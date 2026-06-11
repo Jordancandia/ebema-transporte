@@ -10,7 +10,7 @@ getDatabase();
 
 const SESSION_KEY = 'ebema_user_session';
 let currentSession = null;
-let currentTab = 'rates'; // Cotizador de Tarifas activo por defecto, coincidiendo con la pantalla solicitada
+let currentTab = 'rates'; // Cotizador activo por defecto
 
 const appRoot = document.getElementById('app-root');
 
@@ -42,7 +42,7 @@ function renderApp() {
 function renderLoginView() {
   appRoot.innerHTML = `
     <div class="min-h-screen flex items-center justify-center bg-[#f8f9fa] px-md py-xl">
-      <div class="max-w-md w-full bg-white border border-outline-variant p-lg shadow-md rounded-xl space-y-lg">
+      <div class="max-w-md w-full bg-white border border-outline-variant p-lg shadow-sm rounded-xl space-y-lg">
         
         <!-- Logo y Título -->
         <div class="text-center space-y-xs">
@@ -98,7 +98,6 @@ function renderLoginView() {
     e.preventDefault();
     const email = document.getElementById('login-email').value.trim().toLowerCase();
 
-    // Lógica de validación corporativa
     const isCorpEmail = email.endsWith('@ebema.cl');
 
     if (!isCorpEmail) {
@@ -110,7 +109,7 @@ function renderLoginView() {
     const userSession = {
       email: email,
       name: email.split('@')[0].toUpperCase(),
-      role: email.includes('admin') ? 'Control Operativo' : 'Operaciones Logísticas'
+      role: email.includes('admin') ? 'Admin SIT' : 'Logistics Operator'
     };
 
     localStorage.setItem(SESSION_KEY, JSON.stringify(userSession));
@@ -122,87 +121,87 @@ function renderLoginView() {
 }
 
 // ==========================================================================
-// SHELL DEL DASHBOARD DE SIT EBEMA
+// SHELL DEL DASHBOARD DE SIT EBEMA (IDÉNTICO A GOOGLE STITCH)
 // ==========================================================================
 function renderDashboardShell() {
   appRoot.innerHTML = `
-    <!-- SideNavBar Shell -->
-    <aside class="fixed left-0 top-0 h-full flex flex-col h-screen w-64 border-r border-outline-variant bg-surface z-50">
-      <div class="p-md border-b border-outline-variant flex flex-col gap-xs">
-        <span class="font-headline-sm text-headline-sm font-bold text-primary">SIT EBEMA</span>
-        <span class="font-body-md text-body-md text-secondary">Logistics Management</span>
+    <!-- SideNavBar Anchor -->
+    <nav class="flex flex-col h-full py-lg px-md h-full w-64 fixed left-0 top-0 border-r border-surface-variant bg-surface z-50">
+      <div class="mb-xl px-sm flex flex-col gap-xs">
+        <h1 class="text-headline-sm font-headline-sm font-bold text-primary">SIT EBEMA</h1>
+        <p class="text-label-caps font-label-caps text-secondary uppercase tracking-wider">Logistics Admin</p>
       </div>
       
-      <nav class="flex-1 py-md overflow-y-auto space-y-xs">
+      <div class="space-y-base flex-1" id="sidebar-nav-container">
         <!-- Cotizador (Costs) -->
-        <div class="sidebar-item flex items-center gap-md text-secondary hover:bg-surface-container-high transition-colors px-md py-sm cursor-pointer active:opacity-80" data-tab="rates" id="nav-rates">
+        <a class="sidebar-item flex items-center gap-md px-md py-sm text-secondary hover:text-primary hover:bg-surface-container-high transition-colors rounded-lg cursor-pointer" data-tab="rates" id="nav-rates">
           <span class="material-symbols-outlined">payments</span>
-          <span class="font-body-md text-body-md font-label-caps">Cotizador</span>
-        </div>
+          <span class="font-body-md text-body-md">Cotizador</span>
+        </a>
 
         <!-- Transportistas (Transports) -->
-        <div class="sidebar-item flex items-center gap-md text-secondary hover:bg-surface-container-high transition-colors px-md py-sm cursor-pointer active:opacity-80" data-tab="transports" id="nav-transports">
+        <a class="sidebar-item flex items-center gap-md px-md py-sm text-secondary hover:text-primary hover:bg-surface-container-high transition-colors rounded-lg cursor-pointer" data-tab="transports" id="nav-transports">
           <span class="material-symbols-outlined">local_shipping</span>
-          <span class="font-body-md text-body-md font-label-caps">Transportes</span>
-        </div>
+          <span class="font-body-md text-body-md">Transportes</span>
+        </a>
 
         <!-- Rutas (Routes) -->
-        <div class="sidebar-item flex items-center gap-md text-secondary hover:bg-surface-container-high transition-colors px-md py-sm cursor-pointer active:opacity-80" data-tab="routes" id="nav-routes">
+        <a class="sidebar-item flex items-center gap-md px-md py-sm text-secondary hover:text-primary hover:bg-surface-container-high transition-colors rounded-lg cursor-pointer" data-tab="routes" id="nav-routes">
           <span class="material-symbols-outlined">route</span>
-          <span class="font-body-md text-body-md font-label-caps font-bold">Rutas</span>
-        </div>
+          <span class="font-body-md text-body-md">Rutas</span>
+        </a>
 
         <!-- Direcciones / CDs (Addresses) -->
-        <div class="sidebar-item flex items-center gap-md text-secondary hover:bg-surface-container-high transition-colors px-md py-sm cursor-pointer active:opacity-80" data-tab="logistics" id="nav-logistics">
+        <a class="sidebar-item flex items-center gap-md px-md py-sm text-secondary hover:text-primary hover:bg-surface-container-high transition-colors rounded-lg cursor-pointer" data-tab="logistics" id="nav-logistics">
           <span class="material-symbols-outlined">location_on</span>
-          <span class="font-body-md text-body-md font-label-caps">Centros SAP</span>
-        </div>
-      </nav>
+          <span class="font-body-md text-body-md">Centros SAP</span>
+        </a>
+      </div>
 
-      <!-- Logotipo Footer y Botón Cerrar Sesión -->
-      <div class="p-md mt-auto border-t border-outline-variant space-y-md">
-        <div class="flex items-center justify-between text-xs text-secondary">
-          <div>
-            <p class="font-bold text-on-surface leading-none">${currentSession.name}</p>
-            <p class="text-[10px] opacity-75">${currentSession.role}</p>
-          </div>
-          <button id="btn-logout" class="text-primary hover:text-red-700 flex items-center gap-xs cursor-pointer bg-transparent border-none">
-            <span class="material-symbols-outlined text-[16px]">logout</span>
-          </button>
+      <div class="mt-auto space-y-base border-t border-surface-variant pt-lg">
+        <a class="flex items-center gap-md px-md py-sm text-secondary hover:text-primary hover:bg-surface-container-high transition-colors rounded-lg cursor-pointer" id="btn-logout">
+          <span class="material-symbols-outlined">logout</span>
+          <span class="font-body-md text-body-md">Logout</span>
+        </a>
+      </div>
+    </nav>
+
+    <!-- TopAppBar Anchor -->
+    <header class="flex justify-between items-center h-16 w-full pl-72 pr-margin-desktop bg-surface/80 backdrop-blur-md sticky top-0 z-40 border-b border-surface-variant">
+      <div class="flex items-center gap-md">
+        <span class="text-headline-sm font-headline-sm font-black text-primary hidden md:block">SIT EBEMA</span>
+        <div class="h-8 w-px bg-surface-variant mx-md"></div>
+        <h2 class="text-headline-sm font-headline-sm text-on-surface" id="current-page-title">Cotizador de Tarifas</h2>
+      </div>
+      
+      <div class="flex items-center gap-lg">
+        <div class="relative hidden lg:block">
+          <span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-secondary">search</span>
+          <input class="pl-10 pr-md py-2 bg-surface-container rounded-lg border-none text-body-md w-64 focus:ring-2 focus:ring-primary/20" placeholder="Buscar..." type="text"/>
         </div>
         
-        <div class="flex justify-center">
-          <img alt="EBEMA Logo" class="h-6 object-contain filter grayscale opacity-45" src="https://lh3.googleusercontent.com/aida-public/AB6AXuCX6vaoBm4uTcctJ9LQ_NdCcthUj_n7foJNufSUyUJiON2kZEEvb3UwSDy7WkdEeP0XkixkBtmRwDfymWhdhMxU7VzoUwqH17_s2K77qVRruMYBBJbzylJ0b3uJLmKB0_m_E28HRnUoYf9pvmm-c1B6vv1xiT1AhH_HgkXKmtJCQSMxmhuTRRVwcX6-wAQV9M63ScbxnL0aKfTRPqu3OcuViZvntMqKMGpV_H_W0U_553Kq8Xlmg1nucaU7GqEXAILnnrRBV9BliJg"/>
-        </div>
-      </div>
-    </aside>
-
-    <!-- TopNavBar Shell -->
-    <header class="fixed top-0 right-0 left-64 h-16 flex justify-between items-center px-lg bg-surface border-b border-outline-variant z-40">
-      <div class="flex items-center gap-md flex-1">
-        <div class="relative w-96 focus-within:ring-2 focus-within:ring-primary rounded-lg overflow-hidden">
-          <span class="material-symbols-outlined absolute left-sm top-1/2 -translate-y-1/2 text-secondary">search</span>
-          <input class="w-full bg-surface-container-low border-none pl-10 pr-md py-xs font-body-md text-body-md focus:outline-none" placeholder="Buscar guías, rutas o transportes..." type="text"/>
-        </div>
-      </div>
-      <div class="flex items-center gap-lg">
-        <div class="flex gap-md">
-          <span class="material-symbols-outlined text-secondary hover:text-primary cursor-pointer transition-colors" title="Notificaciones">notifications</span>
-          <span class="material-symbols-outlined text-secondary hover:text-primary cursor-pointer transition-colors" title="Configuración">settings</span>
-        </div>
-        <div class="flex items-center gap-sm border-l border-outline-variant pl-lg">
-          <div class="text-right hidden sm:block">
-            <p class="font-body-md text-body-md font-bold text-on-surface leading-tight">Admin Ebema</p>
-            <p class="font-label-caps text-label-caps text-secondary">Control Operativo</p>
+        <div class="flex items-center gap-sm">
+          <button class="p-2 text-secondary hover:text-primary transition-colors hover:bg-surface-container rounded-full cursor-pointer">
+            <span class="material-symbols-outlined">notifications</span>
+          </button>
+          <button class="p-2 text-secondary hover:text-primary transition-colors hover:bg-surface-container rounded-full cursor-pointer">
+            <span class="material-symbols-outlined">help_outline</span>
+          </button>
+          
+          <div class="ml-md flex items-center gap-sm border-l border-outline-variant pl-md">
+            <img alt="Administrator Profile" class="w-8 h-8 rounded-full border border-surface-variant object-cover" src="https://lh3.googleusercontent.com/aida-public/AB6AXuAAiTCyOhKKpto4TzfW6NIN1sv2OnD_9ISi9_9_tuiAbSovN5cnzTELz4Nql3oFKqQtKhma605ToY_Wn_NCRFbTTLlPwqO5mUsoaSuanYh8zDr7tuqBfaVDdqELWJ7hsYGQl0_xbHsbnSyfAJtiMUt8QMjibQpBCKP4HVz8EUYAGiIrmOly9grHxAaCVCvEcLusH9iewFzjlCHudJnFoLRiF6UTfElTfE36J3YYH5nQBtZlQWKZWewp0HE3B2ymMPHWw9X9ic394nY"/>
+            <div class="hidden sm:block text-left">
+              <p class="text-label-caps font-label-caps leading-none font-bold" id="topbar-user-name">${currentSession.name}</p>
+              <p class="text-[10px] text-secondary">${currentSession.role}</p>
+            </div>
           </div>
-          <img alt="User profile photo" class="w-10 h-10 rounded-full border border-outline-variant object-cover" src="https://lh3.googleusercontent.com/aida-public/AB6AXuCRFHJbXGNKVbHm7RNOX4bWHc3XaRu5LZ7EjxeoWOznluth2v6OLt55JedMINMC3obM6As49yFlAgZ1Tx_Syt297-N_b3mIG1jW6LQ7gbIKLxpOtKSpv5w1BYECELivxnlTyaMqaorObxbMo1qI5bw5VGlkyYg4icJewVPQF5OdfCDpzWOZdrVRscsMD_X8BzyWDOtl8uxufo3DtrceNIEf8UQDED8tnjJKQy9DGfay9E5QWDk2bvaFK92KRPZKgk77_lM7AjH9kr0"/>
         </div>
       </div>
     </header>
 
     <!-- Main Content Canvas -->
-    <main class="ml-64 pt-16 min-h-screen bg-background">
-      <div class="p-xl max-w-7xl mx-auto" id="stage-area">
+    <main class="ml-64 p-margin-desktop min-h-[calc(100vh-64px)] bg-background">
+      <div id="stage-area">
         <!-- Inyectado dinámicamente -->
       </div>
     </main>
@@ -232,30 +231,35 @@ function renderDashboardShell() {
 function switchTab(tabName) {
   currentTab = tabName;
 
-  // Actualizar estilos activos de los ítems de navegación
+  // Restaurar clases inactivas
   document.querySelectorAll('.sidebar-item').forEach(item => {
-    item.className = "sidebar-item flex items-center gap-md text-secondary hover:bg-surface-container-high transition-colors px-md py-sm cursor-pointer active:opacity-80";
+    item.className = "sidebar-item flex items-center gap-md px-md py-sm text-secondary hover:text-primary hover:bg-surface-container-high transition-colors rounded-lg cursor-pointer active:scale-95";
   });
 
   const activeNav = document.getElementById(`nav-${tabName}`);
   if (activeNav) {
-    // Aplicar estilo de pestaña activa (borde izquierdo rojo y fondo)
-    activeNav.className = "sidebar-item flex items-center gap-md bg-secondary-container text-primary border-l-4 border-primary px-md py-sm active:opacity-80 transition-all font-bold";
+    // Aplicar la clase activa de Google Stitch exacta (bg-primary-container y text-on-primary-container)
+    activeNav.className = "sidebar-item flex items-center gap-md px-md py-sm bg-primary-container text-on-primary-container rounded-lg font-semibold opacity-90 transition-all duration-150 cursor-pointer";
   }
 
+  const pageTitle = document.getElementById('current-page-title');
   const stage = document.getElementById('stage-area');
 
   switch (tabName) {
     case 'rates':
+      pageTitle.textContent = 'Cotizador de Tarifas';
       renderRatesView(stage);
       break;
     case 'transports':
+      pageTitle.textContent = 'Gestión de Transportes';
       renderTransportsView(stage);
       break;
     case 'routes':
+      pageTitle.textContent = 'Gestión de Rutas';
       renderRoutesView(stage);
       break;
     case 'logistics':
+      pageTitle.textContent = 'Gestión de Centros';
       renderLogisticsView(stage);
       break;
   }
