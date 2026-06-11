@@ -108,19 +108,25 @@ const defaultData = {
       id: 'cd1',
       nombre: 'CD Santiago Noviciado',
       direccion: 'Camino Noviciado 1050, Lampa, Región Metropolitana',
-      idCentroSap: 'CD100'
+      idCentroSap: 'CD100',
+      lat: -33.3768,
+      lon: -70.8354
     },
     {
       id: 'cd2',
       nombre: 'CD Concepción',
       direccion: 'Ruta 160 Km 12, Coronel, Región del Biobío',
-      idCentroSap: 'CD200'
+      idCentroSap: 'CD200',
+      lat: -36.9015,
+      lon: -73.1168
     },
     {
       id: 'cd3',
       nombre: 'CD Temuco',
       direccion: 'Av. Recabarren 02500, Temuco, Región de La Araucanía',
-      idCentroSap: 'CD300'
+      idCentroSap: 'CD300',
+      lat: -38.7490,
+      lon: -72.6360
     }
   ],
 
@@ -140,7 +146,27 @@ export function getDatabase() {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(defaultData));
     return defaultData;
   }
-  return JSON.parse(data);
+  
+  const parsed = JSON.parse(data);
+  
+  // Migración automática: Asegurar que todos los centros logísticos tengan lat y lon
+  let migrado = false;
+  if (parsed.logisticsCentres) {
+    parsed.logisticsCentres.forEach(cd => {
+      if (cd.lat === undefined || cd.lon === undefined) {
+        const dcd = defaultData.logisticsCentres.find(item => item.idCentroSap === cd.idCentroSap);
+        cd.lat = dcd ? dcd.lat : -33.4489;
+        cd.lon = dcd ? dcd.lon : -70.6693;
+        migrado = true;
+      }
+    });
+  }
+  
+  if (migrado) {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed));
+  }
+  
+  return parsed;
 }
 
 // Guardar los datos en localStorage

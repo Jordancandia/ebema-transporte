@@ -139,3 +139,31 @@ export function showAlert(message, type = 'success') {
     setTimeout(() => alertContainer.remove(), 300);
   }, 3000);
 }
+
+// 6. Geolocalizar una dirección mediante OpenStreetMap Nominatim (Gratuito, sin API Keys)
+export async function geocodeAddress(address) {
+  try {
+    // Limitar la búsqueda a Chile agregando ", Chile" para mayor precisión
+    const query = encodeURIComponent(address + ", Chile");
+    const response = await fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${query}`);
+    if (!response.ok) throw new Error('Error de conexión con Nominatim');
+    
+    const results = await response.json();
+    if (results && results.length > 0) {
+      return {
+        lat: parseFloat(results[0].lat),
+        lon: parseFloat(results[0].lon),
+        displayName: results[0].display_name
+      };
+    }
+  } catch (error) {
+    console.error("Error al geolocalizar dirección:", error);
+  }
+  
+  // Coordenadas por defecto (Santiago Centro) si falla
+  return {
+    lat: -33.4489,
+    lon: -70.6693,
+    displayName: "Santiago Centro, Chile (Por Defecto)"
+  };
+}
