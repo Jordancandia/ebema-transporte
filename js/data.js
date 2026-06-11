@@ -136,6 +136,28 @@ const defaultData = {
     { type: 'Sencillo', capacityTons: '5 - 10 Tons', baseRate: 45000, ratePerKm: 1200 },
     { type: 'Doble Puente', capacityTons: '11 - 18 Tons', baseRate: 75000, ratePerKm: 1800 },
     { type: 'Rampla', capacityTons: '19 - 30 Tons', baseRate: 120000, ratePerKm: 2500 }
+  ],
+
+  // 6. Historial de Cotizaciones (historial_cotizaciones)
+  quotesHistory: [
+    {
+      id: 'q1',
+      fecha: '2026-06-11 08:45',
+      origen: 'CD Santiago Noviciado',
+      destino: 'Rancagua',
+      vehiculo: 'Doble Puente',
+      estado: 'COTIZADO',
+      monto: 246000
+    },
+    {
+      id: 'q2',
+      fecha: '2026-06-11 08:12',
+      origen: 'CD Concepción',
+      destino: 'Talcahuano',
+      vehiculo: 'Sencillo',
+      estado: 'ASIGNADO',
+      monto: 66600
+    }
   ]
 };
 
@@ -160,6 +182,11 @@ export function getDatabase() {
         migrado = true;
       }
     });
+  }
+  
+  if (!parsed.hasOwnProperty('quotesHistory')) {
+    parsed.quotesHistory = defaultData.quotesHistory;
+    migrado = true;
   }
   
   if (migrado) {

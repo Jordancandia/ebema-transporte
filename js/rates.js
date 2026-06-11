@@ -1,376 +1,495 @@
 import { getDatabase, saveDatabase } from './data.js';
 import { formatCLP, showAlert } from './utils.js';
 
-// Renderizar la vista de Matriz de Tarifas y Simulador
+// Renderizar la vista principal del Cotizador de Tarifas
 export function renderRatesView(container) {
   const db = getDatabase();
-  const truckTypes = db.truckTypes;
-  const routes = db.routes.filter(r => r.activo);
   const cds = db.logisticsCentres;
+  const routes = db.routes.filter(r => r.activo);
+  const truckTypes = db.truckTypes;
+
+  // Generar ID único temporal para esta cotización
+  const currentQuoteId = `${Math.floor(1000 + Math.random() * 9000)}-QT`;
 
   container.innerHTML = `
-    <div class="rates-layout">
-      <!-- PANEL IZQUIERDO: MATRIZ BASE Y EDICIÓN -->
-      <div>
-        <div class="table-container-card" style="margin-bottom: 24px;">
-          <div class="table-header-bar">
-            <h4 style="font-weight: 700; font-size: 16px;">Matriz Base de Tarifas por Camión</h4>
-            <span style="font-size: 12px; color: var(--text-muted);">Define los costos por tipo de camión</span>
-          </div>
-          <table class="responsive-table">
-            <thead>
-              <tr>
-                <th>Tipo de Camión</th>
-                <th>Capacidad Ref.</th>
-                <th>Tarifa Base Despacho</th>
-                <th>Costo Adicional x KM</th>
-                <th>Acciones</th>
-              </tr>
-            </thead>
-            <tbody id="truck-rates-tbody">
-              <!-- Cargado dinámicamente -->
-            </tbody>
-          </table>
-        </div>
+    <!-- Page Header -->
+    <div class="mb-xl">
+      <h1 class="font-headline-lg text-headline-lg text-on-surface">Cotizador de Tarifas</h1>
+      <p class="font-body-lg text-body-lg text-secondary">Configure los parámetros de transporte para obtener una estimación precisa de costos operativos.</p>
+    </div>
 
-        <!-- SIMULADOR INTERACTIVO DE COSTO -->
-        <div class="rates-control-panel">
-          <h4 style="font-weight: 700; font-size: 16px; margin-bottom: 20px; color: var(--brand-primary-hover);">Simulador de Tarifas Dinámicas (Ruta X Camión)</h4>
-          
-          <div class="form-grid-2">
-            <div class="form-group">
-              <label for="sim-cd">Centro de Salida (Origen)</label>
-              <select id="sim-cd" class="form-control">
+    <!-- Dashboard Grid -->
+    <div class="grid grid-cols-12 gap-lg">
+      <!-- Left Column: Formulario de Consulta -->
+      <section class="col-span-12 lg:col-span-7 bg-surface-container-lowest border border-outline-variant p-lg shadow-sm">
+        <div class="flex items-center gap-sm mb-lg border-b border-outline-variant pb-sm">
+          <span class="material-symbols-outlined text-primary">analytics</span>
+          <h2 class="font-headline-sm text-headline-sm font-bold text-on-surface">Formulario de Consulta</h2>
+        </div>
+        
+        <form class="space-y-lg" id="quota-form">
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-lg">
+            <!-- Origen -->
+            <div class="space-y-xs">
+              <label class="font-label-caps text-label-caps text-secondary block">ORIGEN (CENTRO LOGÍSTICO)</label>
+              <select id="q-origen" class="w-full border border-[#CED4DA] p-sm font-body-md text-body-md focus:border-[#373A3C] focus:ring-0 transition-all bg-white" required>
                 <option value="">Seleccione origen...</option>
-                <!-- Cargado dinámicamente -->
+                <!-- Opciones cargadas dinámicamente -->
               </select>
             </div>
-            <div class="form-group">
-              <label for="sim-route">Ruta de Destino</label>
-              <select id="sim-route" class="form-control" disabled>
+            <!-- Destino -->
+            <div class="space-y-xs">
+              <label class="font-label-caps text-label-caps text-secondary block">DESTINO (COMUNA O SECTOR)</label>
+              <select id="q-destino" class="w-full border border-[#CED4DA] p-sm font-body-md text-body-md focus:border-[#373A3C] focus:ring-0 transition-all bg-white" required disabled>
                 <option value="">Primero seleccione origen...</option>
               </select>
             </div>
           </div>
 
-          <div class="form-grid-2">
-            <div class="form-group">
-              <label for="sim-truck">Tipo de Camión</label>
-              <select id="sim-truck" class="form-control">
-                <option value="">Seleccione camión...</option>
-                <!-- Cargado dinámicamente -->
-              </select>
+          <!-- Automated Fields -->
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-lg bg-surface-container-low p-md rounded">
+            <div class="space-y-xs">
+              <label class="font-label-caps text-label-caps text-secondary block">TIPO DE RUTA</label>
+              <div class="flex items-center gap-sm bg-surface p-sm border border-outline-variant rounded">
+                <span class="w-3 h-3 rounded-full bg-secondary" id="q-tipo-indicator"></span>
+                <span class="font-body-md text-body-md font-bold text-on-surface" id="q-tipo-text">No asignado</span>
+              </div>
             </div>
-            <div class="form-group">
-              <label for="sim-dist">Distancia de la Ruta</label>
-              <input type="text" id="sim-dist" class="form-control field-locked" disabled placeholder="KM de ruta">
+            <div class="space-y-xs">
+              <label class="font-label-caps text-label-caps text-secondary block">DISTANCIA ESTIMADA</label>
+              <div class="flex items-center gap-sm bg-surface p-sm border border-outline-variant rounded">
+                <span class="material-symbols-outlined text-secondary text-[18px]">straighten</span>
+                <span class="font-data-mono text-data-mono font-bold text-on-surface" id="q-distancia-text">0 KM</span>
+              </div>
             </div>
           </div>
-        </div>
-      </div>
 
-      <!-- PANEL DERECHO: PANEL DE RESULTADO/DETALLE DE COTIZACIÓN -->
-      <div>
-        <div class="simulator-result-box" id="simulator-result-container">
-          <div class="simulator-empty" id="sim-empty-state">
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
-            </svg>
-            <p>Selecciona un Origen, una Ruta y un Tipo de Camión para calcular dinámicamente la tarifa de transporte.</p>
+          <!-- Tipo de Camión -->
+          <div class="space-y-xs">
+            <label class="font-label-caps text-label-caps text-secondary block">TIPO DE VEHÍCULO ASIGNADO</label>
+            <select id="q-vehiculo" class="w-full border border-[#CED4DA] p-sm font-body-md text-body-md focus:border-[#373A3C] focus:ring-0 transition-all bg-white" required>
+              <option value="">Seleccione vehículo...</option>
+              <!-- Cargado dinámicamente -->
+            </select>
           </div>
-          
-          <div id="sim-calculated-state" style="display: none; height: 100%; flex-direction: column; justify-content: space-between;">
-            <div>
-              <div class="result-header">
-                <h4>Detalle de Cotización de Ruta</h4>
-                <h3 id="res-title-route">RUT-SCL-QUI</h3>
-              </div>
-              
-              <div class="result-breakdown">
-                <div class="breakdown-row">
-                  <span>Origen (Salida):</span>
-                  <span id="res-origin">CD Santiago Noviciado</span>
-                </div>
-                <div class="breakdown-row">
-                  <span>Destino (Entrega):</span>
-                  <span id="res-destination">Quilicura</span>
-                </div>
-                <div class="breakdown-row">
-                  <span>Distancia Ruta:</span>
-                  <span id="res-km">25 KM</span>
-                </div>
-                <div class="breakdown-row">
-                  <span>Tipo de Camión:</span>
-                  <span id="res-truck">Sencillo</span>
-                </div>
-                <div class="breakdown-row">
-                  <span>Tarifa Base Camión:</span>
-                  <span id="res-base">45.000 CLP</span>
-                </div>
-                <div class="breakdown-row">
-                  <span>Costo Adicional x KM:</span>
-                  <span id="res-cost-km">1.200 CLP/KM</span>
-                </div>
-                <div class="breakdown-row">
-                  <span>Costo Kilometraje:</span>
-                  <span id="res-total-km">30.000 CLP</span>
-                </div>
-              </div>
-            </div>
 
-            <div>
-              <div class="breakdown-total">
-                <span>Costo de Transporte</span>
-                <span class="price-tag" id="res-total-cost">$75.000</span>
-              </div>
-              
-              <div class="simulator-actions">
-                <button class="btn-secondary" style="width: 100%;" id="btn-reset-simulator">
-                  Reiniciar
-                </button>
-                <button class="btn-primary" style="width: 100%;" id="btn-print-simulator">
-                  Imprimir Reporte
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- MODAL EDITAR TARIFA DE CAMIÓN -->
-    <div class="modal-overlay" id="rate-edit-modal">
-      <div class="modal-window">
-        <div class="modal-header">
-          <h4>Editar Parámetros de Tarifa</h4>
-          <button class="modal-close-btn" id="btn-close-rate-modal">
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
-        </div>
-        <form id="rate-edit-form">
-          <div class="modal-body">
-            <div class="form-group">
-              <label for="rate-truck-type">Categoría del Camión</label>
-              <input type="text" id="rate-truck-type" class="form-control field-locked" disabled>
-            </div>
-            
-            <div class="form-grid-2">
-              <div class="form-group">
-                <label for="rate-base">Tarifa Fija de Despacho ($)</label>
-                <input type="number" id="rate-base" class="form-control" required min="0">
-              </div>
-              <div class="form-group">
-                <label for="rate-km">Costo Adicional x KM ($)</label>
-                <input type="number" id="rate-km" class="form-control" required min="0">
-              </div>
-            </div>
-          </div>
-          <div class="modal-footer">
-            <button type="button" class="btn-secondary" id="btn-cancel-rate-modal">Cancelar</button>
-            <button type="submit" class="btn-primary">Actualizar Tarifas</button>
+          <!-- Atmospheric Decor (Graphic) -->
+          <div class="h-32 w-full overflow-hidden relative border border-outline-variant rounded">
+            <img class="w-full h-full object-cover grayscale opacity-30" alt="A cinematic long shot of a heavy-duty industrial truck driving down a modern Chilean highway at dusk." src="https://lh3.googleusercontent.com/aida-public/AB6AXuBGBETVbx8UuFDc81gmGOJ-gvv-jsbuTZVtaK9pSsSDSHn9Wr4Bt_tluEfLbyHGZtuzb00P3yirq1P7TMt0ide2tTSgKprvNmpOHaldLmmG3DcYLiE0E1Fz_ZXvnjZcusN0ZXTCprULgbmvQuUBv_f5FYKJHlMuHEiOnaLKrP8Q-c-8fR2uOh-8KggAF-gzGxB7AIidMwSvfsiUGdR5uPk4nPNdqHIUF5u1dFoASs01H2b7ApVTMWFEJ0QkYQ9loOyfSinl2QFTmr8"/>
+            <div class="absolute inset-0 bg-gradient-to-t from-surface-container-lowest to-transparent"></div>
+            <div class="absolute bottom-sm left-sm px-xs bg-primary text-white text-[10px] font-bold tracking-widest uppercase">Visualización de Flota</div>
           </div>
         </form>
+      </section>
+
+      <!-- Right Column: Tarjeta de Detalle -->
+      <section class="col-span-12 lg:col-span-5 flex flex-col gap-lg">
+        <div class="bg-surface-container-low border border-outline-variant p-lg shadow-md relative overflow-hidden flex-1 flex flex-col justify-between">
+          <!-- Background Accents -->
+          <div class="absolute -top-12 -right-12 w-48 h-48 bg-primary opacity-5 rounded-full"></div>
+          
+          <div class="relative z-10 flex-1 flex flex-col justify-between">
+            <div>
+              <div class="flex justify-between items-start mb-xl">
+                <div>
+                  <p class="font-label-caps text-label-caps text-secondary mb-1">PROYECCIÓN DE COSTO</p>
+                  <h2 class="font-headline-md text-headline-md font-bold text-on-surface">Resumen de Cotización</h2>
+                </div>
+                <span class="bg-surface-container-highest px-sm py-xs font-label-caps text-[10px] border border-outline-variant" id="q-summary-id">ID: ${currentQuoteId}</span>
+              </div>
+              
+              <ul class="space-y-md mb-xl">
+                <li class="flex justify-between items-center border-b border-outline-variant pb-sm">
+                  <span class="font-body-md text-body-md text-secondary">Origen</span>
+                  <span class="font-body-md text-body-md font-bold text-on-surface" id="q-summary-origen">Seleccione origen</span>
+                </li>
+                <li class="flex justify-between items-center border-b border-outline-variant pb-sm">
+                  <span class="font-body-md text-body-md text-secondary">Destino</span>
+                  <div class="text-right">
+                    <p class="font-body-md text-body-md font-bold text-on-surface" id="q-summary-destino">Seleccione destino</p>
+                    <p class="font-label-caps text-[10px] text-primary hidden" id="q-summary-tipo-badge">INTERREGIONAL</p>
+                  </div>
+                </li>
+                <li class="flex justify-between items-center border-b border-outline-variant pb-sm">
+                  <span class="font-body-md text-body-md text-secondary">Distancia total</span>
+                  <span class="font-data-mono text-data-mono font-bold text-on-surface" id="q-summary-distancia">0.0 KM</span>
+                </li>
+                <li class="flex justify-between items-center">
+                  <span class="font-body-md text-body-md text-secondary">Vehículo asignado</span>
+                  <span class="font-body-md text-body-md font-bold text-on-surface" id="q-summary-vehiculo">Seleccione vehículo</span>
+                </li>
+              </ul>
+            </div>
+
+            <div>
+              <div class="bg-surface-container-lowest p-lg border-2 border-primary/10 mb-xl rounded">
+                <p class="font-label-caps text-label-caps text-secondary text-center mb-base">PRECIO FINAL (IVA INCL.)</p>
+                <p class="font-headline-lg text-headline-lg text-primary text-center font-extrabold tracking-tighter" id="q-summary-precio">$0 CLP</p>
+                <p class="font-label-caps text-[10px] text-center text-secondary mt-base">Vigencia: 24 Horas</p>
+              </div>
+              
+              <div class="flex flex-col gap-sm">
+                <button type="button" id="btn-assign-quote" class="w-full bg-[#28a745] hover:bg-[#218838] text-white font-bold py-md rounded-lg shadow-lg active:scale-[0.98] transition-all flex items-center justify-center gap-md cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed" disabled>
+                  <span class="material-symbols-outlined">assignment_turned_in</span>
+                  Asignar a Plan de Entrega
+                </button>
+                <button type="button" id="btn-export-pdf-quote" class="w-full border border-secondary text-secondary hover:bg-surface-container-high font-bold py-md rounded-lg active:scale-[0.98] transition-all flex items-center justify-center gap-md cursor-pointer">
+                  <span class="material-symbols-outlined">picture_as_pdf</span>
+                  Exportar PDF
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Mini Insights Card -->
+        <div class="bg-surface-container-lowest border border-outline-variant p-md flex items-center gap-lg rounded">
+          <div class="w-12 h-12 bg-surface-container-high flex items-center justify-center text-primary rounded">
+            <span class="material-symbols-outlined text-[32px]">inventory_2</span>
+          </div>
+          <div class="flex-1">
+            <p class="font-label-caps text-[10px] text-secondary">CAPACIDAD UTILIZADA</p>
+            <div class="flex items-center gap-sm">
+              <span class="font-data-mono text-data-mono font-bold" id="kpi-capacity-percentage">85%</span>
+              <div class="flex-1 h-2 bg-surface-container-low rounded-full overflow-hidden">
+                <div class="h-full bg-primary" style="width: 85%" id="kpi-capacity-bar"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- Contextual List: Recent Quotes (Systematic approach to data) -->
+    <div class="mt-xl">
+      <div class="flex justify-between items-end mb-md">
+        <h3 class="font-headline-sm text-headline-sm font-bold text-on-surface">Historial Reciente de Cotizaciones</h3>
+        <button id="btn-reset-history" class="font-label-caps text-label-caps text-primary hover:underline bg-none border-none cursor-pointer">Restablecer Historial</button>
+      </div>
+      <div class="bg-surface border border-outline-variant overflow-hidden rounded">
+        <table class="w-full zebra-table border-collapse">
+          <thead>
+            <tr class="bg-surface-container-high text-left border-b border-outline-variant">
+              <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Fecha</th>
+              <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Origen - Destino</th>
+              <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Vehículo</th>
+              <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Estado</th>
+              <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-right">Monto</th>
+            </tr>
+          </thead>
+          <tbody id="quotes-history-tbody" class="font-body-md text-body-md">
+            <!-- Cargado dinámicamente -->
+          </tbody>
+        </table>
       </div>
     </div>
   `;
 
-  // Renderizar la tabla de tarifas de camión
-  renderTruckRatesTable(truckTypes, container);
+  // --- VARIABLES DE SELECCIÓN Y LOGICA ---
+  const selOrigen = document.getElementById('q-origen');
+  const selDestino = document.getElementById('q-destino');
+  const selVehiculo = document.getElementById('q-vehiculo');
+  
+  const txtTipo = document.getElementById('q-tipo-text');
+  const indTipo = document.getElementById('q-tipo-indicator');
+  const txtDistancia = document.getElementById('q-distancia-text');
 
-  // --- CONFIGURACIÓN DE EVENTOS ---
-  const simCd = document.getElementById('sim-cd');
-  const simRoute = document.getElementById('sim-route');
-  const simTruck = document.getElementById('sim-truck');
-  const simDist = document.getElementById('sim-dist');
+  const sumOrigen = document.getElementById('q-summary-origen');
+  const sumDestino = document.getElementById('q-summary-destino');
+  const sumDistancia = document.getElementById('q-summary-distancia');
+  const sumVehiculo = document.getElementById('q-summary-vehiculo');
+  const sumPrecio = document.getElementById('q-summary-precio');
+  const sumTipoBadge = document.getElementById('q-summary-tipo-badge');
 
-  // Llenar orígenes (CDs)
-  simCd.innerHTML = '<option value="">Seleccione origen...</option>';
+  const btnAssign = document.getElementById('btn-assign-quote');
+  const btnExportPdf = document.getElementById('btn-export-pdf-quote');
+
+  let calculatedPrice = 0;
+  let activeRouteObj = null;
+  let activeTruckObj = null;
+
+  // --- RENDERIZADO INICIAL ---
+
+  // 1. Cargar Orígenes (CDs)
+  selOrigen.innerHTML = '<option value="">Seleccione origen...</option>';
   cds.forEach(cd => {
     const opt = document.createElement('option');
     opt.value = cd.nombre;
     opt.textContent = cd.nombre;
-    simCd.appendChild(opt);
+    selOrigen.appendChild(opt);
   });
 
-  // Llenar tipos de camiones
-  simTruck.innerHTML = '<option value="">Seleccione camión...</option>';
+  // 2. Cargar Vehículos (Tipos de camiones de la Matriz)
+  selVehiculo.innerHTML = '<option value="">Seleccione vehículo...</option>';
   truckTypes.forEach(t => {
     const opt = document.createElement('option');
     opt.value = t.type;
-    opt.textContent = `${t.type} (${t.capacityTons})`;
-    simTruck.appendChild(opt);
+    opt.textContent = `${t.type} (Capacidad: ${t.capacityTons})`;
+    selVehiculo.appendChild(opt);
   });
 
-  // Evento al cambiar origen (Cargar rutas correspondientes)
-  simCd.addEventListener('change', (e) => {
-    const selectedOrigin = e.target.value;
-    simRoute.innerHTML = '<option value="">Seleccione ruta...</option>';
+  // 3. Renderizar la tabla de historial de cotizaciones
+  renderHistoryTable(db.quotesHistory);
+  updateCapacityKpi(db.quotesHistory);
+
+  // --- CONFIGURACIÓN DE EVENTOS REACTIVOS ---
+
+  // Evento Origen: Filtra y habilita los destinos correspondientes
+  selOrigen.addEventListener('change', () => {
+    const chosenOrigin = selOrigen.value;
+    selDestino.innerHTML = '<option value="">Seleccione destino...</option>';
     
-    if (selectedOrigin) {
-      const filteredRoutes = routes.filter(r => r.origen === selectedOrigin);
+    // Limpiar campos automáticos
+    resetAutoFields();
+
+    if (chosenOrigin) {
+      // Filtrar rutas activas que salgan de ese origen
+      const filteredRoutes = routes.filter(r => r.origen === chosenOrigin);
       
       if (filteredRoutes.length === 0) {
-        simRoute.innerHTML = '<option value="">No hay rutas para este origen...</option>';
-        simRoute.disabled = true;
+        selDestino.innerHTML = '<option value="">No hay rutas para este origen</option>';
+        selDestino.disabled = true;
       } else {
         filteredRoutes.forEach(r => {
           const opt = document.createElement('option');
           opt.value = r.id;
-          opt.textContent = `${r.codigo} -> ${r.destino} (${r.km} KM)`;
-          simRoute.appendChild(opt);
+          opt.textContent = `${r.destino} (${r.km} KM)`;
+          selDestino.appendChild(opt);
         });
-        simRoute.disabled = false;
+        selDestino.disabled = false;
       }
+      sumOrigen.textContent = chosenOrigin;
     } else {
-      simRoute.innerHTML = '<option value="">Primero seleccione origen...</option>';
-      simRoute.disabled = true;
+      selDestino.disabled = true;
+      sumOrigen.textContent = "Seleccione origen";
     }
-    
-    simDist.value = '';
-    calculateCost();
+
+    calculateQuotePrice();
   });
 
-  // Evento al cambiar de ruta
-  simRoute.addEventListener('change', () => {
-    const routeId = simRoute.value;
+  // Evento Destino: Carga información de la ruta en tiempo real
+  selDestino.addEventListener('change', () => {
+    const routeId = selDestino.value;
+    
     if (routeId) {
       const selectedRoute = routes.find(r => r.id === routeId);
-      simDist.value = selectedRoute ? `${selectedRoute.km} KM` : '';
+      activeRouteObj = selectedRoute;
+
+      if (selectedRoute) {
+        // Cargar distancia
+        txtDistancia.textContent = `${selectedRoute.km} KM`;
+        sumDistancia.textContent = `${selectedRoute.km} KM`;
+        sumDestino.textContent = selectedRoute.destino;
+
+        // Cargar Tipo de Ruta y lógica regional
+        const originCdObj = cds.find(c => c.nombre === selectedRoute.origen);
+        // Si la región de origen es distinta de la de destino, es Interregional
+        const isInterregional = originCdObj && !selectedRoute.region.toLowerCase().includes(originCdObj.direccion.toLowerCase().split(',').pop().trim().toLowerCase());
+        
+        let typeLabel = selectedRoute.tipo; // Comuna o Sector
+        if (selectedRoute.km > 100) {
+          typeLabel = "Interregional";
+        }
+        
+        txtTipo.textContent = typeLabel;
+        
+        // Estilos del indicador de tipo de ruta
+        indTipo.className = "w-3 h-3 rounded-full";
+        if (typeLabel === "Interregional") {
+          indTipo.classList.add("bg-primary");
+          sumTipoBadge.textContent = "INTERREGIONAL";
+          sumTipoBadge.classList.remove("hidden");
+        } else {
+          indTipo.classList.add("bg-[#28a745]");
+          sumTipoBadge.classList.add("hidden");
+        }
+      }
     } else {
-      simDist.value = '';
-    }
-    calculateCost();
-  });
-
-  // Evento al cambiar de camión
-  simTruck.addEventListener('change', () => {
-    calculateCost();
-  });
-
-  // Función para calcular costos
-  function calculateCost() {
-    const routeId = simRoute.value;
-    const truckType = simTruck.value;
-    
-    const emptyState = document.getElementById('sim-empty-state');
-    const calculatedState = document.getElementById('sim-calculated-state');
-
-    if (!routeId || !truckType) {
-      emptyState.style.display = 'flex';
-      calculatedState.style.display = 'none';
-      return;
+      resetAutoFields();
     }
 
-    const selectedRoute = routes.find(r => r.id === routeId);
-    const selectedTruck = truckTypes.find(t => t.type === truckType);
+    calculateQuotePrice();
+  });
 
-    if (selectedRoute && selectedTruck) {
-      // Fórmula del Costo de Transporte
-      const distance = Number(selectedRoute.km);
-      const baseFee = Number(selectedTruck.baseRate);
-      const kmFee = Number(selectedTruck.ratePerKm);
-      const totalKmCost = distance * kmFee;
-      const finalCost = baseFee + totalKmCost;
+  // Evento Vehículo: Actualiza el tipo y recalculas el precio
+  selVehiculo.addEventListener('change', () => {
+    const truckType = selVehiculo.value;
 
-      // Actualizar valores en pantalla
-      document.getElementById('res-title-route').textContent = selectedRoute.codigo;
-      document.getElementById('res-origin').textContent = selectedRoute.origen;
-      document.getElementById('res-destination').textContent = selectedRoute.destino;
-      document.getElementById('res-km').textContent = `${distance} KM`;
-      document.getElementById('res-truck').textContent = selectedTruck.type;
+    if (truckType) {
+      const selectedTruck = truckTypes.find(t => t.type === truckType);
+      activeTruckObj = selectedTruck;
       
-      document.getElementById('res-base').textContent = formatCLP(baseFee);
-      document.getElementById('res-cost-km').textContent = `${formatCLP(kmFee)}/KM`;
-      document.getElementById('res-total-km').textContent = formatCLP(totalKmCost);
-      document.getElementById('res-total-cost').textContent = formatCLP(finalCost);
+      if (selectedTruck) {
+        sumVehiculo.textContent = `${selectedTruck.type} (${selectedTruck.capacityTons})`;
+      }
+    } else {
+      activeTruckObj = null;
+      sumVehiculo.textContent = "Seleccione vehículo";
+    }
 
-      emptyState.style.display = 'none';
-      calculatedState.style.display = 'flex';
+    calculateQuotePrice();
+  });
+
+  // Fórmula Matemática: Calcular tarifa y actualizar tarjeta
+  function calculateQuotePrice() {
+    if (activeRouteObj && activeTruckObj) {
+      const distance = Number(activeRouteObj.km);
+      const baseRate = Number(activeTruckObj.baseRate);
+      const ratePerKm = Number(activeTruckObj.ratePerKm);
+
+      // FÓRMULA DE COSTO: Tarifa Fija + (Distancia * Costo x KM)
+      calculatedPrice = baseRate + (distance * ratePerKm);
+      
+      sumPrecio.textContent = formatCLP(calculatedPrice);
+      btnAssign.disabled = false;
+    } else {
+      calculatedPrice = 0;
+      sumPrecio.textContent = "$0 CLP";
+      btnAssign.disabled = true;
     }
   }
 
-  // Reiniciar simulador
-  document.getElementById('btn-reset-simulator').addEventListener('click', () => {
-    simCd.value = '';
-    simRoute.value = '';
-    simRoute.disabled = true;
-    simTruck.value = '';
-    simDist.value = '';
-    calculateCost();
+  // Limpiar campos automáticos de ruta
+  function resetAutoFields() {
+    activeRouteObj = null;
+    txtTipo.textContent = "No asignado";
+    indTipo.className = "w-3 h-3 rounded-full bg-secondary";
+    txtDistancia.textContent = "0 KM";
+    sumDestino.textContent = "Seleccione destino";
+    sumDistancia.textContent = "0.0 KM";
+    sumTipoBadge.classList.add("hidden");
+  }
+
+  // --- EVENTO GUARDAR / ASIGNAR COTIZACIÓN A LA BASE DE DATOS ---
+  btnAssign.addEventListener('click', () => {
+    if (!activeRouteObj || !activeTruckObj || calculatedPrice === 0) return;
+
+    const db = getDatabase();
+    
+    // Obtener la fecha actual en formato legible (DD/MM HH:MM)
+    const now = new Date();
+    const formattedDate = `${now.getDate().toString().padStart(2, '0')}/${(now.getMonth() + 1).toString().padStart(2, '0')} ${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
+
+    const newQuote = {
+      id: 'q' + (new Date().getTime()),
+      fecha: formattedDate,
+      origen: activeRouteObj.origen,
+      destino: activeRouteObj.destino,
+      vehiculo: activeTruckObj.type,
+      estado: 'ASIGNADO', // Al asignarse al plan
+      monto: calculatedPrice
+    };
+
+    db.quotesHistory.unshift(newQuote); // Agregar al principio del historial
+    saveDatabase(db);
+
+    showAlert(`Cotización asignada con éxito al Plan de Entrega.`);
+    
+    // Resetear formulario y regenerar ID de cotización
+    document.getElementById('quota-form').reset();
+    resetAutoFields();
+    activeTruckObj = null;
+    sumVehiculo.textContent = "Seleccione vehículo";
+    selDestino.disabled = true;
+    calculateQuotePrice();
+
+    // Regenerar ID en la tarjeta de resumen
+    const nextQuoteId = `${Math.floor(1000 + Math.random() * 9000)}-QT`;
+    document.getElementById('q-summary-id').innerText = `ID: ${nextQuoteId}`;
+
+    // Re-renderizar la vista para reflejar el historial nuevo
+    renderHistoryTable(db.quotesHistory);
+    updateCapacityKpi(db.quotesHistory);
   });
 
-  // Imprimir reporte de cotización
-  document.getElementById('btn-print-simulator').addEventListener('click', () => {
-    const routeId = simRoute.value;
-    const selectedRoute = routes.find(r => r.id === routeId);
-    showAlert(`Reporte de cotización generado para ${selectedRoute ? selectedRoute.codigo : 'ruta'}. Enviando a consola de impresión corporativa...`);
+  // Evento Exportar PDF (Simulado)
+  btnExportPdf.addEventListener('click', () => {
+    showAlert("Generando cotización en PDF... Descarga iniciada.");
+  });
+
+  // Evento Restablecer Historial
+  document.getElementById('btn-reset-history').addEventListener('click', () => {
+    if (confirm("¿Está seguro de restablecer el historial de cotizaciones?")) {
+      const db = getDatabase();
+      db.quotesHistory = [
+        {
+          id: 'q1',
+          fecha: '24/05 08:45',
+          origen: 'CD Santiago Noviciado',
+          destino: 'Rancagua',
+          vehiculo: 'Camión 15 Ton',
+          estado: 'COTIZADO',
+          monto: 185000
+        },
+        {
+          id: 'q2',
+          fecha: '24/05 08:12',
+          origen: 'CD Concepción',
+          destino: 'Talcahuano',
+          vehiculo: 'Camión 5 Ton',
+          estado: 'ASIGNADO',
+          monto: 45000
+        }
+      ];
+      saveDatabase(db);
+      renderHistoryTable(db.quotesHistory);
+      updateCapacityKpi(db.quotesHistory);
+      showAlert("Historial de cotizaciones restablecido.");
+    }
   });
 }
 
-// Renderizar tabla de tarifas
-function renderTruckRatesTable(truckTypes, viewContainer) {
-  const tbody = document.getElementById('truck-rates-tbody');
+// Renderizar la tabla de historial
+function renderHistoryTable(historyList) {
+  const tbody = document.getElementById('quotes-history-tbody');
   if (!tbody) return;
 
+  if (historyList.length === 0) {
+    tbody.innerHTML = `
+      <tr>
+        <td colspan="5" class="p-md text-center text-secondary">
+          No hay cotizaciones registradas recientemente.
+        </td>
+      </tr>
+    `;
+    return;
+  }
+
   tbody.innerHTML = '';
-  truckTypes.forEach((t, idx) => {
+  historyList.forEach(q => {
     const tr = document.createElement('tr');
+    tr.className = "border-b border-outline-variant";
+    
+    // Estilo del badge según estado
+    const badgeBg = q.estado === 'ASIGNADO' ? 'bg-green-100 text-green-800' : 'bg-secondary-container text-on-secondary-container';
+
     tr.innerHTML = `
-      <td style="font-weight: 600; color: var(--brand-primary-hover);">${t.type}</td>
-      <td><span style="background-color: var(--bg-tertiary); padding: 4px 8px; border-radius: 4px; border: 1px solid var(--border-color); font-size: 13px;">${t.capacityTons}</span></td>
-      <td style="font-weight: 500;">${formatCLP(t.baseRate)}</td>
-      <td style="font-weight: 500;">${formatCLP(t.ratePerKm)} / KM</td>
-      <td>
-        <button class="btn-icon-only btn-edit-rate" data-idx="${idx}" title="Editar Tarifas">
-          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
-          </svg>
-        </button>
+      <td class="p-md font-data-mono text-data-mono">${q.fecha}</td>
+      <td class="p-md">${q.origen} → ${q.destino}</td>
+      <td class="p-md">${q.vehiculo}</td>
+      <td class="p-md">
+        <span class="inline-flex items-center px-2 py-1 rounded ${badgeBg} font-label-caps text-[10px]">
+          ${q.estado}
+        </span>
       </td>
+      <td class="p-md text-right font-bold">${formatCLP(q.monto)}</td>
     `;
     tbody.appendChild(tr);
   });
+}
 
-  // Modales y Edición
-  const modal = document.getElementById('rate-edit-modal');
-  const btnClose = document.getElementById('btn-close-rate-modal');
-  const btnCancel = document.getElementById('btn-cancel-rate-modal');
-  const form = document.getElementById('rate-edit-form');
-  let activeIndex = null;
+// Actualizar el porcentaje de capacidad utilizada dinámicamente según asignaciones
+function updateCapacityKpi(historyList) {
+  const capText = document.getElementById('kpi-capacity-percentage');
+  const capBar = document.getElementById('kpi-capacity-bar');
+  if (!capText || !capBar) return;
 
-  document.querySelectorAll('.btn-edit-rate').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      const idx = e.currentTarget.getAttribute('data-idx');
-      const truck = truckTypes[idx];
-      if (truck) {
-        activeIndex = idx;
-        document.getElementById('rate-truck-type').value = truck.type;
-        document.getElementById('rate-base').value = truck.baseRate;
-        document.getElementById('rate-km').value = truck.ratePerKm;
-        modal.classList.add('active');
-      }
-    });
-  });
+  // Calculamos una capacidad basada en las cotizaciones asignadas
+  const assignedCount = historyList.filter(q => q.estado === 'ASIGNADO').length;
+  // Simulación: Cada asignación ocupa un 15%, partiendo de un base de 35%, hasta un límite de 98%
+  let percentage = 35 + (assignedCount * 15);
+  if (percentage > 98) percentage = 98;
 
-  const closeModal = () => modal.classList.remove('active');
-  btnClose.addEventListener('click', closeModal);
-  btnCancel.addEventListener('click', closeModal);
-
-  form.addEventListener('submit', (e) => {
-    e.preventDefault();
-    if (activeIndex !== null) {
-      const db = getDatabase();
-      db.truckTypes[activeIndex].baseRate = Number(document.getElementById('rate-base').value);
-      db.truckTypes[activeIndex].ratePerKm = Number(document.getElementById('rate-km').value);
-      
-      saveDatabase(db);
-      showAlert(`Tarifas para camión ${db.truckTypes[activeIndex].type} actualizadas.`);
-      closeModal();
-      
-      // Forzar renderizado completo de la vista para actualizar tablas e inputs
-      renderRatesView(viewContainer);
-    }
-  });
+  capText.innerText = `${percentage}%`;
+  capBar.style.width = `${percentage}%`;
 }

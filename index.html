@@ -1,42 +1,138 @@
 <!DOCTYPE html>
 <html lang="es">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="Plataforma corporativa Ebema para administración de transporte, control de transportistas, rutas de distribución, centros de distribución SAP y simulación de tarifas.">
-  <meta name="author" content="Ebema Logística">
-  <title>Ebema Logística - Administración de Transporte</title>
+  <meta charset="utf-8"/>
+  <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+  <meta name="description" content="Plataforma SIT EBEMA - Cotizador de Tarifas y Gestión de Transporte Logístico.">
+  <title>SIT EBEMA - Cotizador de Tarifas</title>
+
+  <!-- Tailwind CSS y Plugins -->
+  <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+
+  <!-- Fuentes Premium de Google -->
+  <link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet"/>
   
-  <!-- Icono corporativo -->
-  <link rel="shortcut icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' fill='%232563eb' rx='4'/%3E%3Ctext x='7' y='18' fill='white' font-weight='800' font-family='sans-serif' font-size='16'%3EE%3C/text%3E%3C/svg%3E" type="image/x-icon">
-  
-  <!-- Estilos Globales -->
-  <link rel="stylesheet" href="css/style.css">
-  
-  <!-- Leaflet.js (Mapas Interactivos Libres) -->
+  <!-- Iconos de Material Symbols -->
+  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+
+  <!-- Leaflet.js (Mapas Interactivos) -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
-</head>
-<body>
 
-  <!-- Contenedor principal de la aplicación -->
+  <!-- Estilos Customizados (incluye overrides de Leaflet y scrollbars) -->
+  <link rel="stylesheet" href="css/style.css">
+
+  <!-- Configuración del tema Tailwind Corporativo Ebema -->
+  <script id="tailwind-config">
+    tailwind.config = {
+      darkMode: "class",
+      theme: {
+        extend: {
+          colors: {
+            "secondary-fixed": "#e1e3e5",
+            "surface-tint": "#c0000c",
+            "on-primary": "#ffffff",
+            "outline": "#936e69",
+            "on-error-container": "#93000a",
+            "inverse-surface": "#2e3132",
+            "on-tertiary-fixed-variant": "#444747",
+            "on-tertiary": "#ffffff",
+            "on-surface": "#191c1d",
+            "surface-container": "#edeeef",
+            "on-tertiary-fixed": "#191c1c",
+            "secondary-fixed-dim": "#c5c7c9",
+            "background": "#f8f9fa",
+            "surface-container-high": "#e7e8e9",
+            "surface-bright": "#f8f9fa",
+            "on-primary-fixed-variant": "#930007",
+            "inverse-primary": "#ffb4aa",
+            "surface-dim": "#d9dadb",
+            "on-background": "#191c1d",
+            "on-secondary-fixed": "#191c1e",
+            "error-container": "#ffdad6",
+            "surface-variant": "#e1e3e4",
+            "error": "#ba1a1a",
+            "tertiary-container": "#6f7271",
+            "on-secondary": "#ffffff",
+            "on-primary-fixed": "#410001",
+            "on-primary-container": "#fff5f3",
+            "secondary": "#5c5f61",
+            "tertiary-fixed-dim": "#c5c7c6",
+            "surface-container-low": "#f3f4f5",
+            "surface-container-highest": "#e1e3e4",
+            "on-secondary-container": "#626567",
+            "tertiary": "#565a59",
+            "tertiary-fixed": "#e1e3e1",
+            "secondary-container": "#e1e3e5",
+            "primary": "#b5000b",
+            "inverse-on-surface": "#f0f1f2",
+            "on-error": "#ffffff",
+            "primary-fixed-dim": "#ffb4aa",
+            "on-surface-variant": "#5e3f3b",
+            "surface-container-lowest": "#ffffff",
+            "on-secondary-fixed-variant": "#444749",
+            "on-tertiary-container": "#f6f8f6",
+            "surface": "#f8f9fa",
+            "primary-fixed": "#ffdad5",
+            "primary-container": "#e30613",
+            "outline-variant": "#e9bcb6"
+          },
+          borderRadius: {
+            "DEFAULT": "0.125rem",
+            "lg": "0.25rem",
+            "xl": "0.5rem",
+            "full": "0.75rem"
+          },
+          spacing: {
+            "sm": "8px",
+            "base": "4px",
+            "md": "16px",
+            "xs": "4px",
+            "xl": "32px",
+            "lg": "24px",
+            "margin-mobile": "16px",
+            "margin-desktop": "32px",
+            "gutter": "16px"
+          },
+          fontFamily: {
+            "headline-md": ["Hanken Grotesk"],
+            "data-mono": ["JetBrains Mono"],
+            "body-md": ["Hanken Grotesk"],
+            "label-caps": ["Hanken Grotesk"],
+            "body-lg": ["Hanken Grotesk"],
+            "headline-lg-mobile": ["Hanken Grotesk"],
+            "headline-sm": ["Hanken Grotesk"],
+            "headline-lg": ["Hanken Grotesk"]
+          },
+          fontSize: {
+            "headline-md": ["24px", {"lineHeight": "32px", "letterSpacing": "-0.01em", "fontWeight": "600"}],
+            "data-mono": ["13px", {"lineHeight": "18px", "fontWeight": "500"}],
+            "body-md": ["14px", {"lineHeight": "20px", "fontWeight": "400"}],
+            "label-caps": ["12px", {"lineHeight": "16px", "letterSpacing": "0.05em", "fontWeight": "700"}],
+            "body-lg": ["16px", {"lineHeight": "24px", "fontWeight": "400"}],
+            "headline-lg-mobile": ["28px", {"lineHeight": "36px", "fontWeight": "700"}],
+            "headline-sm": ["20px", {"lineHeight": "28px", "fontWeight": "600"}],
+            "headline-lg": ["32px", {"lineHeight": "40px", "letterSpacing": "-0.02em", "fontWeight": "700"}]
+          }
+        },
+      },
+    }
+  </script>
+</head>
+<body class="bg-background text-on-background font-body-md overflow-x-hidden h-screen">
+
+  <!-- Contenedor Principal de la App (Montado dinámicamente) -->
   <div id="app-root">
-    <!-- El contenido será renderizado de forma dinámica por js/app.js -->
-    <div style="display: flex; justify-content: center; align-items: center; height: 100vh; background-color: #0b0f19; color: #94a3b8; font-family: sans-serif;">
-      <div style="text-align: center;">
-        <div style="font-size: 24px; font-weight: 700; color: #f8fafc; margin-bottom: 10px;">Cargando Ebema Logística...</div>
-        <div style="width: 40px; height: 40px; border: 3px solid rgba(255,255,255,0.1); border-top-color: #2563eb; border-radius: 50%; animation: spin 1s infinite linear; margin: 0 auto;"></div>
+    <div class="flex justify-center items-center h-screen bg-[#f8f9fa] text-secondary">
+      <div class="text-center">
+        <div class="text-2xl font-bold text-primary mb-md animate-pulse">SIT EBEMA</div>
+        <div class="font-body-md">Iniciando cotizador operativo...</div>
+        <div class="w-8 h-8 border-2 border-outline-variant border-t-primary rounded-full animate-spin mx-auto mt-md"></div>
       </div>
     </div>
   </div>
 
-  <style>
-    @keyframes spin {
-      to { transform: rotate(360deg); }
-    }
-  </style>
-
-  <!-- Lógica de la Plataforma (Módulo JS) -->
+  <!-- Script Lógico Modular -->
   <script type="module" src="js/app.js"></script>
 </body>
 </html>
