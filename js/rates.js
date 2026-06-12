@@ -214,7 +214,7 @@ export function renderRatesView(container) {
   selOrigen.innerHTML = '<option value="">Seleccione origen...</option>';
   cds.forEach(cd => {
     const opt = document.createElement('option');
-    opt.value = cd.nombre;
+    opt.value = cd.id;
     opt.textContent = cd.nombre;
     selOrigen.appendChild(opt);
   });
@@ -243,9 +243,9 @@ export function renderRatesView(container) {
     resetAutoFields();
 
     if (chosenOrigin) {
-      // Filtrar rutas activas que salgan de ese origen
-      const filteredRoutes = routes.filter(r => r.origen === chosenOrigin);
-      
+      // Filtrar rutas activas que salgan de ese origen (relación por ID)
+      const filteredRoutes = routes.filter(r => r.origenId === chosenOrigin);
+
       if (filteredRoutes.length === 0) {
         selDestino.innerHTML = '<option value="">No hay rutas para este origen</option>';
         selDestino.disabled = true;
@@ -258,7 +258,8 @@ export function renderRatesView(container) {
         });
         selDestino.disabled = false;
       }
-      sumOrigen.textContent = chosenOrigin;
+      const chosenCd = cds.find(c => c.id === chosenOrigin);
+      sumOrigen.textContent = chosenCd ? chosenCd.nombre : chosenOrigin;
     } else {
       selDestino.disabled = true;
       sumOrigen.textContent = "Seleccione origen";
@@ -282,7 +283,7 @@ export function renderRatesView(container) {
         sumDestino.textContent = selectedRoute.destino;
 
         // Cargar Tipo de Ruta y lógica regional
-        const originCdObj = cds.find(c => c.nombre === selectedRoute.origen);
+        const originCdObj = cds.find(c => c.id === selectedRoute.origenId);
         // Si la región de origen es distinta de la de destino, es Interregional
         const isInterregional = originCdObj && !selectedRoute.region.toLowerCase().includes(originCdObj.direccion.toLowerCase().split(',').pop().trim().toLowerCase());
         
@@ -370,10 +371,12 @@ export function renderRatesView(container) {
     const now = new Date();
     const formattedDate = `${now.getDate().toString().padStart(2, '0')}/${(now.getMonth() + 1).toString().padStart(2, '0')} ${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
 
+    const originCd = cds.find(c => c.id === activeRouteObj.origenId);
     const newQuote = {
       id: 'q' + (new Date().getTime()),
       fecha: formattedDate,
-      origen: activeRouteObj.origen,
+      routeId: activeRouteObj.id,
+      origen: originCd ? originCd.nombre : '(centro eliminado)', // snapshot histórico
       destino: activeRouteObj.destino,
       vehiculo: activeTruckObj.type,
       estado: 'ASIGNADO', // Al asignarse al plan

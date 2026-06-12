@@ -1,4 +1,4 @@
-import { getDatabase, saveDatabase } from './data.js';
+import { getDatabase, saveDatabase, getCentreName } from './data.js';
 import { generateSapCode, parseCSV, showAlert } from './utils.js';
 
 let editingRouteId = null;
@@ -230,7 +230,7 @@ export function renderRoutesView(container) {
   originSelect.innerHTML = '';
   db.logisticsCentres.forEach(cd => {
     const opt = document.createElement('option');
-    opt.value = cd.nombre;
+    opt.value = cd.id;
     opt.textContent = cd.nombre;
     originSelect.appendChild(opt);
   });
@@ -239,9 +239,9 @@ export function renderRoutesView(container) {
   const searchInput = document.getElementById('route-search');
   searchInput.addEventListener('input', (e) => {
     const term = e.target.value.toLowerCase();
-    const filtered = routes.filter(r => 
+    const filtered = routes.filter(r =>
       r.codigo.toLowerCase().includes(term) ||
-      r.origen.toLowerCase().includes(term) ||
+      getCentreName(db, r.origenId).toLowerCase().includes(term) ||
       r.destino.toLowerCase().includes(term) ||
       r.region.toLowerCase().includes(term)
     );
@@ -280,7 +280,7 @@ export function renderRoutesView(container) {
     
     const routeData = {
       codigo: document.getElementById('r-codigo').value.toUpperCase().replace(/\s+/g, ''),
-      origen: document.getElementById('r-origen').value,
+      origenId: document.getElementById('r-origen').value,
       destino: document.getElementById('r-destino').value,
       region: document.getElementById('r-region').value,
       tipo: document.getElementById('r-tipo').value,
@@ -384,10 +384,16 @@ export function renderRoutesView(container) {
         const region = row.region || 'Metropolitana';
         const tipo = row.tipo || 'Comuna';
         const km = Number(row.km || 0);
-        
+
+        // Resolver el nombre del CD a su ID (relación por ID)
+        const originCd = db.logisticsCentres.find(c =>
+          c.nombre.trim().toLowerCase() === origen.trim().toLowerCase()
+        );
+
         let error = '';
         if (!codigo) error = 'Falta Código';
         else if (!origen) error = 'Falta Origen';
+        else if (!originCd) error = 'Origen no existe';
         else if (!destino) error = 'Falta Destino';
         else if (isNaN(km) || km <= 0) error = 'Distancia inválida';
         else if (db.routes.some(r => r.codigo === codigo)) error = 'Código Duplicado';
@@ -410,7 +416,7 @@ export function renderRoutesView(container) {
         if (!error) {
           parsedRoutes.push({
             codigo,
-            origen,
+            origenId: originCd.id,
             destino,
             region,
             tipo,
@@ -463,15 +469,16 @@ function renderRoutesTable(routesList) {
   }
 
   tbody.innerHTML = '';
+  const dbForNames = getDatabase();
   routesList.forEach(r => {
     const tr = document.createElement('tr');
     tr.className = "border-b border-outline-variant hover:bg-surface-container-low transition-colors";
-    
+
     const statusBg = r.activo ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800';
 
     tr.innerHTML = `
       <td class="p-md font-bold text-primary font-data-mono">${r.codigo}</td>
-      <td class="p-md font-bold">${r.origen}</td>
+      <td class="p-md font-bold">${getCentreName(dbForNames, r.origenId)}</td>
       <td class="p-md">${r.destino}</td>
       <td class="p-md text-xs text-secondary">${r.region}</td>
       <td class="p-md"><span class="bg-surface-container-high px-sm py-1 border border-outline-variant rounded text-xs">${r.tipo}</span></td>
@@ -506,7 +513,7 @@ function renderRoutesTable(routesList) {
       if (r) {
         editingRouteId = id;
         document.getElementById('r-codigo').value = r.codigo;
-        document.getElementById('r-origen').value = r.origen;
+        document.getElementById('r-origen').value = r.origenId;
         document.getElementById('r-destino').value = r.destino;
         document.getElementById('r-region').value = r.region;
         document.getElementById('r-tipo').value = r.tipo;

@@ -113,7 +113,7 @@ const defaultData = {
     {
       id: 'r1',
       codigo: 'RUT-SCL-QUI',
-      origen: 'CD Santiago Noviciado',
+      origenId: 'cd1',
       destino: 'Quilicura',
       region: 'Metropolitana',
       tipo: 'Comuna',
@@ -123,7 +123,7 @@ const defaultData = {
     {
       id: 'r2',
       codigo: 'RUT-SCL-RAN',
-      origen: 'CD Santiago Noviciado',
+      origenId: 'cd1',
       destino: 'Rancagua',
       region: 'Libertador General Bernardo O\'Higgins',
       tipo: 'Sector',
@@ -133,7 +133,7 @@ const defaultData = {
     {
       id: 'r3',
       codigo: 'RUT-SCL-CON',
-      origen: 'CD Santiago Noviciado',
+      origenId: 'cd1',
       destino: 'Concepción',
       region: 'Biobío',
       tipo: 'Sector',
@@ -143,7 +143,7 @@ const defaultData = {
     {
       id: 'r4',
       codigo: 'RUT-CON-TAL',
-      origen: 'CD Concepción',
+      origenId: 'cd2',
       destino: 'Talcahuano',
       region: 'Biobío',
       tipo: 'Comuna',
@@ -153,7 +153,7 @@ const defaultData = {
     {
       id: 'r5',
       codigo: 'RUT-TEM-PAD',
-      origen: 'CD Temuco',
+      origenId: 'cd3',
       destino: 'Padre Las Casas',
       region: 'La Araucanía',
       tipo: 'Comuna',
@@ -255,6 +255,20 @@ export function getDatabase() {
     migrado = true;
   }
 
+  // Migración: Rutas enlazadas por nombre de CD → enlazar por ID (origenId)
+  if (parsed.routes && parsed.logisticsCentres) {
+    parsed.routes.forEach(r => {
+      if (!r.origenId) {
+        const cd = parsed.logisticsCentres.find(c =>
+          c.nombre && r.origen && c.nombre.trim().toLowerCase() === r.origen.trim().toLowerCase()
+        );
+        r.origenId = cd ? cd.id : (parsed.logisticsCentres[0] ? parsed.logisticsCentres[0].id : null);
+        delete r.origen;
+        migrado = true;
+      }
+    });
+  }
+
   // Migración: Asegurar que todos los transportes tienen campos de ficha
   if (parsed.transports) {
     parsed.transports.forEach(t => {
@@ -288,6 +302,12 @@ export function getDatabase() {
   }
   
   return parsed;
+}
+
+// Obtener el nombre de un Centro Logístico a partir de su ID
+export function getCentreName(db, centreId) {
+  const cd = db.logisticsCentres.find(c => c.id === centreId);
+  return cd ? cd.nombre : '(centro eliminado)';
 }
 
 // Guardar los datos en localStorage
