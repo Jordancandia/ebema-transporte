@@ -30,15 +30,45 @@ async function checkSession() {
       localStorage.removeItem(SESSION_KEY);
       return;
     }
-    await initDatabase();
     const email = session.user.email.toLowerCase();
+
+    // Refuerzo de dominio: solo cuentas corporativas (aplica también a Google)
+    if (!email.endsWith('@ebema.cl')) {
+      await supabase.auth.signOut();
+      currentSession = null;
+      localStorage.removeItem(SESSION_KEY);
+      showAlert('Acceso restringido a cuentas corporativas @ebema.cl', 'error');
+      return;
+    }
+
+    await initDatabase();
     const db = getDatabase();
-    const u = (db.users || []).find(x => x.email === email);
-    currentSession = {
-      email,
-      name: u ? u.name : email.split('@')[0].toUpperCase(),
-      role: u ? u.role : 'operador'
-    };
+    let u = (db.users || []).find(x => x.email === email);
+
+    // Primer ingreso (ej. vía Google): crear el perfil automáticamente
+    if (!u) {
+      const googleName = session.user.user_metadata && (session.user.user_metadata.full_name || session.user.user_metadata.name);
+      u = {
+        email,
+        name: googleName || email.split('@')[0].toUpperCase(),
+        role: 'operador',
+        activo: true,
+        lastAccess: new Date().toLocaleDateString('es-CL')
+      };
+      db.users.push(u);
+      saveDatabase(db);
+    }
+
+    // Cuenta inhabilitada por el administrador
+    if (u.activo === false) {
+      await supabase.auth.signOut();
+      currentSession = null;
+      localStorage.removeItem(SESSION_KEY);
+      showAlert('Su cuenta corporativa ha sido inhabilitada por el administrador.', 'error');
+      return;
+    }
+
+    currentSession = { email, name: u.name, role: u.role };
     localStorage.setItem(SESSION_KEY, JSON.stringify(currentSession));
   } catch (err) {
     console.error('Error verificando sesión:', err);
@@ -188,8 +218,28 @@ function renderLoginView() {
             </button>
           </form>
 
+          <!-- Separador -->
+          <div style="display:flex;align-items:center;gap:12px;margin-top:22px">
+            <div style="flex:1;height:1px;background:#e1e3e4"></div>
+            <span style="font-size:12px;color:#5c5f61">o</span>
+            <div style="flex:1;height:1px;background:#e1e3e4"></div>
+          </div>
+
+          <!-- Botón Google -->
+          <button
+            type="button"
+            id="btn-login-google"
+            style="width:100%;margin-top:18px;padding:12px;background:white;color:#191c1d;border:1.5px solid #e1e3e4;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;transition:border-color 0.2s,background 0.2s;display:flex;align-items:center;justify-content:center;gap:10px"
+            onmouseover="this.style.borderColor='#c5c7c9';this.style.background='#f8f9fa'"
+            onmouseout="this.style.borderColor='#e1e3e4';this.style.background='white'"
+          >
+            <svg width="18" height="18" viewBox="0 0 48 48"><path fill="#FFC107" d="M43.611 20.083H42V20H24v8h11.303c-1.649 4.657-6.08 8-11.303 8-6.627 0-12-5.373-12-12s5.373-12 12-12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4 12.955 4 4 12.955 4 24s8.955 20 20 20 20-8.955 20-20c0-1.341-.138-2.65-.389-3.917z"/><path fill="#FF3D00" d="m6.306 14.691 6.571 4.819C14.655 15.108 18.961 12 24 12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4 16.318 4 9.656 8.337 6.306 14.691z"/><path fill="#4CAF50" d="M24 44c5.166 0 9.86-1.977 13.409-5.192l-6.19-5.238A11.91 11.91 0 0 1 24 36c-5.202 0-9.619-3.317-11.283-7.946l-6.522 5.025C9.505 39.556 16.227 44 24 44z"/><path fill="#1976D2" d="M43.611 20.083H42V20H24v8h11.303a12.04 12.04 0 0 1-4.087 5.571l.003-.002 6.19 5.238C36.971 39.205 44 34 44 24c0-1.341-.138-2.65-.389-3.917z"/></svg>
+            Continuar con Google
+          </button>
+          <p style="font-size:11px;color:#5c5f61;text-align:center;margin-top:8px">Solo cuentas corporativas @ebema.cl</p>
+
           <!-- Footer -->
-          <div style="margin-top:28px;padding-top:20px;border-top:1px solid #e9bcb6;text-align:center">
+          <div style="margin-top:24px;padding-top:20px;border-top:1px solid #e9bcb6;text-align:center">
             <p style="font-size:13px;color:#5c5f61">¿No tiene acceso? <button id="link-go-register" style="color:#b5000b;background:none;border:none;cursor:pointer;font-weight:700;font-size:13px" onmouseover="this.style.textDecoration='underline'" onmouseout="this.style.textDecoration='none'">Solicitar cuenta corporativa</button></p>
           </div>
         </div>
@@ -215,6 +265,24 @@ function renderLoginView() {
       input.type = 'password';
       icon.textContent = 'visibility';
     }
+  });
+
+  // Login con Google (Workspace de EBEMA)
+  document.getElementById('btn-login-google').addEventListener('click', async () => {
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: 'google',
+      options: {
+        redirectTo: window.location.origin + window.location.pathname,
+        queryParams: {
+          hd: 'ebema.cl',           // Sugerir solo cuentas del dominio EBEMA
+          prompt: 'select_account'  // Permitir elegir la cuenta
+        }
+      }
+    });
+    if (error) {
+      showAlert('No se pudo iniciar con Google: ' + error.message, 'error');
+    }
+    // Si no hay error, el navegador redirige a Google y vuelve con sesión
   });
 
   document.getElementById('link-go-register').addEventListener('click', () => {
