@@ -142,9 +142,11 @@ export function renderLogisticsView(container) {
 
   btnCreateCd.addEventListener('click', () => {
     cdForm.reset();
+    window.__editingCdId = null;
+    document.querySelector('#cd-modal h4').textContent = 'Nuevo Centro Logístico (CD)';
     const activeDb = getDatabase();
     document.getElementById('cd-sap').value = generateSapCode('CD', activeDb.logisticsCentres, 'idCentroSap');
-    
+
     cdModal.classList.remove('pointer-events-none', 'opacity-0');
     cdModal.querySelector('.modal-window').classList.remove('scale-95');
   });
@@ -160,9 +162,10 @@ export function renderLogisticsView(container) {
     e.preventDefault();
     const db = getDatabase();
     const btnSubmit = document.getElementById('btn-submit-cd');
+    const editingId = window.__editingCdId || null;
 
     const sapId = document.getElementById('cd-sap').value.toUpperCase().replace(/\s+/g, '');
-    if (db.logisticsCentres.some(cd => cd.idCentroSap === sapId)) {
+    if (db.logisticsCentres.some(cd => cd.idCentroSap === sapId && cd.id !== editingId)) {
       showAlert('El ID de Centro SAP ya está registrado.', 'error');
       return;
     }
@@ -177,20 +180,37 @@ export function renderLogisticsView(container) {
 
     const coords = await geocodeAddress(direccionCompleta);
 
-    const cdData = {
-      id: 'cd' + (new Date().getTime()),
-      nombre: nombre,
-      direccion: direccionCompleta,
-      idCentroSap: sapId,
-      lat: coords.lat,
-      lon: coords.lon
-    };
+    if (editingId) {
+      // Editar centro existente
+      const idx = db.logisticsCentres.findIndex(c => c.id === editingId);
+      if (idx !== -1) {
+        db.logisticsCentres[idx] = {
+          ...db.logisticsCentres[idx],
+          nombre,
+          direccion: direccionCompleta,
+          idCentroSap: sapId,
+          lat: coords.lat,
+          lon: coords.lon
+        };
+        saveDatabase(db);
+        showAlert('Centro Logístico actualizado con éxito.');
+      }
+    } else {
+      const cdData = {
+        id: 'cd' + (new Date().getTime()),
+        nombre: nombre,
+        direccion: direccionCompleta,
+        idCentroSap: sapId,
+        lat: coords.lat,
+        lon: coords.lon
+      };
+      db.logisticsCentres.push(cdData);
+      saveDatabase(db);
+      showAlert('Centro Logístico geolocalizado y registrado con éxito.');
+    }
 
-    db.logisticsCentres.push(cdData);
-    saveDatabase(db);
-    showAlert('Centro Logístico geolocalizado y registrado con éxito.');
+    window.__editingCdId = null;
     closeModal();
-    
     renderLogisticsView(container);
   });
 }
@@ -218,23 +238,92 @@ function renderCdCards(list) {
     const hasRealCoords = cd.lat && cd.lon && (cd.lat !== -33.4489 || cd.lon !== -70.6693);
 
     card.innerHTML = `
-      <span class="absolute top-sm right-sm bg-surface-container-highest border border-outline-variant px-sm py-xs font-label-caps text-[10px] rounded">${cd.idCentroSap}</span>
-      <div class="pr-xl">
-        <h4 class="font-headline-sm text-[16px] font-bold text-on-surface mb-xs">${cd.nombre}</h4>
-        <div class="flex items-start gap-xs text-xs text-secondary leading-tight">
-          <span class="material-symbols-outlined text-[16px] text-primary mt-0.5">location_on</span>
-          <span>${cd.direccion}</span>
+      <div class="flex items-start justify-between gap-md">
+        <div>
+          <h4 class="font-headline-sm text-[16px] font-bold text-on-surface mb-xs">${cd.nombre}</h4>
+          <div class="flex items-start gap-xs text-xs text-secondary leading-tight">
+            <span class="material-symbols-outlined text-[16px] text-primary mt-0.5">location_on</span>
+            <span>${cd.direccion}</span>
+          </div>
+        </div>
+        <!-- Código SAP destacado -->
+        <div class="text-center bg-primary/5 border-2 border-primary/30 rounded-lg px-md py-sm flex-shrink-0">
+          <p class="text-[9px] font-bold tracking-widest text-secondary uppercase">Código SAP</p>
+          <p class="font-data-mono font-extrabold text-primary" style="font-size:26px;line-height:1.1;letter-spacing:0.04em">${cd.idCentroSap}</p>
         </div>
       </div>
-      
+
       <div class="flex justify-between items-center text-[10px] text-secondary border-t border-outline-variant pt-sm mt-md">
         <span class="flex items-center gap-xs">
           <span class="w-1.5 h-1.5 rounded-full ${hasRealCoords ? 'bg-green-600' : 'bg-amber-600'}"></span>
-          ${hasRealCoords ? 'Geolocalización GPS exacta' : 'Coordenadas estimadas'}
+          ${hasRealCoords ? 'GPS exacto' : 'Coordenadas estimadas'}
         </span>
-        <span class="font-data-mono opacity-75">${cd.lat.toFixed(4)}, ${cd.lon.toFixed(4)}</span>
+        <div class="flex items-center gap-xs">
+          <button class="btn-edit-cd flex items-center gap-1 border border-outline-variant hover:border-primary hover:text-primary text-secondary px-sm py-1 rounded cursor-pointer text-[11px] font-bold" data-id="${cd.id}" title="Editar centro">
+            <span class="material-symbols-outlined text-[14px]">edit</span> Editar
+          </button>
+          <button class="btn-delete-cd flex items-center gap-1 border border-red-200 hover:bg-red-50 text-red-700 px-sm py-1 rounded cursor-pointer text-[11px] font-bold" data-id="${cd.id}" title="Eliminar centro">
+            <span class="material-symbols-outlined text-[14px]">delete</span> Eliminar
+          </button>
+        </div>
       </div>
     `;
     container.appendChild(card);
+  });
+
+  // --- Editar centro ---
+  container.querySelectorAll('.btn-edit-cd').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const id = e.currentTarget.getAttribute('data-id');
+      const db = getDatabase();
+      const cd = db.logisticsCentres.find(c => c.id === id);
+      if (!cd) return;
+
+      window.__editingCdId = id;
+      document.getElementById('cd-nombre').value = cd.nombre;
+      document.getElementById('cd-sap').value = cd.idCentroSap;
+      // Separar dirección "calle, comuna/región" si es posible
+      const partes = (cd.direccion || '').split(',');
+      document.getElementById('cd-direccion').value = partes[0] ? partes[0].trim() : cd.direccion;
+      document.getElementById('cd-comuna').value = partes.slice(1).join(',').trim();
+      document.querySelector('#cd-modal h4').textContent = 'Editar Centro Logístico (CD)';
+
+      const modal = document.getElementById('cd-modal');
+      modal.classList.remove('pointer-events-none', 'opacity-0');
+      modal.querySelector('.modal-window').classList.remove('scale-95');
+    });
+  });
+
+  // --- Eliminar centro (con protección de integridad) ---
+  container.querySelectorAll('.btn-delete-cd').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const id = e.currentTarget.getAttribute('data-id');
+      const db = getDatabase();
+      const cd = db.logisticsCentres.find(c => c.id === id);
+      if (!cd) return;
+
+      // Verificar dependencias: rutas que salen de este centro
+      const rutasAsociadas = (db.routes || []).filter(r => r.origenId === id);
+      if (rutasAsociadas.length > 0) {
+        showAlert(`No se puede eliminar: ${rutasAsociadas.length} ruta(s) dependen de ${cd.nombre}. Elimine o reasigne esas rutas primero.`, 'error');
+        return;
+      }
+      // Verificar transportistas que prestan servicio en este centro
+      const transAsociados = (db.transports || []).filter(t => (t.centrosServicio || []).includes(id));
+      if (transAsociados.length > 0) {
+        showAlert(`No se puede eliminar: ${transAsociados.length} transportista(s) prestan servicio en ${cd.nombre}.`, 'error');
+        return;
+      }
+
+      if (!confirm(`¿Eliminar definitivamente el centro "${cd.nombre}" (${cd.idCentroSap})?`)) return;
+
+      db.logisticsCentres = db.logisticsCentres.filter(c => c.id !== id);
+      saveDatabase(db);
+      showAlert(`Centro ${cd.nombre} eliminado.`);
+      const stage = document.getElementById('stage-area');
+      renderLogisticsView(stage);
+    });
   });
 }

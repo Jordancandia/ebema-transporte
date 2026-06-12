@@ -1,5 +1,24 @@
 import { getDatabase, saveDatabase, getCentreName } from './data.js';
-import { generateSapCode, parseCSV, showAlert } from './utils.js';
+import { generateSapCode, parseCSV, showAlert, geocodeAddress } from './utils.js';
+
+// Estilos de la característica especial de la ruta
+const CARACT_STYLES = {
+  'NORMAL':  'bg-surface-container-high text-secondary border border-outline-variant',
+  'EXTREMA': 'bg-amber-100 text-amber-800 border border-amber-300',
+  'ISLA':    'bg-blue-100 text-blue-800 border border-blue-300'
+};
+
+// Calcular distancia por carretera entre el CD de origen y el destino (OSRM + Nominatim)
+async function calcularDistanciaAuto(cdOrigen, destinoTexto) {
+  const coordsDestino = await geocodeAddress(destinoTexto);
+  if (!coordsDestino || !coordsDestino.lat) throw new Error('No se pudo geolocalizar el destino');
+  const url = `https://router.project-osrm.org/route/v1/driving/${cdOrigen.lon},${cdOrigen.lat};${coordsDestino.lon},${coordsDestino.lat}?overview=false`;
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error('Servicio de rutas no disponible');
+  const data = await resp.json();
+  if (!data.routes || !data.routes[0]) throw new Error('No se encontró ruta por carretera');
+  return Math.round(data.routes[0].distance / 1000);
+}
 
 let editingRouteId = null;
 
@@ -85,6 +104,7 @@ export function renderRoutesView(container) {
               <th class="p-md">Destino (Comuna/Sector)</th>
               <th class="p-md">Región</th>
               <th class="p-md">Tipo</th>
+              <th class="p-md">Característica</th>
               <th class="p-md">Distancia</th>
               <th class="p-md">Estado</th>
               <th class="p-md text-center">Acciones</th>
@@ -158,9 +178,25 @@ export function renderRoutesView(container) {
                 </select>
               </div>
               <div class="space-y-xs">
-                <label for="r-km" class="font-label-caps text-label-caps text-secondary block">DISTANCIA (KM)</label>
-                <input type="number" id="r-km" class="w-full border border-[#CED4DA] p-sm font-body-md text-body-md focus:border-primary focus:ring-0 transition-all rounded bg-white" required min="1" placeholder="Ej: 45">
+                <label for="r-caracteristica" class="font-label-caps text-label-caps text-secondary block">CARACTERÍSTICA ESPECIAL</label>
+                <select id="r-caracteristica" class="w-full border border-[#CED4DA] p-sm font-body-md text-body-md focus:border-primary focus:ring-0 transition-all rounded bg-white" required>
+                  <option value="NORMAL">NORMAL</option>
+                  <option value="EXTREMA">EXTREMA</option>
+                  <option value="ISLA">ISLA</option>
+                </select>
               </div>
+            </div>
+
+            <div class="space-y-xs">
+              <label for="r-km" class="font-label-caps text-label-caps text-secondary block">DISTANCIA (KM)</label>
+              <div class="flex gap-sm">
+                <input type="number" id="r-km" class="flex-1 border border-[#CED4DA] p-sm font-body-md text-body-md focus:border-primary focus:ring-0 transition-all rounded bg-white" required min="1" placeholder="Ej: 45">
+                <button type="button" id="btn-auto-km" class="bg-surface-container-high hover:bg-primary hover:text-white border border-outline-variant text-secondary font-bold px-md py-sm rounded cursor-pointer text-xs flex items-center gap-xs transition-all whitespace-nowrap">
+                  <span class="material-symbols-outlined text-[16px]">travel_explore</span>
+                  Calcular KM automático
+                </button>
+              </div>
+              <p class="text-[11px] text-secondary" id="auto-km-status">Calcula la distancia real por carretera entre el centro de origen y el destino.</p>
             </div>
           </div>
           <div class="p-md border-t border-outline-variant bg-surface-container-low flex justify-end gap-sm">
@@ -274,6 +310,39 @@ export function renderRoutesView(container) {
   btnCloseModal.addEventListener('click', closeFormModal);
   btnCancelModal.addEventListener('click', closeFormModal);
 
+  // Cálculo automático de distancia por carretera (origen CD → destino)
+  document.getElementById('btn-auto-km').addEventListener('click', async () => {
+    const btn = document.getElementById('btn-auto-km');
+    const status = document.getElementById('auto-km-status');
+    const origenId = document.getElementById('r-origen').value;
+    const destino = document.getElementById('r-destino').value.trim();
+    const region = document.getElementById('r-region').value;
+
+    if (!origenId) return showAlert('Seleccione primero el centro de origen.', 'error');
+    if (!destino) return showAlert('Escriba primero el destino.', 'error');
+
+    const activeDb = getDatabase();
+    const cd = activeDb.logisticsCentres.find(c => c.id === origenId);
+    if (!cd || !cd.lat || !cd.lon) return showAlert('El centro de origen no tiene coordenadas GPS.', 'error');
+
+    btn.disabled = true;
+    btn.innerHTML = '<span class="material-symbols-outlined text-[16px] animate-spin">progress_activity</span> Calculando...';
+    status.textContent = 'Geolocalizando destino y calculando ruta por carretera...';
+
+    try {
+      const km = await calcularDistanciaAuto(cd, `${destino}, ${region}`);
+      document.getElementById('r-km').value = km;
+      status.textContent = `✓ Distancia calculada: ${km} km por carretera desde ${cd.nombre}.`;
+      status.style.color = '#16a34a';
+    } catch (err) {
+      status.textContent = '✗ ' + (err.message || 'No se pudo calcular la distancia. Ingrésela manualmente.');
+      status.style.color = '#b5000b';
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = '<span class="material-symbols-outlined text-[16px]">travel_explore</span> Calcular KM automático';
+    }
+  });
+
   routeForm.addEventListener('submit', (e) => {
     e.preventDefault();
     const db = getDatabase();
@@ -284,6 +353,7 @@ export function renderRoutesView(container) {
       destino: document.getElementById('r-destino').value,
       region: document.getElementById('r-region').value,
       tipo: document.getElementById('r-tipo').value,
+      caracteristica: document.getElementById('r-caracteristica').value,
       km: Number(document.getElementById('r-km').value),
       activo: editingRouteId ? db.routes.find(r => r.id === editingRouteId).activo : true
     };
@@ -414,12 +484,14 @@ export function renderRoutesView(container) {
         previewBody.appendChild(tr);
 
         if (!error) {
+          const caractCsv = (row.caracteristica || 'NORMAL').toUpperCase();
           parsedRoutes.push({
             codigo,
             origenId: originCd.id,
             destino,
             region,
             tipo,
+            caracteristica: ['NORMAL', 'EXTREMA', 'ISLA'].includes(caractCsv) ? caractCsv : 'NORMAL',
             km,
             activo: true
           });
@@ -460,7 +532,7 @@ function renderRoutesTable(routesList) {
   if (routesList.length === 0) {
     tbody.innerHTML = `
       <tr>
-        <td colspan="8" class="p-xl text-center text-secondary">
+        <td colspan="9" class="p-xl text-center text-secondary">
           No se encontraron rutas registradas.
         </td>
       </tr>
@@ -482,6 +554,7 @@ function renderRoutesTable(routesList) {
       <td class="p-md">${r.destino}</td>
       <td class="p-md text-xs text-secondary">${r.region}</td>
       <td class="p-md"><span class="bg-surface-container-high px-sm py-1 border border-outline-variant rounded text-xs">${r.tipo}</span></td>
+      <td class="p-md"><span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold ${CARACT_STYLES[r.caracteristica || 'NORMAL']}">${r.caracteristica || 'NORMAL'}</span></td>
       <td class="p-md font-bold font-data-mono">${r.km} KM</td>
       <td class="p-md">
         <span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold ${statusBg}">
@@ -517,6 +590,7 @@ function renderRoutesTable(routesList) {
         document.getElementById('r-destino').value = r.destino;
         document.getElementById('r-region').value = r.region;
         document.getElementById('r-tipo').value = r.tipo;
+        document.getElementById('r-caracteristica').value = r.caracteristica || 'NORMAL';
         document.getElementById('r-km').value = r.km;
 
         document.getElementById('route-modal-title').innerText = 'Editar Ruta';

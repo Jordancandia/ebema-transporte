@@ -82,7 +82,7 @@ export function renderTransportsView(container) {
               <th class="p-md">Código SAP</th>
               <th class="p-md">Razón Social</th>
               <th class="p-md">RUT</th>
-              <th class="p-md">Patente</th>
+              <th class="p-md">Camiones</th>
               <th class="p-md">Capacidad</th>
               <th class="p-md">Contacto</th>
               <th class="p-md">Estado</th>
@@ -331,6 +331,19 @@ export function renderTransportsView(container) {
       }
 
       transportData.id = 't' + (new Date().getTime());
+      // Estructura multi-camión: el camión inicial se crea con la patente del formulario
+      transportData.camiones = [{
+        id: 'c' + transportData.id,
+        patente: transportData.patente,
+        modelo: '',
+        anio: 2020,
+        capacidad: transportData.capacidad,
+        dimensiones: { largo: 0, ancho: 0, alto: 0 },
+        documentos: {},
+        choferRut: ''
+      }];
+      transportData.choferes = [];
+      transportData.centrosServicio = [];
       db.transports.push(transportData);
       saveDatabase(db);
       showAlert('Transportista registrado con éxito');
@@ -547,8 +560,8 @@ function renderTransportsTable(transportsList) {
       <td class="p-md font-bold text-primary font-data-mono">${t.codigoSap}</td>
       <td class="p-md font-bold">${t.razonSocial}</td>
       <td class="p-md font-data-mono">${t.rut}</td>
-      <td class="p-md"><span class="bg-surface-container-high px-sm py-1 border border-outline-variant rounded font-data-mono text-xs">${t.patente}</span></td>
-      <td class="p-md font-bold">${t.capacidad} Ton</td>
+      <td class="p-md"><span class="bg-surface-container-high px-sm py-1 border border-outline-variant rounded font-data-mono text-xs">${(t.camiones || []).length} camión${(t.camiones || []).length === 1 ? '' : 'es'}</span></td>
+      <td class="p-md font-bold">${(t.camiones || []).reduce((acc, c) => acc + Number(c.capacidad || 0), 0)} Ton</td>
       <td class="p-md">
         <div class="text-xs font-bold leading-tight">${t.email}</div>
         <div class="text-[10px] text-secondary">${t.telefono}</div>

@@ -158,7 +158,7 @@ function renderLoginView() {
             </div>
             <div>
               <div style="color:white;font-weight:900;font-size:34px;letter-spacing:-0.01em;line-height:1.05">SIT EBEMA</div>
-              <div style="color:rgba(255,255,255,0.65);font-size:12px;letter-spacing:0.1em;text-transform:uppercase;margin-top:4px">Sistema Integral de Tarifas</div>
+              <div style="color:rgba(255,255,255,0.65);font-size:12px;letter-spacing:0.1em;text-transform:uppercase;margin-top:4px">Sistema Integrado de Transporte</div>
             </div>
           </div>
 
@@ -440,7 +440,7 @@ function renderRegisterView() {
             <div style="width:48px;height:48px;background:rgba(255,255,255,0.15);border:1px solid rgba(255,255,255,0.2);border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:900;color:white">E</div>
             <div>
               <div style="color:white;font-weight:800;font-size:18px;line-height:1.1">SIT EBEMA</div>
-              <div style="color:rgba(255,255,255,0.6);font-size:11px;letter-spacing:0.08em;text-transform:uppercase">Sistema Integral de Tarifas</div>
+              <div style="color:rgba(255,255,255,0.6);font-size:11px;letter-spacing:0.08em;text-transform:uppercase">Sistema Integrado de Transporte</div>
             </div>
           </div>
 
@@ -707,7 +707,7 @@ function renderRecoverView() {
             <div style="width:48px;height:48px;background:rgba(255,255,255,0.15);border:1px solid rgba(255,255,255,0.2);border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:900;color:white">E</div>
             <div>
               <div style="color:white;font-weight:800;font-size:18px;line-height:1.1">SIT EBEMA</div>
-              <div style="color:rgba(255,255,255,0.6);font-size:11px;letter-spacing:0.08em;text-transform:uppercase">Sistema Integral de Tarifas</div>
+              <div style="color:rgba(255,255,255,0.6);font-size:11px;letter-spacing:0.08em;text-transform:uppercase">Sistema Integrado de Transporte</div>
             </div>
           </div>
 

@@ -253,9 +253,10 @@ const defaultData = {
   // 5. Configuración de Tarifas (Matriz)
   // Define los costos base y costo por KM para cada categoría de Camión
   truckTypes: [
-    { type: 'Sencillo', capacityTons: '5 - 10 Tons', baseRate: 45000, ratePerKm: 1200 },
-    { type: 'Doble Puente', capacityTons: '11 - 18 Tons', baseRate: 75000, ratePerKm: 1800 },
-    { type: 'Rampla', capacityTons: '19 - 30 Tons', baseRate: 120000, ratePerKm: 2500 }
+    { type: 'Camión 5 Ton',  capacityTons: 'Hasta 5 Tons',  baseRate: 45000,  ratePerKm: 1200 },
+    { type: 'Camión 10 Ton', capacityTons: 'Hasta 10 Tons', baseRate: 60000,  ratePerKm: 1500 },
+    { type: 'Camión 15 Ton', capacityTons: 'Hasta 15 Tons', baseRate: 75000,  ratePerKm: 1800 },
+    { type: 'Camión 28 Ton', capacityTons: 'Hasta 28 Tons', baseRate: 120000, ratePerKm: 2500 }
   ],
 
   // 6. Historial de Cotizaciones (historial_cotizaciones)
@@ -320,6 +321,43 @@ export function getDatabase() {
   if (!parsed.providers) {
     parsed.providers = [];
     migrado = true;
+  }
+
+  // Migración: Nuevos tipos de camión (5/10/15/28 Ton)
+  if (!parsed.truckTypes || !parsed.truckTypes.some(t => t.type === 'Camión 28 Ton')) {
+    parsed.truckTypes = defaultData.truckTypes;
+    migrado = true;
+  }
+
+  // Migración: Característica de rutas (NORMAL / EXTREMA / ISLA)
+  if (parsed.routes) {
+    parsed.routes.forEach(r => {
+      if (!r.caracteristica) { r.caracteristica = 'NORMAL'; migrado = true; }
+    });
+  }
+
+  // Migración: Transportistas multi-camión y multi-chofer
+  if (parsed.transports) {
+    parsed.transports.forEach(t => {
+      if (!t.camiones) {
+        t.camiones = t.patente ? [{
+          id: 'c' + t.id,
+          patente: t.patente,
+          modelo: t.modelo || '',
+          anio: t.anio || 2020,
+          capacidad: t.capacidad || 0,
+          dimensiones: t.dimensiones || { largo: 0, ancho: 0, alto: 0 },
+          documentos: t.documentos || {},
+          choferRut: (t.conductor && t.conductor.rut) || ''
+        }] : [];
+        migrado = true;
+      }
+      if (!t.choferes) {
+        t.choferes = (t.conductor && t.conductor.nombre) ? [t.conductor] : [];
+        migrado = true;
+      }
+      if (!t.centrosServicio) { t.centrosServicio = []; migrado = true; }
+    });
   }
 
   // Migración: Rutas enlazadas por nombre de CD → enlazar por ID (origenId)
