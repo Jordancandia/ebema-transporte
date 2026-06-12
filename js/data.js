@@ -298,4 +298,9 @@ export function saveDatabase(data) {
 }
 
 // Resetear base de datos a los valores predeterminados
-export fun
+export function resetDatabase() {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(defaultData));
+  window.dispatchEvent(new Event('db_updated'));
+  return defaultData;
+}
+// fin de data.js

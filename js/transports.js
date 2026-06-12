@@ -1,5 +1,6 @@
 import { getDatabase, saveDatabase } from './data.js';
 import { formatRut, validateRut, generateSapCode, parseCSV, showAlert } from './utils.js';
+import { renderFichaTransporte } from './ficha-transporte.js';
 
 let editingTransportId = null;
 
@@ -556,6 +557,9 @@ function renderTransportsTable(transportsList) {
       </td>
       <td class="p-md text-center">
         <div class="flex items-center justify-center gap-xs">
+          <button class="btn-ficha text-secondary hover:text-primary p-xs cursor-pointer" data-id="${t.id}" title="Ver ficha de transporte">
+            <span class="material-symbols-outlined text-[20px]">folder_open</span>
+          </button>
           <button class="btn-edit text-secondary hover:text-primary p-xs cursor-pointer" data-id="${t.id}" title="Editar contacto">
             <span class="material-symbols-outlined text-[20px]">edit</span>
           </button>
@@ -568,6 +572,17 @@ function renderTransportsTable(transportsList) {
       </td>
     `;
     tbody.appendChild(tr);
+  });
+
+  // Evento ver ficha
+  tbody.querySelectorAll('.btn-ficha').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      const id = e.currentTarget.getAttribute('data-id');
+      const stage = document.getElementById('stage-area');
+      const pageTitle = document.getElementById('current-page-title');
+      if (pageTitle) pageTitle.textContent = 'Ficha de Transporte';
+      renderFichaTransporte(stage, id);
+    });
   });
 
   // Evento editar
