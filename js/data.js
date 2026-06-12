@@ -15,36 +15,96 @@ const defaultData = {
       razonSocial: 'Transportes TransMateriales Ltda',
       rut: '76.849.201-3',
       direccion: 'Av. Américo Vespucio 1230, Quilicura',
+      comuna: 'Quilicura',
+      region: 'Metropolitana',
       telefono: '+56 9 8765 4321',
       email: 'contacto@transmateriales.cl',
       patente: 'HR-PX-45',
-      capacidad: 28, // Rampla
+      modelo: 'Mercedes-Benz Actros 2651',
+      anio: 2021,
+      capacidad: 28,
+      dimensiones: { largo: 13.6, ancho: 2.4, alto: 2.7 },
       codigoSap: 'TRSP001',
-      activo: true
+      activo: true,
+      documentos: {
+        permisoCirculacion:   { archivo: null, desde: '2025-01-01', hasta: '2026-12-31' },
+        seguroCarga:          { archivo: null, desde: '2025-03-01', hasta: '2026-02-28' },
+        padron:               { archivo: null, desde: '2020-06-01', hasta: '2030-06-01' },
+        soap:                 { archivo: null, desde: '2026-01-01', hasta: '2026-12-31' },
+        certificadoEmision:   { archivo: null, desde: '2025-06-01', hasta: '2026-06-01' }
+      },
+      conductor: {
+        nombre: 'Carlos Riquelme Fuentes',
+        rut: '15.432.876-K',
+        telefono: '+56 9 7654 3210',
+        licencia: 'A2-567890',
+        archivoLicencia: null,
+        archivoCarne: null
+      }
     },
     {
       id: 't2',
       razonSocial: 'Logística Rápida del Sur',
       rut: '85.340.500-K',
       direccion: 'Panamericana Sur Km 15, San Bernardo',
+      comuna: 'San Bernardo',
+      region: 'Metropolitana',
       telefono: '+56 9 1234 5678',
       email: 'operaciones@lograpidasur.cl',
       patente: 'LK-TR-89',
-      capacidad: 15, // Doble Puente
+      modelo: 'Scania R 410',
+      anio: 2019,
+      capacidad: 15,
+      dimensiones: { largo: 8.5, ancho: 2.4, alto: 2.6 },
       codigoSap: 'TRSP002',
-      activo: true
+      activo: true,
+      documentos: {
+        permisoCirculacion:   { archivo: null, desde: '2025-01-01', hasta: '2025-12-31' },
+        seguroCarga:          { archivo: null, desde: '2025-03-01', hasta: '2025-12-31' },
+        padron:               { archivo: null, desde: '2019-04-01', hasta: '2029-04-01' },
+        soap:                 { archivo: null, desde: '2025-01-01', hasta: '2025-12-31' },
+        certificadoEmision:   { archivo: null, desde: '2025-01-01', hasta: '2025-06-30' }
+      },
+      conductor: {
+        nombre: 'Pedro Soto Contreras',
+        rut: '12.345.678-9',
+        telefono: '+56 9 9876 5432',
+        licencia: 'A2-112233',
+        archivoLicencia: null,
+        archivoCarne: null
+      }
     },
     {
       id: 't3',
       razonSocial: 'Fletes y Transportes del Centro',
       rut: '93.200.410-6',
       direccion: 'Camino a Melipilla 8900, Maipú',
+      comuna: 'Maipú',
+      region: 'Metropolitana',
       telefono: '+56 9 4455 6677',
       email: 'fletes.centro@gmail.com',
       patente: 'GB-DS-12',
-      capacidad: 10, // Sencillo
+      modelo: 'Volvo FH 420',
+      anio: 2018,
+      capacidad: 10,
+      dimensiones: { largo: 7.2, ancho: 2.3, alto: 2.5 },
       codigoSap: 'TRSP003',
-      activo: false
+      activo: false,
+      documentos: {
+        permisoCirculacion:   { archivo: null, desde: '', hasta: '' },
+        seguroCarga:          { archivo: null, desde: '', hasta: '' },
+        padron:               { archivo: null, desde: '', hasta: '' },
+        soap:                 { archivo: null, desde: '', hasta: '' },
+        certificadoEmision:   { archivo: null, desde: '', hasta: '' }
+      },
+      conductor: {
+        nombre: '',
+        rut: '',
+        telefono: '',
+        licencia: '',
+        archivoLicencia: null,
+        archivoCarne: null
+      }
     }
   ],
 
@@ -188,6 +248,40 @@ export function getDatabase() {
     parsed.quotesHistory = defaultData.quotesHistory;
     migrado = true;
   }
+
+  // Migración: Asegurar que existe la tabla de usuarios (Roles y Perfiles)
+  if (!parsed.users) {
+    parsed.users = defaultData.users;
+    migrado = true;
+  }
+
+  // Migración: Asegurar que todos los transportes tienen campos de ficha
+  if (parsed.transports) {
+    parsed.transports.forEach(t => {
+      if (!t.documentos) {
+        t.documentos = {
+          permisoCirculacion:   { archivo: null, desde: '', hasta: '' },
+          seguroCarga:          { archivo: null, desde: '', hasta: '' },
+          padron:               { archivo: null, desde: '', hasta: '' },
+          soap:                 { archivo: null, desde: '', hasta: '' },
+          certificadoEmision:   { archivo: null, desde: '', hasta: '' }
+        };
+        migrado = true;
+      }
+      if (!t.conductor) {
+        t.conductor = { nombre: '', rut: '', telefono: '', licencia: '', archivoLicencia: null, archivoCarne: null };
+        migrado = true;
+      }
+      if (!t.dimensiones) {
+        t.dimensiones = { largo: 0, ancho: 0, alto: 0 };
+        migrado = true;
+      }
+      if (!t.modelo) { t.modelo = ''; migrado = true; }
+      if (!t.anio) { t.anio = 2020; migrado = true; }
+      if (!t.comuna) { t.comuna = ''; migrado = true; }
+      if (!t.region) { t.region = ''; migrado = true; }
+    });
+  }
   
   if (migrado) {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed));
@@ -204,8 +298,4 @@ export function saveDatabase(data) {
 }
 
 // Resetear base de datos a los valores predeterminados
-export function resetDatabase() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(defaultData));
-  window.dispatchEvent(new Event('db_updated'));
-  return defaultData;
-}
+export fun

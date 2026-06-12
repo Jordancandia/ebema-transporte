@@ -68,3 +68,26 @@ body {
   cursor: not-allowed;
   border: 1px dashed #936e69 !important;
 }
+
+/* Animación de carga (spinners en botones de autenticación) */
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* Auth split layout: panel izquierdo con min-height */
+.auth-brand-panel {
+  min-height: 100vh;
+}
+
+/* Auth form panel centrado verticalmente */
+.auth-form-panel {
+  min-height: 100vh;
+  overflow-y: auto;
+}
+
+/* Bento card (tarjeta de sección) */
+.bento-card {
+  background: white;
+  border: 1px solid #e1e3e4;
+}

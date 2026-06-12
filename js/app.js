@@ -1,8 +1,9 @@
-import { getDatabase } from './data.js';
+import { getDatabase, saveDatabase } from './data.js';
 import { renderTransportsView } from './transports.js';
 import { renderRoutesView } from './routes.js';
 import { renderLogisticsView } from './logistics.js';
 import { renderRatesView } from './rates.js';
+import { renderRolesView } from './roles.js';
 import { showAlert } from './utils.js';
 
 // Inicializar base de datos
@@ -11,6 +12,9 @@ getDatabase();
 const SESSION_KEY = 'ebema_user_session';
 let currentSession = null;
 let currentTab = 'rates'; // Cotizador activo por defecto
+
+// Estado de la pantalla de autenticación ('login', 'register', 'recover')
+let authState = 'login'; 
 
 const appRoot = document.getElementById('app-root');
 
@@ -30,65 +34,179 @@ function checkSession() {
 
 function renderApp() {
   if (!currentSession) {
-    renderLoginView();
+    renderAuthView();
   } else {
     renderDashboardShell();
   }
 }
 
 // ==========================================================================
-// VISTA DE LOGIN (ESTILO SIT EBEMA CON TAILWIND)
+// PANTALLAS DE AUTENTICACIÓN (LOGIN, REGISTRO, RECUPERACIÓN)
 // ==========================================================================
+function renderAuthView() {
+  if (authState === 'login') {
+    renderLoginView();
+  } else if (authState === 'register') {
+    renderRegisterView();
+  } else if (authState === 'recover') {
+    renderRecoverView();
+  }
+}
+
+// 1. Iniciar Sesión
 function renderLoginView() {
   appRoot.innerHTML = `
-    <div class="min-h-screen flex items-center justify-center bg-[#f8f9fa] px-md py-xl">
-      <div class="max-w-md w-full bg-white border border-outline-variant p-lg shadow-sm rounded-xl space-y-lg">
-        
-        <!-- Logo y Título -->
-        <div class="text-center space-y-xs">
-          <div class="w-16 h-16 bg-primary text-white font-extrabold rounded-xl flex items-center justify-center text-3xl mx-auto shadow-md">
-            E
+    <div class="auth-split-layout min-h-screen flex" style="background:#f8f9fa">
+
+      <!-- Panel Izquierdo: Branding EBEMA -->
+      <div class="auth-brand-panel hidden lg:flex flex-col justify-between w-2/5 p-12 relative overflow-hidden" style="background:linear-gradient(145deg,#8b0000 0%,#b5000b 45%,#d40010 80%,#ff1a24 100%)">
+        <!-- Patrón de fondo decorativo -->
+        <div style="position:absolute;inset:0;background-image:radial-gradient(circle at 20% 80%, rgba(255,255,255,0.06) 0%, transparent 50%),radial-gradient(circle at 80% 20%, rgba(255,255,255,0.04) 0%, transparent 50%);pointer-events:none"></div>
+        <div style="position:absolute;bottom:-80px;right:-80px;width:320px;height:320px;border-radius:50%;background:rgba(255,255,255,0.04);pointer-events:none"></div>
+        <div style="position:absolute;top:-40px;left:-60px;width:200px;height:200px;border-radius:50%;background:rgba(255,255,255,0.03);pointer-events:none"></div>
+
+        <!-- Logo Superior -->
+        <div style="position:relative;z-index:2">
+          <div style="display:inline-flex;align-items:center;gap:12px;margin-bottom:48px">
+            <div style="width:48px;height:48px;background:rgba(255,255,255,0.15);border:1px solid rgba(255,255,255,0.2);border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:900;color:white;backdrop-filter:blur(4px)">E</div>
+            <div>
+              <div style="color:white;font-weight:800;font-size:18px;letter-spacing:-0.01em;line-height:1.1">SIT EBEMA</div>
+              <div style="color:rgba(255,255,255,0.6);font-size:11px;letter-spacing:0.08em;text-transform:uppercase">Sistema Integral de Tarifas</div>
+            </div>
           </div>
-          <h1 class="font-headline-md text-headline-md font-bold text-on-surface">SIT EBEMA</h1>
-          <p class="font-body-md text-secondary">Plataforma de Administración y Tarifas</p>
+
+          <h2 style="color:white;font-size:32px;font-weight:800;line-height:1.2;letter-spacing:-0.02em;margin-bottom:16px">Gestión logística<br/>inteligente</h2>
+          <p style="color:rgba(255,255,255,0.72);font-size:15px;line-height:1.6;max-width:300px">Plataforma centralizada para cotización de tarifas, administración de rutas y control de transportes.</p>
         </div>
 
-        <div id="login-error-alert" class="p-sm bg-error-container text-on-error-container text-xs border border-error/20 rounded hidden flex items-center gap-xs">
-          <span class="material-symbols-outlined text-[16px]">error</span>
-          <span id="login-error-text"></span>
+        <!-- Stats decorativos -->
+        <div style="position:relative;z-index:2">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:32px">
+            <div style="background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.12);border-radius:10px;padding:16px;backdrop-filter:blur(4px)">
+              <div style="color:white;font-size:24px;font-weight:800;line-height:1">3+</div>
+              <div style="color:rgba(255,255,255,0.65);font-size:11px;margin-top:4px">Centros Logísticos</div>
+            </div>
+            <div style="background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.12);border-radius:10px;padding:16px;backdrop-filter:blur(4px)">
+              <div style="color:white;font-size:24px;font-weight:800;line-height:1">5+</div>
+              <div style="color:rgba(255,255,255,0.65);font-size:11px;margin-top:4px">Rutas Activas</div>
+            </div>
+          </div>
+          <p style="color:rgba(255,255,255,0.4);font-size:11px">© 2026 EBEMA Chile — Acceso restringido</p>
         </div>
+      </div>
 
-        <!-- Formulario -->
-        <form id="login-form" class="space-y-md">
-          <div class="space-y-xs">
-            <label for="login-email" class="font-label-caps text-label-caps text-secondary block">CORREO CORPORATIVO</label>
-            <input 
-              type="email" 
-              id="login-email" 
-              class="w-full border border-[#CED4DA] p-sm font-body-md text-body-md focus:border-primary focus:ring-0 transition-all rounded bg-white" 
-              placeholder="usuario@ebema.cl" 
-              required
-            >
+      <!-- Panel Derecho: Formulario -->
+      <div class="auth-form-panel flex-1 flex items-center justify-center p-8">
+        <div style="width:100%;max-width:420px;animation:slideUp 0.4s ease-out">
+
+          <!-- Header del formulario -->
+          <div style="margin-bottom:36px">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:24px">
+              <div style="width:40px;height:40px;background:#b5000b;border-radius:10px;display:flex;align-items:center;justify-content:center;color:white;font-weight:900;font-size:18px">E</div>
+              <span style="color:#b5000b;font-weight:800;font-size:15px;letter-spacing:-0.01em">SIT EBEMA</span>
+            </div>
+            <h1 style="font-size:28px;font-weight:800;color:#191c1d;letter-spacing:-0.02em;line-height:1.2;margin-bottom:6px">Iniciar Sesión</h1>
+            <p style="color:#5c5f61;font-size:14px">Acceda con su correo corporativo <strong>@ebema.cl</strong></p>
           </div>
 
-          <div class="space-y-xs">
-            <label for="login-password" class="font-label-caps text-label-caps text-secondary block">CONTRASEÑA CORPORATIVA</label>
-            <input 
-              type="password" 
-              id="login-password" 
-              class="w-full border border-[#CED4DA] p-sm font-body-md text-body-md focus:border-primary focus:ring-0 transition-all rounded bg-white" 
-              placeholder="••••••••" 
-              required
-            >
+          <!-- Alerta de error -->
+          <div id="login-error-alert" class="hidden" style="display:none;align-items:center;gap:8px;padding:10px 14px;background:#ffdad6;border:1px solid rgba(186,26,26,0.2);border-radius:8px;margin-bottom:20px;font-size:13px;color:#93000a">
+            <span class="material-symbols-outlined" style="font-size:16px">error</span>
+            <span id="login-error-text"></span>
           </div>
 
-          <button type="submit" class="w-full bg-primary hover:bg-[#930007] text-white font-bold py-sm rounded transition-all cursor-pointer shadow">
-            Iniciar Sesión
-          </button>
-        </form>
+          <!-- Formulario -->
+          <form id="login-form" style="display:flex;flex-direction:column;gap:18px">
+            <div>
+              <label for="login-email" style="display:block;font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#5c5f61;margin-bottom:6px">Correo Corporativo</label>
+              <div style="position:relative">
+                <span class="material-symbols-outlined" style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:#5c5f61;font-size:18px;pointer-events:none">mail</span>
+                <input
+                  type="email"
+                  id="login-email"
+                  placeholder="usuario@ebema.cl"
+                  required
+                  style="width:100%;padding:12px 12px 12px 40px;border:1.5px solid #e1e3e4;border-radius:8px;font-size:14px;background:white;color:#191c1d;outline:none;transition:border-color 0.2s;box-sizing:border-box"
+                  onfocus="this.style.borderColor='#b5000b'"
+                  onblur="this.style.borderColor='#e1e3e4'"
+                />
+              </div>
+            </div>
+
+            <div>
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+                <label for="login-password" style="font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#5c5f61">Contraseña</label>
+                <button type="button" id="link-go-recover" style="font-size:12px;color:#b5000b;background:none;border:none;cursor:pointer;font-weight:600;text-decoration:none" onmouseover="this.style.textDecoration='underline'" onmouseout="this.style.textDecoration='none'">¿Olvidó su clave?</button>
+              </div>
+              <div style="position:relative">
+                <span class="material-symbols-outlined" style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:#5c5f61;font-size:18px;pointer-events:none">lock</span>
+                <input
+                  type="password"
+                  id="login-password"
+                  placeholder="••••••••"
+                  required
+                  style="width:100%;padding:12px 40px 12px 40px;border:1.5px solid #e1e3e4;border-radius:8px;font-size:14px;background:white;color:#191c1d;outline:none;transition:border-color 0.2s;box-sizing:border-box"
+                  onfocus="this.style.borderColor='#b5000b'"
+                  onblur="this.style.borderColor='#e1e3e4'"
+                />
+                <button type="button" id="toggle-login-pass" style="position:absolute;right:12px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:#5c5f61;display:flex;align-items:center">
+                  <span class="material-symbols-outlined" style="font-size:18px">visibility</span>
+                </button>
+              </div>
+            </div>
+
+            <button
+              type="submit"
+              id="btn-login-submit"
+              style="width:100%;padding:13px;background:#b5000b;color:white;border:none;border-radius:8px;font-size:15px;font-weight:700;cursor:pointer;transition:background 0.2s,transform 0.1s;display:flex;align-items:center;justify-content:center;gap:8px;margin-top:4px"
+              onmouseover="this.style.background='#930007'"
+              onmouseout="this.style.background='#b5000b'"
+              onmousedown="this.style.transform='scale(0.98)'"
+              onmouseup="this.style.transform='scale(1)'"
+            >
+              <span class="material-symbols-outlined" style="font-size:18px">login</span>
+              Iniciar Sesión
+            </button>
+          </form>
+
+          <!-- Footer -->
+          <div style="margin-top:28px;padding-top:20px;border-top:1px solid #e9bcb6;text-align:center">
+            <p style="font-size:13px;color:#5c5f61">¿No tiene acceso? <button id="link-go-register" style="color:#b5000b;background:none;border:none;cursor:pointer;font-weight:700;font-size:13px" onmouseover="this.style.textDecoration='underline'" onmouseout="this.style.textDecoration='none'">Solicitar cuenta corporativa</button></p>
+          </div>
+        </div>
       </div>
     </div>
+
+    <style>
+      @keyframes slideUp {
+        from { opacity: 0; transform: translateY(24px); }
+        to { opacity: 1; transform: translateY(0); }
+      }
+    </style>
   `;
+
+  // Toggle ver/ocultar contraseña
+  document.getElementById('toggle-login-pass').addEventListener('click', () => {
+    const input = document.getElementById('login-password');
+    const icon = document.querySelector('#toggle-login-pass .material-symbols-outlined');
+    if (input.type === 'password') {
+      input.type = 'text';
+      icon.textContent = 'visibility_off';
+    } else {
+      input.type = 'password';
+      icon.textContent = 'visibility';
+    }
+  });
+
+  document.getElementById('link-go-register').addEventListener('click', () => {
+    authState = 'register';
+    renderAuthView();
+  });
+
+  document.getElementById('link-go-recover').addEventListener('click', () => {
+    authState = 'recover';
+    renderAuthView();
+  });
 
   const loginForm = document.getElementById('login-form');
   const loginErrorAlert = document.getElementById('login-error-alert');
@@ -97,31 +215,425 @@ function renderLoginView() {
   loginForm.addEventListener('submit', (e) => {
     e.preventDefault();
     const email = document.getElementById('login-email').value.trim().toLowerCase();
+    const btn = document.getElementById('btn-login-submit');
+    btn.innerHTML = '<div style="width:18px;height:18px;border:2px solid rgba(255,255,255,0.3);border-top-color:white;border-radius:50%;animation:spin 0.7s linear infinite"></div> Verificando...';
+    btn.disabled = true;
 
-    const isCorpEmail = email.endsWith('@ebema.cl');
+    setTimeout(() => {
+      const isCorpEmail = email.endsWith('@ebema.cl');
+      if (!isCorpEmail) {
+        loginErrorText.innerText = 'Acceso restringido. Utilice su correo corporativo @ebema.cl';
+        loginErrorAlert.style.display = 'flex';
+        loginErrorAlert.classList.remove('hidden');
+        btn.innerHTML = '<span class="material-symbols-outlined" style="font-size:18px">login</span> Iniciar Sesión';
+        btn.disabled = false;
+        return;
+      }
 
-    if (!isCorpEmail) {
-      loginErrorText.innerText = 'Acceso restringido. Utilice su correo corporativo @ebema.cl';
-      loginErrorAlert.classList.remove('hidden');
-      return;
-    }
+      const db = getDatabase();
+      const registeredUser = db.users.find(u => u.email === email);
+      if (registeredUser && registeredUser.activo === false) {
+        loginErrorText.innerText = 'Su cuenta corporativa ha sido inhabilitada por el administrador.';
+        loginErrorAlert.style.display = 'flex';
+        loginErrorAlert.classList.remove('hidden');
+        btn.innerHTML = '<span class="material-symbols-outlined" style="font-size:18px">login</span> Iniciar Sesión';
+        btn.disabled = false;
+        return;
+      }
 
-    const userSession = {
-      email: email,
-      name: email.split('@')[0].toUpperCase(),
-      role: email.includes('admin') ? 'Admin SIT' : 'Logistics Operator'
-    };
+      const userSession = {
+        email: email,
+        name: registeredUser ? registeredUser.name : email.split('@')[0].toUpperCase(),
+        role: registeredUser ? registeredUser.role : (email.includes('admin') ? 'Admin SIT' : 'Logistics Operator')
+      };
 
+      localStorage.setItem(SESSION_KEY, JSON.stringify(userSession));
+      currentSession = userSession;
+      showAlert(`Bienvenido, ${userSession.name}`);
+      renderApp();
+    }, 800);
+  });
+}
+
+// 2. Registro (Crear Cuenta Corporativa)
+function renderRegisterView() {
+  appRoot.innerHTML = `
+    <div class="min-h-screen flex" style="background:#f8f9fa">
+
+      <!-- Panel Izquierdo: Branding -->
+      <div class="hidden lg:flex flex-col justify-between w-2/5 p-12 relative overflow-hidden" style="background:linear-gradient(145deg,#8b0000 0%,#b5000b 45%,#d40010 80%,#ff1a24 100%)">
+        <div style="position:absolute;inset:0;background-image:radial-gradient(circle at 20% 80%, rgba(255,255,255,0.06) 0%, transparent 50%),radial-gradient(circle at 80% 20%, rgba(255,255,255,0.04) 0%, transparent 50%);pointer-events:none"></div>
+        <div style="position:absolute;bottom:-80px;right:-80px;width:320px;height:320px;border-radius:50%;background:rgba(255,255,255,0.04);pointer-events:none"></div>
+
+        <div style="position:relative;z-index:2">
+          <div style="display:inline-flex;align-items:center;gap:12px;margin-bottom:48px">
+            <div style="width:48px;height:48px;background:rgba(255,255,255,0.15);border:1px solid rgba(255,255,255,0.2);border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:900;color:white">E</div>
+            <div>
+              <div style="color:white;font-weight:800;font-size:18px;line-height:1.1">SIT EBEMA</div>
+              <div style="color:rgba(255,255,255,0.6);font-size:11px;letter-spacing:0.08em;text-transform:uppercase">Sistema Integral de Tarifas</div>
+            </div>
+          </div>
+
+          <h2 style="color:white;font-size:32px;font-weight:800;line-height:1.2;letter-spacing:-0.02em;margin-bottom:16px">Únase al<br/>sistema EBEMA</h2>
+          <p style="color:rgba(255,255,255,0.72);font-size:15px;line-height:1.6;max-width:300px">Cree su cuenta corporativa para acceder a cotizaciones, rutas y gestión logística en tiempo real.</p>
+        </div>
+
+        <!-- Pasos del proceso -->
+        <div style="position:relative;z-index:2">
+          <p style="color:rgba(255,255,255,0.55);font-size:11px;text-transform:uppercase;letter-spacing:0.07em;margin-bottom:16px">Proceso de registro</p>
+          <div style="display:flex;flex-direction:column;gap:12px">
+            <div style="display:flex;align-items:center;gap:12px">
+              <div style="width:28px;height:28px;background:#b5000b;border:2px solid rgba(255,255,255,0.8);border-radius:50%;display:flex;align-items:center;justify-content:center;color:white;font-size:12px;font-weight:700">1</div>
+              <span style="color:white;font-size:13px">Completar datos corporativos</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:12px">
+              <div style="width:28px;height:28px;background:rgba(255,255,255,0.12);border:2px solid rgba(255,255,255,0.3);border-radius:50%;display:flex;align-items:center;justify-content:center;color:rgba(255,255,255,0.6);font-size:12px;font-weight:700">2</div>
+              <span style="color:rgba(255,255,255,0.6);font-size:13px">Aprobación por administrador</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:12px">
+              <div style="width:28px;height:28px;background:rgba(255,255,255,0.12);border:2px solid rgba(255,255,255,0.3);border-radius:50%;display:flex;align-items:center;justify-content:center;color:rgba(255,255,255,0.6);font-size:12px;font-weight:700">3</div>
+              <span style="color:rgba(255,255,255,0.6);font-size:13px">Acceso al sistema habilitado</span>
+            </div>
+          </div>
+          <p style="color:rgba(255,255,255,0.35);font-size:11px;margin-top:24px">© 2026 EBEMA Chile — Solo dominio @ebema.cl</p>
+        </div>
+      </div>
+
+      <!-- Panel Derecho: Formulario de Registro -->
+      <div class="flex-1 flex items-center justify-center p-8 overflow-y-auto">
+        <div style="width:100%;max-width:440px;animation:slideUp 0.4s ease-out">
+
+          <!-- Header -->
+          <div style="margin-bottom:32px">
+            <button id="link-back-login" style="display:inline-flex;align-items:center;gap:6px;color:#5c5f61;background:none;border:none;cursor:pointer;font-size:13px;margin-bottom:20px;padding:0" onmouseover="this.style.color='#b5000b'" onmouseout="this.style.color='#5c5f61'">
+              <span class="material-symbols-outlined" style="font-size:16px">arrow_back</span>
+              Volver al Login
+            </button>
+            <h1 style="font-size:26px;font-weight:800;color:#191c1d;letter-spacing:-0.02em;line-height:1.2;margin-bottom:6px">Crear Cuenta Corporativa</h1>
+            <p style="color:#5c5f61;font-size:14px">Complete el formulario con sus datos de EBEMA Chile.</p>
+          </div>
+
+          <!-- Alerta de error -->
+          <div id="register-error-alert" style="display:none;align-items:center;gap:8px;padding:10px 14px;background:#ffdad6;border:1px solid rgba(186,26,26,0.2);border-radius:8px;margin-bottom:20px;font-size:13px;color:#93000a">
+            <span class="material-symbols-outlined" style="font-size:16px">error</span>
+            <span id="register-error-text"></span>
+          </div>
+
+          <!-- Formulario -->
+          <form id="register-form" style="display:flex;flex-direction:column;gap:16px">
+            <!-- Nombre -->
+            <div>
+              <label style="display:block;font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#5c5f61;margin-bottom:6px">Nombre Completo</label>
+              <div style="position:relative">
+                <span class="material-symbols-outlined" style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:#5c5f61;font-size:18px;pointer-events:none">person</span>
+                <input type="text" id="reg-name" placeholder="Ej. Juan Pérez Soto" required
+                  style="width:100%;padding:12px 12px 12px 40px;border:1.5px solid #e1e3e4;border-radius:8px;font-size:14px;background:white;color:#191c1d;outline:none;transition:border-color 0.2s;box-sizing:border-box"
+                  onfocus="this.style.borderColor='#b5000b'" onblur="this.style.borderColor='#e1e3e4'" />
+              </div>
+            </div>
+
+            <!-- Email -->
+            <div>
+              <label style="display:block;font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#5c5f61;margin-bottom:6px">Correo Corporativo</label>
+              <div style="position:relative">
+                <span class="material-symbols-outlined" style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:#5c5f61;font-size:18px;pointer-events:none">mail</span>
+                <input type="email" id="reg-email" placeholder="usuario@ebema.cl" required
+                  style="width:100%;padding:12px 12px 12px 40px;border:1.5px solid #e1e3e4;border-radius:8px;font-size:14px;background:white;color:#191c1d;outline:none;transition:border-color 0.2s;box-sizing:border-box"
+                  onfocus="this.style.borderColor='#b5000b'" onblur="this.style.borderColor='#e1e3e4'" />
+              </div>
+            </div>
+
+            <!-- Contraseña con indicador -->
+            <div>
+              <label style="display:block;font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#5c5f61;margin-bottom:6px">Contraseña</label>
+              <div style="position:relative">
+                <span class="material-symbols-outlined" style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:#5c5f61;font-size:18px;pointer-events:none">lock</span>
+                <input type="password" id="reg-password" placeholder="Mínimo 6 caracteres" required
+                  style="width:100%;padding:12px 40px 12px 40px;border:1.5px solid #e1e3e4;border-radius:8px;font-size:14px;background:white;color:#191c1d;outline:none;transition:border-color 0.2s;box-sizing:border-box"
+                  onfocus="this.style.borderColor='#b5000b'" onblur="this.style.borderColor='#e1e3e4'" />
+                <button type="button" id="toggle-reg-pass" style="position:absolute;right:12px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:#5c5f61;display:flex;align-items:center">
+                  <span class="material-symbols-outlined" style="font-size:18px">visibility</span>
+                </button>
+              </div>
+              <!-- Indicador de fuerza -->
+              <div style="margin-top:8px">
+                <div style="display:flex;gap:4px;margin-bottom:4px">
+                  <div id="str-bar-1" style="height:3px;flex:1;border-radius:2px;background:#e1e3e4;transition:background 0.3s"></div>
+                  <div id="str-bar-2" style="height:3px;flex:1;border-radius:2px;background:#e1e3e4;transition:background 0.3s"></div>
+                  <div id="str-bar-3" style="height:3px;flex:1;border-radius:2px;background:#e1e3e4;transition:background 0.3s"></div>
+                  <div id="str-bar-4" style="height:3px;flex:1;border-radius:2px;background:#e1e3e4;transition:background 0.3s"></div>
+                </div>
+                <p id="str-label" style="font-size:11px;color:#5c5f61">Ingrese una contraseña</p>
+              </div>
+            </div>
+
+            <!-- Confirmar Contraseña -->
+            <div>
+              <label style="display:block;font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#5c5f61;margin-bottom:6px">Confirmar Contraseña</label>
+              <div style="position:relative">
+                <span class="material-symbols-outlined" style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:#5c5f61;font-size:18px;pointer-events:none">lock_reset</span>
+                <input type="password" id="reg-confirm" placeholder="Repita su contraseña" required
+                  style="width:100%;padding:12px 12px 12px 40px;border:1.5px solid #e1e3e4;border-radius:8px;font-size:14px;background:white;color:#191c1d;outline:none;transition:border-color 0.2s;box-sizing:border-box"
+                  onfocus="this.style.borderColor='#b5000b'" onblur="this.style.borderColor='#e1e3e4'" />
+              </div>
+            </div>
+
+            <button type="submit" id="btn-reg-submit"
+              style="width:100%;padding:13px;background:#b5000b;color:white;border:none;border-radius:8px;font-size:15px;font-weight:700;cursor:pointer;transition:background 0.2s,transform 0.1s;display:flex;align-items:center;justify-content:center;gap:8px;margin-top:4px"
+              onmouseover="this.style.background='#930007'" onmouseout="this.style.background='#b5000b'"
+              onmousedown="this.style.transform='scale(0.98)'" onmouseup="this.style.transform='scale(1)'"
+            >
+              <span class="material-symbols-outlined" style="font-size:18px">person_add</span>
+              Crear Cuenta
+            </button>
+          </form>
+
+          <!-- Footer -->
+          <div style="margin-top:24px;padding-top:18px;border-top:1px solid #e9bcb6;text-align:center">
+            <p style="font-size:13px;color:#5c5f61">¿Ya tiene cuenta? <button id="link-back-login-footer" style="color:#b5000b;background:none;border:none;cursor:pointer;font-weight:700;font-size:13px" onmouseover="this.style.textDecoration='underline'" onmouseout="this.style.textDecoration='none'">Iniciar Sesión</button></p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <style>
+      @keyframes slideUp {
+        from { opacity: 0; transform: translateY(24px); }
+        to { opacity: 1; transform: translateY(0); }
+      }
+    </style>
+  `;
+
+  // Toggle contraseña
+  document.getElementById('toggle-reg-pass').addEventListener('click', () => {
+    const input = document.getElementById('reg-password');
+    const icon = document.querySelector('#toggle-reg-pass .material-symbols-outlined');
+    input.type = input.type === 'password' ? 'text' : 'password';
+    icon.textContent = input.type === 'password' ? 'visibility' : 'visibility_off';
+  });
+
+  // Indicador de fuerza de contraseña
+  document.getElementById('reg-password').addEventListener('input', (e) => {
+    const val = e.target.value;
+    const bars = [1,2,3,4].map(n => document.getElementById(`str-bar-${n}`));
+    const label = document.getElementById('str-label');
+    let strength = 0;
+    if (val.length >= 6) strength++;
+    if (val.length >= 10) strength++;
+    if (/[A-Z]/.test(val) && /[0-9]/.test(val)) strength++;
+    if (/[^A-Za-z0-9]/.test(val)) strength++;
+    const colors = ['#ba1a1a', '#f59e0b', '#10b981', '#059669'];
+    const labels = ['Muy débil', 'Débil', 'Buena', 'Excelente'];
+    bars.forEach((b, i) => { b.style.background = i < strength ? colors[strength - 1] : '#e1e3e4'; });
+    label.textContent = val.length === 0 ? 'Ingrese una contraseña' : labels[strength - 1] || 'Muy débil';
+    label.style.color = strength > 0 ? colors[strength - 1] : '#5c5f61';
+  });
+
+  ['link-back-login', 'link-back-login-footer'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('click', () => { authState = 'login'; renderAuthView(); });
+  });
+
+  const regErrorAlert = document.getElementById('register-error-alert');
+  const regErrorText = document.getElementById('register-error-text');
+
+  document.getElementById('register-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const name = document.getElementById('reg-name').value.trim();
+    const email = document.getElementById('reg-email').value.trim().toLowerCase();
+    const pass = document.getElementById('reg-password').value;
+    const confirmPass = document.getElementById('reg-confirm').value;
+
+    const showErr = (msg) => { regErrorText.innerText = msg; regErrorAlert.style.display = 'flex'; };
+
+    if (!email.endsWith('@ebema.cl')) return showErr('El correo debe ser de dominio corporativo @ebema.cl');
+    if (pass.length < 6) return showErr('La contraseña debe tener mínimo 6 caracteres');
+    if (pass !== confirmPass) return showErr('Las contraseñas no coinciden');
+
+    const db = getDatabase();
+    if (db.users.some(u => u.email === email)) return showErr('El correo ya se encuentra registrado');
+
+    const newUser = { email, name, role: 'Operador Logístico', activo: true, lastAccess: 'Hoy' };
+    db.users.push(newUser);
+    saveDatabase(db);
+
+    const userSession = { email, name: name.toUpperCase(), role: 'Operador Logístico' };
     localStorage.setItem(SESSION_KEY, JSON.stringify(userSession));
     currentSession = userSession;
 
-    showAlert(`Sesión iniciada como ${userSession.name}`);
+    showAlert(`Cuenta creada. Bienvenido, ${name}`);
+    authState = 'login';
     renderApp();
   });
 }
 
+// 3. Recuperar Clave
+function renderRecoverView() {
+  appRoot.innerHTML = `
+    <div class="min-h-screen flex" style="background:#f8f9fa">
+
+      <!-- Panel Izquierdo: Branding -->
+      <div class="hidden lg:flex flex-col justify-between w-2/5 p-12 relative overflow-hidden" style="background:linear-gradient(145deg,#8b0000 0%,#b5000b 45%,#d40010 80%,#ff1a24 100%)">
+        <div style="position:absolute;inset:0;background-image:radial-gradient(circle at 20% 80%, rgba(255,255,255,0.06) 0%, transparent 50%),radial-gradient(circle at 80% 20%, rgba(255,255,255,0.04) 0%, transparent 50%);pointer-events:none"></div>
+        <div style="position:absolute;bottom:-80px;right:-80px;width:320px;height:320px;border-radius:50%;background:rgba(255,255,255,0.04);pointer-events:none"></div>
+
+        <div style="position:relative;z-index:2">
+          <div style="display:inline-flex;align-items:center;gap:12px;margin-bottom:48px">
+            <div style="width:48px;height:48px;background:rgba(255,255,255,0.15);border:1px solid rgba(255,255,255,0.2);border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:900;color:white">E</div>
+            <div>
+              <div style="color:white;font-weight:800;font-size:18px;line-height:1.1">SIT EBEMA</div>
+              <div style="color:rgba(255,255,255,0.6);font-size:11px;letter-spacing:0.08em;text-transform:uppercase">Sistema Integral de Tarifas</div>
+            </div>
+          </div>
+
+          <h2 style="color:white;font-size:32px;font-weight:800;line-height:1.2;letter-spacing:-0.02em;margin-bottom:16px">Recupere<br/>su acceso</h2>
+          <p style="color:rgba(255,255,255,0.72);font-size:15px;line-height:1.6;max-width:300px">Ingrese su correo corporativo y recibirá instrucciones para restablecer su contraseña en minutos.</p>
+        </div>
+
+        <!-- Instrucciones del proceso -->
+        <div style="position:relative;z-index:2">
+          <p style="color:rgba(255,255,255,0.55);font-size:11px;text-transform:uppercase;letter-spacing:0.07em;margin-bottom:16px">¿Cómo funciona?</p>
+          <div style="display:flex;flex-direction:column;gap:14px">
+            <div style="display:flex;align-items:flex-start;gap:12px">
+              <div style="min-width:28px;height:28px;background:rgba(255,255,255,0.12);border-radius:50%;display:flex;align-items:center;justify-content:center">
+                <span class="material-symbols-outlined" style="color:white;font-size:14px">mail</span>
+              </div>
+              <div>
+                <p style="color:white;font-size:13px;font-weight:600;margin-bottom:2px">Ingrese su correo</p>
+                <p style="color:rgba(255,255,255,0.55);font-size:12px">Use su dirección @ebema.cl corporativa</p>
+              </div>
+            </div>
+            <div style="display:flex;align-items:flex-start;gap:12px">
+              <div style="min-width:28px;height:28px;background:rgba(255,255,255,0.12);border-radius:50%;display:flex;align-items:center;justify-content:center">
+                <span class="material-symbols-outlined" style="color:white;font-size:14px">mark_email_read</span>
+              </div>
+              <div>
+                <p style="color:white;font-size:13px;font-weight:600;margin-bottom:2px">Revise su bandeja</p>
+                <p style="color:rgba(255,255,255,0.55);font-size:12px">Le enviaremos un enlace seguro</p>
+              </div>
+            </div>
+            <div style="display:flex;align-items:flex-start;gap:12px">
+              <div style="min-width:28px;height:28px;background:rgba(255,255,255,0.12);border-radius:50%;display:flex;align-items:center;justify-content:center">
+                <span class="material-symbols-outlined" style="color:white;font-size:14px">lock_open</span>
+              </div>
+              <div>
+                <p style="color:white;font-size:13px;font-weight:600;margin-bottom:2px">Restablezca su clave</p>
+                <p style="color:rgba(255,255,255,0.55);font-size:12px">Cree una nueva contraseña segura</p>
+              </div>
+            </div>
+          </div>
+          <p style="color:rgba(255,255,255,0.35);font-size:11px;margin-top:24px">© 2026 EBEMA Chile — Acceso restringido</p>
+        </div>
+      </div>
+
+      <!-- Panel Derecho: Formulario de Recuperación -->
+      <div class="flex-1 flex items-center justify-center p-8">
+        <div style="width:100%;max-width:420px;animation:slideUp 0.4s ease-out">
+
+          <!-- Estado: Formulario -->
+          <div id="recover-step-form">
+            <div style="margin-bottom:32px">
+              <button id="link-back-login" style="display:inline-flex;align-items:center;gap:6px;color:#5c5f61;background:none;border:none;cursor:pointer;font-size:13px;margin-bottom:20px;padding:0" onmouseover="this.style.color='#b5000b'" onmouseout="this.style.color='#5c5f61'">
+                <span class="material-symbols-outlined" style="font-size:16px">arrow_back</span>
+                Volver al Login
+              </button>
+
+              <div style="width:52px;height:52px;background:#ffdad5;border-radius:14px;display:flex;align-items:center;justify-content:center;margin-bottom:20px">
+                <span class="material-symbols-outlined" style="color:#b5000b;font-size:28px">lock_reset</span>
+              </div>
+
+              <h1 style="font-size:26px;font-weight:800;color:#191c1d;letter-spacing:-0.02em;line-height:1.2;margin-bottom:6px">Recuperar Contraseña</h1>
+              <p style="color:#5c5f61;font-size:14px">Ingrese su correo corporativo para recibir el enlace de restablecimiento.</p>
+            </div>
+
+            <form id="recover-form" style="display:flex;flex-direction:column;gap:18px">
+              <div>
+                <label style="display:block;font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#5c5f61;margin-bottom:6px">Correo Corporativo</label>
+                <div style="position:relative">
+                  <span class="material-symbols-outlined" style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:#5c5f61;font-size:18px;pointer-events:none">mail</span>
+                  <input type="email" id="recover-email" placeholder="usuario@ebema.cl" required
+                    style="width:100%;padding:12px 12px 12px 40px;border:1.5px solid #e1e3e4;border-radius:8px;font-size:14px;background:white;color:#191c1d;outline:none;transition:border-color 0.2s;box-sizing:border-box"
+                    onfocus="this.style.borderColor='#b5000b'" onblur="this.style.borderColor='#e1e3e4'" />
+                </div>
+              </div>
+
+              <button type="submit" id="btn-recover-submit"
+                style="width:100%;padding:13px;background:#b5000b;color:white;border:none;border-radius:8px;font-size:15px;font-weight:700;cursor:pointer;transition:background 0.2s;display:flex;align-items:center;justify-content:center;gap:8px"
+                onmouseover="this.style.background='#930007'" onmouseout="this.style.background='#b5000b'"
+              >
+                <span class="material-symbols-outlined" style="font-size:18px">send</span>
+                Enviar Instrucciones
+              </button>
+            </form>
+          </div>
+
+          <!-- Estado: Éxito (oculto inicialmente) -->
+          <div id="recover-step-success" style="display:none;text-align:center;animation:slideUp 0.4s ease-out">
+            <div style="width:72px;height:72px;background:#dcfce7;border-radius:50%;display:flex;align-items:center;justify-content:center;margin:0 auto 24px">
+              <span class="material-symbols-outlined" style="color:#16a34a;font-size:36px">mark_email_read</span>
+            </div>
+            <h2 style="font-size:22px;font-weight:800;color:#191c1d;margin-bottom:10px">¡Correo enviado!</h2>
+            <p style="color:#5c5f61;font-size:14px;line-height:1.6;margin-bottom:28px">Hemos enviado las instrucciones de recuperación a <strong id="recover-email-display"></strong>. Revise su bandeja de entrada.</p>
+            <div style="padding:14px;background:#f3f4f5;border-radius:8px;margin-bottom:24px;text-align:left">
+              <p style="font-size:12px;color:#5c5f61;display:flex;align-items:flex-start;gap:8px">
+                <span class="material-symbols-outlined" style="font-size:16px;color:#b5000b;flex-shrink:0;margin-top:1px">info</span>
+                Si no recibe el correo en 5 minutos, revise la carpeta de spam o contacte al administrador del sistema.
+              </p>
+            </div>
+            <button id="btn-go-login" style="width:100%;padding:12px;background:#b5000b;color:white;border:none;border-radius:8px;font-size:14px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px" onmouseover="this.style.background='#930007'" onmouseout="this.style.background='#b5000b'">
+              <span class="material-symbols-outlined" style="font-size:16px">login</span>
+              Volver al Inicio de Sesión
+            </button>
+          </div>
+
+        </div>
+      </div>
+    </div>
+
+    <style>
+      @keyframes slideUp {
+        from { opacity: 0; transform: translateY(24px); }
+        to { opacity: 1; transform: translateY(0); }
+      }
+    </style>
+  `;
+
+  document.getElementById('link-back-login').addEventListener('click', () => {
+    authState = 'login'; renderAuthView();
+  });
+
+  document.getElementById('btn-go-login')?.addEventListener('click', () => {
+    authState = 'login'; renderAuthView();
+  });
+
+  document.getElementById('recover-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const email = document.getElementById('recover-email').value.trim();
+    const btn = document.getElementById('btn-recover-submit');
+
+    if (!email.endsWith('@ebema.cl')) {
+      showAlert('El correo debe ser de dominio corporativo @ebema.cl', 'error');
+      return;
+    }
+
+    btn.innerHTML = '<div style="width:16px;height:16px;border:2px solid rgba(255,255,255,0.3);border-top-color:white;border-radius:50%;animation:spin 0.7s linear infinite"></div> Enviando...';
+    btn.disabled = true;
+
+    setTimeout(() => {
+      document.getElementById('recover-step-form').style.display = 'none';
+      const successEl = document.getElementById('recover-step-success');
+      successEl.style.display = 'block';
+      document.getElementById('recover-email-display').textContent = email;
+
+      document.getElementById('btn-go-login').addEventListener('click', () => {
+        authState = 'login'; renderAuthView();
+      });
+    }, 1200);
+  });
+}
+
 // ==========================================================================
-// SHELL DEL DASHBOARD DE SIT EBEMA (IDÉNTICO A GOOGLE STITCH)
+// SHELL DEL DASHBOARD DE SIT EBEMA
 // ==========================================================================
 function renderDashboardShell() {
   appRoot.innerHTML = `
@@ -155,6 +667,12 @@ function renderDashboardShell() {
         <a class="sidebar-item flex items-center gap-md px-md py-sm text-secondary hover:text-primary hover:bg-surface-container-high transition-colors rounded-lg cursor-pointer" data-tab="logistics" id="nav-logistics">
           <span class="material-symbols-outlined">location_on</span>
           <span class="font-body-md text-body-md">Centros SAP</span>
+        </a>
+
+        <!-- Roles y Perfiles -->
+        <a class="sidebar-item flex items-center gap-md px-md py-sm text-secondary hover:text-primary hover:bg-surface-container-high transition-colors rounded-lg cursor-pointer" data-tab="roles" id="nav-roles">
+          <span class="material-symbols-outlined">admin_panel_settings</span>
+          <span class="font-body-md text-body-md">Roles y Perfiles</span>
         </a>
       </div>
 
@@ -212,6 +730,7 @@ function renderDashboardShell() {
     localStorage.removeItem(SESSION_KEY);
     currentSession = null;
     currentTab = 'rates';
+    authState = 'login';
     showAlert('Sesión finalizada.');
     renderApp();
   });
@@ -238,7 +757,7 @@ function switchTab(tabName) {
 
   const activeNav = document.getElementById(`nav-${tabName}`);
   if (activeNav) {
-    // Aplicar la clase activa de Google Stitch exacta (bg-primary-container y text-on-primary-container)
+    // Aplicar la clase activa de Google Stitch
     activeNav.className = "sidebar-item flex items-center gap-md px-md py-sm bg-primary-container text-on-primary-container rounded-lg font-semibold opacity-90 transition-all duration-150 cursor-pointer";
   }
 
@@ -261,6 +780,10 @@ function switchTab(tabName) {
     case 'logistics':
       pageTitle.textContent = 'Gestión de Centros';
       renderLogisticsView(stage);
+      break;
+    case 'roles':
+      pageTitle.textContent = 'Roles y Perfiles';
+      renderRolesView(stage);
       break;
   }
 }
