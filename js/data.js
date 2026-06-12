@@ -1,5 +1,64 @@
-// Base de datos inicial y funciones de almacenamiento (localStorage)
+// Capa de datos de SIT EBEMA
+// Fuente principal: Supabase (PostgreSQL compartido, protegido con RLS).
+// localStorage se mantiene como copia local de respaldo (modo sin conexión).
+import { supabase } from './supabase-client.js';
+
 const STORAGE_KEY = 'ebema_transporte_db';
+
+// Mapeo colección local ↔ tabla Supabase (con su clave primaria)
+const TABLE_MAP = [
+  { local: 'logisticsCentres', table: 'logistics_centres', pk: 'id' },
+  { local: 'routes',           table: 'routes',            pk: 'id' },
+  { local: 'truckTypes',       table: 'truck_types',       pk: 'type' },
+  { local: 'transports',       table: 'transports',        pk: 'id' },
+  { local: 'quotesHistory',    table: 'quotes_history',    pk: 'id' },
+  { local: 'users',            table: 'app_users',         pk: 'email' }
+];
+
+let memoryDb = null;
+
+// Cargar TODO desde Supabase a memoria (llamar tras iniciar sesión)
+export async function initDatabase() {
+  try {
+    const results = await Promise.all(
+      TABLE_MAP.map(t => supabase.from(t.table).select('*'))
+    );
+    const failed = results.find(r => r.error);
+    if (failed) throw failed.error;
+
+    memoryDb = {};
+    TABLE_MAP.forEach((t, i) => { memoryDb[t.local] = results[i].data || []; });
+
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(memoryDb));
+    return memoryDb;
+  } catch (err) {
+    console.error('Supabase no disponible, usando copia local:', err.message || err);
+    memoryDb = null; // getDatabase usará el respaldo de localStorage
+    return getDatabase();
+  }
+}
+
+// Sincronizar una colección completa hacia Supabase (upsert + borrar faltantes)
+async function syncTable(table, pk, rows) {
+  if (rows.length > 0) {
+    const { error } = await supabase.from(table).upsert(rows);
+    if (error) throw error;
+  }
+  const keys = rows.map(r => String(r[pk]).replace(/"/g, ''));
+  let q = supabase.from(table).delete();
+  q = keys.length > 0
+    ? q.not(pk, 'in', `(${keys.map(k => `"${k}"`).join(',')})`)
+    : q.neq(pk, '___nunca___');
+  const { error } = await q;
+  if (error) throw error;
+}
+
+// Enviar el estado completo a Supabase (en segundo plano)
+async function syncToSupabase(db) {
+  for (const t of TABLE_MAP) {
+    await syncTable(t.table, t.pk, db[t.local] || []);
+  }
+}
 
 const defaultData = {
   // 1. Usuarios corporativos registrados
@@ -221,8 +280,9 @@ const defaultData = {
   ]
 };
 
-// Cargar datos desde localStorage o guardar los iniciales si no existen
+// Obtener la base de datos en memoria (Supabase) o respaldo local
 export function getDatabase() {
+  if (memoryDb) return memoryDb;
   const data = localStorage.getItem(STORAGE_KEY);
   if (!data) {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(defaultData));
@@ -310,11 +370,17 @@ export function getCentreName(db, centreId) {
   return cd ? cd.nombre : '(centro eliminado)';
 }
 
-// Guardar los datos en localStorage
+// Guardar: memoria + respaldo local + sincronización con Supabase
 export function saveDatabase(data) {
+  memoryDb = data;
   localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
   // Despachar un evento personalizado para actualizar las vistas en tiempo real
   window.dispatchEvent(new Event('db_updated'));
+  // Sincronizar con el servidor en segundo plano
+  syncToSupabase(data).catch(err => {
+    console.error('Error al sincronizar con Supabase:', err.message || err);
+    window.dispatchEvent(new CustomEvent('db_sync_error', { detail: err.message || String(err) }));
+  });
 }
 
 // Resetear base de datos a los valores predeterminados

@@ -1,4 +1,5 @@
-import { getDatabase, saveDatabase } from './data.js';
+import { getDatabase, saveDatabase, initDatabase } from './data.js';
+import { supabase } from './supabase-client.js';
 import { renderTransportsView } from './transports.js';
 import { renderRoutesView } from './routes.js';
 import { renderLogisticsView } from './logistics.js';
@@ -6,31 +7,49 @@ import { renderRatesView } from './rates.js';
 import { renderRolesView } from './roles.js';
 import { showAlert } from './utils.js';
 
-// Inicializar base de datos
-getDatabase();
-
 const SESSION_KEY = 'ebema_user_session';
 let currentSession = null;
 let currentTab = 'rates'; // Cotizador activo por defecto
 
 // Estado de la pantalla de autenticación ('login', 'register', 'recover')
-let authState = 'login'; 
+let authState = 'login';
 
 const appRoot = document.getElementById('app-root');
 
-document.addEventListener('DOMContentLoaded', () => {
-  checkSession();
+document.addEventListener('DOMContentLoaded', async () => {
+  await checkSession();
   renderApp();
 });
 
-function checkSession() {
-  const session = localStorage.getItem(SESSION_KEY);
-  if (session) {
-    currentSession = JSON.parse(session);
-  } else {
+// Verificar sesión real en Supabase y cargar la base de datos compartida
+async function checkSession() {
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) {
+      currentSession = null;
+      localStorage.removeItem(SESSION_KEY);
+      return;
+    }
+    await initDatabase();
+    const email = session.user.email.toLowerCase();
+    const db = getDatabase();
+    const u = (db.users || []).find(x => x.email === email);
+    currentSession = {
+      email,
+      name: u ? u.name : email.split('@')[0].toUpperCase(),
+      role: u ? u.role : 'operador'
+    };
+    localStorage.setItem(SESSION_KEY, JSON.stringify(currentSession));
+  } catch (err) {
+    console.error('Error verificando sesión:', err);
     currentSession = null;
   }
 }
+
+// Avisar si una sincronización con el servidor falla
+window.addEventListener('db_sync_error', () => {
+  showAlert('No se pudo sincronizar con el servidor. Cambios guardados solo localmente.', 'error');
+});
 
 function renderApp() {
   if (!currentSession) {
@@ -212,46 +231,63 @@ function renderLoginView() {
   const loginErrorAlert = document.getElementById('login-error-alert');
   const loginErrorText = document.getElementById('login-error-text');
 
-  loginForm.addEventListener('submit', (e) => {
+  loginForm.addEventListener('submit', async (e) => {
     e.preventDefault();
     const email = document.getElementById('login-email').value.trim().toLowerCase();
+    const password = document.getElementById('login-password').value;
     const btn = document.getElementById('btn-login-submit');
     btn.innerHTML = '<div style="width:18px;height:18px;border:2px solid rgba(255,255,255,0.3);border-top-color:white;border-radius:50%;animation:spin 0.7s linear infinite"></div> Verificando...';
     btn.disabled = true;
 
-    setTimeout(() => {
-      const isCorpEmail = email.endsWith('@ebema.cl');
-      if (!isCorpEmail) {
-        loginErrorText.innerText = 'Acceso restringido. Utilice su correo corporativo @ebema.cl';
-        loginErrorAlert.style.display = 'flex';
-        loginErrorAlert.classList.remove('hidden');
-        btn.innerHTML = '<span class="material-symbols-outlined" style="font-size:18px">login</span> Iniciar Sesión';
-        btn.disabled = false;
-        return;
-      }
+    const showLoginError = (msg) => {
+      loginErrorText.innerText = msg;
+      loginErrorAlert.style.display = 'flex';
+      loginErrorAlert.classList.remove('hidden');
+      btn.innerHTML = '<span class="material-symbols-outlined" style="font-size:18px">login</span> Iniciar Sesión';
+      btn.disabled = false;
+    };
 
-      const db = getDatabase();
-      const registeredUser = db.users.find(u => u.email === email);
-      if (registeredUser && registeredUser.activo === false) {
-        loginErrorText.innerText = 'Su cuenta corporativa ha sido inhabilitada por el administrador.';
-        loginErrorAlert.style.display = 'flex';
-        loginErrorAlert.classList.remove('hidden');
-        btn.innerHTML = '<span class="material-symbols-outlined" style="font-size:18px">login</span> Iniciar Sesión';
-        btn.disabled = false;
-        return;
-      }
+    if (!email.endsWith('@ebema.cl')) {
+      return showLoginError('Acceso restringido. Utilice su correo corporativo @ebema.cl');
+    }
 
-      const userSession = {
-        email: email,
-        name: registeredUser ? registeredUser.name : email.split('@')[0].toUpperCase(),
-        role: registeredUser ? registeredUser.role : (email.includes('admin') ? 'Admin SIT' : 'Logistics Operator')
+    // Autenticación real contra Supabase Auth
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error) {
+      const m = (error.message || '').toLowerCase();
+      if (m.includes('invalid login credentials')) return showLoginError('Correo o contraseña incorrectos.');
+      if (m.includes('email not confirmed')) return showLoginError('Debe confirmar su correo. Revise su bandeja de entrada.');
+      return showLoginError('No se pudo iniciar sesión: ' + error.message);
+    }
+
+    // Cargar base de datos compartida y perfil del usuario
+    await initDatabase();
+    const db = getDatabase();
+    let registeredUser = (db.users || []).find(u => u.email === email);
+
+    if (registeredUser && registeredUser.activo === false) {
+      await supabase.auth.signOut();
+      return showLoginError('Su cuenta corporativa ha sido inhabilitada por el administrador.');
+    }
+
+    // Primer ingreso: crear el perfil en la tabla de usuarios
+    if (!registeredUser) {
+      registeredUser = {
+        email,
+        name: email.split('@')[0].toUpperCase(),
+        role: 'operador',
+        activo: true,
+        lastAccess: new Date().toLocaleDateString('es-CL')
       };
+      db.users.push(registeredUser);
+      saveDatabase(db);
+    }
 
-      localStorage.setItem(SESSION_KEY, JSON.stringify(userSession));
-      currentSession = userSession;
-      showAlert(`Bienvenido, ${userSession.name}`);
-      renderApp();
-    }, 800);
+    const userSession = { email, name: registeredUser.name, role: registeredUser.role };
+    localStorage.setItem(SESSION_KEY, JSON.stringify(userSession));
+    currentSession = userSession;
+    showAlert(`Bienvenido, ${userSession.name}`);
+    renderApp();
   });
 }
 
@@ -437,33 +473,44 @@ function renderRegisterView() {
   const regErrorAlert = document.getElementById('register-error-alert');
   const regErrorText = document.getElementById('register-error-text');
 
-  document.getElementById('register-form').addEventListener('submit', (e) => {
+  document.getElementById('register-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const name = document.getElementById('reg-name').value.trim();
     const email = document.getElementById('reg-email').value.trim().toLowerCase();
     const pass = document.getElementById('reg-password').value;
     const confirmPass = document.getElementById('reg-confirm').value;
+    const btn = document.getElementById('btn-reg-submit');
 
-    const showErr = (msg) => { regErrorText.innerText = msg; regErrorAlert.style.display = 'flex'; };
+    const showErr = (msg) => {
+      regErrorText.innerText = msg;
+      regErrorAlert.style.display = 'flex';
+      btn.innerHTML = '<span class="material-symbols-outlined" style="font-size:18px">person_add</span> Crear Cuenta';
+      btn.disabled = false;
+    };
 
     if (!email.endsWith('@ebema.cl')) return showErr('El correo debe ser de dominio corporativo @ebema.cl');
     if (pass.length < 6) return showErr('La contraseña debe tener mínimo 6 caracteres');
     if (pass !== confirmPass) return showErr('Las contraseñas no coinciden');
 
-    const db = getDatabase();
-    if (db.users.some(u => u.email === email)) return showErr('El correo ya se encuentra registrado');
+    btn.innerHTML = '<div style="width:18px;height:18px;border:2px solid rgba(255,255,255,0.3);border-top-color:white;border-radius:50%;animation:spin 0.7s linear infinite"></div> Creando cuenta...';
+    btn.disabled = true;
 
-    const newUser = { email, name, role: 'Operador Logístico', activo: true, lastAccess: 'Hoy' };
-    db.users.push(newUser);
-    saveDatabase(db);
+    // Registro real en Supabase Auth (requiere confirmación por correo)
+    const { error } = await supabase.auth.signUp({
+      email,
+      password: pass,
+      options: { data: { name } }
+    });
 
-    const userSession = { email, name: name.toUpperCase(), role: 'Operador Logístico' };
-    localStorage.setItem(SESSION_KEY, JSON.stringify(userSession));
-    currentSession = userSession;
+    if (error) {
+      const m = (error.message || '').toLowerCase();
+      if (m.includes('already registered')) return showErr('El correo ya se encuentra registrado');
+      return showErr('No se pudo crear la cuenta: ' + error.message);
+    }
 
-    showAlert(`Cuenta creada. Bienvenido, ${name}`);
+    showAlert('Cuenta creada. Revise su correo para confirmar la cuenta antes de iniciar sesión.');
     authState = 'login';
-    renderApp();
+    renderAuthView();
   });
 }
 
@@ -606,9 +653,9 @@ function renderRecoverView() {
     authState = 'login'; renderAuthView();
   });
 
-  document.getElementById('recover-form').addEventListener('submit', (e) => {
+  document.getElementById('recover-form').addEventListener('submit', async (e) => {
     e.preventDefault();
-    const email = document.getElementById('recover-email').value.trim();
+    const email = document.getElementById('recover-email').value.trim().toLowerCase();
     const btn = document.getElementById('btn-recover-submit');
 
     if (!email.endsWith('@ebema.cl')) {
@@ -619,16 +666,26 @@ function renderRecoverView() {
     btn.innerHTML = '<div style="width:16px;height:16px;border:2px solid rgba(255,255,255,0.3);border-top-color:white;border-radius:50%;animation:spin 0.7s linear infinite"></div> Enviando...';
     btn.disabled = true;
 
-    setTimeout(() => {
-      document.getElementById('recover-step-form').style.display = 'none';
-      const successEl = document.getElementById('recover-step-success');
-      successEl.style.display = 'block';
-      document.getElementById('recover-email-display').textContent = email;
+    // Envío real del correo de recuperación vía Supabase Auth
+    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: window.location.origin + window.location.pathname
+    });
 
-      document.getElementById('btn-go-login').addEventListener('click', () => {
-        authState = 'login'; renderAuthView();
-      });
-    }, 1200);
+    if (error) {
+      showAlert('No se pudo enviar el correo: ' + error.message, 'error');
+      btn.innerHTML = 'Enviar instrucciones';
+      btn.disabled = false;
+      return;
+    }
+
+    document.getElementById('recover-step-form').style.display = 'none';
+    const successEl = document.getElementById('recover-step-success');
+    successEl.style.display = 'block';
+    document.getElementById('recover-email-display').textContent = email;
+
+    document.getElementById('btn-go-login').addEventListener('click', () => {
+      authState = 'login'; renderAuthView();
+    });
   });
 }
 
@@ -725,8 +782,9 @@ function renderDashboardShell() {
     </main>
   `;
 
-  // Cerrar Sesión
-  document.getElementById('btn-logout').addEventListener('click', () => {
+  // Cerrar Sesión (también en el servidor)
+  document.getElementById('btn-logout').addEventListener('click', async () => {
+    await supabase.auth.signOut();
     localStorage.removeItem(SESSION_KEY);
     currentSession = null;
     currentTab = 'rates';
