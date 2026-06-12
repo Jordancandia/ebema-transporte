@@ -295,6 +295,8 @@ export function renderTransportsView(container) {
       direccion: document.getElementById('t-direccion').value,
       telefono: document.getElementById('t-telefono').value,
       email: document.getElementById('t-email').value,
+      // El correo de contacto enlaza el camión con la cuenta del proveedor (Portal Proveedores)
+      ownerEmail: document.getElementById('t-email').value.trim().toLowerCase(),
       activo: editingTransportId ? db.transports.find(t => t.id === editingTransportId).activo : true
     };
 
@@ -308,7 +310,8 @@ export function renderTransportsView(container) {
           capacidad: transportData.capacidad,
           direccion: transportData.direccion,
           telefono: transportData.telefono,
-          email: transportData.email
+          email: transportData.email,
+          ownerEmail: transportData.ownerEmail
         };
         saveDatabase(db);
         showAlert('Transportista actualizado correctamente');

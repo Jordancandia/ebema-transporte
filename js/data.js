@@ -12,7 +12,8 @@ const TABLE_MAP = [
   { local: 'truckTypes',       table: 'truck_types',       pk: 'type' },
   { local: 'transports',       table: 'transports',        pk: 'id' },
   { local: 'quotesHistory',    table: 'quotes_history',    pk: 'id' },
-  { local: 'users',            table: 'app_users',         pk: 'email' }
+  { local: 'users',            table: 'app_users',         pk: 'email' },
+  { local: 'providers',        table: 'providers',         pk: 'email' }
 ];
 
 let memoryDb = null;
@@ -312,6 +313,12 @@ export function getDatabase() {
   // Migración: Asegurar que existe la tabla de usuarios (Roles y Perfiles)
   if (!parsed.users) {
     parsed.users = defaultData.users;
+    migrado = true;
+  }
+
+  // Migración: Asegurar que existe la colección de proveedores
+  if (!parsed.providers) {
+    parsed.providers = [];
     migrado = true;
   }
 

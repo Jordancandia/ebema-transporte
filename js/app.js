@@ -5,7 +5,7 @@ import { renderRoutesView } from './routes.js';
 import { renderLogisticsView } from './logistics.js';
 import { renderRatesView } from './rates.js';
 import { renderRolesView } from './roles.js';
-import { showAlert } from './utils.js';
+import { showAlert, formatRut, validateRut } from './utils.js';
 
 const SESSION_KEY = 'ebema_user_session';
 let currentSession = null;
@@ -31,23 +31,46 @@ async function checkSession() {
       return;
     }
     const email = session.user.email.toLowerCase();
+    const meta = session.user.user_metadata || {};
 
-    // Refuerzo de dominio: solo cuentas corporativas (aplica también a Google)
+    // ===== RAMA PROVEEDOR DE SERVICIO (correo externo) =====
     if (!email.endsWith('@ebema.cl')) {
-      await supabase.auth.signOut();
-      currentSession = null;
-      localStorage.removeItem(SESSION_KEY);
-      showAlert('Acceso restringido a cuentas corporativas @ebema.cl', 'error');
+      await initDatabase(); // RLS solo le entrega SUS datos
+      // Asegurar que existe su perfil de proveedor (creado desde los datos del registro)
+      let { data: provider } = await supabase.from('providers').select('*').eq('email', email).maybeSingle();
+      if (!provider) {
+        const newProvider = {
+          email,
+          razonSocial: meta.razonSocial || meta.full_name || email.split('@')[0],
+          rut: meta.rut || '',
+          telefono: meta.telefono || '',
+          representante: meta.representante || '',
+          estado: 'pendiente'
+        };
+        const { error: insErr } = await supabase.from('providers').insert(newProvider);
+        if (insErr) {
+          console.error('No se pudo crear el perfil de proveedor:', insErr.message);
+          await supabase.auth.signOut();
+          currentSession = null;
+          localStorage.removeItem(SESSION_KEY);
+          showAlert('No se pudo activar su cuenta de proveedor. Contacte a EBEMA.', 'error');
+          return;
+        }
+        provider = newProvider;
+      }
+      currentSession = { email, name: provider.razonSocial, role: 'proveedor', tipo: 'proveedor' };
+      localStorage.setItem(SESSION_KEY, JSON.stringify(currentSession));
       return;
     }
 
+    // ===== RAMA FUNCIONARIO EBEMA =====
     await initDatabase();
     const db = getDatabase();
     let u = (db.users || []).find(x => x.email === email);
 
     // Primer ingreso (ej. vía Google): crear el perfil automáticamente
     if (!u) {
-      const googleName = session.user.user_metadata && (session.user.user_metadata.full_name || session.user.user_metadata.name);
+      const googleName = meta.full_name || meta.name;
       u = {
         email,
         name: googleName || email.split('@')[0].toUpperCase(),
@@ -68,7 +91,7 @@ async function checkSession() {
       return;
     }
 
-    currentSession = { email, name: u.name, role: u.role };
+    currentSession = { email, name: u.name, role: u.role, tipo: 'funcionario' };
     localStorage.setItem(SESSION_KEY, JSON.stringify(currentSession));
   } catch (err) {
     console.error('Error verificando sesión:', err);
@@ -84,9 +107,22 @@ window.addEventListener('db_sync_error', () => {
 function renderApp() {
   if (!currentSession) {
     renderAuthView();
+  } else if (currentSession.tipo === 'proveedor') {
+    import('./provider-portal.js').then(m => m.renderProviderShell(currentSession, handleLogout));
   } else {
     renderDashboardShell();
   }
+}
+
+// Cierre de sesión compartido (dashboard y portal de proveedores)
+async function handleLogout() {
+  await supabase.auth.signOut();
+  localStorage.removeItem(SESSION_KEY);
+  currentSession = null;
+  currentTab = 'rates';
+  authState = 'login';
+  showAlert('Sesión finalizada.');
+  renderApp();
 }
 
 // ==========================================================================
@@ -116,28 +152,27 @@ function renderLoginView() {
 
         <!-- Logo Superior -->
         <div style="position:relative;z-index:2">
-          <div style="display:inline-flex;align-items:center;gap:12px;margin-bottom:48px">
-            <div style="width:48px;height:48px;background:rgba(255,255,255,0.15);border:1px solid rgba(255,255,255,0.2);border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:900;color:white;backdrop-filter:blur(4px)">E</div>
+          <div style="display:inline-flex;align-items:center;gap:16px;margin-bottom:40px">
+            <div style="width:72px;height:72px;background:white;border-radius:16px;display:flex;align-items:center;justify-content:center;padding:8px;box-shadow:0 4px 14px rgba(0,0,0,0.25)">
+              <img src="https://www.ebema.cl/wp-content/uploads/2023/03/cropped-cropped-Ebema-Logo-Ebema-Removebg-1-270x270.png" alt="Logo EBEMA" style="width:100%;height:100%;object-fit:contain" />
+            </div>
             <div>
-              <div style="color:white;font-weight:800;font-size:18px;letter-spacing:-0.01em;line-height:1.1">SIT EBEMA</div>
-              <div style="color:rgba(255,255,255,0.6);font-size:11px;letter-spacing:0.08em;text-transform:uppercase">Sistema Integral de Tarifas</div>
+              <div style="color:white;font-weight:900;font-size:34px;letter-spacing:-0.01em;line-height:1.05">SIT EBEMA</div>
+              <div style="color:rgba(255,255,255,0.65);font-size:12px;letter-spacing:0.1em;text-transform:uppercase;margin-top:4px">Sistema Integral de Tarifas</div>
             </div>
           </div>
 
-          <h2 style="color:white;font-size:32px;font-weight:800;line-height:1.2;letter-spacing:-0.02em;margin-bottom:16px">Gestión logística<br/>inteligente</h2>
-          <p style="color:rgba(255,255,255,0.72);font-size:15px;line-height:1.6;max-width:300px">Plataforma centralizada para cotización de tarifas, administración de rutas y control de transportes.</p>
+          <h2 style="color:white;font-size:30px;font-weight:800;line-height:1.25;letter-spacing:-0.01em;margin-bottom:14px;text-transform:uppercase">Gestión Logística<br/>de Transporte</h2>
+          <p style="color:rgba(255,255,255,0.72);font-size:15px;line-height:1.6;max-width:320px">Plataforma centralizada para cotización de tarifas, administración de rutas y control de transportes.</p>
         </div>
 
-        <!-- Stats decorativos -->
+        <!-- Foto camión con materiales de construcción -->
         <div style="position:relative;z-index:2">
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:32px">
-            <div style="background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.12);border-radius:10px;padding:16px;backdrop-filter:blur(4px)">
-              <div style="color:white;font-size:24px;font-weight:800;line-height:1">3+</div>
-              <div style="color:rgba(255,255,255,0.65);font-size:11px;margin-top:4px">Centros Logísticos</div>
-            </div>
-            <div style="background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.12);border-radius:10px;padding:16px;backdrop-filter:blur(4px)">
-              <div style="color:white;font-size:24px;font-weight:800;line-height:1">5+</div>
-              <div style="color:rgba(255,255,255,0.65);font-size:11px;margin-top:4px">Rutas Activas</div>
+          <div style="border-radius:14px;overflow:hidden;border:1px solid rgba(255,255,255,0.25);box-shadow:0 10px 30px rgba(0,0,0,0.3);margin-bottom:20px">
+            <img src="https://images.unsplash.com/photo-1601584115197-04ecc0da31d7?auto=format&fit=crop&w=900&q=70" alt="Camión de transporte de materiales de construcción" style="width:100%;height:200px;object-fit:cover;display:block" />
+            <div style="background:rgba(0,0,0,0.35);backdrop-filter:blur(6px);padding:10px 16px;display:flex;align-items:center;gap:8px;position:absolute;bottom:0;left:0;right:0">
+              <span class="material-symbols-outlined" style="font-size:16px;color:white">local_shipping</span>
+              <span style="color:white;font-size:12px;font-weight:600">Flota de transporte de materiales de construcción EBEMA</span>
             </div>
           </div>
           <p style="color:rgba(255,255,255,0.4);font-size:11px">© 2026 EBEMA Chile — Acceso restringido</p>
@@ -149,13 +184,25 @@ function renderLoginView() {
         <div style="width:100%;max-width:420px;animation:slideUp 0.4s ease-out">
 
           <!-- Header del formulario -->
-          <div style="margin-bottom:36px">
-            <div style="display:flex;align-items:center;gap:10px;margin-bottom:24px">
-              <div style="width:40px;height:40px;background:#b5000b;border-radius:10px;display:flex;align-items:center;justify-content:center;color:white;font-weight:900;font-size:18px">E</div>
-              <span style="color:#b5000b;font-weight:800;font-size:15px;letter-spacing:-0.01em">SIT EBEMA</span>
+          <div style="margin-bottom:24px">
+            <div style="display:flex;align-items:center;gap:12px;margin-bottom:22px">
+              <img src="https://www.ebema.cl/wp-content/uploads/2023/03/cropped-cropped-Ebema-Logo-Ebema-Removebg-1-270x270.png" alt="Logo EBEMA" style="width:52px;height:52px;object-fit:contain" />
+              <span style="color:#b5000b;font-weight:900;font-size:26px;letter-spacing:-0.01em">SIT EBEMA</span>
             </div>
             <h1 style="font-size:28px;font-weight:800;color:#191c1d;letter-spacing:-0.02em;line-height:1.2;margin-bottom:6px">Iniciar Sesión</h1>
-            <p style="color:#5c5f61;font-size:14px">Acceda con su correo corporativo <strong>@ebema.cl</strong></p>
+            <p style="color:#5c5f61;font-size:14px">Seleccione su tipo de acceso a la plataforma</p>
+          </div>
+
+          <!-- Pestañas de tipo de acceso -->
+          <div style="display:flex;background:#edeeef;border-radius:10px;padding:4px;margin-bottom:24px">
+            <button type="button" id="tab-funcionario" style="flex:1;padding:10px 8px;border:none;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;background:white;color:#b5000b;box-shadow:0 1px 4px rgba(0,0,0,0.12);display:flex;align-items:center;justify-content:center;gap:6px;transition:all 0.2s">
+              <span class="material-symbols-outlined" style="font-size:17px">badge</span>
+              Funcionarios EBEMA
+            </button>
+            <button type="button" id="tab-proveedor" style="flex:1;padding:10px 8px;border:none;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;background:transparent;color:#5c5f61;display:flex;align-items:center;justify-content:center;gap:6px;transition:all 0.2s">
+              <span class="material-symbols-outlined" style="font-size:17px">local_shipping</span>
+              Proveedores de Servicio
+            </button>
           </div>
 
           <!-- Alerta de error -->
@@ -167,7 +214,7 @@ function renderLoginView() {
           <!-- Formulario -->
           <form id="login-form" style="display:flex;flex-direction:column;gap:18px">
             <div>
-              <label for="login-email" style="display:block;font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#5c5f61;margin-bottom:6px">Correo Corporativo</label>
+              <label for="login-email" id="login-email-label" style="display:block;font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#5c5f61;margin-bottom:6px">Correo Corporativo</label>
               <div style="position:relative">
                 <span class="material-symbols-outlined" style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:#5c5f61;font-size:18px;pointer-events:none">mail</span>
                 <input
@@ -218,6 +265,7 @@ function renderLoginView() {
             </button>
           </form>
 
+          <div id="google-section">
           <!-- Separador -->
           <div style="display:flex;align-items:center;gap:12px;margin-top:22px">
             <div style="flex:1;height:1px;background:#e1e3e4"></div>
@@ -237,10 +285,11 @@ function renderLoginView() {
             Continuar con Google
           </button>
           <p style="font-size:11px;color:#5c5f61;text-align:center;margin-top:8px">Solo cuentas corporativas @ebema.cl</p>
+          </div>
 
           <!-- Footer -->
           <div style="margin-top:24px;padding-top:20px;border-top:1px solid #e9bcb6;text-align:center">
-            <p style="font-size:13px;color:#5c5f61">¿No tiene acceso? <button id="link-go-register" style="color:#b5000b;background:none;border:none;cursor:pointer;font-weight:700;font-size:13px" onmouseover="this.style.textDecoration='underline'" onmouseout="this.style.textDecoration='none'">Solicitar cuenta corporativa</button></p>
+            <p style="font-size:13px;color:#5c5f61">¿Es proveedor y no tiene cuenta? <button id="link-go-register" style="color:#b5000b;background:none;border:none;cursor:pointer;font-weight:700;font-size:13px" onmouseover="this.style.textDecoration='underline'" onmouseout="this.style.textDecoration='none'">Regístrese como Proveedor de Servicio</button></p>
           </div>
         </div>
       </div>
@@ -253,6 +302,41 @@ function renderLoginView() {
       }
     </style>
   `;
+
+  // Pestañas: Funcionarios EBEMA / Proveedores de Servicio
+  let loginType = 'funcionario';
+  const tabFunc = document.getElementById('tab-funcionario');
+  const tabProv = document.getElementById('tab-proveedor');
+  const googleSection = document.getElementById('google-section');
+  const emailLabel = document.getElementById('login-email-label');
+  const emailInput = document.getElementById('login-email');
+
+  function setLoginTab(tipo) {
+    loginType = tipo;
+    const activeStyle = (btn) => {
+      btn.style.background = 'white';
+      btn.style.color = '#b5000b';
+      btn.style.boxShadow = '0 1px 4px rgba(0,0,0,0.12)';
+    };
+    const inactiveStyle = (btn) => {
+      btn.style.background = 'transparent';
+      btn.style.color = '#5c5f61';
+      btn.style.boxShadow = 'none';
+    };
+    if (tipo === 'funcionario') {
+      activeStyle(tabFunc); inactiveStyle(tabProv);
+      googleSection.style.display = 'block';
+      emailLabel.textContent = 'Correo Corporativo';
+      emailInput.placeholder = 'usuario@ebema.cl';
+    } else {
+      activeStyle(tabProv); inactiveStyle(tabFunc);
+      googleSection.style.display = 'none';
+      emailLabel.textContent = 'Correo del Proveedor';
+      emailInput.placeholder = 'contacto@suempresa.cl';
+    }
+  }
+  tabFunc.addEventListener('click', () => setLoginTab('funcionario'));
+  tabProv.addEventListener('click', () => setLoginTab('proveedor'));
 
   // Toggle ver/ocultar contraseña
   document.getElementById('toggle-login-pass').addEventListener('click', () => {
@@ -315,8 +399,11 @@ function renderLoginView() {
       btn.disabled = false;
     };
 
-    if (!email.endsWith('@ebema.cl')) {
+    if (loginType === 'funcionario' && !email.endsWith('@ebema.cl')) {
       return showLoginError('Acceso restringido. Utilice su correo corporativo @ebema.cl');
+    }
+    if (loginType === 'proveedor' && email.endsWith('@ebema.cl')) {
+      return showLoginError('Los funcionarios EBEMA deben usar la pestaña "Funcionarios EBEMA".');
     }
 
     // Autenticación real contra Supabase Auth
@@ -328,33 +415,12 @@ function renderLoginView() {
       return showLoginError('No se pudo iniciar sesión: ' + error.message);
     }
 
-    // Cargar base de datos compartida y perfil del usuario
-    await initDatabase();
-    const db = getDatabase();
-    let registeredUser = (db.users || []).find(u => u.email === email);
-
-    if (registeredUser && registeredUser.activo === false) {
-      await supabase.auth.signOut();
-      return showLoginError('Su cuenta corporativa ha sido inhabilitada por el administrador.');
+    // Resolver el perfil según tipo de cuenta (funcionario o proveedor)
+    await checkSession();
+    if (!currentSession) {
+      return showLoginError('No se pudo cargar su perfil. Intente nuevamente.');
     }
-
-    // Primer ingreso: crear el perfil en la tabla de usuarios
-    if (!registeredUser) {
-      registeredUser = {
-        email,
-        name: email.split('@')[0].toUpperCase(),
-        role: 'operador',
-        activo: true,
-        lastAccess: new Date().toLocaleDateString('es-CL')
-      };
-      db.users.push(registeredUser);
-      saveDatabase(db);
-    }
-
-    const userSession = { email, name: registeredUser.name, role: registeredUser.role };
-    localStorage.setItem(SESSION_KEY, JSON.stringify(userSession));
-    currentSession = userSession;
-    showAlert(`Bienvenido, ${userSession.name}`);
+    showAlert(`Bienvenido, ${currentSession.name}`);
     renderApp();
   });
 }
@@ -378,8 +444,8 @@ function renderRegisterView() {
             </div>
           </div>
 
-          <h2 style="color:white;font-size:32px;font-weight:800;line-height:1.2;letter-spacing:-0.02em;margin-bottom:16px">Únase al<br/>sistema EBEMA</h2>
-          <p style="color:rgba(255,255,255,0.72);font-size:15px;line-height:1.6;max-width:300px">Cree su cuenta corporativa para acceder a cotizaciones, rutas y gestión logística en tiempo real.</p>
+          <h2 style="color:white;font-size:32px;font-weight:800;line-height:1.2;letter-spacing:-0.02em;margin-bottom:16px">Regístrese como<br/>Proveedor de Servicio</h2>
+          <p style="color:rgba(255,255,255,0.72);font-size:15px;line-height:1.6;max-width:300px">Cree la cuenta de su empresa de transportes para gestionar la documentación de su flota con EBEMA.</p>
         </div>
 
         <!-- Pasos del proceso -->
@@ -413,8 +479,8 @@ function renderRegisterView() {
               <span class="material-symbols-outlined" style="font-size:16px">arrow_back</span>
               Volver al Login
             </button>
-            <h1 style="font-size:26px;font-weight:800;color:#191c1d;letter-spacing:-0.02em;line-height:1.2;margin-bottom:6px">Crear Cuenta Corporativa</h1>
-            <p style="color:#5c5f61;font-size:14px">Complete el formulario con sus datos de EBEMA Chile.</p>
+            <h1 style="font-size:26px;font-weight:800;color:#191c1d;letter-spacing:-0.02em;line-height:1.2;margin-bottom:6px">Regístrate como Proveedor de Servicio</h1>
+            <p style="color:#5c5f61;font-size:14px">Complete los datos de su empresa de transportes.</p>
           </div>
 
           <!-- Alerta de error -->
@@ -425,12 +491,45 @@ function renderRegisterView() {
 
           <!-- Formulario -->
           <form id="register-form" style="display:flex;flex-direction:column;gap:16px">
-            <!-- Nombre -->
+            <!-- Razón Social -->
             <div>
-              <label style="display:block;font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#5c5f61;margin-bottom:6px">Nombre Completo</label>
+              <label style="display:block;font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#5c5f61;margin-bottom:6px">Razón Social</label>
+              <div style="position:relative">
+                <span class="material-symbols-outlined" style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:#5c5f61;font-size:18px;pointer-events:none">business</span>
+                <input type="text" id="reg-razonsocial" placeholder="Ej. Transportes del Sur Ltda." required
+                  style="width:100%;padding:12px 12px 12px 40px;border:1.5px solid #e1e3e4;border-radius:8px;font-size:14px;background:white;color:#191c1d;outline:none;transition:border-color 0.2s;box-sizing:border-box"
+                  onfocus="this.style.borderColor='#b5000b'" onblur="this.style.borderColor='#e1e3e4'" />
+              </div>
+            </div>
+
+            <!-- RUT y Teléfono -->
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+              <div>
+                <label style="display:block;font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#5c5f61;margin-bottom:6px">RUT Empresa</label>
+                <div style="position:relative">
+                  <span class="material-symbols-outlined" style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:#5c5f61;font-size:18px;pointer-events:none">pin</span>
+                  <input type="text" id="reg-rut" placeholder="76.123.456-7" required
+                    style="width:100%;padding:12px 12px 12px 40px;border:1.5px solid #e1e3e4;border-radius:8px;font-size:14px;background:white;color:#191c1d;outline:none;transition:border-color 0.2s;box-sizing:border-box"
+                    onfocus="this.style.borderColor='#b5000b'" onblur="this.style.borderColor='#e1e3e4'" />
+                </div>
+              </div>
+              <div>
+                <label style="display:block;font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#5c5f61;margin-bottom:6px">Teléfono</label>
+                <div style="position:relative">
+                  <span class="material-symbols-outlined" style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:#5c5f61;font-size:18px;pointer-events:none">call</span>
+                  <input type="tel" id="reg-telefono" placeholder="+56 9 1234 5678" required
+                    style="width:100%;padding:12px 12px 12px 40px;border:1.5px solid #e1e3e4;border-radius:8px;font-size:14px;background:white;color:#191c1d;outline:none;transition:border-color 0.2s;box-sizing:border-box"
+                    onfocus="this.style.borderColor='#b5000b'" onblur="this.style.borderColor='#e1e3e4'" />
+                </div>
+              </div>
+            </div>
+
+            <!-- Representante Legal -->
+            <div>
+              <label style="display:block;font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#5c5f61;margin-bottom:6px">Nombre Representante Legal</label>
               <div style="position:relative">
                 <span class="material-symbols-outlined" style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:#5c5f61;font-size:18px;pointer-events:none">person</span>
-                <input type="text" id="reg-name" placeholder="Ej. Juan Pérez Soto" required
+                <input type="text" id="reg-representante" placeholder="Ej. Juan Pérez Soto" required
                   style="width:100%;padding:12px 12px 12px 40px;border:1.5px solid #e1e3e4;border-radius:8px;font-size:14px;background:white;color:#191c1d;outline:none;transition:border-color 0.2s;box-sizing:border-box"
                   onfocus="this.style.borderColor='#b5000b'" onblur="this.style.borderColor='#e1e3e4'" />
               </div>
@@ -438,10 +537,10 @@ function renderRegisterView() {
 
             <!-- Email -->
             <div>
-              <label style="display:block;font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#5c5f61;margin-bottom:6px">Correo Corporativo</label>
+              <label style="display:block;font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#5c5f61;margin-bottom:6px">Correo de Contacto</label>
               <div style="position:relative">
                 <span class="material-symbols-outlined" style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:#5c5f61;font-size:18px;pointer-events:none">mail</span>
-                <input type="email" id="reg-email" placeholder="usuario@ebema.cl" required
+                <input type="email" id="reg-email" placeholder="contacto@suempresa.cl" required
                   style="width:100%;padding:12px 12px 12px 40px;border:1.5px solid #e1e3e4;border-radius:8px;font-size:14px;background:white;color:#191c1d;outline:none;transition:border-color 0.2s;box-sizing:border-box"
                   onfocus="this.style.borderColor='#b5000b'" onblur="this.style.borderColor='#e1e3e4'" />
               </div>
@@ -488,7 +587,7 @@ function renderRegisterView() {
               onmousedown="this.style.transform='scale(0.98)'" onmouseup="this.style.transform='scale(1)'"
             >
               <span class="material-symbols-outlined" style="font-size:18px">person_add</span>
-              Crear Cuenta
+              Crear Cuenta de Proveedor
             </button>
           </form>
 
@@ -541,9 +640,17 @@ function renderRegisterView() {
   const regErrorAlert = document.getElementById('register-error-alert');
   const regErrorText = document.getElementById('register-error-text');
 
+  // Formato automático del RUT
+  document.getElementById('reg-rut').addEventListener('blur', (e) => {
+    e.target.value = formatRut(e.target.value);
+  });
+
   document.getElementById('register-form').addEventListener('submit', async (e) => {
     e.preventDefault();
-    const name = document.getElementById('reg-name').value.trim();
+    const razonSocial = document.getElementById('reg-razonsocial').value.trim();
+    const rut = formatRut(document.getElementById('reg-rut').value.trim());
+    const telefono = document.getElementById('reg-telefono').value.trim();
+    const representante = document.getElementById('reg-representante').value.trim();
     const email = document.getElementById('reg-email').value.trim().toLowerCase();
     const pass = document.getElementById('reg-password').value;
     const confirmPass = document.getElementById('reg-confirm').value;
@@ -552,22 +659,25 @@ function renderRegisterView() {
     const showErr = (msg) => {
       regErrorText.innerText = msg;
       regErrorAlert.style.display = 'flex';
-      btn.innerHTML = '<span class="material-symbols-outlined" style="font-size:18px">person_add</span> Crear Cuenta';
+      btn.innerHTML = '<span class="material-symbols-outlined" style="font-size:18px">person_add</span> Crear Cuenta de Proveedor';
       btn.disabled = false;
     };
 
-    if (!email.endsWith('@ebema.cl')) return showErr('El correo debe ser de dominio corporativo @ebema.cl');
+    if (email.endsWith('@ebema.cl')) return showErr('Este registro es solo para proveedores externos. Los funcionarios EBEMA ingresan con Google.');
+    if (!validateRut(rut)) return showErr('El RUT de la empresa no es válido');
     if (pass.length < 6) return showErr('La contraseña debe tener mínimo 6 caracteres');
     if (pass !== confirmPass) return showErr('Las contraseñas no coinciden');
 
     btn.innerHTML = '<div style="width:18px;height:18px;border:2px solid rgba(255,255,255,0.3);border-top-color:white;border-radius:50%;animation:spin 0.7s linear infinite"></div> Creando cuenta...';
     btn.disabled = true;
 
-    // Registro real en Supabase Auth (requiere confirmación por correo)
+    // Registro real en Supabase Auth (requiere confirmación por correo).
+    // Los datos de la empresa viajan en los metadatos y se convierten en
+    // el perfil de proveedor en el primer inicio de sesión.
     const { error } = await supabase.auth.signUp({
       email,
       password: pass,
-      options: { data: { name } }
+      options: { data: { tipo: 'proveedor', razonSocial, rut, telefono, representante } }
     });
 
     if (error) {
@@ -851,15 +961,7 @@ function renderDashboardShell() {
   `;
 
   // Cerrar Sesión (también en el servidor)
-  document.getElementById('btn-logout').addEventListener('click', async () => {
-    await supabase.auth.signOut();
-    localStorage.removeItem(SESSION_KEY);
-    currentSession = null;
-    currentTab = 'rates';
-    authState = 'login';
-    showAlert('Sesión finalizada.');
-    renderApp();
-  });
+  document.getElementById('btn-logout').addEventListener('click', handleLogout);
 
   // Enrutamiento de pestañas del Sidebar
   document.querySelectorAll('.sidebar-item').forEach(item => {
