@@ -140,6 +140,38 @@ export function showAlert(message, type = 'success') {
   }, 3000);
 }
 
+// 5b. Construir un CSV (separado por comas) a partir de encabezados y filas (array de arrays)
+export function toCSV(headers, rows) {
+  const escape = (v) => {
+    const s = (v === null || v === undefined) ? '' : String(v);
+    return /[",\n;]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const lines = [headers.map(escape).join(',')];
+  rows.forEach(r => lines.push(r.map(escape).join(',')));
+  return lines.join('\n');
+}
+
+// 5c. Descargar un string como archivo (CSV, texto, etc.)
+export function downloadFile(filename, content, mime = 'text/csv;charset=utf-8;') {
+  const blob = new Blob(['﻿' + content], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+// 5d. Formatear fecha DD-MM-YYYY (requerido por exportaciones CSV ERP)
+export function formatDateDDMMYYYY(date = new Date()) {
+  const d = String(date.getDate()).padStart(2, '0');
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const y = date.getFullYear();
+  return `${d}-${m}-${y}`;
+}
+
 // 6. Geolocalizar una dirección mediante OpenStreetMap Nominatim (Gratuito, sin API Keys)
 export async function geocodeAddress(address) {
   try {

@@ -13,8 +13,79 @@ const TABLE_MAP = [
   { local: 'transports',       table: 'transports',        pk: 'id' },
   { local: 'quotesHistory',    table: 'quotes_history',    pk: 'id' },
   { local: 'users',            table: 'app_users',         pk: 'email' },
-  { local: 'providers',        table: 'providers',         pk: 'email' }
+  { local: 'providers',        table: 'providers',         pk: 'email' },
+  { local: 'tariffConfig',       table: 'tariff_config',        pk: 'id' },
+  { local: 'clientTariffConfig', table: 'client_tariff_config', pk: 'id' }
 ];
+
+// Capacidad nominal en KG a partir del nombre del tipo de camión (ej: "Camión 28 Ton" -> 28000)
+export function truckCapKg(type) {
+  const m = String(type).match(/(\d+)/);
+  return m ? Number(m[1]) * 1000 : 0;
+}
+
+// Configuración por defecto: Administrador de Tarifas Transporte (Pantalla 1)
+export function defaultTariffConfig() {
+  return {
+    // Sub-módulo 1: Peajes — [{ id, rutaId, ejes, concesionaria, plazaPeaje, valorPeaje }]
+    peajes: [],
+    // Sub-módulo 2: Combustibles — { [centroId]: { precioLitro, fecha } }
+    combustibles: {},
+    // Matriz de rendimiento estructural (km/L), por capacidad en kg
+    rendimientos: {
+      '5000':  { cargado: 7.5, vacio: 9.5 },
+      '10000': { cargado: 5.0, vacio: 7.0 },
+      '15000': { cargado: 4.2, vacio: 5.8 },
+      '28000': { cargado: 2.8, vacio: 4.0 }
+    },
+    // Mapeo fijo de ejes por capacidad (kg)
+    ejes: { '5000': 2, '10000': 2, '15000': 3, '28000': 3 },
+    // Sub-módulo 3: Seguro de carga — { [centroId]: ufMensual }
+    seguros: {},
+    // Permiso de circulación + SOAP anual — { 'centroId|capKg': { permiso, soap } }
+    permisosSoap: {},
+    // KM Mensuales Ofrecidos — { 'centroId|capKg': km }
+    kmOfrecidos: {},
+    // Sub-módulo 4: Variables generales
+    variables: {
+      valorUF: 38000,
+      fechaUF: '',
+      margenGanancia: 15,
+      neumaticos: {
+        ciclo: 50000,
+        costos: { '5000': 400000, '10000': 600000, '15000': 800000, '28000': 1200000 }
+      },
+      gps: { costoUF: 0.45 },
+      mantencion: { ciclo: 20000, costos: {} }, // { 'centroId|capKg': costo }
+      chofer: { sueldoMinimo: {}, diasHabiles: 22, comisionPct: 5 }, // sueldoMinimo: { centroId: monto }
+      factorRuta: { NORMAL: 1.00, ISLA: 1.35, EXTREMA: 1.50 },
+      costosBase: {
+        '5000':  { fijo: 30000,  kmAdicional: 46000 },
+        '10000': { fijo: 30000,  kmAdicional: 76000 },
+        '15000': { fijo: 30000,  kmAdicional: 83000 },
+        '28000': { fijo: 100000, kmAdicional: 100000 }
+      }
+    }
+  };
+}
+
+// Configuración por defecto: Administrador de Tarifas Clientes (Pantalla 2)
+export function defaultClientTariffConfig() {
+  return {
+    // Sub-módulo A: histórico 6M ingresado vía CSV
+    historico: [], // [{ centroId, rutaId, tipoCamionKg, toneladas, clientes, obras, interregional }]
+    // Sub-módulo B/C: resultados de consolidación y complejidad por ruta
+    consolidacion: {}, // { rutaId: { factorFinal, indicador, cluster } }
+    clusterColors:    { '1': '#16a34a', '2': '#f59e0b', '3': '#3b82f6', spot: '#6b7280' },
+    clusterNV:        { '1': 3.5, '2': 2.0, '3': 2.0, spot: 1.0 },
+    clusterFrecuencia:{ '1': 'Lunes a Viernes', '2': '2 a 3 días/semana', '3': '2 días/semana', spot: '48 horas' },
+    // Sub-módulo: Tarifas especiales
+    especiales: {
+      tipo0000: { tarifaPlana: 0 },
+      recargoExclusividad: {} // { centroId: { activo: false, pct: 0 } }
+    }
+  };
+}
 
 let memoryDb = null;
 
@@ -279,6 +350,16 @@ const defaultData = {
       estado: 'ASIGNADO',
       monto: 66600
     }
+  ],
+
+  // 7. Administrador de Tarifas Transporte (Pantalla 1)
+  tariffConfig: [
+    { id: 'global', data: defaultTariffConfig() }
+  ],
+
+  // 8. Administrador de Tarifas Clientes (Pantalla 2)
+  clientTariffConfig: [
+    { id: 'global', data: defaultClientTariffConfig() }
   ]
 };
 
@@ -402,11 +483,58 @@ export function getDatabase() {
     });
   }
   
+  // Migración: Administrador de Tarifas Transporte (Pantalla 1)
+  if (!parsed.tariffConfig || !parsed.tariffConfig.length) {
+    parsed.tariffConfig = [{ id: 'global', data: defaultTariffConfig() }];
+    migrado = true;
+  } else {
+    // Fusión superficial con valores por defecto para llenar claves nuevas
+    const def = defaultTariffConfig();
+    const cfg = parsed.tariffConfig[0].data || {};
+    Object.keys(def).forEach(k => {
+      if (cfg[k] === undefined) { cfg[k] = def[k]; migrado = true; }
+    });
+    if (!cfg.variables) cfg.variables = def.variables;
+    Object.keys(def.variables).forEach(k => {
+      if (cfg.variables[k] === undefined) { cfg.variables[k] = def.variables[k]; migrado = true; }
+    });
+    parsed.tariffConfig[0].data = cfg;
+  }
+
+  // Migración: Administrador de Tarifas Clientes (Pantalla 2)
+  if (!parsed.clientTariffConfig || !parsed.clientTariffConfig.length) {
+    parsed.clientTariffConfig = [{ id: 'global', data: defaultClientTariffConfig() }];
+    migrado = true;
+  } else {
+    const def = defaultClientTariffConfig();
+    const cfg = parsed.clientTariffConfig[0].data || {};
+    Object.keys(def).forEach(k => {
+      if (cfg[k] === undefined) { cfg[k] = def[k]; migrado = true; }
+    });
+    parsed.clientTariffConfig[0].data = cfg;
+  }
+
   if (migrado) {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed));
   }
-  
+
   return parsed;
+}
+
+// Atajo: obtener/guardar la configuración de Tarifas Transporte (Pantalla 1)
+export function getTariffConfig(db) {
+  if (!db.tariffConfig || !db.tariffConfig.length) {
+    db.tariffConfig = [{ id: 'global', data: defaultTariffConfig() }];
+  }
+  return db.tariffConfig[0].data;
+}
+
+// Atajo: obtener/guardar la configuración de Tarifas Clientes (Pantalla 2)
+export function getClientTariffConfig(db) {
+  if (!db.clientTariffConfig || !db.clientTariffConfig.length) {
+    db.clientTariffConfig = [{ id: 'global', data: defaultClientTariffConfig() }];
+  }
+  return db.clientTariffConfig[0].data;
 }
 
 // Obtener el nombre de un Centro Logístico a partir de su ID

@@ -1,0 +1,113 @@
+// Motor Actuarial — Administrador de Tarifas Transporte (SIT EBEMA)
+// Implementa, ruta por ruta y tipo de camión por tipo de camión, el cálculo
+// de costos definido en "PANTALLA 1: ADMINISTRADOR DE TARIFAS TRANSPORTE".
+import { truckCapKg } from './data.js';
+
+// Capacidades nominales soportadas (kg)
+export const CAP_LIST = [5000, 10000, 15000, 28000];
+
+// Devuelve la lista de tipos de camión del catálogo con su capacidad en kg
+export function truckTypesWithCap(db) {
+  return db.truckTypes.map(t => ({ ...t, capKg: truckCapKg(t.type) }));
+}
+
+// Calcula el detalle completo de costos (12 pasos del motor actuarial) para
+// una ruta + capacidad de camión (kg) determinadas.
+export function calcularCostoRuta(db, cfg, ruta, capKg) {
+  const centroId = ruta.origenId;
+  const km = Number(ruta.km) || 0;
+  const capKey = String(capKg);
+  const kmKey = `${centroId}|${capKey}`;
+
+  // --- 1. Peajes (simétrico ida/vuelta, según ejes del camión) ---
+  const ejes = cfg.ejes[capKey] || 2;
+  const peajesRuta = (cfg.peajes || []).filter(p => p.rutaId === ruta.id && Number(p.ejes) === ejes);
+  const peajeIda = peajesRuta.reduce((s, p) => s + (Number(p.valorPeaje) || 0), 0);
+  const peajeVuelta = peajeIda;
+  const item1_peajes = peajeIda + peajeVuelta;
+
+  // --- 2. Combustible (cargado ida + vacío vuelta) ---
+  const rend = cfg.rendimientos[capKey] || { cargado: 1, vacio: 1 };
+  const fuel = cfg.combustibles[centroId] || {};
+  const precioLitro = Number(fuel.precioLitro) || 0;
+  const combIda = rend.cargado > 0 ? (km / rend.cargado) * precioLitro : 0;
+  const combVuelta = rend.vacio > 0 ? (km / rend.vacio) * precioLitro : 0;
+  const item2_combustible = combIda + combVuelta;
+
+  // KM mensuales/anuales ofrecidos (denominador de prorrateos)
+  const kmMensual = Number(cfg.kmOfrecidos[kmKey]) || 0;
+  const kmAnual = kmMensual * 12;
+
+  // --- 3. SOAP por KM ---
+  const permisoSoap = cfg.permisosSoap[kmKey] || { permiso: 0, soap: 0 };
+  const item3_soapKm = kmAnual > 0 ? (Number(permisoSoap.soap || 0) / kmAnual) * km : 0;
+
+  // --- 4. Seguro de carga por KM ---
+  const ufVal = Number(cfg.variables.valorUF) || 0;
+  const seguroUFmensual = Number(cfg.seguros[centroId]) || 0;
+  const seguroCLPmensual = seguroUFmensual * ufVal;
+  const item4_seguroKm = kmMensual > 0 ? (seguroCLPmensual / kmMensual) * km : 0;
+
+  // --- 5. Mantención por KM ---
+  const costoMantencion = Number((cfg.variables.mantencion.costos || {})[kmKey]) || 0;
+  const cicloMantencion = Number(cfg.variables.mantencion.ciclo) || 20000;
+  const item5_mantKm = kmAnual > 0 ? ((kmAnual / cicloMantencion) * costoMantencion / kmAnual) * km : 0;
+
+  // --- 6. Neumáticos por KM ---
+  const costoNeumaticos = Number((cfg.variables.neumaticos.costos || {})[capKey]) || 0;
+  const cicloNeumaticos = Number(cfg.variables.neumaticos.ciclo) || 50000;
+  const item6_neumKm = kmAnual > 0 ? ((kmAnual / cicloNeumaticos) * costoNeumaticos / kmAnual) * km : 0;
+
+  // --- 7. GPS / Celular por KM (prorrateo justo) ---
+  const gpsCostoUF = Number(cfg.variables.gps.costoUF) || 0.45;
+  const item7_gpsKm = kmMensual > 0 ? (((gpsCostoUF * ufVal) / kmMensual) * km) : 0;
+
+  // --- 8. Chofer: base diaria ---
+  const sueldoMin = Number((cfg.variables.chofer.sueldoMinimo || {})[centroId]) || 0;
+  const diasHabiles = Number(cfg.variables.chofer.diasHabiles) || 22;
+  const item8_choferBaseDiario = diasHabiles > 0 ? sueldoMin / diasHabiles : 0;
+
+  // --- 9. Variable Chofer (comisión sobre costos directos del tramo de ida) ---
+  const comisionPct = Number(cfg.variables.chofer.comisionPct) || 0;
+  const baseComision = peajeIda + combIda + item3_soapKm + item4_seguroKm + item5_mantKm + item6_neumKm + item7_gpsKm;
+  const item9_varChofer = baseComision * (comisionPct / 100);
+
+  // --- 10. Costo Ruta Total (aplica Factor Ruta geográfico) ---
+  const factorRuta = (cfg.variables.factorRuta || {})[ruta.caracteristica] ?? 1;
+  const sumItems = item1_peajes + item2_combustible + item3_soapKm + item4_seguroKm +
+    item5_mantKm + item6_neumKm + item7_gpsKm + item8_choferBaseDiario + item9_varChofer;
+  const item10_costoRutaTotal = (sumItems + peajeVuelta + combVuelta) * factorRuta;
+
+  // --- 11. Costo por KM Final ---
+  const item11_costoKmFinal = km > 0 ? item10_costoRutaTotal / (km * 2) : 0;
+
+  // --- 12. ZCAP: Expectativa de pago al transportista ---
+  const item12_zcap = item11_costoKmFinal * km;
+
+  const margenPct = Number(cfg.variables.margenGanancia) || 0;
+
+  return {
+    rutaId: ruta.id, centroId, capKg, km, ejes,
+    peajeIda, peajeVuelta, item1_peajes,
+    combIda, combVuelta, item2_combustible,
+    item3_soapKm, item4_seguroKm, item5_mantKm, item6_neumKm, item7_gpsKm,
+    item8_choferBaseDiario, item9_varChofer,
+    factorRuta, item10_costoRutaTotal, item11_costoKmFinal,
+    zcap: item12_zcap,
+    zcapConMargen: item12_zcap * (1 + margenPct / 100),
+    kmMensual, kmAnual
+  };
+}
+
+// Calcula el ZCAP para TODAS las combinaciones ruta x tipo de camión activas
+export function calcularMatrizCostos(db, cfg) {
+  const rutas = db.routes.filter(r => r.activo);
+  const tipos = truckTypesWithCap(db);
+  const out = [];
+  rutas.forEach(ruta => {
+    tipos.forEach(t => {
+      out.push({ ruta, truckType: t, ...calcularCostoRuta(db, cfg, ruta, t.capKg) });
+    });
+  });
+  return out;
+}

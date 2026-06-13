@@ -5,6 +5,8 @@ import { renderRoutesView } from './routes.js';
 import { renderLogisticsView } from './logistics.js';
 import { renderRatesView } from './rates.js';
 import { renderRolesView } from './roles.js';
+import { renderTariffTransportView } from './tarifas-transporte.js';
+import { renderClientTariffView } from './tarifas-clientes.js';
 import { showAlert, formatRut, validateRut } from './utils.js';
 
 const SESSION_KEY = 'ebema_user_session';
@@ -909,6 +911,18 @@ function renderDashboardShell() {
           <span class="material-symbols-outlined">admin_panel_settings</span>
           <span class="font-body-md text-body-md">Roles y Perfiles</span>
         </a>
+
+        <!-- Administrador de Tarifas Transporte -->
+        <a class="sidebar-item flex items-center gap-md px-md py-sm text-secondary hover:text-primary hover:bg-surface-container-high transition-colors rounded-lg cursor-pointer" data-tab="tarifas-transporte" id="nav-tarifas-transporte">
+          <span class="material-symbols-outlined">calculate</span>
+          <span class="font-body-md text-body-md">Tarifas Transporte</span>
+        </a>
+
+        <!-- Administrador de Tarifas Clientes -->
+        <a class="sidebar-item flex items-center gap-md px-md py-sm text-secondary hover:text-primary hover:bg-surface-container-high transition-colors rounded-lg cursor-pointer" data-tab="tarifas-clientes" id="nav-tarifas-clientes">
+          <span class="material-symbols-outlined">request_quote</span>
+          <span class="font-body-md text-body-md">Tarifas Clientes</span>
+        </a>
       </div>
 
       <div class="mt-auto space-y-base border-t border-surface-variant pt-lg">
@@ -1012,6 +1026,14 @@ function switchTab(tabName) {
     case 'roles':
       pageTitle.textContent = 'Roles y Perfiles';
       renderRolesView(stage);
+      break;
+    case 'tarifas-transporte':
+      pageTitle.textContent = 'Administrador de Tarifas Transporte';
+      renderTariffTransportView(stage);
+      break;
+    case 'tarifas-clientes':
+      pageTitle.textContent = 'Administrador de Tarifas Clientes';
+      renderClientTariffView(stage);
       break;
   }
 }
