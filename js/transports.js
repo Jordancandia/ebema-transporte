@@ -1,5 +1,5 @@
 import { getDatabase, saveDatabase, calcEjes } from './data.js';
-import { formatRut, validateRut, generateSapCode, parseCSV, showAlert } from './utils.js';
+import { formatRut, validateRut, generateSapCode, parseCSV, showAlert, escapeHtml } from './utils.js';
 import { renderFichaTransporte } from './ficha-transporte.js';
 
 let editingTransportId = null;
@@ -457,10 +457,10 @@ export function renderTransportsView(container) {
         const tr = document.createElement('tr');
         tr.className = "border-b border-outline-variant";
         tr.innerHTML = `
-          <td class="p-sm">${razonSocial}</td>
-          <td class="p-sm font-data-mono">${rut}</td>
-          <td class="p-sm font-data-mono">${patente}</td>
-          <td class="p-sm font-bold">${capacidad} Ton</td>
+          <td class="p-sm">${escapeHtml(razonSocial)}</td>
+          <td class="p-sm font-data-mono">${escapeHtml(rut)}</td>
+          <td class="p-sm font-data-mono">${escapeHtml(patente)}</td>
+          <td class="p-sm font-bold">${escapeHtml(capacidad)} Ton</td>
           <td class="p-sm">
             <span class="inline-block px-2 py-0.5 rounded text-[10px] font-bold ${error ? 'bg-red-100 text-red-800' : 'bg-green-100 text-green-800'}">
               ${error ? error : 'Listo'}
@@ -576,13 +576,13 @@ function renderTransportsTable(transportsList) {
     const statusBg = t.activo ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800';
 
     tr.innerHTML = `
-      <td class="p-md font-bold text-primary font-data-mono">${t.codigoSap}</td>
-      <td class="p-md font-bold">${t.razonSocial}</td>
-      <td class="p-md font-data-mono">${t.rut}</td>
+      <td class="p-md font-bold text-primary font-data-mono">${escapeHtml(t.codigoSap)}</td>
+      <td class="p-md font-bold">${escapeHtml(t.razonSocial)}</td>
+      <td class="p-md font-data-mono">${escapeHtml(t.rut)}</td>
       <td class="p-md"><span class="bg-surface-container-high px-sm py-1 border border-outline-variant rounded font-data-mono text-xs">${(t.camiones || []).length} camión${(t.camiones || []).length === 1 ? '' : 'es'}</span></td>
       <td class="p-md">
-        <div class="text-xs font-bold leading-tight">${t.email}</div>
-        <div class="text-[10px] text-secondary">${t.telefono}</div>
+        <div class="text-xs font-bold leading-tight">${escapeHtml(t.email)}</div>
+        <div class="text-[10px] text-secondary">${escapeHtml(t.telefono)}</div>
       </td>
       <td class="p-md">
         <span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold ${statusBg}">

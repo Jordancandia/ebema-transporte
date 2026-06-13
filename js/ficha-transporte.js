@@ -1,5 +1,5 @@
 import { getDatabase, saveDatabase, getCentreName, calcEjes } from './data.js';
-import { formatRut, showAlert } from './utils.js';
+import { formatRut, showAlert, escapeHtml } from './utils.js';
 
 // Ficha del Transportista — SIT EBEMA
 // Estructura: EMPRESA → CAMIONES (patentes con documentación y valores) → CHOFERES.
@@ -100,7 +100,7 @@ export function renderFichaTransporte(container, transportId) {
           Volver
         </button>
         <span class="material-symbols-outlined" style="font-size:14px;color:#c5c7c9">chevron_right</span>
-        <span style="color:#191c1d;font-weight:600">${t.razonSocial}</span>
+        <span style="color:#191c1d;font-weight:600">${escapeHtml(t.razonSocial)}</span>
       </div>
 
       <div style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:16px">
@@ -125,7 +125,7 @@ export function renderFichaTransporte(container, transportId) {
           Observaciones que requieren atención
         </p>
         <div style="display:flex;flex-wrap:wrap;gap:6px">
-          ${estado.alerts.slice(0, 12).map(a => `<span style="padding:3px 10px;background:#fef3c7;border:1px solid #fbbf24;border-radius:20px;font-size:11px;color:#78350f;font-weight:600">${a}</span>`).join('')}
+          ${estado.alerts.slice(0, 12).map(a => `<span style="padding:3px 10px;background:#fef3c7;border:1px solid #fbbf24;border-radius:20px;font-size:11px;color:#78350f;font-weight:600">${escapeHtml(a)}</span>`).join('')}
           ${estado.alerts.length > 12 ? `<span style="padding:3px 10px;font-size:11px;color:#78350f">+${estado.alerts.length - 12} más...</span>` : ''}
         </div>
       </div>` : ''}
@@ -482,7 +482,7 @@ function miniField(label, cls, value) {
   return `
     <div>
       <label style="display:block;font-size:10px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#5c5f61;margin-bottom:4px">${label}</label>
-      <input type="text" class="${cls}" value="${value || ''}"
+      <input type="text" class="${cls}" value="${escapeHtml(value)}"
         style="width:100%;padding:8px 10px;border:1.5px solid #e1e3e4;border-radius:7px;font-size:13px;color:#191c1d;background:white;outline:none;box-sizing:border-box"
         onfocus="this.style.borderColor='#7b1fa2'" onblur="this.style.borderColor='#e1e3e4'" />
     </div>`;
@@ -492,7 +492,7 @@ function camionCard(c, i, choferes) {
   const docs = c.documentos || {};
   const dim = c.dimensiones || {};
   const choferOpts = (choferes || []).map(ch =>
-    `<option value="${ch.rut}" ${ch.rut === c.choferRut ? 'selected' : ''}>${ch.nombre} (${ch.rut})</option>`
+    `<option value="${escapeHtml(ch.rut)}" ${ch.rut === c.choferRut ? 'selected' : ''}>${escapeHtml(ch.nombre)} (${escapeHtml(ch.rut)})</option>`
   ).join('');
 
   return `
@@ -501,7 +501,7 @@ function camionCard(c, i, choferes) {
       <div style="padding:12px 16px;background:#f0f7f0;border-bottom:1px solid #e1e3e4;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
         <div style="display:flex;align-items:center;gap:10px">
           <span class="material-symbols-outlined" style="font-size:22px;color:#2e7d32">local_shipping</span>
-          <span style="font-size:15px;font-weight:800;color:#191c1d">Camión ${i + 1}${c.patente ? ' — ' + c.patente : ' (nuevo)'}</span>
+          <span style="font-size:15px;font-weight:800;color:#191c1d">Camión ${i + 1}${c.patente ? ' — ' + escapeHtml(c.patente) : ' (nuevo)'}</span>
         </div>
         <button type="button" class="btn-del-camion" data-camion="${c.id}" style="display:inline-flex;align-items:center;gap:4px;background:none;border:1px solid #fca5a5;border-radius:7px;padding:6px 10px;cursor:pointer;color:#991b1b;font-size:11px;font-weight:700">
           <span class="material-symbols-outlined" style="font-size:15px">delete</span> Eliminar
@@ -581,7 +581,7 @@ function camionCard(c, i, choferes) {
                   <button type="button" class="btn-upload-doc" data-input="file-${c.id}-${d.key}"
                     style="display:inline-flex;align-items:center;gap:5px;padding:7px 10px;background:white;border:1.5px dashed #c5c7c9;border-radius:6px;font-size:11px;font-weight:600;color:#5c5f61;cursor:pointer;width:100%;justify-content:center">
                     <span class="material-symbols-outlined" style="font-size:14px">upload_file</span>
-                    <span id="lbl-${c.id}-${d.key}">${doc.archivo ? '✓ ' + doc.archivo : 'Subir archivo'}</span>
+                    <span id="lbl-${c.id}-${d.key}">${doc.archivo ? '✓ ' + escapeHtml(doc.archivo) : 'Subir archivo'}</span>
                   </button>
                 </div>
               </div>`;
@@ -602,7 +602,7 @@ function camField(label, cls, value, type = 'text') {
   return `
     <div>
       <label style="display:block;font-size:10px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#5c5f61;margin-bottom:4px">${label}</label>
-      <input type="${type}" class="${cls}" value="${value !== undefined && value !== null ? value : ''}" ${type === 'number' ? 'step="0.1"' : ''}
+      <input type="${type}" class="${cls}" value="${escapeHtml(value !== undefined && value !== null ? value : '')}" ${type === 'number' ? 'step="0.1"' : ''}
         style="width:100%;padding:8px 10px;border:1.5px solid #e1e3e4;border-radius:7px;font-size:13px;color:#191c1d;background:white;outline:none;box-sizing:border-box"
         onfocus="this.style.borderColor='#2e7d32'" onblur="this.style.borderColor='#e1e3e4'" />
     </div>`;
@@ -614,7 +614,7 @@ function fieldGroup(label, id, value, type = 'text', editable = true, colSpan = 
   return `
     <div style="grid-column:span ${colSpan}">
       <label for="${id}" style="display:block;font-size:10px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#5c5f61;margin-bottom:5px">${label}${editable ? '' : ' <span style="color:#b5000b;font-size:9px">(bloqueado)</span>'}</label>
-      <input type="${type}" id="${id}" value="${val}" ${locked ? 'readonly' : ''}
+      <input type="${type}" id="${id}" value="${escapeHtml(val)}" ${locked ? 'readonly' : ''}
         style="width:100%;padding:9px 12px;border:1.5px solid ${locked ? '#e9bcb6' : '#e1e3e4'};border-radius:7px;font-size:13px;color:${locked ? '#5c5f61' : '#191c1d'};background:${locked ? '#fdf5f4' : 'white'};outline:none;box-sizing:border-box;cursor:${locked ? 'not-allowed' : 'text'}"
         ${locked ? '' : `onfocus="this.style.borderColor='#b5000b'" onblur="this.style.borderColor='#e1e3e4'"`} />
     </div>`;

@@ -15,11 +15,11 @@ Se revisó el código completo, el esquema de base de datos y las 24 políticas 
 | 3 | Proveedor externo podía auto-aprobarse (`estado`) o falsificar RUT/razón social | Alto (integridad) | ✅ Corregido (trigger) |
 | 4 | Transportista podía reasignar `ownerEmail`, código SAP, `activo`, `centrosServicio` de su propio camión | Alto (integridad) | ✅ Corregido (trigger) |
 | 5 | Funciones `SECURITY DEFINER` invocables por `anon` vía RPC | Bajo | ✅ Corregido (revoke) |
-| 6 | XSS: datos de proveedores/camiones sin escapar en `innerHTML` | Alto (XSS) | ⚠️ Parcial — corregido en portal de proveedores, pendiente en otras vistas |
-| 7 | Registro de proveedor sin validación de `rut`/longitudes (`user_metadata` libre) | Medio | 📋 Recomendación |
-| 8 | Sync destructivo (`syncToSupabase`) falla silenciosamente para roles no-OWNER | **Crítico (funcional)** | 📋 Recomendación — requiere refactor |
-| 9 | `quotes_history` sin columna de centro/usuario → no se puede acotar por RLS | Medio | 📋 Recomendación |
-| 10 | Protección de contraseñas filtradas (HaveIBeenPwned) deshabilitada | Bajo | 📋 Acción manual en Dashboard |
+| 6 | XSS: datos de proveedores/camiones sin escapar en `innerHTML` | Alto (XSS) | ✅ Corregido (portal + `transports.js`, `ficha-transporte.js`, `roles.js`) |
+| 7 | Registro de proveedor sin validación de `rut`/longitudes (`user_metadata` libre) | Medio | ✅ Corregido (`app.js`) |
+| 8 | Sync destructivo (`syncToSupabase`) falla silenciosamente para roles no-OWNER | **Crítico (funcional)** | ✅ Corregido (try/catch por tabla) |
+| 9 | `quotes_history` sin columna de centro/usuario → no se puede acotar por RLS | Medio | ✅ Corregido (columnas + RLS) |
+| 10 | Protección de contraseñas filtradas (HaveIBeenPwned) deshabilitada | Bajo | 📋 Acción manual en Dashboard (ver 5.4) |
 
 ---
 
@@ -67,7 +67,7 @@ Lo mismo aplicaba en `UPDATE`: el trigger `prevent_role_escalation` permitía a 
 - Nueva función `escapeHtml()` en `js/utils.js`.
 - Aplicada a todas las interpolaciones de datos dinámicos en `js/provider-portal.js` (cabecera de sesión, formulario de perfil, listado "Mis Camiones").
 
-**Pendiente:** el mismo patrón (interpolación sin escape de `razonSocial`, `rut`, `representante`, datos de camiones, etc.) existe muy probablemente en las vistas internas que listan proveedores y transportes (p. ej. `providers.js`, `transports.js`, `ficha-transporte.js`, vista CSV de carga masiva). Recomendamos aplicar `escapeHtml()` de forma sistemática a **todo** campo que provenga de `db.providers`, `db.transports` o de `user_metadata`, en una segunda pasada — es un cambio mecánico pero extenso (decenas de plantillas).
+**Actualización 13-06-2026 (2ª pasada):** se aplicó `escapeHtml()` de forma sistemática al resto de las vistas internas: `js/transports.js` (tabla de transportes y previsualización de CSV de carga masiva), `js/ficha-transporte.js` (datos del transportista, camiones, choferes, alertas) y `js/roles.js` (selector de transporte). Cubre `razonSocial`, `rut`, `patente`, `telefono`, `email`, `codigoSap`, nombres de choferes y archivos adjuntos.
 
 ---
 
@@ -81,7 +81,7 @@ Las 11 tablas tienen RLS habilitado. Tras los cambios de hoy:
 - **`transports_camiones` / `transports_choferes`**: scoped por `id_transporte = app_transportista()`, OWNER/ADMIN_DEPOSITO/AGENTE_COMERCIAL ven todo.
 - **`logistics_centres`, `routes`**: scoped por centro para ADMIN_DEPOSITO/AGENTE_COMERCIAL; TRANSPORTISTA/CHOFER tienen lectura general (necesaria para cotizar/operar); escritura solo OWNER o ADMIN_DEPOSITO de su centro.
 - **`truck_types`, `tariff_config`, `client_tariff_config`**: lectura para roles internos, escritura solo OWNER.
-- **`quotes_history`**: lectura/escritura para cualquier rol interno distinto de CHOFER — **sin acotar por centro/usuario** (ver sección 5.3).
+- **`quotes_history`**: ahora tiene columnas `id_centro`/`creado_por`; ADMIN_DEPOSITO/AGENTE_COMERCIAL acotados a `id_centro = app_centro()`, OWNER/TRANSPORTISTA sin restricción, CHOFER sin acceso (ver sección 5.3).
 
 ---
 
@@ -97,9 +97,11 @@ Las 11 tablas tienen RLS habilitado. Tras los cambios de hoy:
 
 ---
 
-## 5. Recomendaciones pendientes (no aplicadas — requieren decisión/refactor)
+## 5. Recomendaciones — estado tras la 2ª pasada (13-06-2026)
 
-### 5.1 Crítico — `syncToSupabase` rompe el guardado para roles no-OWNER
+Los puntos 5.1, 5.2 y 5.3 fueron implementados hoy (ver descripción de la solución aplicada en cada uno). El punto 5.4 sigue pendiente de acción manual en el Dashboard.
+
+### 5.1 Crítico — `syncToSupabase` rompe el guardado para roles no-OWNER — ✅ Corregido
 `data.js → syncToSupabase()` hace, para **cada una** de las 11 tablas, un `upsert()` de todas las filas locales seguido de un `delete()` de todo lo que no esté en esa lista — es decir, un **sync de colección completa**. Con las políticas RLS actuales (que ya limitaban — y ahora limitan más — qué filas puede tocar cada rol), cualquier usuario que no sea OWNER:
 
 - No puede `delete()` filas fuera de su alcance → Supabase devuelve éxito pero **0 filas afectadas** en el delete (no es necesariamente error), pero el `upsert()` de tablas fuera de su alcance (p. ej. `truck_types`, `tariff_config`) **sí falla con error de RLS**, y `syncToSupabase` usa `for...of` + `throw` en el primer error: **toda la sincronización se aborta**, incluida la tabla que el usuario sí quería guardar (si el orden de `TABLE_MAP` la coloca después de una tabla restringida).
@@ -113,20 +115,29 @@ Las 11 tablas tienen RLS habilitado. Tras los cambios de hoy:
 2. Reemplazar el patrón "upsert + delete de todo lo que no está" por operaciones puntuales (`insert`/`update`/`delete` por fila) generadas a partir de un diff, evitando que el cliente necesite permiso de `DELETE` sobre toda la tabla.
 3. Mejorar el mensaje de error para indicar **qué tabla** falló y si fue por permisos (`42501`) vs. error de red, para diagnosticar más rápido.
 
-No se implementó porque toca el corazón de la capa de datos (usada por las 13 pantallas) y conviene probarlo con cada rol antes de desplegar.
+**Solución aplicada** (`js/data.js`, función `syncToSupabase`): cada tabla del `TABLE_MAP` se sincroniza ahora dentro de su propio `try/catch`. Si una tabla falla (p. ej. por RLS, código `42501`), se registra el error y se **continúa con el resto de las tablas** — ya no se aborta el `for...of` completo. Al final, si hubo fallas, se lanza un único error que las resume (`No se pudo sincronizar: <tabla> (<code>): <motivo> | ...`), que `saveDatabase` adjunta al evento `db_sync_error`. El listener en `js/app.js` ahora muestra ese detalle en el toast en vez del mensaje genérico, indicando qué tabla(s) fallaron y por qué.
 
-### 5.2 Validación de `user_metadata` en alta de proveedor (`app.js`)
-Al crear la fila en `providers`, no se valida `rut` (existe `validateRut()` en `utils.js` pero no se usa aquí) ni se acotan longitudes de `razonSocial`/`representante`/`telefono`. Recomendado:
-```js
-if (!validateRut(meta.rut || '')) { /* mostrar error / no crear fila o marcar para revisión */ }
-const razonSocial = (meta.razonSocial || '').slice(0, 120);
-```
+Se optó por la opción 1 del informe original (try/catch por tabla + mensaje específico) por ser la de menor riesgo/esfuerzo; la opción 2 (diff por fila en vez de upsert+delete de colección completa) queda como mejora futura si se requiere granularidad adicional.
 
-### 5.3 `quotes_history` sin scoping por centro/usuario
-La política actual permite a **cualquier** ADMIN_DEPOSITO/AGENTE_COMERCIAL leer y **eliminar** cotizaciones de **cualquier centro**, porque la tabla no tiene columna `id_centro` ni `creado_por`. Esto ya estaba identificado como tarea futura ("Restructurar quotes_history"). Recomendación: agregar esas columnas y luego acotar `quotes_history_all` igual que `routes`/`logistics_centres` (por `id_centro = app_centro()` para roles de centro, sin restricción para OWNER).
+### 5.2 Validación de `user_metadata` en alta de proveedor (`app.js`) — ✅ Corregido
+**Solución aplicada:** en `checkSession()`, antes de insertar la fila inicial en `providers` a partir de `user_metadata`, se valida `rut` con `validateRut()` (si no es válido, se cierra la sesión y se informa al usuario que contacte a EBEMA) y se acotan longitudes: `razonSocial` ≤120, `telefono` ≤30, `representante` ≤80. Los mismos límites (`maxlength`) se agregaron a los campos del formulario de registro (`reg-razonsocial`, `reg-telefono`, `reg-representante`) como defensa adicional en el cliente.
 
-### 5.4 Protección de contraseñas filtradas (HaveIBeenPwned)
-Advisory `auth_leaked_password_protection`: es una opción del **Dashboard de Supabase** (Authentication → Policies/Providers → Password Security), no se puede activar por SQL. Recomendado activarla — afecta tanto a staff @ebema.cl como a proveedores externos que se registran con contraseña.
+### 5.3 `quotes_history` sin scoping por centro/usuario — ✅ Corregido
+**Solución aplicada** (migración `restructure_quotes_history_centro_scope`):
+- Se agregaron las columnas `id_centro` y `creado_por` a `quotes_history`.
+- Se hizo backfill de `id_centro` en las filas existentes a partir de `routes."origenId"` (vía `routeId`).
+- Se reemplazó la política `quotes_history_all`: OWNER y TRANSPORTISTA mantienen el alcance previo (sin restricción / sin acceso para CHOFER, sin cambios); ADMINISTRADOR_DEPOSITO y AGENTE_COMERCIAL quedan acotados a `id_centro = app_centro()`, igual que en `routes`/`logistics_centres`.
+- Se actualizó la semilla local (`defaultData.quotesHistory` en `js/data.js`) con `routeId`/`id_centro`/`creado_por` para que el sync no sobrescriba el backfill con `NULL`.
+
+**Nota:** las pantallas actuales (cotizador) aún guardan el historial reciente solo en `localStorage` por perfil y no escriben en la tabla `quotes_history`; si en el futuro se conecta esa función a la tabla, debe completar `id_centro` (centro del usuario que cotiza) y `creado_por` (su email) al insertar, de lo contrario la política RLS rechazará el `insert` para roles de centro.
+
+### 5.4 Protección de contraseñas filtradas (HaveIBeenPwned) — 📋 Pendiente, acción manual
+Advisory `auth_leaked_password_protection`: es una opción del **Dashboard de Supabase** (Authentication → Policies/Providers → Password Security), no se puede activar por SQL ni por las herramientas de gestión disponibles (no hay endpoint MCP para configuración de Auth). Recomendado activarla — afecta tanto a staff @ebema.cl como a proveedores externos que se registran con contraseña.
+
+**Pasos para Jordan (manual, ~1 minuto):**
+1. Ir a https://supabase.com/dashboard/project/humhokvdowfqicjopbhf/auth/providers
+2. En la sección "Email", o en Authentication → Policies → Password Security (según versión del Dashboard), activar la opción **"Leaked password protection"** (verificación contra HaveIBeenPwned).
+3. Guardar. No requiere reiniciar el proyecto ni afecta sesiones activas.
 
 ---
 
@@ -134,11 +145,15 @@ Advisory `auth_leaked_password_protection`: es una opción del **Dashboard de Su
 
 1. `js/logistics.js`, `js/ficha-transporte.js` — fix `cd.idCentroSap` → `cd.id` (commit `f18fb6b`, ya en producción).
 2. `js/utils.js` — nueva función `escapeHtml()`.
-3. `js/provider-portal.js` — uso de `escapeHtml()` en todos los campos dinámicos.
-4. Base de datos (Supabase, proyecto `humhokvdowfqicjopbhf`) — 4 migraciones aplicadas:
+3. `js/provider-portal.js`, `js/transports.js`, `js/ficha-transporte.js`, `js/roles.js` — uso de `escapeHtml()` en todos los campos dinámicos (proveedores, transportes, camiones, choferes, CSV).
+4. `js/app.js` — validación de `rut` (mod-11) y límites de longitud (`razonSocial` ≤120, `telefono` ≤30, `representante` ≤80) antes de crear la fila de `providers` desde `user_metadata`; mismos límites como `maxlength` en el formulario de registro.
+5. `js/data.js` — `syncToSupabase` ahora aísla errores por tabla (try/catch) y reporta qué tabla(s) fallaron y por qué; semilla local de `quotesHistory` actualizada con `routeId`/`id_centro`/`creado_por`.
+6. `js/app.js` — el listener de `db_sync_error` muestra el detalle de la tabla/causa que falló.
+7. Base de datos (Supabase, proyecto `humhokvdowfqicjopbhf`) — migraciones aplicadas:
    - `harden_app_users_role_assignment`
    - `lock_provider_self_edit_fields`
    - `lock_transport_admin_fields_for_owners_self_edit`
    - `revoke_public_exec_security_definer_funcs`
+   - `restructure_quotes_history_centro_scope` (columnas `id_centro`/`creado_por` + política `quotes_history_all` acotada por centro)
 
-(2) y (3) quedan pendientes de subir con `subir-cambios.bat`.
+**Pendiente:** solo el punto 5.4 (Leaked Password Protection), que requiere acción manual de Jordan en el Dashboard de Supabase.

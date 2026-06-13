@@ -1,5 +1,5 @@
 import { getDatabase, saveDatabase, getCentreName } from './data.js';
-import { showAlert } from './utils.js';
+import { showAlert, escapeHtml } from './utils.js';
 
 // --- Perfiles de Acceso (Roles y Perfiles + Row Level Security) ---
 // 5 perfiles canónicos. Cada uno determina qué puede ver/editar el usuario
@@ -238,7 +238,7 @@ export function renderRolesView(container) {
                 style="width:100%;padding:11px 12px 11px 36px;border:1.5px solid #e1e3e4;border-radius:8px;font-size:14px;background:white;color:#191c1d;outline:none;box-sizing:border-box;transition:border-color 0.2s;appearance:none"
                 onfocus="this.style.borderColor='#b5000b'" onblur="this.style.borderColor='#e1e3e4'">
                 <option value="">Seleccione un transportista...</option>
-                ${(db.transports || []).map(t => `<option value="${t.id}">${t.razonSocial || t.nombre || t.id}</option>`).join('')}
+                ${(db.transports || []).map(t => `<option value="${t.id}">${escapeHtml(t.razonSocial || t.nombre || t.id)}</option>`).join('')}
               </select>
             </div>
           </div>

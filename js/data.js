@@ -210,9 +210,25 @@ async function syncTable(table, pk, rows) {
 }
 
 // Enviar el estado completo a Supabase (en segundo plano)
+// Importante: cada tabla se sincroniza de forma independiente (try/catch propio).
+// Con RLS, un rol no-OWNER no tiene permiso para tocar ciertas tablas (p. ej.
+// truck_types, tariff_config); si esa tabla fallara y abortara el for...of,
+// el resto de las tablas (incluida la que el usuario realmente editó) nunca
+// se sincronizaría, aunque el error no tenga relación con su cambio.
 async function syncToSupabase(db) {
+  const fallidas = [];
   for (const t of TABLE_MAP) {
-    await syncTable(t.table, t.pk, db[t.local] || []);
+    try {
+      await syncTable(t.table, t.pk, db[t.local] || []);
+    } catch (err) {
+      const code = err && err.code ? ` (${err.code})` : '';
+      const motivo = err && err.code === '42501' ? 'sin permiso' : (err.message || String(err));
+      fallidas.push(`${t.table}${code}: ${motivo}`);
+      console.error(`Error al sincronizar la tabla "${t.table}":`, err.message || err);
+    }
+  }
+  if (fallidas.length > 0) {
+    throw new Error(`No se pudo sincronizar: ${fallidas.join(' | ')}`);
   }
 }
 
@@ -413,20 +429,26 @@ const defaultData = {
     {
       id: 'q1',
       fecha: '2026-06-11 08:45',
+      routeId: 'r2',
       origen: 'CD Santiago Noviciado',
       destino: 'Rancagua',
       vehiculo: 'Doble Puente',
       estado: 'COTIZADO',
-      monto: 246000
+      monto: 246000,
+      id_centro: '1080',
+      creado_por: null
     },
     {
       id: 'q2',
       fecha: '2026-06-11 08:12',
+      routeId: 'r4',
       origen: 'CD Concepción',
       destino: 'Talcahuano',
       vehiculo: 'Sencillo',
       estado: 'ASIGNADO',
-      monto: 66600
+      monto: 66600,
+      id_centro: '1080',
+      creado_por: null
     }
   ],
 

@@ -40,12 +40,23 @@ async function checkSession() {
       // Asegurar que existe su perfil de proveedor (creado desde los datos del registro)
       let { data: provider } = await supabase.from('providers').select('*').eq('email', email).maybeSingle();
       if (!provider) {
+        // Los datos vienen de user_metadata, 100% controlados por el usuario externo en signUp().
+        // Se validan y acotan ANTES de insertar en providers (el RUT/razonSocial quedan
+        // bloqueados para edición posterior por el trigger anti-tamper).
+        const rut = formatRut(meta.rut || '');
+        if (!validateRut(rut)) {
+          await supabase.auth.signOut();
+          currentSession = null;
+          localStorage.removeItem(SESSION_KEY);
+          showAlert('El RUT registrado no es válido. Contacte a EBEMA para activar su cuenta.', 'error');
+          return;
+        }
         const newProvider = {
           email,
-          razonSocial: meta.razonSocial || meta.full_name || email.split('@')[0],
-          rut: meta.rut || '',
-          telefono: meta.telefono || '',
-          representante: meta.representante || '',
+          razonSocial: (meta.razonSocial || meta.full_name || email.split('@')[0]).toString().slice(0, 120),
+          rut,
+          telefono: (meta.telefono || '').toString().slice(0, 30),
+          representante: (meta.representante || '').toString().slice(0, 80),
           estado: 'pendiente'
         };
         const { error: insErr } = await supabase.from('providers').insert(newProvider);
@@ -101,8 +112,9 @@ async function checkSession() {
 }
 
 // Avisar si una sincronización con el servidor falla
-window.addEventListener('db_sync_error', () => {
-  showAlert('No se pudo sincronizar con el servidor. Cambios guardados solo localmente.', 'error');
+window.addEventListener('db_sync_error', (e) => {
+  const detalle = e && e.detail ? ` (${e.detail})` : '';
+  showAlert(`No se pudo sincronizar parte de los datos con el servidor. Cambios guardados solo localmente.${detalle}`, 'error');
 });
 
 function renderApp() {
@@ -497,7 +509,7 @@ function renderRegisterView() {
               <label style="display:block;font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#5c5f61;margin-bottom:6px">Razón Social</label>
               <div style="position:relative">
                 <span class="material-symbols-outlined" style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:#5c5f61;font-size:18px;pointer-events:none">business</span>
-                <input type="text" id="reg-razonsocial" placeholder="Ej. Transportes del Sur Ltda." required
+                <input type="text" id="reg-razonsocial" placeholder="Ej. Transportes del Sur Ltda." required maxlength="120"
                   style="width:100%;padding:12px 12px 12px 40px;border:1.5px solid #e1e3e4;border-radius:8px;font-size:14px;background:white;color:#191c1d;outline:none;transition:border-color 0.2s;box-sizing:border-box"
                   onfocus="this.style.borderColor='#b5000b'" onblur="this.style.borderColor='#e1e3e4'" />
               </div>
@@ -518,7 +530,7 @@ function renderRegisterView() {
                 <label style="display:block;font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#5c5f61;margin-bottom:6px">Teléfono</label>
                 <div style="position:relative">
                   <span class="material-symbols-outlined" style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:#5c5f61;font-size:18px;pointer-events:none">call</span>
-                  <input type="tel" id="reg-telefono" placeholder="+56 9 1234 5678" required
+                  <input type="tel" id="reg-telefono" placeholder="+56 9 1234 5678" required maxlength="30"
                     style="width:100%;padding:12px 12px 12px 40px;border:1.5px solid #e1e3e4;border-radius:8px;font-size:14px;background:white;color:#191c1d;outline:none;transition:border-color 0.2s;box-sizing:border-box"
                     onfocus="this.style.borderColor='#b5000b'" onblur="this.style.borderColor='#e1e3e4'" />
                 </div>
@@ -530,7 +542,7 @@ function renderRegisterView() {
               <label style="display:block;font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#5c5f61;margin-bottom:6px">Nombre Representante Legal</label>
               <div style="position:relative">
                 <span class="material-symbols-outlined" style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:#5c5f61;font-size:18px;pointer-events:none">person</span>
-                <input type="text" id="reg-representante" placeholder="Ej. Juan Pérez Soto" required
+                <input type="text" id="reg-representante" placeholder="Ej. Juan Pérez Soto" required maxlength="80"
                   style="width:100%;padding:12px 12px 12px 40px;border:1.5px solid #e1e3e4;border-radius:8px;font-size:14px;background:white;color:#191c1d;outline:none;transition:border-color 0.2s;box-sizing:border-box"
                   onfocus="this.style.borderColor='#b5000b'" onblur="this.style.borderColor='#e1e3e4'" />
               </div>
