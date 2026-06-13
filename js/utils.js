@@ -44,6 +44,17 @@ export function validateRut(rut) {
   return dv === dvCalc;
 }
 
+// 1b. Formatear Teléfono Chileno con prefijo +56 (ej: +56 9 1234 5678)
+export function formatPhone(value) {
+  let digits = (value || '').replace(/[^0-9]/g, '');
+  if (digits.startsWith('56')) digits = digits.slice(2);
+  if (!digits) return '';
+  if (digits.length === 9) {
+    return `+56 ${digits.slice(0, 1)} ${digits.slice(1, 5)} ${digits.slice(5)}`;
+  }
+  return `+56 ${digits}`;
+}
+
 // 2. Formatear Moneda Pesos Chilenos (CLP) (ej: $150.000)
 export function formatCLP(value) {
   return new Intl.NumberFormat('es-CL', {

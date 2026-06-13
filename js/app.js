@@ -6,7 +6,7 @@ import { renderRatesView } from './rates.js';
 import { renderRolesView } from './roles.js';
 import { renderTariffTransportView } from './tarifas-transporte.js';
 import { renderClientTariffView } from './tarifas-clientes.js';
-import { showAlert, formatRut, validateRut } from './utils.js';
+import { showAlert, formatRut, validateRut, formatPhone } from './utils.js';
 
 const SESSION_KEY = 'ebema_user_session';
 let currentSession = null;
@@ -646,11 +646,16 @@ function renderRegisterView() {
     e.target.value = formatRut(e.target.value);
   });
 
+  // Formato automático del Teléfono (siempre con prefijo +56)
+  document.getElementById('reg-telefono').addEventListener('blur', (e) => {
+    if (e.target.value.trim()) e.target.value = formatPhone(e.target.value);
+  });
+
   document.getElementById('register-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const razonSocial = document.getElementById('reg-razonsocial').value.trim();
     const rut = formatRut(document.getElementById('reg-rut').value.trim());
-    const telefono = document.getElementById('reg-telefono').value.trim();
+    const telefono = formatPhone(document.getElementById('reg-telefono').value.trim());
     const representante = document.getElementById('reg-representante').value.trim();
     const email = document.getElementById('reg-email').value.trim().toLowerCase();
     const pass = document.getElementById('reg-password').value;

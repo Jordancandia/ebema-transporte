@@ -2,7 +2,7 @@
 // El proveedor solo ve su perfil y las fichas de SUS camiones (RLS lo garantiza en el servidor).
 import { supabase } from './supabase-client.js';
 import { getDatabase } from './data.js';
-import { showAlert, formatRut } from './utils.js';
+import { showAlert, formatRut, formatPhone } from './utils.js';
 import { renderFichaTransporte } from './ficha-transporte.js';
 
 const ESTADOS = {
@@ -139,10 +139,15 @@ export async function renderPortalHome(container) {
     </section>
   `;
 
+  // Formato automático del Teléfono (siempre con prefijo +56)
+  document.getElementById('p-telefono').addEventListener('blur', (e) => {
+    if (e.target.value.trim()) e.target.value = formatPhone(e.target.value);
+  });
+
   // Guardar perfil (solo campos editables)
   document.getElementById('form-provider-profile').addEventListener('submit', async (e) => {
     e.preventDefault();
-    const telefono = document.getElementById('p-telefono').value.trim();
+    const telefono = formatPhone(document.getElementById('p-telefono').value.trim());
     const representante = document.getElementById('p-representante').value.trim();
     const { error: upErr } = await supabase.from('providers')
       .update({ telefono, representante })

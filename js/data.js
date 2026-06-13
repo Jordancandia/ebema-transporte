@@ -471,6 +471,16 @@ export function getDatabase() {
     });
   }
 
+  // Migración: Zona de transporte, clasificación y coordenadas del destino
+  if (parsed.routes) {
+    parsed.routes.forEach(r => {
+      if (r.idZonaTrans === undefined) { r.idZonaTrans = ''; migrado = true; }
+      if (r.clasificRuta === undefined) { r.clasificRuta = 'Regional'; migrado = true; }
+      if (r.lat === undefined) { r.lat = null; migrado = true; }
+      if (r.lon === undefined) { r.lon = null; migrado = true; }
+    });
+  }
+
   // Migración: Transportistas multi-camión y multi-chofer
   if (parsed.transports) {
     parsed.transports.forEach(t => {

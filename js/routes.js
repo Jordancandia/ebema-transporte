@@ -18,7 +18,7 @@ async function calcularDistanciaAuto(cdOrigen, destinoTexto) {
   if (!resp.ok) throw new Error('Servicio de rutas no disponible');
   const data = await resp.json();
   if (!data.routes || !data.routes[0]) throw new Error('No se encontró ruta por carretera');
-  return Math.round(data.routes[0].distance / 1000);
+  return { km: Math.round(data.routes[0].distance / 1000), lat: coordsDestino.lat, lon: coordsDestino.lon };
 }
 
 let editingRouteId = null;
@@ -138,6 +138,7 @@ function renderRutasSubview(container) {
               <th class="p-md">Destino (Comuna/Sector)</th>
               <th class="p-md">Región</th>
               <th class="p-md">Tipo</th>
+              <th class="p-md">Clasificación</th>
               <th class="p-md">Característica</th>
               <th class="p-md">Distancia</th>
               <th class="p-md">Estado</th>
@@ -226,6 +227,20 @@ function renderRutasSubview(container) {
               <input type="text" id="r-denominacion" class="w-full border border-[#CED4DA] p-sm font-body-md text-body-md focus:border-primary focus:ring-0 transition-all rounded bg-white" placeholder="Se genera automáticamente desde el origen y destino" required>
             </div>
 
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-md">
+              <div class="space-y-xs">
+                <label for="r-zona" class="font-label-caps text-label-caps text-secondary block">ID ZONA TRANSPORTE</label>
+                <input type="text" id="r-zona" class="w-full border border-[#CED4DA] p-sm font-body-md text-body-md focus:border-primary focus:ring-0 transition-all rounded bg-white" placeholder="Ej: ZT-001">
+              </div>
+              <div class="space-y-xs">
+                <label for="r-clasificacion" class="font-label-caps text-label-caps text-secondary block">CLASIFICACIÓN DE RUTA</label>
+                <select id="r-clasificacion" class="w-full border border-[#CED4DA] p-sm font-body-md text-body-md focus:border-primary focus:ring-0 transition-all rounded bg-white" required>
+                  <option value="Regional">Regional</option>
+                  <option value="Interregional">Interregional</option>
+                </select>
+              </div>
+            </div>
+
             <div class="space-y-xs">
               <label for="r-km" class="font-label-caps text-label-caps text-secondary block">DISTANCIA (KM)</label>
               <div class="flex gap-sm">
@@ -235,7 +250,18 @@ function renderRutasSubview(container) {
                   Calcular KM automático
                 </button>
               </div>
-              <p class="text-[11px] text-secondary" id="auto-km-status">Calcula la distancia real por carretera entre el centro de origen y el destino.</p>
+              <p class="text-[11px] text-secondary" id="auto-km-status">Calcula la distancia real por carretera y las coordenadas del destino.</p>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-md">
+              <div class="space-y-xs">
+                <label for="r-lat" class="font-label-caps text-label-caps text-secondary block">LATITUD DESTINO</label>
+                <input type="number" step="any" id="r-lat" class="w-full border border-[#CED4DA] p-sm font-body-md text-body-md focus:border-primary focus:ring-0 transition-all rounded bg-white" placeholder="Se completa con 'Calcular KM automático'">
+              </div>
+              <div class="space-y-xs">
+                <label for="r-lon" class="font-label-caps text-label-caps text-secondary block">LONGITUD DESTINO</label>
+                <input type="number" step="any" id="r-lon" class="w-full border border-[#CED4DA] p-sm font-body-md text-body-md focus:border-primary focus:ring-0 transition-all rounded bg-white" placeholder="Se completa con 'Calcular KM automático'">
+              </div>
             </div>
           </div>
           <div class="p-md border-t border-outline-variant bg-surface-container-low flex justify-end gap-sm">
@@ -261,6 +287,7 @@ function renderRutasSubview(container) {
             <code class="block p-sm bg-background border border-outline-variant rounded font-data-mono text-primary text-xs mt-xs">
               codigo;origen;destino;region;tipo;km
             </code>
+            Opcionalmente puede incluir: <code class="font-data-mono text-xs">caracteristica, denominacion, id_zonatrans, clasificacion, lat, lon</code>.
           </p>
           
           <div class="border-2 border-dashed border-outline-variant hover:border-primary hover:bg-primary-container/[0.03] rounded-lg p-xl text-center cursor-pointer transition-all flex flex-col items-center justify-center gap-sm" id="csv-route-dropzone">
@@ -384,8 +411,10 @@ function renderRutasSubview(container) {
     status.textContent = 'Geolocalizando destino y calculando ruta por carretera...';
 
     try {
-      const km = await calcularDistanciaAuto(cd, `${destino}, ${region}`);
+      const { km, lat, lon } = await calcularDistanciaAuto(cd, `${destino}, ${region}`);
       document.getElementById('r-km').value = km;
+      document.getElementById('r-lat').value = lat;
+      document.getElementById('r-lon').value = lon;
       status.textContent = `✓ Distancia calculada: ${km} km por carretera desde ${cd.nombre}.`;
       status.style.color = '#16a34a';
     } catch (err) {
@@ -401,6 +430,9 @@ function renderRutasSubview(container) {
     e.preventDefault();
     const db = getDatabase();
     
+    const latVal = document.getElementById('r-lat').value;
+    const lonVal = document.getElementById('r-lon').value;
+
     const routeData = {
       codigo: document.getElementById('r-codigo').value.toUpperCase().replace(/\s+/g, ''),
       origenId: document.getElementById('r-origen').value,
@@ -410,6 +442,10 @@ function renderRutasSubview(container) {
       tipo: document.getElementById('r-tipo').value,
       caracteristica: document.getElementById('r-caracteristica').value,
       km: Number(document.getElementById('r-km').value),
+      idZonaTrans: document.getElementById('r-zona').value.trim(),
+      clasificRuta: document.getElementById('r-clasificacion').value,
+      lat: latVal !== '' ? Number(latVal) : null,
+      lon: lonVal !== '' ? Number(lonVal) : null,
       activo: editingRouteId ? db.routes.find(r => r.id === editingRouteId).activo : true
     };
 
@@ -540,6 +576,7 @@ function renderRutasSubview(container) {
 
         if (!error) {
           const caractCsv = (row.caracteristica || 'NORMAL').toUpperCase();
+          const clasifCsv = (row.clasific_ruta || row.clasificacion || '').trim();
           parsedRoutes.push({
             codigo,
             origenId: originCd.id,
@@ -549,6 +586,10 @@ function renderRutasSubview(container) {
             tipo,
             caracteristica: ['NORMAL', 'EXTREMA', 'ISLA'].includes(caractCsv) ? caractCsv : 'NORMAL',
             km,
+            idZonaTrans: row.id_zonatrans || row.idzonatrans || '',
+            clasificRuta: ['Regional', 'Interregional'].includes(clasifCsv) ? clasifCsv : 'Regional',
+            lat: row.lat ? Number(row.lat) : null,
+            lon: row.lon ? Number(row.lon) : null,
             activo: true
           });
         }
@@ -588,7 +629,7 @@ function renderRoutesTable(routesList) {
   if (routesList.length === 0) {
     tbody.innerHTML = `
       <tr>
-        <td colspan="10" class="p-xl text-center text-secondary">
+        <td colspan="11" class="p-xl text-center text-secondary">
           No se encontraron rutas registradas.
         </td>
       </tr>
@@ -611,6 +652,7 @@ function renderRoutesTable(routesList) {
       <td class="p-md">${r.destino}</td>
       <td class="p-md text-xs text-secondary">${r.region}</td>
       <td class="p-md"><span class="bg-surface-container-high px-sm py-1 border border-outline-variant rounded text-xs">${r.tipo}</span></td>
+      <td class="p-md text-xs">${r.clasificRuta || '—'}</td>
       <td class="p-md"><span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold ${CARACT_STYLES[r.caracteristica || 'NORMAL']}">${r.caracteristica || 'NORMAL'}</span></td>
       <td class="p-md font-bold font-data-mono">${r.km} KM</td>
       <td class="p-md">
@@ -653,6 +695,10 @@ function renderRoutesTable(routesList) {
         document.getElementById('r-tipo').value = r.tipo;
         document.getElementById('r-caracteristica').value = r.caracteristica || 'NORMAL';
         document.getElementById('r-km').value = r.km;
+        document.getElementById('r-zona').value = r.idZonaTrans || '';
+        document.getElementById('r-clasificacion').value = r.clasificRuta || 'Regional';
+        document.getElementById('r-lat').value = r.lat !== null && r.lat !== undefined ? r.lat : '';
+        document.getElementById('r-lon').value = r.lon !== null && r.lon !== undefined ? r.lon : '';
 
         document.getElementById('route-modal-title').innerText = 'Editar Ruta';
         
