@@ -427,7 +427,7 @@ function renderSeguros(content, db, cfg) {
     readCSVFile(file, (rows) => {
       let count = 0;
       rows.forEach(row => {
-        const cd = centres.find(c => c.idCentroSap === (row.Centro_SAP || '').trim());
+        const cd = centres.find(c => c.id === (row.Centro_SAP || '').trim());
         const cap = parseCapKgFromCSV(row.Tipo_Camion_Kg);
         if (!cd || !CAP_LIST.includes(cap)) return;
         const key = `${cd.id}|${cap}`;
@@ -641,7 +641,7 @@ function renderVariables(content, db, cfg) {
     readCSVFile(file, (rows) => {
       let count = 0;
       rows.forEach(row => {
-        const cd = centres.find(c => c.idCentroSap === (row.Centro_SAP || '').trim());
+        const cd = centres.find(c => c.id === (row.Centro_SAP || '').trim());
         const cap = parseCapKgFromCSV(row.Tipo_Camion_Kg);
         if (!cd || !CAP_LIST.includes(cap)) return;
         cfg.kmOfrecidos[`${cd.id}|${cap}`] = Number(row.KM_Mensual) || 0;
@@ -714,7 +714,7 @@ function renderResultados(content, db, cfg) {
     const rows = matriz.map(m => {
       const cd = db.logisticsCentres.find(c => c.id === m.centroId);
       return [
-        cd ? cd.idCentroSap : m.centroId,
+        cd ? cd.id : m.centroId,
         m.ruta.codigo,
         m.ruta.destino,
         m.truckType.capKg,

@@ -193,7 +193,7 @@ function renderHistorico(content, db, cfg, ccfg) {
     readCSVFile(file, (rows) => {
       let count = 0, omit = 0;
       rows.forEach(row => {
-        const cd = db.logisticsCentres.find(c => c.idCentroSap === (row.Centro_SAP || '').trim());
+        const cd = db.logisticsCentres.find(c => c.id === (row.Centro_SAP || '').trim());
         const idRuta = (row.Id_Ruta || '').trim();
         const ruta = db.routes.find(r => r.codigo.toLowerCase() === idRuta.toLowerCase() || r.id === idRuta);
         const cap = parseCapKgCleansed(row.Tipo_Camion_Kg);
@@ -629,7 +629,7 @@ function renderResultadosClientes(content, db, cfg, ccfg) {
     const rows = [];
     matriz.forEach(m => {
       expandExclusividad(m, m.zfmi).forEach(e => {
-        rows.push([m.centro ? m.centro.idCentroSap : '', rutaIdExport(m), m.ruta.destino, capKgExport(m), 'ZFMI', e.valor, e.exclusivo, validoDe, VALIDEZ_A]);
+        rows.push([m.centro ? m.centro.id : '', rutaIdExport(m), m.ruta.destino, capKgExport(m), 'ZFMI', e.valor, e.exclusivo, validoDe, VALIDEZ_A]);
       });
     });
     downloadFile(`zfmi_clientes_${Date.now()}.csv`, toCSV(headers, rows));
@@ -641,7 +641,7 @@ function renderResultadosClientes(content, db, cfg, ccfg) {
     const rows = [];
     matriz.forEach(m => {
       expandExclusividad(m, m.zfmx).forEach(e => {
-        rows.push([m.centro ? m.centro.idCentroSap : '', rutaIdExport(m), m.ruta.destino, capKgExport(m), 'ZFMX', e.valor, e.exclusivo, validoDe, VALIDEZ_A]);
+        rows.push([m.centro ? m.centro.id : '', rutaIdExport(m), m.ruta.destino, capKgExport(m), 'ZFMX', e.valor, e.exclusivo, validoDe, VALIDEZ_A]);
       });
     });
     downloadFile(`zfmx_clientes_${Date.now()}.csv`, toCSV(headers, rows));
@@ -653,7 +653,7 @@ function renderResultadosClientes(content, db, cfg, ccfg) {
     const rows = [];
     matriz.forEach(m => {
       expandExclusividad(m, m.zfmp).forEach(e => {
-        rows.push([m.centro ? m.centro.idCentroSap : '', rutaIdExport(m), m.ruta.destino, capKgExport(m), 'KG', e.valor, e.exclusivo, validoDe, VALIDEZ_A]);
+        rows.push([m.centro ? m.centro.id : '', rutaIdExport(m), m.ruta.destino, capKgExport(m), 'KG', e.valor, e.exclusivo, validoDe, VALIDEZ_A]);
       });
     });
     downloadFile(`zfmp_clientes_${Date.now()}.csv`, toCSV(headers, rows));

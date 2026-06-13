@@ -1,5 +1,5 @@
 import { getDatabase, saveDatabase } from './data.js';
-import { generateSapCode, showAlert, geocodeAddress } from './utils.js';
+import { showAlert, geocodeAddress } from './utils.js';
 
 // Renderizar la vista de Centros Logísticos con Mapa Interactivo Leaflet y Tailwind CSS
 export function renderLogisticsView(container) {
@@ -50,7 +50,8 @@ export function renderLogisticsView(container) {
             <div class="grid grid-cols-1 md:grid-cols-2 gap-md">
               <div class="space-y-xs">
                 <label for="cd-sap" class="font-label-caps text-label-caps text-secondary block">ID CENTRO SAP</label>
-                <input type="text" id="cd-sap" class="w-full border border-[#CED4DA] p-sm font-body-md text-body-md focus:border-primary focus:ring-0 transition-all rounded bg-white" required placeholder="Ej: CD400">
+                <input type="text" id="cd-sap" class="w-full border border-[#CED4DA] p-sm font-body-md text-body-md focus:border-primary focus:ring-0 transition-all rounded bg-white disabled:bg-surface-container-low disabled:text-secondary" required placeholder="Ej: 1003">
+                <p class="text-[10px] text-secondary" id="cd-sap-hint"></p>
               </div>
               <div class="space-y-xs">
                 <label for="cd-comuna" class="font-label-caps text-label-caps text-secondary block">REGIÓN/COMUNA</label>
@@ -95,7 +96,7 @@ export function renderLogisticsView(container) {
             <div class="text-on-surface font-body-md" style="font-family: 'Hanken Grotesk', sans-serif;">
               <strong class="text-primary font-bold text-sm">${cd.nombre}</strong><br>
               <span class="text-xs text-secondary">${cd.direccion}</span><br>
-              <span class="text-[10px] font-bold text-primary block mt-1">Código SAP: ${cd.idCentroSap}</span>
+              <span class="text-[10px] font-bold text-primary block mt-1">Código SAP: ${cd.id}</span>
             </div>
           `);
         markers.push(marker);
@@ -140,8 +141,10 @@ export function renderLogisticsView(container) {
     cdForm.reset();
     window.__editingCdId = null;
     document.querySelector('#cd-modal h4').textContent = 'Nuevo Centro Logístico (CD)';
-    const activeDb = getDatabase();
-    document.getElementById('cd-sap').value = generateSapCode('CD', activeDb.logisticsCentres, 'idCentroSap');
+    const sapInput = document.getElementById('cd-sap');
+    sapInput.value = '';
+    sapInput.disabled = false;
+    document.getElementById('cd-sap-hint').textContent = 'Ingrese el código de centro SAP (será el identificador único del centro).';
 
     cdModal.classList.remove('pointer-events-none', 'opacity-0');
     cdModal.querySelector('.modal-window').classList.remove('scale-95');
@@ -161,7 +164,7 @@ export function renderLogisticsView(container) {
     const editingId = window.__editingCdId || null;
 
     const sapId = document.getElementById('cd-sap').value.toUpperCase().replace(/\s+/g, '');
-    if (db.logisticsCentres.some(cd => cd.idCentroSap === sapId && cd.id !== editingId)) {
+    if (!editingId && db.logisticsCentres.some(cd => cd.id === sapId)) {
       showAlert('El ID de Centro SAP ya está registrado.', 'error');
       return;
     }
@@ -177,14 +180,13 @@ export function renderLogisticsView(container) {
     const coords = await geocodeAddress(direccionCompleta);
 
     if (editingId) {
-      // Editar centro existente
+      // Editar centro existente (el ID Centro SAP no se modifica: es clave de otras tablas)
       const idx = db.logisticsCentres.findIndex(c => c.id === editingId);
       if (idx !== -1) {
         db.logisticsCentres[idx] = {
           ...db.logisticsCentres[idx],
           nombre,
           direccion: direccionCompleta,
-          idCentroSap: sapId,
           lat: coords.lat,
           lon: coords.lon
         };
@@ -193,10 +195,9 @@ export function renderLogisticsView(container) {
       }
     } else {
       const cdData = {
-        id: 'cd' + (new Date().getTime()),
+        id: sapId,
         nombre: nombre,
         direccion: direccionCompleta,
-        idCentroSap: sapId,
         lat: coords.lat,
         lon: coords.lon
       };
@@ -278,7 +279,10 @@ function renderCdCards(list, parentContainer) {
 
       window.__editingCdId = id;
       document.getElementById('cd-nombre').value = cd.nombre;
-      document.getElementById('cd-sap').value = cd.idCentroSap;
+      const sapInput = document.getElementById('cd-sap');
+      sapInput.value = cd.id;
+      sapInput.disabled = true;
+      document.getElementById('cd-sap-hint').textContent = 'El ID Centro SAP no se puede modificar una vez creado.';
       // Separar dirección "calle, comuna/región" si es posible
       const partes = (cd.direccion || '').split(',');
       document.getElementById('cd-direccion').value = partes[0] ? partes[0].trim() : cd.direccion;
@@ -313,7 +317,7 @@ function renderCdCards(list, parentContainer) {
         return;
       }
 
-      if (!confirm(`¿Eliminar definitivamente el centro "${cd.nombre}" (${cd.idCentroSap})?`)) return;
+      if (!confirm(`¿Eliminar definitivamente el centro "${cd.nombre}" (${cd.id})?`)) return;
 
       db.logisticsCentres = db.logisticsCentres.filter(c => c.id !== id);
       saveDatabase(db);

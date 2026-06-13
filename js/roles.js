@@ -225,7 +225,7 @@ export function renderRolesView(container) {
                 style="width:100%;padding:11px 12px 11px 36px;border:1.5px solid #e1e3e4;border-radius:8px;font-size:14px;background:white;color:#191c1d;outline:none;box-sizing:border-box;transition:border-color 0.2s;appearance:none"
                 onfocus="this.style.borderColor='#b5000b'" onblur="this.style.borderColor='#e1e3e4'">
                 <option value="">Seleccione un centro...</option>
-                ${(db.logisticsCentres || []).map(cd => `<option value="${cd.id}">${cd.nombre} (${cd.idCentroSap})</option>`).join('')}
+                ${(db.logisticsCentres || []).map(cd => `<option value="${cd.id}">${cd.nombre} (${cd.id})</option>`).join('')}
               </select>
             </div>
           </div>

@@ -7,13 +7,15 @@ const STORAGE_KEY = 'ebema_transporte_db';
 
 // Mapeo colección local ↔ tabla Supabase (con su clave primaria)
 const TABLE_MAP = [
-  { local: 'logisticsCentres', table: 'logistics_centres', pk: 'id' },
-  { local: 'routes',           table: 'routes',            pk: 'id' },
-  { local: 'truckTypes',       table: 'truck_types',       pk: 'type' },
-  { local: 'transports',       table: 'transports',        pk: 'id' },
-  { local: 'quotesHistory',    table: 'quotes_history',    pk: 'id' },
-  { local: 'users',            table: 'app_users',         pk: 'email' },
-  { local: 'providers',        table: 'providers',         pk: 'email' },
+  { local: 'logisticsCentres',  table: 'logistics_centres',  pk: 'id' },
+  { local: 'routes',            table: 'routes',             pk: 'id' },
+  { local: 'truckTypes',        table: 'truck_types',        pk: 'type' },
+  { local: 'transports',        table: 'transports',         pk: 'id' },
+  { local: 'transportsCamiones',  table: 'transports_camiones',  pk: 'id_camion' },
+  { local: 'transportsChoferes',  table: 'transports_choferes',  pk: 'rut' },
+  { local: 'quotesHistory',     table: 'quotes_history',     pk: 'id' },
+  { local: 'users',             table: 'app_users',          pk: 'email' },
+  { local: 'providers',         table: 'providers',          pk: 'email' },
   { local: 'tariffConfig',       table: 'tariff_config',        pk: 'id' },
   { local: 'clientTariffConfig', table: 'client_tariff_config', pk: 'id' }
 ];
@@ -27,6 +29,51 @@ export function truckCapKg(type) {
 // Tipo de eje según capacidad del camión (Tons): 5 a 10 Ton -> 2 ejes · 15 a 28 Ton -> 3 ejes
 export function calcEjes(capacidad) {
   return Number(capacidad) >= 15 ? 3 : 2;
+}
+
+// Derivar las tablas normalizadas transports_camiones / transports_choferes
+// a partir de los arrays JSON transports[].camiones / transports[].choferes.
+// El JSON sigue siendo la fuente de verdad (sin reescritura de la pantalla Transportistas);
+// estas tablas planas se regeneran completas en cada guardado para mantenerse sincronizadas.
+function deriveCamionesChoferes(db) {
+  const camiones = [];
+  const choferes = [];
+  (db.transports || []).forEach(t => {
+    (t.camiones || []).forEach(c => {
+      if (!c.patente) return;
+      camiones.push({
+        id_camion: c.patente,
+        id_transporte: t.id,
+        modelo: c.modelo || '',
+        anio: c.anio || null,
+        capacidad_ton: c.capacidad || 0,
+        ejes: c.ejes !== undefined ? c.ejes : calcEjes(c.capacidad),
+        alto_carroceria: (c.dimensiones && c.dimensiones.alto) || null,
+        ancho_carroceria: (c.dimensiones && c.dimensiones.ancho) || null,
+        largo_carroceria: (c.dimensiones && c.dimensiones.largo) || null,
+        chofer_rut: c.choferRut || null,
+        documentos: c.documentos || {}
+      });
+    });
+    (t.choferes || []).forEach(ch => {
+      if (!ch.rut) return;
+      const nombreCompleto = (ch.nombre || '').trim();
+      const partes = nombreCompleto.split(/\s+/);
+      const idCamion = (t.camiones || []).find(c => c.choferRut === ch.rut);
+      choferes.push({
+        rut: ch.rut,
+        nombre: partes[0] || '',
+        apellido: partes.slice(1).join(' '),
+        licencia: ch.licencia || '',
+        celula_identidad: ch.archivoCarne || null,
+        telefono: ch.telefono || '',
+        id_transporte: t.id,
+        id_camion: idCamion ? idCamion.patente : null
+      });
+    });
+  });
+  db.transportsCamiones = camiones;
+  db.transportsChoferes = choferes;
 }
 
 // Configuración por defecto: Administrador de Tarifas Transporte (Pantalla 1)
@@ -304,7 +351,6 @@ const defaultData = {
       id: 'cd1',
       nombre: 'CD Santiago Noviciado',
       direccion: 'Camino Noviciado 1050, Lampa, Región Metropolitana',
-      idCentroSap: 'CD100',
       lat: -33.3768,
       lon: -70.8354
     },
@@ -312,7 +358,6 @@ const defaultData = {
       id: 'cd2',
       nombre: 'CD Concepción',
       direccion: 'Ruta 160 Km 12, Coronel, Región del Biobío',
-      idCentroSap: 'CD200',
       lat: -36.9015,
       lon: -73.1168
     },
@@ -320,7 +365,6 @@ const defaultData = {
       id: 'cd3',
       nombre: 'CD Temuco',
       direccion: 'Av. Recabarren 02500, Temuco, Región de La Araucanía',
-      idCentroSap: 'CD300',
       lat: -38.7490,
       lon: -72.6360
     }
@@ -384,9 +428,14 @@ export function getDatabase() {
   if (parsed.logisticsCentres) {
     parsed.logisticsCentres.forEach(cd => {
       if (cd.lat === undefined || cd.lon === undefined) {
-        const dcd = defaultData.logisticsCentres.find(item => item.idCentroSap === cd.idCentroSap);
+        const dcd = defaultData.logisticsCentres.find(item => item.id === cd.id);
         cd.lat = dcd ? dcd.lat : -33.4489;
         cd.lon = dcd ? dcd.lon : -70.6693;
+        migrado = true;
+      }
+      // Eliminar el campo redundante idCentroSap (id ahora ES el código SAP)
+      if (cd.idCentroSap !== undefined) {
+        delete cd.idCentroSap;
         migrado = true;
       }
     });
@@ -584,6 +633,7 @@ export function getCentreName(db, centreId) {
 
 // Guardar: memoria + respaldo local + sincronización con Supabase
 export function saveDatabase(data) {
+  deriveCamionesChoferes(data);
   memoryDb = data;
   localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
   // Despachar un evento personalizado para actualizar las vistas en tiempo real
