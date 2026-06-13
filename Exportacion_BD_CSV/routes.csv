@@ -1,0 +1,6 @@
+﻿id,codigo,origenId,destino,region,tipo,km,activo,caracteristica,denominacion
+r1,RUT-SCL-QUI,cd2,Quilicura,Metropolitana,Comuna,25,False,NORMAL,
+r2,RUT-SCL-RAN,cd2,Rancagua,Los Lagos,Sector,95,False,NORMAL,
+r3,RUT-SCL-CON,cd2,Concepción,Biobío,Sector,510,False,NORMAL,
+r4,RUT-CON-TAL,cd2,Talcahuano,Biobío,Comuna,18,True,NORMAL,
+r5,RUT-TEM-PAD,cd3,Padre Las Casas,La Araucanía,Comuna,8,False,NORMAL,

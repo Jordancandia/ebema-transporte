@@ -1,0 +1,12 @@
+tabla_origen,columna_origen,tabla_destino,columna_destino,tipo_relacion,descripcion
+routes,origenId,logistics_centres,id,Muchos a Uno,Cada ruta pertenece a un Centro de Distribucion (CD) de origen
+transports,camiones (jsonb),(interno - transports_camiones.csv),transportId,Uno a Muchos,Cada transportista tiene uno o varios camiones (array embebido)
+transports,choferes (jsonb),(interno - transports_choferes.csv),transportId,Uno a Muchos,Cada transportista tiene uno o varios choferes (array embebido)
+transports,centrosServicio (jsonb),logistics_centres,id,Muchos a Muchos,Lista de IDs de Centros Logisticos que el transportista puede atender
+transports,datosBancarios.rut (jsonb),transports,rut,Uno a Uno,El RUT de la cuenta bancaria debe coincidir con el RUT del transportista
+quotes_history,routeId,routes,id,Muchos a Uno,Cada cotizacion historica referencia la ruta cotizada
+truck_types,type,transports.camiones[].capacidad,(comparacion logica),Logica de negocio,La capacidad del camion (Tons) determina la tarifa base y el tipo de eje (calcEjes)
+tariff_config,id=global,(config unica),-,Configuracion global,Fila unica con parametros de tarifas de transporte (peajes, combustibles, rendimientos, etc.)
+client_tariff_config,id=global,(config unica),-,Configuracion global,Fila unica con parametros de tarifas/clusters de clientes
+app_users,email,transports.ownerEmail,email,Uno a Muchos,Un usuario/proveedor puede estar asociado a una o varias fichas de transporte (login)
+providers,email,transports.ownerEmail,email,Uno a Uno,Proveedor registrado vinculado a su ficha de transporte por email

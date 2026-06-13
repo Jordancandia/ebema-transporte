@@ -1,5 +1,6 @@
 import { getDatabase, saveDatabase, getCentreName } from './data.js';
 import { generateSapCode, parseCSV, showAlert, geocodeAddress } from './utils.js';
+import { renderLogisticsView } from './logistics.js';
 
 // Estilos de la característica especial de la ruta
 const CARACT_STYLES = {
@@ -21,8 +22,46 @@ async function calcularDistanciaAuto(cdOrigen, destinoTexto) {
 }
 
 let editingRouteId = null;
+let currentRoutesSubTab = 'rutas';
 
+// Página unificada "Rutas de Transporte": combina Rutas y Centros Logísticos en sub-pestañas
 export function renderRoutesView(container) {
+  container.innerHTML = `
+    <!-- Page Header -->
+    <div class="mb-lg">
+      <h1 class="font-headline-lg text-headline-lg text-on-surface">Rutas de Transporte</h1>
+      <p class="font-body-lg text-body-lg text-secondary">Administre los centros logísticos (CD) de origen y las rutas de despacho hacia los destinos finales.</p>
+    </div>
+
+    <!-- Sub-pestañas -->
+    <div class="flex gap-sm mb-lg border-b border-outline-variant">
+      <button class="rutas-subtab-btn px-md py-sm font-bold text-xs uppercase tracking-wider cursor-pointer border-b-2 transition-all flex items-center gap-xs ${currentRoutesSubTab === 'rutas' ? 'border-primary text-primary' : 'border-transparent text-secondary hover:text-primary'}" data-subtab="rutas">
+        <span class="material-symbols-outlined text-[18px]">route</span> Rutas
+      </button>
+      <button class="rutas-subtab-btn px-md py-sm font-bold text-xs uppercase tracking-wider cursor-pointer border-b-2 transition-all flex items-center gap-xs ${currentRoutesSubTab === 'centros' ? 'border-primary text-primary' : 'border-transparent text-secondary hover:text-primary'}" data-subtab="centros">
+        <span class="material-symbols-outlined text-[18px]">location_on</span> Centros Logísticos
+      </button>
+    </div>
+
+    <div id="rutas-subview-content"></div>
+  `;
+
+  container.querySelectorAll('.rutas-subtab-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      currentRoutesSubTab = btn.getAttribute('data-subtab');
+      renderRoutesView(container);
+    });
+  });
+
+  const subContent = document.getElementById('rutas-subview-content');
+  if (currentRoutesSubTab === 'centros') {
+    renderLogisticsView(subContent);
+  } else {
+    renderRutasSubview(subContent);
+  }
+}
+
+function renderRutasSubview(container) {
   const db = getDatabase();
   const routes = db.routes;
 
@@ -30,17 +69,11 @@ export function renderRoutesView(container) {
   const totalRoutes = routes.length;
   const activeRoutes = routes.filter(r => r.activo).length;
   const inactiveRoutes = totalRoutes - activeRoutes;
-  const averageKm = totalRoutes > 0 
-    ? Math.round(routes.reduce((acc, r) => acc + Number(r.km), 0) / totalRoutes) 
+  const averageKm = totalRoutes > 0
+    ? Math.round(routes.reduce((acc, r) => acc + Number(r.km), 0) / totalRoutes)
     : 0;
 
   container.innerHTML = `
-    <!-- Page Header -->
-    <div class="mb-xl">
-      <h1 class="font-headline-lg text-headline-lg text-on-surface">Administración de Rutas Logísticas</h1>
-      <p class="font-body-lg text-body-lg text-secondary">Defina los puntos de salida, comunas de entrega, regiones geográficas y kilometraje para la cotización de fletes.</p>
-    </div>
-
     <!-- Tarjetas de Estadísticas KPI -->
     <div class="grid grid-cols-1 md:grid-cols-4 gap-lg mb-xl">
       <div class="bg-surface border border-outline-variant p-md shadow-sm rounded flex items-center justify-between">
@@ -400,7 +433,7 @@ export function renderRoutesView(container) {
     }
 
     closeFormModal();
-    renderRoutesView(container);
+    renderRutasSubview(container);
   });
 
   // --- CARGA MASIVA DE RUTAS ---
@@ -544,7 +577,7 @@ export function renderRoutesView(container) {
     saveDatabase(db);
     showAlert(`Se importaron ${parsedRoutes.length} rutas correctamente.`);
     closeBulkModal();
-    renderRoutesView(container);
+    renderRutasSubview(container);
   });
 }
 

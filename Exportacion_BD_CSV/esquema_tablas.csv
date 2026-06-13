@@ -1,0 +1,69 @@
+tabla,columna,tipo_dato,clave,nullable,default,notas
+logistics_centres,id,text,PK,No,,Identificador del Centro de Distribucion
+logistics_centres,nombre,text,,No,,Nombre del CD
+logistics_centres,direccion,text,,Si,,Direccion fisica
+logistics_centres,idCentroSap,text,,Si,,Codigo SAP del centro
+logistics_centres,lat,double precision,,Si,,Latitud GPS
+logistics_centres,lon,double precision,,Si,,Longitud GPS
+routes,id,text,PK,No,,Identificador de la ruta
+routes,codigo,text,UNIQUE,No,,Codigo SAP de ruta
+routes,origenId,text,FK -> logistics_centres.id,Si,,Centro logistico de origen
+routes,destino,text,,Si,,Comuna o sector destino
+routes,region,text,,Si,,Region del destino
+routes,tipo,text,,Si,,Tipo de zona (Comuna/Sector)
+routes,km,numeric,,Si,,Distancia en kilometros
+routes,activo,boolean,,Si,true,Estado de la ruta
+routes,caracteristica,text,,Si,'NORMAL',NORMAL / EXTREMA / ISLA
+routes,denominacion,text,,Si,,Denominacion = Centro Origen - Destino
+truck_types,type,text,PK,No,,Tipo de camion (ej: Camion 28 Ton)
+truck_types,capacityTons,text,,Si,,Capacidad descriptiva en toneladas
+truck_types,baseRate,numeric,,Si,,Tarifa base
+truck_types,ratePerKm,numeric,,Si,,Tarifa por kilometro
+transports,id,text,PK,No,,Identificador del transportista
+transports,razonSocial,text,,No,,Razon social
+transports,rut,text,,Si,,RUT del transportista
+transports,direccion,text,,Si,,Direccion
+transports,comuna,text,,Si,,Comuna
+transports,region,text,,Si,,Region
+transports,telefono,text,,Si,,Telefono de contacto
+transports,email,text,,Si,,Email de contacto
+transports,patente,text,,Si,,Patente del vehiculo principal
+transports,modelo,text,,Si,,Modelo del vehiculo principal
+transports,anio,integer,,Si,,Anio del vehiculo principal
+transports,capacidad,numeric,,Si,,Capacidad (legado; el detalle real esta en camiones)
+transports,dimensiones,jsonb,,Si,'{}',Dimensiones del vehiculo principal
+transports,codigoSap,text,,Si,,Codigo SAP del transportista
+transports,activo,boolean,,Si,true,Estado del transportista
+transports,documentos,jsonb,,Si,'{}',Documentos del vehiculo principal (SOAP, padron, etc.)
+transports,conductor,jsonb,,Si,'{}',Conductor principal (legado)
+transports,ownerEmail,text,,Si,,Email del usuario propietario de la ficha
+transports,camiones,jsonb,,Si,'[]',Array de camiones (ver transports_camiones.csv)
+transports,choferes,jsonb,,Si,'[]',Array de choferes (ver transports_choferes.csv)
+transports,centrosServicio,jsonb,,Si,'[]',Array de IDs de centros logisticos atendidos
+transports,datosBancarios,jsonb,,Si,'{}',Banco / tipo de cuenta / numero de cuenta / RUT
+quotes_history,id,text,PK,No,,Identificador de la cotizacion
+quotes_history,fecha,text,,Si,,Fecha y hora de la cotizacion
+quotes_history,routeId,text,FK -> routes.id,Si,,Ruta cotizada
+quotes_history,origen,text,,Si,,Centro de origen (texto)
+quotes_history,destino,text,,Si,,Destino (texto)
+quotes_history,vehiculo,text,,Si,,Tipo de vehiculo cotizado
+quotes_history,estado,text,,Si,,Estado de la cotizacion
+quotes_history,monto,numeric,,Si,,Valor neto cotizado
+app_users,email,text,PK,No,,Email del usuario (login)
+app_users,name,text,,Si,,Nombre del usuario
+app_users,role,text,,Si,'operador',Rol (admin/operador)
+app_users,activo,boolean,,Si,true,Estado del usuario
+app_users,lastAccess,text,,Si,,Ultimo acceso
+providers,email,text,PK,No,,Email del proveedor (sin registros actualmente)
+providers,razonSocial,text,,No,,Razon social del proveedor
+providers,rut,text,,Si,,RUT del proveedor
+providers,telefono,text,,Si,,Telefono
+providers,representante,text,,Si,,Representante legal
+providers,estado,text,,Si,'pendiente',Estado de aprobacion del proveedor
+providers,createdAt,timestamptz,,Si,now(),Fecha de creacion
+tariff_config,id,text,PK,No,,Identificador de configuracion (siempre 'global')
+tariff_config,data,jsonb,,No,'{}',Configuracion completa de tarifas de transporte
+tariff_config,updated_at,timestamptz,,No,now(),Ultima actualizacion
+client_tariff_config,id,text,PK,No,,Identificador de configuracion (siempre 'global')
+client_tariff_config,data,jsonb,,No,'{}',Configuracion completa de tarifas de clientes
+client_tariff_config,updated_at,timestamptz,,No,now(),Ultima actualizacion

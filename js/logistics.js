@@ -7,11 +7,7 @@ export function renderLogisticsView(container) {
   const centres = db.logisticsCentres;
 
   container.innerHTML = `
-    <!-- Page Header -->
-    <div class="mb-xl">
-      <h1 class="font-headline-lg text-headline-lg text-on-surface">Centros Logísticos Ebema</h1>
-      <p class="font-body-lg text-body-lg text-secondary">Administre los centros de distribución (CD) y puntos de salida. Seleccione un centro para geolocalizarlo en el mapa interactivo.</p>
-    </div>
+    <p class="font-body-md text-body-md text-secondary mb-md">Administre los centros de distribución (CD) y puntos de salida. Seleccione un centro para geolocalizarlo en el mapa interactivo.</p>
 
     <div style="display: flex; justify-content: flex-end; margin-bottom: 16px;">
       <button id="btn-create-cd" class="bg-primary hover:bg-[#930007] text-white font-bold px-md py-sm rounded active:scale-[0.98] transition-all flex items-center gap-sm cursor-pointer text-xs uppercase tracking-wider shadow">
@@ -77,7 +73,7 @@ export function renderLogisticsView(container) {
   `;
 
   // Renderizar CD Cards
-  renderCdCards(centres);
+  renderCdCards(centres, container);
 
   // Inicializar Mapa Leaflet
   let map;
@@ -215,7 +211,7 @@ export function renderLogisticsView(container) {
   });
 }
 
-function renderCdCards(list) {
+function renderCdCards(list, parentContainer) {
   const container = document.getElementById('cd-cards-container');
   if (!container) return;
 
@@ -322,8 +318,7 @@ function renderCdCards(list) {
       db.logisticsCentres = db.logisticsCentres.filter(c => c.id !== id);
       saveDatabase(db);
       showAlert(`Centro ${cd.nombre} eliminado.`);
-      const stage = document.getElementById('stage-area');
-      renderLogisticsView(stage);
+      renderLogisticsView(parentContainer);
     });
   });
 }

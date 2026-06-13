@@ -1,0 +1,4 @@
+﻿id_camion,transportId,razonSocialTransporte,patente,modelo,anio,capacidad_ton,ejes,choferRut,dimensiones
+ct3,t3,Fletes y Transportes del Centro,GB-DS-12,Volvo FH 420,2018,10,,,"{""alto"": 2.5, ""ancho"": 2.3, ""largo"": 7.2}"
+ct1,t1,Transportes TransMateriales Ltda,HR-PX-45,Mercedes-Benz Actros 2651,2021,28,,15.432.876-K,"{""alto"": 2.7, ""ancho"": 2.4, ""largo"": 13.6}"
+ct2,t2,Logística Rápida del Sur,LK-TR-89,Scania R 410,2019,15,,12.345.678-9,"{""alto"": 2.6, ""ancho"": 2.4, ""largo"": 8.5}"

@@ -1,0 +1,4 @@
+﻿email,name,role,activo,lastAccess
+admin@ebema.cl,Administrador Ebema,admin,True,
+logistica@ebema.cl,Operador Logístico,operador,True,
+jcandia@ebema.cl,Jordan Candia,admin,True,

@@ -2,7 +2,6 @@ import { getDatabase, saveDatabase, initDatabase } from './data.js';
 import { supabase } from './supabase-client.js';
 import { renderTransportsView } from './transports.js';
 import { renderRoutesView } from './routes.js';
-import { renderLogisticsView } from './logistics.js';
 import { renderRatesView } from './rates.js';
 import { renderRolesView } from './roles.js';
 import { renderTariffTransportView } from './tarifas-transporte.js';
@@ -894,16 +893,10 @@ function renderDashboardShell() {
           <span class="font-body-md text-body-md">Transportes</span>
         </a>
 
-        <!-- Rutas (Routes) -->
+        <!-- Rutas de Transporte (Routes + Centros SAP) -->
         <a class="sidebar-item flex items-center gap-md px-md py-sm text-secondary hover:text-primary hover:bg-surface-container-high transition-colors rounded-lg cursor-pointer" data-tab="routes" id="nav-routes">
           <span class="material-symbols-outlined">route</span>
-          <span class="font-body-md text-body-md">Rutas</span>
-        </a>
-
-        <!-- Direcciones / CDs (Addresses) -->
-        <a class="sidebar-item flex items-center gap-md px-md py-sm text-secondary hover:text-primary hover:bg-surface-container-high transition-colors rounded-lg cursor-pointer" data-tab="logistics" id="nav-logistics">
-          <span class="material-symbols-outlined">location_on</span>
-          <span class="font-body-md text-body-md">Centros SAP</span>
+          <span class="font-body-md text-body-md">Rutas de Transporte</span>
         </a>
 
         <!-- Roles y Perfiles -->
@@ -1016,12 +1009,8 @@ function switchTab(tabName) {
       renderTransportsView(stage);
       break;
     case 'routes':
-      pageTitle.textContent = 'Gestión de Rutas';
+      pageTitle.textContent = 'Rutas de Transporte';
       renderRoutesView(stage);
-      break;
-    case 'logistics':
-      pageTitle.textContent = 'Gestión de Centros';
-      renderLogisticsView(stage);
       break;
     case 'roles':
       pageTitle.textContent = 'Roles y Perfiles';

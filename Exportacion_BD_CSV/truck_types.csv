@@ -1,0 +1,5 @@
+﻿type,capacityTons,baseRate,ratePerKm
+Camión 5 Ton,Hasta 5 Tons,45000,1200
+Camión 10 Ton,Hasta 10 Tons,60000,1500
+Camión 15 Ton,Hasta 15 Tons,75000,1800
+Camión 28 Ton,Hasta 28 Tons,120000,2500
