@@ -1,19 +1,52 @@
-import { getDatabase, saveDatabase } from './data.js';
+import { getDatabase, saveDatabase, getCentreName } from './data.js';
 import { showAlert } from './utils.js';
 
-// Colores y etiquetas por rol
+// --- Perfiles de Acceso (Roles y Perfiles + Row Level Security) ---
+// 5 perfiles canónicos. Cada uno determina qué puede ver/editar el usuario
+// en la plataforma; el control real de acceso se aplica vía RLS en Supabase
+// usando el rol y, cuando corresponde, el centro/transportista asociado.
 const ROLE_CONFIG = {
-  'Administrador':       { bg: '#ffdad5', text: '#93000a', border: '#ffb4aa', icon: 'admin_panel_settings' },
-  'Operador Logístico':  { bg: '#e8f5e9', text: '#1b5e20', border: '#a5d6a7', icon: 'local_shipping' },
-  'Visita':              { bg: '#e8eaf6', text: '#283593', border: '#9fa8da', icon: 'visibility' },
-  'admin':               { bg: '#ffdad5', text: '#93000a', border: '#ffb4aa', icon: 'admin_panel_settings' },
-  'operador':            { bg: '#e8f5e9', text: '#1b5e20', border: '#a5d6a7', icon: 'local_shipping' },
-  'Admin SIT':           { bg: '#fce4ec', text: '#880e4f', border: '#f48fb1', icon: 'shield_person' },
-  'Logistics Operator':  { bg: '#e8f5e9', text: '#1b5e20', border: '#a5d6a7', icon: 'local_shipping' }
+  'OWNER':                  { bg: '#ffdad5', text: '#93000a', border: '#ffb4aa', icon: 'workspace_premium', label: 'Owner' },
+  'ADMINISTRADOR_DEPOSITO': { bg: '#e3f2fd', text: '#0d47a1', border: '#90caf9', icon: 'warehouse',          label: 'Admin. Depósito' },
+  'AGENTE_COMERCIAL':       { bg: '#e8f5e9', text: '#1b5e20', border: '#a5d6a7', icon: 'request_quote',      label: 'Agente Comercial' },
+  'TRANSPORTISTA':          { bg: '#fff3e0', text: '#e65100', border: '#ffcc80', icon: 'local_shipping',    label: 'Transportista' },
+  'CHOFER':                 { bg: '#f3e5f5', text: '#6a1b9a', border: '#ce93d8', icon: 'badge',              label: 'Chofer' }
 };
 
+// Descripciones de cada perfil (se muestran al seleccionar el rol en el modal)
+const ROLE_DESCRIPTIONS = {
+  'OWNER': 'Ve y edita cualquier campo de la plataforma: todos los centros, planes, rutas, tarifas de transporte y clientes.',
+  'ADMINISTRADOR_DEPOSITO': 'Igual que Owner, pero limitado a su centro asociado (centros, rutas, tarifas y clientes de ese centro).',
+  'AGENTE_COMERCIAL': 'Puede cotizar y ver la información asociada a su centro.',
+  'TRANSPORTISTA': 'Ve el estado de sus camiones, cuenta bancaria asociada, transportes y choferes. Edita solo lo que está en su perfil.',
+  'CHOFER': 'Ve el estado de su camión asignado, datos del transporte y sus datos personales (nombre, RUT, correo, teléfono, licencia y carnet).'
+};
+
+// Roles legados (datos antiguos) → equivalente normalizado entre los 5 perfiles
+const LEGACY_ROLE_MAP = {
+  'Administrador': 'OWNER',
+  'admin': 'OWNER',
+  'Admin SIT': 'OWNER',
+  'Operador Logístico': 'ADMINISTRADOR_DEPOSITO',
+  'operador': 'ADMINISTRADOR_DEPOSITO',
+  'Logistics Operator': 'ADMINISTRADOR_DEPOSITO',
+  'Visita': 'AGENTE_COMERCIAL',
+  'proveedor': 'TRANSPORTISTA'
+};
+
+// Roles que requieren un "Centro Logístico" asociado
+const CENTRO_ROLES = ['ADMINISTRADOR_DEPOSITO', 'AGENTE_COMERCIAL'];
+// Roles que requieren un "Transportista" asociado
+const TRANSPORTE_ROLES = ['TRANSPORTISTA', 'CHOFER'];
+
+// Normaliza un rol (legado o nuevo) a uno de los 5 perfiles canónicos
+function normalizeRole(role) {
+  if (ROLE_CONFIG[role]) return role;
+  return LEGACY_ROLE_MAP[role] || 'AGENTE_COMERCIAL';
+}
+
 function getRoleConfig(role) {
-  return ROLE_CONFIG[role] || { bg: '#f3f4f5', text: '#5c5f61', border: '#e1e3e4', icon: 'person' };
+  return ROLE_CONFIG[normalizeRole(role)] || { bg: '#f3f4f5', text: '#5c5f61', border: '#e1e3e4', icon: 'person', label: role || 'Sin rol' };
 }
 
 function getInitials(name) {
@@ -40,10 +73,9 @@ export function renderRolesView(container) {
   const users = db.users;
 
   const totalUsers = users.length;
-  const adminCount = users.filter(u => ['Administrador','admin','Admin SIT'].includes(u.role)).length;
-  const operatorCount = users.filter(u => ['Operador Logístico','operador','Logistics Operator'].includes(u.role)).length;
+  const ownerCount = users.filter(u => normalizeRole(u.role) === 'OWNER').length;
+  const depositoCount = users.filter(u => normalizeRole(u.role) === 'ADMINISTRADOR_DEPOSITO').length;
   const activeCount = users.filter(u => u.activo !== false).length;
-  const visitCount = users.filter(u => u.role === 'Visita').length;
 
   container.innerHTML = `
     <!-- Encabezado de Sección -->
@@ -73,17 +105,17 @@ export function renderRolesView(container) {
       </div>
       <div style="background:white;border:1px solid #e1e3e4;border-radius:8px;padding:16px;display:flex;justify-content:space-between;align-items:center">
         <div>
-          <p style="font-size:10px;font-weight:700;letter-spacing:0.07em;text-transform:uppercase;color:#5c5f61;margin-bottom:4px">Administradores</p>
-          <p style="font-size:28px;font-weight:800;color:#93000a;line-height:1">${adminCount}</p>
+          <p style="font-size:10px;font-weight:700;letter-spacing:0.07em;text-transform:uppercase;color:#5c5f61;margin-bottom:4px">Owners</p>
+          <p style="font-size:28px;font-weight:800;color:#93000a;line-height:1">${ownerCount}</p>
         </div>
-        <span class="material-symbols-outlined" style="font-size:32px;color:#93000a;opacity:0.3">shield_person</span>
+        <span class="material-symbols-outlined" style="font-size:32px;color:#93000a;opacity:0.3">workspace_premium</span>
       </div>
       <div style="background:white;border:1px solid #e1e3e4;border-radius:8px;padding:16px;display:flex;justify-content:space-between;align-items:center">
         <div>
-          <p style="font-size:10px;font-weight:700;letter-spacing:0.07em;text-transform:uppercase;color:#5c5f61;margin-bottom:4px">Operadores</p>
-          <p style="font-size:28px;font-weight:800;color:#1b5e20;line-height:1">${operatorCount}</p>
+          <p style="font-size:10px;font-weight:700;letter-spacing:0.07em;text-transform:uppercase;color:#5c5f61;margin-bottom:4px">Admin. Depósito</p>
+          <p style="font-size:28px;font-weight:800;color:#0d47a1;line-height:1">${depositoCount}</p>
         </div>
-        <span class="material-symbols-outlined" style="font-size:32px;color:#1b5e20;opacity:0.3">manage_accounts</span>
+        <span class="material-symbols-outlined" style="font-size:32px;color:#0d47a1;opacity:0.3">warehouse</span>
       </div>
       <div style="background:white;border:1px solid #e1e3e4;border-radius:8px;padding:16px;display:flex;justify-content:space-between;align-items:center">
         <div>
@@ -168,19 +200,46 @@ export function renderRolesView(container) {
           </div>
 
           <div>
-            <label style="display:block;font-size:11px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#5c5f61;margin-bottom:8px">Rol de Acceso</label>
+            <label style="display:block;font-size:11px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#5c5f61;margin-bottom:8px">Rol de Acceso (Perfil)</label>
             <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px" id="rol-selector">
-              ${['Administrador','Operador Logístico','Visita'].map(rol => {
+              ${Object.keys(ROLE_CONFIG).map(rol => {
                 const rc = getRoleConfig(rol);
                 return `
                 <label style="cursor:pointer">
                   <input type="radio" name="modal-role" value="${rol}" style="display:none" class="role-radio" />
                   <div class="role-option" data-role="${rol}" style="padding:10px 8px;border:2px solid #e1e3e4;border-radius:8px;text-align:center;transition:all 0.15s;user-select:none">
                     <span class="material-symbols-outlined" style="font-size:20px;color:${rc.text};display:block;margin-bottom:4px">${rc.icon}</span>
-                    <span style="font-size:11px;font-weight:700;color:#191c1d;display:block;line-height:1.2">${rol}</span>
+                    <span style="font-size:11px;font-weight:700;color:#191c1d;display:block;line-height:1.2">${rc.label}</span>
                   </div>
                 </label>`;
               }).join('')}
+            </div>
+            <p id="role-desc-text" style="font-size:12px;color:#5c5f61;margin-top:8px;line-height:1.4;background:#f8f9fa;border:1px solid #e1e3e4;border-radius:6px;padding:8px 10px"></p>
+          </div>
+
+          <div id="field-centro" style="display:none">
+            <label style="display:block;font-size:11px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#5c5f61;margin-bottom:6px">Centro Asociado</label>
+            <div style="position:relative">
+              <span class="material-symbols-outlined" style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:#5c5f61;font-size:16px;pointer-events:none">location_on</span>
+              <select id="modal-user-centro"
+                style="width:100%;padding:11px 12px 11px 36px;border:1.5px solid #e1e3e4;border-radius:8px;font-size:14px;background:white;color:#191c1d;outline:none;box-sizing:border-box;transition:border-color 0.2s;appearance:none"
+                onfocus="this.style.borderColor='#b5000b'" onblur="this.style.borderColor='#e1e3e4'">
+                <option value="">Seleccione un centro...</option>
+                ${(db.logisticsCentres || []).map(cd => `<option value="${cd.id}">${cd.nombre} (${cd.idCentroSap})</option>`).join('')}
+              </select>
+            </div>
+          </div>
+
+          <div id="field-transportista" style="display:none">
+            <label style="display:block;font-size:11px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#5c5f61;margin-bottom:6px">Transportista Asociado</label>
+            <div style="position:relative">
+              <span class="material-symbols-outlined" style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:#5c5f61;font-size:16px;pointer-events:none">local_shipping</span>
+              <select id="modal-user-transportista"
+                style="width:100%;padding:11px 12px 11px 36px;border:1.5px solid #e1e3e4;border-radius:8px;font-size:14px;background:white;color:#191c1d;outline:none;box-sizing:border-box;transition:border-color 0.2s;appearance:none"
+                onfocus="this.style.borderColor='#b5000b'" onblur="this.style.borderColor='#e1e3e4'">
+                <option value="">Seleccione un transportista...</option>
+                ${(db.transports || []).map(t => `<option value="${t.id}">${t.razonSocial || t.nombre || t.id}</option>`).join('')}
+              </select>
             </div>
           </div>
 
@@ -257,8 +316,21 @@ function setupRoleSelector() {
       // Marcar el radio correspondiente
       const radio = document.querySelector(`input[name="modal-role"][value="${role}"]`);
       if (radio) radio.checked = true;
+      updateRoleFields(role);
     });
   });
+}
+
+// Actualiza la descripción del perfil y muestra/oculta los campos de
+// "Centro Asociado" / "Transportista Asociado" según el rol seleccionado.
+function updateRoleFields(role) {
+  const descEl = document.getElementById('role-desc-text');
+  if (descEl) descEl.textContent = ROLE_DESCRIPTIONS[role] || '';
+
+  const fieldCentro = document.getElementById('field-centro');
+  const fieldTransportista = document.getElementById('field-transportista');
+  if (fieldCentro) fieldCentro.style.display = CENTRO_ROLES.includes(role) ? 'block' : 'none';
+  if (fieldTransportista) fieldTransportista.style.display = TRANSPORTE_ROLES.includes(role) ? 'block' : 'none';
 }
 
 function openModal(userIdx = null) {
@@ -275,6 +347,12 @@ function openModal(userIdx = null) {
   // Limpiar selección de roles
   document.querySelectorAll('.role-option').forEach(o => o.classList.remove('selected'));
   document.querySelectorAll('input[name="modal-role"]').forEach(r => r.checked = false);
+  const centroSelect = document.getElementById('modal-user-centro');
+  const transportistaSelect = document.getElementById('modal-user-transportista');
+  if (centroSelect) centroSelect.value = '';
+  if (transportistaSelect) transportistaSelect.value = '';
+
+  let selectedRole = 'AGENTE_COMERCIAL';
 
   if (userIdx !== null) {
     // Modo edición
@@ -289,14 +367,10 @@ function openModal(userIdx = null) {
     emailInput.style.background = '#f3f4f5';
     emailInput.style.cursor = 'not-allowed';
 
-    // Seleccionar rol actual
-    const currentRole = user.role || '';
-    const roleOpt = document.querySelector(`.role-option[data-role="${currentRole}"]`);
-    if (roleOpt) {
-      roleOpt.classList.add('selected');
-      const radio = document.querySelector(`input[name="modal-role"][value="${currentRole}"]`);
-      if (radio) radio.checked = true;
-    }
+    // Seleccionar rol actual (normalizado a los 5 perfiles canónicos)
+    selectedRole = normalizeRole(user.role);
+    if (centroSelect && user.centroId) centroSelect.value = user.centroId;
+    if (transportistaSelect && user.transportistaId) transportistaSelect.value = user.transportistaId;
   } else {
     // Modo creación
     title.textContent = 'Agregar Usuario';
@@ -307,15 +381,15 @@ function openModal(userIdx = null) {
     emailInput.readOnly = false;
     emailInput.style.background = 'white';
     emailInput.style.cursor = 'text';
-
-    // Seleccionar Operador Logístico por defecto
-    const defaultOpt = document.querySelector('.role-option[data-role="Operador Logístico"]');
-    if (defaultOpt) {
-      defaultOpt.classList.add('selected');
-      const radio = document.querySelector('input[name="modal-role"][value="Operador Logístico"]');
-      if (radio) radio.checked = true;
-    }
   }
+
+  const roleOpt = document.querySelector(`.role-option[data-role="${selectedRole}"]`);
+  if (roleOpt) {
+    roleOpt.classList.add('selected');
+    const radio = document.querySelector(`input[name="modal-role"][value="${selectedRole}"]`);
+    if (radio) radio.checked = true;
+  }
+  updateRoleFields(selectedRole);
 
   modal.style.display = 'flex';
   nameInput.focus();
@@ -343,10 +417,25 @@ function saveUser() {
   if (!email.endsWith('@ebema.cl')) return showErr('El correo debe pertenecer al dominio @ebema.cl');
   if (!selectedRole) return showErr('Seleccione un rol de acceso.');
 
+  // Centro / transportista asociado (según el perfil seleccionado)
+  const centroId = document.getElementById('modal-user-centro')?.value || '';
+  const transportistaId = document.getElementById('modal-user-transportista')?.value || '';
+
+  if (CENTRO_ROLES.includes(selectedRole) && !centroId) {
+    return showErr('Seleccione el Centro Asociado para este perfil.');
+  }
+  if (TRANSPORTE_ROLES.includes(selectedRole) && !transportistaId) {
+    return showErr('Seleccione el Transportista Asociado para este perfil.');
+  }
+
+  // Limpiar asociaciones que no correspondan al perfil
+  const finalCentroId = CENTRO_ROLES.includes(selectedRole) ? centroId : null;
+  const finalTransportistaId = TRANSPORTE_ROLES.includes(selectedRole) ? transportistaId : null;
+
   if (editIdx === '') {
     // Crear usuario
     if (db.users.some(u => u.email === email)) return showErr('El correo ya se encuentra registrado.');
-    db.users.push({ email, name, role: selectedRole, activo: true, lastAccess: 'Nunca' });
+    db.users.push({ email, name, role: selectedRole, centroId: finalCentroId, transportistaId: finalTransportistaId, activo: true, lastAccess: 'Nunca' });
     showAlert(`Usuario ${name} registrado con éxito.`);
   } else {
     // Editar usuario
@@ -354,6 +443,8 @@ function saveUser() {
     if (db.users[idx]) {
       db.users[idx].name = name;
       db.users[idx].role = selectedRole;
+      db.users[idx].centroId = finalCentroId;
+      db.users[idx].transportistaId = finalTransportistaId;
       showAlert(`Perfil de ${name} actualizado.`);
     }
   }
@@ -393,17 +484,23 @@ function renderUsersTable(usersList, viewContainer, isFiltered = false) {
       ? db.users.findIndex(u => u.email === user.email)
       : localIdx;
 
+    const normRole = normalizeRole(user.role);
     const rc = getRoleConfig(user.role);
     const [avatarBg, avatarText] = getAvatarPalette(user.email);
     const initials = getInitials(user.name);
     const isActive = user.activo !== false;
 
-    // Normalizar nombre de rol para display
-    let roleDisplay = user.role || 'Sin rol';
-    if (user.role === 'admin') roleDisplay = 'Administrador';
-    if (user.role === 'operador') roleDisplay = 'Operador Logístico';
-    if (user.role === 'Logistics Operator') roleDisplay = 'Operador Logístico';
-    if (user.role === 'Admin SIT') roleDisplay = 'Administrador';
+    // Normalizar nombre de rol para display (uno de los 5 perfiles canónicos)
+    const roleDisplay = rc.label;
+
+    // Centro o transportista asociado (según el perfil)
+    let asociadoTxt = '';
+    if (CENTRO_ROLES.includes(normRole) && user.centroId) {
+      asociadoTxt = getCentreName(db, user.centroId) || '';
+    } else if (TRANSPORTE_ROLES.includes(normRole) && user.transportistaId) {
+      const t = (db.transports || []).find(t => t.id === user.transportistaId);
+      asociadoTxt = t ? (t.razonSocial || t.nombre || '') : '';
+    }
 
     const tr = document.createElement('tr');
     tr.className = 'user-row';
@@ -429,6 +526,7 @@ function renderUsersTable(usersList, viewContainer, isFiltered = false) {
           <span class="material-symbols-outlined" style="font-size:12px">${rc.icon}</span>
           ${roleDisplay}
         </span>
+        ${asociadoTxt ? `<p style="font-size:10px;color:#5c5f61;margin-top:4px">${asociadoTxt}</p>` : ''}
       </td>
       <td style="padding:14px 16px;text-align:center">
         <span style="display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border-radius:20px;font-size:10px;font-weight:700;${isActive ? 'background:#e8f5e9;color:#1b5e20;border:1px solid #a5d6a7' : 'background:#fce4e4;color:#b71c1c;border:1px solid #ef9a9a'}">

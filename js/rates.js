@@ -1,6 +1,56 @@
 import { getDatabase, saveDatabase, getCentreName } from './data.js';
 import { formatCLP, showAlert, geocodeAddress } from './utils.js';
 
+// --- Caché de cotizaciones recientes por perfil (localStorage) ---
+// Guarda las últimas 10 cotizaciones del usuario para evitar repetir
+// consultas de geolocalización (Nominatim/Google) para la misma ruta.
+const RECENT_QUOTES_MAX = 10;
+
+function getSessionEmail() {
+  try {
+    const session = JSON.parse(localStorage.getItem('ebema_user_session') || '{}');
+    return session.email || 'anon';
+  } catch (e) {
+    return 'anon';
+  }
+}
+
+function recentQuotesKey() {
+  return `ebema_recent_quotes_${getSessionEmail()}`;
+}
+
+function loadRecentQuotes() {
+  try {
+    const raw = localStorage.getItem(recentQuotesKey());
+    const list = raw ? JSON.parse(raw) : [];
+    return Array.isArray(list) ? list : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+function saveRecentQuotes(list) {
+  localStorage.setItem(recentQuotesKey(), JSON.stringify(list.slice(0, RECENT_QUOTES_MAX)));
+}
+
+// Busca en el caché del perfil una cotización previa para el mismo origen/destino
+function findCachedQuote(origenId, destino) {
+  if (!origenId || !destino) return null;
+  const destinoNorm = destino.trim().toLowerCase();
+  return loadRecentQuotes().find(q => q.origenId === origenId && (q.destino || '').trim().toLowerCase() === destinoNorm) || null;
+}
+
+// Inserta/actualiza una entrada en el caché del perfil (más reciente primero, máx. 10)
+function upsertRecentQuote(entry) {
+  const list = loadRecentQuotes();
+  const destinoNorm = (entry.destino || '').trim().toLowerCase();
+  const idx = list.findIndex(q => q.origenId === entry.origenId && (q.destino || '').trim().toLowerCase() === destinoNorm);
+  if (idx !== -1) list.splice(idx, 1);
+  list.unshift(entry);
+  saveRecentQuotes(list);
+  return list;
+}
+
 // Cotizador de Tarifas — SIT EBEMA (Sistema Integrado de Transporte)
 // Servicio EXCLUSIVO: tarifa según tipo de camión (5/10/15/28 Ton).
 // Servicio CONSOLIDADO: tarifa prorrateada según kilos transportados.
@@ -116,8 +166,6 @@ export function renderRatesView(container) {
       <!-- Right Column: Resumen de Cotización -->
       <section class="col-span-12 lg:col-span-5 flex flex-col gap-lg">
         <div class="bg-surface-container-low border border-outline-variant p-lg shadow-md relative overflow-hidden flex-1 flex flex-col justify-between">
-          <div class="absolute -top-12 -right-12 w-48 h-48 bg-primary opacity-5 rounded-full"></div>
-
           <div class="relative z-10 flex-1 flex flex-col justify-between">
             <div>
               <div class="flex justify-between items-start mb-xl">
@@ -156,7 +204,7 @@ export function renderRatesView(container) {
               <div class="bg-surface-container-lowest p-lg border-2 border-primary/10 mb-xl rounded">
                 <p class="font-label-caps text-label-caps text-secondary text-center mb-base">VALOR NETO</p>
                 <p class="font-headline-lg text-headline-lg text-primary text-center font-extrabold tracking-tighter" id="q-summary-precio">$0 CLP</p>
-                <p class="font-label-caps text-[10px] text-center text-secondary mt-base">IVA no incluido · Vigencia: 24 Horas</p>
+                <p class="font-label-caps text-[10px] text-center text-secondary mt-base">IVA no incluido</p>
               </div>
 
               <div class="flex flex-col gap-sm">
@@ -241,6 +289,7 @@ export function renderRatesView(container) {
   let activeRoute = null;     // ruta encontrada (o null)
   let routePending = false;   // destino consultado sin ruta creada
   let servicio = 'exclusivo';
+  let lastDestCoords = null;  // últimas coordenadas de destino (propias o cacheadas)
 
   // --- CARGA INICIAL ---
   selOrigen.innerHTML = '<option value="">Seleccione origen...</option>';
@@ -259,7 +308,7 @@ export function renderRatesView(container) {
     selVehiculo.appendChild(opt);
   });
 
-  renderHistoryTable(db.quotesHistory);
+  renderHistoryTable(loadRecentQuotes());
 
   // --- MAPA: VISUALIZAR FLOTA (ORIGEN / DESTINO) ---
   let fleetMap, fleetMarkers = [], fleetLine = null;
@@ -305,11 +354,21 @@ export function renderRatesView(container) {
 
     const destinoVal = inpDestino.value.trim();
     if (destinoVal) {
-      const dest = await geocodeAddress(destinoVal);
+      // Reutilizar coordenadas cacheadas del perfil para no repetir la consulta a Nominatim/Google
+      const cached = findCachedQuote(origenId, destinoVal);
+      let dest;
+      if (cached && cached.lat && cached.lon) {
+        dest = { lat: cached.lat, lon: cached.lon };
+      } else {
+        dest = await geocodeAddress(destinoVal);
+      }
+      lastDestCoords = dest;
       const marker = L.marker([dest.lat, dest.lon]).addTo(fleetMap)
         .bindPopup(`<strong>Destino:</strong> ${destinoVal}`);
       fleetMarkers.push(marker);
       points.push([dest.lat, dest.lon]);
+    } else {
+      lastDestCoords = null;
     }
 
     if (points.length === 2) {
@@ -381,17 +440,20 @@ export function renderRatesView(container) {
       sumDistancia.textContent = `${match.km} KM`;
       rutaEstado.textContent = 'RUTA CREADA';
       rutaInd.className = 'w-3 h-3 rounded-full bg-[#28a745]';
-      sumRuta.textContent = `${match.codigo} · CREADA`;
+      sumRuta.textContent = match.codigo;
       sumRuta.className = 'inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-green-100 text-green-800';
     } else {
       routePending = true;
       rutaCodigo.textContent = '—';
-      txtDistancia.textContent = '0 KM';
-      sumDistancia.textContent = '0.0 KM';
+      // Si ya se cotizó este mismo origen/destino antes, reutilizar la distancia cacheada
+      const cached = findCachedQuote(origenId, destinoVal);
+      const kmEstimado = cached && cached.km ? cached.km : 0;
+      txtDistancia.textContent = `${kmEstimado} KM`;
+      sumDistancia.textContent = `${kmEstimado} KM`;
       rutaEstado.textContent = 'PENDIENTE DE CREACIÓN';
       rutaInd.className = 'w-3 h-3 rounded-full bg-[#f59e0b]';
-      sumRuta.textContent = 'PENDIENTE DE CREACIÓN';
-      sumRuta.className = 'inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-800';
+      sumRuta.textContent = 'RUTA NO CREADA';
+      sumRuta.className = 'inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-red-100 text-red-800';
     }
   }
 
@@ -462,6 +524,26 @@ export function renderRatesView(container) {
     }
 
     sumPrecio.textContent = precio > 0 ? formatCLP(precio) : '$0 CLP';
+
+    // Guardar/actualizar la cotización en el caché de las últimas 10 del perfil,
+    // para evitar volver a consultar la misma ruta (origen/destino) más adelante.
+    const origenId = selOrigen.value;
+    const destinoVal = inpDestino.value.trim();
+    if (precio > 0 && origenId && destinoVal) {
+      upsertRecentQuote({
+        fecha: new Date().toLocaleString('es-CL', { dateStyle: 'short', timeStyle: 'short' }),
+        origenId,
+        origen: getCentreName(db, origenId),
+        destino: destinoVal,
+        vehiculo: sumVehiculo.textContent,
+        estado: activeRoute ? 'RUTA CREADA' : 'RUTA NO CREADA',
+        monto: precio,
+        km: activeRoute ? Number(activeRoute.km) : (findCachedQuote(origenId, destinoVal)?.km || 0),
+        lat: lastDestCoords ? lastDestCoords.lat : null,
+        lon: lastDestCoords ? lastDestCoords.lon : null
+      });
+      renderHistoryTable(loadRecentQuotes());
+    }
   }
 }
 
@@ -485,7 +567,9 @@ function renderHistoryTable(historyList) {
   historyList.forEach(q => {
     const tr = document.createElement('tr');
     tr.className = "border-b border-outline-variant";
-    const badgeBg = q.estado === 'ASIGNADO' ? 'bg-green-100 text-green-800' : 'bg-secondary-container text-on-secondary-container';
+    const badgeBg = (q.estado === 'ASIGNADO' || q.estado === 'RUTA CREADA') ? 'bg-green-100 text-green-800'
+      : q.estado === 'RUTA NO CREADA' ? 'bg-red-100 text-red-800'
+      : 'bg-secondary-container text-on-secondary-container';
     tr.innerHTML = `
       <td class="p-md font-data-mono text-data-mono">${q.fecha}</td>
       <td class="p-md">${q.origen} → ${q.destino}</td>
