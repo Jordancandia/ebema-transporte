@@ -67,6 +67,7 @@ export function renderTariffTransportView(container) {
 
     <div class="flex gap-sm mb-lg border-b border-outline-variant pb-sm overflow-x-auto" id="tt-subtabs">
       ${subTabButton('peajes', 'toll', 'Peajes')}
+      ${subTabButton('camiones', 'local_shipping', 'Tarifas por Camión')}
       ${subTabButton('combustibles', 'local_gas_station', 'Combustibles y Rendimientos')}
       ${subTabButton('seguros', 'shield', 'Seguros y Permisos')}
       ${subTabButton('variables', 'tune', 'Variables Generales')}
@@ -95,6 +96,7 @@ export function renderTariffTransportView(container) {
     const content = document.getElementById('tt-content');
     switch (activeSub) {
       case 'peajes': renderPeajes(content, db, cfg); break;
+      case 'camiones': renderTarifasCamion(content, db, cfg); break;
       case 'combustibles': renderCombustibles(content, db, cfg); break;
       case 'seguros': renderSeguros(content, db, cfg); break;
       case 'variables': renderVariables(content, db, cfg); break;
@@ -259,6 +261,72 @@ function renderPeajes(content, db, cfg) {
       saveDatabase(db);
       showAlert(`${count} peajes cargados desde CSV`);
       renderPeajes(content, db, cfg);
+    });
+  });
+}
+
+// ============================================================
+// SUB-MÓDULO: TARIFAS DE TRANSPORTE POR CENTRO Y TIPO DE CAMIÓN
+// ============================================================
+function truckNumInput(id, field, value) {
+  return `<input type="number" step="any" class="${inputCls}" data-truck-id="${id}" data-truck-field="${field}" value="${value ?? 0}">`;
+}
+
+function renderTarifasCamion(content, db, cfg) {
+  const centres = db.logisticsCentres;
+
+  content.innerHTML = `
+    <div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm">
+      <div class="flex items-center gap-sm mb-md border-b border-outline-variant pb-sm">
+        <span class="material-symbols-outlined text-primary">local_shipping</span>
+        <h2 class="font-headline-sm text-headline-sm font-bold text-on-surface">Tarifas de Transporte por Centro y Tipo de Camión</h2>
+      </div>
+      <p class="text-[12px] text-secondary mb-md">Tarifa Base y Tarifa/KM alimentan el Cotizador de Tarifas (servicio Exclusivo y Consolidado). Km Base y Costo Base son el tramo de referencia usado para fijar dichas tarifas.</p>
+
+      ${centres.map(cd => {
+        const rows = (db.truckTypes || []).filter(t => t.Id_centro === cd.id);
+        return `
+        <div class="mb-lg">
+          <h3 class="font-body-lg text-body-lg font-bold text-on-surface mb-xs">${cd.nombre} <span class="text-secondary font-data-mono text-[12px]">(${cd.id})</span></h3>
+          <div class="bg-surface border border-outline-variant overflow-hidden rounded">
+            <table class="w-full zebra-table border-collapse">
+              <thead>
+                <tr class="bg-surface-container-high text-left border-b border-outline-variant">
+                  <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Tipo de Camión</th>
+                  <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Capacidad</th>
+                  <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-right">Km Base</th>
+                  <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-right">Costo Base</th>
+                  <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-right">Tarifa Base</th>
+                  <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-right">Tarifa / KM</th>
+                </tr>
+              </thead>
+              <tbody class="font-body-md text-body-md">
+                ${rows.length === 0 ? `<tr><td colspan="6" class="p-md text-center text-secondary">Sin tarifas configuradas para este centro.</td></tr>` :
+                  rows.map(t => `
+                  <tr class="border-b border-outline-variant">
+                    <td class="p-md font-bold">${t.type}</td>
+                    <td class="p-md">${t.capacityTons}</td>
+                    <td class="p-md w-28">${truckNumInput(t.id, 'Kmbase', t.Kmbase)}</td>
+                    <td class="p-md w-32">${truckNumInput(t.id, 'baseKM', t.baseKM)}</td>
+                    <td class="p-md w-32">${truckNumInput(t.id, 'baseRate', t.baseRate)}</td>
+                    <td class="p-md w-28">${truckNumInput(t.id, 'ratePerKm', t.ratePerKm)}</td>
+                  </tr>`).join('')}
+              </tbody>
+            </table>
+          </div>
+        </div>`;
+      }).join('')}
+    </div>
+  `;
+
+  content.querySelectorAll('[data-truck-id]').forEach(inp => {
+    inp.addEventListener('change', (e) => {
+      const id = e.target.dataset.truckId;
+      const field = e.target.dataset.truckField;
+      const val = e.target.value === '' ? 0 : Number(e.target.value);
+      const row = (db.truckTypes || []).find(t => t.id === id);
+      if (row) row[field] = val;
+      saveDatabase(db);
     });
   });
 }

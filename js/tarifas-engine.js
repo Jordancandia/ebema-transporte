@@ -6,9 +6,13 @@ import { truckCapKg } from './data.js';
 // Capacidades nominales soportadas (kg)
 export const CAP_LIST = [5000, 10000, 15000, 28000];
 
-// Devuelve la lista de tipos de camión del catálogo con su capacidad en kg
-export function truckTypesWithCap(db) {
-  return db.truckTypes.map(t => ({ ...t, capKg: truckCapKg(t.type) }));
+// Devuelve la lista de tipos de camión del catálogo con su capacidad en kg.
+// Si se indica centroId, filtra solo las tarifas de ese centro logístico (Id_centro).
+export function truckTypesWithCap(db, centroId) {
+  const tipos = centroId
+    ? db.truckTypes.filter(t => t.Id_centro === centroId)
+    : db.truckTypes;
+  return tipos.map(t => ({ ...t, capKg: truckCapKg(t.type) }));
 }
 
 // Calcula el detalle completo de costos (12 pasos del motor actuarial) para
@@ -102,9 +106,9 @@ export function calcularCostoRuta(db, cfg, ruta, capKg) {
 // Calcula el ZCAP para TODAS las combinaciones ruta x tipo de camión activas
 export function calcularMatrizCostos(db, cfg) {
   const rutas = db.routes.filter(r => r.activo);
-  const tipos = truckTypesWithCap(db);
   const out = [];
   rutas.forEach(ruta => {
+    const tipos = truckTypesWithCap(db, ruta.origenId);
     tipos.forEach(t => {
       out.push({ ruta, truckType: t, ...calcularCostoRuta(db, cfg, ruta, t.capKg) });
     });

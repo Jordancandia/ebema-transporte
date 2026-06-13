@@ -9,7 +9,7 @@ const STORAGE_KEY = 'ebema_transporte_db';
 const TABLE_MAP = [
   { local: 'logisticsCentres',  table: 'logistics_centres',  pk: 'id' },
   { local: 'routes',            table: 'routes',             pk: 'id' },
-  { local: 'truckTypes',        table: 'truck_types',        pk: 'type' },
+  { local: 'truckTypes',        table: 'truck_types',        pk: 'id' },
   { local: 'transports',        table: 'transports',         pk: 'id' },
   { local: 'transportsCamiones',  table: 'transports_camiones',  pk: 'id_camion' },
   { local: 'transportsChoferes',  table: 'transports_choferes',  pk: 'rut' },
@@ -29,6 +29,38 @@ export function truckCapKg(type) {
 // Tipo de eje según capacidad del camión (Tons): 5 a 10 Ton -> 2 ejes · 15 a 28 Ton -> 3 ejes
 export function calcEjes(capacidad) {
   return Number(capacidad) >= 15 ? 3 : 2;
+}
+
+// Tarifas de transporte por centro (truck_types): 4 tipos de camión base,
+// duplicados para cada centro logístico (Id_centro). Kmbase/baseKM definen
+// el tramo y costo base referencial; baseRate/ratePerKm son la tarifa vigente.
+const TRUCK_BASE_TYPES = [
+  { type: 'Camión 5 Ton',  capacityTons: 'Hasta 5 Tons',  baseRate: 45000,  ratePerKm: 1200 },
+  { type: 'Camión 10 Ton', capacityTons: 'Hasta 10 Tons', baseRate: 60000,  ratePerKm: 1500 },
+  { type: 'Camión 15 Ton', capacityTons: 'Hasta 15 Tons', baseRate: 75000,  ratePerKm: 1800 },
+  { type: 'Camión 28 Ton', capacityTons: 'Hasta 28 Tons', baseRate: 120000, ratePerKm: 2500 }
+];
+
+// Genera las filas de truck_types (una por centro x tipo de camión) a partir
+// de una lista de centros logísticos y una lista base de tipos de camión.
+function buildTruckTypes(centres, baseTypes = TRUCK_BASE_TYPES) {
+  const out = [];
+  (centres || []).forEach(cd => {
+    baseTypes.forEach(b => {
+      const cap = String(truckCapKg(b.type) / 1000);
+      out.push({
+        id: `${cd.id}-${cap}`,
+        Id_centro: cd.id,
+        type: b.type,
+        capacityTons: b.capacityTons,
+        baseRate: Number(b.baseRate) || 0,
+        ratePerKm: Number(b.ratePerKm) || 0,
+        Kmbase: 50,
+        baseKM: Number(b.baseRate) || 0
+      });
+    });
+  });
+  return out;
 }
 
 // Derivar las tablas normalizadas transports_camiones / transports_choferes
@@ -370,14 +402,11 @@ const defaultData = {
     }
   ],
 
-  // 5. Configuración de Tarifas (Matriz)
-  // Define los costos base y costo por KM para cada categoría de Camión
-  truckTypes: [
-    { type: 'Camión 5 Ton',  capacityTons: 'Hasta 5 Tons',  baseRate: 45000,  ratePerKm: 1200 },
-    { type: 'Camión 10 Ton', capacityTons: 'Hasta 10 Tons', baseRate: 60000,  ratePerKm: 1500 },
-    { type: 'Camión 15 Ton', capacityTons: 'Hasta 15 Tons', baseRate: 75000,  ratePerKm: 1800 },
-    { type: 'Camión 28 Ton', capacityTons: 'Hasta 28 Tons', baseRate: 120000, ratePerKm: 2500 }
-  ],
+  // 5. Configuración de Tarifas (Matriz) — Tarifas de transporte por centro
+  // Define los costos base y costo por KM para cada categoría de Camión, por centro logístico (Id_centro)
+  truckTypes: buildTruckTypes([
+    { id: 'cd1' }, { id: 'cd2' }, { id: 'cd3' }
+  ]),
 
   // 6. Historial de Cotizaciones (historial_cotizaciones)
   quotesHistory: [
@@ -458,9 +487,16 @@ export function getDatabase() {
     migrado = true;
   }
 
-  // Migración: Nuevos tipos de camión (5/10/15/28 Ton)
-  if (!parsed.truckTypes || !parsed.truckTypes.some(t => t.type === 'Camión 28 Ton')) {
-    parsed.truckTypes = defaultData.truckTypes;
+  // Migración: Tarifas de transporte POR CENTRO (Id_centro, Kmbase, baseKM, id sintético)
+  if (!parsed.truckTypes || !parsed.truckTypes.some(t => t.Id_centro && t.id)) {
+    const centres = (parsed.logisticsCentres && parsed.logisticsCentres.length)
+      ? parsed.logisticsCentres
+      : defaultData.logisticsCentres;
+    const genericos = (parsed.truckTypes || []).filter(t => !t.Id_centro);
+    const baseTypes = genericos.length
+      ? genericos.map(t => ({ type: t.type, capacityTons: t.capacityTons, baseRate: t.baseRate, ratePerKm: t.ratePerKm }))
+      : TRUCK_BASE_TYPES;
+    parsed.truckTypes = buildTruckTypes(centres, baseTypes);
     migrado = true;
   }
 

@@ -59,6 +59,14 @@ export function renderRatesView(container) {
   const cds = db.logisticsCentres;
   const routes = db.routes.filter(r => r.activo);
   const truckTypes = db.truckTypes;
+  // Catálogo de tipos de camión (distintos), para poblar el selector — las tarifas
+  // efectivas (baseRate/ratePerKm) se buscan luego por centro de origen + tipo.
+  const truckTypeCatalog = [];
+  truckTypes.forEach(t => {
+    if (!truckTypeCatalog.some(x => x.type === t.type)) {
+      truckTypeCatalog.push({ type: t.type, capacityTons: t.capacityTons });
+    }
+  });
 
   const currentQuoteId = `${Math.floor(1000 + Math.random() * 9000)}-QT`;
 
@@ -301,7 +309,7 @@ export function renderRatesView(container) {
   });
 
   selVehiculo.innerHTML = '<option value="">Seleccione camión...</option>';
-  truckTypes.forEach(t => {
+  truckTypeCatalog.forEach(t => {
     const opt = document.createElement('option');
     opt.value = t.type;
     opt.textContent = `${t.type} (${t.capacityTons})`;
@@ -498,9 +506,12 @@ export function renderRatesView(container) {
 
     if (activeRoute) {
       const km = Number(activeRoute.km);
+      const origenId = selOrigen.value;
+      // Tarifas vigentes para el centro de origen de la ruta activa
+      const tarifasCentro = truckTypes.filter(t => t.Id_centro === origenId);
 
       if (servicio === 'exclusivo') {
-        const truck = truckTypes.find(t => t.type === selVehiculo.value);
+        const truck = tarifasCentro.find(t => t.type === selVehiculo.value);
         if (truck) {
           precio = Number(truck.baseRate) + (km * Number(truck.ratePerKm));
           sumVehiculo.textContent = truck.type;
@@ -509,9 +520,9 @@ export function renderRatesView(container) {
         }
       } else {
         const kilos = Number(inpKilos.value) || 0;
-        if (kilos > 0) {
+        if (kilos > 0 && tarifasCentro.length > 0) {
           // Tarifa consolidada: prorrateo sobre el camión de mayor capacidad (28 Ton)
-          const ref = truckTypes.reduce((a, b) => (Number(a.baseRate) > Number(b.baseRate) ? a : b));
+          const ref = tarifasCentro.reduce((a, b) => (Number(a.baseRate) > Number(b.baseRate) ? a : b));
           const total28 = Number(ref.baseRate) + (km * Number(ref.ratePerKm));
           precio = Math.max(25000, Math.round(total28 * (Math.min(kilos, 28000) / 28000)));
           sumVehiculo.textContent = `Consolidado · ${kilos.toLocaleString('es-CL')} kg`;
