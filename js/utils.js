@@ -1,5 +1,16 @@
 // Funciones de Utilidad Compartidas para la Plataforma Ebema
 
+// 0. Escapar texto antes de insertarlo en innerHTML (previene XSS con datos de usuarios/proveedores)
+export function escapeHtml(value) {
+  if (value === null || value === undefined) return '';
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 // 1. Formatear y Validar RUT Chileno (ej: 76.849.201-3 o 768492013)
 export function formatRut(rut) {
   // Limpiar caracteres extraños

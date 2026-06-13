@@ -2,7 +2,7 @@
 // El proveedor solo ve su perfil y las fichas de SUS camiones (RLS lo garantiza en el servidor).
 import { supabase } from './supabase-client.js';
 import { getDatabase } from './data.js';
-import { showAlert, formatRut, formatPhone } from './utils.js';
+import { showAlert, formatRut, formatPhone, escapeHtml } from './utils.js';
 import { renderFichaTransporte } from './ficha-transporte.js';
 
 const ESTADOS = {
@@ -26,8 +26,8 @@ export function renderProviderShell(session, onLogout) {
       </div>
       <div style="display:flex;align-items:center;gap:16px">
         <div style="text-align:right" class="hidden sm:block">
-          <p style="font-size:13px;font-weight:700;color:#191c1d;line-height:1.1">${session.name}</p>
-          <p style="font-size:11px;color:#5c5f61">${session.email}</p>
+          <p style="font-size:13px;font-weight:700;color:#191c1d;line-height:1.1">${escapeHtml(session.name)}</p>
+          <p style="font-size:11px;color:#5c5f61">${escapeHtml(session.email)}</p>
         </div>
         <button id="btn-provider-logout" style="display:inline-flex;align-items:center;gap:6px;padding:8px 14px;background:white;border:1.5px solid #e1e3e4;border-radius:8px;font-size:13px;font-weight:600;color:#5c5f61;cursor:pointer;transition:all 0.2s" onmouseover="this.style.borderColor='#b5000b';this.style.color='#b5000b'" onmouseout="this.style.borderColor='#e1e3e4';this.style.color='#5c5f61'">
           <span class="material-symbols-outlined" style="font-size:17px">logout</span>
@@ -84,11 +84,11 @@ export async function renderPortalHome(container) {
       </div>
       <div style="padding:20px">
         <form id="form-provider-profile" style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
-          ${campo('Razón Social', 'p-razon', provider.razonSocial, false)}
-          ${campo('RUT Empresa', 'p-rut', provider.rut, false)}
-          ${campo('Correo de Contacto', 'p-email', provider.email, false)}
-          ${campo('Teléfono', 'p-telefono', provider.telefono, true)}
-          ${campo('Nombre Representante Legal', 'p-representante', provider.representante, true, '2')}
+          ${campo('Razón Social', 'p-razon', escapeHtml(provider.razonSocial), false)}
+          ${campo('RUT Empresa', 'p-rut', escapeHtml(provider.rut), false)}
+          ${campo('Correo de Contacto', 'p-email', escapeHtml(provider.email), false)}
+          ${campo('Teléfono', 'p-telefono', escapeHtml(provider.telefono), true)}
+          ${campo('Nombre Representante Legal', 'p-representante', escapeHtml(provider.representante), true, '2')}
           <div style="grid-column:1/-1;display:flex;justify-content:flex-end;padding-top:8px;border-top:1px solid #f3f4f5">
             <button type="submit" style="display:inline-flex;align-items:center;gap:6px;padding:9px 18px;background:#b5000b;color:white;border:none;border-radius:7px;font-size:13px;font-weight:700;cursor:pointer">
               <span class="material-symbols-outlined" style="font-size:16px">save</span> Guardar Cambios
@@ -114,7 +114,7 @@ export async function renderPortalHome(container) {
           <div style="text-align:center;padding:30px;color:#5c5f61">
             <span class="material-symbols-outlined" style="font-size:42px;color:#c5c7c9">no_transfer</span>
             <p style="font-size:14px;margin-top:10px">EBEMA aún no ha asociado camiones a su cuenta.</p>
-            <p style="font-size:12px;margin-top:4px;color:#888">Los vehículos se asocian usando el correo <strong>${provider.email}</strong> como contacto del transporte.</p>
+            <p style="font-size:12px;margin-top:4px;color:#888">Los vehículos se asocian usando el correo <strong>${escapeHtml(provider.email)}</strong> como contacto del transporte.</p>
           </div>
         ` : `
           <div style="display:flex;flex-direction:column;gap:10px">
@@ -123,8 +123,8 @@ export async function renderPortalHome(container) {
                 <div style="display:flex;align-items:center;gap:12px">
                   <span class="material-symbols-outlined" style="font-size:26px;color:#b5000b">local_shipping</span>
                   <div>
-                    <p style="font-size:14px;font-weight:700;color:#191c1d">${t.patente} — ${t.modelo || 'Sin modelo'}</p>
-                    <p style="font-size:12px;color:#5c5f61">${t.capacidad} Tons · Código ${t.codigoSap || '—'}</p>
+                    <p style="font-size:14px;font-weight:700;color:#191c1d">${escapeHtml(t.patente)} — ${escapeHtml(t.modelo) || 'Sin modelo'}</p>
+                    <p style="font-size:12px;color:#5c5f61">${escapeHtml(t.capacidad)} Tons · Código ${escapeHtml(t.codigoSap) || '—'}</p>
                   </div>
                 </div>
                 <button class="btn-ver-ficha" data-id="${t.id}" style="display:inline-flex;align-items:center;gap:6px;padding:8px 14px;background:#b5000b;color:white;border:none;border-radius:7px;font-size:12px;font-weight:700;cursor:pointer">
