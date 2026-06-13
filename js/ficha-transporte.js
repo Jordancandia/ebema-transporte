@@ -1,4 +1,4 @@
-import { getDatabase, saveDatabase, getCentreName } from './data.js';
+import { getDatabase, saveDatabase, getCentreName, calcEjes } from './data.js';
 import { formatRut, showAlert } from './utils.js';
 
 // Ficha del Transportista — SIT EBEMA
@@ -11,6 +11,18 @@ const REGIONES_CHILE = [
   'Maule','Ñuble','Biobío','La Araucanía','Los Ríos','Los Lagos',
   'Aysén del General Carlos Ibáñez del Campo','Magallanes y Antártica Chilena'
 ];
+
+// Bancos habilitados para operar en Chile (según CMF)
+const BANCOS_CHILE = [
+  'Banco de Chile', 'Banco Internacional', 'Banco Estado', 'Banco BICE',
+  'Banco Santander Chile', 'Itaú Corpbanca', 'Banco Security', 'Banco Falabella',
+  'Banco Ripley', 'Banco Consorcio', 'Scotiabank Chile', 'Banco BTG Pactual Chile',
+  'HSBC Bank Chile', 'Banco de Crédito e Inversiones (BCI)', 'China Construction Bank Chile',
+  'Coopeuch', 'Tenpo Prepago'
+];
+
+// Tipos de cuenta bancaria aceptados para pago a transportistas
+const TIPOS_CUENTA = ['Cuenta Corriente', 'Cuenta Vista', 'Chequera Electrónica', 'Cuenta RUT'];
 
 // Documentos del camión. Los marcados con "conValor" exigen declarar su valor en CLP.
 const DOCS_CONFIG = [
@@ -73,6 +85,8 @@ export function renderFichaTransporte(container, transportId) {
   if (!t.camiones) t.camiones = [];
   if (!t.choferes) t.choferes = [];
   if (!t.centrosServicio) t.centrosServicio = [];
+  if (!t.datosBancarios) t.datosBancarios = { banco: '', tipoCuenta: '', numeroCuenta: '', rut: t.rut };
+  t.datosBancarios.rut = t.rut; // siempre debe coincidir con el RUT del proveedor
 
   const estado = calcularEstado(t);
   const cds = db.logisticsCentres;
@@ -151,7 +165,24 @@ export function renderFichaTransporte(container, transportId) {
         </div>
       </section>
 
-      <!-- ===== 2. CHOFERES ===== -->
+      <!-- ===== 2. DATOS BANCARIOS (CUENTA CORRIENTE PARA PAGOS) ===== -->
+      <section style="background:white;border:1px solid #e1e3e4;border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.05)">
+        ${seccionHeader('account_balance', '#1565c0', '#e3f2fd', 'Datos Bancarios para Pago', 'Cuenta a la que se realizarán los pagos por servicios de transporte')}
+        <div style="padding:20px">
+          <form id="form-bancario" style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+            ${selectBanco('Banco', 'b-banco', t.datosBancarios.banco)}
+            ${selectTipoCuenta('Tipo de Cuenta', 'b-tipo', t.datosBancarios.tipoCuenta)}
+            ${fieldGroup('Número de Cuenta', 'b-numero', t.datosBancarios.numeroCuenta, 'text', true)}
+            ${fieldGroup('RUT Asociado a la Cuenta', 'b-rut', t.datosBancarios.rut, 'text', false)}
+
+            <div style="grid-column:1/-1;display:flex;justify-content:flex-end;padding-top:8px;border-top:1px solid #f3f4f5">
+              ${btnGuardar('#1565c0', 'Guardar Datos Bancarios')}
+            </div>
+          </form>
+        </div>
+      </section>
+
+      <!-- ===== 3. CHOFERES ===== -->
       <section style="background:white;border:1px solid #e1e3e4;border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.05)">
         ${seccionHeader('group', '#7b1fa2', '#f3e5f5', 'Choferes', 'Conductores de la empresa — se asignan a los camiones por RUT')}
         <div style="padding:20px">
@@ -170,7 +201,7 @@ export function renderFichaTransporte(container, transportId) {
         </div>
       </section>
 
-      <!-- ===== 3. CAMIONES ===== -->
+      <!-- ===== 4. CAMIONES ===== -->
       <section style="background:white;border:1px solid #e1e3e4;border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.05)">
         ${seccionHeader('local_shipping', '#2e7d32', '#e8f5e9', 'Camiones (Patentes)', 'Flota del transportista con su documentación y chofer asignado')}
         <div style="padding:20px;display:flex;flex-direction:column;gap:16px">
@@ -232,7 +263,31 @@ export function renderFichaTransporte(container, transportId) {
     refresh();
   });
 
-  // --- 2. CHOFERES ---
+  // --- 2. DATOS BANCARIOS ---
+  document.getElementById('form-bancario').addEventListener('submit', e => {
+    e.preventDefault();
+    const database = getDatabase();
+    const obj = getT(database);
+    if (!obj) return;
+
+    const banco = document.getElementById('b-banco').value;
+    const tipoCuenta = document.getElementById('b-tipo').value;
+    const numeroCuenta = document.getElementById('b-numero').value.trim();
+    if (!banco || !tipoCuenta || !numeroCuenta) return showAlert('Complete banco, tipo de cuenta y número de cuenta.', 'error');
+
+    obj.datosBancarios = {
+      banco,
+      tipoCuenta,
+      numeroCuenta,
+      rut: obj.rut // el RUT de la cuenta nunca es editable: siempre coincide con el RUT del proveedor
+    };
+
+    saveDatabase(database);
+    showAlert('Datos bancarios actualizados.');
+    refresh();
+  });
+
+  // --- 3. CHOFERES ---
   document.getElementById('btn-add-chofer').addEventListener('click', () => {
     const rows = document.getElementById('choferes-rows');
     const idx = rows.children.length;
@@ -278,7 +333,7 @@ export function renderFichaTransporte(container, transportId) {
     if (btn) btn.closest('.chofer-row').remove();
   });
 
-  // --- 3. CAMIONES ---
+  // --- 4. CAMIONES ---
   document.getElementById('btn-add-camion').addEventListener('click', () => {
     const database = getDatabase();
     const obj = getT(database);
@@ -289,6 +344,7 @@ export function renderFichaTransporte(container, transportId) {
       modelo: '',
       anio: new Date().getFullYear(),
       capacidad: 5,
+      ejes: calcEjes(5),
       dimensiones: { largo: 0, ancho: 0, alto: 0 },
       documentos: {},
       choferRut: ''
@@ -338,6 +394,7 @@ export function renderFichaTransporte(container, transportId) {
       cam.modelo = card.querySelector('.cam-modelo').value;
       cam.anio = parseInt(card.querySelector('.cam-anio').value) || 2020;
       cam.capacidad = Number(card.querySelector('.cam-capacidad').value) || 0;
+      cam.ejes = calcEjes(cam.capacidad);
       cam.dimensiones = {
         largo: parseFloat(card.querySelector('.cam-largo').value) || 0,
         ancho: parseFloat(card.querySelector('.cam-ancho').value) || 0,
@@ -453,11 +510,21 @@ function camionCard(c, i, choferes) {
 
       <div style="padding:16px;display:flex;flex-direction:column;gap:14px">
         <!-- Datos del vehículo -->
-        <div style="display:grid;grid-template-columns:repeat(4, 1fr);gap:12px">
+        <div style="display:grid;grid-template-columns:repeat(5, 1fr);gap:12px">
           ${camField('Patente', 'cam-patente', c.patente)}
           ${camField('Modelo', 'cam-modelo', c.modelo)}
           ${camField('Año', 'cam-anio', c.anio, 'number')}
-          ${camField('Capacidad (Tons)', 'cam-capacidad', c.capacidad, 'number')}
+          <div>
+            <label style="display:block;font-size:10px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#5c5f61;margin-bottom:4px">Capacidad (Tons)</label>
+            <input type="number" step="0.1" class="cam-capacidad" value="${c.capacidad !== undefined && c.capacidad !== null ? c.capacidad : ''}"
+              oninput="var ej=document.getElementById('cam-ejes-${c.id}'); if(ej) ej.textContent = (Number(this.value) >= 15 ? '3 Ejes' : '2 Ejes');"
+              style="width:100%;padding:8px 10px;border:1.5px solid #e1e3e4;border-radius:7px;font-size:13px;color:#191c1d;background:white;outline:none;box-sizing:border-box"
+              onfocus="this.style.borderColor='#2e7d32'" onblur="this.style.borderColor='#e1e3e4'" />
+          </div>
+          <div>
+            <label style="display:block;font-size:10px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#5c5f61;margin-bottom:4px">Tipo de Eje</label>
+            <div id="cam-ejes-${c.id}" style="width:100%;padding:8px 10px;border:1.5px solid #e1e3e4;border-radius:7px;font-size:13px;color:#5c5f61;background:#f8f9fa;font-weight:700;box-sizing:border-box">${calcEjes(c.capacidad)} Ejes</div>
+          </div>
         </div>
 
         <!-- Dimensiones + chofer -->
@@ -562,6 +629,34 @@ function selectRegion(label, id, current) {
       <label for="${id}" style="display:block;font-size:10px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#5c5f61;margin-bottom:5px">${label}</label>
       <select id="${id}" style="width:100%;padding:9px 12px;border:1.5px solid #e1e3e4;border-radius:7px;font-size:13px;color:#191c1d;background:white;outline:none;box-sizing:border-box">
         <option value="">Seleccionar región...</option>
+        ${options}
+      </select>
+    </div>`;
+}
+
+function selectBanco(label, id, current) {
+  const options = BANCOS_CHILE.map(b =>
+    `<option value="${b}" ${b === current ? 'selected' : ''}>${b}</option>`
+  ).join('');
+  return `
+    <div>
+      <label for="${id}" style="display:block;font-size:10px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#5c5f61;margin-bottom:5px">${label}</label>
+      <select id="${id}" style="width:100%;padding:9px 12px;border:1.5px solid #e1e3e4;border-radius:7px;font-size:13px;color:#191c1d;background:white;outline:none;box-sizing:border-box">
+        <option value="">Seleccionar banco...</option>
+        ${options}
+      </select>
+    </div>`;
+}
+
+function selectTipoCuenta(label, id, current) {
+  const options = TIPOS_CUENTA.map(tc =>
+    `<option value="${tc}" ${tc === current ? 'selected' : ''}>${tc}</option>`
+  ).join('');
+  return `
+    <div>
+      <label for="${id}" style="display:block;font-size:10px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#5c5f61;margin-bottom:5px">${label}</label>
+      <select id="${id}" style="width:100%;padding:9px 12px;border:1.5px solid #e1e3e4;border-radius:7px;font-size:13px;color:#191c1d;background:white;outline:none;box-sizing:border-box">
+        <option value="">Seleccionar tipo de cuenta...</option>
         ${options}
       </select>
     </div>`;

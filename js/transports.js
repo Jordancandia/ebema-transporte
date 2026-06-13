@@ -1,18 +1,27 @@
-import { getDatabase, saveDatabase } from './data.js';
+import { getDatabase, saveDatabase, calcEjes } from './data.js';
 import { formatRut, validateRut, generateSapCode, parseCSV, showAlert } from './utils.js';
 import { renderFichaTransporte } from './ficha-transporte.js';
 
 let editingTransportId = null;
 
+// Suma la capacidad (Tons) de los camiones de los transportistas activos,
+// opcionalmente filtrado por centro logístico (centrosServicio)
+function computeFleetCapacity(transports, centroId) {
+  return transports
+    .filter(t => t.activo && (!centroId || (t.centrosServicio || []).includes(centroId)))
+    .reduce((acc, t) => acc + (t.camiones || []).reduce((a, c) => a + Number(c.capacidad || 0), 0), 0);
+}
+
 export function renderTransportsView(container) {
   const db = getDatabase();
   const transports = db.transports;
-  
+  const cds = db.logisticsCentres;
+
   // Calcular KPIs
   const totalTransports = transports.length;
   const activeTransports = transports.filter(t => t.activo).length;
   const inactiveTransports = totalTransports - activeTransports;
-  const totalCapacity = transports.reduce((acc, t) => acc + (t.activo ? Number(t.capacidad) : 0), 0);
+  const totalCapacity = computeFleetCapacity(transports, '');
 
   container.innerHTML = `
     <!-- Page Header -->
@@ -40,7 +49,7 @@ export function renderTransportsView(container) {
       <div class="bg-surface border border-outline-variant p-md shadow-sm rounded border-l-4 border-primary flex items-center justify-between">
         <div>
           <h4 class="font-label-caps text-label-caps text-secondary uppercase">Capacidad Flota</h4>
-          <div class="font-headline-md text-headline-md font-bold text-primary mt-1">${totalCapacity} Ton</div>
+          <div class="font-headline-md text-headline-md font-bold text-primary mt-1" id="kpi-capacidad-flota">${totalCapacity} Ton</div>
         </div>
         <span class="material-symbols-outlined text-[32px] text-primary">analytics</span>
       </div>
@@ -57,11 +66,17 @@ export function renderTransportsView(container) {
     <div class="bg-surface border border-outline-variant rounded shadow-sm overflow-hidden">
       <!-- Barra superior de filtros -->
       <div class="p-md border-b border-outline-variant flex flex-col md:flex-row justify-between items-center gap-md bg-white">
-        <div class="relative w-full md:w-96 focus-within:ring-2 focus-within:ring-primary rounded overflow-hidden">
-          <span class="material-symbols-outlined absolute left-sm top-1/2 -translate-y-1/2 text-secondary">search</span>
-          <input type="text" id="transport-search" class="w-full bg-surface-container-low border-none pl-10 pr-md py-xs font-body-md text-body-md focus:outline-none" placeholder="Buscar por Razón Social, RUT, SAP, Patente...">
+        <div class="flex flex-col md:flex-row gap-sm w-full md:w-auto flex-1">
+          <div class="relative w-full md:w-96 focus-within:ring-2 focus-within:ring-primary rounded overflow-hidden">
+            <span class="material-symbols-outlined absolute left-sm top-1/2 -translate-y-1/2 text-secondary">search</span>
+            <input type="text" id="transport-search" class="w-full bg-surface-container-low border-none pl-10 pr-md py-xs font-body-md text-body-md focus:outline-none" placeholder="Buscar por Razón Social, RUT, SAP, Patente...">
+          </div>
+          <select id="transport-centro-filter" class="w-full md:w-64 bg-surface-container-low border-none px-md py-xs font-body-md text-body-md focus:outline-none rounded">
+            <option value="">Todos los centros</option>
+            ${cds.map(cd => `<option value="${cd.id}">${cd.nombre}</option>`).join('')}
+          </select>
         </div>
-        
+
         <div class="flex gap-sm w-full md:w-auto">
           <button id="btn-bulk-upload-transports" class="flex-1 md:flex-none border border-secondary text-secondary hover:bg-surface-container-high font-bold px-md py-sm rounded active:scale-[0.98] transition-all flex items-center justify-center gap-sm cursor-pointer text-xs uppercase tracking-wider">
             <span class="material-symbols-outlined text-[18px]">upload_file</span>
@@ -83,7 +98,6 @@ export function renderTransportsView(container) {
               <th class="p-md">Razón Social</th>
               <th class="p-md">RUT</th>
               <th class="p-md">Camiones</th>
-              <th class="p-md">Capacidad</th>
               <th class="p-md">Contacto</th>
               <th class="p-md">Estado</th>
               <th class="p-md text-center">Acciones</th>
@@ -129,23 +143,14 @@ export function renderTransportsView(container) {
               </div>
             </div>
 
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-md">
-              <div class="space-y-xs">
-                <label for="t-capacidad" class="font-label-caps text-label-caps text-secondary block">TIPO DE VEHÍCULO / CAPACIDAD</label>
-                <select id="t-capacidad" class="w-full border border-[#CED4DA] p-sm font-body-md text-body-md focus:border-primary focus:ring-0 transition-all rounded bg-white" required>
-                  <option value="10">Camión Sencillo (10 Tons)</option>
-                  <option value="15">Camión Doble Puente (15 Tons)</option>
-                  <option value="28">Rampla 28 Toneladas</option>
-                </select>
-              </div>
-              <div class="space-y-xs">
-                <label for="t-codigosap" class="font-label-caps text-label-caps text-secondary block">CÓDIGO SAP</label>
-                <input type="text" id="t-codigosap" class="w-full border border-[#CED4DA] p-sm font-body-md text-body-md focus:border-primary focus:ring-0 transition-all rounded bg-white" required placeholder="Auto-generado">
-                <div id="t-sap-lock-msg" class="text-[11px] text-primary hidden items-center gap-xs font-bold mt-1">
-                  <span class="material-symbols-outlined text-[12px]">lock</span> Código SAP bloqueado (no editable)
-                </div>
+            <div class="space-y-xs">
+              <label for="t-codigosap" class="font-label-caps text-label-caps text-secondary block">CÓDIGO SAP</label>
+              <input type="text" id="t-codigosap" class="w-full border border-[#CED4DA] p-sm font-body-md text-body-md focus:border-primary focus:ring-0 transition-all rounded bg-white" required placeholder="Auto-generado">
+              <div id="t-sap-lock-msg" class="text-[11px] text-primary hidden items-center gap-xs font-bold mt-1">
+                <span class="material-symbols-outlined text-[12px]">lock</span> Código SAP bloqueado (no editable)
               </div>
             </div>
+            <p class="text-[11px] text-secondary -mt-xs">La capacidad y el tipo de eje de cada camión se registran en el detalle de la Ficha de Transporte (Camiones).</p>
 
             <div class="pt-sm border-t border-outline-variant">
               <h5 class="font-label-caps text-label-caps text-primary mb-md">Datos de Contacto (Editables)</h5>
@@ -233,16 +238,29 @@ export function renderTransportsView(container) {
 
   // --- CONFIGURACIÓN DE EVENTOS ---
   const searchInput = document.getElementById('transport-search');
-  searchInput.addEventListener('input', (e) => {
-    const term = e.target.value.toLowerCase();
-    const filtered = transports.filter(t => 
-      t.razonSocial.toLowerCase().includes(term) ||
-      t.rut.toLowerCase().includes(term) ||
-      t.patente.toLowerCase().includes(term) ||
-      t.codigoSap.toLowerCase().includes(term)
-    );
+  const centroFilter = document.getElementById('transport-centro-filter');
+  const kpiCapacidad = document.getElementById('kpi-capacidad-flota');
+
+  const applyFilters = () => {
+    const term = searchInput.value.toLowerCase();
+    const centroId = centroFilter.value;
+
+    const filtered = transports.filter(t => {
+      const matchesTerm = !term ||
+        t.razonSocial.toLowerCase().includes(term) ||
+        t.rut.toLowerCase().includes(term) ||
+        t.patente.toLowerCase().includes(term) ||
+        t.codigoSap.toLowerCase().includes(term);
+      const matchesCentro = !centroId || (t.centrosServicio || []).includes(centroId);
+      return matchesTerm && matchesCentro;
+    });
+
     renderTransportsTable(filtered);
-  });
+    kpiCapacidad.textContent = `${computeFleetCapacity(transports, centroId)} Ton`;
+  };
+
+  searchInput.addEventListener('input', applyFilters);
+  centroFilter.addEventListener('change', applyFilters);
 
   const transportModal = document.getElementById('transport-modal');
   const btnCreateTransport = document.getElementById('btn-create-transport');
@@ -290,7 +308,6 @@ export function renderTransportsView(container) {
       razonSocial: document.getElementById('t-razonsocial').value,
       rut: rutVal,
       patente: document.getElementById('t-patente').value.toUpperCase().replace(/\s+/g, ''),
-      capacidad: Number(document.getElementById('t-capacidad').value),
       codigoSap: document.getElementById('t-codigosap').value.toUpperCase(),
       direccion: document.getElementById('t-direccion').value,
       telefono: document.getElementById('t-telefono').value,
@@ -307,7 +324,6 @@ export function renderTransportsView(container) {
         db.transports[index] = {
           ...original,
           razonSocial: transportData.razonSocial,
-          capacidad: transportData.capacidad,
           direccion: transportData.direccion,
           telefono: transportData.telefono,
           email: transportData.email,
@@ -331,13 +347,16 @@ export function renderTransportsView(container) {
       }
 
       transportData.id = 't' + (new Date().getTime());
-      // Estructura multi-camión: el camión inicial se crea con la patente del formulario
+      // Estructura multi-camión: el camión inicial se crea con la patente del formulario.
+      // La capacidad y el tipo de eje se completan luego en la Ficha de Transporte (Camiones).
+      const capacidadInicial = 10;
       transportData.camiones = [{
         id: 'c' + transportData.id,
         patente: transportData.patente,
         modelo: '',
         anio: 2020,
-        capacidad: transportData.capacidad,
+        capacidad: capacidadInicial,
+        ejes: calcEjes(capacidadInicial),
         dimensiones: { largo: 0, ancho: 0, alto: 0 },
         documentos: {},
         choferRut: ''
@@ -541,7 +560,7 @@ function renderTransportsTable(transportsList) {
   if (transportsList.length === 0) {
     tbody.innerHTML = `
       <tr>
-        <td colspan="8" class="p-xl text-center text-secondary">
+        <td colspan="7" class="p-xl text-center text-secondary">
           No se encontraron transportistas registrados en la base de datos.
         </td>
       </tr>
@@ -561,7 +580,6 @@ function renderTransportsTable(transportsList) {
       <td class="p-md font-bold">${t.razonSocial}</td>
       <td class="p-md font-data-mono">${t.rut}</td>
       <td class="p-md"><span class="bg-surface-container-high px-sm py-1 border border-outline-variant rounded font-data-mono text-xs">${(t.camiones || []).length} camión${(t.camiones || []).length === 1 ? '' : 'es'}</span></td>
-      <td class="p-md font-bold">${(t.camiones || []).reduce((acc, c) => acc + Number(c.capacidad || 0), 0)} Ton</td>
       <td class="p-md">
         <div class="text-xs font-bold leading-tight">${t.email}</div>
         <div class="text-[10px] text-secondary">${t.telefono}</div>
@@ -613,7 +631,6 @@ function renderTransportsTable(transportsList) {
         document.getElementById('t-razonsocial').value = t.razonSocial;
         document.getElementById('t-rut').value = t.rut;
         document.getElementById('t-patente').value = t.patente;
-        document.getElementById('t-capacidad').value = t.capacidad;
         document.getElementById('t-codigosap').value = t.codigoSap;
         document.getElementById('t-direccion').value = t.direccion;
         document.getElementById('t-telefono').value = t.telefono;

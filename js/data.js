@@ -24,6 +24,11 @@ export function truckCapKg(type) {
   return m ? Number(m[1]) * 1000 : 0;
 }
 
+// Tipo de eje según capacidad del camión (Tons): 5 a 10 Ton -> 2 ejes · 15 a 28 Ton -> 3 ejes
+export function calcEjes(capacidad) {
+  return Number(capacidad) >= 15 ? 3 : 2;
+}
+
 // Configuración por defecto: Administrador de Tarifas Transporte (Pantalla 1)
 export function defaultTariffConfig() {
   return {
@@ -427,6 +432,7 @@ export function getDatabase() {
           modelo: t.modelo || '',
           anio: t.anio || 2020,
           capacidad: t.capacidad || 0,
+          ejes: calcEjes(t.capacidad || 0),
           dimensiones: t.dimensiones || { largo: 0, ancho: 0, alto: 0 },
           documentos: t.documentos || {},
           choferRut: (t.conductor && t.conductor.rut) || ''
@@ -441,6 +447,28 @@ export function getDatabase() {
     });
   }
 
+  // Migración: Tipo de eje por capacidad de camión (5-10 Ton -> 2 ejes · 15-28 Ton -> 3 ejes)
+  if (parsed.transports) {
+    parsed.transports.forEach(t => {
+      (t.camiones || []).forEach(c => {
+        if (c.ejes === undefined) { c.ejes = calcEjes(c.capacidad); migrado = true; }
+      });
+    });
+  }
+
+  // Migración: Datos bancarios para pago a transportistas (cuenta corriente / vista / etc.)
+  if (parsed.transports) {
+    parsed.transports.forEach(t => {
+      if (!t.datosBancarios) {
+        t.datosBancarios = { banco: '', tipoCuenta: '', numeroCuenta: '', rut: t.rut };
+        migrado = true;
+      } else if (t.datosBancarios.rut !== t.rut) {
+        t.datosBancarios.rut = t.rut;
+        migrado = true;
+      }
+    });
+  }
+
   // Migración: Rutas enlazadas por nombre de CD → enlazar por ID (origenId)
   if (parsed.routes && parsed.logisticsCentres) {
     parsed.routes.forEach(r => {
@@ -450,6 +478,17 @@ export function getDatabase() {
         );
         r.origenId = cd ? cd.id : (parsed.logisticsCentres[0] ? parsed.logisticsCentres[0].id : null);
         delete r.origen;
+        migrado = true;
+      }
+    });
+  }
+
+  // Migración: Denominación de ruta (centro origen + destino)
+  if (parsed.routes && parsed.logisticsCentres) {
+    parsed.routes.forEach(r => {
+      if (!r.denominacion) {
+        const cd = parsed.logisticsCentres.find(c => c.id === r.origenId);
+        r.denominacion = `${cd ? cd.nombre : 'Origen'} - ${r.destino || ''}`;
         migrado = true;
       }
     });

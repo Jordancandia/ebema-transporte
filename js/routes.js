@@ -100,6 +100,7 @@ export function renderRoutesView(container) {
           <thead>
             <tr class="bg-surface-container-high border-b border-outline-variant text-[11px] font-bold text-secondary uppercase tracking-wider">
               <th class="p-md">Código Ruta</th>
+              <th class="p-md">Denominación</th>
               <th class="p-md">Origen (CD)</th>
               <th class="p-md">Destino (Comuna/Sector)</th>
               <th class="p-md">Región</th>
@@ -188,6 +189,11 @@ export function renderRoutesView(container) {
             </div>
 
             <div class="space-y-xs">
+              <label for="r-denominacion" class="font-label-caps text-label-caps text-secondary block">DENOMINACIÓN DE RUTA (ORIGEN - DESTINO)</label>
+              <input type="text" id="r-denominacion" class="w-full border border-[#CED4DA] p-sm font-body-md text-body-md focus:border-primary focus:ring-0 transition-all rounded bg-white" placeholder="Se genera automáticamente desde el origen y destino" required>
+            </div>
+
+            <div class="space-y-xs">
               <label for="r-km" class="font-label-caps text-label-caps text-secondary block">DISTANCIA (KM)</label>
               <div class="flex gap-sm">
                 <input type="number" id="r-km" class="flex-1 border border-[#CED4DA] p-sm font-body-md text-body-md focus:border-primary focus:ring-0 transition-all rounded bg-white" required min="1" placeholder="Ej: 45">
@@ -271,6 +277,20 @@ export function renderRoutesView(container) {
     originSelect.appendChild(opt);
   });
 
+  // Denominación de ruta = Centro Origen - Destino (autogenerada, editable)
+  const origenSelectEl = document.getElementById('r-origen');
+  const destinoInputEl = document.getElementById('r-destino');
+  const denominacionEl = document.getElementById('r-denominacion');
+  const actualizarDenominacion = () => {
+    const origenNombre = origenSelectEl.options[origenSelectEl.selectedIndex]
+      ? origenSelectEl.options[origenSelectEl.selectedIndex].textContent
+      : '';
+    const destino = destinoInputEl.value.trim();
+    denominacionEl.value = `${origenNombre}${destino ? ' - ' + destino : ''}`;
+  };
+  origenSelectEl.addEventListener('change', actualizarDenominacion);
+  destinoInputEl.addEventListener('input', actualizarDenominacion);
+
   // Buscador
   const searchInput = document.getElementById('route-search');
   searchInput.addEventListener('input', (e) => {
@@ -298,7 +318,8 @@ export function renderRoutesView(container) {
     
     const activeDb = getDatabase();
     document.getElementById('r-codigo').value = generateSapCode('RUT-SAP-', activeDb.routes, 'codigo');
-    
+    actualizarDenominacion();
+
     routeModal.classList.remove('pointer-events-none', 'opacity-0');
     routeModal.querySelector('.modal-window').classList.remove('scale-95');
   });
@@ -351,6 +372,7 @@ export function renderRoutesView(container) {
       codigo: document.getElementById('r-codigo').value.toUpperCase().replace(/\s+/g, ''),
       origenId: document.getElementById('r-origen').value,
       destino: document.getElementById('r-destino').value,
+      denominacion: document.getElementById('r-denominacion').value.trim(),
       region: document.getElementById('r-region').value,
       tipo: document.getElementById('r-tipo').value,
       caracteristica: document.getElementById('r-caracteristica').value,
@@ -489,6 +511,7 @@ export function renderRoutesView(container) {
             codigo,
             origenId: originCd.id,
             destino,
+            denominacion: row.denominacion ? row.denominacion.trim() : `${originCd.nombre} - ${destino}`,
             region,
             tipo,
             caracteristica: ['NORMAL', 'EXTREMA', 'ISLA'].includes(caractCsv) ? caractCsv : 'NORMAL',
@@ -532,7 +555,7 @@ function renderRoutesTable(routesList) {
   if (routesList.length === 0) {
     tbody.innerHTML = `
       <tr>
-        <td colspan="9" class="p-xl text-center text-secondary">
+        <td colspan="10" class="p-xl text-center text-secondary">
           No se encontraron rutas registradas.
         </td>
       </tr>
@@ -550,6 +573,7 @@ function renderRoutesTable(routesList) {
 
     tr.innerHTML = `
       <td class="p-md font-bold text-primary font-data-mono">${r.codigo}</td>
+      <td class="p-md text-xs">${r.denominacion || `${getCentreName(dbForNames, r.origenId)} - ${r.destino}`}</td>
       <td class="p-md font-bold">${getCentreName(dbForNames, r.origenId)}</td>
       <td class="p-md">${r.destino}</td>
       <td class="p-md text-xs text-secondary">${r.region}</td>
@@ -571,6 +595,9 @@ function renderRoutesTable(routesList) {
               ${r.activo ? 'block' : 'check_circle'}
             </span>
           </button>
+          <button class="btn-delete-route text-secondary hover:text-red-700 p-xs cursor-pointer" data-id="${r.id}" title="Eliminar ruta">
+            <span class="material-symbols-outlined text-[20px]">delete</span>
+          </button>
         </div>
       </td>
     `;
@@ -588,6 +615,7 @@ function renderRoutesTable(routesList) {
         document.getElementById('r-codigo').value = r.codigo;
         document.getElementById('r-origen').value = r.origenId;
         document.getElementById('r-destino').value = r.destino;
+        document.getElementById('r-denominacion').value = r.denominacion || `${getCentreName(db, r.origenId)} - ${r.destino}`;
         document.getElementById('r-region').value = r.region;
         document.getElementById('r-tipo').value = r.tipo;
         document.getElementById('r-caracteristica').value = r.caracteristica || 'NORMAL';
@@ -607,12 +635,29 @@ function renderRoutesTable(routesList) {
       const id = e.currentTarget.getAttribute('data-id');
       const db = getDatabase();
       const idx = db.routes.findIndex(item => item.id === id);
-      
+
       if (idx !== -1) {
         const r = db.routes[idx];
         r.activo = !r.activo;
         saveDatabase(db);
         showAlert(`La ruta ${r.codigo} ha sido ${r.activo ? 'activada' : 'dada de baja'}.`);
+        renderRoutesView(document.getElementById('stage-area'));
+      }
+    });
+  });
+
+  tbody.querySelectorAll('.btn-delete-route').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      const id = e.currentTarget.getAttribute('data-id');
+      const db = getDatabase();
+      const idx = db.routes.findIndex(item => item.id === id);
+
+      if (idx !== -1) {
+        const r = db.routes[idx];
+        if (!confirm(`¿Eliminar la ruta ${r.codigo} (${r.denominacion || r.destino})? Esta acción no se puede deshacer.`)) return;
+        db.routes.splice(idx, 1);
+        saveDatabase(db);
+        showAlert(`La ruta ${r.codigo} ha sido eliminada.`);
         renderRoutesView(document.getElementById('stage-area'));
       }
     });

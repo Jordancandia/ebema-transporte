@@ -1,5 +1,5 @@
 import { getDatabase, saveDatabase, getCentreName } from './data.js';
-import { formatCLP, showAlert } from './utils.js';
+import { formatCLP, showAlert, geocodeAddress } from './utils.js';
 
 // Cotizador de Tarifas — SIT EBEMA (Sistema Integrado de Transporte)
 // Servicio EXCLUSIVO: tarifa según tipo de camión (5/10/15/28 Ton).
@@ -154,9 +154,9 @@ export function renderRatesView(container) {
 
             <div>
               <div class="bg-surface-container-lowest p-lg border-2 border-primary/10 mb-xl rounded">
-                <p class="font-label-caps text-label-caps text-secondary text-center mb-base">PRECIO FINAL (IVA INCL.)</p>
+                <p class="font-label-caps text-label-caps text-secondary text-center mb-base">VALOR NETO</p>
                 <p class="font-headline-lg text-headline-lg text-primary text-center font-extrabold tracking-tighter" id="q-summary-precio">$0 CLP</p>
-                <p class="font-label-caps text-[10px] text-center text-secondary mt-base">Vigencia: 24 Horas</p>
+                <p class="font-label-caps text-[10px] text-center text-secondary mt-base">IVA no incluido · Vigencia: 24 Horas</p>
               </div>
 
               <div class="flex flex-col gap-sm">
@@ -177,6 +177,21 @@ export function renderRatesView(container) {
       </section>
     </div>
 
+    <!-- Visualizar Flota: Mapa Origen / Destino -->
+    <div class="mt-xl">
+      <div class="flex justify-between items-end mb-md">
+        <h3 class="font-headline-sm text-headline-sm font-bold text-on-surface">Visualizar Flota</h3>
+        <p class="font-body-md text-[12px] text-secondary">Origen y destino de la cotización actual</p>
+      </div>
+      <div class="bg-surface border border-outline-variant rounded overflow-hidden">
+        <div id="quote-fleet-map" class="h-[350px] relative" style="z-index: 1;">
+          <div class="flex justify-center items-center h-full text-secondary font-body-md bg-surface-container-low">
+            Cargando mapa...
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Historial -->
     <div class="mt-xl">
       <div class="flex justify-between items-end mb-md">
@@ -190,7 +205,7 @@ export function renderRatesView(container) {
               <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Origen - Destino</th>
               <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Vehículo</th>
               <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Estado</th>
-              <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-right">Monto</th>
+              <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-right">Monto Neto</th>
             </tr>
           </thead>
           <tbody id="quotes-history-tbody" class="font-body-md text-body-md"></tbody>
@@ -246,6 +261,67 @@ export function renderRatesView(container) {
 
   renderHistoryTable(db.quotesHistory);
 
+  // --- MAPA: VISUALIZAR FLOTA (ORIGEN / DESTINO) ---
+  let fleetMap, fleetMarkers = [], fleetLine = null;
+  let geocodeTimeout = null;
+  try {
+    fleetMap = L.map('quote-fleet-map').setView([-34.5, -71.5], 6);
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+      maxZoom: 19,
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>'
+    }).addTo(fleetMap);
+  } catch (err) {
+    console.error("Error al cargar Leaflet:", err);
+    document.getElementById('quote-fleet-map').innerHTML = `
+      <div class="flex justify-center items-center h-full text-secondary font-body-md bg-surface-container-low border border-outline-variant">
+        Error al cargar los servicios de mapa interactivo.
+      </div>
+    `;
+  }
+
+  function clearFleetMap() {
+    if (!fleetMap) return;
+    fleetMarkers.forEach(m => fleetMap.removeLayer(m));
+    fleetMarkers = [];
+    if (fleetLine) {
+      fleetMap.removeLayer(fleetLine);
+      fleetLine = null;
+    }
+  }
+
+  async function updateFleetMap() {
+    if (!fleetMap) return;
+    clearFleetMap();
+    const origenId = selOrigen.value;
+    const cd = cds.find(c => c.id === origenId);
+    const points = [];
+
+    if (cd && cd.lat && cd.lon) {
+      const marker = L.marker([cd.lat, cd.lon]).addTo(fleetMap)
+        .bindPopup(`<strong>Origen:</strong> ${cd.nombre}`);
+      fleetMarkers.push(marker);
+      points.push([cd.lat, cd.lon]);
+    }
+
+    const destinoVal = inpDestino.value.trim();
+    if (destinoVal) {
+      const dest = await geocodeAddress(destinoVal);
+      const marker = L.marker([dest.lat, dest.lon]).addTo(fleetMap)
+        .bindPopup(`<strong>Destino:</strong> ${destinoVal}`);
+      fleetMarkers.push(marker);
+      points.push([dest.lat, dest.lon]);
+    }
+
+    if (points.length === 2) {
+      fleetLine = L.polyline(points, { color: '#b5000b', weight: 3, dashArray: '6 6' }).addTo(fleetMap);
+      fleetMap.fitBounds(points, { padding: [40, 40] });
+    } else if (points.length === 1) {
+      fleetMap.setView(points[0], 10);
+    } else {
+      fleetMap.setView([-34.5, -71.5], 6);
+    }
+  }
+
   // --- EVENTOS ---
 
   selOrigen.addEventListener('change', () => {
@@ -270,11 +346,14 @@ export function renderRatesView(container) {
       sumOrigen.textContent = 'Seleccione origen';
     }
     calculatePrice();
+    updateFleetMap();
   });
 
   inpDestino.addEventListener('input', () => {
     consultarRuta();
     calculatePrice();
+    clearTimeout(geocodeTimeout);
+    geocodeTimeout = setTimeout(updateFleetMap, 800);
   });
 
   function consultarRuta() {
