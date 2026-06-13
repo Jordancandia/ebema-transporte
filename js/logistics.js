@@ -246,7 +246,7 @@ function renderCdCards(list, parentContainer) {
         <!-- Código SAP destacado -->
         <div class="text-center bg-primary/5 border-2 border-primary/30 rounded-lg px-md py-sm flex-shrink-0">
           <p class="text-[9px] font-bold tracking-widest text-secondary uppercase">Código SAP</p>
-          <p class="font-data-mono font-extrabold text-primary" style="font-size:26px;line-height:1.1;letter-spacing:0.04em">${cd.idCentroSap}</p>
+          <p class="font-data-mono font-extrabold text-primary" style="font-size:26px;line-height:1.1;letter-spacing:0.04em">${cd.id}</p>
         </div>
       </div>
 

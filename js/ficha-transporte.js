@@ -664,7 +664,7 @@ function selectTipoCuenta(label, id, current) {
 
 function selectCentro(label, id, cds, current) {
   const options = cds.map(cd =>
-    `<option value="${cd.id}" ${cd.id === current ? 'selected' : ''}>${cd.nombre} (${cd.idCentroSap})</option>`
+    `<option value="${cd.id}" ${cd.id === current ? 'selected' : ''}>${cd.nombre} (${cd.id})</option>`
   ).join('');
   return `
     <div>
