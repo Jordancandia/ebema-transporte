@@ -63,6 +63,12 @@ export function renderLogisticsView(container) {
               <label for="cd-direccion" class="font-label-caps text-label-caps text-secondary block">DIRECCIÓN GEOGRÁFICA (CALLE Y NÚMERO)</label>
               <input type="text" id="cd-direccion" class="w-full border border-[#CED4DA] p-sm font-body-md text-body-md focus:border-primary focus:ring-0 transition-all rounded bg-white" required placeholder="Ej: Av. Las Industrias 890">
             </div>
+
+            <div class="space-y-xs" id="cd-map-adjust-wrap" style="display:none;">
+              <label class="font-label-caps text-label-caps text-secondary block">UBICACIÓN EN EL MAPA (arrastre el pin para ajustar)</label>
+              <p class="text-[11px] mb-1" id="cd-geo-status"></p>
+              <div id="cd-map-adjust" class="rounded border border-outline-variant" style="height: 220px; z-index:1;"></div>
+            </div>
           </div>
           <div class="p-md border-t border-outline-variant bg-surface-container-low flex justify-end gap-sm">
             <button type="button" class="border border-secondary text-secondary hover:bg-surface-container-high font-bold px-md py-sm rounded cursor-pointer" id="btn-cancel-cd-modal">Cancelar</button>
@@ -73,8 +79,46 @@ export function renderLogisticsView(container) {
     </div>
   `;
 
+  // Estado del paso de geolocalización/ajuste de pin (paso 2 del formulario)
+  let pendingCoords = null;
+  let pendingData = null;
+  let adjustMap = null;
+  let adjustMarker = null;
+
+  const resetGeoStep = (defaultLabel) => {
+    pendingCoords = null;
+    pendingData = null;
+    if (adjustMap) { adjustMap.remove(); adjustMap = null; }
+    adjustMarker = null;
+    document.getElementById('cd-map-adjust-wrap').style.display = 'none';
+    document.getElementById('cd-geo-status').textContent = '';
+    const btnSubmit = document.getElementById('btn-submit-cd');
+    btnSubmit.disabled = false;
+    btnSubmit.innerText = defaultLabel;
+  };
+
+  const showAdjustMap = (coords) => {
+    const wrap = document.getElementById('cd-map-adjust-wrap');
+    const statusEl = document.getElementById('cd-geo-status');
+    wrap.style.display = '';
+    statusEl.textContent = coords.found
+      ? `Ubicación encontrada: ${coords.displayName}`
+      : `⚠ ${coords.displayName}`;
+    statusEl.className = `text-[11px] mb-1 ${coords.found ? 'text-secondary' : 'text-red-700 font-bold'}`;
+
+    if (adjustMap) { adjustMap.remove(); adjustMap = null; }
+    adjustMap = L.map('cd-map-adjust').setView([coords.lat, coords.lon], coords.found ? 15 : 11);
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+      maxZoom: 19,
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>'
+    }).addTo(adjustMap);
+    adjustMarker = L.marker([coords.lat, coords.lon], { draggable: true }).addTo(adjustMap)
+      .bindTooltip('Arrastre para ajustar la ubicación exacta', { permanent: false });
+    setTimeout(() => adjustMap.invalidateSize(), 150);
+  };
+
   // Renderizar CD Cards
-  renderCdCards(centres, container);
+  renderCdCards(centres, container, resetGeoStep);
 
   // Inicializar Mapa Leaflet
   let map;
@@ -145,6 +189,7 @@ export function renderLogisticsView(container) {
     sapInput.value = '';
     sapInput.disabled = false;
     document.getElementById('cd-sap-hint').textContent = 'Ingrese el código de centro SAP (será el identificador único del centro).';
+    resetGeoStep('Geolocalizar y Registrar');
 
     cdModal.classList.remove('pointer-events-none', 'opacity-0');
     cdModal.querySelector('.modal-window').classList.remove('scale-95');
@@ -153,6 +198,7 @@ export function renderLogisticsView(container) {
   const closeModal = () => {
     cdModal.classList.add('pointer-events-none', 'opacity-0');
     cdModal.querySelector('.modal-window').classList.add('scale-95');
+    resetGeoStep('Geolocalizar y Registrar');
   };
   btnCloseModal.addEventListener('click', closeModal);
   btnCancelModal.addEventListener('click', closeModal);
@@ -163,6 +209,46 @@ export function renderLogisticsView(container) {
     const btnSubmit = document.getElementById('btn-submit-cd');
     const editingId = window.__editingCdId || null;
 
+    // Paso 2: la dirección ya fue geolocalizada y se muestra el mapa de ajuste.
+    // Al confirmar, se guarda con la posición final del pin (ajustada o no).
+    if (pendingCoords && pendingData) {
+      const finalLatLng = adjustMarker ? adjustMarker.getLatLng() : pendingCoords;
+      const { nombre, direccionCompleta } = pendingData;
+
+      if (editingId) {
+        const idx = db.logisticsCentres.findIndex(c => c.id === editingId);
+        if (idx !== -1) {
+          db.logisticsCentres[idx] = {
+            ...db.logisticsCentres[idx],
+            nombre,
+            direccion: direccionCompleta,
+            lat: finalLatLng.lat,
+            lon: finalLatLng.lng
+          };
+          saveDatabase(db);
+          showAlert('Centro Logístico actualizado con éxito.');
+        }
+      } else {
+        const cdData = {
+          id: pendingData.sapId,
+          nombre: nombre,
+          direccion: direccionCompleta,
+          lat: finalLatLng.lat,
+          lon: finalLatLng.lng
+        };
+        db.logisticsCentres.push(cdData);
+        saveDatabase(db);
+        showAlert('Centro Logístico geolocalizado y registrado con éxito.');
+      }
+
+      window.__editingCdId = null;
+      resetGeoStep('Geolocalizar y Registrar');
+      closeModal();
+      renderLogisticsView(container);
+      return;
+    }
+
+    // Paso 1: validar y geolocalizar la dirección, mostrando el mapa de ajuste.
     const sapId = document.getElementById('cd-sap').value.toUpperCase().replace(/\s+/g, '');
     if (!editingId && db.logisticsCentres.some(cd => cd.id === sapId)) {
       showAlert('El ID de Centro SAP ya está registrado.', 'error');
@@ -179,40 +265,20 @@ export function renderLogisticsView(container) {
 
     const coords = await geocodeAddress(direccionCompleta);
 
-    if (editingId) {
-      // Editar centro existente (el ID Centro SAP no se modifica: es clave de otras tablas)
-      const idx = db.logisticsCentres.findIndex(c => c.id === editingId);
-      if (idx !== -1) {
-        db.logisticsCentres[idx] = {
-          ...db.logisticsCentres[idx],
-          nombre,
-          direccion: direccionCompleta,
-          lat: coords.lat,
-          lon: coords.lon
-        };
-        saveDatabase(db);
-        showAlert('Centro Logístico actualizado con éxito.');
-      }
-    } else {
-      const cdData = {
-        id: sapId,
-        nombre: nombre,
-        direccion: direccionCompleta,
-        lat: coords.lat,
-        lon: coords.lon
-      };
-      db.logisticsCentres.push(cdData);
-      saveDatabase(db);
-      showAlert('Centro Logístico geolocalizado y registrado con éxito.');
-    }
+    pendingCoords = coords;
+    pendingData = { nombre, direccionCompleta, sapId };
+    showAdjustMap(coords);
 
-    window.__editingCdId = null;
-    closeModal();
-    renderLogisticsView(container);
+    btnSubmit.disabled = false;
+    btnSubmit.innerText = 'Confirmar Ubicación y Guardar';
+
+    if (!coords.found) {
+      showAlert('No se encontró la dirección automáticamente. Ajuste el pin en el mapa antes de confirmar.', 'error');
+    }
   });
 }
 
-function renderCdCards(list, parentContainer) {
+function renderCdCards(list, parentContainer, resetGeoStep) {
   const container = document.getElementById('cd-cards-container');
   if (!container) return;
 
@@ -288,6 +354,7 @@ function renderCdCards(list, parentContainer) {
       document.getElementById('cd-direccion').value = partes[0] ? partes[0].trim() : cd.direccion;
       document.getElementById('cd-comuna').value = partes.slice(1).join(',').trim();
       document.querySelector('#cd-modal h4').textContent = 'Editar Centro Logístico (CD)';
+      if (typeof resetGeoStep === 'function') resetGeoStep('Geolocalizar y Guardar Cambios');
 
       const modal = document.getElementById('cd-modal');
       modal.classList.remove('pointer-events-none', 'opacity-0');

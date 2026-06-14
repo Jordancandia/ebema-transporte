@@ -195,29 +195,65 @@ export function formatDateDDMMYYYY(date = new Date()) {
 }
 
 // 6. Geolocalizar una dirección mediante OpenStreetMap Nominatim (Gratuito, sin API Keys)
+// Estrategia de reintentos: dirección completa -> sin número de calle -> solo comuna/región.
+// Devuelve siempre { lat, lon, displayName, found } — found=false indica que NO se encontró
+// nada útil y se usó el centro de Santiago como último recurso (debe ajustarse manualmente).
 export async function geocodeAddress(address) {
-  try {
-    // Limitar la búsqueda a Chile agregando ", Chile" para mayor precisión
-    const query = encodeURIComponent(address + ", Chile");
-    const response = await fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${query}`);
-    if (!response.ok) throw new Error('Error de conexión con Nominatim');
-    
-    const results = await response.json();
-    if (results && results.length > 0) {
-      return {
-        lat: parseFloat(results[0].lat),
-        lon: parseFloat(results[0].lon),
-        displayName: results[0].display_name
-      };
+  const tryQuery = async (q) => {
+    try {
+      const query = encodeURIComponent(q);
+      const response = await fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=1&addressdetails=1&countrycodes=cl&q=${query}`);
+      if (!response.ok) throw new Error('Error de conexión con Nominatim');
+
+      const results = await response.json();
+      if (results && results.length > 0) {
+        return {
+          lat: parseFloat(results[0].lat),
+          lon: parseFloat(results[0].lon),
+          displayName: results[0].display_name,
+          found: true
+        };
+      }
+    } catch (error) {
+      console.error("Error al geolocalizar dirección:", error);
     }
-  } catch (error) {
-    console.error("Error al geolocalizar dirección:", error);
+    return null;
+  };
+
+  // Intento 1: dirección completa
+  let result = await tryQuery(`${address}, Chile`);
+  if (result) return result;
+
+  // Intento 2: sin el número de calle (algunas direcciones industriales/rurales
+  // no están indexadas a nivel de número exacto en OpenStreetMap)
+  const sinNumero = address.replace(/\b\d+[A-Za-z]?\b/g, '').replace(/\s{2,}/g, ' ').replace(/\s*,\s*/g, ', ').trim();
+  if (sinNumero && sinNumero.toLowerCase() !== address.toLowerCase()) {
+    result = await tryQuery(`${sinNumero}, Chile`);
+    if (result) {
+      result.displayName += ' (aproximado: sin número de calle — verifique el pin)';
+      return result;
+    }
   }
-  
-  // Coordenadas por defecto (Santiago Centro) si falla
+
+  // Intento 3: solo la comuna/región (último segmento separado por coma)
+  const partes = address.split(',');
+  if (partes.length > 1) {
+    const comuna = partes.slice(1).join(',').trim();
+    if (comuna) {
+      result = await tryQuery(`${comuna}, Chile`);
+      if (result) {
+        result.displayName += ' (aproximado: solo comuna/región — ajuste el pin)';
+        return result;
+      }
+    }
+  }
+
+  // Sin resultados en ningún intento: coordenadas por defecto (Santiago Centro),
+  // marcadas como NO encontradas para que la interfaz pida ajuste manual del pin.
   return {
     lat: -33.4489,
     lon: -70.6693,
-    displayName: "Santiago Centro, Chile (Por Defecto)"
+    displayName: "No se encontró la dirección — ajuste el pin manualmente",
+    found: false
   };
 }
