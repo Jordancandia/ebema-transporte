@@ -1,5 +1,10 @@
-import { getDatabase, saveDatabase, getCentreName } from './data.js';
+import { getDatabase, saveDatabase, getCentreName, getTariffConfig, getClientTariffConfig, truckCapKg } from './data.js';
+import { calcularCostoRuta } from './tarifas-engine.js';
 import { formatCLP, showAlert, geocodeAddress } from './utils.js';
+
+// Tramo de camión siguiente, usado para ZFMP (precio por kg de referencia) en
+// el panel "Referencia Tarifa Cliente" del cotizador.
+const NEXT_CAP_REF = { 5000: 10000, 10000: 15000, 15000: 28000, 28000: 28000 };
 
 // --- Caché de cotizaciones recientes por perfil (localStorage) ---
 // Guarda las últimas 10 cotizaciones del usuario para evitar repetir
@@ -209,6 +214,24 @@ export function renderRatesView(container) {
             </div>
 
             <div>
+              <div class="bg-surface-container-lowest p-md border border-outline-variant mb-md rounded text-secondary hidden" id="q-ref-zfm">
+                <p class="font-label-caps text-label-caps text-secondary mb-xs text-center">Referencia Tarifa Cliente (Motor ZCAP)</p>
+                <div class="grid grid-cols-3 gap-sm text-center">
+                  <div>
+                    <span class="block font-data-mono text-data-mono font-bold text-on-surface" id="q-ref-zfmi">—</span>
+                    <span class="text-[10px]">ZFMI (mín.)</span>
+                  </div>
+                  <div>
+                    <span class="block font-data-mono text-data-mono font-bold text-on-surface" id="q-ref-zfmp">—</span>
+                    <span class="text-[10px]">ZFMP ($/kg)</span>
+                  </div>
+                  <div>
+                    <span class="block font-data-mono text-data-mono font-bold text-on-surface" id="q-ref-zfmx">—</span>
+                    <span class="text-[10px]">ZFMX (máx.)</span>
+                  </div>
+                </div>
+              </div>
+
               <div class="bg-surface-container-lowest p-lg border-2 border-primary/10 mb-xl rounded">
                 <p class="font-label-caps text-label-caps text-secondary text-center mb-base">VALOR NETO</p>
                 <p class="font-headline-lg text-headline-lg text-primary text-center font-extrabold tracking-tighter" id="q-summary-precio">$0 CLP</p>
@@ -288,6 +311,11 @@ export function renderRatesView(container) {
   const sumRuta = document.getElementById('q-summary-ruta');
   const sumVehiculo = document.getElementById('q-summary-vehiculo');
   const sumPrecio = document.getElementById('q-summary-precio');
+
+  const refZfm = document.getElementById('q-ref-zfm');
+  const refZfmi = document.getElementById('q-ref-zfmi');
+  const refZfmp = document.getElementById('q-ref-zfmp');
+  const refZfmx = document.getElementById('q-ref-zfmx');
 
   const blockExclusivo = document.getElementById('q-exclusivo-block');
   const blockConsolidado = document.getElementById('q-consolidado-block');
@@ -503,6 +531,7 @@ export function renderRatesView(container) {
   // --- CÁLCULO DE TARIFA ---
   function calculatePrice() {
     let precio = 0;
+    let refCapKg = null;
 
     if (activeRoute) {
       const km = Number(activeRoute.km);
@@ -515,6 +544,7 @@ export function renderRatesView(container) {
         if (truck) {
           precio = Number(truck.baseRate) + (km * Number(truck.ratePerKm));
           sumVehiculo.textContent = truck.type;
+          refCapKg = truckCapKg(truck.type);
         } else {
           sumVehiculo.textContent = 'Seleccione camión';
         }
@@ -526,6 +556,7 @@ export function renderRatesView(container) {
           const total28 = Number(ref.baseRate) + (km * Number(ref.ratePerKm));
           precio = Math.max(25000, Math.round(total28 * (Math.min(kilos, 28000) / 28000)));
           sumVehiculo.textContent = `Consolidado · ${kilos.toLocaleString('es-CL')} kg`;
+          refCapKg = 28000;
         } else {
           sumVehiculo.textContent = 'Ingrese kilos';
         }
@@ -535,6 +566,7 @@ export function renderRatesView(container) {
     }
 
     sumPrecio.textContent = precio > 0 ? formatCLP(precio) : '$0 CLP';
+    updateZfmReference(refCapKg);
 
     // Guardar/actualizar la cotización en el caché de las últimas 10 del perfil,
     // para evitar volver a consultar la misma ruta (origen/destino) más adelante.
@@ -554,6 +586,40 @@ export function renderRatesView(container) {
         lon: lastDestCoords ? lastDestCoords.lon : null
       });
       renderHistoryTable(loadRecentQuotes());
+    }
+  }
+
+  // --- REFERENCIA TARIFA CLIENTE (ZFMI/ZFMP/ZFMX) ---
+  // Muestra, a modo de referencia para el agente comercial, el rango de tarifa
+  // calculado por el Motor ZCAP / Tarifa Cliente para la ruta y camión actuales.
+  // No reemplaza ni altera el VALOR NETO mostrado (basado en Tarifa Base/Tarifa-KM).
+  function updateZfmReference(capKg) {
+    if (!activeRoute || !capKg) {
+      refZfm.classList.add('hidden');
+      return;
+    }
+    try {
+      const cfg = getTariffConfig(db);
+      const ccfg = getClientTariffConfig(db);
+      const cons = (ccfg.consolidacion || {})[activeRoute.id] || { factorConsolidacion: 1 };
+      const factor = cons.factorConsolidacion ?? 1;
+      const nextCap = NEXT_CAP_REF[capKg] || capKg;
+
+      const m = calcularCostoRuta(db, cfg, activeRoute, capKg);
+      const m5 = calcularCostoRuta(db, cfg, activeRoute, 5000);
+      const mNext = calcularCostoRuta(db, cfg, activeRoute, nextCap);
+
+      const zfmx = Math.round(m.zcapConMargen);
+      const zfmi = Math.round(m5.zcapConMargen * factor);
+      const zfmp = nextCap > 0 ? Math.round((mNext.zcapConMargen / nextCap) * factor) : 0;
+
+      refZfmi.textContent = formatCLP(zfmi);
+      refZfmp.textContent = formatCLP(zfmp);
+      refZfmx.textContent = formatCLP(zfmx);
+      refZfm.classList.remove('hidden');
+    } catch (err) {
+      console.error('Error al calcular referencia ZFMI/ZFMP/ZFMX:', err);
+      refZfm.classList.add('hidden');
     }
   }
 }

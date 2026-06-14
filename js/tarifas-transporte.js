@@ -281,13 +281,18 @@ function renderTarifasCamion(content, db, cfg) {
         <span class="material-symbols-outlined text-primary">local_shipping</span>
         <h2 class="font-headline-sm text-headline-sm font-bold text-on-surface">Tarifas de Transporte por Centro y Tipo de Camión</h2>
       </div>
-      <p class="text-[12px] text-secondary mb-md">Tarifa Base y Tarifa/KM alimentan el Cotizador de Tarifas (servicio Exclusivo y Consolidado). Km Base y Costo Base son el tramo de referencia usado para fijar dichas tarifas.</p>
+      <p class="text-[12px] text-secondary mb-md">Tarifa Base y Tarifa/KM alimentan el Cotizador de Tarifas (servicio Exclusivo y Consolidado). Km Base y Costo Base son el tramo de referencia usado para fijar dichas tarifas. Use "Aplicar Motor ZCAP" para recalcular Tarifa Base y Tarifa/KM desde el costeo actuarial (promedio de rutas activas del centro, con margen de ganancia).</p>
 
       ${centres.map(cd => {
         const rows = (db.truckTypes || []).filter(t => t.Id_centro === cd.id);
         return `
         <div class="mb-lg">
-          <h3 class="font-body-lg text-body-lg font-bold text-on-surface mb-xs">${cd.nombre} <span class="text-secondary font-data-mono text-[12px]">(${cd.id})</span></h3>
+          <div class="flex items-center justify-between mb-xs">
+            <h3 class="font-body-lg text-body-lg font-bold text-on-surface">${cd.nombre} <span class="text-secondary font-data-mono text-[12px]">(${cd.id})</span></h3>
+            ${rows.length > 0 ? `<button class="tt-apply-zcap bg-primary hover:bg-[#930007] text-white font-bold px-md py-xs rounded flex items-center gap-xs text-[11px] uppercase" data-centro="${cd.id}">
+              <span class="material-symbols-outlined text-[16px]">calculate</span> Aplicar Motor ZCAP
+            </button>` : ''}
+          </div>
           <div class="bg-surface border border-outline-variant overflow-hidden rounded">
             <table class="w-full zebra-table border-collapse">
               <thead>
@@ -327,6 +332,40 @@ function renderTarifasCamion(content, db, cfg) {
       const row = (db.truckTypes || []).find(t => t.id === id);
       if (row) row[field] = val;
       saveDatabase(db);
+    });
+  });
+
+  // ---------- Aplicar Motor ZCAP: recalcula Tarifa Base y Tarifa/KM ----------
+  // desde el costeo actuarial (promedio de rutas activas del centro por tipo de
+  // camión, costo/km final con margen de ganancia). Km Base define el tramo de
+  // referencia usado para derivar la Tarifa Base (Costo Base = Tarifa Base).
+  content.querySelectorAll('.tt-apply-zcap').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const centroId = btn.dataset.centro;
+      const matriz = calcularMatrizCostos(db, cfg).filter(m => m.centroId === centroId);
+      const rows = (db.truckTypes || []).filter(t => t.Id_centro === centroId);
+      const margenPct = Number(cfg.variables.margenGanancia) || 0;
+
+      let actualizados = 0;
+      rows.forEach(t => {
+        const items = matriz.filter(m => m.capKg === truckCapKg(t.type));
+        if (items.length === 0) return;
+        const avgCostoKmFinal = items.reduce((s, m) => s + m.item11_costoKmFinal, 0) / items.length;
+        const ratePerKmConMargen = avgCostoKmFinal * (1 + margenPct / 100);
+        const kmBase = Number(t.Kmbase) || 0;
+        t.ratePerKm = Math.round(ratePerKmConMargen);
+        t.baseRate = Math.round(ratePerKmConMargen * kmBase);
+        t.baseKM = t.baseRate;
+        actualizados++;
+      });
+
+      if (actualizados === 0) {
+        showAlert('No hay rutas activas para este centro; no se pudo calcular el Motor ZCAP.', 'error');
+        return;
+      }
+      saveDatabase(db);
+      showAlert(`Tarifas actualizadas desde el Motor ZCAP para ${actualizados} tipo(s) de camión`);
+      renderTarifasCamion(content, db, cfg);
     });
   });
 }

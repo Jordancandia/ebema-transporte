@@ -490,10 +490,12 @@ function renderEspeciales(content, db, cfg, ccfg) {
 // ============================================================
 function calcularMatrizClientes(db, cfg, ccfg) {
   const rutas = db.routes.filter(r => r.activo);
-  const tipos = truckTypesWithCap(db);
   const out = [];
 
   rutas.forEach(ruta => {
+    // Solo los tipos de camión del centro de origen de esta ruta (evita filas duplicadas
+    // cuando hay más de un centro logístico con tarifas de transporte configuradas).
+    const tipos = truckTypesWithCap(db, ruta.origenId);
     const cons = ccfg.consolidacion[ruta.id] || { factorConsolidacion: 1, indicador: 0, cluster: 'spot' };
     const factor = cons.factorConsolidacion ?? 1;
     const cd = db.logisticsCentres.find(c => c.id === ruta.origenId);
