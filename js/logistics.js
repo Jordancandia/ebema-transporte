@@ -1,5 +1,8 @@
 import { getDatabase, saveDatabase } from './data.js';
-import { showAlert, geocodeAddress } from './utils.js';
+import { showAlert, geocodeAddress, escapeHtml, toCSV, downloadFile } from './utils.js';
+import { GRUPOS_ORIGEN } from './chile-geo.js';
+
+let currentCdSearchTerm = '';
 
 // Renderizar la vista de Centros Logísticos con Mapa Interactivo Leaflet y Tailwind CSS
 export function renderLogisticsView(container) {
@@ -9,7 +12,15 @@ export function renderLogisticsView(container) {
   container.innerHTML = `
     <p class="font-body-md text-body-md text-secondary mb-md">Administre los centros de distribución (CD) y puntos de salida. Seleccione un centro para geolocalizarlo en el mapa interactivo.</p>
 
-    <div style="display: flex; justify-content: flex-end; margin-bottom: 16px;">
+    <div class="flex flex-wrap items-center gap-sm mb-md">
+      <div class="relative flex-1 min-w-[220px]">
+        <span class="material-symbols-outlined absolute left-sm top-1/2 -translate-y-1/2 text-secondary text-[20px]">search</span>
+        <input type="text" id="cd-search" placeholder="Buscar por nombre, dirección, código SAP u origen..." class="w-full pl-xl pr-sm py-sm border border-outline-variant rounded font-body-md text-body-md focus:border-primary focus:ring-0 transition-all">
+      </div>
+      <button id="btn-export-cds-csv" class="border border-outline-variant hover:border-primary hover:text-primary text-secondary font-bold px-md py-sm rounded cursor-pointer text-xs uppercase tracking-wider flex items-center gap-sm transition-all">
+        <span class="material-symbols-outlined text-[18px]">download</span>
+        Exportar CSV
+      </button>
       <button id="btn-create-cd" class="bg-primary hover:bg-[#930007] text-white font-bold px-md py-sm rounded active:scale-[0.98] transition-all flex items-center gap-sm cursor-pointer text-xs uppercase tracking-wider shadow">
         <span class="material-symbols-outlined text-[18px]">add</span>
         Registrar Centro SAP
@@ -46,7 +57,7 @@ export function renderLogisticsView(container) {
               <label for="cd-nombre" class="font-label-caps text-label-caps text-secondary block">NOMBRE DE PLANTA / CENTRO</label>
               <input type="text" id="cd-nombre" class="w-full border border-[#CED4DA] p-sm font-body-md text-body-md focus:border-primary focus:ring-0 transition-all rounded bg-white" required placeholder="Ej: CD Santiago Sur">
             </div>
-            
+
             <div class="grid grid-cols-1 md:grid-cols-2 gap-md">
               <div class="space-y-xs">
                 <label for="cd-sap" class="font-label-caps text-label-caps text-secondary block">ID CENTRO SAP</label>
@@ -117,15 +128,42 @@ export function renderLogisticsView(container) {
     setTimeout(() => adjustMap.invalidateSize(), 150);
   };
 
-  // Renderizar CD Cards
-  renderCdCards(centres, container, resetGeoStep);
+  // Filtro de búsqueda rápida + render agrupado por origen
+  const cdSearchInput = document.getElementById('cd-search');
+  cdSearchInput.value = currentCdSearchTerm;
+  const applyCdFilters = () => {
+    const term = currentCdSearchTerm.toLowerCase();
+    const filtered = term ? centres.filter(cd =>
+      (cd.nombre || '').toLowerCase().includes(term) ||
+      (cd.direccion || '').toLowerCase().includes(term) ||
+      (cd.id || '').toLowerCase().includes(term) ||
+      (cd.origen_grupo || '').toLowerCase().includes(term)
+    ) : centres;
+    renderCdCards(filtered, container, resetGeoStep);
+    return filtered;
+  };
+  cdSearchInput.addEventListener('input', (e) => {
+    currentCdSearchTerm = e.target.value;
+    applyCdFilters();
+  });
+
+  document.getElementById('btn-export-cds-csv').addEventListener('click', () => {
+    if (centres.length === 0) { showAlert('No hay centros logísticos para exportar.', 'error'); return; }
+    const headers = ['ID Centro SAP', 'Nombre', 'Dirección', 'Origen', 'Latitud', 'Longitud'];
+    const csvRows = centres.map(cd => [cd.id || '', cd.nombre || '', cd.direccion || '', cd.origen_grupo || '', cd.lat || '', cd.lon || '']);
+    const csv = toCSV(headers, csvRows);
+    downloadFile(`centros_logisticos_${new Date().toISOString().slice(0, 10)}.csv`, csv);
+  });
+
+  // Renderizar CD Cards (agrupadas por origen)
+  applyCdFilters();
 
   // Inicializar Mapa Leaflet
   let map;
   let markers = [];
   try {
     map = L.map('logistics-map').setView([-34.5, -71.5], 6);
-    
+
     // Capa de Mapa estilo Premium Dark (CartoDB Dark Matter)
     L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
       maxZoom: 19,
@@ -145,7 +183,7 @@ export function renderLogisticsView(container) {
           `);
         markers.push(marker);
         bounds.push([cd.lat, cd.lon]);
-        
+
         // Asignar click a la tarjeta para enfocar en el mapa
         const cardElement = document.getElementById(`cd-card-${cd.id}`);
         if (cardElement) {
@@ -153,7 +191,7 @@ export function renderLogisticsView(container) {
             // Quitar clase activa previa y agregarla a este
             document.querySelectorAll('.cd-card').forEach(c => c.classList.remove('border-primary', 'bg-primary-container/[0.02]'));
             cardElement.classList.add('border-primary', 'bg-primary-container/[0.02]');
-            
+
             map.flyTo([cd.lat, cd.lon], 14, { duration: 1.5 });
             marker.openPopup();
           });
@@ -292,12 +330,33 @@ function renderCdCards(list, parentContainer, resetGeoStep) {
   }
 
   container.innerHTML = '';
+
+  // Agrupar centros por Origen (GRUPOS_ORIGEN), dejando "Sin Origen" al final
+  const grupos = {};
   list.forEach(cd => {
+    const grupo = cd.origen_grupo || 'Sin Origen';
+    if (!grupos[grupo]) grupos[grupo] = [];
+    grupos[grupo].push(cd);
+  });
+  const ordenGrupos = [...GRUPOS_ORIGEN.filter(g => grupos[g]), ...Object.keys(grupos).filter(g => !GRUPOS_ORIGEN.includes(g))];
+
+  ordenGrupos.forEach(grupo => {
+    const header = document.createElement('div');
+    header.className = 'flex items-center gap-sm mt-sm mb-1 first:mt-0';
+    header.innerHTML = `
+      <span class="material-symbols-outlined text-primary text-[18px]">flag</span>
+      <h4 class="font-label-caps text-label-caps text-secondary uppercase tracking-wider">${escapeHtml(grupo)}</h4>
+      <span class="text-[10px] text-secondary bg-surface-container-high rounded-full px-sm py-0.5">${grupos[grupo].length}</span>
+      <div class="flex-1 border-t border-outline-variant"></div>
+    `;
+    container.appendChild(header);
+
+    grupos[grupo].forEach(cd => {
     const card = document.createElement('div');
     card.className = 'cd-card bg-surface border border-outline-variant rounded p-md shadow-sm transition-all flex flex-col justify-between hover:border-primary relative';
     card.id = `cd-card-${cd.id}`;
     card.style.cursor = 'pointer';
-    
+
     const hasRealCoords = cd.lat && cd.lon && (cd.lat !== -33.4489 || cd.lon !== -70.6693);
 
     card.innerHTML = `
@@ -332,6 +391,7 @@ function renderCdCards(list, parentContainer, resetGeoStep) {
       </div>
     `;
     container.appendChild(card);
+    });
   });
 
   // --- Editar centro ---

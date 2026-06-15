@@ -1,7 +1,7 @@
 // Motor Actuarial — Administrador de Tarifas Transporte (SIT EBEMA)
 // Implementa, ruta por ruta y tipo de camión por tipo de camión, el cálculo
 // de costos definido en "PANTALLA 1: ADMINISTRADOR DE TARIFAS TRANSPORTE".
-import { truckCapKg } from './data.js';
+import { truckCapKg, getGroupRepId } from './data.js';
 
 // Capacidades nominales soportadas (kg)
 export const CAP_LIST = [5000, 10000, 15000, 28000];
@@ -9,8 +9,9 @@ export const CAP_LIST = [5000, 10000, 15000, 28000];
 // Devuelve la lista de tipos de camión del catálogo con su capacidad en kg.
 // Si se indica centroId, filtra solo las tarifas de ese centro logístico (Id_centro).
 export function truckTypesWithCap(db, centroId) {
-  const tipos = centroId
-    ? db.truckTypes.filter(t => t.Id_centro === centroId)
+  const cfgId = centroId ? getGroupRepId(db, centroId) : null;
+  const tipos = cfgId
+    ? db.truckTypes.filter(t => t.Id_centro === cfgId)
     : db.truckTypes;
   return tipos.map(t => ({ ...t, capKg: truckCapKg(t.type) }));
 }
@@ -19,20 +20,33 @@ export function truckTypesWithCap(db, centroId) {
 // una ruta + capacidad de camión (kg) determinadas.
 export function calcularCostoRuta(db, cfg, ruta, capKg) {
   const centroId = ruta.origenId;
+  // Configuración compartida por Centro Origen (grupo): resuelve "por detrás"
+  // al centro representante del grupo (ej. Santiago = 1001/1002/1003 -> 1003).
+  const cfgId = getGroupRepId(db, centroId);
   const km = Number(ruta.km) || 0;
   const capKey = String(capKg);
-  const kmKey = `${centroId}|${capKey}`;
+  const kmKey = `${cfgId}|${capKey}`;
 
-  // --- 1. Peajes (simétrico ida/vuelta, según ejes del camión) ---
+  // --- 1. Peajes (según ejes del camión: 2 ó 3) ---
+  // Prioridad: route_tolls (cálculo automático vía Google Routes API, ida/vuelta
+  // independientes). Si la ruta no tiene cálculo registrado, se usa el respaldo
+  // del registro manual de plazas de peaje (cfg.peajes, simétrico ida/vuelta).
   const ejes = cfg.ejes[capKey] || 2;
-  const peajesRuta = (cfg.peajes || []).filter(p => p.rutaId === ruta.id && Number(p.ejes) === ejes);
-  const peajeIda = peajesRuta.reduce((s, p) => s + (Number(p.valorPeaje) || 0), 0);
-  const peajeVuelta = peajeIda;
+  const tollRow = (db.routeTolls || []).find(rt => rt.route_id === ruta.id && Number(rt.ejes) === ejes);
+  let peajeIda, peajeVuelta;
+  if (tollRow) {
+    peajeIda = Number(tollRow.peaje_ida) || 0;
+    peajeVuelta = Number(tollRow.peaje_vuelta) || 0;
+  } else {
+    const peajesRuta = (cfg.peajes || []).filter(p => p.rutaId === ruta.id && Number(p.ejes) === ejes);
+    peajeIda = peajesRuta.reduce((s, p) => s + (Number(p.valorPeaje) || 0), 0);
+    peajeVuelta = peajeIda;
+  }
   const item1_peajes = peajeIda + peajeVuelta;
 
   // --- 2. Combustible (cargado ida + vacío vuelta) ---
   const rend = cfg.rendimientos[capKey] || { cargado: 1, vacio: 1 };
-  const fuel = cfg.combustibles[centroId] || {};
+  const fuel = cfg.combustibles[cfgId] || {};
   const precioLitro = Number(fuel.precioLitro) || 0;
   const combIda = rend.cargado > 0 ? (km / rend.cargado) * precioLitro : 0;
   const combVuelta = rend.vacio > 0 ? (km / rend.vacio) * precioLitro : 0;
@@ -48,7 +62,7 @@ export function calcularCostoRuta(db, cfg, ruta, capKg) {
 
   // --- 4. Seguro de carga por KM ---
   const ufVal = Number(cfg.variables.valorUF) || 0;
-  const seguroUFmensual = Number(cfg.seguros[centroId]) || 0;
+  const seguroUFmensual = Number(cfg.seguros[cfgId]) || 0;
   const seguroCLPmensual = seguroUFmensual * ufVal;
   const item4_seguroKm = kmMensual > 0 ? (seguroCLPmensual / kmMensual) * km : 0;
 
@@ -67,7 +81,7 @@ export function calcularCostoRuta(db, cfg, ruta, capKg) {
   const item7_gpsKm = kmMensual > 0 ? (((gpsCostoUF * ufVal) / kmMensual) * km) : 0;
 
   // --- 8. Chofer: base diaria ---
-  const sueldoMin = Number((cfg.variables.chofer.sueldoMinimo || {})[centroId]) || 0;
+  const sueldoMin = Number((cfg.variables.chofer.sueldoMinimo || {})[cfgId]) || 0;
   const diasHabiles = Number(cfg.variables.chofer.diasHabiles) || 22;
   const item8_choferBaseDiario = diasHabiles > 0 ? sueldoMin / diasHabiles : 0;
 

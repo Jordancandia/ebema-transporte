@@ -1,6 +1,11 @@
-import { getDatabase, saveDatabase, getCentreName, getTariffConfig, getClientTariffConfig, truckCapKg } from './data.js';
+import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig, truckCapKg } from './data.js';
 import { calcularCostoRuta } from './tarifas-engine.js';
 import { formatCLP, showAlert, geocodeAddress } from './utils.js';
+import { GRUPOS_ORIGEN } from './chile-geo.js';
+import { resolveOrigenIdFromGrupo } from './routes.js';
+
+// Orden estándar de tipos de camión: 5, 10, 15 y 28 toneladas.
+const TRUCK_TYPE_ORDER = ['Camión 5 Ton', 'Camión 10 Ton', 'Camión 15 Ton', 'Camión 28 Ton'];
 
 // Tramo de camión siguiente, usado para ZFMP (precio por kg de referencia) en
 // el panel "Referencia Tarifa Cliente" del cotizador.
@@ -72,6 +77,16 @@ export function renderRatesView(container) {
       truckTypeCatalog.push({ type: t.type, capacityTons: t.capacityTons });
     }
   });
+  // Orden fijo: 5, 10, 15 y 28 Ton
+  truckTypeCatalog.sort((a, b) => {
+    const ia = TRUCK_TYPE_ORDER.indexOf(a.type);
+    const ib = TRUCK_TYPE_ORDER.indexOf(b.type);
+    return (ia === -1 ? 999 : ia) - (ib === -1 ? 999 : ib);
+  });
+
+  // Orígenes agrupados: varios centros logísticos pueden compartir el mismo
+  // Origen (zona de despacho) y, por lo tanto, las mismas rutas.
+  const origenGrupos = GRUPOS_ORIGEN.filter(g => cds.some(cd => cd.origen_grupo === g));
 
   const currentQuoteId = `${Math.floor(1000 + Math.random() * 9000)}-QT`;
 
@@ -238,28 +253,16 @@ export function renderRatesView(container) {
                 <p class="font-label-caps text-[10px] text-center text-secondary mt-base">IVA no incluido</p>
               </div>
 
-              <div class="flex flex-col gap-sm">
-                <button type="button" id="btn-assign-quote" disabled title="Función deshabilitada"
-                  class="w-full bg-[#28a745] text-white font-bold py-md rounded-lg shadow-lg flex items-center justify-center gap-md opacity-40 cursor-not-allowed">
-                  <span class="material-symbols-outlined">assignment_turned_in</span>
-                  Asignar a Plan de Entrega
-                </button>
-                <button type="button" id="btn-export-pdf-quote" disabled title="Función deshabilitada"
-                  class="w-full border border-secondary text-secondary font-bold py-md rounded-lg flex items-center justify-center gap-md opacity-40 cursor-not-allowed">
-                  <span class="material-symbols-outlined">picture_as_pdf</span>
-                  Exportar PDF
-                </button>
-              </div>
             </div>
           </div>
         </div>
       </section>
     </div>
 
-    <!-- Visualizar Flota: Mapa Origen / Destino -->
+    <!-- Ruta Despacho: Mapa Origen / Destino -->
     <div class="mt-xl">
       <div class="flex justify-between items-end mb-md">
-        <h3 class="font-headline-sm text-headline-sm font-bold text-on-surface">Visualizar Flota</h3>
+        <h3 class="font-headline-sm text-headline-sm font-bold text-on-surface">Ruta Despacho</h3>
         <p class="font-body-md text-[12px] text-secondary">Origen y destino de la cotización actual</p>
       </div>
       <div class="bg-surface border border-outline-variant rounded overflow-hidden">
@@ -329,10 +332,10 @@ export function renderRatesView(container) {
 
   // --- CARGA INICIAL ---
   selOrigen.innerHTML = '<option value="">Seleccione origen...</option>';
-  cds.forEach(cd => {
+  origenGrupos.forEach(grupo => {
     const opt = document.createElement('option');
-    opt.value = cd.id;
-    opt.textContent = cd.nombre;
+    opt.value = grupo;
+    opt.textContent = grupo;
     selOrigen.appendChild(opt);
   });
 
@@ -374,24 +377,42 @@ export function renderRatesView(container) {
     }
   }
 
+  // Obtiene la geometría real de la ruta por carretera (OSRM), como lista de [lat, lon]
+  async function fetchRoadGeometry(origin, dest) {
+    try {
+      const url = `https://router.project-osrm.org/route/v1/driving/${origin.lon},${origin.lat};${dest.lon},${dest.lat}?overview=full&geometries=geojson`;
+      const resp = await fetch(url);
+      if (!resp.ok) return null;
+      const data = await resp.json();
+      if (!data.routes || !data.routes[0] || !data.routes[0].geometry) return null;
+      return data.routes[0].geometry.coordinates.map(([lon, lat]) => [lat, lon]);
+    } catch (e) {
+      return null;
+    }
+  }
+
   async function updateFleetMap() {
     if (!fleetMap) return;
     clearFleetMap();
-    const origenId = selOrigen.value;
-    const cd = cds.find(c => c.id === origenId);
+    const origenGrupo = selOrigen.value;
+    const cdOrigenId = resolveOrigenIdFromGrupo(db, origenGrupo);
+    const cd = cds.find(c => c.id === cdOrigenId);
     const points = [];
+    let origenCoords = null;
+    let destCoords = null;
 
     if (cd && cd.lat && cd.lon) {
       const marker = L.marker([cd.lat, cd.lon]).addTo(fleetMap)
         .bindPopup(`<strong>Origen:</strong> ${cd.nombre}`);
       fleetMarkers.push(marker);
+      origenCoords = { lat: cd.lat, lon: cd.lon };
       points.push([cd.lat, cd.lon]);
     }
 
     const destinoVal = inpDestino.value.trim();
     if (destinoVal) {
       // Reutilizar coordenadas cacheadas del perfil para no repetir la consulta a Nominatim/Google
-      const cached = findCachedQuote(origenId, destinoVal);
+      const cached = findCachedQuote(origenGrupo, destinoVal);
       let dest;
       if (cached && cached.lat && cached.lon) {
         dest = { lat: cached.lat, lon: cached.lon };
@@ -399,6 +420,7 @@ export function renderRatesView(container) {
         dest = await geocodeAddress(destinoVal);
       }
       lastDestCoords = dest;
+      destCoords = dest;
       const marker = L.marker([dest.lat, dest.lon]).addTo(fleetMap)
         .bindPopup(`<strong>Destino:</strong> ${destinoVal}`);
       fleetMarkers.push(marker);
@@ -408,8 +430,15 @@ export function renderRatesView(container) {
     }
 
     if (points.length === 2) {
-      fleetLine = L.polyline(points, { color: '#b5000b', weight: 3, dashArray: '6 6' }).addTo(fleetMap);
-      fleetMap.fitBounds(points, { padding: [40, 40] });
+      // Trazar la ruta real por carretera (OSRM); si no está disponible, usar línea recta como respaldo.
+      const roadGeometry = await fetchRoadGeometry(origenCoords, destCoords);
+      if (roadGeometry && roadGeometry.length > 1) {
+        fleetLine = L.polyline(roadGeometry, { color: '#b5000b', weight: 4 }).addTo(fleetMap);
+        fleetMap.fitBounds(roadGeometry, { padding: [40, 40] });
+      } else {
+        fleetLine = L.polyline(points, { color: '#b5000b', weight: 3, dashArray: '6 6' }).addTo(fleetMap);
+        fleetMap.fitBounds(points, { padding: [40, 40] });
+      }
     } else if (points.length === 1) {
       fleetMap.setView(points[0], 10);
     } else {
@@ -420,13 +449,14 @@ export function renderRatesView(container) {
   // --- EVENTOS ---
 
   selOrigen.addEventListener('change', () => {
-    const origenId = selOrigen.value;
+    const origenGrupo = selOrigen.value;
     datalist.innerHTML = '';
     inpDestino.value = '';
     resetRouteInfo();
 
-    if (origenId) {
-      const destinos = routes.filter(r => r.origenId === origenId).map(r => r.destino);
+    if (origenGrupo) {
+      // Destinos unificados: todas las rutas de los centros que comparten este Origen
+      const destinos = routes.filter(r => r.origen_grupo === origenGrupo).map(r => r.destino);
       [...new Set(destinos)].forEach(d => {
         const opt = document.createElement('option');
         opt.value = d;
@@ -434,7 +464,7 @@ export function renderRatesView(container) {
       });
       inpDestino.disabled = false;
       inpDestino.placeholder = 'Escriba la comuna o sector...';
-      sumOrigen.textContent = getCentreName(db, origenId);
+      sumOrigen.textContent = origenGrupo;
     } else {
       inpDestino.disabled = true;
       inpDestino.placeholder = 'Primero seleccione origen...';
@@ -452,18 +482,18 @@ export function renderRatesView(container) {
   });
 
   function consultarRuta() {
-    const origenId = selOrigen.value;
+    const origenGrupo = selOrigen.value;
     const destinoVal = inpDestino.value.trim();
     activeRoute = null;
     routePending = false;
 
-    if (!origenId || !destinoVal) {
+    if (!origenGrupo || !destinoVal) {
       resetRouteInfo();
       return;
     }
 
     const match = routes.find(r =>
-      r.origenId === origenId &&
+      r.origen_grupo === origenGrupo &&
       r.destino.trim().toLowerCase() === destinoVal.toLowerCase()
     );
 
@@ -482,7 +512,7 @@ export function renderRatesView(container) {
       routePending = true;
       rutaCodigo.textContent = '—';
       // Si ya se cotizó este mismo origen/destino antes, reutilizar la distancia cacheada
-      const cached = findCachedQuote(origenId, destinoVal);
+      const cached = findCachedQuote(origenGrupo, destinoVal);
       const kmEstimado = cached && cached.km ? cached.km : 0;
       txtDistancia.textContent = `${kmEstimado} KM`;
       sumDistancia.textContent = `${kmEstimado} KM`;
@@ -535,9 +565,10 @@ export function renderRatesView(container) {
 
     if (activeRoute) {
       const km = Number(activeRoute.km);
-      const origenId = selOrigen.value;
-      // Tarifas vigentes para el centro de origen de la ruta activa
-      const tarifasCentro = truckTypes.filter(t => t.Id_centro === origenId);
+      const origenGrupo = selOrigen.value;
+      // Tarifas vigentes para el centro representativo del Origen seleccionado
+      const cdOrigenId = resolveOrigenIdFromGrupo(db, origenGrupo);
+      const tarifasCentro = truckTypes.filter(t => t.Id_centro === cdOrigenId);
 
       if (servicio === 'exclusivo') {
         const truck = tarifasCentro.find(t => t.type === selVehiculo.value);
@@ -570,18 +601,18 @@ export function renderRatesView(container) {
 
     // Guardar/actualizar la cotización en el caché de las últimas 10 del perfil,
     // para evitar volver a consultar la misma ruta (origen/destino) más adelante.
-    const origenId = selOrigen.value;
+    const origenGrupo = selOrigen.value;
     const destinoVal = inpDestino.value.trim();
-    if (precio > 0 && origenId && destinoVal) {
+    if (precio > 0 && origenGrupo && destinoVal) {
       upsertRecentQuote({
         fecha: new Date().toLocaleString('es-CL', { dateStyle: 'short', timeStyle: 'short' }),
-        origenId,
-        origen: getCentreName(db, origenId),
+        origenId: origenGrupo,
+        origen: origenGrupo,
         destino: destinoVal,
         vehiculo: sumVehiculo.textContent,
         estado: activeRoute ? 'RUTA CREADA' : 'RUTA NO CREADA',
         monto: precio,
-        km: activeRoute ? Number(activeRoute.km) : (findCachedQuote(origenId, destinoVal)?.km || 0),
+        km: activeRoute ? Number(activeRoute.km) : (findCachedQuote(origenGrupo, destinoVal)?.km || 0),
         lat: lastDestCoords ? lastDestCoords.lat : null,
         lon: lastDestCoords ? lastDestCoords.lon : null
       });

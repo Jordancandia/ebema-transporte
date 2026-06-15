@@ -125,7 +125,7 @@ export function renderTransportsView(container) {
               <label for="t-razonsocial" class="font-label-caps text-label-caps text-secondary block">RAZÓN SOCIAL</label>
               <input type="text" id="t-razonsocial" class="w-full border border-[#CED4DA] p-sm font-body-md text-body-md focus:border-primary focus:ring-0 transition-all rounded bg-white" required placeholder="Ej. Transportes Ebema Express">
             </div>
-            
+
             <div class="grid grid-cols-1 md:grid-cols-2 gap-md">
               <div class="space-y-xs">
                 <label for="t-rut" class="font-label-caps text-label-caps text-secondary block">RUT EMPRESA</label>
@@ -154,7 +154,7 @@ export function renderTransportsView(container) {
 
             <div class="pt-sm border-t border-outline-variant">
               <h5 class="font-label-caps text-label-caps text-primary mb-md">Datos de Contacto (Editables)</h5>
-              
+
               <div class="space-y-md">
                 <div class="space-y-xs">
                   <label for="t-direccion" class="font-label-caps text-label-caps text-secondary block">DIRECCIÓN COMERCIAL</label>
@@ -198,7 +198,7 @@ export function renderTransportsView(container) {
               razonSocial;rut;direccion;telefono;email;patente;capacidad
             </code>
           </p>
-          
+
           <div class="border-2 border-dashed border-outline-variant hover:border-primary hover:bg-primary-container/[0.03] rounded-lg p-xl text-center cursor-pointer transition-all flex flex-col items-center justify-center gap-sm" id="csv-dropzone">
             <span class="material-symbols-outlined text-[48px] text-secondary">cloud_upload</span>
             <span class="font-body-md text-secondary font-bold">Arrastra tu archivo CSV aquí o haz clic para buscar</span>
@@ -273,10 +273,10 @@ export function renderTransportsView(container) {
     transportForm.reset();
     document.getElementById('transport-modal-title').innerText = 'Nuevo Transportista';
     setLockFields(false);
-    
+
     const activeDb = getDatabase();
     document.getElementById('t-codigosap').value = generateSapCode('TRSP', activeDb.transports, 'codigoSap');
-    
+
     // Abrir con animación
     transportModal.classList.remove('pointer-events-none', 'opacity-0');
     transportModal.querySelector('.modal-window').classList.remove('scale-95');
@@ -298,7 +298,7 @@ export function renderTransportsView(container) {
     e.preventDefault();
     const db = getDatabase();
     const rutVal = document.getElementById('t-rut').value;
-    
+
     if (!editingTransportId && !validateRut(rutVal)) {
       showAlert('El RUT ingresado no es válido.', 'error');
       return;
@@ -380,7 +380,7 @@ export function renderTransportsView(container) {
   const btnConfirmBulk = document.getElementById('btn-confirm-bulk');
   const csvDropzone = document.getElementById('csv-dropzone');
   const csvFileInput = document.getElementById('csv-file-input');
-  
+
   let parsedTransports = [];
 
   btnBulkUpload.addEventListener('click', () => {
@@ -388,7 +388,7 @@ export function renderTransportsView(container) {
     btnConfirmBulk.disabled = true;
     document.getElementById('csv-preview-container').classList.add('hidden');
     document.getElementById('csv-preview-body').innerHTML = '';
-    
+
     bulkModal.classList.remove('pointer-events-none', 'opacity-0');
     bulkModal.querySelector('.modal-window').classList.remove('scale-95');
   });
@@ -432,12 +432,12 @@ export function renderTransportsView(container) {
         showAlert('El archivo CSV está vacío o no tiene el formato correcto.', 'error');
         return;
       }
-      
+
       const db = getDatabase();
       parsedTransports = [];
       const previewBody = document.getElementById('csv-preview-body');
       previewBody.innerHTML = '';
-      
+
       rows.forEach(row => {
         const razonSocial = row.razonSocial || '';
         let rut = formatRut(row.rut || '');
@@ -446,14 +446,14 @@ export function renderTransportsView(container) {
         const email = row.email || '';
         const patente = (row.patente || '').toUpperCase().replace(/\s+/g, '');
         const capacidad = Number(row.capacidad || 10);
-        
+
         let error = '';
         if (!razonSocial) error = 'Falta Razón Social';
         else if (!validateRut(rut)) error = 'RUT inválido';
         else if (!patente || patente.length < 5) error = 'Patente incorrecta';
         else if (db.transports.some(t => t.rut === rut)) error = 'RUT Duplicado';
         else if (db.transports.some(t => t.patente === patente)) error = 'Patente Duplicada';
-        
+
         const tr = document.createElement('tr');
         tr.className = "border-b border-outline-variant";
         tr.innerHTML = `
@@ -485,7 +485,7 @@ export function renderTransportsView(container) {
 
       document.getElementById('csv-count').innerText = rows.length;
       document.getElementById('csv-preview-container').classList.remove('hidden');
-      
+
       if (parsedTransports.length > 0) {
         btnConfirmBulk.disabled = false;
       } else {
@@ -497,7 +497,7 @@ export function renderTransportsView(container) {
 
   btnConfirmBulk.addEventListener('click', () => {
     const db = getDatabase();
-    
+
     parsedTransports.forEach(t => {
       t.id = 't' + (new Date().getTime() + Math.random().toString(36).substr(2, 5));
       t.codigoSap = generateSapCode('TRSP', db.transports, 'codigoSap');
@@ -515,7 +515,7 @@ function setLockFields(isEdit) {
   const rutInput = document.getElementById('t-rut');
   const patenteInput = document.getElementById('t-patente');
   const sapInput = document.getElementById('t-codigosap');
-  
+
   const rutMsg = document.getElementById('t-rut-lock-msg');
   const patenteMsg = document.getElementById('t-patente-lock-msg');
   const sapMsg = document.getElementById('t-sap-lock-msg');
@@ -524,7 +524,7 @@ function setLockFields(isEdit) {
     rutInput.disabled = true;
     patenteInput.disabled = true;
     sapInput.disabled = true;
-    
+
     rutInput.className = "w-full border border-outline-variant p-sm font-body-md text-body-md rounded bg-[#E9ECEF] text-secondary cursor-not-allowed";
     patenteInput.className = "w-full border border-outline-variant p-sm font-body-md text-body-md rounded bg-[#E9ECEF] text-secondary cursor-not-allowed";
     sapInput.className = "w-full border border-outline-variant p-sm font-body-md text-body-md rounded bg-[#E9ECEF] text-secondary cursor-not-allowed";
@@ -572,7 +572,7 @@ function renderTransportsTable(transportsList) {
   transportsList.forEach(t => {
     const tr = document.createElement('tr');
     tr.className = "border-b border-outline-variant hover:bg-surface-container-low transition-colors";
-    
+
     const statusBg = t.activo ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800';
 
     tr.innerHTML = `
@@ -625,7 +625,7 @@ function renderTransportsTable(transportsList) {
       const id = e.currentTarget.getAttribute('data-id');
       const db = getDatabase();
       const t = db.transports.find(item => item.id === id);
-      
+
       if (t) {
         editingTransportId = id;
         document.getElementById('t-razonsocial').value = t.razonSocial;
@@ -652,7 +652,7 @@ function renderTransportsTable(transportsList) {
       const id = e.currentTarget.getAttribute('data-id');
       const db = getDatabase();
       const idx = db.transports.findIndex(item => item.id === id);
-      
+
       if (idx !== -1) {
         const t = db.transports[idx];
         t.activo = !t.activo;

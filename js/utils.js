@@ -16,11 +16,11 @@ export function formatRut(rut) {
   // Limpiar caracteres extraños
   let valor = rut.replace(/[^0-9kK]/g, '');
   if (valor.length < 2) return valor;
-  
+
   // Separar cuerpo y dígito verificador
   let cuerpo = valor.slice(0, -1);
   let dv = valor.slice(-1).toUpperCase();
-  
+
   // Formatear cuerpo con puntos
   let cuerpoFormateado = '';
   while (cuerpo.length > 3) {
@@ -28,7 +28,7 @@ export function formatRut(rut) {
     cuerpo = cuerpo.slice(0, -3);
   }
   cuerpoFormateado = cuerpo + cuerpoFormateado;
-  
+
   return cuerpoFormateado + '-' + dv;
 }
 
@@ -36,22 +36,22 @@ export function validateRut(rut) {
   if (!rut || rut.length < 3) return false;
   let valor = rut.replace(/[^0-9kK]/g, '');
   if (valor.length < 8) return false;
-  
+
   let cuerpo = valor.slice(0, -1);
   let dv = valor.slice(-1).toUpperCase();
-  
+
   // Calcular dígito verificador
   let suma = 0;
   let multiplicador = 2;
-  
+
   for (let i = cuerpo.length - 1; i >= 0; i--) {
     suma += parseInt(cuerpo.charAt(i)) * multiplicador;
     multiplicador = multiplicador === 7 ? 2 : multiplicador + 1;
   }
-  
+
   let dvEsperado = 11 - (suma % 11);
   let dvCalc = dvEsperado === 11 ? '0' : dvEsperado === 10 ? 'K' : dvEsperado.toString();
-  
+
   return dv === dvCalc;
 }
 
@@ -91,13 +91,13 @@ export function generateSapCode(prefix, list, key) {
 export function parseCSV(text) {
   const lines = text.split('\n').map(line => line.trim()).filter(line => line.length > 0);
   if (lines.length < 2) return [];
-  
+
   // Detectar delimitador (coma o punto y coma)
   const headerLine = lines[0];
   const delimiter = headerLine.includes(';') ? ';' : ',';
-  
+
   const headers = headerLine.split(delimiter).map(h => h.trim().replace(/^["']|["']$/g, ''));
-  
+
   const results = [];
   for (let i = 1; i < lines.length; i++) {
     const row = lines[i].split(delimiter).map(cell => cell.trim().replace(/^["']|["']$/g, ''));
@@ -126,7 +126,7 @@ export function showAlert(message, type = 'success') {
       <span class="toast-message">${message}</span>
     </div>
   `;
-  
+
   // Agregar estilos rápidos de la alerta
   Object.assign(alertContainer.style, {
     position: 'fixed',
@@ -145,15 +145,15 @@ export function showAlert(message, type = 'success') {
     opacity: '0',
     transform: 'translateY(20px)'
   });
-  
+
   document.body.appendChild(alertContainer);
-  
+
   // Forzar reflow y animar entrada
   setTimeout(() => {
     alertContainer.style.opacity = '1';
     alertContainer.style.transform = 'translateY(0)';
   }, 10);
-  
+
   // Ocultar y remover después de 3 segundos
   setTimeout(() => {
     alertContainer.style.opacity = '0';
