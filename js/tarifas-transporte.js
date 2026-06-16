@@ -308,6 +308,9 @@ function renderPeajesAuto(content, db, cfg) {
         <button id="pj-export" class="bg-surface-container-high hover:bg-surface-container text-on-surface font-bold px-md py-sm rounded flex items-center gap-xs text-[12px] uppercase">
           <span class="material-symbols-outlined text-[18px]">download</span> Exportar CSV
         </button>
+        <button id="pj-calcular-km" class="bg-secondary hover:bg-[#4a5568] text-white font-bold px-md py-sm rounded flex items-center gap-xs text-[12px] uppercase">
+          <span class="material-symbols-outlined text-[18px]">straighten</span> Calcular KM
+        </button>
         <button id="pj-calcular" class="bg-primary hover:bg-[#930007] text-white font-bold px-md py-sm rounded flex items-center gap-xs text-[12px] uppercase">
           <span class="material-symbols-outlined text-[18px]">calculate</span> Calcular Peajes
         </button>
@@ -402,7 +405,19 @@ function renderPeajesAuto(content, db, cfg) {
     content.querySelectorAll('.pj-row-check').forEach(cb => { cb.checked = e.target.checked; });
   });
 
-  // Calcular: solo rutas seleccionadas, o todas las filtradas si ninguna seleccionada
+  // Calcular KM: solo rutas seleccionadas, o todas las filtradas si ninguna seleccionada
+  document.getElementById('pj-calcular-km').addEventListener('click', () => {
+    const checked = [...content.querySelectorAll('.pj-row-check:checked')].map(cb => cb.dataset.routeId);
+    let rutasTarget;
+    if (checked.length > 0) {
+      rutasTarget = [...new Set(checked)].map(id => routes.find(r => r.id === id)).filter(Boolean);
+    } else {
+      rutasTarget = [...new Set(rows.map(r => r.ruta))];
+    }
+    calcularKm(content, db, cfg, rutasTarget);
+  });
+
+  // Calcular Peajes: solo rutas seleccionadas, o todas las filtradas si ninguna seleccionada
   document.getElementById('pj-calcular').addEventListener('click', () => {
     const checked = [...content.querySelectorAll('.pj-row-check:checked')].map(cb => cb.dataset.routeId);
     let rutasTarget;
@@ -446,12 +461,49 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// Invoca la Edge Function 'route-tolls' (proxy seguro hacia TollGuru API)
-async function callRouteTolls(origin, destination, vehicleType) {
-  const { data, error } = await supabase.functions.invoke('route-tolls', { body: { origin, destination, vehicleType } });
+// Mapeo Centro Logístico EBEMA → nombre de ciudad en GetAPI (/locations)
+// GetAPI soporta 31 ciudades fijas en sus rutas de peaje.
+const CENTRO_GETAPI_CITY = {
+  1001: 'Santiago (Vespucio Norte)',
+  1002: 'Santiago (Vespucio Norte)',
+  1003: 'Santiago (Vespucio Norte)',
+  1005: 'Santiago (Río Maipo)',
+  1020: 'Antofagasta (La Negra)',
+  1040: 'Coquimbo',
+  1050: 'Quillota',
+  1060: 'Rancagua',
+  1070: 'Talca',
+  1080: 'Concepción (vía Itata)',
+  1081: 'Concepción (vía Itata)',
+  1082: 'Concepción (vía Itata)',
+  1090: 'Temuco',
+  1100: 'Puerto Montt',
+  1160: 'Chillán',
+};
+
+// Invoca la Edge Function 'getapi-tolls' (proxy seguro hacia chile.getapi.cl)
+// Usa /route-cost con nombres de ciudad (el plan actual no incluye /route-cost-by-coords).
+// Homologación:
+//   ejes=2 (5t/10t) → CAMION_2_EJES
+//   ejes=3 (15t/28t) → CAMION_PESADO
+// Si la ciudad de destino no está en la lista de 31 ciudades GetAPI,
+// retorna { tollCLP: 0, hasToll: false, notFound: true } — sin error, sin peaje.
+async function callGetApiTolls(originCity, destCity, category) {
+  const { data, error } = await supabase.functions.invoke('getapi-tolls', {
+    body: { originCity, destCity, category }
+  });
   if (error) throw error;
   if (data && data.error) throw new Error(data.error);
-  return data;
+  return data; // { tollCLP, hasToll, tollsCount, details, notFound? }
+}
+
+async function callGoogleDistance(originLat, originLng, destLat, destLng) {
+  const { data, error } = await supabase.functions.invoke('google-distance', {
+    body: { originLat, originLng, destLat, destLng }
+  });
+  if (error) throw error;
+  if (data && data.error) throw new Error(data.error);
+  return data; // { distanceKm, durationMin, distanceText, durationText }
 }
 
 // Crea o actualiza la fila route_tolls para (routeId, ejes) con los resultados
@@ -474,8 +526,8 @@ function pjUpsertToll(db, routeId, ejes, ida, vuelta, opts = {}) {
   row.peaje_vuelta = vuelta ? Math.round(vuelta.tollCLP || 0) : 0;
   row.km_ida = ida && ida.distanceMeters != null ? Math.round(ida.distanceMeters / 100) / 10 : null;
   row.km_vuelta = vuelta && vuelta.distanceMeters != null ? Math.round(vuelta.distanceMeters / 100) / 10 : null;
-  const idaReview = !ida || (ida.hasToll && !ida.tollCLP);
-  const vueltaReview = !vuelta || (vuelta.hasToll && !vuelta.tollCLP);
+  const idaReview = !ida || (ida.hasToll && !ida.tollCLP) || !!ida.notFound;
+  const vueltaReview = !vuelta || (vuelta.hasToll && !vuelta.tollCLP) || !!vuelta.notFound;
   row.needs_review = !!(idaReview || vueltaReview);
   row.calculado_en = now;
   row.updated_at = now;
@@ -721,9 +773,12 @@ function createProgressModal(total) {
   };
 }
 
-// Orquesta el cálculo (a demanda) de peajes para las rutas indicadas: para
-// cada ruta consulta la Edge Function 'route-tolls' Ida y Vuelta (0.5s de
-// espera entre consultas) y guarda el resultado para 2 y 3 ejes.
+// Orquesta el cálculo (a demanda) de peajes para las rutas indicadas usando GetAPI Chile.
+// Homologación:
+//   2 ejes (5t / 10t) → CAMION_2_EJES
+//   3 ejes (15t / 28t) → CAMION_PESADO
+// Se hacen 4 consultas por ruta (2 categorías × Ida + Vuelta).
+// GetAPI no retorna distancia → el campo KM queda vacío.
 async function calcularPeajes(content, db, cfg, rutas) {
   if (!rutas || rutas.length === 0) {
     showAlert('No hay rutas para calcular con los filtros actuales', 'error');
@@ -731,10 +786,11 @@ async function calcularPeajes(content, db, cfg, rutas) {
   }
   const targets = rutas.filter(r => r.lat != null && r.lon != null);
   const sinCoords = rutas.length - targets.length;
-  const totalConsultas = targets.length * 4;
-  const estMin = Math.max(1, Math.ceil((totalConsultas * 0.5) / 60));
+  const totalConsultas = targets.length * 4; // 2 categorías (2 ejes + 3 ejes) × Ida + Vuelta
+  const estSeg = totalConsultas * 1; // ~1s por consulta
+  const estMin = estSeg < 60 ? `~${estSeg}s` : `~${Math.ceil(estSeg / 60)} min`;
   const aviso = sinCoords > 0 ? `\n${sinCoords} ruta(s) sin coordenadas quedarán marcadas para revisión.` : '';
-  if (!confirm(`Se calcularán peajes (vía TollGuru) para ${targets.length} ruta(s): Ida + Vuelta, por separado para 2 y 3 ejes = ${totalConsultas} consultas.\nTiempo estimado: ~${estMin} min.${aviso}\n\nNota: el plan de prueba de TollGuru permite 15 consultas/día.\n¿Continuar?`)) {
+  if (!confirm(`Se calcularán peajes (vía GetAPI Chile) para ${targets.length} ruta(s).\nIda + Vuelta × 2 ejes y 3 ejes = ${totalConsultas} consultas. Tiempo estimado: ${estMin}.${aviso}\n\nHomologación: 2 ejes → CAMION_2_EJES · 3 ejes → CAMION_PESADO\n¿Continuar?`)) {
     return;
   }
 
@@ -747,6 +803,9 @@ async function calcularPeajes(content, db, cfg, rutas) {
   let cancelado = false;
   modal.cancelBtn.addEventListener('click', () => { cancelado = true; });
 
+  // Mapa ejes → categoría GetAPI
+  const ejesToCategory = { 2: 'CAMION_2_EJES', 3: 'CAMION_PESADO' };
+
   for (let i = 0; i < targets.length; i++) {
     if (cancelado) break;
     const ruta = targets[i];
@@ -758,26 +817,35 @@ async function calcularPeajes(content, db, cfg, rutas) {
       continue;
     }
 
-    const origenPt = { lat: cd.lat, lng: cd.lon };
-    const destinoPt = { lat: ruta.lat, lng: ruta.lon };
+    // Resolver ciudad de origen (Centro Logístico → nombre GetAPI)
+    const originCity = CENTRO_GETAPI_CITY[String(cd.id)] || CENTRO_GETAPI_CITY[Number(cd.id)];
+    if (!originCity) {
+      console.warn('Centro sin mapeo GetAPI:', cd.id, cd.nombre);
+      [2, 3].forEach(ejes => pjUpsertToll(db, ruta.id, ejes, null, null, { error: true }));
+      continue;
+    }
+    // Destino: usar ruta.destino directamente (GetAPI acepta nombres de ciudades chilenas)
+    const destCity = ruta.destino;
 
     for (const ejes of [2, 3]) {
-      const vehicleType = ejes === 2 ? '2AxlesTruck' : '3AxlesTruck';
+      const category = ejesToCategory[ejes];
       let ida = null, vuelta = null, errored = false;
       try {
-        ida = await callRouteTolls(origenPt, destinoPt, vehicleType);
+        ida = await callGetApiTolls(originCity, destCity, category);
         await sleep(500);
-        vuelta = await callRouteTolls(destinoPt, origenPt, vehicleType);
-        await sleep(500);
-      } catch (err) {
-        console.error('Error calculando peajes para', ruta.codigo, ejes, 'ejes', err);
-        errored = true;
-        if (/cuota|429|FORBIDDEN/i.test(String(err && err.message))) {
-          cancelado = true;
-          showAlert('Cuota diaria de TollGuru excedida. Avance guardado.', 'error');
+        // Si destino no está en GetAPI (notFound), vuelta también queda en $0
+        if (!ida || ida.notFound) {
+          vuelta = ida; // mismo resultado: $0, no hay peaje en esa ruta
+        } else {
+          vuelta = await callGetApiTolls(destCity, originCity, category);
+          await sleep(500);
         }
+      } catch (err) {
+        console.error('Error calculando peajes GetAPI para', ruta.codigo, ejes, 'ejes', err);
+        errored = true;
       }
 
+      // GetAPI no retorna distanceMeters → km_ida/km_vuelta quedan null.
       pjUpsertToll(db, ruta.id, ejes, ida, vuelta, { error: errored });
       if (cancelado) break;
     }
@@ -789,6 +857,82 @@ async function calcularPeajes(content, db, cfg, rutas) {
   saveDatabase(db);
   modal.close();
   showAlert(cancelado ? 'Cálculo de peajes cancelado (avance guardado)' : 'Cálculo de peajes finalizado');
+  renderPeajesAuto(content, db, cfg);
+}
+
+// ---------- Calcular KM vía Google Distance Matrix ----------
+async function calcularKm(content, db, cfg, rutas) {
+  if (!rutas || rutas.length === 0) {
+    showAlert('No hay rutas para calcular KM', 'error');
+    return;
+  }
+
+  const sinKm = rutas.filter(r => {
+    const tollRow = (db.routeTolls || []).find(t => t.route_id === r.id && t.km_ida != null);
+    return !tollRow;
+  });
+
+  const targets = sinKm.filter(r => r.lat != null && r.lon != null);
+  const sinCoords = sinKm.length - targets.length;
+  const yaConKm = rutas.length - sinKm.length;
+
+  if (targets.length === 0) {
+    const msg = yaConKm === rutas.length
+      ? 'Todas las rutas seleccionadas ya tienen KM calculado (cache).'
+      : `No hay rutas con coordenadas para calcular KM.`;
+    showAlert(msg, 'info');
+    return;
+  }
+
+  const avisoCache = yaConKm > 0 ? `\n${yaConKm} ruta(s) ya tienen KM y serán omitidas (cache).` : '';
+  const avisoCoords = sinCoords > 0 ? `\n${sinCoords} ruta(s) sin coordenadas serán omitidas.` : '';
+  if (!confirm(`Se calcularán KMs (vía Google Distance Matrix) para ${targets.length} ruta(s).${avisoCache}${avisoCoords}\n\n¿Continuar?`)) return;
+
+  const modal = createProgressModal(targets.length);
+  let cancelado = false;
+  modal.cancelBtn.addEventListener('click', () => { cancelado = true; });
+
+  db.routeTolls = db.routeTolls || [];
+
+  for (let i = 0; i < targets.length; i++) {
+    if (cancelado) break;
+    const ruta = targets[i];
+    const cd = (db.logisticsCentres || []).find(c => c.id === ruta.origenId);
+    modal.update(i, targets.length, `${ruta.codigo} — ${ruta.destino || ''}`);
+
+    if (!cd || cd.lat == null || cd.lon == null) {
+      console.warn('Centro sin coordenadas para KM:', cd?.id, cd?.nombre);
+      continue;
+    }
+
+    try {
+      const ida = await callGoogleDistance(cd.lat, cd.lon, ruta.lat, ruta.lon);
+      await sleep(300);
+      const vuelta = await callGoogleDistance(ruta.lat, ruta.lon, cd.lat, cd.lon);
+      await sleep(300);
+
+      [2, 3].forEach(ejes => {
+        let row = db.routeTolls.find(rt => rt.route_id === ruta.id && Number(rt.ejes) === ejes);
+        if (!row) {
+          row = { id: `tj_${ruta.id}_${ejes}`, route_id: ruta.id, ejes, peaje_ida: 0, peaje_vuelta: 0, needs_review: false };
+          db.routeTolls.push(row);
+        }
+        row.km_ida = ida ? ida.distanceKm : null;
+        row.km_vuelta = vuelta ? vuelta.distanceKm : null;
+        row.updated_at = new Date().toISOString();
+      });
+
+    } catch (err) {
+      console.error('Error calculando KM para', ruta.codigo, err);
+    }
+
+    if ((i + 1) % 10 === 0) saveDatabase(db);
+  }
+
+  modal.update(targets.length, targets.length, cancelado ? 'Cancelado' : 'Finalizado');
+  saveDatabase(db);
+  modal.close();
+  showAlert(cancelado ? 'Cálculo de KM cancelado (avance guardado)' : 'Cálculo de KM finalizado');
   renderPeajesAuto(content, db, cfg);
 }
 
