@@ -48,8 +48,8 @@ const inputCls = 'w-full border border-[#CED4DA] p-xs font-data-mono text-data-m
 function numInput(path, value, extra = '') {
   return `<input type="number" step="any" class="${inputCls}" data-path="${path}" value="${value ?? 0}" ${extra}>`;
 }
-function dateInput(path, value) {
-  return `<input type="date" class="${inputCls} text-left" data-path="${path}" value="${value || ''}">`;
+function dateInput(path, value, extra = '') {
+  return `<input type="date" class="${inputCls} text-left" data-path="${path}" value="${value || ''}" ${extra}>`;
 }
 function textInput(path, value, extra = '') {
   return `<input type="text" class="${inputCls} text-left" data-path="${path}" value="${value || ''}" ${extra}>`;
@@ -341,6 +341,8 @@ function renderPeajesAuto(content, db, cfg) {
                 let estado;
                 if (!toll || !toll.calculado_en) {
                   estado = `<span class="inline-flex items-center px-2 py-1 rounded bg-secondary-container text-on-secondary-container font-label-caps text-[10px]">SIN CALCULAR</span>`;
+                } else if (toll.notFound) {
+                  estado = `<span class="inline-flex items-center gap-1 px-2 py-1 rounded bg-amber-100 text-amber-800 font-label-caps text-[10px]" title="Destino no encontrado en catálogo GetAPI — ingresar peaje manualmente"><span class="material-symbols-outlined text-[14px]">location_off</span> SIN COBERTURA</span>`;
                 } else if (toll.needs_review) {
                   estado = `<span class="inline-flex items-center gap-1 px-2 py-1 rounded bg-red-100 text-red-800 font-label-caps text-[10px]"><span class="material-symbols-outlined text-[14px]">warning</span> REVISIÓN</span>`;
                 } else {
@@ -353,8 +355,18 @@ function renderPeajesAuto(content, db, cfg) {
                   <td class="p-md">${escapeHtml(origenNombre)}</td>
                   <td class="p-md">${escapeHtml(ruta.destino || '')}</td>
                   <td class="p-md">${EJES_LABELS[ejes]}</td>
-                  <td class="p-md w-32">${tollNumInput(ruta.id, ejes, 'peaje_ida', toll ? toll.peaje_ida : 0)}</td>
-                  <td class="p-md w-32">${tollNumInput(ruta.id, ejes, 'peaje_vuelta', toll ? toll.peaje_vuelta : 0)}</td>
+                  <td class="p-md w-32">
+                    ${tollNumInput(ruta.id, ejes, 'peaje_ida', toll ? toll.peaje_ida : 0)}
+                    ${toll && (toll.mainline_ida || toll.ramp_ida || toll.electronic_ida) ? `<div class="text-[10px] text-secondary mt-1 leading-tight">
+                      ${toll.mainline_ida   ? `<span title="Troncal">T:${formatCLP(toll.mainline_ida)}</span> ` : ''}${toll.ramp_ida ? `<span title="Lateral">L:${formatCLP(toll.ramp_ida)}</span> ` : ''}${toll.electronic_ida ? `<span title="TAG">E:${formatCLP(toll.electronic_ida)}</span>` : ''}
+                    </div>` : ''}
+                  </td>
+                  <td class="p-md w-32">
+                    ${tollNumInput(ruta.id, ejes, 'peaje_vuelta', toll ? toll.peaje_vuelta : 0)}
+                    ${toll && (toll.mainline_vuelta || toll.ramp_vuelta || toll.electronic_vuelta) ? `<div class="text-[10px] text-secondary mt-1 leading-tight">
+                      ${toll.mainline_vuelta   ? `<span title="Troncal">T:${formatCLP(toll.mainline_vuelta)}</span> ` : ''}${toll.ramp_vuelta ? `<span title="Lateral">L:${formatCLP(toll.ramp_vuelta)}</span> ` : ''}${toll.electronic_vuelta ? `<span title="TAG">E:${formatCLP(toll.electronic_vuelta)}</span>` : ''}
+                    </div>` : ''}
+                  </td>
                   <td class="p-md text-right font-data-mono text-data-mono">${kmTotal}</td>
                   <td class="p-md text-center">${estado}</td>
                   <td class="p-md text-center">
@@ -436,23 +448,28 @@ function renderPeajesAuto(content, db, cfg) {
     });
   });
 }
+// Mapeo ejes → tipos de camión individuales para el CSV de exportación.
+// Un camión de 2 ejes (CAMION_2_EJES) cubre capacidades 5T y 10T.
+// Un camión de 3 ejes (CAMION_PESADO) cubre capacidades 15T y 28T.
+const EJES_TO_TIPOS = {
+  2: ['5T', '10T'],
+  3: ['15T', '28T']
+};
+
 function exportPeajesCSV(db, rows) {
-  const grupos = getOrigenGroups(db);
-  const headers = ['RUTA', 'ORIGEN', 'DESTINO', 'TIPO_DE_CAMION', 'PEAJE_IDA', 'PEAJE_VUELTA', 'KM'];
-  const data = rows.map(({ ruta, ejes, toll }) => {
-    const grupo = grupos.find(g => g.centroIds.includes(ruta.origenId));
+  const grupos  = getOrigenGroups(db);
+  const headers = ['RUTA', 'ORIGEN', 'DESTINO', 'TIPO_CAMION', 'PEAJE_IDA', 'PEAJE_VUELTA'];
+  const data = [];
+  for (const { ruta, ejes, toll } of rows) {
+    const grupo  = grupos.find(g => g.centroIds.includes(ruta.origenId));
     const origen = grupo ? grupo.nombre : (getCentreName(db, ruta.origenId) || '');
-    const km = toll && toll.km_ida != null ? (toll.km_ida * 2).toFixed(1) : '';
-    return [
-      ruta.codigo,
-      origen,
-      ruta.destino || '',
-      EJES_LABELS[ejes],
-      toll ? Math.round(toll.peaje_ida || 0) : 0,
-      toll ? Math.round(toll.peaje_vuelta || 0) : 0,
-      km
-    ];
-  });
+    const ida    = toll ? Math.round(toll.peaje_ida    || 0) : 0;
+    const vuelta = toll ? Math.round(toll.peaje_vuelta || 0) : 0;
+    // Expandir a una fila por cada tipo de camión individual
+    for (const tipo of (EJES_TO_TIPOS[ejes] || [EJES_LABELS[ejes]])) {
+      data.push([ruta.codigo, origen, ruta.destino || '', tipo, ida, vuelta]);
+    }
+  }
   downloadFile(`peajes_rutas_${Date.now()}.csv`, toCSV(headers, data));
   showAlert('Archivo CSV de peajes exportado');
 }
@@ -461,25 +478,43 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// Mapeo Centro Logístico EBEMA → nombre de ciudad en GetAPI (/locations)
-// GetAPI soporta 31 ciudades fijas en sus rutas de peaje.
-const CENTRO_GETAPI_CITY = {
-  1001: 'Santiago (Vespucio Norte)',
-  1002: 'Santiago (Vespucio Norte)',
-  1003: 'Santiago (Vespucio Norte)',
-  1005: 'Santiago (Río Maipo)',
-  1020: 'Antofagasta (La Negra)',
-  1040: 'Coquimbo',
-  1050: 'Quillota',
-  1060: 'Rancagua',
-  1070: 'Talca',
-  1080: 'Concepción (vía Itata)',
-  1081: 'Concepción (vía Itata)',
-  1082: 'Concepción (vía Itata)',
-  1090: 'Temuco',
-  1100: 'Puerto Montt',
-  1160: 'Chillán',
+/**
+ * Construye el parámetro de ubicación para GetAPI Chile en formato
+ * "NombreComuna, NombreRegion" a partir de objetos con propiedades
+ * { comuna, region }. Esto elimina diccionarios hardcoded y usa
+ * directamente los campos estructurados de la base de datos.
+ *
+ * Ejemplo:
+ *   construirParametrosRuta(
+ *     { comuna: 'Quilicura', region: 'Metropolitana' },
+ *     { comuna: 'Loncoche',  region: 'La Araucanía'  }
+ *   )
+ *   → { origin: 'Quilicura, Metropolitana', destination: 'Loncoche, La Araucanía' }
+ *
+ * La codificación URL la maneja el Edge Function con URLSearchParams.
+ */
+// Mapea nombres oficiales largos de regiones a la forma corta que reconoce GetAPI.
+const REGION_ALIAS = {
+  "Libertador General Bernardo O'Higgins": "O'Higgins",
+  'Metropolitana de Santiago':             'Metropolitana',
+  'Magallanes y de la Antártica Chilena':  'Magallanes',
 };
+function normalizarRegion(region) {
+  if (!region) return region;
+  const r = String(region).trim();
+  return REGION_ALIAS[r] ?? r;
+}
+
+function construirParametrosRuta(origenObj, destinoObj) {
+  const fmt = (obj) => {
+    const partes = [obj.comuna, normalizarRegion(obj.region)].filter(Boolean).map(s => String(s).trim());
+    return partes.join(', ');
+  };
+  return {
+    origin:      fmt(origenObj),
+    destination: fmt(destinoObj)
+  };
+}
 
 // Invoca la Edge Function 'getapi-tolls' (proxy seguro hacia chile.getapi.cl)
 // Usa /route-cost con nombres de ciudad (el plan actual no incluye /route-cost-by-coords).
@@ -508,6 +543,7 @@ async function callGoogleDistance(originLat, originLng, destLat, destLng) {
 
 // Crea o actualiza la fila route_tolls para (routeId, ejes) con los resultados
 // de ida/vuelta. Si opts.error, marca la fila para revisión sin tocar valores.
+// Guarda además el desglose por tipo: mainline (Troncal), ramp (Lateral), electronic (TAG).
 function pjUpsertToll(db, routeId, ejes, ida, vuelta, opts = {}) {
   db.routeTolls = db.routeTolls || [];
   let row = db.routeTolls.find(rt => rt.route_id === routeId && Number(rt.ejes) === ejes);
@@ -522,15 +558,35 @@ function pjUpsertToll(db, routeId, ejes, ida, vuelta, opts = {}) {
     row.updated_at = now;
     return row;
   }
-  row.peaje_ida = ida ? Math.round(ida.tollCLP || 0) : 0;
+  row.peaje_ida    = ida    ? Math.round(ida.tollCLP    || 0) : 0;
   row.peaje_vuelta = vuelta ? Math.round(vuelta.tollCLP || 0) : 0;
-  row.km_ida = ida && ida.distanceMeters != null ? Math.round(ida.distanceMeters / 100) / 10 : null;
+  row.km_ida    = ida    && ida.distanceMeters    != null ? Math.round(ida.distanceMeters    / 100) / 10 : null;
   row.km_vuelta = vuelta && vuelta.distanceMeters != null ? Math.round(vuelta.distanceMeters / 100) / 10 : null;
-  const idaReview = !ida || (ida.hasToll && !ida.tollCLP) || !!ida.notFound;
-  const vueltaReview = !vuelta || (vuelta.hasToll && !vuelta.tollCLP) || !!vuelta.notFound;
+
+  // Desglose por tipo de peaje (v5 Edge Function)
+  row.mainline_ida    = ida    ? Math.round(ida.mainlineCLP    || 0) : 0;
+  row.ramp_ida        = ida    ? Math.round(ida.rampCLP        || 0) : 0;
+  row.electronic_ida  = ida    ? Math.round(ida.electronicCLP  || 0) : 0;
+  row.mainline_vuelta    = vuelta ? Math.round(vuelta.mainlineCLP    || 0) : 0;
+  row.ramp_vuelta        = vuelta ? Math.round(vuelta.rampCLP        || 0) : 0;
+  row.electronic_vuelta  = vuelta ? Math.round(vuelta.electronicCLP  || 0) : 0;
+
+  // needs_review si:
+  //   - Sin resultado de API (error de red)
+  //   - notFound: ciudad no encontrada en GetAPI → no podemos confirmar si hay peaje → revisión manual
+  //   - hasToll=true pero tollCLP=0 → dato inconsistente
+  // notFound=false Y hasToll=false → ruta confirmada sin peaje → $0 correcto, no revisa
+  const idaReview    = !ida    || !!ida.notFound    || (ida.hasToll    && !ida.tollCLP);
+  const vueltaReview = !vuelta || !!vuelta.notFound || (vuelta.hasToll && !vuelta.tollCLP);
   row.needs_review = !!(idaReview || vueltaReview);
+  // Guardar motivo de revisión para mostrar en tabla
+  if ((ida && ida.notFound) || (vuelta && vuelta.notFound)) {
+    row.notFound = true;
+  } else {
+    row.notFound = false;
+  }
   row.calculado_en = now;
-  row.updated_at = now;
+  row.updated_at   = now;
   return row;
 }
 
@@ -810,22 +866,26 @@ async function calcularPeajes(content, db, cfg, rutas) {
     if (cancelado) break;
     const ruta = targets[i];
     const cd = (db.logisticsCentres || []).find(c => c.id === ruta.origenId);
-    modal.update(i, targets.length, `${ruta.codigo} — ${ruta.destino || ''}`);
+    modal.update(i, targets.length, `${ruta.codigo} — ${ruta.comuna || ruta.destino || ''} (${ruta.region || ''})`);
 
-    if (!cd || cd.lat == null || cd.lon == null) {
+    // Origen: requiere campos comuna+region en logistics_centres (migración 2026-06)
+    if (!cd.comuna || !cd.region) {
+      console.warn('Centro sin commune/region configurado:', cd.id, cd.nombre);
+      [2, 3].forEach(ejes => pjUpsertToll(db, ruta.id, ejes, null, null, { error: true }));
+      continue;
+    }
+    // Destino: campos comuna+region del registro de ruta
+    if (!ruta.comuna || !ruta.region) {
+      console.warn('Ruta sin commune/region:', ruta.codigo);
       [2, 3].forEach(ejes => pjUpsertToll(db, ruta.id, ejes, null, null, { error: true }));
       continue;
     }
 
-    // Resolver ciudad de origen (Centro Logístico → nombre GetAPI)
-    const originCity = CENTRO_GETAPI_CITY[String(cd.id)] || CENTRO_GETAPI_CITY[Number(cd.id)];
-    if (!originCity) {
-      console.warn('Centro sin mapeo GetAPI:', cd.id, cd.nombre);
-      [2, 3].forEach(ejes => pjUpsertToll(db, ruta.id, ejes, null, null, { error: true }));
-      continue;
-    }
-    // Destino: usar ruta.destino directamente (GetAPI acepta nombres de ciudades chilenas)
-    const destCity = ruta.destino;
+    // Construir parámetros en formato "NombreComuna, NombreRegion"
+    const { origin: originCity, destination: destCity } = construirParametrosRuta(
+      { comuna: cd.comuna,   region: cd.region   },
+      { comuna: ruta.comuna, region: ruta.region }
+    );
 
     for (const ejes of [2, 3]) {
       const category = ejesToCategory[ejes];
@@ -1224,17 +1284,54 @@ function renderTarifasCamion(content, db, cfg) {
 // ============================================================
 // SUB-MÓDULO 2: COMBUSTIBLES Y RENDIMIENTOS
 // ============================================================
+const CNE_FUNCTION_URL = 'https://deetqblpfobwqioyfkiu.supabase.co/functions/v1/cne-diesel-price';
+
+function todayISO() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function fuenteBadge(fuel) {
+  if (!fuel || !fuel.precioLitro) {
+    return `<span class="inline-flex items-center px-2 py-1 rounded bg-secondary-container text-on-secondary-container font-label-caps text-[10px]">SIN DATOS</span>`;
+  }
+  if (fuel.fuente === 'cne') {
+    const ref = fuel.cneRegion
+      ? `<br><span class="font-normal text-[10px] opacity-75">${fuel.cneRegion} ${fuel.cneMes || ''}/${fuel.cneAnio || ''}</span>`
+      : '';
+    return `<span class="inline-flex flex-col items-center px-2 py-1 rounded bg-blue-100 text-blue-800 font-label-caps text-[10px] leading-tight">
+      <span class="flex items-center gap-xs"><span class="material-symbols-outlined text-[12px]">cloud_done</span> API CNE</span>${ref}
+    </span>`;
+  }
+  return `<span class="inline-flex items-center gap-xs px-2 py-1 rounded bg-surface-container text-secondary font-label-caps text-[10px]">
+    <span class="material-symbols-outlined text-[12px]">edit</span> Manual
+  </span>`;
+}
+
 function renderCombustibles(content, db, cfg) {
   const groups = getOrigenGroups(db);
   const hoy = new Date();
 
   content.innerHTML = `
     <div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm mb-lg">
-      <div class="flex items-center gap-sm mb-md border-b border-outline-variant pb-sm">
-        <span class="material-symbols-outlined text-primary">local_gas_station</span>
-        <h2 class="font-headline-sm text-headline-sm font-bold text-on-surface">Precio de Combustible por Centro Logístico</h2>
+      <div class="flex items-center justify-between mb-md border-b border-outline-variant pb-sm flex-wrap gap-sm">
+        <div class="flex items-center gap-sm">
+          <span class="material-symbols-outlined text-primary">local_gas_station</span>
+          <h2 class="font-headline-sm text-headline-sm font-bold text-on-surface">Precio de Combustible por Centro Logístico</h2>
+        </div>
+        <button id="cne-update-btn"
+          class="flex items-center gap-xs bg-primary text-white px-md py-sm rounded text-[12px] font-bold uppercase hover:opacity-90 transition-opacity">
+          <span class="material-symbols-outlined text-[16px]">cloud_download</span>
+          Actualizar desde CNE
+        </button>
       </div>
-      <p class="text-[12px] text-secondary mb-md">Alerta crítica si un centro pasa más de 3 semanas sin confirmar/actualizar su precio.</p>
+
+      <div id="cne-status" class="hidden mb-md text-[12px] px-md py-sm rounded border"></div>
+
+      <p class="text-[12px] text-secondary mb-md">
+        Alerta crítica si un centro pasa más de 3 semanas sin actualizar su precio.
+        <b>Actualizar desde CNE</b> obtiene el precio del Petróleo Diésel de la última semana publicada por la CNE.
+        Editar manualmente un precio lo marca como <i>Manual</i> y resetea la fecha a hoy.
+      </p>
       <div class="bg-surface border border-outline-variant overflow-hidden rounded">
         <table class="w-full zebra-table border-collapse">
           <thead>
@@ -1243,26 +1340,28 @@ function renderCombustibles(content, db, cfg) {
               <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-right">Precio Litro (CLP)</th>
               <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Última Actualización</th>
               <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-center">Estado</th>
+              <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-center">Fuente</th>
             </tr>
           </thead>
-          <tbody class="font-body-md text-body-md">
+          <tbody class="font-body-md text-body-md" id="combustibles-tbody">
             ${groups.map(g => {
               const fuel = cfg.combustibles[g.repId] || {};
               let estado = `<span class="inline-flex items-center px-2 py-1 rounded bg-secondary-container text-on-secondary-container font-label-caps text-[10px]">SIN DATOS</span>`;
               if (fuel.fecha) {
                 const dias = Math.floor((hoy - new Date(fuel.fecha)) / 86400000);
                 estado = dias > 21
-                  ? `<span class="inline-flex items-center gap-1 px-2 py-1 rounded bg-red-100 text-red-800 font-label-caps text-[10px]"><span class="material-symbols-outlined text-[14px]">warning</span> ${dias} DÍAS SIN ACTUALIZAR</span>`
+                  ? `<span class="inline-flex items-center gap-1 px-2 py-1 rounded bg-red-100 text-red-800 font-label-caps text-[10px]"><span class="material-symbols-outlined text-[14px]">warning</span> ${dias}D SIN ACTUALIZAR</span>`
                   : `<span class="inline-flex items-center px-2 py-1 rounded bg-green-100 text-green-800 font-label-caps text-[10px]">VIGENTE (${dias}D)</span>`;
               }
               const integrantes = g.centros.length > 1
                 ? `<br><span class="text-secondary text-[11px]">${g.centros.map(c => c.nombre).join(', ')}</span>`
                 : '';
-              return `<tr class="border-b border-outline-variant">
+              return `<tr class="border-b border-outline-variant" data-repid="${g.repId}">
                 <td class="p-md font-bold">${g.nombre}${integrantes}</td>
-                <td class="p-md w-40">${numInput(`combustibles.${g.repId}.precioLitro`, fuel.precioLitro)}</td>
-                <td class="p-md w-44">${dateInput(`combustibles.${g.repId}.fecha`, fuel.fecha)}</td>
+                <td class="p-md w-40">${numInput(`combustibles.${g.repId}.precioLitro`, fuel.precioLitro, 'data-combustible-repid="' + g.repId + '" data-combustible-field="precio"')}</td>
+                <td class="p-md w-44">${dateInput(`combustibles.${g.repId}.fecha`, fuel.fecha, `data-combustible-repid="${g.repId}" data-combustible-field="fecha"`)}</td>
                 <td class="p-md text-center">${estado}</td>
+                <td class="p-md text-center">${fuenteBadge(fuel)}</td>
               </tr>`;
             }).join('')}
           </tbody>
@@ -1300,6 +1399,81 @@ function renderCombustibles(content, db, cfg) {
       </div>
     </div>
   `;
+
+  // ── Listener: edición manual de precio o fecha → fuente=Manual, fecha=hoy si es precio
+  content.querySelectorAll('[data-combustible-repid]').forEach(input => {
+    input.addEventListener('change', () => {
+      const repId = input.dataset.combustibleRepid;
+      const field = input.dataset.combustibleField;
+      if (!repId || !cfg.combustibles[repId]) return;
+      cfg.combustibles[repId].fuente = 'manual';
+      // Si cambió el precio, resetear fecha a hoy
+      if (field === 'precio') {
+        const hoyStr = todayISO();
+        cfg.combustibles[repId].fecha = hoyStr;
+        // Actualizar el date input visualmente
+        const fechaInput = content.querySelector(`[data-path="combustibles.${repId}.fecha"]`);
+        if (fechaInput) fechaInput.value = hoyStr;
+      }
+      // Limpiar metadata CNE al editar manualmente
+      delete cfg.combustibles[repId].cneRegion;
+      delete cfg.combustibles[repId].cneMes;
+      delete cfg.combustibles[repId].cneAnio;
+      saveDatabase(db);
+      // Re-render para actualizar badge Fuente y estado días
+      renderCombustibles(content, db, cfg);
+    });
+  });
+
+  // ── Botón "Actualizar desde CNE" ──────────────────────────────
+  document.getElementById('cne-update-btn')?.addEventListener('click', async () => {
+    const btn    = document.getElementById('cne-update-btn');
+    const status = document.getElementById('cne-status');
+
+    btn.disabled = true;
+    btn.innerHTML = '<span class="material-symbols-outlined text-[16px] animate-spin">sync</span> Consultando CNE…';
+    status.className = 'mb-md text-[12px] px-md py-sm rounded border bg-blue-50 border-blue-200 text-blue-800';
+    status.textContent = 'Conectando con API CNE…';
+    status.classList.remove('hidden');
+
+    try {
+      const res  = await fetch(CNE_FUNCTION_URL);
+      const json = await res.json();
+
+      if (!json.success) throw new Error(json.error || 'Error desconocido en Edge Function');
+
+      const precios  = json.data;
+      const hoyStr   = todayISO(); // fecha de la consulta = hoy (no la fecha de publicación CNE)
+      let actualizados = 0;
+
+      groups.forEach(g => {
+        const grupoKey = String(g.grupo).toUpperCase();
+        const entry    = precios[grupoKey];
+        if (!entry) return;
+        if (!cfg.combustibles[g.repId]) cfg.combustibles[g.repId] = {};
+        cfg.combustibles[g.repId].precioLitro = entry.precio;
+        cfg.combustibles[g.repId].fecha       = hoyStr;      // ← hoy, no la fecha CNE
+        cfg.combustibles[g.repId].fuente      = 'cne';
+        cfg.combustibles[g.repId].cneRegion   = entry.region;
+        cfg.combustibles[g.repId].cneMes      = entry.mes;
+        cfg.combustibles[g.repId].cneAnio     = entry.anio;
+        actualizados++;
+      });
+
+      saveDatabase(db);
+
+      status.className = 'mb-md text-[12px] px-md py-sm rounded border bg-green-50 border-green-200 text-green-800';
+      status.textContent = `✓ ${actualizados} centros actualizados — precio CNE Diésel más reciente. Fecha de actualización: ${hoyStr}.`;
+
+      renderCombustibles(content, db, cfg);
+
+    } catch (err) {
+      status.className = 'mb-md text-[12px] px-md py-sm rounded border bg-red-50 border-red-200 text-red-800';
+      status.textContent = `Error: ${err.message}`;
+      btn.disabled = false;
+      btn.innerHTML = '<span class="material-symbols-outlined text-[16px]">cloud_download</span> Actualizar desde CNE';
+    }
+  });
 }
 
 // ============================================================
@@ -1712,8 +1886,6 @@ function renderResultados(content, db, cfg) {
                 <td class="p-md font-bold">${m.ruta.codigo} — ${m.ruta.destino}</td>
                 <td class="p-md">${m.ruta.clasificRuta || ''}</td>
                 <td class="p-md text-right font-data-mono text-data-mono">${m.km}</td>
-                <td class="p-md">${m.truckType.type}</td>
-                <td class="p-md text-center font-data-mono text-data-mono">${m.ejes}</td>
                 <td class="p-md text-right font-data-mono text-data-mono">${formatCLP(m.item1_peajes)}</td>
                 <td class="p-md text-right font-data-mono text-data-mono">${formatCLP(m.item2_combustible)}</td>
                 <td class="p-md text-right font-data-mono text-data-mono">${formatCLP(m.item10_costoRutaTotal)}</td>
@@ -1747,18 +1919,4 @@ function renderResultados(content, db, cfg) {
   document.getElementById('zcap-export').addEventListener('click', () => {
     const headers = ['Codigo_Centro', 'Ruta_ID', 'Destino_Comuna', 'Clasificacion', 'Tipo_Camion_Kg', 'Ejes', 'Valor_ZCAP_KM'];
     const rows = matriz.map(m => {
-      const cd = db.logisticsCentres.find(c => c.id === m.centroId);
-      return [
-        cd ? cd.id : m.centroId,
-        m.ruta.codigo,
-        m.ruta.destino,
-        m.ruta.clasificRuta || '',
-        m.truckType.capKg,
-        m.ejes,
-        Math.round(m.item11_costoKmFinal)
-      ];
-    });
-    downloadFile(`zcap_transporte_${Date.now()}.csv`, toCSV(headers, rows));
-    showAlert('Archivo CSV de costos de transporte exportado');
-  });
-}
+      const c
