@@ -341,7 +341,7 @@ function renderPeajesAuto(content, db, cfg) {
                 let estado;
                 if (!toll || !toll.calculado_en) {
                   estado = `<span class="inline-flex items-center px-2 py-1 rounded bg-secondary-container text-on-secondary-container font-label-caps text-[10px]">SIN CALCULAR</span>`;
-                } else if (toll.notFound) {
+                } else if (toll.not_found) {
                   estado = `<span class="inline-flex items-center gap-1 px-2 py-1 rounded bg-amber-100 text-amber-800 font-label-caps text-[10px]" title="Destino no encontrado en catálogo GetAPI — ingresar peaje manualmente"><span class="material-symbols-outlined text-[14px]">location_off</span> SIN COBERTURA</span>`;
                 } else if (toll.needs_review) {
                   estado = `<span class="inline-flex items-center gap-1 px-2 py-1 rounded bg-red-100 text-red-800 font-label-caps text-[10px]"><span class="material-symbols-outlined text-[14px]">warning</span> REVISIÓN</span>`;
@@ -506,13 +506,10 @@ function normalizarRegion(region) {
 }
 
 function construirParametrosRuta(origenObj, destinoObj) {
-  const fmt = (obj) => {
-    const partes = [obj.comuna, normalizarRegion(obj.region)].filter(Boolean).map(s => String(s).trim());
-    return partes.join(', ');
-  };
+  // GetAPI Chile acepta SOLO el nombre de la ciudad/comuna — no acepta "Ciudad, Región".
   return {
-    origin:      fmt(origenObj),
-    destination: fmt(destinoObj)
+    origin:      String(origenObj.comuna || '').trim(),
+    destination: String(destinoObj.comuna || '').trim()
   };
 }
 
@@ -580,10 +577,11 @@ function pjUpsertToll(db, routeId, ejes, ida, vuelta, opts = {}) {
   const vueltaReview = !vuelta || !!vuelta.notFound || (vuelta.hasToll && !vuelta.tollCLP);
   row.needs_review = !!(idaReview || vueltaReview);
   // Guardar motivo de revisión para mostrar en tabla
+  // Usar snake_case para que coincida con columna DB y persista en Supabase
   if ((ida && ida.notFound) || (vuelta && vuelta.notFound)) {
-    row.notFound = true;
+    row.not_found = true;
   } else {
-    row.notFound = false;
+    row.not_found = false;
   }
   row.calculado_en = now;
   row.updated_at   = now;
@@ -1931,6 +1929,4 @@ function renderResultados(content, db, cfg) {
       ];
     });
     downloadFile(`zcap_transporte_${Date.now()}.csv`, toCSV(headers, rows));
-    showAlert('Archivo CSV de costos de transporte exportado');
-  });
-}
+    showAlert('Arch
