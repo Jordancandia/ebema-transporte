@@ -1919,4 +1919,18 @@ function renderResultados(content, db, cfg) {
   document.getElementById('zcap-export').addEventListener('click', () => {
     const headers = ['Codigo_Centro', 'Ruta_ID', 'Destino_Comuna', 'Clasificacion', 'Tipo_Camion_Kg', 'Ejes', 'Valor_ZCAP_KM'];
     const rows = matriz.map(m => {
-      const c
+      const cd = db.logisticsCentres.find(c => c.id === m.centroId);
+      return [
+        cd ? cd.id : m.centroId,
+        m.ruta.codigo,
+        m.ruta.destino,
+        m.ruta.clasificRuta || '',
+        m.truckType.capKg,
+        m.ejes,
+        Math.round(m.item11_costoKmFinal)
+      ];
+    });
+    downloadFile(`zcap_transporte_${Date.now()}.csv`, toCSV(headers, rows));
+    showAlert('Archivo CSV de costos de transporte exportado');
+  });
+}
