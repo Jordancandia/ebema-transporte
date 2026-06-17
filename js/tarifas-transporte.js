@@ -1929,4 +1929,6 @@ function renderResultados(content, db, cfg) {
       ];
     });
     downloadFile(`zcap_transporte_${Date.now()}.csv`, toCSV(headers, rows));
-    showAlert('Arch
+    showAlert('Archivo CSV de costos de transporte exportado');
+  });
+}
