@@ -444,7 +444,8 @@ function renderPeajesAuto(content, db, cfg) {
   content.querySelectorAll('[data-calc-route]').forEach(btn => {
     btn.addEventListener('click', () => {
       const ruta = routes.find(r => r.id === btn.dataset.calcRoute);
-      if (ruta) calcularPeajes(content, db, cfg, [ruta]);
+      // force: true — el usuario pidió explícitamente recalcular esta ruta, ignorar caché
+      if (ruta) calcularPeajes(content, db, cfg, [ruta], { force: true });
     });
   });
 }
@@ -831,20 +832,38 @@ function createProgressModal(total) {
 // Homologación:
 //   2 ejes (5t / 10t) → CAMION_2_EJES
 //   3 ejes (15t / 28t) → CAMION_PESADO
-// Se hacen 4 consultas por ruta (2 categorías × Ida + Vuelta).
+// Se hacen hasta 4 consultas por ruta (2 categorías × Ida + Vuelta).
+// Con force=false (modo masivo): omite rutas/ejes que ya tienen caché válida (calculado_en + !needs_review).
+// Con force=true (por-fila): siempre reconsulta la API, ignorando caché.
 // GetAPI no retorna distancia → el campo KM queda vacío.
-async function calcularPeajes(content, db, cfg, rutas) {
+async function calcularPeajes(content, db, cfg, rutas, { force = false } = {}) {
   if (!rutas || rutas.length === 0) {
     showAlert('No hay rutas para calcular con los filtros actuales', 'error');
     return;
   }
   const targets = rutas.filter(r => r.lat != null && r.lon != null);
   const sinCoords = rutas.length - targets.length;
-  const totalConsultas = targets.length * 4; // 2 categorías (2 ejes + 3 ejes) × Ida + Vuelta
-  const estSeg = totalConsultas * 1; // ~1s por consulta
+
+  // Calcular cuántos pares (ruta × ejes) ya tienen caché válida para informar al usuario
+  const pairesEnCache = force ? 0 : targets.reduce((n, r) =>
+    n + [2, 3].filter(e => {
+      const c = pjGetTollRow(db, r.id, e);
+      return c && c.calculado_en && !c.needs_review;
+    }).length, 0);
+  const consultasReales = (targets.length * 4) - (pairesEnCache * 2); // cada par en caché omite ida+vuelta
+  const estSeg = Math.max(consultasReales, 1); // ~1s por consulta
   const estMin = estSeg < 60 ? `~${estSeg}s` : `~${Math.ceil(estSeg / 60)} min`;
   const aviso = sinCoords > 0 ? `\n${sinCoords} ruta(s) sin coordenadas quedarán marcadas para revisión.` : '';
-  if (!confirm(`Se calcularán peajes (vía GetAPI Chile) para ${targets.length} ruta(s).\nIda + Vuelta × 2 ejes y 3 ejes = ${totalConsultas} consultas. Tiempo estimado: ${estMin}.${aviso}\n\nHomologación: 2 ejes → CAMION_2_EJES · 3 ejes → CAMION_PESADO\n¿Continuar?`)) {
+  const avisoCache = !force && pairesEnCache > 0
+    ? `\n${pairesEnCache} par(es) ruta×ejes ya tienen caché válida y serán omitidos.\nUsa el botón ↺ por fila para forzar actualización de una ruta específica.`
+    : '';
+  const resumenConsultas = !force && pairesEnCache > 0
+    ? `Consultas reales: ~${consultasReales} (${pairesEnCache} par(es) omitidos por caché). Tiempo estimado: ${estMin}.`
+    : `Ida + Vuelta × 2 ejes y 3 ejes = ${targets.length * 4} consultas. Tiempo estimado: ${estMin}.`;
+  const msgConfirm = force
+    ? `Se recalcularán peajes (forzado) para ${targets.length} ruta(s).\n${resumenConsultas}${aviso}\n\nHomologación: 2 ejes → CAMION_2_EJES · 3 ejes → CAMION_PESADO\n¿Continuar?`
+    : `Se calcularán peajes (vía GetAPI Chile) para ${targets.length} ruta(s).\n${resumenConsultas}${aviso}${avisoCache}\n\nHomologación: 2 ejes → CAMION_2_EJES · 3 ejes → CAMION_PESADO\n¿Continuar?`;
+  if (!confirm(msgConfirm)) {
     return;
   }
 
@@ -886,6 +905,15 @@ async function calcularPeajes(content, db, cfg, rutas) {
     );
 
     for (const ejes of [2, 3]) {
+      // Caché: si ya existe un resultado válido (calculado_en + sin revisión pendiente)
+      // y NO estamos en modo forzado, reutilizar el valor guardado sin llamar a la API.
+      if (!force) {
+        const cached = pjGetTollRow(db, ruta.id, ejes);
+        if (cached && cached.calculado_en && !cached.needs_review) {
+          continue; // hit de caché — omitir consulta API para este par ruta×ejes
+        }
+      }
+
       const category = ejesToCategory[ejes];
       let ida = null, vuelta = null, errored = false;
       try {
@@ -1886,49 +1914,4 @@ function renderResultados(content, db, cfg) {
                 <td class="p-md text-right font-data-mono text-data-mono">${m.km}</td>
                 <td class="p-md text-right font-data-mono text-data-mono">${formatCLP(m.item1_peajes)}</td>
                 <td class="p-md text-right font-data-mono text-data-mono">${formatCLP(m.item2_combustible)}</td>
-                <td class="p-md text-right font-data-mono text-data-mono">${formatCLP(m.item10_costoRutaTotal)}</td>
-                <td class="p-md text-right font-data-mono text-data-mono">${formatCLP(m.item11_costoKmFinal)}</td>
-                <td class="p-md text-right font-data-mono text-data-mono font-bold bg-primary/5">${formatCLP(m.zcap)}</td>
-              </tr>`).join('')}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  `;
-
-  document.getElementById('zcap-f-centro').addEventListener('change', (e) => {
-    zcapFiltroCentro = e.target.value;
-    renderResultados(content, db, cfg);
-  });
-  document.getElementById('zcap-f-clasif').addEventListener('change', (e) => {
-    zcapFiltroClasif = e.target.value;
-    renderResultados(content, db, cfg);
-  });
-
-  document.getElementById('zcap-actualizar').addEventListener('click', () => {
-    const conZcap = syncTarifasZcap(db, cfg, zcapFiltroCentro);
-    const msg = grupoSel
-      ? `Tarifas actualizadas desde el Motor ZCAP para ${grupoSel.nombre} (${conZcap.size} tipo(s) de camión)`
-      : `Tarifas actualizadas desde el Motor ZCAP para ${conZcap.size} tipo(s) de camión en todos los Centros Origen`;
-    showAlert(msg);
-    renderResultados(content, db, cfg);
-  });
-
-  document.getElementById('zcap-export').addEventListener('click', () => {
-    const headers = ['Codigo_Centro', 'Ruta_ID', 'Destino_Comuna', 'Clasificacion', 'Tipo_Camion_Kg', 'Ejes', 'Valor_ZCAP_KM'];
-    const rows = matriz.map(m => {
-      const cd = db.logisticsCentres.find(c => c.id === m.centroId);
-      return [
-        cd ? cd.id : m.centroId,
-        m.ruta.codigo,
-        m.ruta.destino,
-        m.ruta.clasificRuta || '',
-        m.truckType.capKg,
-        m.ejes,
-        Math.round(m.item11_costoKmFinal)
-      ];
-    });
-    downloadFile(`zcap_transporte_${Date.now()}.csv`, toCSV(headers, rows));
-    showAlert('Archivo CSV de costos de transporte exportado');
-  });
-}
+                <td class="p-md text-right font-data-mono text-data-mono">${formatCLP(m.item10_costoRutaTotal)}</td
