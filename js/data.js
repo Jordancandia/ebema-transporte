@@ -97,7 +97,7 @@ export function getOrigenGroups(db) {
     const entry = map[g];
     const conTipos = entry.centros.find(cd => (db.truckTypes || []).some(t => t.Id_centro === cd.id));
     const rep = conTipos || entry.centros[0];
-    const nombre = entry.centros.length > 1 ? tituloGrupo(entry.grupo) : rep.nombre;
+    const nombre = tituloGrupo(entry.grupo);
     return {
       grupo: entry.grupo,
       nombre,

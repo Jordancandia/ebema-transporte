@@ -1,4 +1,4 @@
-import { getDatabase, saveDatabase, calcEjes, getOrigenGroups } from './data.js';
+import { getDatabase, saveDatabase, calcEjes, getOrigenGroups } from './data.js?v=20260622f';
 import { formatRut, validateRut, generateSapCode, parseCSV, showAlert, escapeHtml } from './utils.js';
 import { renderFichaTransporte } from './ficha-transporte.js';
 import { abrirModalTroncal } from './troncales.js';
