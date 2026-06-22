@@ -14,11 +14,13 @@ let pjFiltroTexto = '';
 let pjFiltroComuna = '';
 let pjFiltroCentro = '';
 let pjFiltroPendientes = false;
+let pjFiltroRevision = false;
 
 // Estado de filtros de la vista "Peajes Interregionales"
 let pjiFiltroComuna = '';
 let pjiFiltroCentro = '';
 let pjiFiltroPendientes = false;
+let pjiFiltroRevision = false;
 
 // Estado de filtros de la vista "Motor de Costo — Resultados por Ruta"
 let zcapFiltroCentro = ''; // origen_grupo (Centro Origen); '' = todos
@@ -515,8 +517,10 @@ function renderPeajesAuto(content, db, cfg) {
     const g = grupos.find(g => g.grupo === pjFiltroCentro);
     if (g) rows = rows.filter(r => g.centroIds.includes(r.ruta.origenId) || r.ruta.origen_grupo === g.grupo);
   }
-  if (pjFiltroPendientes) {
-    rows = rows.filter(r => !r.toll || !r.toll.calculado_en || r.toll.needs_review);
+  if (pjFiltroRevision) {
+    rows = rows.filter(r => r.toll && r.toll.needs_review);
+  } else if (pjFiltroPendientes) {
+    rows = rows.filter(r => !r.toll || !r.toll.calculado_en);
   }
 
   const totalRows = rows.length;
@@ -543,19 +547,19 @@ function renderPeajesAuto(content, db, cfg) {
       </p>
 
       <div class="grid grid-cols-1 md:grid-cols-4 gap-md mb-md">
-        <div class="bg-surface-container-low p-md rounded">
-          <p class="font-label-caps text-label-caps text-secondary">Rutas Regionales</p>
+        <button id="pj-kpi-todas" class="bg-surface-container-low p-md rounded text-left hover:bg-secondary-container transition-colors ${!pjFiltroPendientes && !pjFiltroRevision ? 'ring-2 ring-primary' : ''}">
+          <p class="font-label-caps text-label-caps text-secondary">Rutas Registradas</p>
           <p class="font-headline-sm text-headline-sm font-bold text-on-surface">${routes.length}</p>
-        </div>
+        </button>
         <div class="bg-surface-container-low p-md rounded">
           <p class="font-label-caps text-label-caps text-secondary">Combinaciones (Ruta × Tipo Camión)</p>
           <p class="font-headline-sm text-headline-sm font-bold text-on-surface">${routes.length * 2}</p>
         </div>
-        <button id="pj-kpi-pendientes" class="bg-surface-container-low p-md rounded text-left hover:bg-secondary-container transition-colors">
+        <button id="pj-kpi-pendientes" class="bg-surface-container-low p-md rounded text-left hover:bg-secondary-container transition-colors ${pjFiltroPendientes ? 'ring-2 ring-primary' : ''}">
           <p class="font-label-caps text-label-caps text-secondary">Sin Calcular</p>
           <p class="font-headline-sm text-headline-sm font-bold text-on-surface">${pendientesCount}</p>
         </button>
-        <button id="pj-kpi-revision" class="bg-surface-container-low p-md rounded text-left hover:bg-secondary-container transition-colors">
+        <button id="pj-kpi-revision" class="bg-surface-container-low p-md rounded text-left hover:bg-secondary-container transition-colors ${pjFiltroRevision ? 'ring-2 ring-primary' : ''}">
           <p class="font-label-caps text-label-caps text-secondary">Para Revisión</p>
           <p class="font-headline-sm text-headline-sm font-bold ${revisionCount > 0 ? 'text-primary' : 'text-on-surface'}">${revisionCount}</p>
         </button>
@@ -693,8 +697,9 @@ function renderPeajesAuto(content, db, cfg) {
   document.getElementById('pj-f-comuna').addEventListener('change', (e) => { pjFiltroComuna = e.target.value; renderPeajesAuto(content, db, cfg); });
   document.getElementById('pj-f-origen').addEventListener('change', (e) => { pjFiltroCentro = e.target.value; renderPeajesAuto(content, db, cfg); });
   document.getElementById('pj-f-pend').addEventListener('change', (e) => { pjFiltroPendientes = e.target.checked; renderPeajesAuto(content, db, cfg); });
-  document.getElementById('pj-kpi-pendientes').addEventListener('click', () => { pjFiltroPendientes = true; pjFiltroComuna = ''; pjFiltroCentro = ''; renderPeajesAuto(content, db, cfg); });
-  document.getElementById('pj-kpi-revision').addEventListener('click', () => { pjFiltroPendientes = true; pjFiltroComuna = ''; pjFiltroCentro = ''; renderPeajesAuto(content, db, cfg); });
+  document.getElementById('pj-kpi-todas').addEventListener('click', () => { pjFiltroPendientes = false; pjFiltroRevision = false; pjFiltroComuna = ''; pjFiltroCentro = ''; renderPeajesAuto(content, db, cfg); });
+  document.getElementById('pj-kpi-pendientes').addEventListener('click', () => { pjFiltroPendientes = true; pjFiltroRevision = false; pjFiltroComuna = ''; pjFiltroCentro = ''; renderPeajesAuto(content, db, cfg); });
+  document.getElementById('pj-kpi-revision').addEventListener('click', () => { pjFiltroRevision = true; pjFiltroPendientes = false; pjFiltroComuna = ''; pjFiltroCentro = ''; renderPeajesAuto(content, db, cfg); });
   document.getElementById('pj-export').addEventListener('click', () => exportPeajesCSV(db, rows));
   document.getElementById('pj-export-cache').addEventListener('click', () => exportRouteTollsCSV(db));
   document.getElementById('pj-import-cache').addEventListener('click', () => document.getElementById('pj-import-cache-input').click());
@@ -773,8 +778,10 @@ function renderPeajesInterregionales(content, db, cfg) {
     const g = grupos.find(g => g.grupo === pjiFiltroCentro);
     if (g) rows = rows.filter(r => g.centroIds.includes(r.ruta.origenId) || r.ruta.origen_grupo === g.grupo);
   }
-  if (pjiFiltroPendientes) {
-    rows = rows.filter(r => !r.toll || !r.toll.calculado_en || r.toll.needs_review);
+  if (pjiFiltroRevision) {
+    rows = rows.filter(r => r.toll && r.toll.needs_review);
+  } else if (pjiFiltroPendientes) {
+    rows = rows.filter(r => !r.toll || !r.toll.calculado_en);
   }
 
   const totalRows = rows.length;
@@ -809,11 +816,11 @@ function renderPeajesInterregionales(content, db, cfg) {
           <p class="font-label-caps text-label-caps text-secondary">Combinaciones (Ruta × Tipo Camión)</p>
           <p class="font-headline-sm text-headline-sm font-bold text-on-surface">${routes.length * 2}</p>
         </div>
-        <button id="pji-kpi-pendientes" class="bg-surface-container-low p-md rounded text-left hover:bg-secondary-container transition-colors">
+        <button id="pji-kpi-pendientes" class="bg-surface-container-low p-md rounded text-left hover:bg-secondary-container transition-colors ${pjiFiltroPendientes ? 'ring-2 ring-primary' : ''}">
           <p class="font-label-caps text-label-caps text-secondary">Sin Calcular</p>
           <p class="font-headline-sm text-headline-sm font-bold text-on-surface">${pendientesCount}</p>
         </button>
-        <button id="pji-kpi-revision" class="bg-surface-container-low p-md rounded text-left hover:bg-secondary-container transition-colors">
+        <button id="pji-kpi-revision" class="bg-surface-container-low p-md rounded text-left hover:bg-secondary-container transition-colors ${pjiFiltroRevision ? 'ring-2 ring-primary' : ''}">
           <p class="font-label-caps text-label-caps text-secondary">Para Revisión</p>
           <p class="font-headline-sm text-headline-sm font-bold ${revisionCount > 0 ? 'text-primary' : 'text-on-surface'}">${revisionCount}</p>
         </button>
@@ -935,8 +942,8 @@ function renderPeajesInterregionales(content, db, cfg) {
   document.getElementById('pji-f-comuna').addEventListener('change', (e) => { pjiFiltroComuna = e.target.value; renderPeajesInterregionales(content, db, cfg); });
   document.getElementById('pji-f-origen').addEventListener('change', (e) => { pjiFiltroCentro = e.target.value; renderPeajesInterregionales(content, db, cfg); });
   document.getElementById('pji-f-pend').addEventListener('change', (e) => { pjiFiltroPendientes = e.target.checked; renderPeajesInterregionales(content, db, cfg); });
-  document.getElementById('pji-kpi-pendientes').addEventListener('click', () => { pjiFiltroPendientes = true; pjiFiltroComuna = ''; pjiFiltroCentro = ''; renderPeajesInterregionales(content, db, cfg); });
-  document.getElementById('pji-kpi-revision').addEventListener('click', () => { pjiFiltroPendientes = true; pjiFiltroComuna = ''; pjiFiltroCentro = ''; renderPeajesInterregionales(content, db, cfg); });
+  document.getElementById('pji-kpi-pendientes').addEventListener('click', () => { pjiFiltroPendientes = true; pjiFiltroRevision = false; pjiFiltroComuna = ''; pjiFiltroCentro = ''; renderPeajesInterregionales(content, db, cfg); });
+  document.getElementById('pji-kpi-revision').addEventListener('click', () => { pjiFiltroRevision = true; pjiFiltroPendientes = false; pjiFiltroComuna = ''; pjiFiltroCentro = ''; renderPeajesInterregionales(content, db, cfg); });
   document.getElementById('pji-export-cache').addEventListener('click', () => exportRouteTollsCSV(db));
   document.getElementById('pji-import-cache').addEventListener('click', () => document.getElementById('pji-import-cache-input').click());
   document.getElementById('pji-import-cache-input').addEventListener('change', (e) => {
