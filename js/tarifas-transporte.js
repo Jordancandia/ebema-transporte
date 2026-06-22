@@ -1208,7 +1208,6 @@ function pjUpsertToll(db, routeId, ejes, ida, vuelta, opts = {}) {
   const vueltaReview = !vuelta || !!vuelta.notFound || (vueltaHasToll && !row.peaje_vuelta);
   row.needs_review = !!(idaReview || vueltaReview);
   row.not_found = !!((ida && ida.notFound) || (vuelta && vuelta.notFound));
-  row.notFound = row.not_found; // alias para render
   row.calculado_en = now;
   row.updated_at   = now;
   return row;
