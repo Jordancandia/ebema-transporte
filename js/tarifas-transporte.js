@@ -1509,7 +1509,11 @@ async function calcularPeajes(content, db, cfg, rutas, { force = false } = {}) {
       }
     }
 
-    const cd = (db.logisticsCentres || []).find(c => c.id === ruta.origenId);
+    // En PRD todos los origenId='1000' — buscar por origen_grupo para obtener el centro correcto
+    const cdPorGrupo = ruta.origen_grupo
+      ? (db.logisticsCentres || []).find(c => c.origen_grupo === ruta.origen_grupo && c.comuna)
+      : null;
+    const cd = cdPorGrupo || (db.logisticsCentres || []).find(c => c.id === ruta.origenId);
     modal.update(i, targets.length, `[Distancia] ${ruta.codigo} — ${ruta.comuna || ruta.destino || ''}`);
 
     if (!cd?.comuna || !ruta.comuna) {
@@ -1620,7 +1624,11 @@ async function calcularKm(content, db, cfg, rutas) {
   for (let i = 0; i < targets.length; i++) {
     if (cancelado) break;
     const ruta = targets[i];
-    const cd = (db.logisticsCentres || []).find(c => c.id === ruta.origenId);
+    // En PRD todos los origenId='1000' — buscar por origen_grupo para obtener el centro correcto
+    const cdKmPorGrupo = ruta.origen_grupo
+      ? (db.logisticsCentres || []).find(c => c.origen_grupo === ruta.origen_grupo && c.lat != null)
+      : null;
+    const cd = cdKmPorGrupo || (db.logisticsCentres || []).find(c => c.id === ruta.origenId);
     modal.update(i, targets.length, `${ruta.codigo} — ${ruta.destino || ''}`);
 
     if (!cd || cd.lat == null || cd.lon == null) {
