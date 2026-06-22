@@ -210,7 +210,7 @@ function renderCostosExtras(content, db, cfg) {
   const rutasFiltradas = ceFiltroCentro
     ? routes.filter(r => {
         const g = grupos.find(g => g.grupo === ceFiltroCentro);
-        return g && g.centroIds.includes(r.origenId);
+        return g && (g.centroIds.includes(r.origenId) || r.origen_grupo === g.grupo);
       })
     : routes;
 
@@ -513,7 +513,7 @@ function renderPeajesAuto(content, db, cfg) {
   }
   if (pjFiltroCentro) {
     const g = grupos.find(g => g.grupo === pjFiltroCentro);
-    if (g) rows = rows.filter(r => g.centroIds.includes(r.ruta.origenId));
+    if (g) rows = rows.filter(r => g.centroIds.includes(r.ruta.origenId) || r.ruta.origen_grupo === g.grupo);
   }
   if (pjFiltroPendientes) {
     rows = rows.filter(r => !r.toll || !r.toll.calculado_en || r.toll.needs_review);
@@ -771,7 +771,7 @@ function renderPeajesInterregionales(content, db, cfg) {
   }
   if (pjiFiltroCentro) {
     const g = grupos.find(g => g.grupo === pjiFiltroCentro);
-    if (g) rows = rows.filter(r => g.centroIds.includes(r.ruta.origenId));
+    if (g) rows = rows.filter(r => g.centroIds.includes(r.ruta.origenId) || r.ruta.origen_grupo === g.grupo);
   }
   if (pjiFiltroPendientes) {
     rows = rows.filter(r => !r.toll || !r.toll.calculado_en || r.toll.needs_review);
