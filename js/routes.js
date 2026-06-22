@@ -1,4 +1,4 @@
-import { getDatabase, saveDatabase, getCentreName } from './data.js?v=20260622j';
+import { getDatabase, saveDatabase, getCentreName } from './data.js?v=20260622k';
 import { generateSapCode, parseCSV, showAlert, geocodeAddress, escapeHtml, toCSV, downloadFile } from './utils.js';
 import { renderLogisticsView } from './logistics.js';
 import { renderZonasView, getField, normalizeRegionName, standardizeComuna } from './zonas-transporte.js';
@@ -1004,12 +1004,16 @@ function renderRutasSubview(container) {
 
       const query = [r.destino, r.comuna, r.region].filter(Boolean).join(', ');
       try {
-        const coords = await geocodeAddress(query);
+        // Pasar la comuna como hint para priorizar la tabla estática local (sin Nominatim)
+        const coords = await geocodeAddress(query, r.comuna);
         r.lat = coords.lat;
         r.lon = coords.lon;
         r.georef_estado = !!coords.found;
         if (coords.found) ok++; else manual++;
-        geoLogEl.insertAdjacentHTML('beforeend', `<div class="px-sm py-1 border-b border-outline-variant ${coords.found ? 'text-green-700' : 'text-amber-700'}">${coords.found ? '✓' : '⚠'} ${escapeHtml(r.codigo)} — ${escapeHtml(query)}</div>`);
+        const fuenteLocal = coords.displayName && coords.displayName.includes('tabla local');
+        geoLogEl.insertAdjacentHTML('beforeend', `<div class="px-sm py-1 border-b border-outline-variant ${coords.found ? 'text-green-700' : 'text-amber-700'}">${coords.found ? '✓' : '⚠'} ${escapeHtml(r.codigo)} — ${escapeHtml(r.comuna || query)}${fuenteLocal ? ' (local)' : ''}</div>`);
+        // Solo esperar si se llamó a Nominatim (tabla local es instantánea)
+        if (!fuenteLocal && !geoCancelled) await new Promise(resolve => setTimeout(resolve, 1100));
       } catch (err) {
         manual++;
         geoLogEl.insertAdjacentHTML('beforeend', `<div class="px-sm py-1 border-b border-outline-variant text-red-700">✗ ${escapeHtml(r.codigo)} — error de geolocalización</div>`);
@@ -1020,11 +1024,8 @@ function renderRutasSubview(container) {
       geoProgressBar.style.width = `${Math.round((done / pending.length) * 100)}%`;
       geoProgressText.innerText = `${done} / ${pending.length} — Georreferenciadas: ${ok}, Por revisar: ${manual}`;
 
-      // Guardar progreso periódicamente para no perder avance si se cierra el modal
-      if (done % 10 === 0) saveDatabase(activeDb);
-
-      // Respetar el límite de uso de Nominatim (~1 solicitud por segundo)
-      if (!geoCancelled) await new Promise(resolve => setTimeout(resolve, 1100));
+      // Guardar progreso periódicamente
+      if (done % 50 === 0) saveDatabase(activeDb);
     }
 
     saveDatabase(activeDb);
@@ -1045,7 +1046,7 @@ function renderRutasSubview(container) {
     const activeDb = getDatabase();
     const pending = activeDb.routes.filter(r => !r.georef_estado);
     if (pending.length === 0) { showAlert('No hay rutas pendientes de georreferenciación.', 'error'); return; }
-    if (!confirm(`¿Georreferenciar ${pending.length} rutas pendientes? Se procesarán una por una con ~1s de espera entre cada una.`)) return;
+    if (!confirm(`¿Georreferenciar ${pending.length} rutas pendientes? Las comunas conocidas se resuelven al instante desde tabla local.`)) return;
 
     let done = 0, ok = 0, manual = 0;
     showAlert(`Procesando ${pending.length} rutas...`, 'info');
@@ -1053,15 +1054,17 @@ function renderRutasSubview(container) {
     for (const r of pending) {
       const query = [r.destino, r.comuna, r.region].filter(Boolean).join(', ');
       try {
-        const coords = await geocodeAddress(query);
+        const coords = await geocodeAddress(query, r.comuna);
         r.lat = coords.lat;
         r.lon = coords.lon;
         r.georef_estado = !!coords.found;
         if (coords.found) ok++; else manual++;
+        // Solo esperar si se usó Nominatim (tabla local es instantánea)
+        const fuenteLocal = coords.displayName && coords.displayName.includes('tabla local');
+        if (!fuenteLocal) await new Promise(resolve => setTimeout(resolve, 1100));
       } catch { manual++; }
       done++;
-      if (done % 10 === 0) saveDatabase(activeDb);
-      if (!geoCancelled) await new Promise(resolve => setTimeout(resolve, 1100));
+      if (done % 50 === 0) saveDatabase(activeDb);
     }
 
     saveDatabase(activeDb);

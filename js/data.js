@@ -273,18 +273,45 @@ export async function initDatabase() {
 }
 
 // Sincronizar una colección completa hacia Supabase (upsert + borrar faltantes)
+// Para tablas grandes (> URL_SAFE_LIMIT filas), el NOT IN(...) supera el límite de URL
+// del navegador. En ese caso se buscan los IDs remotos y se borra solo la diferencia.
+const URL_SAFE_LIMIT = 150;
 async function syncTable(table, pk, rows) {
   if (rows.length > 0) {
     const { error } = await supabase.from(table).upsert(rows);
     if (error) throw error;
   }
-  const keys = rows.map(r => String(r[pk]).replace(/"/g, ''));
-  let q = supabase.from(table).delete();
-  q = keys.length > 0
-    ? q.not(pk, 'in', `(${keys.map(k => `"${k}"`).join(',')})`)
-    : q.neq(pk, '___nunca___');
-  const { error } = await q;
-  if (error) throw error;
+
+  const localKeys = new Set(rows.map(r => String(r[pk]).replace(/"/g, '')));
+
+  if (localKeys.size > URL_SAFE_LIMIT) {
+    // Tabla grande: obtener IDs remotos y borrar solo los que ya no existen localmente
+    let remoteKeys = [];
+    let from2 = 0;
+    while (true) {
+      const { data, error } = await supabase.from(table).select(pk).range(from2, from2 + PAGE_SIZE - 1);
+      if (error) throw error;
+      remoteKeys = remoteKeys.concat((data || []).map(r => String(r[pk])));
+      if (!data || data.length < PAGE_SIZE) break;
+      from2 += PAGE_SIZE;
+    }
+    const toDelete = remoteKeys.filter(k => !localKeys.has(k));
+    // Borrar en lotes de 50 para mantener URLs dentro del límite
+    for (let i = 0; i < toDelete.length; i += 50) {
+      const batch = toDelete.slice(i, i + 50);
+      const { error } = await supabase.from(table).delete().in(pk, batch);
+      if (error) throw error;
+    }
+  } else {
+    // Tabla pequeña: usar NOT IN directo (URL corta)
+    const keys = [...localKeys];
+    let q = supabase.from(table).delete();
+    q = keys.length > 0
+      ? q.not(pk, 'in', `(${keys.map(k => `"${k}"`).join(',')})`)
+      : q.neq(pk, '___nunca___');
+    const { error } = await q;
+    if (error) throw error;
+  }
 }
 
 // Enviar el estado completo a Supabase (en segundo plano)

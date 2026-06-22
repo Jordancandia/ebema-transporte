@@ -1,4 +1,5 @@
 // Funciones de Utilidad Compartidas para la Plataforma Ebema
+import { getCoordsComuna } from './chile-coords.js';
 
 // 0. Escapar texto antes de insertarlo en innerHTML (previene XSS con datos de usuarios/proveedores)
 export function escapeHtml(value) {
@@ -194,17 +195,35 @@ export function formatDateDDMMYYYY(date = new Date()) {
   return `${d}-${m}-${y}`;
 }
 
-// 6. Geolocalizar una dirección mediante OpenStreetMap Nominatim (Gratuito, sin API Keys)
-// Estrategia de reintentos: dirección completa -> sin número de calle -> solo comuna/región.
-// Devuelve siempre { lat, lon, displayName, found } — found=false indica que NO se encontró
-// nada útil y se usó el centro de Santiago como último recurso (debe ajustarse manualmente).
-export async function geocodeAddress(address) {
+// 6. Geolocalizar una dirección.
+// Estrategia: tabla local de comunas (instantáneo) → Nominatim (fallback, con rate limit).
+// La tabla local cubre todas las comunas de Chile, evitando el falso fallback a Santiago.
+// Devuelve siempre { lat, lon, displayName, found }.
+export async function geocodeAddress(address, comunaHint = null) {
+  // Intento 0: tabla estática de comunas (extrae la primera parte de la dirección como comuna)
+  // Se acepta un hint explícito de la comuna si se pasa desde el llamador.
+  const candidatas = [];
+  if (comunaHint) candidatas.push(comunaHint);
+  // Extraer segmento inicial de address que puede ser la comuna
+  const partes0 = address.split(',').map(s => s.trim());
+  candidatas.push(...partes0);
+  for (const c of candidatas) {
+    const coords = getCoordsComuna(c);
+    if (coords) {
+      return {
+        lat: coords.lat,
+        lon: coords.lon,
+        displayName: `${c}, Chile (tabla local)`,
+        found: true
+      };
+    }
+  }
+
   const tryQuery = async (q) => {
     try {
       const query = encodeURIComponent(q);
       const response = await fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=1&addressdetails=1&countrycodes=cl&q=${query}`);
       if (!response.ok) throw new Error('Error de conexión con Nominatim');
-
       const results = await response.json();
       if (results && results.length > 0) {
         return {
@@ -220,36 +239,34 @@ export async function geocodeAddress(address) {
     return null;
   };
 
-  // Intento 1: dirección completa
+  // Intento 1 (Nominatim): dirección completa
   let result = await tryQuery(`${address}, Chile`);
   if (result) return result;
 
-  // Intento 2: sin el número de calle (algunas direcciones industriales/rurales
-  // no están indexadas a nivel de número exacto en OpenStreetMap)
+  // Intento 2 (Nominatim): sin número de calle
   const sinNumero = address.replace(/\b\d+[A-Za-z]?\b/g, '').replace(/\s{2,}/g, ' ').replace(/\s*,\s*/g, ', ').trim();
   if (sinNumero && sinNumero.toLowerCase() !== address.toLowerCase()) {
     result = await tryQuery(`${sinNumero}, Chile`);
     if (result) {
-      result.displayName += ' (aproximado: sin número de calle — verifique el pin)';
+      result.displayName += ' (aproximado: sin número de calle)';
       return result;
     }
   }
 
-  // Intento 3: solo la comuna/región (último segmento separado por coma)
+  // Intento 3 (Nominatim): solo la comuna/región
   const partes = address.split(',');
   if (partes.length > 1) {
     const comuna = partes.slice(1).join(',').trim();
     if (comuna) {
       result = await tryQuery(`${comuna}, Chile`);
       if (result) {
-        result.displayName += ' (aproximado: solo comuna/región — ajuste el pin)';
+        result.displayName += ' (aproximado: solo comuna/región)';
         return result;
       }
     }
   }
 
-  // Sin resultados en ningún intento: coordenadas por defecto (Santiago Centro),
-  // marcadas como NO encontradas para que la interfaz pida ajuste manual del pin.
+  // Sin resultados: coordenadas por defecto (Santiago Centro), found=false.
   return {
     lat: -33.4489,
     lon: -70.6693,
