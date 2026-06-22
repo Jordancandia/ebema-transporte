@@ -2938,10 +2938,6 @@ function renderPeajesAuto(content, db, cfg) {
 // Mapeo ejes → tipos de camión individuales para el CSV de exportación.
 // Un camión de 2 ejes (CAMION_2_EJES) cubre capacidades 5T y 10T.
 // Un camión de 3 ejes (CAMION_PESADO) cubre capacidades 15T y 28T.
-// (declarado arriba) // const EJES_TO_TIPOS = {
-  2: ['5T', '10T'],
-  3: ['15T', '28T']
-};
 
 function exportPeajesCSV(db, rows) {
   const grupos  = getOrigenGroups(db);
@@ -2981,11 +2977,6 @@ function sleep(ms) {
  * La codificación URL la maneja el Edge Function con URLSearchParams.
  */
 // Mapea nombres oficiales largos de regiones a la forma corta que reconoce GetAPI.
-// (declarado arriba) // const REGION_ALIAS = {
-  "Libertador General Bernardo O'Higgins": "O'Higgins",
-  'Metropolitana de Santiago':             'Metropolitana',
-  'Magallanes y de la Antártica Chilena':  'Magallanes',
-};
 function normalizarRegion(region) {
   if (!region) return region;
   const r = String(region).trim();
@@ -3794,8 +3785,6 @@ function renderTarifasCamion(content, db, cfg) {
 // ============================================================
 // SUB-MÓDULO 2: COMBUSTIBLES Y RENDIMIENTOS
 // ============================================================
-// (declarado arriba) // const CNE_FUNCTION_URL = 'https://deetqblpfobwqioyfkiu.supabase.co/functions/v1/cne-diesel-price';
-
 function todayISO() {
   return new Date().toISOString().slice(0, 10);
 }
