@@ -2640,7 +2640,31 @@ function renderZapSap(content, db, cfg) {
         showAlert('No hay datos para exportar.', 'info');
         return;
       }
-      const headers = ['ID_CENTRO', 'CENTRO', 'ID_RUTA', function subTabButton(key, icon, label) {
+      const headers = ['ID_CENTRO', 'CENTRO', 'ID_RUTA', 'DESTINO', 'FACTOR', 'TIPO_CAMION_KG', 'KM_IDA', 'TARIFA_KM', 'COSTO_BASE', 'COSTO_TOTAL', 'PARTICIPACION'];
+      const bom = '\uFEFF';
+      const csvData = allRows.map(r => [
+        r.centroId,
+        r.centroNombre,
+        r.rutaCodigo,
+        r.rutaDestino,
+        r.caracteristica === 'NORMAL' ? 1 : r.caracteristica === 'ISLA' ? 2 : 3,
+        r.capKg,
+        r.kmIda,
+        Math.round(r.tarifaKm),
+        r.costoBase,
+        r.costoTotal,
+        r.participacion.toFixed(1)
+      ]);
+      const csv = bom + toCSV(headers, csvData);
+      downloadFile(`zap_sap_export_${new Date().toISOString().slice(0,10).replace(/-/g,'')}.csv`, csv);
+      showAlert(`Archivo ZAP/SAP exportado: ${csvData.length} registros.`);
+    });
+  }
+
+  render(null);
+}
+
+function subTabButton(key, icon, label) {
   return `<button class="tt-subtab flex items-center gap-xs px-md py-sm rounded-lg font-bold text-[12px] uppercase tracking-wide bg-surface-container-high text-secondary cursor-pointer whitespace-nowrap" data-sub="${key}">
     <span class="material-symbols-outlined text-[16px]">${icon}</span> ${label}
   </button>`;
