@@ -2959,27 +2959,6 @@ function renderPeajesAuto(content, db, cfg) {
     });
   });
 }
-// Mapeo ejes → tipos de camión individuales para el CSV de exportación.
-// Un camión de 2 ejes (CAMION_2_EJES) cubre capacidades 5T y 10T.
-// Un camión de 3 ejes (CAMION_PESADO) cubre capacidades 15T y 28T.
-
-function exportPeajesCSV(db, rows) {
-  const grupos  = getOrigenGroups(db);
-  const headers = ['RUTA', 'ORIGEN', 'DESTINO', 'TIPO_CAMION', 'PEAJE_IDA', 'PEAJE_VUELTA'];
-  const data = [];
-  for (const { ruta, ejes, toll } of rows) {
-    const grupo  = grupos.find(g => g.centroIds.includes(ruta.origenId));
-    const origen = grupo ? grupo.nombre : (getCentreName(db, ruta.origenId) || '');
-    const ida    = toll ? Math.round(toll.peaje_ida    || 0) : 0;
-    const vuelta = toll ? Math.round(toll.peaje_vuelta || 0) : 0;
-    // Expandir a una fila por cada tipo de camión individual
-    for (const tipo of (EJES_TO_TIPOS[ejes] || [EJES_LABELS[ejes]])) {
-      data.push([ruta.codigo, origen, ruta.destino || '', tipo, ida, vuelta]);
-    }
-  }
-  downloadFile(`peajes_rutas_${Date.now()}.csv`, toCSV(headers, data));
-  showAlert('Archivo CSV de peajes exportado');
-}
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
