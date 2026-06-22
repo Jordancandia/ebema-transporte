@@ -212,7 +212,7 @@ function renderCostosExtras(content, db, cfg) {
   const rutasFiltradas = ceFiltroCentro
     ? routes.filter(r => {
         const g = grupos.find(g => g.grupo === ceFiltroCentro);
-        return g && (g.centroIds.includes(r.origenId) || r.origen_grupo === g.grupo);
+        return g && (r.origen_grupo === g.grupo || g.centroIds.includes(r.origenId));
       })
     : routes;
 
@@ -295,7 +295,7 @@ function renderCostosExtras(content, db, cfg) {
               ? `<tr><td colspan="9" class="p-md text-center text-secondary">No hay costos extras registrados. Usa "Agregar Ítem" para crear uno.</td></tr>`
               : rows.map(ce => {
                   const ruta   = routes.find(r => r.id === ce.route_id);
-                  const grupo  = ruta ? (grupos.find(g => g.centroIds.includes(ruta.origenId)) || grupos.find(g => g.grupo === ruta.origen_grupo)) : null;
+                  const grupo  = ruta ? (grupos.find(g => g.grupo === ruta.origen_grupo) || grupos.find(g => g.centroIds.includes(ruta.origenId))) : null;
                   const origen = grupo ? grupo.nombre : '—';
                   const destino = ruta ? (ruta.destino || ruta.denominacion || '—') : '(ruta eliminada)';
                   const codigo  = ruta ? (ruta.codigo || '—') : '—';
@@ -515,7 +515,7 @@ function renderPeajesAuto(content, db, cfg) {
   }
   if (pjFiltroCentro) {
     const g = grupos.find(g => g.grupo === pjFiltroCentro);
-    if (g) rows = rows.filter(r => g.centroIds.includes(r.ruta.origenId) || r.ruta.origen_grupo === g.grupo);
+    if (g) rows = rows.filter(r => r.ruta.origen_grupo === g.grupo || g.centroIds.includes(r.ruta.origenId));
   }
   if (pjFiltroRevision) {
     rows = rows.filter(r => r.toll && r.toll.needs_review);
@@ -626,7 +626,7 @@ function renderPeajesAuto(content, db, cfg) {
           <tbody class="font-body-md text-body-md">
             ${displayRows.length === 0 ? `<tr><td colspan="10" class="p-md text-center text-secondary">No hay rutas que coincidan con los filtros.</td></tr>` :
               displayRows.map(({ ruta, ejes, toll }) => {
-                const grupo = (grupos.find(g => g.centroIds.includes(ruta.origenId)) || grupos.find(g => g.grupo === ruta.origen_grupo));
+                const grupo = (grupos.find(g => g.grupo === ruta.origen_grupo) || grupos.find(g => g.centroIds.includes(ruta.origenId)));
                 const origenNombre = grupo ? grupo.nombre : (getCentreName(db, ruta.origenId) || '');
                 const kmTotal = ruta.km != null ? ruta.km.toFixed(1) + ' KM' : '—';
                 let estado;
@@ -776,7 +776,7 @@ function renderPeajesInterregionales(content, db, cfg) {
   }
   if (pjiFiltroCentro) {
     const g = grupos.find(g => g.grupo === pjiFiltroCentro);
-    if (g) rows = rows.filter(r => g.centroIds.includes(r.ruta.origenId) || r.ruta.origen_grupo === g.grupo);
+    if (g) rows = rows.filter(r => r.ruta.origen_grupo === g.grupo || g.centroIds.includes(r.ruta.origenId));
   }
   if (pjiFiltroRevision) {
     rows = rows.filter(r => r.toll && r.toll.needs_review);
@@ -881,7 +881,7 @@ function renderPeajesInterregionales(content, db, cfg) {
           <tbody class="font-body-md text-body-md">
             ${displayRows.length === 0 ? `<tr><td colspan="10" class="p-md text-center text-secondary">No hay rutas interregionales que coincidan con los filtros.</td></tr>` :
               displayRows.map(({ ruta, ejes, toll }) => {
-                const grupo = (grupos.find(g => g.centroIds.includes(ruta.origenId)) || grupos.find(g => g.grupo === ruta.origen_grupo));
+                const grupo = (grupos.find(g => g.grupo === ruta.origen_grupo) || grupos.find(g => g.centroIds.includes(ruta.origenId)));
                 const origenNombre = grupo ? grupo.nombre : (getCentreName(db, ruta.origenId) || '');
                 const kmTotal = ruta.km != null ? ruta.km.toFixed(1) + ' KM' : '—';
                 let estado;
@@ -1003,7 +1003,7 @@ function exportPeajesCSV(db, rows) {
   const headers = ['RUTA', 'ORIGEN', 'DESTINO', 'TIPO_CAMION', 'PEAJE_IDA', 'PEAJE_VUELTA'];
   const data = [];
   for (const { ruta, ejes, toll } of rows) {
-    const grupo  = (grupos.find(g => g.centroIds.includes(ruta.origenId)) || grupos.find(g => g.grupo === ruta.origen_grupo));
+    const grupo  = (grupos.find(g => g.grupo === ruta.origen_grupo) || grupos.find(g => g.centroIds.includes(ruta.origenId)));
     const origen = grupo ? grupo.nombre : (getCentreName(db, ruta.origenId) || '');
     const ida    = toll ? Math.round(toll.peaje_ida    || 0) : 0;
     const vuelta = toll ? Math.round(toll.peaje_vuelta || 0) : 0;
