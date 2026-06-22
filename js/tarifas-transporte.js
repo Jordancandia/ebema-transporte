@@ -517,6 +517,14 @@ function renderPeajesAuto(content, db, cfg) {
     const g = grupos.find(g => g.grupo === pjFiltroCentro);
     if (g) rows = rows.filter(r => r.ruta.origen_grupo === g.grupo || g.centroIds.includes(r.ruta.origenId));
   }
+  // KPIs: contar sobre las filas ya filtradas por centro/comuna (sin aplicar pendientes/revision)
+  const rowsBase = rows;
+  const rutasBase = [...new Set(rowsBase.map(r => r.ruta.id))];
+  const pendientesCount = rowsBase.filter(r => !r.toll || !r.toll.calculado_en).length;
+  const revisionCount  = rowsBase.filter(r => r.toll && r.toll.needs_review).length;
+  const rutasCount     = rutasBase.length;
+  const combinaciones  = rowsBase.length;
+
   if (pjFiltroRevision) {
     rows = rows.filter(r => r.toll && r.toll.needs_review);
   } else if (pjFiltroPendientes) {
@@ -525,15 +533,6 @@ function renderPeajesAuto(content, db, cfg) {
 
   const totalRows = rows.length;
   const displayRows = rows.slice(0, PJ_DISPLAY_LIMIT);
-
-  let pendientesCount = 0;
-  routes.forEach(ruta => {
-    [2, 3].forEach(ejes => {
-      const t = pjGetTollRow(db, ruta.id, ejes);
-      if (!t || !t.calculado_en) pendientesCount++;
-    });
-  });
-  const revisionCount = (db.routeTolls || []).filter(t => t.needs_review).length;
 
   content.innerHTML = `
     <div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm mb-lg">
@@ -549,11 +548,11 @@ function renderPeajesAuto(content, db, cfg) {
       <div class="grid grid-cols-1 md:grid-cols-4 gap-md mb-md">
         <button id="pj-kpi-todas" class="bg-surface-container-low p-md rounded text-left hover:bg-secondary-container transition-colors ${!pjFiltroPendientes && !pjFiltroRevision ? 'ring-2 ring-primary' : ''}">
           <p class="font-label-caps text-label-caps text-secondary">Rutas Registradas</p>
-          <p class="font-headline-sm text-headline-sm font-bold text-on-surface">${routes.length}</p>
+          <p class="font-headline-sm text-headline-sm font-bold text-on-surface">${rutasCount}</p>
         </button>
         <div class="bg-surface-container-low p-md rounded">
           <p class="font-label-caps text-label-caps text-secondary">Combinaciones (Ruta × Tipo Camión)</p>
-          <p class="font-headline-sm text-headline-sm font-bold text-on-surface">${routes.length * 2}</p>
+          <p class="font-headline-sm text-headline-sm font-bold text-on-surface">${combinaciones}</p>
         </div>
         <button id="pj-kpi-pendientes" class="bg-surface-container-low p-md rounded text-left hover:bg-secondary-container transition-colors ${pjFiltroPendientes ? 'ring-2 ring-primary' : ''}">
           <p class="font-label-caps text-label-caps text-secondary">Sin Calcular</p>
@@ -778,6 +777,14 @@ function renderPeajesInterregionales(content, db, cfg) {
     const g = grupos.find(g => g.grupo === pjiFiltroCentro);
     if (g) rows = rows.filter(r => r.ruta.origen_grupo === g.grupo || g.centroIds.includes(r.ruta.origenId));
   }
+  // KPIs: contar sobre las filas ya filtradas por centro/comuna
+  const rowsBase = rows;
+  const rutasBase = [...new Set(rowsBase.map(r => r.ruta.id))];
+  const pendientesCount = rowsBase.filter(r => !r.toll || !r.toll.calculado_en).length;
+  const revisionCount  = rowsBase.filter(r => r.toll && r.toll.needs_review).length;
+  const rutasCount     = rutasBase.length;
+  const combinaciones  = rowsBase.length;
+
   if (pjiFiltroRevision) {
     rows = rows.filter(r => r.toll && r.toll.needs_review);
   } else if (pjiFiltroPendientes) {
@@ -786,15 +793,6 @@ function renderPeajesInterregionales(content, db, cfg) {
 
   const totalRows = rows.length;
   const displayRows = rows.slice(0, PJ_DISPLAY_LIMIT);
-
-  let pendientesCount = 0;
-  routes.forEach(ruta => {
-    [2, 3].forEach(ejes => {
-      const t = pjGetTollRow(db, ruta.id, ejes);
-      if (!t || !t.calculado_en) pendientesCount++;
-    });
-  });
-  const revisionCount = (db.routeTolls || []).filter(t => t.needs_review).length;
 
   content.innerHTML = `
     <div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm mb-lg">
@@ -809,12 +807,12 @@ function renderPeajesInterregionales(content, db, cfg) {
 
       <div class="grid grid-cols-1 md:grid-cols-4 gap-md mb-md">
         <div class="bg-surface-container-low p-md rounded">
-          <p class="font-label-caps text-label-caps text-secondary">Rutas Interregionales</p>
-          <p class="font-headline-sm text-headline-sm font-bold text-on-surface">${routes.length}</p>
+          <p class="font-label-caps text-label-caps text-secondary">Rutas Registradas</p>
+          <p class="font-headline-sm text-headline-sm font-bold text-on-surface">${rutasCount}</p>
         </div>
         <div class="bg-surface-container-low p-md rounded">
           <p class="font-label-caps text-label-caps text-secondary">Combinaciones (Ruta × Tipo Camión)</p>
-          <p class="font-headline-sm text-headline-sm font-bold text-on-surface">${routes.length * 2}</p>
+          <p class="font-headline-sm text-headline-sm font-bold text-on-surface">${combinaciones}</p>
         </div>
         <button id="pji-kpi-pendientes" class="bg-surface-container-low p-md rounded text-left hover:bg-secondary-container transition-colors ${pjiFiltroPendientes ? 'ring-2 ring-primary' : ''}">
           <p class="font-label-caps text-label-caps text-secondary">Sin Calcular</p>
