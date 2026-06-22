@@ -117,18 +117,7 @@ export function calcularCostoRuta(db, cfg, ruta, capKg) {
   return {
     rutaId: ruta.id, centroId, capKg, km, ejes,
     peajeIda, peajeVuelta, item1_peajes,
-    extraCostsRuta, itemExtraIda, itemExtraVuelta, item1b_costosExtra,
-    combIda, combVuelta, item2_combustible,
-    item3_soapKm, item4_seguroKm, item5_mantKm, item6_neumKm, item7_gpsKm,
-    item8_choferBaseDiario, item9_varChofer,
-    factorRuta, item10_costoRutaTotal, item11_costoKmFinal,
-    zcap: item12_zcap,
-    zcapConMargen: item12_zcap * (1 + margenPct / 100),
-    kmMensual, kmAnual
-  };
-}
-
-// Calcula el ZCAP para TODAS las combinaciones ruta x tipo de camión activas
+    extraCostsRuta, itemExtraIda, itemExtraVuelta, 
 export function calcularMatrizCostos(db, cfg) {
   const rutas = db.routes.filter(r => r.activo);
   const out = [];
