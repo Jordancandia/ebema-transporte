@@ -5,6 +5,7 @@ import { REGIONES, COMUNAS_POR_REGION, TIPOS_ZONA, findRegionByComuna } from './
 let editingZonaId = null;
 let currentFiltroRegionZona = '';
 let currentFiltroIncompletasZona = false;
+let currentFiltroErpZona = ''; // '', 'erp', 'pendiente'
 
 // --- Normalización de datos para Carga Masiva (CSV) ---
 // Los archivos exportados desde Excel suelen traer encabezados en mayúsculas/distinta
@@ -137,20 +138,20 @@ export function renderZonasView(container) {
         </div>
         <span class="material-symbols-outlined text-[32px] text-secondary">map</span>
       </div>
-      <div class="bg-surface border border-outline-variant p-md shadow-sm rounded flex items-center justify-between">
+      <button type="button" id="kpi-zona-erp" class="bg-surface border ${currentFiltroErpZona === 'erp' ? 'border-green-500 ring-2 ring-green-300' : 'border-outline-variant'} p-md shadow-sm rounded flex items-center justify-between cursor-pointer text-left transition-all hover:shadow-md" title="Click para filtrar las zonas creadas en ERP">
         <div>
           <h4 class="font-label-caps text-label-caps text-secondary uppercase">Creadas en ERP</h4>
           <div class="font-headline-md text-headline-md font-bold text-green-700 mt-1">${enErp}</div>
         </div>
         <span class="material-symbols-outlined text-[32px] text-green-600">check_circle</span>
-      </div>
-      <div class="bg-surface border border-outline-variant p-md shadow-sm rounded flex items-center justify-between">
+      </button>
+      <button type="button" id="kpi-zona-pend-erp" class="bg-surface border ${currentFiltroErpZona === 'pendiente' ? 'border-red-500 ring-2 ring-red-300' : 'border-outline-variant'} p-md shadow-sm rounded flex items-center justify-between cursor-pointer text-left transition-all hover:shadow-md" title="Click para filtrar las zonas pendientes de ERP">
         <div>
           <h4 class="font-label-caps text-label-caps text-secondary uppercase">Pendientes ERP</h4>
           <div class="font-headline-md text-headline-md font-bold text-red-600 mt-1">${pendErp}</div>
         </div>
         <span class="material-symbols-outlined text-[32px] text-red-500">pending</span>
-      </div>
+      </button>
       <button type="button" id="kpi-zona-incompletas" class="bg-surface border ${currentFiltroIncompletasZona ? 'border-amber-500 ring-2 ring-amber-300' : 'border-outline-variant'} p-md shadow-sm rounded border-l-4 border-amber-400 flex items-center justify-between cursor-pointer text-left transition-all hover:shadow-md" title="Click para filtrar las zonas con datos pendientes">
         <div>
           <h4 class="font-label-caps text-label-caps text-secondary uppercase">Datos a Completar</h4>
@@ -369,6 +370,11 @@ export function renderZonasView(container) {
     if (currentFiltroIncompletasZona) {
       filtered = filtered.filter(zonaIncompleta);
     }
+    if (currentFiltroErpZona === 'erp') {
+      filtered = filtered.filter(z => z.estado_erp);
+    } else if (currentFiltroErpZona === 'pendiente') {
+      filtered = filtered.filter(z => !z.estado_erp);
+    }
     renderZonasTable(filtered);
     return filtered;
   };
@@ -385,6 +391,27 @@ export function renderZonasView(container) {
   if (kpiIncompletas) {
     kpiIncompletas.addEventListener('click', () => {
       currentFiltroIncompletasZona = !currentFiltroIncompletasZona;
+      currentFiltroErpZona = '';
+      renderZonasView(container);
+    });
+  }
+
+  // KPI "Creadas en ERP": al hacer click, filtra zonas con estado_erp=true
+  const kpiErp = document.getElementById('kpi-zona-erp');
+  if (kpiErp) {
+    kpiErp.addEventListener('click', () => {
+      currentFiltroErpZona = currentFiltroErpZona === 'erp' ? '' : 'erp';
+      currentFiltroIncompletasZona = false;
+      renderZonasView(container);
+    });
+  }
+
+  // KPI "Pendientes ERP": al hacer click, filtra zonas con estado_erp=false
+  const kpiPendErp = document.getElementById('kpi-zona-pend-erp');
+  if (kpiPendErp) {
+    kpiPendErp.addEventListener('click', () => {
+      currentFiltroErpZona = currentFiltroErpZona === 'pendiente' ? '' : 'pendiente';
+      currentFiltroIncompletasZona = false;
       renderZonasView(container);
     });
   }

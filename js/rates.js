@@ -230,7 +230,7 @@ export function renderRatesView(container) {
 
             <div>
               <div class="bg-surface-container-lowest p-md border border-outline-variant mb-md rounded text-secondary hidden" id="q-ref-zfm">
-                <p class="font-label-caps text-label-caps text-secondary mb-xs text-center">Referencia Tarifa Cliente (Motor ZCAP)</p>
+                <p class="font-label-caps text-label-caps text-secondary mb-xs text-center">Referencia Tarifa Cliente (Motor de Costo)</p>
                 <div class="grid grid-cols-3 gap-sm text-center">
                   <div>
                     <span class="block font-data-mono text-data-mono font-bold text-on-surface" id="q-ref-zfmi">—</span>
@@ -622,7 +622,7 @@ export function renderRatesView(container) {
 
   // --- REFERENCIA TARIFA CLIENTE (ZFMI/ZFMP/ZFMX) ---
   // Muestra, a modo de referencia para el agente comercial, el rango de tarifa
-  // calculado por el Motor ZCAP / Tarifa Cliente para la ruta y camión actuales.
+  // calculado por el Motor de Costo / Tarifa Cliente para la ruta y camión actuales.
   // No reemplaza ni altera el VALOR NETO mostrado (basado en Tarifa Base/Tarifa-KM).
   function updateZfmReference(capKg) {
     if (!activeRoute || !capKg) {

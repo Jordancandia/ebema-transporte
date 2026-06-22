@@ -165,6 +165,14 @@ function renderRutasSubview(container) {
             <span class="material-symbols-outlined text-[18px]">my_location</span>
             Georreferenciar Rutas
           </button>
+          <button id="btn-geo-pendientes" class="flex-1 md:flex-none border border-amber-500 text-amber-700 hover:bg-amber-50 font-bold px-md py-sm rounded active:scale-[0.98] transition-all flex items-center justify-center gap-sm cursor-pointer text-xs uppercase tracking-wider">
+            <span class="material-symbols-outlined text-[18px]">auto_fix_high</span>
+            Georreferenciar Pendientes
+          </button>
+          <button id="btn-calcular-km-rutas" class="flex-1 md:flex-none border border-sky-500 text-sky-700 hover:bg-sky-50 font-bold px-md py-sm rounded active:scale-[0.98] transition-all flex items-center justify-center gap-sm cursor-pointer text-xs uppercase tracking-wider">
+            <span class="material-symbols-outlined text-[18px]">straighten</span>
+            Calcular KM
+          </button>
           <button id="btn-bulk-upload-routes" class="flex-1 md:flex-none border border-secondary text-secondary hover:bg-surface-container-high font-bold px-md py-sm rounded active:scale-[0.98] transition-all flex items-center justify-center gap-sm cursor-pointer text-xs uppercase tracking-wider">
             <span class="material-symbols-outlined text-[18px]">upload_file</span>
             Carga Masiva (CSV)
@@ -190,6 +198,7 @@ function renderRutasSubview(container) {
               <th class="p-md">Región</th>
               <th class="p-md">Tipo</th>
               <th class="p-md">Clasificación</th>
+              <th class="p-md">Factor</th>
               <th class="p-md">KM</th>
               <th class="p-md">Estado ERP</th>
               <th class="p-md">Latitud</th>
@@ -311,9 +320,9 @@ function renderRutasSubview(container) {
               <div class="space-y-xs">
                 <label for="r-caracteristica" class="font-label-caps text-label-caps text-secondary block">CARACTERÍSTICA ESPECIAL (TARIFAS)</label>
                 <select id="r-caracteristica" class="w-full border border-[#CED4DA] p-sm font-body-md text-body-md focus:border-primary focus:ring-0 transition-all rounded bg-white" required>
-                  <option value="NORMAL">NORMAL</option>
-                  <option value="EXTREMA">EXTREMA</option>
-                  <option value="ISLA">ISLA</option>
+                  <option value="NORMAL">1 — NORMAL</option>
+                  <option value="EXTREMA">3 — EXTREMA</option>
+                  <option value="ISLA">2 — ISLA</option>
                 </select>
               </div>
             </div>
@@ -377,6 +386,7 @@ function renderRutasSubview(container) {
                     <th class="p-sm">Origen</th>
                     <th class="p-sm">Zona / Destino</th>
                     <th class="p-sm">KM</th>
+                    <th class="p-sm">Característica</th>
                     <th class="p-sm">Estado</th>
                   </tr>
                 </thead>
@@ -788,6 +798,14 @@ function renderRutasSubview(container) {
         const clasifCsv = (getField(row, 'clasificacion', 'clasificación') || '').trim();
         const kmRaw = getField(row, 'km');
         const kmCsv = kmRaw !== '' && kmRaw !== undefined ? Number(kmRaw) : null;
+        const factorRutaRaw = getField(row, 'factor_ruta', 'factorruta');
+        const factorRutaNum = factorRutaRaw !== '' && factorRutaRaw !== undefined ? Number(factorRutaRaw) : 0;
+        const factorRutaMap = { 1: 'NORMAL', 2: 'ISLA', 3: 'EXTREMA' };
+        const factorRutaCsv = factorRutaMap[factorRutaNum] || (['NORMAL', 'ISLA', 'EXTREMA'].includes(factorRutaRaw?.toUpperCase()) ? factorRutaRaw.toUpperCase() : '');
+        const caracRaw = getField(row, 'caracteristica', 'característica');
+        const caracNum = caracRaw !== '' && caracRaw !== undefined ? Number(caracRaw) : 0;
+        const caracMap = { 1: 'NORMAL', 2: 'ISLA', 3: 'EXTREMA' };
+        const caracteristicaCsv = caracMap[caracNum] || (['NORMAL', 'ISLA', 'EXTREMA'].includes(caracRaw?.toUpperCase()) ? caracRaw.toUpperCase() : '') || factorRutaCsv || '';
         const latRaw = getField(row, 'latitud', 'lat');
         const lonRaw = getField(row, 'longitud', 'lon');
         const latCsv = (latRaw !== '' && latRaw !== undefined) ? Number(latRaw) : null;
@@ -835,6 +853,7 @@ function renderRutasSubview(container) {
           <td class="p-sm">${escapeHtml(origenValido || origenCsv)}</td>
           <td class="p-sm">${escapeHtml(idZona)} / ${escapeHtml(destinoCsv)}</td>
           <td class="p-sm font-bold">${kmCsv !== null && !isNaN(kmCsv) ? kmCsv + ' KM' : '—'}</td>
+          <td class="p-sm">${caracteristicaCsv ? `<span class="inline-block px-2 py-0.5 rounded text-[10px] font-bold ${caracteristicaCsv === 'NORMAL' ? 'bg-gray-100 text-gray-700' : caracteristicaCsv === 'ISLA' ? 'bg-blue-100 text-blue-700' : 'bg-amber-100 text-amber-700'}">${caracteristicaCsv}</span>` : '<span class="text-secondary">—</span>'}</td>
           <td class="p-sm">
             <span class="inline-block px-2 py-0.5 rounded text-[10px] font-bold ${error ? 'bg-red-100 text-red-800' : (incompleto ? 'bg-amber-100 text-amber-800' : 'bg-green-100 text-green-800')}">
               ${error ? error : (incompleto ? 'Completar Datos' : 'Listo')}
@@ -881,7 +900,7 @@ function renderRutasSubview(container) {
             tipo: clasifNorm,
             km: (kmCsv !== null && !isNaN(kmCsv)) ? kmCsv : 0,
             estado_erp,
-            caracteristica: 'NORMAL',
+            caracteristica: caracteristicaCsv || 'NORMAL',
             lat: georefCsv ? georefCsv.lat : null,
             lon: georefCsv ? georefCsv.lon : null,
             georef_estado: georefEstado,
@@ -1021,6 +1040,69 @@ function renderRutasSubview(container) {
     }
   });
 
+  // Botón "Georreferenciar Pendientes" — procesa directamente todas las rutas sin georef
+  document.getElementById('btn-geo-pendientes')?.addEventListener('click', async () => {
+    const activeDb = getDatabase();
+    const pending = activeDb.routes.filter(r => !r.georef_estado);
+    if (pending.length === 0) { showAlert('No hay rutas pendientes de georreferenciación.', 'error'); return; }
+    if (!confirm(`¿Georreferenciar ${pending.length} rutas pendientes? Se procesarán una por una con ~1s de espera entre cada una.`)) return;
+
+    let done = 0, ok = 0, manual = 0;
+    showAlert(`Procesando ${pending.length} rutas...`, 'info');
+
+    for (const r of pending) {
+      const query = [r.destino, r.comuna, r.region].filter(Boolean).join(', ');
+      try {
+        const coords = await geocodeAddress(query);
+        r.lat = coords.lat;
+        r.lon = coords.lon;
+        r.georef_estado = !!coords.found;
+        if (coords.found) ok++; else manual++;
+      } catch { manual++; }
+      done++;
+      if (done % 10 === 0) saveDatabase(activeDb);
+      if (!geoCancelled) await new Promise(resolve => setTimeout(resolve, 1100));
+    }
+
+    saveDatabase(activeDb);
+    const db2 = getDatabase();
+    renderRoutesTable(db2.routes);
+    showAlert(`Finalizado: ${ok} ubicadas automáticamente, ${manual} requieren revisión manual.`);
+  });
+
+  // Botón "Calcular KM" — calcula distancia por OSRM para rutas sin km
+  document.getElementById('btn-calcular-km-rutas')?.addEventListener('click', async () => {
+    const activeDb = getDatabase();
+    const pendientes = activeDb.routes.filter(r => !r.km || r.km === 0);
+    if (pendientes.length === 0) { showAlert('Todas las rutas ya tienen KM calculado.', 'error'); return; }
+    if (!confirm(`¿Calcular KM para ${pendientes.length} rutas? Se geolocalizará cada destino y consultará OSRM (~1.5s por ruta).`)) return;
+
+    let done = 0, ok = 0, errors = 0;
+    showAlert(`Calculando KM para ${pendientes.length} rutas...`, 'info');
+
+    for (const r of pendientes) {
+      try {
+        const cd = activeDb.logisticsCentres.find(c => c.id === r.origenId);
+        if (!cd || !cd.lat || !cd.lon) { errors++; continue; }
+        const destinoTexto = [r.destino, r.comuna, r.region].filter(Boolean).join(', ');
+        const result = await calcularDistanciaAuto(cd, destinoTexto);
+        r.km = result.km;
+        if (!r.lat) r.lat = result.lat;
+        if (!r.lon) r.lon = result.lon;
+        if (!r.georef_estado) r.georef_estado = true;
+        ok++;
+      } catch { errors++; }
+      done++;
+      if (done % 10 === 0) saveDatabase(activeDb);
+      await new Promise(resolve => setTimeout(resolve, 1500));
+    }
+
+    saveDatabase(activeDb);
+    const db2 = getDatabase();
+    renderRoutesTable(db2.routes);
+    showAlert(`Finalizado: ${ok} KM calculados, ${errors} con errores.`);
+  });
+
   // Función auxiliar para abrir el modal en modo edición (usada por la tabla)
   window.__openRouteEditModal = (routeId) => {
     const activeDb = getDatabase();
@@ -1059,7 +1141,7 @@ function renderRoutesTable(routesList) {
   if (routesList.length === 0) {
     tbody.innerHTML = `
       <tr>
-        <td colspan="16" class="p-xl text-center text-secondary">
+        <td colspan="17" class="p-xl text-center text-secondary">
           No se encontraron rutas registradas.
         </td>
       </tr>
@@ -1100,6 +1182,11 @@ function renderRoutesTable(routesList) {
       <td class="p-md text-xs">${campoPendiente(r.region)}</td>
       <td class="p-md text-xs"><span class="bg-surface-container-high px-sm py-1 border border-outline-variant rounded text-xs">${escapeHtml(r.clasificRuta) || '—'}</span></td>
       <td class="p-md text-xs"><span class="bg-surface-container-high px-sm py-1 border border-outline-variant rounded text-xs">${escapeHtml(r.tipo) || '—'}</span></td>
+      <td class="p-md">
+        <span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold ${CARACT_STYLES[r.caracteristica || 'NORMAL']}">
+          ${r.caracteristica === 'NORMAL' ? '1' : r.caracteristica === 'ISLA' ? '2' : r.caracteristica === 'EXTREMA' ? '3' : '—'}
+        </span>
+      </td>
       <td class="p-md font-bold font-data-mono text-xs">${r.km ? r.km + ' KM' : campoPendiente('')}</td>
       <td class="p-md">
         <span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold ${statusErp}">

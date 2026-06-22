@@ -546,8 +546,23 @@ const defaultData = {
   // 10. Peajes por ruta (ida/vuelta, por tipo de camión según ejes: 2 o 3)
   routeTolls: [],
 
-  // 11. Costos Extra por ruta (BARCAZA, TRAVESÍA, etc.) — por ejes, ida y vuelta separados
-  extraCosts: []
+  // 11. Camiones Troncales (servicio de larga distancia entre centros)
+  troncales: [
+    {
+      id: 'tr1',
+      razonSocial: 'Transportes Troncales del Sur Ltda',
+      rut: '77.123.456-7',
+      activo: true,
+      rutasCobertura: [
+        { origen: 'SANTIAGO', destino: 'CONCEPCION' },
+        { origen: 'SANTIAGO', destino: 'TEMUCO' }
+      ],
+      camiones: [
+        { patente: 'XX-YY-12', modelo: 'Volvo FH 460', capacidad: 28, ejes: 3 },
+        { patente: 'XX-YY-13', modelo: 'Scania R500', capacidad: 28, ejes: 3 }
+      ]
+    }
+  ]
 };
 
 // Obtener la base de datos en memoria (Supabase) o respaldo local
@@ -616,6 +631,12 @@ export function getDatabase() {
   // Migración: Asegurar que existe la colección de Costos Extra por Ruta
   if (!parsed.extraCosts) {
     parsed.extraCosts = [];
+    migrado = true;
+  }
+
+  // Migración: Asegurar que existe la colección de Troncales
+  if (!parsed.troncales) {
+    parsed.troncales = defaultData.troncales ? JSON.parse(JSON.stringify(defaultData.troncales)) : [];
     migrado = true;
   }
 
@@ -861,5 +882,20 @@ export function resetDatabase() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(defaultData));
   window.dispatchEvent(new Event('db_updated'));
   return defaultData;
+}
+
+// Limpiar datos maestros de prueba (rutas, zonas, transportistas)
+// sin afectar centros logísticos, tipos de camión ni configuraciones.
+export function limpiarDatosMaestros() {
+  const db = getDatabase();
+  db.routes = [];
+  db.transportZones = [];
+  db.transports = [];
+  db.transportsCamiones = [];
+  db.transportsChoferes = [];
+  db.routeTolls = [];
+  saveDatabase(db);
+  console.log('✓ Datos maestros limpiados: rutas, zonas, transportistas.');
+  return db;
 }
 // fin de data.js

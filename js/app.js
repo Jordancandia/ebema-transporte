@@ -912,10 +912,10 @@ function renderDashboardShell() {
           <span class="font-body-md text-body-md">Cotizador</span>
         </a>
 
-        <!-- Transportistas (Transports) -->
+        <!-- Proveedores de Transporte -->
         <a class="sidebar-item flex items-center gap-md px-md py-sm text-secondary hover:text-primary hover:bg-surface-container-high transition-colors rounded-lg cursor-pointer" data-tab="transports" id="nav-transports">
-          <span class="material-symbols-outlined">local_shipping</span>
-          <span class="font-body-md text-body-md">Transportes</span>
+          <span class="material-symbols-outlined">groups</span>
+          <span class="font-body-md text-body-md">Proveedores</span>
         </a>
 
         <!-- Rutas de Transporte (Routes + Centros SAP) -->
@@ -945,6 +945,7 @@ function renderDashboardShell() {
       </div>
 
       <div class="mt-auto space-y-base border-t border-surface-variant pt-lg">
+
         <a class="flex items-center gap-md px-md py-sm text-secondary hover:text-primary hover:bg-surface-container-high transition-colors rounded-lg cursor-pointer" id="btn-logout">
           <span class="material-symbols-outlined">logout</span>
           <span class="font-body-md text-body-md">Logout</span>
@@ -995,6 +996,7 @@ function renderDashboardShell() {
 
   // Cerrar Sesión (también en el servidor)
   document.getElementById('btn-logout').addEventListener('click', handleLogout);
+
 
   // Enrutamiento de pestañas del Sidebar
   document.querySelectorAll('.sidebar-item').forEach(item => {
@@ -1052,3 +1054,5 @@ function switchTab(tabName) {
       break;
   }
 }
+
+// Exponer utilidad de limpieza en consola

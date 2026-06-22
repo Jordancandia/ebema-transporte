@@ -1,4 +1,4 @@
-import { getDatabase, saveDatabase, getCentreName, calcEjes } from './data.js';
+import { getDatabase, saveDatabase, getCentreName, getOrigenGroups, calcEjes } from './data.js';
 import { formatRut, showAlert, escapeHtml } from './utils.js';
 
 // Ficha del Transportista — SIT EBEMA
@@ -89,7 +89,7 @@ export function renderFichaTransporte(container, transportId) {
   t.datosBancarios.rut = t.rut; // siempre debe coincidir con el RUT del proveedor
 
   const estado = calcularEstado(t);
-  const cds = db.logisticsCentres;
+  const grupos = getOrigenGroups(db);
 
   container.innerHTML = `
     <!-- ===== HEADER ===== -->
@@ -150,11 +150,11 @@ export function renderFichaTransporte(container, transportId) {
             <div style="grid-column:1/-1;padding:14px;background:#f8f9fa;border:1px solid #e1e3e4;border-radius:8px">
               <p style="font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#5c5f61;margin-bottom:12px;display:flex;align-items:center;gap:6px">
                 <span class="material-symbols-outlined" style="font-size:14px">location_on</span>
-                Centros donde presta servicio (máximo 2)
+                Centros donde presta servicio (máximo 2 grupos)
               </p>
               <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-                ${selectCentro('Centro de Servicio 1', 'f-centro1', cds, t.centrosServicio[0] || '')}
-                ${selectCentro('Centro de Servicio 2 (opcional)', 'f-centro2', cds, t.centrosServicio[1] || '')}
+                ${selectGrupoCentro('Centro de Servicio 1', 'f-centro1', grupos, t.centrosServicio[0] || '')}
+                ${selectGrupoCentro('Centro de Servicio 2 (opcional)', 'f-centro2', grupos, t.centrosServicio[1] || '')}
               </div>
             </div>
 
@@ -255,8 +255,14 @@ export function renderFichaTransporte(container, transportId) {
 
     const c1 = document.getElementById('f-centro1').value;
     const c2 = document.getElementById('f-centro2').value;
-    if (c1 && c2 && c1 === c2) return showAlert('Los dos centros de servicio no pueden ser el mismo.', 'error');
-    obj.centrosServicio = [c1, c2].filter(Boolean);
+    if (c1 && c2 && c1 === c2) return showAlert('Los dos grupos de servicio no pueden ser el mismo.', 'error');
+    const gruposSel = [c1, c2].filter(Boolean);
+    const expanded = [];
+    gruposSel.forEach(g => {
+      const grupo = grupos.find(gr => gr.grupo === g);
+      if (grupo) expanded.push(...grupo.centroIds);
+    });
+    obj.centrosServicio = expanded;
 
     saveDatabase(database);
     showAlert('Datos del proveedor actualizados.');
@@ -662,10 +668,12 @@ function selectTipoCuenta(label, id, current) {
     </div>`;
 }
 
-function selectCentro(label, id, cds, current) {
-  const options = cds.map(cd =>
-    `<option value="${cd.id}" ${cd.id === current ? 'selected' : ''}>${cd.nombre} (${cd.id})</option>`
-  ).join('');
+function selectGrupoCentro(label, id, grupos, currentCentroId) {
+  const grupoActual = grupos.find(g => g.centroIds.includes(currentCentroId));
+  const options = grupos.map(g => {
+    const selected = grupoActual && g.grupo === grupoActual.grupo;
+    return `<option value="${g.grupo}" ${selected ? 'selected' : ''}>${g.nombre} (${g.centroIds.join(', ')})</option>`;
+  }).join('');
   return `
     <div>
       <label for="${id}" style="display:block;font-size:10px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#5c5f61;margin-bottom:4px">${label}</label>
