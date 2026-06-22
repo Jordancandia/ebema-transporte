@@ -1462,9 +1462,17 @@ async function calcularPeajes(content, db, cfg, rutas, { force = false } = {}) {
     showAlert('No hay rutas para calcular con los filtros actuales', 'error');
     return;
   }
-  const targets = rutas.filter(r => r.lat != null && r.lon != null);
-  const sinCoords = rutas.length - targets.length;
-  const avisoCoords = sinCoords > 0 ? `\n${sinCoords} ruta(s) sin coordenadas quedarán en revisión.` : '';
+  // Filtrar rutas con ciudad de origen y destino disponibles (NO requiere lat/lon — el cálculo usa nombres de ciudad)
+  const targets = rutas.filter(r => {
+    if (!r.comuna) return false;
+    const cdG = r.origen_grupo
+      ? (db.logisticsCentres || []).find(c => c.origen_grupo === r.origen_grupo && c.comuna)
+      : null;
+    const cd = cdG || (db.logisticsCentres || []).find(c => c.id === r.origenId);
+    return !!(cd?.comuna);
+  });
+  const sinCiudad = rutas.length - targets.length;
+  const avisoCoords = sinCiudad > 0 ? `\n${sinCiudad} ruta(s) sin ciudad origen/destino quedarán en revisión.` : '';
 
   // Contar rutas ya en caché válida (para informar al usuario en modo masivo)
   const enCache = force ? 0 : targets.filter(r => {
@@ -1480,8 +1488,8 @@ async function calcularPeajes(content, db, cfg, rutas, { force = false } = {}) {
     return;
   }
 
-  // Rutas sin coordenadas → revisión directa
-  rutas.filter(r => r.lat == null || r.lon == null).forEach(ruta => {
+  // Rutas sin ciudad origen/destino → revisión directa
+  rutas.filter(r => !targets.includes(r)).forEach(ruta => {
     [2, 3].forEach(ejes => pjUpsertToll(db, ruta.id, ejes, null, null, { error: true }));
   });
 
