@@ -293,7 +293,7 @@ function renderCostosExtras(content, db, cfg) {
               ? `<tr><td colspan="9" class="p-md text-center text-secondary">No hay costos extras registrados. Usa "Agregar Ítem" para crear uno.</td></tr>`
               : rows.map(ce => {
                   const ruta   = routes.find(r => r.id === ce.route_id);
-                  const grupo  = ruta ? grupos.find(g => g.centroIds.includes(ruta.origenId)) : null;
+                  const grupo  = ruta ? (grupos.find(g => g.centroIds.includes(ruta.origenId)) || grupos.find(g => g.grupo === ruta.origen_grupo)) : null;
                   const origen = grupo ? grupo.nombre : '—';
                   const destino = ruta ? (ruta.destino || ruta.denominacion || '—') : '(ruta eliminada)';
                   const codigo  = ruta ? (ruta.codigo || '—') : '—';
@@ -622,7 +622,7 @@ function renderPeajesAuto(content, db, cfg) {
           <tbody class="font-body-md text-body-md">
             ${displayRows.length === 0 ? `<tr><td colspan="10" class="p-md text-center text-secondary">No hay rutas que coincidan con los filtros.</td></tr>` :
               displayRows.map(({ ruta, ejes, toll }) => {
-                const grupo = grupos.find(g => g.centroIds.includes(ruta.origenId));
+                const grupo = (grupos.find(g => g.centroIds.includes(ruta.origenId)) || grupos.find(g => g.grupo === ruta.origen_grupo));
                 const origenNombre = grupo ? grupo.nombre : (getCentreName(db, ruta.origenId) || '');
                 const kmTotal = ruta.km != null ? ruta.km.toFixed(1) + ' KM' : '—';
                 let estado;
@@ -874,7 +874,7 @@ function renderPeajesInterregionales(content, db, cfg) {
           <tbody class="font-body-md text-body-md">
             ${displayRows.length === 0 ? `<tr><td colspan="10" class="p-md text-center text-secondary">No hay rutas interregionales que coincidan con los filtros.</td></tr>` :
               displayRows.map(({ ruta, ejes, toll }) => {
-                const grupo = grupos.find(g => g.centroIds.includes(ruta.origenId));
+                const grupo = (grupos.find(g => g.centroIds.includes(ruta.origenId)) || grupos.find(g => g.grupo === ruta.origen_grupo));
                 const origenNombre = grupo ? grupo.nombre : (getCentreName(db, ruta.origenId) || '');
                 const kmTotal = ruta.km != null ? ruta.km.toFixed(1) + ' KM' : '—';
                 let estado;
@@ -996,7 +996,7 @@ function exportPeajesCSV(db, rows) {
   const headers = ['RUTA', 'ORIGEN', 'DESTINO', 'TIPO_CAMION', 'PEAJE_IDA', 'PEAJE_VUELTA'];
   const data = [];
   for (const { ruta, ejes, toll } of rows) {
-    const grupo  = grupos.find(g => g.centroIds.includes(ruta.origenId));
+    const grupo  = (grupos.find(g => g.centroIds.includes(ruta.origenId)) || grupos.find(g => g.grupo === ruta.origen_grupo));
     const origen = grupo ? grupo.nombre : (getCentreName(db, ruta.origenId) || '');
     const ida    = toll ? Math.round(toll.peaje_ida    || 0) : 0;
     const vuelta = toll ? Math.round(toll.peaje_vuelta || 0) : 0;
