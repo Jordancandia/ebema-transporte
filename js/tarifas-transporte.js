@@ -1,7 +1,7 @@
 // PANTALLA 1: Administrador de Tarifas Transporte — SIT EBEMA
 // Sub-módulos: Peajes, Combustibles y Rendimientos, Seguros y Permisos,
 // Variables Generales y Motor de Costo (ZCAP) con exportación CSV.
-import { getDatabase, saveDatabase, getCentreName, getTariffConfig, getClientTariffConfig, truckCapKg, getOrigenGroups, getGroupRepId, buildTruckTypes, TRUCK_BASE_TYPES } from './data.js?v=20260622f';
+import { getDatabase, saveDatabase, getCentreName, getTariffConfig, getClientTariffConfig, truckCapKg, getOrigenGroups, getGroupRepId, buildTruckTypes, TRUCK_BASE_TYPES } from './data.js?v=20260622j';
 import { CAP_LIST, truckTypesWithCap, calcularMatrizCostos } from './tarifas-engine.js';
 import { formatCLP, parseCSV, showAlert, toCSV, downloadFile, escapeHtml } from './utils.js';
 import { supabase } from './supabase-client.js';
@@ -1067,7 +1067,7 @@ function importRouteTollsCSV(file, db) {
         existing.updated_at = new Date().toISOString();
         importados++;
       });
-      saveDatabase(db);
+      saveDatabase(db, { syncOnly: ['routeTolls'] });
       showAlert(`Cache API importado: ${importados} registros actualizados/insertados.`);
     } catch (err) {
       showAlert('Error al importar cache: ' + (err.message || err), 'error');
@@ -1416,7 +1416,7 @@ function abrirModalCargaPeajesComuna(content, db, cfg) {
         totalRutas++;
       });
     });
-    saveDatabase(db);
+    saveDatabase(db, { syncOnly: ['routeTolls'] });
     el.remove();
     showAlert(`Carga masiva de peajes por comuna aplicada: ${totalRutas} registro(s) actualizado(s) en ${validRows.length} fila(s).`);
     renderPeajesAuto(content, db, cfg);
@@ -1537,7 +1537,7 @@ async function calcularPeajes(content, db, cfg, rutas, { force = false } = {}) {
   }
 
   if (cancelado) {
-    saveDatabase(db);
+    saveDatabase(db, { syncOnly: ['routeTolls'] });
     modal.close();
     showAlert('Cálculo cancelado (avance guardado)');
     renderPeajesAuto(content, db, cfg);
@@ -1575,11 +1575,11 @@ async function calcularPeajes(content, db, cfg, rutas, { force = false } = {}) {
       if (cancelado) break;
     }
 
-    if ((i + 1) % 10 === 0) saveDatabase(db);
+    if ((i + 1) % 10 === 0) saveDatabase(db, { syncOnly: ['routeTolls'] });
   }
 
   modal.update(tollTargets.length, tollTargets.length, cancelado ? 'Cancelado' : 'Finalizado');
-  saveDatabase(db);
+  saveDatabase(db, { syncOnly: ['routeTolls'] });
   modal.close();
 
   const resumen = `Completado: ${tollTargets.length} ruta(s) procesadas por GetAPI.`;
@@ -1657,11 +1657,11 @@ async function calcularKm(content, db, cfg, rutas) {
       console.error('Error calculando KM para', ruta.codigo, err);
     }
 
-    if ((i + 1) % 10 === 0) saveDatabase(db);
+    if ((i + 1) % 10 === 0) saveDatabase(db, { syncOnly: ['routeTolls'] });
   }
 
   modal.update(targets.length, targets.length, cancelado ? 'Cancelado' : 'Finalizado');
-  saveDatabase(db);
+  saveDatabase(db, { syncOnly: ['routeTolls'] });
   modal.close();
   showAlert(cancelado ? 'Cálculo de KM cancelado (avance guardado)' : 'Cálculo de KM finalizado');
   renderPeajesAuto(content, db, cfg);
@@ -2928,26 +2928,4 @@ function renderZapSap(content, db, cfg) {
         showAlert('No hay datos para exportar.', 'info');
         return;
       }
-      const headers = ['ID_CENTRO', 'CENTRO', 'ID_RUTA', 'DESTINO', 'FACTOR', 'TIPO_CAMION_KG', 'KM_IDA', 'TARIFA_KM', 'COSTO_BASE', 'COSTO_TOTAL', 'PARTICIPACION'];
-      const bom = '\uFEFF';
-      const csvData = allRows.map(r => [
-        r.centroId,
-        r.centroNombre,
-        r.rutaCodigo,
-        r.rutaDestino,
-        r.caracteristica === 'NORMAL' ? 1 : r.caracteristica === 'ISLA' ? 2 : 3,
-        r.capKg,
-        r.kmIda,
-        Math.round(r.tarifaKm),
-        r.costoBase,
-        r.costoTotal,
-        r.participacion.toFixed(1)
-      ]);
-      const csv = bom + toCSV(headers, csvData);
-      downloadFile(`zap_sap_export_${new Date().toISOString().slice(0,10).replace(/-/g,'')}.csv`, csv);
-      showAlert(`Archivo ZAP/SAP exportado: ${csvData.length} registros.`);
-    });
-  }
-
-  render(null);
-}
+      const headers = ['ID_CENTRO', 'CENTRO', 'ID_RUTA', 'DESTINO', 'FACTOR', 'TIPO_CAMION_KG', 'KM_IDA', 'TARIFA_KM', 'COS

@@ -293,9 +293,12 @@ async function syncTable(table, pk, rows) {
 // truck_types, tariff_config); si esa tabla fallara y abortara el for...of,
 // el resto de las tablas (incluida la que el usuario realmente editó) nunca
 // se sincronizaría, aunque el error no tenga relación con su cambio.
-async function syncToSupabase(db) {
+async function syncToSupabase(db, syncOnly = null) {
   const fallidas = [];
-  for (const t of TABLE_MAP) {
+  const tablas = syncOnly
+    ? TABLE_MAP.filter(t => syncOnly.includes(t.local))
+    : TABLE_MAP;
+  for (const t of tablas) {
     try {
       await syncTable(t.table, t.pk, db[t.local] || []);
     } catch (err) {
@@ -864,14 +867,15 @@ export function getCentreName(db, centreId) {
 }
 
 // Guardar: memoria + respaldo local + sincronización con Supabase
-export function saveDatabase(data) {
+// opts.syncOnly: array de nombres locales a sincronizar (p.ej. ['routeTolls']). Si null, sincroniza todo.
+export function saveDatabase(data, { syncOnly = null } = {}) {
   deriveCamionesChoferes(data);
   memoryDb = data;
   localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
   // Despachar un evento personalizado para actualizar las vistas en tiempo real
   window.dispatchEvent(new Event('db_updated'));
   // Sincronizar con el servidor en segundo plano
-  syncToSupabase(data).catch(err => {
+  syncToSupabase(data, syncOnly).catch(err => {
     console.error('Error al sincronizar con Supabase:', err.message || err);
     window.dispatchEvent(new CustomEvent('db_sync_error', { detail: err.message || String(err) }));
   });

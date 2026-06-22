@@ -1,7 +1,7 @@
 // Motor Actuarial — Administrador de Tarifas Transporte (SIT EBEMA)
 // Implementa, ruta por ruta y tipo de camión por tipo de camión, el cálculo
 // de costos definido en "PANTALLA 1: ADMINISTRADOR DE TARIFAS TRANSPORTE".
-import { truckCapKg, getGroupRepId } from './data.js?v=20260622f';
+import { truckCapKg, getGroupRepId } from './data.js?v=20260622j';
 
 // Capacidades nominales soportadas (kg)
 export const CAP_LIST = [5000, 10000, 15000, 28000];
