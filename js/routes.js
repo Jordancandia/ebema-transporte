@@ -1,4 +1,4 @@
-import { getDatabase, saveDatabase, getCentreName } from './data.js?v=20260622k';
+import { getDatabase, saveDatabase, getCentreName } from './data.js?v=20260622m';
 import { generateSapCode, parseCSV, showAlert, geocodeAddress, escapeHtml, toCSV, downloadFile } from './utils.js';
 import { renderLogisticsView } from './logistics.js';
 import { renderZonasView, getField, normalizeRegionName, standardizeComuna } from './zonas-transporte.js';
@@ -431,6 +431,38 @@ function renderRutasSubview(container) {
         <div class="p-md border-t border-outline-variant bg-surface-container-low flex justify-end gap-sm sticky bottom-0">
           <button class="border border-secondary text-secondary hover:bg-surface-container-high font-bold px-md py-sm rounded cursor-pointer" id="btn-cancel-geo">Cerrar</button>
           <button class="bg-primary hover:bg-[#930007] text-white font-bold px-md py-sm rounded cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed" id="btn-start-geo">Iniciar Georreferenciación</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal Calcular KM Masivo -->
+    <div class="modal-overlay fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center opacity-0 pointer-events-none transition-opacity duration-300" id="km-routes-modal">
+      <div class="modal-window w-[560px] max-w-[90vw] bg-white border border-outline-variant shadow-lg rounded-xl overflow-hidden transform scale-95 transition-transform duration-300 max-h-[90vh] overflow-y-auto">
+        <div class="p-md border-b border-outline-variant flex justify-between items-center bg-surface-container-low sticky top-0 z-10">
+          <h4 class="font-headline-sm text-headline-sm font-bold text-on-surface">Calcular KM entre Puntos</h4>
+          <button class="text-secondary hover:text-primary cursor-pointer" id="btn-close-km-modal">
+            <span class="material-symbols-outlined text-[24px]">close</span>
+          </button>
+        </div>
+        <div class="p-lg space-y-md">
+          <p class="font-body-md text-secondary leading-relaxed">
+            Se calculará la distancia por carretera (OSRM) entre cada Centro de Distribución origen y el destino de la ruta. Las rutas ya georreferenciadas se procesan directamente (~0.5 s c/u); las restantes geocodifican primero (~1.5 s c/u).
+          </p>
+          <div class="bg-surface-container-low border border-outline-variant rounded p-md text-sm space-y-xs">
+            <p><span class="font-bold text-headline-sm" id="km-pending-count">0</span> rutas sin KM calculado.</p>
+            <p class="text-xs text-secondary" id="km-pending-detail"></p>
+          </div>
+          <div id="km-progress-wrap" class="hidden space-y-xs">
+            <div class="w-full bg-surface-container-high rounded-full h-2 overflow-hidden">
+              <div id="km-progress-bar" class="bg-sky-500 h-2 rounded-full transition-all" style="width:0%"></div>
+            </div>
+            <p class="text-xs text-secondary" id="km-progress-text">0 / 0</p>
+            <div class="max-h-40 overflow-y-auto border border-outline-variant rounded text-xs font-data-mono" id="km-log"></div>
+          </div>
+        </div>
+        <div class="p-md border-t border-outline-variant bg-surface-container-low flex justify-end gap-sm sticky bottom-0">
+          <button class="border border-secondary text-secondary hover:bg-surface-container-high font-bold px-md py-sm rounded cursor-pointer" id="btn-cancel-km">Cerrar</button>
+          <button class="bg-sky-600 hover:bg-sky-700 text-white font-bold px-md py-sm rounded cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed" id="btn-start-km">Iniciar Cálculo KM</button>
         </div>
       </div>
     </div>
@@ -1073,37 +1105,126 @@ function renderRutasSubview(container) {
     showAlert(`Finalizado: ${ok} ubicadas automáticamente, ${manual} requieren revisión manual.`);
   });
 
-  // Botón "Calcular KM" — calcula distancia por OSRM para rutas sin km
-  document.getElementById('btn-calcular-km-rutas')?.addEventListener('click', async () => {
+  // --- CALCULAR KM MASIVO ---
+  const kmModal = document.getElementById('km-routes-modal');
+  const btnCalcKm = document.getElementById('btn-calcular-km-rutas');
+  const btnCloseKmModal = document.getElementById('btn-close-km-modal');
+  const btnCancelKm = document.getElementById('btn-cancel-km');
+  const btnStartKm = document.getElementById('btn-start-km');
+  const kmPendingCountEl = document.getElementById('km-pending-count');
+  const kmPendingDetailEl = document.getElementById('km-pending-detail');
+  const kmProgressWrap = document.getElementById('km-progress-wrap');
+  const kmProgressBar = document.getElementById('km-progress-bar');
+  const kmProgressText = document.getElementById('km-progress-text');
+  const kmLogEl = document.getElementById('km-log');
+
+  let kmRunning = false;
+  let kmCancelled = false;
+
+  const rutasSinKm = () => getDatabase().routes.filter(r => !r.km || r.km === 0);
+
+  const openKmModal = () => {
+    const pendientes = rutasSinKm();
+    const conCoords = pendientes.filter(r => r.lat && r.lon).length;
+    kmPendingCountEl.innerText = pendientes.length;
+    kmPendingDetailEl.innerText = `${conCoords} ya georreferenciadas (~0.5 s c/u) · ${pendientes.length - conCoords} sin coordenadas (~1.5 s c/u)`;
+    kmProgressWrap.classList.add('hidden');
+    kmProgressBar.style.width = '0%';
+    kmProgressText.innerText = '';
+    kmLogEl.innerHTML = '';
+    btnStartKm.disabled = pendientes.length === 0;
+    btnStartKm.innerText = 'Iniciar Cálculo KM';
+    kmModal.classList.remove('pointer-events-none', 'opacity-0');
+    kmModal.querySelector('.modal-window').classList.remove('scale-95');
+  };
+
+  btnCalcKm?.addEventListener('click', openKmModal);
+
+  const closeKmModal = () => {
+    if (kmRunning) kmCancelled = true;
+    kmModal.classList.add('pointer-events-none', 'opacity-0');
+    kmModal.querySelector('.modal-window').classList.add('scale-95');
+  };
+  btnCloseKmModal?.addEventListener('click', closeKmModal);
+  btnCancelKm?.addEventListener('click', closeKmModal);
+
+  btnStartKm?.addEventListener('click', async () => {
+    if (kmRunning) {
+      kmCancelled = true;
+      btnStartKm.innerText = 'Deteniendo...';
+      btnStartKm.disabled = true;
+      return;
+    }
+
     const activeDb = getDatabase();
-    const pendientes = activeDb.routes.filter(r => !r.km || r.km === 0);
-    if (pendientes.length === 0) { showAlert('Todas las rutas ya tienen KM calculado.', 'error'); return; }
-    if (!confirm(`¿Calcular KM para ${pendientes.length} rutas? Se geolocalizará cada destino y consultará OSRM (~1.5s por ruta).`)) return;
+    const pendientes = rutasSinKm();
+    if (pendientes.length === 0) return;
+
+    kmRunning = true;
+    kmCancelled = false;
+    btnStartKm.innerText = 'Detener';
+    kmProgressWrap.classList.remove('hidden');
+    kmLogEl.innerHTML = '';
 
     let done = 0, ok = 0, errors = 0;
-    showAlert(`Calculando KM para ${pendientes.length} rutas...`, 'info');
+    const total = pendientes.length;
 
     for (const r of pendientes) {
+      if (kmCancelled) break;
+
       try {
-        const cd = activeDb.logisticsCentres.find(c => c.id === r.origenId);
-        if (!cd || !cd.lat || !cd.lon) { errors++; continue; }
-        const destinoTexto = [r.destino, r.comuna, r.region].filter(Boolean).join(', ');
-        const result = await calcularDistanciaAuto(cd, destinoTexto);
-        r.km = result.km;
-        if (!r.lat) r.lat = result.lat;
-        if (!r.lon) r.lon = result.lon;
-        if (!r.georef_estado) r.georef_estado = true;
-        ok++;
-      } catch { errors++; }
+        // Buscar CD por origen_grupo primero, fallback a origenId
+        const cdGrupo = r.origen_grupo
+          ? (activeDb.logisticsCentres || []).find(c => c.origen_grupo === r.origen_grupo && c.lat != null)
+          : null;
+        const cd = cdGrupo || (activeDb.logisticsCentres || []).find(c => c.id === r.origenId);
+        if (!cd || !cd.lat || !cd.lon) {
+          errors++;
+          kmLogEl.insertAdjacentHTML('beforeend', `<div class="px-sm py-1 border-b border-outline-variant text-red-700">✗ ${escapeHtml(r.codigo)} — sin CD de origen con coordenadas</div>`);
+        } else if (r.lat && r.lon) {
+          // Ruta ya georreferenciada: OSRM directo
+          const osrmUrl = `https://router.project-osrm.org/route/v1/driving/${cd.lon},${cd.lat};${r.lon},${r.lat}?overview=false`;
+          const resp = await fetch(osrmUrl);
+          if (!resp.ok) throw new Error('OSRM no disponible');
+          const data = await resp.json();
+          if (!data.routes || !data.routes[0]) throw new Error('Sin ruta OSRM');
+          r.km = Math.round(data.routes[0].distance / 1000);
+          ok++;
+          kmLogEl.insertAdjacentHTML('beforeend', `<div class="px-sm py-1 border-b border-outline-variant text-green-700">✓ ${escapeHtml(r.codigo)} — ${escapeHtml(r.comuna || '')} → ${r.km} km</div>`);
+        } else {
+          // Sin coordenadas: geocodificar + OSRM
+          const destinoTexto = [r.destino, r.comuna, r.region].filter(Boolean).join(', ');
+          const result = await calcularDistanciaAuto(cd, destinoTexto);
+          r.km = result.km;
+          r.lat = result.lat;
+          r.lon = result.lon;
+          r.georef_estado = true;
+          ok++;
+          kmLogEl.insertAdjacentHTML('beforeend', `<div class="px-sm py-1 border-b border-outline-variant text-green-700">✓ ${escapeHtml(r.codigo)} — ${escapeHtml(r.comuna || '')} → ${r.km} km (geocodificado)</div>`);
+        }
+      } catch (err) {
+        errors++;
+        kmLogEl.insertAdjacentHTML('beforeend', `<div class="px-sm py-1 border-b border-outline-variant text-red-700">✗ ${escapeHtml(r.codigo)} — ${err.message}</div>`);
+      }
+
       done++;
-      if (done % 10 === 0) saveDatabase(activeDb);
-      await new Promise(resolve => setTimeout(resolve, 1500));
+      const pct = Math.round((done / total) * 100);
+      kmProgressBar.style.width = `${pct}%`;
+      kmProgressText.innerText = `${done} / ${total} — ${ok} OK · ${errors} errores`;
+      kmLogEl.scrollTop = kmLogEl.scrollHeight;
+
+      if (done % 50 === 0) saveDatabase(activeDb);
+      await new Promise(resolve => setTimeout(resolve, 500));
     }
 
     saveDatabase(activeDb);
-    const db2 = getDatabase();
-    renderRoutesTable(db2.routes);
-    showAlert(`Finalizado: ${ok} KM calculados, ${errors} con errores.`);
+    kmRunning = false;
+    kmPendingCountEl.innerText = rutasSinKm().length;
+    btnStartKm.disabled = rutasSinKm().length === 0;
+    btnStartKm.innerText = kmCancelled ? 'Detenido' : 'Completado';
+
+    renderRoutesTable(getDatabase().routes);
+    showAlert(`KM ${kmCancelled ? 'detenido' : 'finalizado'}: ${ok} calculados, ${errors} con errores.`);
   });
 
   // Función auxiliar para abrir el modal en modo edición (usada por la tabla)
@@ -1156,150 +1277,4 @@ function renderRoutesTable(routesList) {
   routesList.forEach(r => {
     const tr = document.createElement('tr');
     const incompleto = rutaIncompleta(r);
-    tr.className = `border-b border-outline-variant hover:bg-surface-container-low transition-colors ${incompleto ? 'bg-amber-50/60' : ''}`;
-
-    const statusVigencia = r.activo ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800';
-    const statusErp = r.estado_erp ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800';
-    const tieneCoords = r.lat !== null && r.lat !== undefined && r.lon !== null && r.lon !== undefined;
-    let georefLabel = 'PENDIENTE';
-    let statusGeoref = 'bg-red-100 text-red-800';
-    if (r.georef_estado) {
-      georefLabel = 'OK';
-      statusGeoref = 'bg-green-100 text-green-800';
-    } else if (tieneCoords) {
-      georefLabel = 'REVISAR';
-      statusGeoref = 'bg-amber-100 text-amber-800';
-    }
-
-    const campoPendiente = (valor) => valor
-      ? escapeHtml(valor)
-      : `<span class="inline-flex items-center gap-1 text-amber-700 font-bold text-[10px] uppercase whitespace-nowrap"><span class="material-symbols-outlined text-[14px]">warning</span> Completar</span>`;
-
-    tr.innerHTML = `
-      <td class="p-md font-bold text-primary font-data-mono">${escapeHtml(r.codigo)}</td>
-      <td class="p-md text-xs">${escapeHtml(r.denominacion)}</td>
-      <td class="p-md font-bold text-xs">${escapeHtml(r.origen_grupo) || '—'}</td>
-      <td class="p-md text-xs font-data-mono">${campoPendiente(r.id_zona_transporte)}</td>
-      <td class="p-md text-xs">${escapeHtml(r.destino)}</td>
-      <td class="p-md text-xs">${campoPendiente(r.comuna)}</td>
-      <td class="p-md text-xs">${campoPendiente(r.region)}</td>
-      <td class="p-md text-xs"><span class="bg-surface-container-high px-sm py-1 border border-outline-variant rounded text-xs">${escapeHtml(r.clasificRuta) || '—'}</span></td>
-      <td class="p-md text-xs"><span class="bg-surface-container-high px-sm py-1 border border-outline-variant rounded text-xs">${escapeHtml(r.tipo) || '—'}</span></td>
-      <td class="p-md">
-        <span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold ${CARACT_STYLES[r.caracteristica || 'NORMAL']}">
-          ${r.caracteristica === 'NORMAL' ? '1' : r.caracteristica === 'ISLA' ? '2' : r.caracteristica === 'EXTREMA' ? '3' : '—'}
-        </span>
-      </td>
-      <td class="p-md font-bold font-data-mono text-xs">${r.km ? r.km + ' KM' : campoPendiente('')}</td>
-      <td class="p-md">
-        <span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold ${statusErp}">
-          ${r.estado_erp ? 'EN ERP' : 'PENDIENTE'}
-        </span>
-      </td>
-      <td class="p-md text-xs font-data-mono">${(r.lat !== null && r.lat !== undefined) ? r.lat : campoPendiente('')}</td>
-      <td class="p-md text-xs font-data-mono">${(r.lon !== null && r.lon !== undefined) ? r.lon : campoPendiente('')}</td>
-      <td class="p-md">
-        <span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold ${statusGeoref}">
-          ${georefLabel}
-        </span>
-      </td>
-      <td class="p-md">
-        <span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold ${statusVigencia}">
-          ${r.activo ? 'ACTIVO' : 'DE BAJA'}
-        </span>
-      </td>
-      <td class="p-md text-center">
-        <div class="flex items-center justify-center gap-xs">
-          <button class="btn-edit text-secondary hover:text-primary p-xs cursor-pointer" data-id="${r.id}" title="Editar ruta">
-            <span class="material-symbols-outlined text-[20px]">edit</span>
-          </button>
-          <button class="btn-refresh-geo text-secondary hover:text-primary p-xs cursor-pointer" data-id="${r.id}" title="Recalcular KM y Georreferencia">
-            <span class="material-symbols-outlined text-[20px]">my_location</span>
-          </button>
-          <button class="btn-toggle text-secondary hover:text-primary p-xs cursor-pointer" data-id="${r.id}" title="${r.activo ? 'Dar de baja' : 'Activar'}">
-            <span class="material-symbols-outlined text-[20px] ${r.activo ? 'text-red-600 hover:text-red-800' : 'text-green-600 hover:text-green-800'}">
-              ${r.activo ? 'block' : 'check_circle'}
-            </span>
-          </button>
-          <button class="btn-delete-route text-secondary hover:text-red-700 p-xs cursor-pointer" data-id="${r.id}" title="Eliminar ruta">
-            <span class="material-symbols-outlined text-[20px]">delete</span>
-          </button>
-        </div>
-      </td>
-    `;
-    tbody.appendChild(tr);
-  });
-
-  tbody.querySelectorAll('.btn-edit').forEach(btn => {
-    btn.addEventListener('click', (e) => window.__openRouteEditModal(e.currentTarget.getAttribute('data-id')));
-  });
-
-  tbody.querySelectorAll('.btn-refresh-geo').forEach(btn => {
-    btn.addEventListener('click', async (e) => {
-      const id = e.currentTarget.getAttribute('data-id');
-      const db = getDatabase();
-      const r = db.routes.find(item => item.id === id);
-      if (!r) return;
-
-      const origenId = resolveOrigenIdFromGrupo(db, r.origen_grupo);
-      const cd = (db.logisticsCentres || []).find(c => c.id === origenId);
-      if (!cd || !cd.lat || !cd.lon) {
-        showAlert('El centro logístico de origen no tiene coordenadas GPS.', 'error');
-        return;
-      }
-
-      const icon = e.currentTarget.querySelector('.material-symbols-outlined');
-      icon.classList.add('animate-spin');
-      e.currentTarget.disabled = true;
-
-      try {
-        const destinoTexto = [r.destino, r.comuna, r.region].filter(Boolean).join(', ');
-        const { km, lat, lon } = await calcularDistanciaAuto(cd, destinoTexto);
-        r.km = km;
-        r.lat = lat;
-        r.lon = lon;
-        r.georef_estado = true;
-        saveDatabase(db);
-        showAlert(`Ruta ${r.codigo} actualizada: ${km} km.`);
-        renderRoutesView(document.getElementById('stage-area'));
-      } catch (err) {
-        showAlert('✗ ' + (err.message || 'No se pudo recalcular la ruta.'), 'error');
-        icon.classList.remove('animate-spin');
-        e.currentTarget.disabled = false;
-      }
-    });
-  });
-
-  tbody.querySelectorAll('.btn-toggle').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      const id = e.currentTarget.getAttribute('data-id');
-      const db = getDatabase();
-      const idx = db.routes.findIndex(item => item.id === id);
-
-      if (idx !== -1) {
-        const r = db.routes[idx];
-        r.activo = !r.activo;
-        saveDatabase(db);
-        showAlert(`La ruta ${r.codigo} ha sido ${r.activo ? 'activada' : 'dada de baja'}.`);
-        renderRoutesView(document.getElementById('stage-area'));
-      }
-    });
-  });
-
-  tbody.querySelectorAll('.btn-delete-route').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      const id = e.currentTarget.getAttribute('data-id');
-      const db = getDatabase();
-      const idx = db.routes.findIndex(item => item.id === id);
-
-      if (idx !== -1) {
-        const r = db.routes[idx];
-        if (!confirm(`¿Eliminar la ruta ${r.codigo} (${r.denominacion || r.destino})? Esta acción no se puede deshacer.`)) return;
-        db.routes.splice(idx, 1);
-        saveDatabase(db);
-        showAlert(`La ruta ${r.codigo} ha sido eliminada.`);
-        renderRoutesView(document.getElementById('stage-area'));
-      }
-    });
-  });
-}
+    tr.className = `border-b border-outline-variant hover:bg-surface-container-low transition-colors ${incompleto ? 'bg-amber-50/6

@@ -1,4 +1,4 @@
-import { getDatabase, saveDatabase, getCentreName } from './data.js?v=20260622k';
+import { getDatabase, saveDatabase, getCentreName } from './data.js?v=20260622m';
 import { showAlert, escapeHtml } from './utils.js';
 
 // --- Perfiles de Acceso (Roles y Perfiles + Row Level Security) ---

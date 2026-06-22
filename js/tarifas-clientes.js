@@ -1,6 +1,6 @@
 // MÓDULO: Administrador de Tarifas Clientes — SIT EBEMA v2.1
 // Vistas: Histórico (6M) | Consolidación | Densidad Logística | Frecuencia y Especiales | Cluster | Resultados
-import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig } from './data.js?v=20260622k';
+import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig } from './data.js?v=20260622m';
 import { CAP_LIST, truckTypesWithCap, calcularCostoRuta } from './tarifas-engine.js';
 import { formatCLP, showAlert, toCSV, downloadFile, formatDateDDMMYYYY } from './utils.js';
 
