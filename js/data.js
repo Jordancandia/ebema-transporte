@@ -19,7 +19,8 @@ const TABLE_MAP = [
   { local: 'providers',         table: 'providers',          pk: 'email' },
   { local: 'tariffConfig',       table: 'tariff_config',        pk: 'id' },
   { local: 'clientTariffConfig', table: 'client_tariff_config', pk: 'id' },
-  { local: 'routeTolls',         table: 'route_tolls',          pk: 'id' }
+  { local: 'routeTolls',         table: 'route_tolls',          pk: 'id' },
+  { local: 'extraCosts',         table: 'extra_costs',          pk: 'id' }
 ];
 
 // Capacidad nominal en KG a partir del nombre del tipo de camión (ej: "Camión 28 Ton" -> 28000)
@@ -543,7 +544,10 @@ const defaultData = {
   transportZones: [],
 
   // 10. Peajes por ruta (ida/vuelta, por tipo de camión según ejes: 2 o 3)
-  routeTolls: []
+  routeTolls: [],
+
+  // 11. Costos Extra por ruta (BARCAZA, TRAVESÍA, etc.) — por ejes, ida y vuelta separados
+  extraCosts: []
 };
 
 // Obtener la base de datos en memoria (Supabase) o respaldo local
@@ -606,6 +610,12 @@ export function getDatabase() {
   // Migración: Asegurar que existe la colección de Peajes por Ruta
   if (!parsed.routeTolls) {
     parsed.routeTolls = [];
+    migrado = true;
+  }
+
+  // Migración: Asegurar que existe la colección de Costos Extra por Ruta
+  if (!parsed.extraCosts) {
+    parsed.extraCosts = [];
     migrado = true;
   }
 

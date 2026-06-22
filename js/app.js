@@ -930,6 +930,7 @@ function renderDashboardShell() {
           <span class="font-body-md text-body-md">Roles y Perfiles</span>
         </a>
 
+
         <!-- Administrador de Tarifas Transporte -->
         <a class="sidebar-item flex items-center gap-md px-md py-sm text-secondary hover:text-primary hover:bg-surface-container-high transition-colors rounded-lg cursor-pointer" data-tab="tarifas-transporte" id="nav-tarifas-transporte">
           <span class="material-symbols-outlined">calculate</span>

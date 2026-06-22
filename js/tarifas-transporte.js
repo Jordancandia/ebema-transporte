@@ -110,6 +110,7 @@ export function renderTariffTransportView(container) {
       ${subTabButton('seguros', 'shield', 'Seguros y Permisos')}
       ${subTabButton('variables', 'tune', 'Variables Generales')}
       ${subTabButton('resultados', 'calculate', 'Motor ZCAP')}
+      ${subTabButton('costos-extras', 'add_circle', 'Costos Extras')}
     </div>
 
     <div id="tt-content"></div>
@@ -139,6 +140,7 @@ export function renderTariffTransportView(container) {
       case 'seguros': renderSeguros(content, db, cfg); break;
       case 'variables': renderVariables(content, db, cfg); break;
       case 'resultados': renderResultados(content, db, cfg); break;
+      case 'costos-extras': renderCostosExtras(content, db, cfg); break;
     }
 
     // Listener delegado para todas las celdas editables con data-path
@@ -149,6 +151,303 @@ export function renderTariffTransportView(container) {
       if (e.target.type === 'number') val = val === '' ? 0 : Number(val);
       setPath(cfg, path, val);
       saveDatabase(db);
+    });
+  }
+}
+
+// COSTOS EXTRAS — ítems adicionales por ruta y tipo de eje (BARCAZA, TRAVESÍA…)
+// Se suman al motor ZCAP como ítem 1b, con ida y vuelta separados.
+// ─────────────────────────────────────────────────────────────────────────────
+const CE_ITEMS_SUGERIDOS = ['BARCAZA', 'TRAVESÍA', 'ACARREO', 'PEAJE ESPECIAL', 'PERNOCTE', 'ESCOLTA', 'DESCARRILAMIENTO', 'FLETE ESPECIAL'];
+const CE_EJES_LABELS = { 2: '2 Ejes (5 y 10 Ton)', 3: '3 Ejes (15 y 28 Ton)' };
+
+function renderCostosExtras(content, db, cfg) {
+  const grupos      = getOrigenGroups(db);
+  const routes      = (db.routes || []).filter(r => r.activo);
+  db.extraCosts     = db.extraCosts || [];
+
+  // ── Filtros ──
+  let ceFiltroCentro = window._ceFiltroCentro || '';
+  let ceFiltroRuta   = window._ceFiltroRuta   || '';
+  let ceFiltroEjes   = window._ceFiltroEjes   || '';
+
+  function getRows() {
+    let rows = db.extraCosts.filter(c => c.activo !== false);
+    if (ceFiltroCentro) {
+      const g = grupos.find(g => g.grupo === ceFiltroCentro);
+      const ids = g ? g.centroIds : [];
+      const rutasGrupo = routes.filter(r => ids.includes(r.origenId)).map(r => r.id);
+      rows = rows.filter(c => rutasGrupo.includes(c.route_id));
+    }
+    if (ceFiltroRuta)  rows = rows.filter(c => c.route_id === ceFiltroRuta);
+    if (ceFiltroEjes)  rows = rows.filter(c => Number(c.ejes) === Number(ceFiltroEjes));
+    return rows;
+  }
+
+  function rerender() {
+    window._ceFiltroCentro = ceFiltroCentro;
+    window._ceFiltroRuta   = ceFiltroRuta;
+    window._ceFiltroEjes   = ceFiltroEjes;
+    renderCostosExtras(content, db, cfg);
+  }
+
+  const rows = getRows();
+  const totalExtras = db.extraCosts.filter(c => c.activo !== false).length;
+  const totalRutas  = [...new Set(db.extraCosts.filter(c => c.activo !== false).map(c => c.route_id))].length;
+  const sumaTotal   = rows.reduce((s, c) => s + (Number(c.costo_ida) || 0) + (Number(c.costo_vuelta) || 0), 0);
+
+  const centrosOrigen = grupos.map(g => ({ id: g.grupo, nombre: g.nombre }));
+  const rutasFiltradas = ceFiltroCentro
+    ? routes.filter(r => {
+        const g = grupos.find(g => g.grupo === ceFiltroCentro);
+        return g && g.centroIds.includes(r.origenId);
+      })
+    : routes;
+
+  content.innerHTML = `
+    <datalist id="ce-items-list">
+      ${CE_ITEMS_SUGERIDOS.map(i => `<option value="${escapeHtml(i)}">`).join('')}
+    </datalist>
+
+    <div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm mb-lg">
+      <div class="flex items-center gap-sm mb-md border-b border-outline-variant pb-sm">
+        <span class="material-symbols-outlined text-primary">add_circle</span>
+        <h2 class="font-headline-sm text-headline-sm font-bold text-on-surface">Costos Extras por Ruta</h2>
+      </div>
+      <p class="text-[12px] text-secondary mb-md">
+        Ítems de costo adicionales por ruta y tipo de eje (BARCAZA, TRAVESÍA, escolta, etc.).
+        Se suman al motor ZCAP como <b>ítem 1b</b> junto a peajes, con ida y vuelta independientes.
+      </p>
+
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-md mb-md">
+        <div class="bg-surface-container-low p-md rounded">
+          <p class="font-label-caps text-label-caps text-secondary">Ítems Registrados</p>
+          <p class="font-headline-sm text-headline-sm font-bold text-on-surface">${totalExtras}</p>
+        </div>
+        <div class="bg-surface-container-low p-md rounded">
+          <p class="font-label-caps text-label-caps text-secondary">Rutas con Costos Extras</p>
+          <p class="font-headline-sm text-headline-sm font-bold text-on-surface">${totalRutas}</p>
+        </div>
+        <div class="bg-surface-container-low p-md rounded">
+          <p class="font-label-caps text-label-caps text-secondary">Total Visible (Ida + Vuelta)</p>
+          <p class="font-headline-sm text-headline-sm font-bold text-primary">${formatCLP(sumaTotal)}</p>
+        </div>
+      </div>
+
+      <div class="flex flex-wrap gap-sm items-end mb-md">
+        <div class="space-y-xs">
+          <label class="font-label-caps text-label-caps text-secondary block">CENTRO ORIGEN</label>
+          <select id="ce-f-centro" class="border border-[#CED4DA] p-sm font-body-md text-body-md bg-white w-48">
+            <option value="">Todos</option>
+            ${centrosOrigen.map(c => `<option value="${escapeHtml(c.id)}" ${c.id === ceFiltroCentro ? 'selected' : ''}>${escapeHtml(c.nombre)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="space-y-xs">
+          <label class="font-label-caps text-label-caps text-secondary block">RUTA</label>
+          <select id="ce-f-ruta" class="border border-[#CED4DA] p-sm font-body-md text-body-md bg-white w-48">
+            <option value="">Todas</option>
+            ${rutasFiltradas.map(r => `<option value="${escapeHtml(r.id)}" ${r.id === ceFiltroRuta ? 'selected' : ''}>${escapeHtml(r.codigo)} — ${escapeHtml(r.destino || '')}</option>`).join('')}
+          </select>
+        </div>
+        <div class="space-y-xs">
+          <label class="font-label-caps text-label-caps text-secondary block">TIPO CAMIÓN</label>
+          <select id="ce-f-ejes" class="border border-[#CED4DA] p-sm font-body-md text-body-md bg-white w-44">
+            <option value="">Todos</option>
+            <option value="2" ${ceFiltroEjes === '2' ? 'selected' : ''}>2 Ejes (5 y 10 Ton)</option>
+            <option value="3" ${ceFiltroEjes === '3' ? 'selected' : ''}>3 Ejes (15 y 28 Ton)</option>
+          </select>
+        </div>
+        <div class="flex-1"></div>
+        <button id="ce-agregar" class="bg-primary hover:bg-[#930007] text-white font-bold px-md py-sm rounded flex items-center gap-xs text-[12px] uppercase">
+          <span class="material-symbols-outlined text-[18px]">add</span> Agregar Ítem
+        </button>
+      </div>
+
+      <div class="bg-surface border border-outline-variant overflow-hidden rounded overflow-x-auto">
+        <table class="w-full zebra-table border-collapse">
+          <thead>
+            <tr class="bg-surface-container-high text-left border-b border-outline-variant">
+              <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Ruta</th>
+              <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Origen</th>
+              <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Destino</th>
+              <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Tipo Camión</th>
+              <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Ítem de Costo</th>
+              <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-right">Costo Ida</th>
+              <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-right">Costo Vuelta</th>
+              <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-right">Total</th>
+              <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-center">Acciones</th>
+            </tr>
+          </thead>
+          <tbody class="font-body-md text-body-md">
+            ${rows.length === 0
+              ? `<tr><td colspan="9" class="p-md text-center text-secondary">No hay costos extras registrados. Usa "Agregar Ítem" para crear uno.</td></tr>`
+              : rows.map(ce => {
+                  const ruta   = routes.find(r => r.id === ce.route_id);
+                  const grupo  = ruta ? grupos.find(g => g.centroIds.includes(ruta.origenId)) : null;
+                  const origen = grupo ? grupo.nombre : '—';
+                  const destino = ruta ? (ruta.destino || ruta.denominacion || '—') : '(ruta eliminada)';
+                  const codigo  = ruta ? (ruta.codigo || '—') : '—';
+                  const total   = (Number(ce.costo_ida) || 0) + (Number(ce.costo_vuelta) || 0);
+                  return `<tr class="border-b border-outline-variant">
+                    <td class="p-md font-bold">${escapeHtml(codigo)}</td>
+                    <td class="p-md">${escapeHtml(origen)}</td>
+                    <td class="p-md">${escapeHtml(destino)}</td>
+                    <td class="p-md">${CE_EJES_LABELS[ce.ejes] || ce.ejes}</td>
+                    <td class="p-md">
+                      <span class="inline-flex items-center px-2 py-1 rounded bg-secondary-container text-on-secondary-container font-label-caps text-[11px]">
+                        ${escapeHtml(ce.item || '—')}
+                      </span>
+                    </td>
+                    <td class="p-md text-right font-data-mono text-data-mono">${formatCLP(ce.costo_ida)}</td>
+                    <td class="p-md text-right font-data-mono text-data-mono">${formatCLP(ce.costo_vuelta)}</td>
+                    <td class="p-md text-right font-data-mono text-data-mono font-bold">${formatCLP(total)}</td>
+                    <td class="p-md text-center flex items-center justify-center gap-sm">
+                      <button class="ce-editar text-secondary hover:text-primary" data-ce-id="${escapeHtml(ce.id)}" title="Editar">
+                        <span class="material-symbols-outlined text-[18px]">edit</span>
+                      </button>
+                      <button class="ce-eliminar text-secondary hover:text-red-600" data-ce-id="${escapeHtml(ce.id)}" title="Eliminar">
+                        <span class="material-symbols-outlined text-[18px]">delete</span>
+                      </button>
+                    </td>
+                  </tr>`;
+                }).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+
+  // Filtros
+  content.querySelector('#ce-f-centro')?.addEventListener('change', e => { ceFiltroCentro = e.target.value; ceFiltroRuta = ''; rerender(); });
+  content.querySelector('#ce-f-ruta')?.addEventListener('change',   e => { ceFiltroRuta   = e.target.value; rerender(); });
+  content.querySelector('#ce-f-ejes')?.addEventListener('change',   e => { ceFiltroEjes   = e.target.value; rerender(); });
+
+  // Agregar ítem
+  content.querySelector('#ce-agregar')?.addEventListener('click', () => abrirModalCE(null));
+
+  // Editar / Eliminar
+  content.querySelectorAll('.ce-editar').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const ce = db.extraCosts.find(c => c.id === btn.dataset.ceId);
+      if (ce) abrirModalCE(ce);
+    });
+  });
+  content.querySelectorAll('.ce-eliminar').forEach(btn => {
+    btn.addEventListener('click', () => {
+      if (!confirm('¿Eliminar este ítem de costo extra?')) return;
+      db.extraCosts = db.extraCosts.filter(c => c.id !== btn.dataset.ceId);
+      saveDatabase(db);
+      rerender();
+    });
+  });
+
+  // ── Modal agregar / editar ──────────────────────────────────────────────────
+  function abrirModalCE(ce) {
+    const esNuevo = !ce;
+    const el = document.createElement('div');
+    el.className = 'fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-md';
+    el.innerHTML = `
+      <div class="bg-white rounded-lg shadow-xl p-lg w-full max-w-lg">
+        <div class="flex items-center gap-sm mb-md border-b border-outline-variant pb-sm">
+          <span class="material-symbols-outlined text-primary">add_circle</span>
+          <h3 class="font-headline-sm text-headline-sm font-bold text-on-surface">${esNuevo ? 'Agregar Ítem de Costo Extra' : 'Editar Ítem de Costo Extra'}</h3>
+        </div>
+
+        <div class="space-y-md">
+          <div>
+            <label class="font-label-caps text-label-caps text-secondary block mb-xs">CENTRO ORIGEN</label>
+            <select id="ce-m-centro" class="w-full border border-[#CED4DA] p-sm font-body-md text-body-md bg-white">
+              <option value="">— Seleccionar —</option>
+              ${centrosOrigen.map(c => {
+                const sel = ce ? (routes.find(r => r.id === ce.route_id) && grupos.find(g => g.centroIds.includes(routes.find(r => r.id === ce.route_id)?.origenId))?.grupo === c.id) : false;
+                return `<option value="${escapeHtml(c.id)}" ${sel ? 'selected' : ''}>${escapeHtml(c.nombre)}</option>`;
+              }).join('')}
+            </select>
+          </div>
+          <div>
+            <label class="font-label-caps text-label-caps text-secondary block mb-xs">RUTA</label>
+            <select id="ce-m-ruta" class="w-full border border-[#CED4DA] p-sm font-body-md text-body-md bg-white">
+              <option value="">— Seleccionar —</option>
+              ${routes.map(r => `<option value="${escapeHtml(r.id)}" ${ce && ce.route_id === r.id ? 'selected' : ''}>${escapeHtml(r.codigo)} — ${escapeHtml(r.destino || '')}</option>`).join('')}
+            </select>
+          </div>
+          <div>
+            <label class="font-label-caps text-label-caps text-secondary block mb-xs">TIPO DE CAMIÓN</label>
+            <select id="ce-m-ejes" class="w-full border border-[#CED4DA] p-sm font-body-md text-body-md bg-white">
+              <option value="2" ${!ce || Number(ce.ejes) === 2 ? 'selected' : ''}>2 Ejes — 5 Ton y 10 Ton</option>
+              <option value="3" ${ce && Number(ce.ejes) === 3 ? 'selected' : ''}>3 Ejes — 15 Ton y 28 Ton</option>
+            </select>
+          </div>
+          <div>
+            <label class="font-label-caps text-label-caps text-secondary block mb-xs">ÍTEM DE COSTO</label>
+            <input id="ce-m-item" list="ce-items-list" type="text" placeholder="Ej: BARCAZA, TRAVESÍA…"
+              value="${escapeHtml(ce ? ce.item : '')}"
+              class="w-full border border-[#CED4DA] p-sm font-body-md text-body-md">
+            <p class="text-[11px] text-secondary mt-xs">Puedes escribir cualquier etiqueta o elegir una sugerida.</p>
+          </div>
+          <div class="grid grid-cols-2 gap-md">
+            <div>
+              <label class="font-label-caps text-label-caps text-secondary block mb-xs">COSTO IDA (CLP)</label>
+              <input id="ce-m-ida" type="number" min="0" step="1000"
+                value="${ce ? (ce.costo_ida || 0) : 0}"
+                class="w-full border border-[#CED4DA] p-sm font-data-mono text-data-mono">
+            </div>
+            <div>
+              <label class="font-label-caps text-label-caps text-secondary block mb-xs">COSTO VUELTA (CLP)</label>
+              <input id="ce-m-vuelta" type="number" min="0" step="1000"
+                value="${ce ? (ce.costo_vuelta || 0) : 0}"
+                class="w-full border border-[#CED4DA] p-sm font-data-mono text-data-mono">
+            </div>
+          </div>
+        </div>
+
+        <div class="flex justify-end gap-sm mt-lg">
+          <button id="ce-m-cancel" class="px-md py-sm rounded border border-outline text-secondary font-bold text-[12px] uppercase">Cancelar</button>
+          <button id="ce-m-save" class="px-md py-sm rounded bg-primary text-white font-bold text-[12px] uppercase">Guardar</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(el);
+
+    // Filtrar rutas al cambiar centro en el modal
+    el.querySelector('#ce-m-centro').addEventListener('change', e => {
+      const g    = grupos.find(g => g.grupo === e.target.value);
+      const ids  = g ? g.centroIds : [];
+      const sel  = el.querySelector('#ce-m-ruta');
+      sel.innerHTML = '<option value="">— Seleccionar —</option>' +
+        routes
+          .filter(r => !ids.length || ids.includes(r.origenId))
+          .map(r => `<option value="${escapeHtml(r.id)}">${escapeHtml(r.codigo)} — ${escapeHtml(r.destino || '')}</option>`)
+          .join('');
+    });
+
+    el.querySelector('#ce-m-cancel').addEventListener('click', () => el.remove());
+
+    el.querySelector('#ce-m-save').addEventListener('click', () => {
+      const routeId    = el.querySelector('#ce-m-ruta').value;
+      const ejes       = Number(el.querySelector('#ce-m-ejes').value);
+      const item       = el.querySelector('#ce-m-item').value.trim().toUpperCase();
+      const costo_ida  = Number(el.querySelector('#ce-m-ida').value)    || 0;
+      const costo_vuelta = Number(el.querySelector('#ce-m-vuelta').value) || 0;
+
+      if (!routeId) { alert('Selecciona una ruta.'); return; }
+      if (!item)    { alert('Ingresa un ítem de costo (ej: BARCAZA).'); return; }
+
+      const now = new Date().toISOString();
+      if (esNuevo) {
+        db.extraCosts.push({
+          id: `ce_${routeId}_${ejes}_${Date.now()}`,
+          route_id: routeId, ejes, item,
+          costo_ida, costo_vuelta, activo: true,
+          created_at: now, updated_at: now
+        });
+      } else {
+        Object.assign(ce, { route_id: routeId, ejes, item, costo_ida, costo_vuelta, updated_at: now });
+      }
+
+      saveDatabase(db);
+      el.remove();
+      rerender();
     });
   }
 }
@@ -443,7 +742,6 @@ function renderPeajesAuto(content, db, cfg) {
 
   content.querySelectorAll('[data-calc-route]').forEach(btn => {
     btn.addEventListener('click', () => {
-      const ruta = routes.find(r => r.id === btn.dataset.calcRoute);
       // force: true — el usuario pidió explícitamente recalcular esta ruta, ignorar caché
       if (ruta) calcularPeajes(content, db, cfg, [ruta], { force: true });
     });
@@ -832,9 +1130,7 @@ function createProgressModal(total) {
 // Homologación:
 //   2 ejes (5t / 10t) → CAMION_2_EJES
 //   3 ejes (15t / 28t) → CAMION_PESADO
-// Se hacen hasta 4 consultas por ruta (2 categorías × Ida + Vuelta).
-// Con force=false (modo masivo): omite rutas/ejes que ya tienen caché válida (calculado_en + !needs_review).
-// Con force=true (por-fila): siempre reconsulta la API, ignorando caché.
+// Se hacen 4 consultas por ruta (2 categorías × Ida + Vuelta).
 // GetAPI no retorna distancia → el campo KM queda vacío.
 async function calcularPeajes(content, db, cfg, rutas, { force = false } = {}) {
   if (!rutas || rutas.length === 0) {
@@ -1914,4 +2210,49 @@ function renderResultados(content, db, cfg) {
                 <td class="p-md text-right font-data-mono text-data-mono">${m.km}</td>
                 <td class="p-md text-right font-data-mono text-data-mono">${formatCLP(m.item1_peajes)}</td>
                 <td class="p-md text-right font-data-mono text-data-mono">${formatCLP(m.item2_combustible)}</td>
-                <td class="p-md text-right font-data-mono text-data-mono">${formatCLP(m.item10_costoRutaTotal)}</td
+                <td class="p-md text-right font-data-mono text-data-mono">${formatCLP(m.item10_costoRutaTotal)}</td>
+                <td class="p-md text-right font-data-mono text-data-mono">${formatCLP(m.item11_costoKmFinal)}</td>
+                <td class="p-md text-right font-data-mono text-data-mono font-bold bg-primary/5">${formatCLP(m.zcap)}</td>
+              </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+
+  document.getElementById('zcap-f-centro').addEventListener('change', (e) => {
+    zcapFiltroCentro = e.target.value;
+    renderResultados(content, db, cfg);
+  });
+  document.getElementById('zcap-f-clasif').addEventListener('change', (e) => {
+    zcapFiltroClasif = e.target.value;
+    renderResultados(content, db, cfg);
+  });
+
+  document.getElementById('zcap-actualizar').addEventListener('click', () => {
+    const conZcap = syncTarifasZcap(db, cfg, zcapFiltroCentro);
+    const msg = grupoSel
+      ? `Tarifas actualizadas desde el Motor ZCAP para ${grupoSel.nombre} (${conZcap.size} tipo(s) de camión)`
+      : `Tarifas actualizadas desde el Motor ZCAP para ${conZcap.size} tipo(s) de camión en todos los Centros Origen`;
+    showAlert(msg);
+    renderResultados(content, db, cfg);
+  });
+
+  document.getElementById('zcap-export').addEventListener('click', () => {
+    const headers = ['Codigo_Centro', 'Ruta_ID', 'Destino_Comuna', 'Clasificacion', 'Tipo_Camion_Kg', 'Ejes', 'Valor_ZCAP_KM'];
+    const rows = matriz.map(m => {
+      const cd = db.logisticsCentres.find(c => c.id === m.centroId);
+      return [
+        cd ? cd.id : m.centroId,
+        m.ruta.codigo,
+        m.ruta.destino,
+        m.ruta.clasificRuta || '',
+        m.truckType.capKg,
+        m.ejes,
+        Math.round(m.item11_costoKmFinal)
+      ];
+    });
+    downloadFile(`zcap_transporte_${Date.now()}.csv`, toCSV(headers, rows));
+    showAlert('Archivo CSV de costos de transporte exportado');
+  });
+}

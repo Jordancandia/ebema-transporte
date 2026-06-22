@@ -44,6 +44,16 @@ export function calcularCostoRuta(db, cfg, ruta, capKg) {
   }
   const item1_peajes = peajeIda + peajeVuelta;
 
+  // --- 1b. Costos Extra por ruta (BARCAZA, TRAVESÍA, acarreo, etc.) ---
+  // Ítems configurados manualmente en la pestaña "Costos Extras", por ruta y tipo de eje.
+  // Se suman directamente a los costos de ida y vuelta antes del factor de ruta.
+  const extraCostsRuta = (db.extraCosts || []).filter(c =>
+    c.route_id === ruta.id && Number(c.ejes) === ejes && c.activo !== false
+  );
+  const itemExtraIda    = extraCostsRuta.reduce((s, c) => s + (Number(c.costo_ida)    || 0), 0);
+  const itemExtraVuelta = extraCostsRuta.reduce((s, c) => s + (Number(c.costo_vuelta) || 0), 0);
+  const item1b_costosExtra = itemExtraIda + itemExtraVuelta;
+
   // --- 2. Combustible (cargado ida + vacío vuelta) ---
   const rend = cfg.rendimientos[capKey] || { cargado: 1, vacio: 1 };
   const fuel = cfg.combustibles[cfgId] || {};
@@ -87,14 +97,14 @@ export function calcularCostoRuta(db, cfg, ruta, capKg) {
 
   // --- 9. Variable Chofer (comisión sobre costos directos del tramo de ida) ---
   const comisionPct = Number(cfg.variables.chofer.comisionPct) || 0;
-  const baseComision = peajeIda + combIda + item3_soapKm + item4_seguroKm + item5_mantKm + item6_neumKm + item7_gpsKm;
+  const baseComision = peajeIda + itemExtraIda + combIda + item3_soapKm + item4_seguroKm + item5_mantKm + item6_neumKm + item7_gpsKm;
   const item9_varChofer = baseComision * (comisionPct / 100);
 
   // --- 10. Costo Ruta Total (aplica Factor Ruta geográfico) ---
   const factorRuta = (cfg.variables.factorRuta || {})[ruta.caracteristica] ?? 1;
-  const sumItems = item1_peajes + item2_combustible + item3_soapKm + item4_seguroKm +
+  const sumItems = item1_peajes + item1b_costosExtra + item2_combustible + item3_soapKm + item4_seguroKm +
     item5_mantKm + item6_neumKm + item7_gpsKm + item8_choferBaseDiario + item9_varChofer;
-  const item10_costoRutaTotal = (sumItems + peajeVuelta + combVuelta) * factorRuta;
+  const item10_costoRutaTotal = (sumItems + peajeVuelta + combVuelta + itemExtraVuelta) * factorRuta;
 
   // --- 11. Costo por KM Final ---
   const item11_costoKmFinal = km > 0 ? item10_costoRutaTotal / (km * 2) : 0;
@@ -107,6 +117,7 @@ export function calcularCostoRuta(db, cfg, ruta, capKg) {
   return {
     rutaId: ruta.id, centroId, capKg, km, ejes,
     peajeIda, peajeVuelta, item1_peajes,
+    extraCostsRuta, itemExtraIda, itemExtraVuelta, item1b_costosExtra,
     combIda, combVuelta, item2_combustible,
     item3_soapKm, item4_seguroKm, item5_mantKm, item6_neumKm, item7_gpsKm,
     item8_choferBaseDiario, item9_varChofer,
