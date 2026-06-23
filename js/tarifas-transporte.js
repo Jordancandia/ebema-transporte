@@ -1567,14 +1567,19 @@ async function calcularPeajes(content, db, cfg, rutas, { force = false } = {}) {
       let ida = null, vuelta = null, errored = false;
       try {
         ida = await callGetApiTolls(originCity, destCity, category);
-        await sleep(500);
-        // Si el destino no está en GetAPI (notFound), vuelta = mismo resultado ($0)
-        if (!ida || ida.notFound) {
-          vuelta = ida;
-        } else {
-          vuelta = await callGetApiTolls(destCity, originCity, category);
-          await sleep(500);
+        await sleep(1000);
+        // Retry automático si falla por rate-limit (notFound puede ser transitorio)
+        if (ida && ida.notFound) {
+          await sleep(2000);
+          const retry = await callGetApiTolls(originCity, destCity, category);
+          if (retry && !retry.notFound) {
+            ida = retry;
+            console.log(`[GetAPI] Retry exitoso para ${ruta.codigo} ${ejes}ej ida`);
+          }
+          await sleep(1000);
         }
+        // Vuelta = mismo valor que ida (peajes son iguales en ambas direcciones)
+        vuelta = ida;
       } catch (err) {
         console.error('Error GetAPI para', ruta.codigo, ejes, 'ejes:', err.message);
         errored = true;
