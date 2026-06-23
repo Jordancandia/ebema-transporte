@@ -753,7 +753,9 @@ function renderPeajesAuto(content, db, cfg) {
 // SUB-MÓDULO 1b: PEAJES INTERREGIONALES
 // ============================================================
 function renderPeajesInterregionales(content, db, cfg) {
-  const routes = (db.routes || []).filter(r => r.activo && r.clasificRuta === 'Interregional');
+  // Solo rutas Interregionales con zona tipo Comuna
+  const comunaZonasInter = new Set((db.transportZones || []).filter(z => z.tipo === 'Comuna').map(z => z.zona));
+  const routes = (db.routes || []).filter(r => r.activo && r.clasificRuta === 'Interregional' && comunaZonasInter.has(r.id_zona_transporte));
 
   const zonasComunas = (db.transportZones || []).filter(z => z.tipo === 'Comuna');
   const comunasDisponibles = [...new Map(
@@ -1567,16 +1569,16 @@ async function calcularPeajes(content, db, cfg, rutas, { force = false } = {}) {
       let ida = null, vuelta = null, errored = false;
       try {
         ida = await callGetApiTolls(originCity, destCity, category);
-        await sleep(1000);
+        await sleep(1500);
         // Retry automático si falla por rate-limit (notFound puede ser transitorio)
         if (ida && ida.notFound) {
-          await sleep(2000);
+          await sleep(3000);
           const retry = await callGetApiTolls(originCity, destCity, category);
           if (retry && !retry.notFound) {
             ida = retry;
             console.log(`[GetAPI] Retry exitoso para ${ruta.codigo} ${ejes}ej ida`);
           }
-          await sleep(1000);
+          await sleep(1500);
         }
         // Vuelta = mismo valor que ida (peajes son iguales en ambas direcciones)
         vuelta = ida;
