@@ -260,10 +260,41 @@ export async function initDatabase() {
       TABLE_MAP.map(t => fetchAllRows(t.table))
     );
 
+    // Leer localStorage ANTES de sobreescribir: puede tener filas pendientes de sync
+    // (race condition: usuario refresca antes de que syncToSupabase complete).
+    // Para cada tabla, si localStorage tiene filas que Supabase no tiene aún, las conservamos.
+    const localBackup = (() => {
+      try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}'); } catch { return {}; }
+    })();
+
     memoryDb = {};
-    TABLE_MAP.forEach((t, i) => { memoryDb[t.local] = results[i] || []; });
+    TABLE_MAP.forEach((t, i) => {
+      const remoteRows = results[i] || [];
+      const localRows  = localBackup[t.local] || [];
+      if (localRows.length > remoteRows.length && t.pk) {
+        // Merge: usar Supabase como base + agregar filas locales que aún no llegaron a remoto
+        const remoteKeys = new Set(remoteRows.map(r => String(r[t.pk])));
+        const pending    = localRows.filter(r => !remoteKeys.has(String(r[t.pk])));
+        memoryDb[t.local] = [...remoteRows, ...pending];
+      } else {
+        memoryDb[t.local] = remoteRows;
+      }
+    });
 
     localStorage.setItem(STORAGE_KEY, JSON.stringify(memoryDb));
+
+    // Reintentar sync de filas que quedaron pendientes (sin await — segundo plano)
+    const hayPendientes = TABLE_MAP.some((t, i) => {
+      const remoteRows = results[i] || [];
+      const localRows  = localBackup[t.local] || [];
+      return localRows.length > remoteRows.length;
+    });
+    if (hayPendientes) {
+      syncToSupabase(memoryDb).catch(err =>
+        console.warn('Re-sync pendiente falló:', err.message || err)
+      );
+    }
+
     return memoryDb;
   } catch (err) {
     console.error('Supabase no disponible, usando copia local:', err.message || err);
@@ -898,35 +929,4 @@ export function getCentreName(db, centreId) {
 export function saveDatabase(data, { syncOnly = null } = {}) {
   deriveCamionesChoferes(data);
   memoryDb = data;
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-  // Despachar un evento personalizado para actualizar las vistas en tiempo real
-  window.dispatchEvent(new Event('db_updated'));
-  // Sincronizar con el servidor en segundo plano
-  syncToSupabase(data, syncOnly).catch(err => {
-    console.error('Error al sincronizar con Supabase:', err.message || err);
-    window.dispatchEvent(new CustomEvent('db_sync_error', { detail: err.message || String(err) }));
-  });
-}
-
-// Resetear base de datos a los valores predeterminados
-export function resetDatabase() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(defaultData));
-  window.dispatchEvent(new Event('db_updated'));
-  return defaultData;
-}
-
-// Limpiar datos maestros de prueba (rutas, zonas, transportistas)
-// sin afectar centros logísticos, tipos de camión ni configuraciones.
-export function limpiarDatosMaestros() {
-  const db = getDatabase();
-  db.routes = [];
-  db.transportZones = [];
-  db.transports = [];
-  db.transportsCamiones = [];
-  db.transportsChoferes = [];
-  db.routeTolls = [];
-  saveDatabase(db);
-  console.log('✓ Datos maestros limpiados: rutas, zonas, transportistas.');
-  return db;
-}
-// fin de data.js
+  localStorage.setItem(STORAG
