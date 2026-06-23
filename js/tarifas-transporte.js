@@ -515,7 +515,7 @@ function renderPeajesAuto(content, db, cfg) {
   }
   if (pjFiltroCentro) {
     const g = grupos.find(g => g.grupo === pjFiltroCentro);
-    if (g) rows = rows.filter(r => r.ruta.origen_grupo === g.grupo || g.centroIds.includes(r.ruta.origenId));
+    if (g) rows = rows.filter(r => r.ruta.origen_grupo ? r.ruta.origen_grupo === g.grupo : g.centroIds.includes(r.ruta.origenId));
   }
   // KPIs: contar sobre las filas ya filtradas por centro/comuna (sin aplicar pendientes/revision)
   const rowsBase = rows;
@@ -777,7 +777,7 @@ function renderPeajesInterregionales(content, db, cfg) {
   }
   if (pjiFiltroCentro) {
     const g = grupos.find(g => g.grupo === pjiFiltroCentro);
-    if (g) rows = rows.filter(r => r.ruta.origen_grupo === g.grupo || g.centroIds.includes(r.ruta.origenId));
+    if (g) rows = rows.filter(r => r.ruta.origen_grupo ? r.ruta.origen_grupo === g.grupo : g.centroIds.includes(r.ruta.origenId));
   }
   // KPIs: contar sobre las filas ya filtradas por centro/comuna
   const rowsBase = rows;
