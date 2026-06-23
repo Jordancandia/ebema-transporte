@@ -457,7 +457,7 @@ function renderRutasSubview(container) {
               <div id="km-progress-bar" class="bg-sky-500 h-2 rounded-full transition-all" style="width:0%"></div>
             </div>
             <p class="text-xs text-secondary" id="km-progress-text">0 / 0</p>
-            <div class="max-h-40 overflow-y-auto border border-outline-variant rounded text-xs font-data-mono" id="km-log"></div>
+            <div class="max-h-40 overflow-y-auto border border-outline-variant rounded text-xs font-mono" id="km-log"></div>
           </div>
         </div>
         <div class="p-md border-t border-outline-variant bg-surface-container-low flex justify-end gap-sm sticky bottom-0">
@@ -1105,7 +1105,7 @@ function renderRutasSubview(container) {
     showAlert(`Finalizado: ${ok} ubicadas automáticamente, ${manual} requieren revisión manual.`);
   });
 
-  // --- CALCULAR KM MASIVO ---
+  // --- CALCULAR KM MASIVO (modal con progreso) ---
   const kmModal = document.getElementById('km-routes-modal');
   const btnCalcKm = document.getElementById('btn-calcular-km-rutas');
   const btnCloseKmModal = document.getElementById('btn-close-km-modal');
@@ -1155,7 +1155,6 @@ function renderRutasSubview(container) {
       btnStartKm.disabled = true;
       return;
     }
-
     const activeDb = getDatabase();
     const pendientes = rutasSinKm();
     if (pendientes.length === 0) return;
@@ -1171,18 +1170,15 @@ function renderRutasSubview(container) {
 
     for (const r of pendientes) {
       if (kmCancelled) break;
-
       try {
-        // Buscar CD por origen_grupo primero, fallback a origenId
         const cdGrupo = r.origen_grupo
           ? (activeDb.logisticsCentres || []).find(c => c.origen_grupo === r.origen_grupo && c.lat != null)
           : null;
         const cd = cdGrupo || (activeDb.logisticsCentres || []).find(c => c.id === r.origenId);
         if (!cd || !cd.lat || !cd.lon) {
           errors++;
-          kmLogEl.insertAdjacentHTML('beforeend', `<div class="px-sm py-1 border-b border-outline-variant text-red-700">✗ ${escapeHtml(r.codigo)} — sin CD de origen con coordenadas</div>`);
+          kmLogEl.insertAdjacentHTML('beforeend', `<div class="px-2 py-1 border-b text-red-700">\u2717 ${r.codigo} \u2014 sin CD de origen con coordenadas</div>`);
         } else if (r.lat && r.lon) {
-          // Ruta ya georreferenciada: OSRM directo
           const osrmUrl = `https://router.project-osrm.org/route/v1/driving/${cd.lon},${cd.lat};${r.lon},${r.lat}?overview=false`;
           const resp = await fetch(osrmUrl);
           if (!resp.ok) throw new Error('OSRM no disponible');
@@ -1190,9 +1186,8 @@ function renderRutasSubview(container) {
           if (!data.routes || !data.routes[0]) throw new Error('Sin ruta OSRM');
           r.km = Math.round(data.routes[0].distance / 1000);
           ok++;
-          kmLogEl.insertAdjacentHTML('beforeend', `<div class="px-sm py-1 border-b border-outline-variant text-green-700">✓ ${escapeHtml(r.codigo)} — ${escapeHtml(r.comuna || '')} → ${r.km} km</div>`);
+          kmLogEl.insertAdjacentHTML('beforeend', `<div class="px-2 py-1 border-b text-green-700">\u2713 ${r.codigo} \u2014 ${r.comuna || ''} \u2192 ${r.km} km</div>`);
         } else {
-          // Sin coordenadas: geocodificar + OSRM
           const destinoTexto = [r.destino, r.comuna, r.region].filter(Boolean).join(', ');
           const result = await calcularDistanciaAuto(cd, destinoTexto);
           r.km = result.km;
@@ -1200,19 +1195,17 @@ function renderRutasSubview(container) {
           r.lon = result.lon;
           r.georef_estado = true;
           ok++;
-          kmLogEl.insertAdjacentHTML('beforeend', `<div class="px-sm py-1 border-b border-outline-variant text-green-700">✓ ${escapeHtml(r.codigo)} — ${escapeHtml(r.comuna || '')} → ${r.km} km (geocodificado)</div>`);
+          kmLogEl.insertAdjacentHTML('beforeend', `<div class="px-2 py-1 border-b text-green-700">\u2713 ${r.codigo} \u2014 ${r.comuna || ''} \u2192 ${r.km} km (geocodificado)</div>`);
         }
       } catch (err) {
         errors++;
-        kmLogEl.insertAdjacentHTML('beforeend', `<div class="px-sm py-1 border-b border-outline-variant text-red-700">✗ ${escapeHtml(r.codigo)} — ${err.message}</div>`);
+        kmLogEl.insertAdjacentHTML('beforeend', `<div class="px-2 py-1 border-b text-red-700">\u2717 ${r.codigo} \u2014 ${err.message}</div>`);
       }
-
       done++;
       const pct = Math.round((done / total) * 100);
       kmProgressBar.style.width = `${pct}%`;
-      kmProgressText.innerText = `${done} / ${total} — ${ok} OK · ${errors} errores`;
+      kmProgressText.innerText = `${done} / ${total} \u2014 ${ok} OK \xb7 ${errors} errores`;
       kmLogEl.scrollTop = kmLogEl.scrollHeight;
-
       if (done % 50 === 0) saveDatabase(activeDb);
       await new Promise(resolve => setTimeout(resolve, 500));
     }
@@ -1222,7 +1215,6 @@ function renderRutasSubview(container) {
     kmPendingCountEl.innerText = rutasSinKm().length;
     btnStartKm.disabled = rutasSinKm().length === 0;
     btnStartKm.innerText = kmCancelled ? 'Detenido' : 'Completado';
-
     renderRoutesTable(getDatabase().routes);
     showAlert(`KM ${kmCancelled ? 'detenido' : 'finalizado'}: ${ok} calculados, ${errors} con errores.`);
   });
@@ -1277,4 +1269,150 @@ function renderRoutesTable(routesList) {
   routesList.forEach(r => {
     const tr = document.createElement('tr');
     const incompleto = rutaIncompleta(r);
-    tr.className = `border-b border-outline-variant hover:bg-surface-container-low transition-colors ${incompleto ? 'bg-amber-50/6
+    tr.className = `border-b border-outline-variant hover:bg-surface-container-low transition-colors ${incompleto ? 'bg-amber-50/60' : ''}`;
+
+    const statusVigencia = r.activo ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800';
+    const statusErp = r.estado_erp ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800';
+    const tieneCoords = r.lat !== null && r.lat !== undefined && r.lon !== null && r.lon !== undefined;
+    let georefLabel = 'PENDIENTE';
+    let statusGeoref = 'bg-red-100 text-red-800';
+    if (r.georef_estado) {
+      georefLabel = 'OK';
+      statusGeoref = 'bg-green-100 text-green-800';
+    } else if (tieneCoords) {
+      georefLabel = 'REVISAR';
+      statusGeoref = 'bg-amber-100 text-amber-800';
+    }
+
+    const campoPendiente = (valor) => valor
+      ? escapeHtml(valor)
+      : `<span class="inline-flex items-center gap-1 text-amber-700 font-bold text-[10px] uppercase whitespace-nowrap"><span class="material-symbols-outlined text-[14px]">warning</span> Completar</span>`;
+
+    tr.innerHTML = `
+      <td class="p-md font-bold text-primary font-data-mono">${escapeHtml(r.codigo)}</td>
+      <td class="p-md text-xs">${escapeHtml(r.denominacion)}</td>
+      <td class="p-md font-bold text-xs">${escapeHtml(r.origen_grupo) || '—'}</td>
+      <td class="p-md text-xs font-data-mono">${campoPendiente(r.id_zona_transporte)}</td>
+      <td class="p-md text-xs">${escapeHtml(r.destino)}</td>
+      <td class="p-md text-xs">${campoPendiente(r.comuna)}</td>
+      <td class="p-md text-xs">${campoPendiente(r.region)}</td>
+      <td class="p-md text-xs"><span class="bg-surface-container-high px-sm py-1 border border-outline-variant rounded text-xs">${escapeHtml(r.clasificRuta) || '—'}</span></td>
+      <td class="p-md text-xs"><span class="bg-surface-container-high px-sm py-1 border border-outline-variant rounded text-xs">${escapeHtml(r.tipo) || '—'}</span></td>
+      <td class="p-md">
+        <span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold ${CARACT_STYLES[r.caracteristica || 'NORMAL']}">
+          ${r.caracteristica === 'NORMAL' ? '1' : r.caracteristica === 'ISLA' ? '2' : r.caracteristica === 'EXTREMA' ? '3' : '—'}
+        </span>
+      </td>
+      <td class="p-md font-bold font-data-mono text-xs">${r.km ? r.km + ' KM' : campoPendiente('')}</td>
+      <td class="p-md">
+        <span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold ${statusErp}">
+          ${r.estado_erp ? 'EN ERP' : 'PENDIENTE'}
+        </span>
+      </td>
+      <td class="p-md text-xs font-data-mono">${(r.lat !== null && r.lat !== undefined) ? r.lat : campoPendiente('')}</td>
+      <td class="p-md text-xs font-data-mono">${(r.lon !== null && r.lon !== undefined) ? r.lon : campoPendiente('')}</td>
+      <td class="p-md">
+        <span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold ${statusGeoref}">
+          ${georefLabel}
+        </span>
+      </td>
+      <td class="p-md">
+        <span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold ${statusVigencia}">
+          ${r.activo ? 'ACTIVO' : 'DE BAJA'}
+        </span>
+      </td>
+      <td class="p-md text-center">
+        <div class="flex items-center justify-center gap-xs">
+          <button class="btn-edit text-secondary hover:text-primary p-xs cursor-pointer" data-id="${r.id}" title="Editar ruta">
+            <span class="material-symbols-outlined text-[20px]">edit</span>
+          </button>
+          <button class="btn-refresh-geo text-secondary hover:text-primary p-xs cursor-pointer" data-id="${r.id}" title="Recalcular KM y Georreferencia">
+            <span class="material-symbols-outlined text-[20px]">my_location</span>
+          </button>
+          <button class="btn-toggle text-secondary hover:text-primary p-xs cursor-pointer" data-id="${r.id}" title="${r.activo ? 'Dar de baja' : 'Activar'}">
+            <span class="material-symbols-outlined text-[20px] ${r.activo ? 'text-red-600 hover:text-red-800' : 'text-green-600 hover:text-green-800'}">
+              ${r.activo ? 'block' : 'check_circle'}
+            </span>
+          </button>
+          <button class="btn-delete-route text-secondary hover:text-red-700 p-xs cursor-pointer" data-id="${r.id}" title="Eliminar ruta">
+            <span class="material-symbols-outlined text-[20px]">delete</span>
+          </button>
+        </div>
+      </td>
+    `;
+    tbody.appendChild(tr);
+  });
+
+  tbody.querySelectorAll('.btn-edit').forEach(btn => {
+    btn.addEventListener('click', (e) => window.__openRouteEditModal(e.currentTarget.getAttribute('data-id')));
+  });
+
+  tbody.querySelectorAll('.btn-refresh-geo').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      const id = e.currentTarget.getAttribute('data-id');
+      const db = getDatabase();
+      const r = db.routes.find(item => item.id === id);
+      if (!r) return;
+
+      const origenId = resolveOrigenIdFromGrupo(db, r.origen_grupo);
+      const cd = (db.logisticsCentres || []).find(c => c.id === origenId);
+      if (!cd || !cd.lat || !cd.lon) {
+        showAlert('El centro logístico de origen no tiene coordenadas GPS.', 'error');
+        return;
+      }
+
+      const icon = e.currentTarget.querySelector('.material-symbols-outlined');
+      icon.classList.add('animate-spin');
+      e.currentTarget.disabled = true;
+
+      try {
+        const destinoTexto = [r.destino, r.comuna, r.region].filter(Boolean).join(', ');
+        const { km, lat, lon } = await calcularDistanciaAuto(cd, destinoTexto);
+        r.km = km;
+        r.lat = lat;
+        r.lon = lon;
+        r.georef_estado = true;
+        saveDatabase(db);
+        showAlert(`Ruta ${r.codigo} actualizada: ${km} km.`);
+        renderRoutesView(document.getElementById('stage-area'));
+      } catch (err) {
+        showAlert('✗ ' + (err.message || 'No se pudo recalcular la ruta.'), 'error');
+        icon.classList.remove('animate-spin');
+        e.currentTarget.disabled = false;
+      }
+    });
+  });
+
+  tbody.querySelectorAll('.btn-toggle').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      const id = e.currentTarget.getAttribute('data-id');
+      const db = getDatabase();
+      const idx = db.routes.findIndex(item => item.id === id);
+
+      if (idx !== -1) {
+        const r = db.routes[idx];
+        r.activo = !r.activo;
+        saveDatabase(db);
+        showAlert(`La ruta ${r.codigo} ha sido ${r.activo ? 'activada' : 'dada de baja'}.`);
+        renderRoutesView(document.getElementById('stage-area'));
+      }
+    });
+  });
+
+  tbody.querySelectorAll('.btn-delete-route').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      const id = e.currentTarget.getAttribute('data-id');
+      const db = getDatabase();
+      const idx = db.routes.findIndex(item => item.id === id);
+
+      if (idx !== -1) {
+        const r = db.routes[idx];
+        if (!confirm(`¿Eliminar la ruta ${r.codigo} (${r.denominacion || r.destino})? Esta acción no se puede deshacer.`)) return;
+        db.routes.splice(idx, 1);
+        saveDatabase(db);
+        showAlert(`La ruta ${r.codigo} ha sido eliminada.`);
+        renderRoutesView(document.getElementById('stage-area'));
+      }
+    });
+  });
+}
