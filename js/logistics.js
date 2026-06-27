@@ -1,4 +1,4 @@
-import { getDatabase, saveDatabase } from './data.js?v=20260622n';
+import { getDatabase, saveDatabase } from './data.js?v=20260626a';
 import { showAlert, geocodeAddress, escapeHtml, toCSV, downloadFile } from './utils.js';
 import { GRUPOS_ORIGEN } from './chile-geo.js';
 

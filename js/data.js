@@ -285,10 +285,8 @@ export async function initDatabase() {
       }
     });
 
-    // Restaurar historico desde clave separada (no se guarda en Supabase por tamaño)
-    const _savedHist = (() => {
-      try { return JSON.parse(localStorage.getItem('sit_hist_data') || 'null'); } catch { return null; }
-    })();
+    // Restaurar historico desde IndexedDB (no se guarda en Supabase por tamaño)
+    const _savedHist = await loadHistorico();
     if (_savedHist?.length > 0 && memoryDb.clientTariffConfig?.[0]) {
       const _cfg = memoryDb.clientTariffConfig[0];
       _cfg.data = { ...(_cfg.data || {}), historico: _savedHist };
@@ -358,6 +356,52 @@ async function syncTable(table, pk, rows) {
 // truck_types, tariff_config); si esa tabla fallara y abortara el for...of,
 // el resto de las tablas (incluida la que el usuario realmente editó) nunca
 // se sincronizaría, aunque el error no tenga relación con su cambio.
+
+// ─── IndexedDB para historico (evita límite 5MB de localStorage) ──────────
+const IDB_NAME    = 'sit_ebema_idb';
+const IDB_VERSION = 1;
+
+function openIDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(IDB_NAME, IDB_VERSION);
+    req.onupgradeneeded = (e) => {
+      const db = e.target.result;
+      if (!db.objectStoreNames.contains('historico')) db.createObjectStore('historico');
+    };
+    req.onsuccess  = (e) => resolve(e.target.result);
+    req.onerror    = (e) => reject(e.target.error);
+  });
+}
+
+export async function saveHistorico(rows) {
+  try {
+    const db = await openIDB();
+    await new Promise((resolve, reject) => {
+      const tx  = db.transaction('historico', 'readwrite');
+      tx.objectStore('historico').put(rows || [], 'data');
+      tx.oncomplete = () => resolve();
+      tx.onerror    = (e) => reject(e.target.error);
+    });
+  } catch (e) {
+    console.warn('IDB saveHistorico falló:', e.message || e);
+  }
+}
+
+export async function loadHistorico() {
+  try {
+    const db = await openIDB();
+    return await new Promise((resolve, reject) => {
+      const tx  = db.transaction('historico', 'readonly');
+      const req = tx.objectStore('historico').get('data');
+      req.onsuccess = (e) => resolve(e.target.result || []);
+      req.onerror   = (e) => reject(e.target.error);
+    });
+  } catch (e) {
+    console.warn('IDB loadHistorico falló:', e.message || e);
+    return [];
+  }
+}
+// ──────────────────────────────────────────────────────────────────────────────
 
 // Elimina el array historico de clientTariffConfig para no exceder límites de payload
 function stripHistorico(rows) {
@@ -948,13 +992,13 @@ export function getCentreName(db, centreId) {
 export function saveDatabase(data, { syncOnly = null } = {}) {
   deriveCamionesChoferes(data);
   memoryDb = data;
-  // Guardar historico en clave separada (evita exceder cuota de localStorage ~5MB)
+  // Guardar historico en IndexedDB (sin límite de tamaño)
   const _hist = data.clientTariffConfig?.[0]?.data?.historico;
-  if (_hist && _hist.length > 0) {
-    try { localStorage.setItem('sit_hist_data', JSON.stringify(_hist)); } catch (_) { /* sin espacio */ }
-  }
+  if (_hist !== undefined) saveHistorico(_hist); // fire-and-forget
   const _dataForStorage = { ...data, clientTariffConfig: stripHistorico(data.clientTariffConfig || []) };
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(_dataForStorage)); } catch (_) { /* sin espacio */ }
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(_dataForStorage)); } catch (_e) {
+    console.warn('localStorage lleno:', _e.message);
+  }
   // Despachar un evento personalizado para actualizar las vistas en tiempo real
   window.dispatchEvent(new Event('db_updated'));
   // Sincronizar con el servidor en segundo plano

@@ -1,6 +1,6 @@
 // MÓDULO: Administrador de Tarifas Clientes — SIT EBEMA v2.1
 // Vistas: Histórico (6M) | Consolidación | Densidad Logística | Frecuencia y Especiales | Cluster | Resultados
-import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig } from './data.js?v=20260622n';
+import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig, saveHistorico, loadHistorico } from './data.js?v=20260626a';
 import { CAP_LIST, truckTypesWithCap, calcularCostoRuta } from './tarifas-engine.js';
 import { formatCLP, showAlert, toCSV, downloadFile, formatDateDDMMYYYY } from './utils.js';
 
@@ -229,10 +229,22 @@ export function renderClientTariffView(container) {
   const ccfg = getClientTariffConfig(db);
   ensureCcfg(ccfg);
 
-  // Restaurar datos históricos desde la base de datos
+  // Restaurar datos históricos desde IndexedDB si no vienen de Supabase
   if (ccfg.historico && ccfg.historico.length) {
     histData = ccfg.historico;
     oficinaToGrupo = computeOficinaGrupos(db, histData);
+  } else {
+    // Intento asíncrono desde IndexedDB (sin bloquear el render)
+    loadHistorico().then(rows => {
+      if (rows && rows.length > 0 && !histData.length) {
+        histData = rows;
+        ccfg.historico = rows;
+        oficinaToGrupo = computeOficinaGrupos(db, rows);
+        // Re-renderizar la subvista activa si ya está montada
+        const activeTab = document.querySelector('#ct-subtabs button.border-primary');
+        if (activeTab) activeTab.click();
+      }
+    });
   }
 
   container.innerHTML = `
@@ -408,6 +420,7 @@ function renderHistorico(content, db, ccfg) {
       ccfg.histMeta = { uploadDate: formatDateDDMMYYYY(new Date()), rowCount: parsed.length, fileName: file.name };
       ccfg.historico = parsed;
       saveDatabase(db);
+      saveHistorico(parsed); // guardar en IndexedDB (sin límite localStorage)
       const msg = `${parsed.length.toLocaleString()} filas cargadas y guardadas.`;
       if (parsed.length > 5000) showAlert(`${msg} (Más de 5000 registros — puede afectar el rendimiento al guardar.)`, 'warning');
       else showAlert(msg);
@@ -421,7 +434,9 @@ function renderHistorico(content, db, ccfg) {
     histData = []; histPage = 0; oficinaToGrupo = {};
     ccfg.histMeta = { uploadDate: null, rowCount: 0, fileName: '' };
     ccfg.historico = [];
-    saveDatabase(db); renderHistorico(content, db, ccfg);
+    saveDatabase(db);
+    saveHistorico([]); // limpiar IndexedDB
+    renderHistorico(content, db, ccfg);
   });
   document.getElementById('hist-fg')?.addEventListener('change', (e) => { histFilterGrupo  = e.target.value; histPage = 0; renderHistorico(content, db, ccfg); });
   document.getElementById('hist-fe')?.addEventListener('change', (e) => { histFilterEstado = e.target.value; histPage = 0; renderHistorico(content, db, ccfg); });

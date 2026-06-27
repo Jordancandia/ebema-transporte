@@ -1,4 +1,4 @@
-import { getDatabase, saveDatabase, getCentreName, getOrigenGroups, calcEjes } from './data.js?v=20260622n';
+import { getDatabase, saveDatabase, getCentreName, getOrigenGroups, calcEjes } from './data.js?v=20260626a';
 import { formatRut, showAlert, escapeHtml } from './utils.js';
 
 // Ficha del Transportista — SIT EBEMA
