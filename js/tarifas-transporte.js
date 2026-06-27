@@ -2371,52 +2371,68 @@ function renderParticipacion(content, db, cfg) {
     return;
   }
 
-  const grupos = getOrigenGroups(db);
-  let centros = [...new Set(histData.map(h => h.centroId))].filter(Boolean).sort();
   const routes = (db.routes || []).filter(r => r.activo);
+
+  // ── Mapear oficina → origen_grupo (igual lógica que computeOficinaGrupos) ──
+  const oficToGrupo = {};
+  histData.forEach(h => {
+    if (oficToGrupo[h.oficina]) return;
+    const freq = {};
+    histData.filter(r => r.oficina === h.oficina).forEach(r => {
+      const route = routes.find(rt => rt.id === r.idRuta || rt.codigo === r.idRuta);
+      if (route?.origen_grupo) freq[route.origen_grupo] = (freq[route.origen_grupo] || 0) + 1;
+    });
+    const top = Object.entries(freq).sort((a, b) => b[1] - a[1])[0];
+    oficToGrupo[h.oficina] = top ? top[0] : `Centro ${h.oficina}`;
+  });
+
+  // Grupos únicos con datos
+  const centros = [...new Set(Object.values(oficToGrupo))].sort();
 
   let participacionFiltroCentro = '';
 
-  function calcParticipacion(centroId) {
-    const centroRoutes = histData.filter(h => String(h.centroId) === String(centroId));
-    if (centroRoutes.length === 0) return [];
+  function calcParticipacion(grupo) {
+    // Filas del grupo
+    const grupoRows = histData.filter(h => oficToGrupo[h.oficina] === grupo);
+    if (!grupoRows.length) return [];
 
-    const gruposRoutes = centroRoutes.map(h => {
-      const ruta = routes.find(r => r.id === h.rutaId || r.codigo === h.rutaId);
-      return { ...h, ruta };
-    }).filter(h => h.ruta && h.ruta.clasificRuta === 'Regional' && h.ruta.tipo === 'Comuna');
+    // Agregar por ruta (sólo Regional + Comuna)
+    const routeMap = new Map();
+    grupoRows.forEach(h => {
+      const ruta = routes.find(r => r.id === h.idRuta || r.codigo === h.idRuta);
+      if (!ruta || ruta.clasificRuta !== 'Regional' || ruta.tipo !== 'Comuna') return;
+      if (!routeMap.has(h.idRuta)) {
+        routeMap.set(h.idRuta, { idRuta: h.idRuta, ruta, clientes: new Set(), obras: new Set(), ton: 0 });
+      }
+      const e = routeMap.get(h.idRuta);
+      if (h.idCliente && h.idCliente !== '-') e.clientes.add(h.idCliente);
+      if (h.idObra    && h.idObra    !== '-') e.obras.add(h.idObra);
+      e.ton += h.ton;
+    });
 
-    const normales = gruposRoutes.filter(h => (h.ruta.caracteristica || 'NORMAL') === 'NORMAL');
-    const extremas = gruposRoutes.filter(h => (h.ruta.caracteristica || 'NORMAL') !== 'NORMAL');
+    const aggregated = [...routeMap.values()].map(e => ({
+      rutaId:        e.idRuta,
+      ruta:          e.ruta,
+      clientes:      e.clientes.size,
+      obras:         e.obras.size,
+      toneladas:     e.ton,
+      caracteristica: e.ruta.caracteristica || 'NORMAL'
+    }));
+
+    const normales = aggregated.filter(r => r.caracteristica === 'NORMAL');
+    const extremas = aggregated.filter(r => r.caracteristica !== 'NORMAL');
 
     const calcGroup = (group) => {
-      const totalClientes = group.reduce((s, h) => s + Number(h.clientes || 0), 0);
-      const totalObras = group.reduce((s, h) => s + Number(h.obras || 0), 0);
-      const totalTon = group.reduce((s, h) => s + Number(h.toneladas || 0), 0);
-      const totalProm = totalClientes + totalObras + totalTon;
-
-      return group.map(h => {
-        const cli = Number(h.clientes || 0);
-        const obr = Number(h.obras || 0);
-        const ton = Number(h.toneladas || 0);
-        const prom = (cli + obr + ton) / 3;
-        const pct = totalProm > 0 ? (prom / (totalProm / 3)) * 100 : 0;
-        return {
-          rutaId: h.rutaId,
-          ruta: h.ruta,
-          clientes: cli,
-          obras: obr,
-          toneladas: ton,
-          promedio: prom,
-          pct: Math.round(pct * 100) / 100,
-          caracteristica: h.ruta.caracteristica || 'NORMAL'
-        };
+      const totCli = group.reduce((s, r) => s + r.clientes, 0) || 1;
+      const totObr = group.reduce((s, r) => s + r.obras,    0) || 1;
+      const totTon = group.reduce((s, r) => s + r.toneladas,0) || 1;
+      return group.map(r => {
+        const pct = ((r.clientes/totCli + r.obras/totObr + r.toneladas/totTon) / 3) * 100;
+        return { ...r, pct: Math.round(pct * 100) / 100 };
       }).sort((a, b) => b.pct - a.pct);
     };
 
-    const normalesCalc = calcGroup(normales);
-    const extremasCalc = extremas.length > 0 ? calcGroup(extremas) : [];
-    return [...normalesCalc, ...extremasCalc];
+    return [...calcGroup(normales), ...calcGroup(extremas)];
   }
 
   function render(centroId) {
@@ -2440,11 +2456,7 @@ function renderParticipacion(content, db, cfg) {
             <label class="font-label-caps text-label-caps text-secondary block">CENTRO ORIGEN</label>
             <select id="part-f-centro" class="border border-[#CED4DA] p-sm font-body-md text-body-md bg-white w-48">
               <option value="">Seleccione un centro</option>
-              ${centros.map(c => {
-                const grupo = grupos.find(g => String(g.repId) === String(c) || g.centroIds.includes(Number(c)));
-                const nombre = grupo ? grupo.nombre : c;
-                return `<option value="${escapeHtml(String(c))}" ${String(c) === String(centroId) ? 'selected' : ''}>${escapeHtml(nombre)}</option>`;
-              }).join('')}
+              ${centros.map(c => `<option value="${escapeHtml(c)}" ${c === centroId ? 'selected' : ''}>${escapeHtml(c)}</option>`).join('')}
             </select>
           </div>
         </div>
