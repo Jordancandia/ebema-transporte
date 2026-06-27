@@ -285,7 +285,16 @@ export async function initDatabase() {
       }
     });
 
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(memoryDb));
+    // Restaurar historico desde clave separada (no se guarda en Supabase por tamaño)
+    const _savedHist = (() => {
+      try { return JSON.parse(localStorage.getItem('sit_hist_data') || 'null'); } catch { return null; }
+    })();
+    if (_savedHist?.length > 0 && memoryDb.clientTariffConfig?.[0]) {
+      const _cfg = memoryDb.clientTariffConfig[0];
+      _cfg.data = { ...(_cfg.data || {}), historico: _savedHist };
+    }
+
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...memoryDb, clientTariffConfig: stripHistorico(memoryDb.clientTariffConfig || []) }));
 
     if (hayPendientes) {
       syncToSupabase(memoryDb).catch(err =>
@@ -349,6 +358,15 @@ async function syncTable(table, pk, rows) {
 // truck_types, tariff_config); si esa tabla fallara y abortara el for...of,
 // el resto de las tablas (incluida la que el usuario realmente editó) nunca
 // se sincronizaría, aunque el error no tenga relación con su cambio.
+
+// Elimina el array historico de clientTariffConfig para no exceder límites de payload
+function stripHistorico(rows) {
+  return (rows || []).map(r => {
+    if (r.id !== 'global' || !r.data) return r;
+    return { ...r, data: { ...r.data, historico: [] } };
+  });
+}
+
 async function syncToSupabase(db, syncOnly = null) {
   const fallidas = [];
   const tablas = syncOnly
@@ -356,7 +374,10 @@ async function syncToSupabase(db, syncOnly = null) {
     : TABLE_MAP;
   for (const t of tablas) {
     try {
-      await syncTable(t.table, t.pk, db[t.local] || []);
+      const rows = (t.local === 'clientTariffConfig')
+          ? stripHistorico(db[t.local] || [])
+          : (db[t.local] || []);
+      await syncTable(t.table, t.pk, rows);
     } catch (err) {
       const code = err && err.code ? ` (${err.code})` : '';
       const motivo = err && err.code === '42501' ? 'sin permiso' : (err.message || String(err));
@@ -927,7 +948,13 @@ export function getCentreName(db, centreId) {
 export function saveDatabase(data, { syncOnly = null } = {}) {
   deriveCamionesChoferes(data);
   memoryDb = data;
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  // Guardar historico en clave separada (evita exceder cuota de localStorage ~5MB)
+  const _hist = data.clientTariffConfig?.[0]?.data?.historico;
+  if (_hist && _hist.length > 0) {
+    try { localStorage.setItem('sit_hist_data', JSON.stringify(_hist)); } catch (_) { /* sin espacio */ }
+  }
+  const _dataForStorage = { ...data, clientTariffConfig: stripHistorico(data.clientTariffConfig || []) };
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(_dataForStorage)); } catch (_) { /* sin espacio */ }
   // Despachar un evento personalizado para actualizar las vistas en tiempo real
   window.dispatchEvent(new Event('db_updated'));
   // Sincronizar con el servidor en segundo plano

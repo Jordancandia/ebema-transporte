@@ -51,7 +51,9 @@ function getPath(obj, path, fallback) {
 const inputCls = 'w-full border border-[#CED4DA] p-xs font-data-mono text-data-mono text-right focus:border-primary focus:ring-0 transition-all bg-white rounded';
 
 function numInput(path, value, extra = '') {
-  return `<input type="number" step="any" class="${inputCls}" data-path="${path}" value="${value ?? 0}" ${extra}>`;
+  const _n = Number(value ?? 0);
+  const _fmt = isNaN(_n) ? '0' : _n.toLocaleString('es-CL', { maximumFractionDigits: 6 });
+  return `<input type="text" inputmode="decimal" class="${inputCls}" data-path="${path}" data-numeric="1" value="${_fmt}" ${extra}>`;
 }
 function dateInput(path, value, extra = '') {
   return `<input type="date" class="${inputCls} text-left" data-path="${path}" value="${value || ''}" ${extra}>`;
@@ -159,7 +161,13 @@ export function renderTariffTransportView(container) {
       const path = e.target.dataset.path;
       if (!path) return;
       let val = e.target.value;
-      if (e.target.type === 'number') val = val === '' ? 0 : Number(val);
+      if (e.target.type === 'number') {
+        val = val === '' ? 0 : Number(val);
+      } else if (e.target.dataset.numeric) {
+        // Parsear número con formato es-CL (punto=miles, coma=decimal)
+        val = val === '' ? 0 : Number(String(val).replace(/\./g, '').replace(',', '.'));
+        if (isNaN(val)) val = 0;
+      }
       setPath(cfg, path, val);
       saveDatabase(db);
     });
