@@ -2881,7 +2881,8 @@ function renderResultados(content, db, cfg) {
           <tbody class="font-body-md text-body-md">
             ${matriz.length === 0 ? `<tr><td colspan="${HEADERS.length}" class="p-md text-center text-secondary">Sin resultados para los filtros seleccionados.</td></tr>` :
               matriz.map(m => {
-                const pct = participacion[m.ruta.id]?.pct || 0;
+                const partEntry = participacion[m.ruta.id] || participacion[m.ruta.codigo];
+                const pct = partEntry?.pct || 0;
                 const tarifaPonderada = ((m.item11_costoKmFinal || 0) * pct / 100);
                 const grupoNombre = groupMap[m.ruta.origen_grupo] || m.ruta.origen_grupo;
                 const seguros = (m.item3_soapKm || 0) + (m.item4_seguroKm || 0);
@@ -2937,7 +2938,8 @@ function renderResultados(content, db, cfg) {
     const headers = ['Grupo_Centro', 'ID_Ruta', 'Destino', 'Clasificacion', 'Tipo_Camion_Kg', 'KM', 'Peajes', 'Comb_Ida', 'Comb_Vuelta', 'Seguros_SOAP', 'Mantencion', 'Neumaticos', 'GPS', 'Rem_Chofer', 'Var_Chofer', 'Factor_Ruta', 'Costo_Ruta_Total', 'Costo_KM_Final', 'Peso_Pct', 'Tarifa_Ponderada'];
     const rows = matriz.map(m => {
       const grupoNombre = groupMap[m.ruta.origen_grupo] || m.ruta.origen_grupo;
-      const pct = participacion[m.ruta.id]?.pct || 0;
+      const partEntry = participacion[m.ruta.id] || participacion[m.ruta.codigo];
+      const pct = partEntry?.pct || 0;
       const tarifaPonderada = ((m.item11_costoKmFinal || 0) * pct / 100);
       const seguros = (m.item3_soapKm || 0) + (m.item4_seguroKm || 0);
       return [
