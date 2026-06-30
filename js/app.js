@@ -1,4 +1,4 @@
-import { getDatabase, saveDatabase, initDatabase } from './data.js?v=20260629a';
+import { getDatabase, saveDatabase, initDatabase } from './data.js?v=20260630a';
 import { supabase } from './supabase-client.js';
 import { renderTransportsView } from './transports.js';
 import { renderRoutesView } from './routes.js';

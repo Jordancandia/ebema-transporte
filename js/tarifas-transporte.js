@@ -1,7 +1,7 @@
 // PANTALLA 1: Administrador de Tarifas Transporte — SIT EBEMA
 // Sub-módulos: Peajes, Combustibles y Rendimientos, Seguros y Permisos,
 // Variables Generales y Motor de Costo (ZCAP) con exportación CSV.
-import { getDatabase, saveDatabase, getCentreName, getTariffConfig, getClientTariffConfig, truckCapKg, getOrigenGroups, getGroupRepId, buildTruckTypes, TRUCK_BASE_TYPES } from './data.js?v=20260629a';
+import { getDatabase, saveDatabase, getCentreName, getTariffConfig, getClientTariffConfig, truckCapKg, getOrigenGroups, getGroupRepId, buildTruckTypes, TRUCK_BASE_TYPES } from './data.js?v=20260630a';
 import { CAP_LIST, truckTypesWithCap, calcularMatrizCostos } from './tarifas-engine.js';
 import { formatCLP, parseCSV, showAlert, toCSV, downloadFile, escapeHtml } from './utils.js';
 import { supabase } from './supabase-client.js';
@@ -187,27 +187,42 @@ function renderCostosExtras(content, db, cfg) {
   db.extraCosts     = db.extraCosts || [];
 
   // ── Filtros ──
-  let ceFiltroCentro = window._ceFiltroCentro || '';
-  let ceFiltroRuta   = window._ceFiltroRuta   || '';
-  let ceFiltroEjes   = window._ceFiltroEjes   || '';
+  let ceFiltroCentro  = window._ceFiltroCentro  || '';
+  let ceFiltroRuta    = window._ceFiltroRuta    || '';
+  let ceFiltroEjes    = window._ceFiltroEjes    || '';
+  let ceFiltroClasif  = window._ceFiltroClasif  || '';
+  let ceFiltroComuna  = window._ceFiltroComuna  || '';
 
   function getRows() {
     let rows = db.extraCosts.filter(c => c.activo !== false);
     if (ceFiltroCentro) {
       const g = grupos.find(g => g.grupo === ceFiltroCentro);
       const ids = g ? g.centroIds : [];
-      const rutasGrupo = routes.filter(r => ids.includes(r.origenId)).map(r => r.id);
+      const rutasGrupo = routes.filter(r => ids.includes(r.origenId) || r.origen_grupo === ceFiltroCentro).map(r => r.id);
       rows = rows.filter(c => rutasGrupo.includes(c.route_id));
     }
-    if (ceFiltroRuta)  rows = rows.filter(c => c.route_id === ceFiltroRuta);
-    if (ceFiltroEjes)  rows = rows.filter(c => Number(c.ejes) === Number(ceFiltroEjes));
+    if (ceFiltroRuta)   rows = rows.filter(c => c.route_id === ceFiltroRuta);
+    if (ceFiltroEjes)   rows = rows.filter(c => Number(c.ejes) === Number(ceFiltroEjes));
+    if (ceFiltroClasif) {
+      const rutasClasif = routes.filter(r => r.clasificRuta === ceFiltroClasif).map(r => r.id);
+      rows = rows.filter(c => rutasClasif.includes(c.route_id));
+    }
+    if (ceFiltroComuna) {
+      const term = ceFiltroComuna.toLowerCase();
+      rows = rows.filter(c => {
+        const r = routes.find(rt => rt.id === c.route_id);
+        return r && (r.destino || '').toLowerCase().includes(term);
+      });
+    }
     return rows;
   }
 
   function rerender() {
-    window._ceFiltroCentro = ceFiltroCentro;
-    window._ceFiltroRuta   = ceFiltroRuta;
-    window._ceFiltroEjes   = ceFiltroEjes;
+    window._ceFiltroCentro  = ceFiltroCentro;
+    window._ceFiltroRuta    = ceFiltroRuta;
+    window._ceFiltroEjes    = ceFiltroEjes;
+    window._ceFiltroClasif  = ceFiltroClasif;
+    window._ceFiltroComuna  = ceFiltroComuna;
     renderCostosExtras(content, db, cfg);
   }
 
@@ -268,6 +283,19 @@ function renderCostosExtras(content, db, cfg) {
             <option value="">Todas</option>
             ${rutasFiltradas.map(r => `<option value="${escapeHtml(r.id)}" ${r.id === ceFiltroRuta ? 'selected' : ''}>${escapeHtml(r.codigo)} — ${escapeHtml(r.destino || '')}</option>`).join('')}
           </select>
+        </div>
+        <div class="space-y-xs">
+          <label class="font-label-caps text-label-caps text-secondary block">TIPO</label>
+          <select id="ce-f-clasif" class="border border-[#CED4DA] p-sm font-body-md text-body-md bg-white w-44">
+            <option value="">Todos</option>
+            <option value="Regional" ${ceFiltroClasif === 'Regional' ? 'selected' : ''}>Regional</option>
+            <option value="Interregional" ${ceFiltroClasif === 'Interregional' ? 'selected' : ''}>Interregional</option>
+          </select>
+        </div>
+        <div class="space-y-xs">
+          <label class="font-label-caps text-label-caps text-secondary block">NOMBRE COMUNA</label>
+          <input id="ce-f-comuna" type="text" placeholder="Buscar por destino…" value="${escapeHtml(ceFiltroComuna)}"
+            class="border border-[#CED4DA] p-sm font-body-md text-body-md bg-white w-44">
         </div>
         <div class="space-y-xs">
           <label class="font-label-caps text-label-caps text-secondary block">TIPO CAMIÓN</label>
@@ -341,6 +369,8 @@ function renderCostosExtras(content, db, cfg) {
   content.querySelector('#ce-f-centro')?.addEventListener('change', e => { ceFiltroCentro = e.target.value; ceFiltroRuta = ''; rerender(); });
   content.querySelector('#ce-f-ruta')?.addEventListener('change',   e => { ceFiltroRuta   = e.target.value; rerender(); });
   content.querySelector('#ce-f-ejes')?.addEventListener('change',   e => { ceFiltroEjes   = e.target.value; rerender(); });
+  content.querySelector('#ce-f-clasif')?.addEventListener('change', e => { ceFiltroClasif  = e.target.value; rerender(); });
+  content.querySelector('#ce-f-comuna')?.addEventListener('input',  e => { ceFiltroComuna  = e.target.value; rerender(); });
 
   // Agregar ítem
   content.querySelector('#ce-agregar')?.addEventListener('click', () => abrirModalCE(null));
@@ -382,6 +412,23 @@ function renderCostosExtras(content, db, cfg) {
                 const sel = ce ? (routes.find(r => r.id === ce.route_id) && grupos.find(g => g.centroIds.includes(routes.find(r => r.id === ce.route_id)?.origenId))?.grupo === c.id) : false;
                 return `<option value="${escapeHtml(c.id)}" ${sel ? 'selected' : ''}>${escapeHtml(c.nombre)}</option>`;
               }).join('')}
+            </select>
+          </div>
+          <div>
+            <label class="font-label-caps text-label-caps text-secondary block mb-xs">COMUNA / DESTINO</label>
+            <select id="ce-m-comuna" class="w-full border border-[#CED4DA] p-sm font-body-md text-body-md bg-white">
+              <option value="">— Seleccionar —</option>
+              ${(() => {
+                const centroSel = ce ? (grupos.find(g => g.centroIds.includes(routes.find(r => r.id === ce.route_id)?.origenId) || routes.find(r => r.id === ce.route_id)?.origen_grupo === g.grupo))?.grupo || '' : '';
+                const g = grupos.find(g => g.grupo === centroSel);
+                const ids = g ? g.centroIds : [];
+                const comunas = [...new Map(
+                  routes.filter(r => (!ids.length || ids.includes(r.origenId) || r.origen_grupo === centroSel))
+                    .map(r => [r.destino || r.id, { val: r.destino || r.id, label: r.destino || r.codigo }])
+                ).values()].sort((a,b) => a.label.localeCompare(b.label));
+                const rutaSel = ce ? routes.find(r => r.id === ce.route_id) : null;
+                return comunas.map(c => `<option value="${escapeHtml(c.val)}" ${rutaSel && rutaSel.destino === c.val ? 'selected' : ''}>${escapeHtml(c.label)}</option>`).join('');
+              })()}
             </select>
           </div>
           <div>
@@ -429,16 +476,42 @@ function renderCostosExtras(content, db, cfg) {
     `;
     document.body.appendChild(el);
 
+    // Función para repoblar dropdown de COMMUNE según centro
+    function repoblarComunas(centroGrupo) {
+      const g = grupos.find(g => g.grupo === centroGrupo);
+      const ids = g ? g.centroIds : [];
+      const rutasFiltradas = routes.filter(r => !ids.length || ids.includes(r.origenId) || r.origen_grupo === centroGrupo);
+      const comunas = [...new Map(
+        rutasFiltradas.map(r => [r.destino || r.id, { val: r.destino || r.id, label: r.destino || r.codigo }])
+      ).values()].sort((a, b) => a.label.localeCompare(b.label));
+      el.querySelector('#ce-m-comuna').innerHTML = '<option value="">— Seleccionar —</option>' +
+        comunas.map(c => `<option value="${escapeHtml(c.val)}">${escapeHtml(c.label)}</option>`).join('');
+      el.querySelector('#ce-m-ruta').innerHTML = '<option value="">— Seleccionar —</option>';
+    }
+
+    // Función para repoblar RUTA según COMMUNE seleccionada
+    function repoblarRutas(centroGrupo, destino) {
+      const g = grupos.find(g => g.grupo === centroGrupo);
+      const ids = g ? g.centroIds : [];
+      const rutasFiltradas = routes.filter(r =>
+        (!ids.length || ids.includes(r.origenId) || r.origen_grupo === centroGrupo) &&
+        (r.destino || r.id) === destino
+      );
+      const sel = el.querySelector('#ce-m-ruta');
+      sel.innerHTML = '<option value="">— Seleccionar —</option>' +
+        rutasFiltradas.map(r => `<option value="${escapeHtml(r.id)}">${escapeHtml(r.codigo)} — ${escapeHtml(r.destino || '')}</option>`).join('');
+      if (rutasFiltradas.length === 1) sel.value = rutasFiltradas[0].id; // auto-seleccionar si hay solo una
+    }
+
     // Filtrar rutas al cambiar centro en el modal
     el.querySelector('#ce-m-centro').addEventListener('change', e => {
-      const g    = grupos.find(g => g.grupo === e.target.value);
-      const ids  = g ? g.centroIds : [];
-      const sel  = el.querySelector('#ce-m-ruta');
-      sel.innerHTML = '<option value="">— Seleccionar —</option>' +
-        routes
-          .filter(r => !ids.length || ids.includes(r.origenId))
-          .map(r => `<option value="${escapeHtml(r.id)}">${escapeHtml(r.codigo)} — ${escapeHtml(r.destino || '')}</option>`)
-          .join('');
+      repoblarComunas(e.target.value);
+    });
+
+    // Filtrar rutas al cambiar commune en el modal
+    el.querySelector('#ce-m-comuna').addEventListener('change', e => {
+      const centroGrupo = el.querySelector('#ce-m-centro').value;
+      repoblarRutas(centroGrupo, e.target.value);
     });
 
     el.querySelector('#ce-m-cancel').addEventListener('click', () => el.remove());
@@ -2396,6 +2469,7 @@ function renderParticipacion(content, db, cfg) {
   }
 
   const routes = (db.routes || []).filter(r => r.activo);
+  const grupos = getOrigenGroups(db);
 
   // ── Mapear oficina → origen_grupo (igual lógica que computeOficinaGrupos) ──
   const oficToGrupo = {};
@@ -2426,10 +2500,15 @@ function renderParticipacion(content, db, cfg) {
     if (!grupoRows.length) return [];
 
     // Paso 1: Agregar toneladas/clientes/obras por idRuta para todas las rutas Regionales
+    // Solo rutas que pertenecen al centro seleccionado
+    const g = grupos.find(g => g.grupo === grupo);
+    const centroIds = g ? g.centroIds : [];
     const rawMap = new Map();
     grupoRows.forEach(h => {
       const ruta = routeByIdP.get(h.idRuta);
       if (!ruta || ruta.clasificRuta !== 'Regional') return;
+      // Filtrar: la ruta debe pertenecer al centro del grupo seleccionado
+      if (centroIds.length && !centroIds.includes(ruta.origenId) && ruta.origen_grupo !== grupo) return;
       if (!rawMap.has(h.idRuta)) {
         rawMap.set(h.idRuta, { idRuta: h.idRuta, ruta, clientes: new Set(), obras: new Set(), ton: 0 });
       }
@@ -2757,6 +2836,8 @@ function renderVariables(content, db, cfg) {
 function renderResultados(content, db, cfg) {
   const groups = getOrigenGroups(db);
   let matriz = calcularMatrizCostos(db, cfg);
+  // Solo rutas tipo COMUNA
+  matriz = matriz.filter(m => (m.ruta.tipo || '').toUpperCase() === 'COMUNA');
   if (zcapFiltroCentro) matriz = matriz.filter(m => m.ruta.origen_grupo === zcapFiltroCentro);
   if (zcapFiltroClasif) matriz = matriz.filter(m => m.ruta.clasificRuta === zcapFiltroClasif);
 
@@ -2765,7 +2846,7 @@ function renderResultados(content, db, cfg) {
   const groupMap = {};
   groups.forEach(g => { groupMap[g.grupo] = g.nombre; });
 
-  const HEADERS = ['Centro', 'Ruta', 'Clasificación', 'KM', 'Peajes', 'Combustible', 'SOAP', 'Seguro', 'Mantención', 'Neumáticos', 'GPS', 'Rem. Chofer', 'Var. Chofer', 'Costo Ruta Total', 'Costo/KM Final', 'Participación', 'Tarifa Ponderada'];
+  const HEADERS = ['Centro', 'ID Ruta', 'Destino', 'Clasificación', 'Tipo Camión (Kg)', 'KM', 'Peajes', 'Comb. Ida', 'Comb. Vuelta', 'Seguros (SOAP+Seg)', 'Mantención', 'Neumáticos', 'GPS', 'Rem. Chofer', 'Var. Chofer', 'Factor Ruta', 'Costo Ruta Total', 'Costo/KM Final', 'Peso', 'Tarifa Ponderada'];
 
   content.innerHTML = `
     <div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm mb-lg">
@@ -2816,20 +2897,26 @@ function renderResultados(content, db, cfg) {
                 const pct = participacion[m.ruta.id]?.pct || 0;
                 const tarifaPonderada = ((m.item11_costoKmFinal || 0) * pct / 100);
                 const grupoNombre = groupMap[m.ruta.origen_grupo] || m.ruta.origen_grupo;
+                const seguros = (m.item3_soapKm || 0) + (m.item4_seguroKm || 0);
+                const factorLabel = m.factorRuta != null ? m.factorRuta.toFixed(2) : '1.00';
+                const capLabel = m.truckType?.capKg ? m.truckType.capKg.toLocaleString('es-CL') : '—';
                 return `<tr class="border-b border-outline-variant">
-                <td class="p-md font-bold">${grupoNombre}</td>
-                <td class="p-md">${m.ruta.codigo} — ${m.ruta.destino}</td>
+                <td class="p-md font-bold text-nowrap">${grupoNombre}</td>
+                <td class="p-md font-data-mono text-data-mono font-bold">${m.ruta.codigo}</td>
+                <td class="p-md">${m.ruta.destino || ''}</td>
                 <td class="p-md">${m.ruta.clasificRuta || ''}</td>
+                <td class="p-md text-right font-data-mono text-data-mono">${capLabel}</td>
                 <td class="p-md text-right font-data-mono text-data-mono">${m.km}</td>
                 <td class="p-md text-right font-data-mono text-data-mono">${formatCLP(m.item1_peajes)}</td>
-                <td class="p-md text-right font-data-mono text-data-mono">${formatCLP(m.item2_combustible)}</td>
-                <td class="p-md text-right font-data-mono text-data-mono">${formatCLP(m.item3_soapKm)}</td>
-                <td class="p-md text-right font-data-mono text-data-mono">${formatCLP(m.item4_seguroKm)}</td>
+                <td class="p-md text-right font-data-mono text-data-mono">${formatCLP(m.combIda)}</td>
+                <td class="p-md text-right font-data-mono text-data-mono">${formatCLP(m.combVuelta)}</td>
+                <td class="p-md text-right font-data-mono text-data-mono">${formatCLP(seguros)}</td>
                 <td class="p-md text-right font-data-mono text-data-mono">${formatCLP(m.item5_mantKm)}</td>
                 <td class="p-md text-right font-data-mono text-data-mono">${formatCLP(m.item6_neumKm)}</td>
                 <td class="p-md text-right font-data-mono text-data-mono">${formatCLP(m.item7_gpsKm)}</td>
                 <td class="p-md text-right font-data-mono text-data-mono">${formatCLP(m.item8_choferBaseDiario)}</td>
                 <td class="p-md text-right font-data-mono text-data-mono">${formatCLP(m.item9_varChofer)}</td>
+                <td class="p-md text-right font-data-mono text-data-mono font-bold">${factorLabel}</td>
                 <td class="p-md text-right font-data-mono text-data-mono">${formatCLP(m.item10_costoRutaTotal)}</td>
                 <td class="p-md text-right font-data-mono text-data-mono">${formatCLP(m.item11_costoKmFinal)}</td>
                 <td class="p-md text-right font-data-mono text-data-mono">${pct.toFixed(2)}%</td>
@@ -2860,127 +2947,15 @@ function renderResultados(content, db, cfg) {
   });
 
   document.getElementById('zcap-export').addEventListener('click', () => {
-    const headers = ['Grupo_Centro', 'Ruta_ID', 'Destino', 'Clasificacion', 'Tipo_Camion_Kg', 'KM', 'Peajes', 'Combustible', 'SOAP', 'Seguro', 'Mantencion', 'Neumaticos', 'GPS', 'Rem_Chofer', 'Var_Chofer', 'Costo_Ruta_Total', 'Costo_KM_Final', 'Participacion_Pct', 'Tarifa_Ponderada'];
+    const headers = ['Grupo_Centro', 'ID_Ruta', 'Destino', 'Clasificacion', 'Tipo_Camion_Kg', 'KM', 'Peajes', 'Comb_Ida', 'Comb_Vuelta', 'Seguros_SOAP', 'Mantencion', 'Neumaticos', 'GPS', 'Rem_Chofer', 'Var_Chofer', 'Factor_Ruta', 'Costo_Ruta_Total', 'Costo_KM_Final', 'Peso_Pct', 'Tarifa_Ponderada'];
     const rows = matriz.map(m => {
       const grupoNombre = groupMap[m.ruta.origen_grupo] || m.ruta.origen_grupo;
       const pct = participacion[m.ruta.id]?.pct || 0;
       const tarifaPonderada = ((m.item11_costoKmFinal || 0) * pct / 100);
+      const seguros = (m.item3_soapKm || 0) + (m.item4_seguroKm || 0);
       return [
         grupoNombre,
         m.ruta.codigo,
-        m.ruta.destino,
+        m.ruta.destino || '',
         m.ruta.clasificRuta || '',
-        m.truckType.capKg,
-        m.km,
-        Math.round(m.item1_peajes),
-        Math.round(m.item2_combustible),
-        Math.round(m.item3_soapKm),
-        Math.round(m.item4_seguroKm),
-        Math.round(m.item5_mantKm),
-        Math.round(m.item6_neumKm),
-        Math.round(m.item7_gpsKm),
-        Math.round(m.item8_choferBaseDiario),
-        Math.round(m.item9_varChofer),
-        Math.round(m.item10_costoRutaTotal),
-        Math.round(m.item11_costoKmFinal),
-        pct.toFixed(2),
-        Math.round(tarifaPonderada)
-      ];
-    });
-    downloadFile(`motor_costo_${Date.now()}.csv`, toCSV(headers, rows));
-    showAlert('Archivo CSV del Motor de Costo exportado');
-  });
-}
-
-// ============================================================
-// SUB-MÓDULO 7: ZAP/SAP
-// ============================================================
-function renderZapSap(content, db, cfg) {
-  const groups = getOrigenGroups(db);
-  const participacion = cfg.participacionRutas || {};
-
-  let zapFiltroCentro = '';
-
-  function render(centroId) {
-    let targetGroups = groups;
-    if (centroId) targetGroups = groups.filter(g => g.grupo === centroId);
-
-    const allRows = [];
-    targetGroups.forEach(g => {
-      const centroRoutes = (db.routes || []).filter(r => r.activo && r.origen_grupo === g.grupo);
-      const truckTypes = (db.truckTypes || []).filter(t => t.Id_centro === g.repId);
-
-      centroRoutes.forEach(ruta => {
-        truckTypes.forEach(truck => {
-          const rutaHasExtrema = ruta.caracteristica && ruta.caracteristica !== 'NORMAL';
-          const tarifaKm = rutaHasExtrema && truck.ratePerKmExtrema
-            ? truck.ratePerKmExtrema
-            : truck.baseRate || 0;
-          const costoBase = truck.baseKM || 0;
-          const kmIda = ruta.km || 0;
-          const costoTotal = kmIda * tarifaKm + costoBase;
-          const pct = participacion[ruta.id]?.pct || 0;
-          allRows.push({
-            centroId: g.grupo,
-            centroNombre: g.nombre,
-            rutaCodigo: ruta.codigo,
-            rutaDestino: ruta.destino || '',
-            tipoCamion: truck.type,
-            capKg: truckCapKg(truck.type),
-            kmIda,
-            tarifaKm,
-            costoBase,
-            costoTotal: Math.round(costoTotal),
-            participacion: pct,
-            caracteristica: ruta.caracteristica || 'NORMAL'
-          });
-        });
-      });
-    });
-
-    content.innerHTML = `
-      <div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm">
-        <div class="flex items-center justify-between mb-md border-b border-outline-variant pb-sm">
-          <div class="flex items-center gap-sm">
-            <span class="material-symbols-outlined text-primary">table</span>
-            <h2 class="font-headline-sm text-headline-sm font-bold text-on-surface">ZAP/SAP — Costos por Centro, Ruta y Tipo de Camión</h2>
-          </div>
-          <button id="zap-export" class="bg-primary hover:bg-[#930007] text-white font-bold px-md py-sm rounded flex items-center gap-xs text-[12px] uppercase">
-            <span class="material-symbols-outlined text-[18px]">download</span> Exportar CSV
-          </button>
-        </div>
-        <p class="text-[12px] text-secondary mb-md">
-          Costo por ruta calculado como KM_IDA × Tarifa KM + Costo Base. Para rutas ISLA/EXTREMA se usa la Tarifa KM Extrema/Isla si está configurada.
-          Valores sin decimales para exportación a SAP/ZAP.
-        </p>
-
-        <div class="flex gap-sm items-end mb-md">
-          <div class="space-y-xs">
-            <label class="font-label-caps text-label-caps text-secondary block">CENTRO ORIGEN</label>
-            <select id="zap-f-centro" class="border border-[#CED4DA] p-sm font-body-md text-body-md bg-white w-48">
-              <option value="">Todos</option>
-              ${groups.map(g => `<option value="${g.grupo}" ${g.grupo === centroId ? 'selected' : ''}>${g.nombre}</option>`).join('')}
-            </select>
-          </div>
-          <div class="text-[11px] text-secondary self-end pb-xs">${allRows.length} registro(s)</div>
-        </div>
-
-        <div class="bg-surface border border-outline-variant overflow-hidden rounded overflow-x-auto">
-          <table class="w-full zebra-table border-collapse">
-            <thead>
-              <tr class="bg-surface-container-high text-left border-b border-outline-variant">
-                <th class="p-md font-label-caps text-label-caps text-secondary uppercase">ID Centro</th>
-                <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Centro</th>
-                <th class="p-md font-label-caps text-label-caps text-secondary uppercase">ID Ruta</th>
-                <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Destino</th>
-                <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Factor</th>
-                <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-right">Camión (Kg)</th>
-                <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-right">KM Ida</th>
-                <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-right">Tarifa KM</th>
-                <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-right">Costo Base</th>
-                <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-right">Costo Total</th>
-                <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-right">%Part</th>
-              </tr>
-            </thead>
-            <tbody class="font-body-md text-body-md">
-              ${allRows.length === 0 ? '<tr><td colspan="11" class="p-md text-center text-secondary">Sin datos para los filtros selecci
+        m.tru
