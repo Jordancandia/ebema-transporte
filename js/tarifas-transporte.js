@@ -1,7 +1,7 @@
 // PANTALLA 1: Administrador de Tarifas Transporte — SIT EBEMA
 // Sub-módulos: Peajes, Combustibles y Rendimientos, Seguros y Permisos,
 // Variables Generales y Motor de Costo (ZCAP) con exportación CSV.
-import { getDatabase, saveDatabase, getCentreName, getTariffConfig, getClientTariffConfig, truckCapKg, getOrigenGroups, getGroupRepId, buildTruckTypes, TRUCK_BASE_TYPES } from './data.js?v=20260626a';
+import { getDatabase, saveDatabase, getCentreName, getTariffConfig, getClientTariffConfig, truckCapKg, getOrigenGroups, getGroupRepId, buildTruckTypes, TRUCK_BASE_TYPES } from './data.js?v=20260629a';
 import { CAP_LIST, truckTypesWithCap, calcularMatrizCostos } from './tarifas-engine.js';
 import { formatCLP, parseCSV, showAlert, toCSV, downloadFile, escapeHtml } from './utils.js';
 import { supabase } from './supabase-client.js';
@@ -499,17 +499,23 @@ function renderPeajes(content, db, cfg) {
 
 // ---------- Cálculo Automático de Peajes (Google Routes API) ----------
 function renderPeajesAuto(content, db, cfg) {
-  // Solo rutas Regionales con zona tipo Comuna
-  const comunaZonas = new Set((db.transportZones || []).filter(z => z.tipo === 'Comuna').map(z => z.zona));
-  const routes = (db.routes || []).filter(r => r.activo && r.clasificRuta === 'Regional' && comunaZonas.has(r.id_zona_transporte));
-
-  const zonasComunas = (db.transportZones || []).filter(z => z.tipo === 'Comuna');
-  const comunasDisponibles = [...new Map(
-    zonasComunas.map(z => [z.zona, { id: z.zona, label: z.denominacion || z.zona }])
-  ).values()].sort((a, b) => a.label.localeCompare(b.label));
+  // Solo rutas Regionales tipo COMUNA (campo tipo de la ruta)
+  const routes = (db.routes || []).filter(r => r.activo && r.clasificRuta === 'Regional' && (r.tipo || '').toUpperCase() === 'COMUNA');
 
   const grupos = getOrigenGroups(db);
   const centrosOrigen = grupos.map(g => ({ id: g.grupo, nombre: g.nombre }));
+
+  // Comunas filtradas por centro seleccionado (solo las comunas de las rutas del centro)
+  const zonesById = new Map((db.transportZones || []).map(z => [z.zona, z]));
+  const routesParaComuna = pjFiltroCentro
+    ? (() => { const g = grupos.find(g => g.grupo === pjFiltroCentro); return g ? routes.filter(r => r.origen_grupo ? r.origen_grupo === g.grupo : g.centroIds.includes(r.origenId)) : routes; })()
+    : routes;
+  const comunasDisponibles = [...new Map(
+    routesParaComuna
+      .map(r => { const z = zonesById.get(r.id_zona_transporte); return z ? { id: z.zona, label: z.denominacion || z.zona } : null; })
+      .filter(Boolean)
+      .map(c => [c.id, c])
+  ).values()].sort((a, b) => a.label.localeCompare(b.label));
 
   let rows = [];
   routes.forEach(ruta => {
@@ -695,6 +701,12 @@ function renderPeajesAuto(content, db, cfg) {
         db.routeTolls.push(row);
       }
       row[field] = val;
+      // IDA → replica automáticamente a VUELTA
+      if (field === 'peaje_ida') {
+        row.peaje_vuelta = val;
+        const vueltaInp = content.querySelector(`[data-toll-route="${routeId}"][data-toll-ejes="${ejes}"][data-toll-field="peaje_vuelta"]`);
+        if (vueltaInp) vueltaInp.value = val;
+      }
       row.needs_review = false; // edición manual = revisado
       row.updated_at = new Date().toISOString();
       saveDatabase(db);
@@ -705,8 +717,8 @@ function renderPeajesAuto(content, db, cfg) {
   document.getElementById('pj-f-origen').addEventListener('change', (e) => { pjFiltroCentro = e.target.value; renderPeajesAuto(content, db, cfg); });
   document.getElementById('pj-f-pend').addEventListener('change', (e) => { pjFiltroPendientes = e.target.checked; renderPeajesAuto(content, db, cfg); });
   document.getElementById('pj-kpi-todas').addEventListener('click', () => { pjFiltroPendientes = false; pjFiltroRevision = false; pjFiltroComuna = ''; pjFiltroCentro = ''; renderPeajesAuto(content, db, cfg); });
-  document.getElementById('pj-kpi-pendientes').addEventListener('click', () => { pjFiltroPendientes = true; pjFiltroRevision = false; pjFiltroComuna = ''; pjFiltroCentro = ''; renderPeajesAuto(content, db, cfg); });
-  document.getElementById('pj-kpi-revision').addEventListener('click', () => { pjFiltroRevision = true; pjFiltroPendientes = false; pjFiltroComuna = ''; pjFiltroCentro = ''; renderPeajesAuto(content, db, cfg); });
+  document.getElementById('pj-kpi-pendientes').addEventListener('click', () => { pjFiltroPendientes = !pjFiltroPendientes; if (pjFiltroPendientes) pjFiltroRevision = false; renderPeajesAuto(content, db, cfg); });
+  document.getElementById('pj-kpi-revision').addEventListener('click', () => { pjFiltroRevision = !pjFiltroRevision; if (pjFiltroRevision) pjFiltroPendientes = false; renderPeajesAuto(content, db, cfg); });
   document.getElementById('pj-export').addEventListener('click', () => exportPeajesCSV(db, rows));
   document.getElementById('pj-export-cache').addEventListener('click', () => exportRouteTollsCSV(db));
   document.getElementById('pj-import-cache').addEventListener('click', () => document.getElementById('pj-import-cache-input').click());
@@ -761,17 +773,23 @@ function renderPeajesAuto(content, db, cfg) {
 // SUB-MÓDULO 1b: PEAJES INTERREGIONALES
 // ============================================================
 function renderPeajesInterregionales(content, db, cfg) {
-  // Solo rutas Interregionales con zona tipo Comuna
-  const comunaZonasInter = new Set((db.transportZones || []).filter(z => z.tipo === 'Comuna').map(z => z.zona));
-  const routes = (db.routes || []).filter(r => r.activo && r.clasificRuta === 'Interregional' && comunaZonasInter.has(r.id_zona_transporte));
-
-  const zonasComunas = (db.transportZones || []).filter(z => z.tipo === 'Comuna');
-  const comunasDisponibles = [...new Map(
-    zonasComunas.map(z => [z.zona, { id: z.zona, label: z.denominacion || z.zona }])
-  ).values()].sort((a, b) => a.label.localeCompare(b.label));
+  // Solo rutas Interregionales tipo COMUNA (campo tipo de la ruta)
+  const routes = (db.routes || []).filter(r => r.activo && r.clasificRuta === 'Interregional' && (r.tipo || '').toUpperCase() === 'COMUNA');
 
   const grupos = getOrigenGroups(db);
   const centrosOrigen = grupos.map(g => ({ id: g.grupo, nombre: g.nombre }));
+
+  // Comunas filtradas por centro seleccionado
+  const zonesById_i = new Map((db.transportZones || []).map(z => [z.zona, z]));
+  const routesParaComuna_i = pjiFiltroCentro
+    ? (() => { const g = grupos.find(g => g.grupo === pjiFiltroCentro); return g ? routes.filter(r => r.origen_grupo ? r.origen_grupo === g.grupo : g.centroIds.includes(r.origenId)) : routes; })()
+    : routes;
+  const comunasDisponibles = [...new Map(
+    routesParaComuna_i
+      .map(r => { const z = zonesById_i.get(r.id_zona_transporte); return z ? { id: z.zona, label: z.denominacion || z.zona } : null; })
+      .filter(Boolean)
+      .map(c => [c.id, c])
+  ).values()].sort((a, b) => a.label.localeCompare(b.label));
 
   let rows = [];
   routes.forEach(ruta => {
@@ -941,6 +959,12 @@ function renderPeajesInterregionales(content, db, cfg) {
         db.routeTolls.push(row);
       }
       row[field] = val;
+      // IDA → replica automáticamente a VUELTA
+      if (field === 'peaje_ida') {
+        row.peaje_vuelta = val;
+        const vueltaInp = content.querySelector(`[data-toll-route="${routeId}"][data-toll-ejes="${ejes}"][data-toll-field="peaje_vuelta"]`);
+        if (vueltaInp) vueltaInp.value = val;
+      }
       row.needs_review = false;
       row.updated_at = new Date().toISOString();
       saveDatabase(db);
@@ -950,8 +974,8 @@ function renderPeajesInterregionales(content, db, cfg) {
   document.getElementById('pji-f-comuna').addEventListener('change', (e) => { pjiFiltroComuna = e.target.value; renderPeajesInterregionales(content, db, cfg); });
   document.getElementById('pji-f-origen').addEventListener('change', (e) => { pjiFiltroCentro = e.target.value; renderPeajesInterregionales(content, db, cfg); });
   document.getElementById('pji-f-pend').addEventListener('change', (e) => { pjiFiltroPendientes = e.target.checked; renderPeajesInterregionales(content, db, cfg); });
-  document.getElementById('pji-kpi-pendientes').addEventListener('click', () => { pjiFiltroPendientes = true; pjiFiltroRevision = false; pjiFiltroComuna = ''; pjiFiltroCentro = ''; renderPeajesInterregionales(content, db, cfg); });
-  document.getElementById('pji-kpi-revision').addEventListener('click', () => { pjiFiltroRevision = true; pjiFiltroPendientes = false; pjiFiltroComuna = ''; pjiFiltroCentro = ''; renderPeajesInterregionales(content, db, cfg); });
+  document.getElementById('pji-kpi-pendientes').addEventListener('click', () => { pjiFiltroPendientes = !pjiFiltroPendientes; if (pjiFiltroPendientes) pjiFiltroRevision = false; renderPeajesInterregionales(content, db, cfg); });
+  document.getElementById('pji-kpi-revision').addEventListener('click', () => { pjiFiltroRevision = !pjiFiltroRevision; if (pjiFiltroRevision) pjiFiltroPendientes = false; renderPeajesInterregionales(content, db, cfg); });
   document.getElementById('pji-export-cache').addEventListener('click', () => exportRouteTollsCSV(db));
   document.getElementById('pji-import-cache').addEventListener('click', () => document.getElementById('pji-import-cache-input').click());
   document.getElementById('pji-import-cache-input').addEventListener('change', (e) => {
@@ -2391,53 +2415,79 @@ function renderParticipacion(content, db, cfg) {
 
   let participacionFiltroCentro = '';
 
+  // Mapa de zonas para rollup Sector → COMUNA
+  const zonasByIdP = new Map((db.transportZones || []).map(z => [z.zona, z]));
+  // Índice de rutas por id y por codigo
+  const routeByIdP = new Map();
+  routes.forEach(r => { if (r.id) routeByIdP.set(r.id, r); if (r.codigo) routeByIdP.set(r.codigo, r); });
+
   function calcParticipacion(grupo) {
-    // Filas del grupo
     const grupoRows = histData.filter(h => oficToGrupo[h.oficina] === grupo);
     if (!grupoRows.length) return [];
 
-    // Agregar por ruta (sólo Regional + Comuna)
-    const routeMap = new Map();
+    // Paso 1: Agregar toneladas/clientes/obras por idRuta para todas las rutas Regionales
+    const rawMap = new Map();
     grupoRows.forEach(h => {
-      const ruta = routes.find(r => r.id === h.idRuta || r.codigo === h.idRuta);
-      if (!ruta || ruta.clasificRuta !== 'Regional' || ruta.tipo !== 'Comuna') return;
-      if (!routeMap.has(h.idRuta)) {
-        routeMap.set(h.idRuta, { idRuta: h.idRuta, ruta, clientes: new Set(), obras: new Set(), ton: 0 });
+      const ruta = routeByIdP.get(h.idRuta);
+      if (!ruta || ruta.clasificRuta !== 'Regional') return;
+      if (!rawMap.has(h.idRuta)) {
+        rawMap.set(h.idRuta, { idRuta: h.idRuta, ruta, clientes: new Set(), obras: new Set(), ton: 0 });
       }
-      const e = routeMap.get(h.idRuta);
+      const e = rawMap.get(h.idRuta);
       if (h.idCliente && h.idCliente !== '-') e.clientes.add(h.idCliente);
       if (h.idObra    && h.idObra    !== '-') e.obras.add(h.idObra);
       e.ton += h.ton;
     });
 
-    const aggregated = [...routeMap.values()].map(e => ({
-      rutaId:        e.idRuta,
-      ruta:          e.ruta,
-      clientes:      e.clientes.size,
-      obras:         e.obras.size,
-      toneladas:     e.ton,
-      caracteristica: e.ruta.caracteristica || 'NORMAL'
-    }));
+    // Paso 2: Identificar rutas COMUNA y construir mapa zonaId → rutaId (para rollup)
+    const comunaZonaToRutaId = new Map();
+    rawMap.forEach((e, idRuta) => {
+      if ((e.ruta.tipo || '').toUpperCase() === 'COMUNA' && e.ruta.id_zona_transporte) {
+        comunaZonaToRutaId.set(e.ruta.id_zona_transporte, idRuta);
+      }
+    });
 
-    const normales = aggregated.filter(r => r.caracteristica === 'NORMAL');
-    const extremas = aggregated.filter(r => r.caracteristica !== 'NORMAL');
+    // Paso 3: Inicializar routeMap solo con rutas COMUNA
+    const routeMap = new Map();
+    rawMap.forEach((e, idRuta) => {
+      if ((e.ruta.tipo || '').toUpperCase() === 'COMUNA') {
+        routeMap.set(idRuta, { idRuta, ruta: e.ruta, clientes: new Set(e.clientes), obras: new Set(e.obras), ton: e.ton });
+      }
+    });
 
-    const calcGroup = (group) => {
-      const totCli = group.reduce((s, r) => s + r.clientes, 0) || 1;
-      const totObr = group.reduce((s, r) => s + r.obras,    0) || 1;
-      const totTon = group.reduce((s, r) => s + r.toneladas,0) || 1;
-      return group.map(r => {
-        const pct = ((r.clientes/totCli + r.obras/totObr + r.toneladas/totTon) / 3) * 100;
-        return { ...r, pct: Math.round(pct * 100) / 100 };
-      }).sort((a, b) => b.pct - a.pct);
-    };
+    // Paso 4: Rollup Sector → COMUNA padre (vía zone.comuna = zonaId de la COMUNA padre)
+    rawMap.forEach((e, idRuta) => {
+      if ((e.ruta.tipo || '').toLowerCase() !== 'sector') return;
+      const zone = zonasByIdP.get(e.ruta.id_zona_transporte);
+      if (!zone || !zone.comuna) return;
+      const parentRutaId = comunaZonaToRutaId.get(zone.comuna);
+      if (!parentRutaId) return;
+      const parent = routeMap.get(parentRutaId);
+      if (!parent) return;
+      parent.ton += e.ton;
+      e.clientes.forEach(c => parent.clientes.add(c));
+      e.obras.forEach(o => parent.obras.add(o));
+    });
 
-    return [...calcGroup(normales), ...calcGroup(extremas)];
+    // Paso 5: Calcular PESO = ton_ruta / ton_total_centro, ordenar desc por toneladas
+    const totalTon = [...routeMap.values()].reduce((s, e) => s + e.ton, 0) || 1;
+
+    return [...routeMap.values()]
+      .map(e => ({
+        rutaId: e.idRuta,
+        ruta: e.ruta,
+        clientes: e.clientes.size,
+        obras: e.obras.size,
+        toneladas: e.ton,
+        peso: e.ton / totalTon,
+        caracteristica: e.ruta.caracteristica || 'NORMAL'
+      }))
+      .sort((a, b) => b.toneladas - a.toneladas);
   }
 
   function render(centroId) {
     const results = centroId ? calcParticipacion(centroId) : [];
-    const totalPct = results.reduce((s, r) => s + r.pct, 0);
+    const totalTon = results.reduce((s, r) => s + r.toneladas, 0);
 
     content.innerHTML = `
       <div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm">
@@ -2446,8 +2496,8 @@ function renderParticipacion(content, db, cfg) {
           <h2 class="font-headline-sm text-headline-sm font-bold text-on-surface">Participación Rutas</h2>
         </div>
         <p class="text-[12px] text-secondary mb-md">
-          Participación de cada ruta Regional + Comuna basada en el histórico de 6 meses (clientes, obras y toneladas).
-          Rutas con característica ISLA/EXTREMA calculan su porcentaje solo sobre el grupo de la misma característica.
+          Ranking de rutas Regionales + COMUNA por toneladas movilizadas (histórico 6 meses). Las rutas tipo Sector
+          suman sus toneladas a la COMUNA padre. El Peso es la fracción que representa cada ruta sobre el total del centro.
           Los datos provienen de <b>Tarifas Clientes → Histórico</b>.
         </p>
 
@@ -2466,34 +2516,37 @@ function renderParticipacion(content, db, cfg) {
           <table class="w-full zebra-table border-collapse">
             <thead>
               <tr class="bg-surface-container-high text-left border-b border-outline-variant">
+                <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-right">#</th>
                 <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Ruta</th>
                 <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Destino</th>
-                <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Característica</th>
+                <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Caract.</th>
                 <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-right">Clientes</th>
                 <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-right">Obras</th>
                 <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-right">Toneladas</th>
-                <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-right">% Participación</th>
+                <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-right">PESO</th>
                 <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Barra</th>
               </tr>
             </thead>
             <tbody class="font-body-md text-body-md">
-              ${results.map(r => {
-                const maxPct = results.length > 0 ? results[0].pct : 1;
-                const barWidth = Math.min(100, (r.pct / maxPct) * 100);
+              ${results.map((r, idx) => {
+                const maxTon = results.length > 0 ? results[0].toneladas : 1;
+                const barWidth = Math.min(100, (r.toneladas / maxTon) * 100);
                 const badgeCls = r.caracteristica === 'NORMAL' ? 'bg-surface-container-high text-secondary border border-outline-variant'
                   : r.caracteristica === 'ISLA' ? 'bg-blue-100 text-blue-800 border border-blue-300'
                   : 'bg-amber-100 text-amber-800 border border-amber-300';
+                const pesoPct = (r.peso * 100).toFixed(2);
                 return `<tr class="border-b border-outline-variant">
+                  <td class="p-md text-right text-secondary font-data-mono text-data-mono">${idx + 1}</td>
                   <td class="p-md font-bold">${escapeHtml(r.ruta?.codigo || r.rutaId)}</td>
                   <td class="p-md">${escapeHtml(r.ruta?.destino || '')}</td>
-                  <td class="p-md"><span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold ${badgeCls}">${r.caracteristica === 'NORMAL' ? '1' : r.caracteristica === 'ISLA' ? '2' : '3'}</span></td>
-                  <td class="p-md text-right">${r.clientes.toFixed(1)}</td>
-                  <td class="p-md text-right">${r.obras.toFixed(1)}</td>
-                  <td class="p-md text-right">${r.toneladas.toFixed(1)}</td>
-                  <td class="p-md text-right font-bold font-data-mono text-data-mono">${r.pct.toFixed(2)}%</td>
+                  <td class="p-md"><span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold ${badgeCls}">${r.caracteristica === 'NORMAL' ? 'NORMAL' : r.caracteristica === 'ISLA' ? 'ISLA' : 'EXTREMA'}</span></td>
+                  <td class="p-md text-right">${r.clientes}</td>
+                  <td class="p-md text-right">${r.obras}</td>
+                  <td class="p-md text-right font-data-mono text-data-mono">${r.toneladas.toLocaleString('es-CL', { maximumFractionDigits: 1 })}</td>
+                  <td class="p-md text-right font-bold font-data-mono text-data-mono">${pesoPct}%</td>
                   <td class="p-md">
                     <div class="w-24 h-2.5 bg-surface-container-high rounded-full overflow-hidden">
-                      <div class="h-full rounded-full ${r.caracteristica === 'NORMAL' ? 'bg-primary' : 'bg-amber-500'}" style="width: ${barWidth}%"></div>
+                      <div class="h-full rounded-full bg-primary" style="width: ${barWidth}%"></div>
                     </div>
                   </td>
                 </tr>`;
@@ -2501,8 +2554,9 @@ function renderParticipacion(content, db, cfg) {
             </tbody>
             <tfoot>
               <tr class="bg-surface-container-high border-t border-outline-variant">
-                <td colspan="6" class="p-md font-bold text-right">Total</td>
-                <td class="p-md font-bold font-data-mono text-data-mono text-right">${totalPct.toFixed(2)}%</td>
+                <td colspan="6" class="p-md font-bold text-right">Total Centro</td>
+                <td class="p-md font-bold font-data-mono text-data-mono text-right">${totalTon.toLocaleString('es-CL', { maximumFractionDigits: 1 })} ton</td>
+                <td class="p-md font-bold font-data-mono text-data-mono text-right">100%</td>
                 <td class="p-md"></td>
               </tr>
             </tfoot>
@@ -2531,8 +2585,9 @@ function renderParticipacion(content, db, cfg) {
         results.forEach(r => {
           cfg.participacionRutas = cfg.participacionRutas || {};
           cfg.participacionRutas[r.rutaId] = {
-            pct: r.pct,
-            cluster: r.pct >= 30 ? 1 : r.pct >= 10 ? 2 : 3,
+            pct: Math.round(r.peso * 10000) / 100,
+            peso: r.peso,
+            cluster: r.peso >= 0.30 ? 1 : r.peso >= 0.10 ? 2 : 3,
             caracteristica: r.caracteristica
           };
         });
@@ -2928,61 +2983,4 @@ function renderZapSap(content, db, cfg) {
               </tr>
             </thead>
             <tbody class="font-body-md text-body-md">
-              ${allRows.length === 0 ? '<tr><td colspan="11" class="p-md text-center text-secondary">Sin datos para los filtros seleccionados.</td></tr>' :
-                allRows.map(r => {
-                  const badgeCls = r.caracteristica === 'NORMAL' ? 'bg-surface-container-high text-secondary border border-outline-variant'
-                    : r.caracteristica === 'ISLA' ? 'bg-blue-100 text-blue-800 border border-blue-300'
-                    : 'bg-amber-100 text-amber-800 border border-amber-300';
-                  return `<tr class="border-b border-outline-variant">
-                    <td class="p-md font-data-mono">${escapeHtml(r.centroId)}</td>
-                    <td class="p-md">${escapeHtml(r.centroNombre)}</td>
-                    <td class="p-md font-bold font-data-mono">${escapeHtml(r.rutaCodigo)}</td>
-                    <td class="p-md">${escapeHtml(r.rutaDestino)}</td>
-                    <td class="p-md"><span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold ${badgeCls}">${r.caracteristica === 'NORMAL' ? '1' : r.caracteristica === 'ISLA' ? '2' : '3'}</span></td>
-                    <td class="p-md text-right font-data-mono">${r.capKg}</td>
-                    <td class="p-md text-right font-data-mono">${r.kmIda}</td>
-                    <td class="p-md text-right font-data-mono">${formatCLP(Math.round(r.tarifaKm))}</td>
-                    <td class="p-md text-right font-data-mono">${formatCLP(r.costoBase)}</td>
-                    <td class="p-md text-right font-bold font-data-mono">${formatCLP(r.costoTotal)}</td>
-                    <td class="p-md text-right font-data-mono">${r.participacion.toFixed(1)}%</td>
-                  </tr>`;
-                }).join('')}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    `;
-
-    document.getElementById('zap-f-centro')?.addEventListener('change', (e) => {
-      zapFiltroCentro = e.target.value;
-      render(e.target.value || null);
-    });
-
-    document.getElementById('zap-export')?.addEventListener('click', () => {
-      if (allRows.length === 0) {
-        showAlert('No hay datos para exportar.', 'info');
-        return;
-      }
-      const headers = ['ID_CENTRO', 'CENTRO', 'ID_RUTA', 'DESTINO', 'FACTOR', 'TIPO_CAMION_KG', 'KM_IDA', 'TARIFA_KM', 'COSTO_BASE', 'COSTO_TOTAL', 'PARTICIPACION'];
-      const bom = '\uFEFF';
-      const csvData = allRows.map(r => [
-        r.centroId,
-        r.centroNombre,
-        r.rutaCodigo,
-        r.rutaDestino,
-        r.caracteristica === 'NORMAL' ? 1 : r.caracteristica === 'ISLA' ? 2 : 3,
-        r.capKg,
-        r.kmIda,
-        Math.round(r.tarifaKm),
-        r.costoBase,
-        r.costoTotal,
-        r.participacion.toFixed(1)
-      ]);
-      const csv = bom + toCSV(headers, csvData);
-      downloadFile(`zap_sap_export_${new Date().toISOString().slice(0,10).replace(/-/g,'')}.csv`, csv);
-      showAlert(`Archivo ZAP/SAP exportado: ${csvData.length} registros.`);
-    });
-  }
-
-  render(null);
-}
+              ${allRows.length === 0 ? '<tr><td colspan="11" class="p-md text-center text-secondary">Sin datos para los filtros selecci
