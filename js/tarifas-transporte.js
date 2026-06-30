@@ -23,8 +23,9 @@ let pjiFiltroPendientes = false;
 let pjiFiltroRevision = false;
 
 // Estado de filtros de la vista "Motor de Costo — Resultados por Ruta"
-let zcapFiltroCentro = ''; // origen_grupo (Centro Origen); '' = todos
-let zcapFiltroClasif = ''; // 'Regional' | 'Interregional'; '' = todas
+let zcapFiltroCentro  = ''; // origen_grupo (Centro Origen); '' = todos
+let zcapFiltroClasif  = ''; // 'Regional' | 'Interregional'; '' = todas
+let zcapFiltroCapKg   = ''; // '5000'|'10000'|'15000'|'28000'; '' = todos
 let tarifaCentroFiltro = '';
 
 // ---------- Helpers genéricos ----------
@@ -2827,6 +2828,7 @@ function renderResultados(content, db, cfg) {
   matriz = matriz.filter(m => (m.ruta.tipo || '').toUpperCase() === 'COMUNA');
   if (zcapFiltroCentro) matriz = matriz.filter(m => m.ruta.origen_grupo === zcapFiltroCentro);
   if (zcapFiltroClasif) matriz = matriz.filter(m => m.ruta.clasificRuta === zcapFiltroClasif);
+  if (zcapFiltroCapKg)  matriz = matriz.filter(m => String(m.truckType?.capKg) === zcapFiltroCapKg);
 
   const grupoSel = groups.find(g => g.grupo === zcapFiltroCentro);
   const participacion = cfg.participacionRutas || {};
@@ -2885,6 +2887,16 @@ function renderResultados(content, db, cfg) {
             <option value="Interregional" ${zcapFiltroClasif === 'Interregional' ? 'selected' : ''}>Interregional</option>
           </select>
         </div>
+        <div>
+          <label class="font-label-caps text-label-caps text-secondary block">TIPO CAMIÓN (KG)</label>
+          <select id="zcap-f-capkg" class="border border-[#CED4DA] p-sm font-body-md text-body-md bg-white w-44">
+            <option value="">Todos</option>
+            <option value="5000"  ${zcapFiltroCapKg === '5000'  ? 'selected' : ''}>5.000 Kg</option>
+            <option value="10000" ${zcapFiltroCapKg === '10000' ? 'selected' : ''}>10.000 Kg</option>
+            <option value="15000" ${zcapFiltroCapKg === '15000' ? 'selected' : ''}>15.000 Kg</option>
+            <option value="28000" ${zcapFiltroCapKg === '28000' ? 'selected' : ''}>28.000 Kg</option>
+          </select>
+        </div>
       </div>
 
       <div class="bg-surface border border-outline-variant overflow-hidden rounded overflow-x-auto">
@@ -2941,6 +2953,10 @@ function renderResultados(content, db, cfg) {
   });
   document.getElementById('zcap-f-clasif').addEventListener('change', (e) => {
     zcapFiltroClasif = e.target.value;
+    renderResultados(content, db, cfg);
+  });
+  document.getElementById('zcap-f-capkg').addEventListener('change', (e) => {
+    zcapFiltroCapKg = e.target.value;
     renderResultados(content, db, cfg);
   });
 
