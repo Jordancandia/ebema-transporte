@@ -2541,7 +2541,8 @@ function renderParticipacion(content, db, cfg) {
 
     return [...routeMap.values()]
       .map(e => ({
-        rutaId: e.idRuta,
+        rutaId: e.ruta?.id || e.idRuta,   // preferir UUID para lookup garantizado
+        rutaCodigo: e.ruta?.codigo || e.idRuta,
         ruta: e.ruta,
         clientes: e.clientes.size,
         obras: e.obras.size,
@@ -2651,12 +2652,15 @@ function renderParticipacion(content, db, cfg) {
       guardarBtn.addEventListener('click', () => {
         results.forEach(r => {
           cfg.participacionRutas = cfg.participacionRutas || {};
-          cfg.participacionRutas[r.rutaId] = {
+          const entry = {
             pct: Math.round(r.peso * 10000) / 100,
             peso: r.peso,
             cluster: r.peso >= 0.30 ? 1 : r.peso >= 0.10 ? 2 : 3,
             caracteristica: r.caracteristica
           };
+          cfg.participacionRutas[r.rutaId] = entry;          // por UUID
+          if (r.rutaCodigo && r.rutaCodigo !== r.rutaId)
+            cfg.participacionRutas[r.rutaCodigo] = entry;    // por código (fallback)
         });
         saveDatabase(db);
         showAlert(`Participación guardada para ${results.length} ruta(s).`);
