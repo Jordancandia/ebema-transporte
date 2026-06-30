@@ -2833,7 +2833,23 @@ function renderResultados(content, db, cfg) {
   const groupMap = {};
   groups.forEach(g => { groupMap[g.grupo] = g.nombre; });
 
-  const HEADERS = ['Centro', 'ID Ruta', 'Destino', 'Clasificación', 'Tipo Camión (Kg)', 'KM', 'Peajes', 'Comb. Ida', 'Comb. Vuelta', 'Seguros (SOAP+Seg)', 'Mantención', 'Neumáticos', 'GPS', 'Rem. Chofer', 'Var. Chofer', 'Factor Ruta', 'Costo Ruta Total', 'Costo/KM Final', 'Peso', 'Tarifa Ponderada'];
+  // Mapa de costos extras: route_id + ejes → { ida, vuelta, total }
+  const extraCostsMap = new Map();
+  (db.extraCosts || []).filter(c => c.activo !== false).forEach(c => {
+    const key = `${c.route_id}__${c.ejes}`;
+    const prev = extraCostsMap.get(key) || { ida: 0, vuelta: 0 };
+    extraCostsMap.set(key, {
+      ida:    prev.ida    + (Number(c.costo_ida)    || 0),
+      vuelta: prev.vuelta + (Number(c.costo_vuelta) || 0)
+    });
+  });
+  function getExtraTotal(ruta, capKg) {
+    const ejes = capKg <= 10000 ? 2 : 3;
+    const entry = extraCostsMap.get(`${ruta.id}__${ejes}`);
+    return entry ? entry.ida + entry.vuelta : 0;
+  }
+
+  const HEADERS = ['Centro', 'ID Ruta', 'Destino', 'Clasificación', 'Tipo Camión (Kg)', 'KM', 'Peajes', 'Comb. Ida', 'Comb. Vuelta', 'Seguros (SOAP+Seg)', 'Costos Extras', 'Mantención', 'Neumáticos', 'GPS', 'Rem. Chofer', 'Var. Chofer', 'Factor Ruta', 'Costo Ruta Total', 'Costo/KM Final', 'Peso', 'Tarifa Ponderada'];
 
   content.innerHTML = `
     <div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm mb-lg">
@@ -2887,7 +2903,9 @@ function renderResultados(content, db, cfg) {
                 const grupoNombre = groupMap[m.ruta.origen_grupo] || m.ruta.origen_grupo;
                 const seguros = (m.item3_soapKm || 0) + (m.item4_seguroKm || 0);
                 const factorLabel = m.factorRuta != null ? m.factorRuta.toFixed(2) : '1.00';
-                const capLabel = m.truckType?.capKg ? m.truckType.capKg.toLocaleString('es-CL') : '—';
+                const capKg = m.truckType?.capKg || 0;
+                const capLabel = capKg ? capKg.toLocaleString('es-CL') : '—';
+                const extraTotal = getExtraTotal(m.ruta, capKg);
                 return `<tr class="border-b border-outline-variant">
                 <td class="p-md font-bold text-nowrap">${grupoNombre}</td>
                 <td class="p-md font-data-mono text-data-mono font-bold">${m.ruta.codigo}</td>
@@ -2899,6 +2917,7 @@ function renderResultados(content, db, cfg) {
                 <td class="p-md text-right font-data-mono text-data-mono">${formatCLP(m.combIda)}</td>
                 <td class="p-md text-right font-data-mono text-data-mono">${formatCLP(m.combVuelta)}</td>
                 <td class="p-md text-right font-data-mono text-data-mono">${formatCLP(seguros)}</td>
+                <td class="p-md text-right font-data-mono text-data-mono ${extraTotal > 0 ? 'text-amber-700 font-bold' : ''}">${extraTotal > 0 ? formatCLP(extraTotal) : '—'}</td>
                 <td class="p-md text-right font-data-mono text-data-mono">${formatCLP(m.item5_mantKm)}</td>
                 <td class="p-md text-right font-data-mono text-data-mono">${formatCLP(m.item6_neumKm)}</td>
                 <td class="p-md text-right font-data-mono text-data-mono">${formatCLP(m.item7_gpsKm)}</td>
@@ -2935,24 +2954,27 @@ function renderResultados(content, db, cfg) {
   });
 
   document.getElementById('zcap-export').addEventListener('click', () => {
-    const headers = ['Grupo_Centro', 'ID_Ruta', 'Destino', 'Clasificacion', 'Tipo_Camion_Kg', 'KM', 'Peajes', 'Comb_Ida', 'Comb_Vuelta', 'Seguros_SOAP', 'Mantencion', 'Neumaticos', 'GPS', 'Rem_Chofer', 'Var_Chofer', 'Factor_Ruta', 'Costo_Ruta_Total', 'Costo_KM_Final', 'Peso_Pct', 'Tarifa_Ponderada'];
+    const headers = ['Grupo_Centro', 'ID_Ruta', 'Destino', 'Clasificacion', 'Tipo_Camion_Kg', 'KM', 'Peajes', 'Comb_Ida', 'Comb_Vuelta', 'Seguros_SOAP', 'Costos_Extras', 'Mantencion', 'Neumaticos', 'GPS', 'Rem_Chofer', 'Var_Chofer', 'Factor_Ruta', 'Costo_Ruta_Total', 'Costo_KM_Final', 'Peso_Pct', 'Tarifa_Ponderada'];
     const rows = matriz.map(m => {
       const grupoNombre = groupMap[m.ruta.origen_grupo] || m.ruta.origen_grupo;
       const partEntry = participacion[m.ruta.id] || participacion[m.ruta.codigo];
       const pct = partEntry?.pct || 0;
       const tarifaPonderada = ((m.item11_costoKmFinal || 0) * pct / 100);
       const seguros = (m.item3_soapKm || 0) + (m.item4_seguroKm || 0);
+      const capKgCsv = m.truckType?.capKg || 0;
+      const extraTotalCsv = getExtraTotal(m.ruta, capKgCsv);
       return [
         grupoNombre,
         m.ruta.codigo,
         m.ruta.destino || '',
         m.ruta.clasificRuta || '',
-        m.truckType?.capKg || '',
+        capKgCsv || '',
         m.km,
         Math.round(m.item1_peajes),
         Math.round(m.combIda || 0),
         Math.round(m.combVuelta || 0),
         Math.round(seguros),
+        Math.round(extraTotalCsv),
         Math.round(m.item5_mantKm),
         Math.round(m.item6_neumKm),
         Math.round(m.item7_gpsKm),
