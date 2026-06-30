@@ -153,7 +153,6 @@ export function renderTariffTransportView(container) {
       case 'participacion': renderParticipacion(content, db, cfg); break;
       case 'variables': renderVariables(content, db, cfg); break;
       case 'resultados': renderResultados(content, db, cfg); break;
-      case 'zapsap': renderZapSap(content, db, cfg); break;
     }
 
     // Listener delegado para todas las celdas editables con data-path
@@ -418,17 +417,6 @@ function renderCostosExtras(content, db, cfg) {
             <label class="font-label-caps text-label-caps text-secondary block mb-xs">COMUNA / DESTINO</label>
             <select id="ce-m-comuna" class="w-full border border-[#CED4DA] p-sm font-body-md text-body-md bg-white">
               <option value="">— Seleccionar —</option>
-              ${(() => {
-                const centroSel = ce ? (grupos.find(g => g.centroIds.includes(routes.find(r => r.id === ce.route_id)?.origenId) || routes.find(r => r.id === ce.route_id)?.origen_grupo === g.grupo))?.grupo || '' : '';
-                const g = grupos.find(g => g.grupo === centroSel);
-                const ids = g ? g.centroIds : [];
-                const comunas = [...new Map(
-                  routes.filter(r => (!ids.length || ids.includes(r.origenId) || r.origen_grupo === centroSel))
-                    .map(r => [r.destino || r.id, { val: r.destino || r.id, label: r.destino || r.codigo }])
-                ).values()].sort((a,b) => a.label.localeCompare(b.label));
-                const rutaSel = ce ? routes.find(r => r.id === ce.route_id) : null;
-                return comunas.map(c => `<option value="${escapeHtml(c.val)}" ${rutaSel && rutaSel.destino === c.val ? 'selected' : ''}>${escapeHtml(c.label)}</option>`).join('');
-              })()}
             </select>
           </div>
           <div>
@@ -476,7 +464,7 @@ function renderCostosExtras(content, db, cfg) {
     `;
     document.body.appendChild(el);
 
-    // Función para repoblar dropdown de COMMUNE según centro
+    // Función para repoblar COMMUNE según centro
     function repoblarComunas(centroGrupo) {
       const g = grupos.find(g => g.grupo === centroGrupo);
       const ids = g ? g.centroIds : [];
@@ -489,7 +477,7 @@ function renderCostosExtras(content, db, cfg) {
       el.querySelector('#ce-m-ruta').innerHTML = '<option value="">— Seleccionar —</option>';
     }
 
-    // Función para repoblar RUTA según COMMUNE seleccionada
+    // Función para repoblar RUTA según COMMUNE
     function repoblarRutas(centroGrupo, destino) {
       const g = grupos.find(g => g.grupo === centroGrupo);
       const ids = g ? g.centroIds : [];
@@ -500,8 +488,12 @@ function renderCostosExtras(content, db, cfg) {
       const sel = el.querySelector('#ce-m-ruta');
       sel.innerHTML = '<option value="">— Seleccionar —</option>' +
         rutasFiltradas.map(r => `<option value="${escapeHtml(r.id)}">${escapeHtml(r.codigo)} — ${escapeHtml(r.destino || '')}</option>`).join('');
-      if (rutasFiltradas.length === 1) sel.value = rutasFiltradas[0].id; // auto-seleccionar si hay solo una
+      if (rutasFiltradas.length === 1) sel.value = rutasFiltradas[0].id;
     }
+
+    // Precargar comunas si hay centro preseleccionado (editar)
+    const centroPresel = el.querySelector('#ce-m-centro').value;
+    if (centroPresel) repoblarComunas(centroPresel);
 
     // Filtrar rutas al cambiar centro en el modal
     el.querySelector('#ce-m-centro').addEventListener('change', e => {
@@ -774,12 +766,6 @@ function renderPeajesAuto(content, db, cfg) {
         db.routeTolls.push(row);
       }
       row[field] = val;
-      // IDA → replica automáticamente a VUELTA
-      if (field === 'peaje_ida') {
-        row.peaje_vuelta = val;
-        const vueltaInp = content.querySelector(`[data-toll-route="${routeId}"][data-toll-ejes="${ejes}"][data-toll-field="peaje_vuelta"]`);
-        if (vueltaInp) vueltaInp.value = val;
-      }
       row.needs_review = false; // edición manual = revisado
       row.updated_at = new Date().toISOString();
       saveDatabase(db);
@@ -2499,10 +2485,11 @@ function renderParticipacion(content, db, cfg) {
     const grupoRows = histData.filter(h => oficToGrupo[h.oficina] === grupo);
     if (!grupoRows.length) return [];
 
-    // Paso 1: Agregar toneladas/clientes/obras por idRuta para todas las rutas Regionales
     // Solo rutas que pertenecen al centro seleccionado
     const g = grupos.find(g => g.grupo === grupo);
     const centroIds = g ? g.centroIds : [];
+
+    // Paso 1: Agregar toneladas/clientes/obras por idRuta para todas las rutas Regionales
     const rawMap = new Map();
     grupoRows.forEach(h => {
       const ruta = routeByIdP.get(h.idRuta);
@@ -2958,4 +2945,25 @@ function renderResultados(content, db, cfg) {
         m.ruta.codigo,
         m.ruta.destino || '',
         m.ruta.clasificRuta || '',
-        m.tru
+        m.truckType?.capKg || '',
+        m.km,
+        Math.round(m.item1_peajes),
+        Math.round(m.combIda || 0),
+        Math.round(m.combVuelta || 0),
+        Math.round(seguros),
+        Math.round(m.item5_mantKm),
+        Math.round(m.item6_neumKm),
+        Math.round(m.item7_gpsKm),
+        Math.round(m.item8_choferBaseDiario),
+        Math.round(m.item9_varChofer),
+        (m.factorRuta || 1).toFixed(2),
+        Math.round(m.item10_costoRutaTotal),
+        Math.round(m.item11_costoKmFinal),
+        pct.toFixed(2),
+        Math.round(tarifaPonderada)
+      ];
+    });
+    downloadFile(`motor_costo_${Date.now()}.csv`, toCSV(headers, rows));
+    showAlert('Archivo CSV del Motor de Costo exportado');
+  });
+}
