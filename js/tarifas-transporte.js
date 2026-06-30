@@ -2661,6 +2661,7 @@ function renderParticipacion(content, db, cfg) {
           cfg.participacionRutas[r.rutaId] = entry;          // por UUID
           if (r.rutaCodigo && r.rutaCodigo !== r.rutaId)
             cfg.participacionRutas[r.rutaCodigo] = entry;    // por código (fallback)
+          console.log('[PART-SAVE]', r.rutaId, r.rutaCodigo, entry.pct);
         });
         saveDatabase(db);
         showAlert(`Participación guardada para ${results.length} ruta(s).`);
@@ -2915,6 +2916,7 @@ function renderResultados(content, db, cfg) {
               matriz.map(m => {
                 const partEntry = participacion[m.ruta.id] || participacion[m.ruta.codigo];
                 const pct = partEntry?.pct || 0;
+                if (!partEntry) console.log('[PART-MISS]', m.ruta.id, m.ruta.codigo, Object.keys(participacion).slice(0,5));
                 const tarifaPonderada = ((m.item11_costoKmFinal || 0) * pct / 100);
                 const grupoNombre = groupMap[m.ruta.origen_grupo] || m.ruta.origen_grupo;
                 const seguros = (m.item3_soapKm || 0) + (m.item4_seguroKm || 0);
