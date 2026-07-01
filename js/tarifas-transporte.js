@@ -1939,12 +1939,17 @@ function syncTarifasZcap(db, cfg, grupoFiltro = '') {
   const conZcap = new Set();
   let cambios = false;
 
-  // Suma tarifa ponderada = Σ(costoKmFinal × peso%) para un conjunto de rutas
-  function sumaPonderada(items) {
-    return items.reduce((s, m) => {
+  // Tarifa base = Σ(costoKmFinal × peso%) si hay participación guardada;
+  // si no hay (todos peso=0), usa el promedio simple de costoKmFinal (fallback Motor de Costo)
+  function tarifaBase(items) {
+    const sumaPond = items.reduce((s, m) => {
       const p = participacion[m.ruta.id] || participacion[m.ruta.codigo];
       return s + (m.item11_costoKmFinal || 0) * ((p?.pct || 0) / 100);
     }, 0);
+    if (sumaPond > 0) return sumaPond;
+    // Fallback: promedio simple de costoKmFinal del Motor de Costo
+    const total = items.reduce((s, m) => s + (m.item11_costoKmFinal || 0), 0);
+    return items.length ? total / items.length : 0;
   }
 
   groups.forEach(g => {
@@ -1962,11 +1967,11 @@ function syncTarifasZcap(db, cfg, grupoFiltro = '') {
       const itemsNormal  = items.filter(m => (m.ruta.caracteristica || 'NORMAL').toUpperCase() === 'NORMAL');
       const itemsExtrema = items.filter(m => (m.ruta.caracteristica || 'NORMAL').toUpperCase() !== 'NORMAL');
 
-      const ratePerKm = Math.round(sumaPonderada(itemsNormal) * (1 + margenPct / 100));
+      const ratePerKm = Math.round(tarifaBase(itemsNormal) * (1 + margenPct / 100));
       if (t.ratePerKm !== ratePerKm) { t.ratePerKm = ratePerKm; cambios = true; }
 
       if (itemsExtrema.length > 0) {
-        const ratePerKmExtrema = Math.round(sumaPonderada(itemsExtrema) * (1 + margenPct / 100));
+        const ratePerKmExtrema = Math.round(tarifaBase(itemsExtrema) * (1 + margenPct / 100));
         if (t.ratePerKmExtrema !== ratePerKmExtrema) { t.ratePerKmExtrema = ratePerKmExtrema; cambios = true; }
       }
     });
