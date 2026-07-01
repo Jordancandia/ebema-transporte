@@ -105,7 +105,7 @@ export function calcularCostoRuta(db, cfg, ruta, capKg) {
   const margenPct = Number(cfg.variables.margenGanancia) || 0;
   const sumItems = item1_peajes + item1b_costosExtra + item2_combustible + item3_soapKm + item4_seguroKm +
     item5_mantKm + item6_neumKm + item7_gpsKm + item8_choferBaseDiario + item9_varChofer;
-  const costoVuelta = (sumItems + peajeVuelta + combVuelta + itemExtraVuelta) * factorRuta;
+  const costoVuelta = sumItems * factorRuta;
 
   // --- 10b. Costo Ruta Total (costo vuelta + margen del transportista sobre precio de venta) ---
   // Fórmula: costoVuelta / (1 - margen%) — margen calculado sobre precio, no sobre costo.
