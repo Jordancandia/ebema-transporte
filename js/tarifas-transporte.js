@@ -1956,7 +1956,7 @@ function syncTarifasZcap(db, cfg, grupoFiltro = '') {
     const rows = (db.truckTypes || []).filter(t => t.Id_centro === g.repId);
     rows.forEach(t => {
       const items = matriz.filter(m =>
-        g.centroIds.includes(m.centroId) &&
+        m.ruta.origen_grupo === g.grupo &&
         m.capKg === truckCapKg(t.type) &&
         (m.ruta.tipo || '').toUpperCase() === 'COMUNA' &&
         m.ruta.clasificRuta === 'Regional'
