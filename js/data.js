@@ -363,9 +363,27 @@ async function syncTable(table, pk, rows) {
 // el resto de las tablas (incluida la que el usuario realmente editó) nunca
 // se sincronizaría, aunque el error no tenga relación con su cambio.
 
-// ─── IndexedDB para historico (evita límite 5MB de localStorage) ──────────
+// ─── Persistencia del histórico: localStorage (primario) + IndexedDB (fallback para datasets grandes) ──
+const HIST_LS_KEY = 'sit_ebema_hist_v1';
 const IDB_NAME    = 'sit_ebema_idb';
 const IDB_VERSION = 1;
+
+function _saveHistLS(rows) {
+  try {
+    localStorage.setItem(HIST_LS_KEY, JSON.stringify(rows || []));
+    return true;
+  } catch (_e) {
+    // localStorage lleno — dejar que IDB sea el único respaldo
+    return false;
+  }
+}
+
+function _loadHistLS() {
+  try {
+    const s = localStorage.getItem(HIST_LS_KEY);
+    return s ? JSON.parse(s) : null;
+  } catch (_e) { return null; }
+}
 
 function openIDB() {
   return new Promise((resolve, reject) => {
@@ -380,6 +398,9 @@ function openIDB() {
 }
 
 export async function saveHistorico(rows) {
+  // Intentar localStorage primero (más confiable en recargas)
+  _saveHistLS(rows);
+  // También guardar en IDB como respaldo para datasets grandes
   try {
     const db = await openIDB();
     await new Promise((resolve, reject) => {
@@ -394,6 +415,10 @@ export async function saveHistorico(rows) {
 }
 
 export async function loadHistorico() {
+  // 1. Intentar localStorage (más rápido y confiable)
+  const lsData = _loadHistLS();
+  if (lsData?.length > 0) return lsData;
+  // 2. Fallback a IndexedDB
   try {
     const db = await openIDB();
     return await new Promise((resolve, reject) => {
