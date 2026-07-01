@@ -4,8 +4,9 @@ import { renderTransportsView } from './transports.js';
 import { renderRoutesView } from './routes.js';
 import { renderRatesView } from './rates.js';
 import { renderRolesView } from './roles.js';
-import { renderTariffTransportView } from './tarifas-transporte.js?v=20260701i';
+import { renderTariffTransportView } from './tarifas-transporte.js?v=20260701j';
 import { renderClientTariffView } from './tarifas-clientes.js?v=20260622b';
+import { renderZcapView } from './zcap.js';
 import { showAlert, formatRut, validateRut, formatPhone } from './utils.js';
 
 const SESSION_KEY = 'ebema_user_session';
@@ -942,6 +943,12 @@ function renderDashboardShell() {
           <span class="material-symbols-outlined">request_quote</span>
           <span class="font-body-md text-body-md">Tarifas Clientes</span>
         </a>
+
+        <!-- ZCAP — Costos de Servicio por Centro -->
+        <a class="sidebar-item flex items-center gap-md px-md py-sm text-secondary hover:text-primary hover:bg-surface-container-high transition-colors rounded-lg cursor-pointer" data-tab="zcap" id="nav-zcap">
+          <span class="material-symbols-outlined">price_check</span>
+          <span class="font-body-md text-body-md">ZCAP</span>
+        </a>
       </div>
 
       <div class="mt-auto space-y-base border-t border-surface-variant pt-lg">
@@ -1051,6 +1058,10 @@ function switchTab(tabName) {
     case 'tarifas-clientes':
       pageTitle.textContent = 'Administrador de Tarifas Clientes';
       renderClientTariffView(stage);
+      break;
+    case 'zcap':
+      pageTitle.textContent = 'ZCAP — Costos de Servicio';
+      renderZcapView(stage);
       break;
   }
 }
