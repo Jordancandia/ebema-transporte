@@ -2950,7 +2950,7 @@ function renderResultados(content, db, cfg) {
     return entry ? entry.ida + entry.vuelta : 0;
   }
 
-  const HEADERS = ['Centro', 'ID Ruta', 'Destino', 'Clasificación', 'Tipo Camión (Kg)', 'KM', 'Peajes', 'Comb. Ida', 'Comb. Vuelta', 'Seguros (SOAP+Seg)', 'Costos Extras', 'Mantención', 'Neumáticos', 'GPS', 'Rem. Chofer', 'Var. Chofer', 'Factor Ruta', 'Costo Ruta Total', 'Costo/KM Final', 'Peso', 'Tarifa Ponderada'];
+  const HEADERS = ['Centro', 'ID Ruta', 'Destino', 'Clasificación', 'Tipo Camión (Kg)', 'KM', 'Peajes', 'Comb. Ida', 'Comb. Vuelta', 'Seguros (SOAP+Seg)', 'Costos Extras', 'Mantención', 'Neumáticos', 'GPS', 'Rem. Chofer', 'Var. Chofer', 'Factor Ruta', 'Costo Vuelta', 'Costo Ruta Total', 'Costo/KM Final', 'Peso', 'Tarifa Ponderada'];
 
   content.innerHTML = `
     <div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm mb-lg">
@@ -2968,7 +2968,7 @@ function renderResultados(content, db, cfg) {
           </button>
         </div>
       </div>
-      <p class="text-[12px] text-secondary mb-md">Desglose completo de costos por ruta y tipo de camión. KM es solo ida; Peajes y Combustible consideran ida + vuelta. "Actualizar Tarifas" recalcula y guarda Tarifa/KM y Tarifa Base (Tarifa por Camión) para el Centro Origen filtrado. Las columnas Participación y Tarifa Ponderada se calculan desde la vista Participación Rutas.</p>
+      <p class="text-[12px] text-secondary mb-md">Desglose por ruta y tipo de camión. <strong>Costo Vuelta</strong> = Σ ítems × factor ruta (costo puro). <strong>Costo Ruta Total</strong> = Costo Vuelta / (1 − margen%) = precio de venta. <strong>Tarifa Ponderada</strong> = (Costo Ruta Total / km×2) × peso ruta.</p>
 
       <div class="flex flex-wrap items-end gap-md mb-md">
         <div>
@@ -3041,7 +3041,8 @@ function renderResultados(content, db, cfg) {
                 <td class="p-md text-right font-data-mono text-data-mono">${formatCLP(m.item8_choferBaseDiario)}</td>
                 <td class="p-md text-right font-data-mono text-data-mono">${formatCLP(m.item9_varChofer)}</td>
                 <td class="p-md text-right font-data-mono text-data-mono font-bold">${factorLabel}</td>
-                <td class="p-md text-right font-data-mono text-data-mono">${formatCLP(m.item10_costoRutaTotal)}</td>
+                <td class="p-md text-right font-data-mono text-data-mono">${formatCLP(m.costoVuelta)}</td>
+                <td class="p-md text-right font-data-mono text-data-mono font-bold">${formatCLP(m.item10_costoRutaTotal)}</td>
                 <td class="p-md text-right font-data-mono text-data-mono">${formatCLP(m.item11_costoKmFinal)}</td>
                 <td class="p-md text-right font-data-mono text-data-mono">${pct.toFixed(2)}%</td>
                 <td class="p-md text-right font-data-mono text-data-mono">${formatCLP(Math.round(tarifaPonderada))}</td>
@@ -3106,6 +3107,7 @@ function renderResultados(content, db, cfg) {
         Math.round(m.item8_choferBaseDiario),
         Math.round(m.item9_varChofer),
         (m.factorRuta || 1).toFixed(2),
+        Math.round(m.costoVuelta || 0),
         Math.round(m.item10_costoRutaTotal),
         Math.round(m.item11_costoKmFinal),
         pct.toFixed(2),

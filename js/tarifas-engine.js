@@ -100,19 +100,23 @@ export function calcularCostoRuta(db, cfg, ruta, capKg) {
   const baseComision = peajeIda + itemExtraIda + combIda + item3_soapKm + item4_seguroKm + item5_mantKm + item6_neumKm + item7_gpsKm;
   const item9_varChofer = baseComision * (comisionPct / 100);
 
-  // --- 10. Costo Ruta Total (aplica Factor Ruta geográfico) ---
+  // --- 10. Costo Vuelta (Σ ítems × Factor Ruta geográfico) ---
   const factorRuta = (cfg.variables.factorRuta || {})[ruta.caracteristica] ?? 1;
+  const margenPct = Number(cfg.variables.margenGanancia) || 0;
   const sumItems = item1_peajes + item1b_costosExtra + item2_combustible + item3_soapKm + item4_seguroKm +
     item5_mantKm + item6_neumKm + item7_gpsKm + item8_choferBaseDiario + item9_varChofer;
-  const item10_costoRutaTotal = (sumItems + peajeVuelta + combVuelta + itemExtraVuelta) * factorRuta;
+  const costoVuelta = (sumItems + peajeVuelta + combVuelta + itemExtraVuelta) * factorRuta;
 
-  // --- 11. Costo por KM Final ---
+  // --- 10b. Costo Ruta Total (costo vuelta + margen del transportista sobre precio de venta) ---
+  // Fórmula: costoVuelta / (1 - margen%) — margen calculado sobre precio, no sobre costo.
+  const divisorMargen = margenPct < 100 ? (1 - margenPct / 100) : 1;
+  const item10_costoRutaTotal = costoVuelta / divisorMargen;
+
+  // --- 11. Costo por KM Final (incluye factor ruta + margen) ---
   const item11_costoKmFinal = km > 0 ? item10_costoRutaTotal / (km * 2) : 0;
 
-  // --- 12. ZCAP: Expectativa de pago al transportista ---
+  // --- 12. ZCAP: Expectativa de pago al transportista (con margen incorporado) ---
   const item12_zcap = item11_costoKmFinal * km;
-
-  const margenPct = Number(cfg.variables.margenGanancia) || 0;
 
   return {
     rutaId: ruta.id, centroId, capKg, km, ejes,
@@ -121,9 +125,9 @@ export function calcularCostoRuta(db, cfg, ruta, capKg) {
     combIda, combVuelta, item2_combustible,
     item3_soapKm, item4_seguroKm, item5_mantKm, item6_neumKm, item7_gpsKm,
     item8_choferBaseDiario, item9_varChofer,
-    factorRuta, item10_costoRutaTotal, item11_costoKmFinal,
+    factorRuta, costoVuelta, item10_costoRutaTotal, item11_costoKmFinal,
     zcap: item12_zcap,
-    zcapConMargen: item12_zcap * (1 + margenPct / 100),
+    zcapConMargen: item12_zcap,
     kmMensual, kmAnual
   };
 }
