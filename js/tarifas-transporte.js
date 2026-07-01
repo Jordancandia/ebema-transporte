@@ -2149,16 +2149,18 @@ function renderCombustibles(content, db, cfg) {
       <div id="cne-status" class="hidden mb-md text-[12px] px-md py-sm rounded border"></div>
 
       <p class="text-[12px] text-secondary mb-md">
-        Alerta crítica si un centro pasa más de 3 semanas sin actualizar su precio.
+        Ingrese el precio por litro <b>con IVA</b> y el porcentaje de IVA. El <b>Precio sin IVA</b> es el valor que se usa en el Motor de Costo para calcular el costo de combustible.
         <b>Actualizar desde CNE</b> obtiene el precio del Petróleo Diésel de la última semana publicada por la CNE.
-        Editar manualmente un precio lo marca como <i>Manual</i> y resetea la fecha a hoy.
+        Alerta crítica si un centro pasa más de 3 semanas sin actualizar.
       </p>
       <div class="bg-surface border border-outline-variant overflow-hidden rounded">
         <table class="w-full zebra-table border-collapse">
           <thead>
             <tr class="bg-surface-container-high text-left border-b border-outline-variant">
               <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Centro Logístico</th>
-              <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-right">Precio Litro (CLP)</th>
+              <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-right">Precio Litro c/IVA (CLP)</th>
+              <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-right">IVA %</th>
+              <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-right">Precio sin IVA (CLP)</th>
               <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Última Actualización</th>
               <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-center">Estado</th>
               <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-center">Fuente</th>
@@ -2177,9 +2179,15 @@ function renderCombustibles(content, db, cfg) {
               const integrantes = g.centros.length > 1
                 ? `<br><span class="text-secondary text-[11px]">${g.centros.map(c => c.nombre).join(', ')}</span>`
                 : '';
+              const ivaPct = Number(fuel.ivaPct) || 0;
+              const precioNeto = ivaPct > 0
+                ? Math.round(Number(fuel.precioLitro || 0) / (1 + ivaPct / 100))
+                : Number(fuel.precioLitro || 0);
               return `<tr class="border-b border-outline-variant" data-repid="${g.repId}">
                 <td class="p-md font-bold">${g.nombre}${integrantes}</td>
                 <td class="p-md w-40">${numInput(`combustibles.${g.repId}.precioLitro`, fuel.precioLitro, 'data-combustible-repid="' + g.repId + '" data-combustible-field="precio"')}</td>
+                <td class="p-md w-28">${numInput(`combustibles.${g.repId}.ivaPct`, fuel.ivaPct ?? 19, 'data-combustible-repid="' + g.repId + '" data-combustible-field="iva"')}</td>
+                <td class="p-md w-36 text-right font-data-mono text-data-mono font-bold text-primary">${precioNeto.toLocaleString('es-CL')}</td>
                 <td class="p-md w-44">${dateInput(`combustibles.${g.repId}.fecha`, fuel.fecha, `data-combustible-repid="${g.repId}" data-combustible-field="fecha"`)}</td>
                 <td class="p-md text-center">${estado}</td>
                 <td class="p-md text-center">${fuenteBadge(fuel)}</td>
@@ -2221,27 +2229,31 @@ function renderCombustibles(content, db, cfg) {
     </div>
   `;
 
-  // ── Listener: edición manual de precio o fecha → fuente=Manual, fecha=hoy si es precio
+  // ── Listener: edición manual de precio, iva o fecha
   content.querySelectorAll('[data-combustible-repid]').forEach(input => {
     input.addEventListener('change', () => {
       const repId = input.dataset.combustibleRepid;
       const field = input.dataset.combustibleField;
-      if (!repId || !cfg.combustibles[repId]) return;
-      cfg.combustibles[repId].fuente = 'manual';
-      // Si cambió el precio, resetear fecha a hoy
+      if (!repId) return;
+      if (!cfg.combustibles[repId]) cfg.combustibles[repId] = {};
       if (field === 'precio') {
+        cfg.combustibles[repId].fuente = 'manual';
         const hoyStr = todayISO();
         cfg.combustibles[repId].fecha = hoyStr;
-        // Actualizar el date input visualmente
         const fechaInput = content.querySelector(`[data-path="combustibles.${repId}.fecha"]`);
         if (fechaInput) fechaInput.value = hoyStr;
+        delete cfg.combustibles[repId].cneRegion;
+        delete cfg.combustibles[repId].cneMes;
+        delete cfg.combustibles[repId].cneAnio;
+      } else if (field === 'iva') {
+        // Solo actualizar ivaPct, no cambia fuente ni fecha
+        const val = Number(input.value);
+        cfg.combustibles[repId].ivaPct = isNaN(val) ? 0 : val;
+      } else if (field === 'fecha') {
+        cfg.combustibles[repId].fuente = 'manual';
       }
-      // Limpiar metadata CNE al editar manualmente
-      delete cfg.combustibles[repId].cneRegion;
-      delete cfg.combustibles[repId].cneMes;
-      delete cfg.combustibles[repId].cneAnio;
       saveDatabase(db);
-      // Re-render para actualizar badge Fuente y estado días
+      // Re-render para actualizar precio sin IVA y badges
       renderCombustibles(content, db, cfg);
     });
   });

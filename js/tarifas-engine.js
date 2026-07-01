@@ -55,11 +55,14 @@ export function calcularCostoRuta(db, cfg, ruta, capKg) {
   const item1b_costosExtra = itemExtraIda + itemExtraVuelta;
 
   // --- 2. Combustible (cargado ida + vacío vuelta) ---
+  // Se descuenta el IVA al precio: precio neto = precioLitro / (1 + ivaPct/100)
   const rend = cfg.rendimientos[capKey] || { cargado: 1, vacio: 1 };
   const fuel = cfg.combustibles[cfgId] || {};
   const precioLitro = Number(fuel.precioLitro) || 0;
-  const combIda = rend.cargado > 0 ? (km / rend.cargado) * precioLitro : 0;
-  const combVuelta = rend.vacio > 0 ? (km / rend.vacio) * precioLitro : 0;
+  const ivaPct = Number(fuel.ivaPct) || 0;
+  const precioLitroNeto = ivaPct > 0 ? precioLitro / (1 + ivaPct / 100) : precioLitro;
+  const combIda = rend.cargado > 0 ? (km / rend.cargado) * precioLitroNeto : 0;
+  const combVuelta = rend.vacio > 0 ? (km / rend.vacio) * precioLitroNeto : 0;
   const item2_combustible = combIda + combVuelta;
 
   // KM mensuales/anuales ofrecidos (denominador de prorrateos)
