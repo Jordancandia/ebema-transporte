@@ -1935,29 +1935,39 @@ function syncTarifasZcap(db, cfg, grupoFiltro = '') {
   const groups = getOrigenGroups(db).filter(g => !grupoFiltro || g.grupo === grupoFiltro);
   const matriz = calcularMatrizCostos(db, cfg);
   const margenPct = Number(cfg.variables.margenGanancia) || 0;
+  const participacion = cfg.participacionRutas || {};
   const conZcap = new Set();
   let cambios = false;
+
+  // Suma tarifa ponderada = Σ(costoKmFinal × peso%) para un conjunto de rutas
+  function sumaPonderada(items) {
+    return items.reduce((s, m) => {
+      const p = participacion[m.ruta.id] || participacion[m.ruta.codigo];
+      return s + (m.item11_costoKmFinal || 0) * ((p?.pct || 0) / 100);
+    }, 0);
+  }
 
   groups.forEach(g => {
     const rows = (db.truckTypes || []).filter(t => t.Id_centro === g.repId);
     rows.forEach(t => {
-      const items = matriz.filter(m => g.centroIds.includes(m.centroId) && m.capKg === truckCapKg(t.type));
+      const items = matriz.filter(m =>
+        g.centroIds.includes(m.centroId) &&
+        m.capKg === truckCapKg(t.type) &&
+        (m.ruta.tipo || '').toUpperCase() === 'COMUNA' &&
+        m.ruta.clasificRuta === 'Regional'
+      );
       if (items.length === 0) return;
       conZcap.add(t.id);
-      const avgCostoKmFinal = items.reduce((s, m) => s + m.item11_costoKmFinal, 0) / items.length;
-      const ratePerKm = Math.round(avgCostoKmFinal * (1 + margenPct / 100));
-      if (t.ratePerKm !== ratePerKm) {
-        t.ratePerKm = ratePerKm;
-        cambios = true;
-      }
-      const itemsExtrema = items.filter(m => m.ruta && m.ruta.caracteristica && m.ruta.caracteristica !== 'NORMAL');
+
+      const itemsNormal  = items.filter(m => (m.ruta.caracteristica || 'NORMAL').toUpperCase() === 'NORMAL');
+      const itemsExtrema = items.filter(m => (m.ruta.caracteristica || 'NORMAL').toUpperCase() !== 'NORMAL');
+
+      const ratePerKm = Math.round(sumaPonderada(itemsNormal) * (1 + margenPct / 100));
+      if (t.ratePerKm !== ratePerKm) { t.ratePerKm = ratePerKm; cambios = true; }
+
       if (itemsExtrema.length > 0) {
-        const avgExtrema = itemsExtrema.reduce((s, m) => s + m.item11_costoKmFinal, 0) / itemsExtrema.length;
-        const ratePerKmExtrema = Math.round(avgExtrema * (1 + margenPct / 100));
-        if (t.ratePerKmExtrema !== ratePerKmExtrema) {
-          t.ratePerKmExtrema = ratePerKmExtrema;
-          cambios = true;
-        }
+        const ratePerKmExtrema = Math.round(sumaPonderada(itemsExtrema) * (1 + margenPct / 100));
+        if (t.ratePerKmExtrema !== ratePerKmExtrema) { t.ratePerKmExtrema = ratePerKmExtrema; cambios = true; }
       }
     });
   });
