@@ -2015,7 +2015,7 @@ function renderTarifasCamion(content, db, cfg) {
       </div>
 
       ${groups.map(g => {
-        const rows = (db.truckTypes || []).filter(t => t.Id_centro === g.repId);
+        const rows = (db.truckTypes || []).filter(t => t.Id_centro === g.repId).sort((a, b) => truckCapKg(a.type) - truckCapKg(b.type));
         const integrantes = g.centros.length > 1
           ? ` <span class="text-secondary text-[12px]">(${g.centros.map(c => c.nombre).join(', ')})</span>`
           : '';
