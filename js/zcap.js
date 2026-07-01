@@ -1,6 +1,6 @@
 // Vista ZCAP — Costo de Servicio por Centro Logístico, Ruta y Tipo de Camión
-// Regional:       ZCAP = baseRate + km × ratePerKm  (Tarifas por Camión)
-// Interregional:  ZCAP = item10_costoRutaTotal       (Motor de Costo Interregional)
+// Regional:       ZCAP = costosBase[capKg].fijo + km × ratePerKm
+// Interregional:  ZCAP = item10_costoRutaTotal
 import { getDatabase, getTariffConfig, truckCapKg, getOrigenGroups, getGroupRepId } from './data.js?v=20260630a';
 import { calcularCostoRuta } from './tarifas-engine.js';
 import { formatCLP, escapeHtml } from './utils.js';
@@ -33,11 +33,13 @@ export function renderZcapView(container) {
   function calcZcapRow(ruta, truck) {
     const km = Number(ruta.km) || 0;
     if ((ruta.clasificRuta || '') === 'Regional') {
-      const base = Number(truck.baseRate) || 0;
+      // Costo base desde Variables Generales (fijo por capacidad de camión)
+      const capKg = truckCapKg(truck.type);
+      const costoBase = Number(cfg.variables.costosBase?.[String(capKg)]?.fijo) || Number(truck.baseRate) || 0;
       const rate = Number(truck.ratePerKm) || 0;
-      return base + km * rate;
+      return costoBase + km * rate;
     } else {
-      // Interregional: usar motor de costo
+      // Interregional: motor de costo (ya incluye todos los costos)
       const capKg = truckCapKg(truck.type);
       if (!capKg) return 0;
       try {
@@ -136,8 +138,8 @@ export function renderZcapView(container) {
           <h2 class="font-headline-sm text-headline-sm font-bold text-on-surface">ZCAP — Costo de Servicio por Centro y Ruta</h2>
         </div>
         <p class="text-[12px] text-secondary mb-md">
-          <b>Rutas Regionales:</b> ZCAP = Costo Base + km × Tarifa/KM (de Tarifas por Camión). &nbsp;
-          <b>Rutas Interregionales:</b> ZCAP = Costo Ruta Total del Motor de Costo Interregional.
+          <b>Rutas Regionales:</b> ZCAP = Costo Base (Variables Generales) + km × Tarifa/KM Normal. &nbsp;
+          <b>Rutas Interregionales:</b> ZCAP = Costo Ruta Total (Motor de Costo Interregional).
         </p>
 
         <div class="flex flex-wrap gap-md items-end mb-md">
