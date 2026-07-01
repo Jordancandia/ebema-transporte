@@ -24,10 +24,14 @@ let pjiFiltroRevision = false;
 
 // Estado de filtros de la vista "Motor de Costo — Resultados por Ruta"
 let zcapFiltroCentro  = ''; // origen_grupo (Centro Origen); '' = todos
-let zcapFiltroClasif  = ''; // 'Regional' | 'Interregional'; '' = todas
 let zcapFiltroCapKg   = ''; // '5000'|'10000'|'15000'|'28000'; '' = todos
 let zcapFiltroComuna  = ''; // texto libre sobre destino; '' = todos
 let tarifaCentroFiltro = '';
+
+// Estado de filtros de la vista "Motor de Costo Interregional"
+let zintFiltroCentro = '';
+let zintFiltroCapKg  = '';
+let zintFiltroComuna = '';
 
 // ---------- Helpers genéricos ----------
 function setPath(obj, path, value) {
@@ -113,7 +117,7 @@ export function renderTariffTransportView(container) {
     </div>
 
     <div class="flex gap-sm mb-lg border-b border-outline-variant pb-sm overflow-x-auto" id="tt-subtabs">
-      ${subTabButton('peajes', 'toll', 'Peajes')}
+      ${subTabButton('peajes', 'toll', 'Peajes Regionales')}
       ${subTabButton('peajes-inter', 'alt_route', 'Peajes Interregionales')}
       ${subTabButton('camiones', 'local_shipping', 'Tarifas por Camión')}
       ${subTabButton('combustibles', 'local_gas_station', 'Combustibles y Rendimientos')}
@@ -122,6 +126,7 @@ export function renderTariffTransportView(container) {
       ${subTabButton('participacion', 'donut_large', 'Participación Rutas')}
       ${subTabButton('variables', 'tune', 'Variables Generales')}
       ${subTabButton('resultados', 'calculate', 'Motor de Costo')}
+      ${subTabButton('resultados-inter', 'map', 'Motor de Costo Interregional')}
       ${subTabButton('zapsap', 'table', 'ZAP/SAP')}
     </div>
 
@@ -155,6 +160,7 @@ export function renderTariffTransportView(container) {
       case 'participacion': renderParticipacion(content, db, cfg); break;
       case 'variables': renderVariables(content, db, cfg); break;
       case 'resultados': renderResultados(content, db, cfg); break;
+      case 'resultados-inter': renderResultadosInter(content, db, cfg); break;
     }
 
     // Listener delegado para todas las celdas editables con data-path
@@ -2040,7 +2046,7 @@ function renderTarifasCamion(content, db, cfg) {
                   <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-right">Costo Base</th>
                   <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-right">Tarifa Base KM</th>
                   ${tieneExtrema ? '<th class="p-md font-label-caps text-label-caps text-secondary uppercase text-right">Tarifa KM Extrema/Isla</th>' : ''}
-                  <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-right">Tarifa / KM</th>
+                  <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-right">Tarifa / KM Normal</th>
                 </tr>
               </thead>
               <tbody class="font-body-md text-body-md">
@@ -2480,48 +2486,71 @@ function renderParticipacion(content, db, cfg) {
     const centros = [...new Set(grupos.map(g => g.grupo))].sort();
     const allGroups = getOrigenGroups(db);
 
+    let fallbackFiltroCentro = '';
+
     const rowsPart = clavesPart.map(k => {
       const e = partGuardada[k];
       const ruta = routes.find(r => r.codigo === k || r.id === k);
-      return { codigo: k, ruta, pct: e.pct, caracteristica: e.caracteristica, grupo: ruta?.origen_grupo || '—' };
+      return { codigo: k, ruta, pct: e.pct, caracteristica: e.caracteristica, grupo: ruta?.origen_grupo || '—', destino: ruta?.destino || '' };
     }).sort((a, b) => b.pct - a.pct);
 
-    // Agrupar por centro
-    const porCentro = {};
-    rowsPart.forEach(r => { (porCentro[r.grupo] = porCentro[r.grupo] || []).push(r); });
+    function renderFallback(filtroCentro) {
+      const rowsFiltradas = filtroCentro ? rowsPart.filter(r => r.grupo === filtroCentro) : rowsPart;
+      // Agrupar por centro
+      const porCentro = {};
+      rowsFiltradas.forEach(r => { (porCentro[r.grupo] = porCentro[r.grupo] || []).push(r); });
 
-    content.innerHTML = `
-      <div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm">
-        <div class="flex items-center gap-sm mb-md border-b border-outline-variant pb-sm">
-          <span class="material-symbols-outlined text-primary">donut_large</span>
-          <h2 class="font-headline-sm text-headline-sm font-bold text-on-surface">Participación Rutas (datos guardados)</h2>
-        </div>
-        <div class="bg-amber-50 border border-amber-200 text-amber-800 text-[12px] p-sm rounded mb-md">
-          Mostrando participación previamente guardada. Para recalcular, cargue el CSV histórico en <b>Tarifas Clientes → Histórico</b>.
-        </div>
-        ${Object.entries(porCentro).map(([grupo, filas]) => {
-          const gNombre = allGroups.find(g => g.grupo === grupo)?.nombre || grupo;
-          return `<div class="mb-lg">
-            <h3 class="font-body-lg font-bold mb-xs">${gNombre}</h3>
-            <div class="bg-surface border border-outline-variant overflow-x-auto rounded">
-              <table class="w-full zebra-table border-collapse">
-                <thead><tr class="bg-surface-container-high border-b border-outline-variant">
-                  <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Ruta</th>
-                  <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Caract.</th>
-                  <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-right">PESO %</th>
-                </tr></thead>
-                <tbody class="font-body-md text-body-md">
-                  ${filas.map(r => `<tr class="border-b border-outline-variant">
-                    <td class="p-md font-bold">${escapeHtml(r.codigo)}</td>
-                    <td class="p-md">${escapeHtml(r.caracteristica || 'NORMAL')}</td>
-                    <td class="p-md text-right font-data-mono font-bold">${r.pct}%</td>
-                  </tr>`).join('')}
-                </tbody>
-              </table>
+      content.innerHTML = `
+        <div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm">
+          <div class="flex items-center gap-sm mb-md border-b border-outline-variant pb-sm">
+            <span class="material-symbols-outlined text-primary">donut_large</span>
+            <h2 class="font-headline-sm text-headline-sm font-bold text-on-surface">Participación Rutas (datos guardados)</h2>
+          </div>
+          <div class="bg-amber-50 border border-amber-200 text-amber-800 text-[12px] p-sm rounded mb-md">
+            Mostrando participación previamente guardada. Para recalcular, cargue el CSV histórico en <b>Tarifas Clientes → Histórico</b>.
+          </div>
+          <div class="flex gap-sm items-end mb-md">
+            <div class="space-y-xs">
+              <label class="font-label-caps text-label-caps text-secondary block">CENTRO ORIGEN</label>
+              <select id="part-fb-centro" class="border border-[#CED4DA] p-sm font-body-md text-body-md bg-white w-56">
+                <option value="">Todos los centros</option>
+                ${centros.map(c => `<option value="${escapeHtml(c)}" ${c === filtroCentro ? 'selected' : ''}>${escapeHtml(c)}</option>`).join('')}
+              </select>
             </div>
-          </div>`;
-        }).join('')}
-      </div>`;
+          </div>
+          ${Object.entries(porCentro).map(([grupo, filas]) => {
+            const gNombre = allGroups.find(g => g.grupo === grupo)?.nombre || grupo;
+            return `<div class="mb-lg">
+              <h3 class="font-body-lg font-bold mb-xs">${gNombre}</h3>
+              <div class="bg-surface border border-outline-variant overflow-x-auto rounded">
+                <table class="w-full zebra-table border-collapse">
+                  <thead><tr class="bg-surface-container-high border-b border-outline-variant">
+                    <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Ruta</th>
+                    <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Destino</th>
+                    <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Caract.</th>
+                    <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-right">PESO %</th>
+                  </tr></thead>
+                  <tbody class="font-body-md text-body-md">
+                    ${filas.map(r => `<tr class="border-b border-outline-variant">
+                      <td class="p-md font-bold">${escapeHtml(r.codigo)}</td>
+                      <td class="p-md">${escapeHtml(r.destino)}</td>
+                      <td class="p-md">${escapeHtml(r.caracteristica || 'NORMAL')}</td>
+                      <td class="p-md text-right font-data-mono font-bold">${r.pct}%</td>
+                    </tr>`).join('')}
+                  </tbody>
+                </table>
+              </div>
+            </div>`;
+          }).join('')}
+        </div>`;
+
+      document.getElementById('part-fb-centro')?.addEventListener('change', e => {
+        fallbackFiltroCentro = e.target.value;
+        renderFallback(fallbackFiltroCentro);
+      });
+    }
+
+    renderFallback(fallbackFiltroCentro);
     return;
   }
 
@@ -2922,7 +2951,6 @@ function renderResultados(content, db, cfg) {
   // Solo rutas REGIONAL + COMUNA
   matriz = matriz.filter(m => (m.ruta.tipo || '').toUpperCase() === 'COMUNA' && m.ruta.clasificRuta === 'Regional');
   if (zcapFiltroCentro) matriz = matriz.filter(m => m.ruta.origen_grupo === zcapFiltroCentro);
-  if (zcapFiltroClasif) matriz = matriz.filter(m => m.ruta.clasificRuta === zcapFiltroClasif);
   if (zcapFiltroCapKg)  matriz = matriz.filter(m => String(m.truckType?.capKg) === zcapFiltroCapKg);
   if (zcapFiltroComuna) {
     const q = zcapFiltroComuna.toLowerCase();
@@ -2976,14 +3004,6 @@ function renderResultados(content, db, cfg) {
           <select id="zcap-f-centro" class="border border-[#CED4DA] p-sm font-body-md text-body-md bg-white w-56">
             <option value="">Todos</option>
             ${groups.map(g => `<option value="${g.grupo}" ${zcapFiltroCentro === g.grupo ? 'selected' : ''}>${g.nombre}</option>`).join('')}
-          </select>
-        </div>
-        <div>
-          <label class="font-label-caps text-label-caps text-secondary block">CLASIFICACIÓN</label>
-          <select id="zcap-f-clasif" class="border border-[#CED4DA] p-sm font-body-md text-body-md bg-white w-40">
-            <option value="">Todas</option>
-            <option value="Regional" ${zcapFiltroClasif === 'Regional' ? 'selected' : ''}>Regional</option>
-            <option value="Interregional" ${zcapFiltroClasif === 'Interregional' ? 'selected' : ''}>Interregional</option>
           </select>
         </div>
         <div>
@@ -3057,10 +3077,6 @@ function renderResultados(content, db, cfg) {
     zcapFiltroCentro = e.target.value;
     renderResultados(content, db, cfg);
   });
-  document.getElementById('zcap-f-clasif').addEventListener('change', (e) => {
-    zcapFiltroClasif = e.target.value;
-    renderResultados(content, db, cfg);
-  });
   document.getElementById('zcap-f-capkg').addEventListener('change', (e) => {
     zcapFiltroCapKg = e.target.value;
     renderResultados(content, db, cfg);
@@ -3116,5 +3132,132 @@ function renderResultados(content, db, cfg) {
     });
     downloadFile(`motor_costo_${Date.now()}.csv`, toCSV(headers, rows));
     showAlert('Archivo CSV del Motor de Costo exportado');
+  });
+}
+
+// ============================================================
+// SUB-MÓDULO: MOTOR DE COSTO INTERREGIONAL
+// ============================================================
+function renderResultadosInter(content, db, cfg) {
+  const groups = getOrigenGroups(db);
+  let matriz = calcularMatrizCostos(db, cfg);
+  // Solo rutas INTERREGIONALES (cualquier tipo)
+  matriz = matriz.filter(m => m.ruta.clasificRuta === 'Interregional');
+  if (zintFiltroCentro) matriz = matriz.filter(m => m.ruta.origen_grupo === zintFiltroCentro);
+  if (zintFiltroCapKg)  matriz = matriz.filter(m => String(m.truckType?.capKg) === zintFiltroCapKg);
+  if (zintFiltroComuna) {
+    const q = zintFiltroComuna.toLowerCase();
+    matriz = matriz.filter(m => (m.ruta.destino || m.ruta.nombre || '').toLowerCase().includes(q));
+  }
+
+  const HEADERS_INT = ['Centro', 'ID Ruta', 'Destino', 'Tipo Camión (Kg)', 'KM',
+    'Peajes', 'Comb. Ida', 'Comb. Vuelta', 'Seguros (SOAP+Seg)', 'Costos Extras',
+    'Mantención', 'Neumáticos', 'GPS', 'Rem. Chofer', 'Var. Chofer',
+    'Factor Ruta', 'Costo Vuelta', 'Costo Ruta Total', 'Costo/KM Final'];
+
+  content.innerHTML = `
+    <div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm mb-lg">
+      <div class="flex items-center justify-between mb-md border-b border-outline-variant pb-sm">
+        <div class="flex items-center gap-sm">
+          <span class="material-symbols-outlined text-primary">map</span>
+          <h2 class="font-headline-sm text-headline-sm font-bold text-on-surface">Motor de Costo — Rutas Interregionales</h2>
+        </div>
+        <button id="zint-export" class="bg-surface border border-outline-variant hover:bg-surface-container-high text-on-surface font-bold px-md py-sm rounded flex items-center gap-sm text-xs uppercase">
+          <span class="material-symbols-outlined text-[18px]">download</span> Exportar CSV
+        </button>
+      </div>
+      <p class="text-[12px] text-secondary mb-md"><strong>Costo Vuelta</strong> = Σ ítems × factor ruta. <strong>Costo Ruta Total</strong> = Costo Vuelta / (1 − margen%). <strong>Costo/KM</strong> = Costo Ruta Total / (km × 2). Sin peso ni tarifa ponderada.</p>
+
+      <div class="flex flex-wrap items-end gap-md mb-md">
+        <div>
+          <label class="font-label-caps text-label-caps text-secondary block">CENTRO ORIGEN</label>
+          <select id="zint-f-centro" class="border border-[#CED4DA] p-sm font-body-md text-body-md bg-white w-56">
+            <option value="">Todos</option>
+            ${groups.map(g => `<option value="${g.grupo}" ${zintFiltroCentro === g.grupo ? 'selected' : ''}>${g.nombre}</option>`).join('')}
+          </select>
+        </div>
+        <div>
+          <label class="font-label-caps text-label-caps text-secondary block">TIPO CAMIÓN (KG)</label>
+          <select id="zint-f-capkg" class="border border-[#CED4DA] p-sm font-body-md text-body-md bg-white w-44">
+            <option value="">Todos</option>
+            <option value="5000"  ${zintFiltroCapKg === '5000'  ? 'selected' : ''}>5.000 Kg</option>
+            <option value="10000" ${zintFiltroCapKg === '10000' ? 'selected' : ''}>10.000 Kg</option>
+            <option value="15000" ${zintFiltroCapKg === '15000' ? 'selected' : ''}>15.000 Kg</option>
+            <option value="28000" ${zintFiltroCapKg === '28000' ? 'selected' : ''}>28.000 Kg</option>
+          </select>
+        </div>
+        <div>
+          <label class="font-label-caps text-label-caps text-secondary block">BUSCAR DESTINO</label>
+          <input id="zint-f-destino" type="text" placeholder="Filtrar destino..." value="${escapeHtml(zintFiltroComuna)}"
+            class="border border-[#CED4DA] p-sm font-body-md text-body-md bg-white w-44">
+        </div>
+      </div>
+
+      <div class="text-[12px] text-secondary mb-sm">${matriz.length} fila(s) encontrada(s)</div>
+
+      <div class="bg-surface border border-outline-variant overflow-hidden rounded overflow-x-auto">
+        <table class="w-full zebra-table border-collapse text-[12px]">
+          <thead>
+            <tr class="bg-surface-container-high text-left border-b border-outline-variant">
+              ${HEADERS_INT.map(h => `<th class="p-md font-label-caps text-label-caps text-secondary uppercase text-right first:text-left">${h}</th>`).join('')}
+            </tr>
+          </thead>
+          <tbody class="font-data-mono text-data-mono">
+            ${matriz.length === 0 ? `<tr><td colspan="${HEADERS_INT.length}" class="p-lg text-center text-secondary">Sin rutas interregionales activas.</td></tr>` :
+              matriz.map(m => {
+                const grupoNombre = groups.find(g => g.grupo === m.ruta.origen_grupo)?.nombre || m.ruta.origen_grupo || '';
+                const capLabel = m.capKg ? `${Number(m.capKg).toLocaleString('es-CL')} Kg` : '—';
+                const seguros  = (m.item3_soapKm || 0) + (m.item4_seguroKm || 0);
+                const extraTotal = m.extraCostsRuta?.reduce((s, c) => s + (Number(c.costo_ida) || 0) + (Number(c.costo_vuelta) || 0), 0) || 0;
+                return `<tr class="border-b border-outline-variant">
+                  <td class="p-md font-bold text-nowrap text-left">${grupoNombre}</td>
+                  <td class="p-md text-left">${m.ruta.codigo}</td>
+                  <td class="p-md text-left">${m.ruta.destino || ''}</td>
+                  <td class="p-md text-right">${capLabel}</td>
+                  <td class="p-md text-right">${m.km}</td>
+                  <td class="p-md text-right">${formatCLP(m.item1_peajes)}</td>
+                  <td class="p-md text-right">${formatCLP(m.combIda)}</td>
+                  <td class="p-md text-right">${formatCLP(m.combVuelta)}</td>
+                  <td class="p-md text-right">${formatCLP(seguros)}</td>
+                  <td class="p-md text-right ${extraTotal > 0 ? 'text-amber-700 font-bold' : ''}">${extraTotal > 0 ? formatCLP(extraTotal) : '—'}</td>
+                  <td class="p-md text-right">${formatCLP(m.item5_mantKm)}</td>
+                  <td class="p-md text-right">${formatCLP(m.item6_neumKm)}</td>
+                  <td class="p-md text-right">${formatCLP(m.item7_gpsKm)}</td>
+                  <td class="p-md text-right">${formatCLP(m.item8_choferBaseDiario)}</td>
+                  <td class="p-md text-right">${formatCLP(m.item9_varChofer)}</td>
+                  <td class="p-md text-right font-bold">${(m.factorRuta || 1).toFixed(2)}</td>
+                  <td class="p-md text-right">${formatCLP(m.costoVuelta)}</td>
+                  <td class="p-md text-right font-bold">${formatCLP(m.item10_costoRutaTotal)}</td>
+                  <td class="p-md text-right font-bold text-primary">${formatCLP(m.item11_costoKmFinal)}</td>
+                </tr>`;
+              }).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+
+  document.getElementById('zint-f-centro')?.addEventListener('change', e => { zintFiltroCentro = e.target.value; renderResultadosInter(content, db, cfg); });
+  document.getElementById('zint-f-capkg')?.addEventListener('change',  e => { zintFiltroCapKg  = e.target.value; renderResultadosInter(content, db, cfg); });
+  document.getElementById('zint-f-destino')?.addEventListener('input', e => { zintFiltroComuna = e.target.value; renderResultadosInter(content, db, cfg); });
+
+  document.getElementById('zint-export')?.addEventListener('click', () => {
+    const rows = matriz.map(m => {
+      const grupoNombre = groups.find(g => g.grupo === m.ruta.origen_grupo)?.nombre || m.ruta.origen_grupo || '';
+      const capLabel = m.capKg ? `${Number(m.capKg).toLocaleString('es-CL')} Kg` : '';
+      const seguros  = (m.item3_soapKm || 0) + (m.item4_seguroKm || 0);
+      const extraTotal = m.extraCostsRuta?.reduce((s, c) => s + (Number(c.costo_ida) || 0) + (Number(c.costo_vuelta) || 0), 0) || 0;
+      return [
+        grupoNombre, m.ruta.codigo, m.ruta.destino || '', capLabel, m.km,
+        Math.round(m.item1_peajes), Math.round(m.combIda || 0), Math.round(m.combVuelta || 0),
+        Math.round(seguros), Math.round(extraTotal),
+        Math.round(m.item5_mantKm), Math.round(m.item6_neumKm), Math.round(m.item7_gpsKm),
+        Math.round(m.item8_choferBaseDiario), Math.round(m.item9_varChofer),
+        (m.factorRuta || 1).toFixed(2),
+        Math.round(m.costoVuelta || 0), Math.round(m.item10_costoRutaTotal), Math.round(m.item11_costoKmFinal)
+      ];
+    });
+    downloadFile(`motor_costo_interregional_${Date.now()}.csv`, toCSV(HEADERS_INT, rows));
+    showAlert('CSV Motor de Costo Interregional exportado');
   });
 }
