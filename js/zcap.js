@@ -1,7 +1,7 @@
 // Vista ZCAP — Costo de Servicio por Centro Logístico, Ruta y Tipo de Camión
 // Regional:       ZCAP = costosBase[capKg].fijo + km × ratePerKm
 // Interregional:  ZCAP = item10_costoRutaTotal
-import { getDatabase, getTariffConfig, truckCapKg, getOrigenGroups, getGroupRepId } from './data.js?v=20260630a';
+import { getDatabase, getTariffConfig, truckCapKg, getOrigenGroups, getGroupRepId, TRUCK_BASE_TYPES } from './data.js?v=20260630a';
 import { calcularCostoRuta } from './tarifas-engine.js';
 import { formatCLP, escapeHtml } from './utils.js';
 
@@ -33,10 +33,14 @@ export function renderZcapView(container) {
   function calcZcapRow(ruta, truck) {
     const km = Number(ruta.km) || 0;
     if ((ruta.clasificRuta || '') === 'Regional') {
-      // Costo base desde Variables Generales (fijo por capacidad de camión)
-      const capKg = truckCapKg(truck.type);
-      const costoBase = Number(cfg.variables.costosBase?.[String(capKg)]?.fijo) || Number(truck.baseRate) || 0;
-      const rate = Number(truck.ratePerKm) || 0;
+      // Costo base: usa truck.baseRate si está guardado; sino usa el default de TRUCK_BASE_TYPES
+      const defaultBase = TRUCK_BASE_TYPES.find(b => b.type === truck.type)?.baseRate || 0;
+      const costoBase = Number(truck.baseRate) || defaultBase;
+      // Tarifa/KM: si la ruta es Isla o Extrema usa la tarifa especial
+      const isExtrema = ['ISLA', 'EXTREMA'].includes((ruta.caracteristica || '').toUpperCase());
+      const rate = isExtrema
+        ? (Number(truck.ratePerKmExtrema) || Number(truck.ratePerKm) || 0)
+        : (Number(truck.ratePerKm) || 0);
       return costoBase + km * rate;
     } else {
       // Interregional: motor de costo (ya incluye todos los costos)
