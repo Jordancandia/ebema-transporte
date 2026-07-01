@@ -26,6 +26,7 @@ let pjiFiltroRevision = false;
 let zcapFiltroCentro  = ''; // origen_grupo (Centro Origen); '' = todos
 let zcapFiltroClasif  = ''; // 'Regional' | 'Interregional'; '' = todas
 let zcapFiltroCapKg   = ''; // '5000'|'10000'|'15000'|'28000'; '' = todos
+let zcapFiltroComuna  = ''; // texto libre sobre destino; '' = todos
 let tarifaCentroFiltro = '';
 
 // ---------- Helpers genéricos ----------
@@ -2536,20 +2537,27 @@ function renderParticipacion(content, db, cfg) {
       e.obras.forEach(o => parent.obras.add(o));
     });
 
-    // Paso 5: Calcular PESO = ton_ruta / ton_total_centro, ordenar desc por toneladas
-    const totalTon = [...routeMap.values()].reduce((s, e) => s + e.ton, 0) || 1;
+    // Paso 5: PESO por grupo de característica (NORMAL sum 100%, EXTREMA/ISLA sum 100% dentro de su grupo)
+    const catTon = {};
+    routeMap.forEach(e => {
+      const cat = (e.ruta.caracteristica || 'NORMAL').toUpperCase();
+      catTon[cat] = (catTon[cat] || 0) + e.ton;
+    });
 
     return [...routeMap.values()]
-      .map(e => ({
-        rutaId: e.ruta?.id || e.idRuta,   // preferir UUID para lookup garantizado
-        rutaCodigo: e.ruta?.codigo || e.idRuta,
-        ruta: e.ruta,
-        clientes: e.clientes.size,
-        obras: e.obras.size,
-        toneladas: e.ton,
-        peso: e.ton / totalTon,
-        caracteristica: e.ruta.caracteristica || 'NORMAL'
-      }))
+      .map(e => {
+        const cat = (e.ruta.caracteristica || 'NORMAL').toUpperCase();
+        return {
+          rutaId: e.ruta?.id || e.idRuta,
+          rutaCodigo: e.ruta?.codigo || e.idRuta,
+          ruta: e.ruta,
+          clientes: e.clientes.size,
+          obras: e.obras.size,
+          toneladas: e.ton,
+          peso: e.ton / (catTon[cat] || 1),
+          caracteristica: e.ruta.caracteristica || 'NORMAL'
+        };
+      })
       .sort((a, b) => b.toneladas - a.toneladas);
   }
 
@@ -2621,12 +2629,19 @@ function renderParticipacion(content, db, cfg) {
               }).join('')}
             </tbody>
             <tfoot>
-              <tr class="bg-surface-container-high border-t border-outline-variant">
-                <td colspan="6" class="p-md font-bold text-right">Total Centro</td>
-                <td class="p-md font-bold font-data-mono text-data-mono text-right">${totalTon.toLocaleString('es-CL', { maximumFractionDigits: 1 })} ton</td>
-                <td class="p-md font-bold font-data-mono text-data-mono text-right">100%</td>
-                <td class="p-md"></td>
-              </tr>
+              ${(() => {
+                const cats = [...new Set(results.map(r => (r.ruta.caracteristica || 'NORMAL').toUpperCase()))].sort();
+                return cats.map(cat => {
+                  const catRows = results.filter(r => (r.ruta.caracteristica || 'NORMAL').toUpperCase() === cat);
+                  const catTon = catRows.reduce((s, r) => s + r.toneladas, 0);
+                  return `<tr class="bg-surface-container-high border-t border-outline-variant">
+                    <td colspan="6" class="p-md font-bold text-right">Subtotal ${cat}</td>
+                    <td class="p-md font-bold font-data-mono text-data-mono text-right">${catTon.toLocaleString('es-CL', { maximumFractionDigits: 1 })} ton</td>
+                    <td class="p-md font-bold font-data-mono text-data-mono text-right">100%</td>
+                    <td class="p-md"></td>
+                  </tr>`;
+                }).join('');
+              })()}
             </tfoot>
           </table>
         </div>
@@ -2650,21 +2665,27 @@ function renderParticipacion(content, db, cfg) {
     const guardarBtn = document.getElementById('part-guardar');
     if (guardarBtn) {
       guardarBtn.addEventListener('click', () => {
-        results.forEach(r => {
+        if (!results || results.length === 0) {
+          showAlert('Seleccione un centro para guardar la participación.', 'error'); return;
+        }
+        try {
           cfg.participacionRutas = cfg.participacionRutas || {};
-          const entry = {
-            pct: Math.round(r.peso * 10000) / 100,
-            peso: r.peso,
-            cluster: r.peso >= 0.30 ? 1 : r.peso >= 0.10 ? 2 : 3,
-            caracteristica: r.caracteristica
-          };
-          cfg.participacionRutas[r.rutaId] = entry;          // por UUID
-          if (r.rutaCodigo && r.rutaCodigo !== r.rutaId)
-            cfg.participacionRutas[r.rutaCodigo] = entry;    // por código (fallback)
-          console.log('[PART-SAVE]', r.rutaId, r.rutaCodigo, entry.pct);
-        });
-        saveDatabase(db);
-        showAlert(`Participación guardada para ${results.length} ruta(s).`);
+          results.forEach(r => {
+            const entry = {
+              pct: Math.round(r.peso * 10000) / 100,
+              peso: r.peso,
+              cluster: r.peso >= 0.30 ? 1 : r.peso >= 0.10 ? 2 : 3,
+              caracteristica: r.caracteristica
+            };
+            cfg.participacionRutas[r.rutaId] = entry;
+            if (r.rutaCodigo && r.rutaCodigo !== r.rutaId)
+              cfg.participacionRutas[r.rutaCodigo] = entry;
+          });
+          saveDatabase(db);
+          showAlert(`✓ Participación guardada: ${results.length} ruta(s).`);
+        } catch(err) {
+          showAlert('Error al guardar: ' + err.message, 'error');
+        }
       });
     }
   }
@@ -2829,11 +2850,15 @@ function renderVariables(content, db, cfg) {
 function renderResultados(content, db, cfg) {
   const groups = getOrigenGroups(db);
   let matriz = calcularMatrizCostos(db, cfg);
-  // Solo rutas tipo COMUNA
-  matriz = matriz.filter(m => (m.ruta.tipo || '').toUpperCase() === 'COMUNA');
+  // Solo rutas REGIONAL + COMUNA
+  matriz = matriz.filter(m => (m.ruta.tipo || '').toUpperCase() === 'COMUNA' && m.ruta.clasificRuta === 'Regional');
   if (zcapFiltroCentro) matriz = matriz.filter(m => m.ruta.origen_grupo === zcapFiltroCentro);
   if (zcapFiltroClasif) matriz = matriz.filter(m => m.ruta.clasificRuta === zcapFiltroClasif);
   if (zcapFiltroCapKg)  matriz = matriz.filter(m => String(m.truckType?.capKg) === zcapFiltroCapKg);
+  if (zcapFiltroComuna) {
+    const q = zcapFiltroComuna.toLowerCase();
+    matriz = matriz.filter(m => (m.ruta.destino || m.ruta.nombre || '').toLowerCase().includes(q));
+  }
 
   const grupoSel = groups.find(g => g.grupo === zcapFiltroCentro);
   const participacion = cfg.participacionRutas || {};
@@ -2902,6 +2927,11 @@ function renderResultados(content, db, cfg) {
             <option value="28000" ${zcapFiltroCapKg === '28000' ? 'selected' : ''}>28.000 Kg</option>
           </select>
         </div>
+        <div>
+          <label class="font-label-caps text-label-caps text-secondary block">BUSCAR COMUNA</label>
+          <input id="zcap-f-comuna" type="text" placeholder="Filtrar destino..." value="${escapeHtml(zcapFiltroComuna)}"
+            class="border border-[#CED4DA] p-sm font-body-md text-body-md bg-white w-44">
+        </div>
       </div>
 
       <div class="bg-surface border border-outline-variant overflow-hidden rounded overflow-x-auto">
@@ -2916,7 +2946,7 @@ function renderResultados(content, db, cfg) {
               matriz.map(m => {
                 const partEntry = participacion[m.ruta.id] || participacion[m.ruta.codigo];
                 const pct = partEntry?.pct || 0;
-                if (!partEntry) console.log('[PART-MISS]', m.ruta.id, m.ruta.codigo, Object.keys(participacion).slice(0,5));
+
                 const tarifaPonderada = ((m.item11_costoKmFinal || 0) * pct / 100);
                 const grupoNombre = groupMap[m.ruta.origen_grupo] || m.ruta.origen_grupo;
                 const seguros = (m.item3_soapKm || 0) + (m.item4_seguroKm || 0);
@@ -2963,6 +2993,10 @@ function renderResultados(content, db, cfg) {
   });
   document.getElementById('zcap-f-capkg').addEventListener('change', (e) => {
     zcapFiltroCapKg = e.target.value;
+    renderResultados(content, db, cfg);
+  });
+  document.getElementById('zcap-f-comuna')?.addEventListener('input', e => {
+    zcapFiltroComuna = e.target.value;
     renderResultados(content, db, cfg);
   });
 
