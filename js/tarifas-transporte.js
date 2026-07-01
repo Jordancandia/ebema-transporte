@@ -1967,11 +1967,11 @@ function syncTarifasZcap(db, cfg, grupoFiltro = '') {
       const itemsNormal  = items.filter(m => (m.ruta.caracteristica || 'NORMAL').toUpperCase() === 'NORMAL');
       const itemsExtrema = items.filter(m => (m.ruta.caracteristica || 'NORMAL').toUpperCase() !== 'NORMAL');
 
-      const ratePerKm = Math.round(tarifaBase(itemsNormal) * (1 + margenPct / 100));
+      const ratePerKm = Math.round(tarifaBase(itemsNormal));
       if (t.ratePerKm !== ratePerKm) { t.ratePerKm = ratePerKm; cambios = true; }
 
       if (itemsExtrema.length > 0) {
-        const ratePerKmExtrema = Math.round(tarifaBase(itemsExtrema) * (1 + margenPct / 100));
+        const ratePerKmExtrema = Math.round(tarifaBase(itemsExtrema));
         if (t.ratePerKmExtrema !== ratePerKmExtrema) { t.ratePerKmExtrema = ratePerKmExtrema; cambios = true; }
       }
     });
