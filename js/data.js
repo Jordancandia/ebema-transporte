@@ -287,9 +287,15 @@ export async function initDatabase() {
 
     // Restaurar historico desde IndexedDB (no se guarda en Supabase por tamaño)
     const _savedHist = await loadHistorico();
-    if (_savedHist?.length > 0 && memoryDb.clientTariffConfig?.[0]) {
-      const _cfg = memoryDb.clientTariffConfig[0];
-      _cfg.data = { ...(_cfg.data || {}), historico: _savedHist };
+    if (_savedHist?.length > 0) {
+      // Auto-crear clientTariffConfig si viene vacío de Supabase
+      if (!memoryDb.clientTariffConfig || !memoryDb.clientTariffConfig.length) {
+        memoryDb.clientTariffConfig = [{ id: 'global', data: defaultClientTariffConfig() }];
+      }
+      memoryDb.clientTariffConfig[0].data = {
+        ...(memoryDb.clientTariffConfig[0].data || defaultClientTariffConfig()),
+        historico: _savedHist
+      };
     }
 
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...memoryDb, clientTariffConfig: stripHistorico(memoryDb.clientTariffConfig || []) }));
