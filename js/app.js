@@ -1,10 +1,10 @@
-import { getDatabase, saveDatabase, initDatabase } from './data.js?v=20260701a';
+import { getDatabase, saveDatabase, initDatabase } from './data.js?v=20260701b';
 import { supabase } from './supabase-client.js';
 import { renderTransportsView } from './transports.js';
 import { renderRoutesView } from './routes.js';
 import { renderRatesView } from './rates.js';
 import { renderRolesView } from './roles.js';
-import { renderTariffTransportView } from './tarifas-transporte.js?v=20260701a';
+import { renderTariffTransportView } from './tarifas-transporte.js?v=20260701b';
 import { renderClientTariffView } from './tarifas-clientes.js?v=20260622b';
 import { showAlert, formatRut, validateRut, formatPhone } from './utils.js';
 

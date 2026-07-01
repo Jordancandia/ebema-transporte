@@ -2460,13 +2460,67 @@ function renderSeguros(content, db, cfg) {
 function renderParticipacion(content, db, cfg) {
   const histData = getClientTariffConfig(db).historico || [];
   if (histData.length === 0) {
+    // Sin histórico: mostrar participación guardada si existe
+    const partGuardada = cfg.participacionRutas || {};
+    const clavesPart = Object.keys(partGuardada).filter(k => !k.startsWith('r1')); // solo códigos, no UUIDs
+    if (clavesPart.length === 0) {
+      content.innerHTML = `
+        <div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm">
+          <div class="flex items-center gap-sm mb-md">
+            <span class="material-symbols-outlined text-primary">donut_large</span>
+            <h2 class="font-headline-sm text-headline-sm font-bold text-on-surface">Participación Rutas</h2>
+          </div>
+          <p class="text-secondary">No hay datos históricos cargados. Diríjase a <b>Tarifas Clientes → Histórico</b> para cargar el archivo CSV de 6 meses.</p>
+        </div>`;
+      return;
+    }
+    // Mostrar participación guardada agrupada por ruta
+    const routes = db.routes || [];
+    const grupos = getOrigenGroups(db);
+    const centros = [...new Set(grupos.map(g => g.grupo))].sort();
+    const allGroups = getOrigenGroups(db);
+
+    const rowsPart = clavesPart.map(k => {
+      const e = partGuardada[k];
+      const ruta = routes.find(r => r.codigo === k || r.id === k);
+      return { codigo: k, ruta, pct: e.pct, caracteristica: e.caracteristica, grupo: ruta?.origen_grupo || '—' };
+    }).sort((a, b) => b.pct - a.pct);
+
+    // Agrupar por centro
+    const porCentro = {};
+    rowsPart.forEach(r => { (porCentro[r.grupo] = porCentro[r.grupo] || []).push(r); });
+
     content.innerHTML = `
       <div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm">
-        <div class="flex items-center gap-sm mb-md">
+        <div class="flex items-center gap-sm mb-md border-b border-outline-variant pb-sm">
           <span class="material-symbols-outlined text-primary">donut_large</span>
-          <h2 class="font-headline-sm text-headline-sm font-bold text-on-surface">Participación Rutas</h2>
+          <h2 class="font-headline-sm text-headline-sm font-bold text-on-surface">Participación Rutas (datos guardados)</h2>
         </div>
-        <p class="text-secondary">No hay datos históricos cargados. Diríjase a <b>Tarifas Clientes → Histórico</b> para cargar el archivo CSV de 6 meses.</p>
+        <div class="bg-amber-50 border border-amber-200 text-amber-800 text-[12px] p-sm rounded mb-md">
+          Mostrando participación previamente guardada. Para recalcular, cargue el CSV histórico en <b>Tarifas Clientes → Histórico</b>.
+        </div>
+        ${Object.entries(porCentro).map(([grupo, filas]) => {
+          const gNombre = allGroups.find(g => g.grupo === grupo)?.nombre || grupo;
+          return `<div class="mb-lg">
+            <h3 class="font-body-lg font-bold mb-xs">${gNombre}</h3>
+            <div class="bg-surface border border-outline-variant overflow-x-auto rounded">
+              <table class="w-full zebra-table border-collapse">
+                <thead><tr class="bg-surface-container-high border-b border-outline-variant">
+                  <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Ruta</th>
+                  <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Caract.</th>
+                  <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-right">PESO %</th>
+                </tr></thead>
+                <tbody class="font-body-md text-body-md">
+                  ${filas.map(r => `<tr class="border-b border-outline-variant">
+                    <td class="p-md font-bold">${escapeHtml(r.codigo)}</td>
+                    <td class="p-md">${escapeHtml(r.caracteristica || 'NORMAL')}</td>
+                    <td class="p-md text-right font-data-mono font-bold">${r.pct}%</td>
+                  </tr>`).join('')}
+                </tbody>
+              </table>
+            </div>
+          </div>`;
+        }).join('')}
       </div>`;
     return;
   }
