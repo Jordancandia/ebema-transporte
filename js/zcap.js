@@ -5,7 +5,7 @@ import { getDatabase, getTariffConfig, truckCapKg, getOrigenGroups, getGroupRepI
 import { calcularCostoRuta } from './tarifas-engine.js';
 import { formatCLP, escapeHtml } from './utils.js';
 
-console.log('[ZCAP MODULE] cargado v20260701q');
+console.log('[ZCAP MODULE] cargado v20260701t');
 const TRUCK_ORDER = ['Camión 5 Ton', 'Camión 10 Ton', 'Camión 15 Ton', 'Camión 28 Ton'];
 
 let zcapFiltCentro = '';
@@ -48,14 +48,17 @@ export function renderZcapView(container) {
       // Km Base: si el centro tiene Kmbase configurado, aplica tramo base + tramo variable
       const kmBase = Number(truck.Kmbase) || 0;
       const baseKM  = Number(truck.baseKM)  || 0;
-      if (truck.type === 'Camión 5 Ton') console.log('[ZCAP DEBUG]', ruta.codigo, '→', { Kmbase: truck.Kmbase, kmBase, baseKM, costoBase, rate, km, result: kmBase > 0 ? (costoBase + baseKM) + Math.max(0, km - kmBase) * rate : costoBase + km * rate });
       if (kmBase > 0) {
         // [Costo Base + Tarifa Base KM] + [max(0, km - kmBase) × rate]
         const kmExcedente = Math.max(0, km - kmBase);
-        return (costoBase + baseKM) + kmExcedente * rate;
+        const _res = (costoBase + baseKM) + kmExcedente * rate;
+        if (ruta.codigo === 'SGO128') console.log('[ZCAP-T] SGO128 ×', truck.type, '→ KMBASE PATH  km:', km, 'kmBase:', kmBase, 'excedente:', kmExcedente, 'result:', _res);
+        return _res;
       }
+      const _res2 = costoBase + km * rate;
+      if (ruta.codigo === 'SGO128') console.log('[ZCAP-T] SGO128 ×', truck.type, '→ FALLBACK PATH  km:', km, 'kmBase:', kmBase, 'result:', _res2);
       // Sin Km Base: fórmula estándar
-      return costoBase + km * rate;
+      return _res2;
     } else {
       // Interregional: motor de costo (ya incluye todos los costos)
       const capKg = truckCapKg(truck.type);
@@ -76,6 +79,7 @@ export function renderZcapView(container) {
 
     const repId  = grupo.repId;
     let trucks   = getTruckTypes(repId);
+    console.log('[ZCAP-T] trucks repId:', repId, trucks.map(t => `${t.type}[Kmbase=${t.Kmbase}]`).join(', '));
     if (zcapFiltTruck) trucks = trucks.filter(t => t.type === zcapFiltTruck);
 
     let rutas = allRoutes.filter(r => r.origen_grupo === centro.origen_grupo);
