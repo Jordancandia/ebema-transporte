@@ -16,7 +16,8 @@ let zcapFiltRuta   = '';
 export function renderZcapView(container) {
   console.log('[ZCAP] renderZcapView llamado');
   const db  = getDatabase();
-  console.log('[ZCAP] truckTypes en db:', db.truckTypes?.length, '| 5T SANTIAGO:', db.truckTypes?.find(t => t.Id_centro === '1003' && t.type === 'Camión 5 Ton'));
+  const _t5 = db.truckTypes?.find(t => t.Id_centro === '1003' && t.type === 'Camión 5 Ton');
+  console.log('[ZCAP] 5T-1003 → Kmbase:', _t5?.Kmbase, '| baseKM:', _t5?.baseKM, '| baseRate:', _t5?.baseRate, '| ratePerKm:', _t5?.ratePerKm);
   const cfg = getTariffConfig(db);
   const centres  = (db.logisticsCentres || []).sort((a, b) => String(a.id).localeCompare(String(b.id)));
   const grupos   = getOrigenGroups(db);
