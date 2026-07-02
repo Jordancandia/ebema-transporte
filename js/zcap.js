@@ -36,11 +36,20 @@ export function renderZcapView(container) {
       // Costo base: usa truck.baseRate si está guardado; sino usa el default de TRUCK_BASE_TYPES
       const defaultBase = TRUCK_BASE_TYPES.find(b => b.type === truck.type)?.baseRate || 0;
       const costoBase = Number(truck.baseRate) || defaultBase;
-      // Tarifa/KM: si la ruta es Isla o Extrema usa la tarifa especial
+      // Tarifa/KM: Normal o Extrema/Isla según característica de la ruta
       const isExtrema = ['ISLA', 'EXTREMA'].includes((ruta.caracteristica || '').toUpperCase());
       const rate = isExtrema
         ? (Number(truck.ratePerKmExtrema) || Number(truck.ratePerKm) || 0)
         : (Number(truck.ratePerKm) || 0);
+      // Km Base: si el centro tiene Kmbase configurado, aplica tramo base + tramo variable
+      const kmBase = Number(truck.Kmbase) || 0;
+      const baseKM  = Number(truck.baseKM)  || 0;
+      if (kmBase > 0) {
+        // [Costo Base + Tarifa Base KM] + [max(0, km - kmBase) × rate]
+        const kmExcedente = Math.max(0, km - kmBase);
+        return (costoBase + baseKM) + kmExcedente * rate;
+      }
+      // Sin Km Base: fórmula estándar
       return costoBase + km * rate;
     } else {
       // Interregional: motor de costo (ya incluye todos los costos)
