@@ -5,6 +5,7 @@ import { getDatabase, getTariffConfig, truckCapKg, getOrigenGroups, getGroupRepI
 import { calcularCostoRuta } from './tarifas-engine.js';
 import { formatCLP, escapeHtml } from './utils.js';
 
+console.log('[ZCAP MODULE] cargado v20260701q');
 const TRUCK_ORDER = ['Camión 5 Ton', 'Camión 10 Ton', 'Camión 15 Ton', 'Camión 28 Ton'];
 
 let zcapFiltCentro = '';
@@ -13,7 +14,9 @@ let zcapFiltTruck  = '';
 let zcapFiltRuta   = '';
 
 export function renderZcapView(container) {
+  console.log('[ZCAP] renderZcapView llamado');
   const db  = getDatabase();
+  console.log('[ZCAP] truckTypes en db:', db.truckTypes?.length, '| 5T SANTIAGO:', db.truckTypes?.find(t => t.Id_centro === '1003' && t.type === 'Camión 5 Ton'));
   const cfg = getTariffConfig(db);
   const centres  = (db.logisticsCentres || []).sort((a, b) => String(a.id).localeCompare(String(b.id)));
   const grupos   = getOrigenGroups(db);
