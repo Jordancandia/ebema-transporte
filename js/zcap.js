@@ -44,7 +44,7 @@ export function renderZcapView(container) {
       // Km Base: si el centro tiene Kmbase configurado, aplica tramo base + tramo variable
       const kmBase = Number(truck.Kmbase) || 0;
       const baseKM  = Number(truck.baseKM)  || 0;
-      if (ruta.codigo === 'SGO128') console.log('[ZCAP DEBUG] SGO128 5T →', { Kmbase: truck.Kmbase, kmBase, baseKM, costoBase, rate, km });
+      if (truck.type === 'Camión 5 Ton') console.log('[ZCAP DEBUG]', ruta.codigo, '→', { Kmbase: truck.Kmbase, kmBase, baseKM, costoBase, rate, km, result: kmBase > 0 ? (costoBase + baseKM) + Math.max(0, km - kmBase) * rate : costoBase + km * rate });
       if (kmBase > 0) {
         // [Costo Base + Tarifa Base KM] + [max(0, km - kmBase) × rate]
         const kmExcedente = Math.max(0, km - kmBase);
