@@ -6,7 +6,7 @@ import { CAP_LIST, truckTypesWithCap, calcularMatrizCostos } from './tarifas-eng
 import { formatCLP, parseCSV, showAlert, toCSV, downloadFile, escapeHtml } from './utils.js';
 import { supabase } from './supabase-client.js';
 import { getField } from './zonas-transporte.js';
-import { renderZcapView } from './zcap.js?v=20260701o';
+import { renderZcapView } from './zcap.js?v=20260701p';
 
 let activeSub = 'peajes';
 
