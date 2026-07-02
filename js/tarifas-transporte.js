@@ -6,6 +6,7 @@ import { CAP_LIST, truckTypesWithCap, calcularMatrizCostos } from './tarifas-eng
 import { formatCLP, parseCSV, showAlert, toCSV, downloadFile, escapeHtml } from './utils.js';
 import { supabase } from './supabase-client.js';
 import { getField } from './zonas-transporte.js';
+import { renderZcapView } from './zcap.js?v=20260701n';
 
 let activeSub = 'peajes';
 
@@ -127,7 +128,7 @@ export function renderTariffTransportView(container) {
       ${subTabButton('variables', 'tune', 'Variables Generales')}
       ${subTabButton('resultados', 'calculate', 'Motor de Costo')}
       ${subTabButton('resultados-inter', 'map', 'Motor de Costo Interregional')}
-      ${subTabButton('zapsap', 'table', 'ZAP/SAP')}
+      ${subTabButton('zcap', 'price_check', 'ZCAP')}
     </div>
 
     <div id="tt-content"></div>
@@ -161,6 +162,7 @@ export function renderTariffTransportView(container) {
       case 'variables': renderVariables(content, db, cfg); break;
       case 'resultados': renderResultados(content, db, cfg); break;
       case 'resultados-inter': renderResultadosInter(content, db, cfg); break;
+      case 'zcap': renderZcapView(content); break;
     }
 
     // Listener delegado para todas las celdas editables con data-path
