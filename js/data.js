@@ -1031,4 +1031,33 @@ export function saveDatabase(data, { syncOnly = null } = {}) {
     console.warn('localStorage lleno:', _e.message);
   }
   // Despachar un evento personalizado para actualizar las vistas en tiempo real
-  window.dispatchEvent(new Event('db_update
+  window.dispatchEvent(new Event('db_updated'));
+  // Sincronizar con el servidor en segundo plano
+  syncToSupabase(data, syncOnly).catch(err => {
+    console.error('Error al sincronizar con Supabase:', err.message || err);
+    window.dispatchEvent(new CustomEvent('db_sync_error', { detail: err.message || String(err) }));
+  });
+}
+
+// Resetear base de datos a los valores predeterminados
+export function resetDatabase() {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(defaultData));
+  window.dispatchEvent(new Event('db_updated'));
+  return defaultData;
+}
+
+// Limpiar datos maestros de prueba (rutas, zonas, transportistas)
+// sin afectar centros logísticos, tipos de camión ni configuraciones.
+export function limpiarDatosMaestros() {
+  const db = getDatabase();
+  db.routes = [];
+  db.transportZones = [];
+  db.transports = [];
+  db.transportsCamiones = [];
+  db.transportsChoferes = [];
+  db.routeTolls = [];
+  saveDatabase(db);
+  console.log('✓ Datos maestros limpiados: rutas, zonas, transportistas.');
+  return db;
+}
+// fin de data.js
