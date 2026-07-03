@@ -1655,11 +1655,11 @@ async function calcularPeajes(content, db, cfg, rutas, { force = false } = {}) {
     return;
   }
 
-  // ── FASE 2: TollGuru (fuente primaria) + GetAPI como fallback ──────────────
+  // ── FASE 2: TollGuru — única fuente de peajes ───────────────────────────────
   const ejesToCategory = { 2: 'CAMION_2_EJES', 3: 'CAMION_PESADO' };
   const tollTargets = tollTargetsPrep;
-  let tgUsados = 0, gaUsados = 0;
-  modal.update(0, tollTargets.length, `Fase 2/3 — TollGuru para ${tollTargets.length} ruta(s)…`);
+  let tgUsados = 0;
+  modal.update(0, tollTargets.length, `Fase 2/2 — TollGuru para ${tollTargets.length} ruta(s)…`);
 
   for (let i = 0; i < tollTargets.length; i++) {
     if (cancelado) break;
@@ -1668,8 +1668,6 @@ async function calcularPeajes(content, db, cfg, rutas, { force = false } = {}) {
     for (const ejes of [2, 3]) {
       const category = ejesToCategory[ejes];
       let ida = null, errored = false;
-
-      // ── Primario: TollGuru ──────────────────────────────────────────────────
       modal.update(i, tollTargets.length, `[TollGuru] ${ruta.codigo} ${ejes}ej — ${ruta.comuna || ruta.destino || ''}`);
       try {
         const tg = await callTollGuruTolls(originCity, destCity, category, Number(ruta.lat) || null, Number(ruta.lon) || null);
@@ -1681,28 +1679,6 @@ async function calcularPeajes(content, db, cfg, rutas, { force = false } = {}) {
       }
       await sleep(1000);
 
-      // ── Fallback: GetAPI si TollGuru falló o retornó sin datos ─────────────
-      const tgNeedsReview = errored || !ida || !!ida.notFound || ((ida.hasToll ?? false) && !ida.tollCLP);
-      if (tgNeedsReview) {
-        modal.update(i, tollTargets.length, `[GetAPI] ${ruta.codigo} ${ejes}ej — fallback…`);
-        try {
-          let ga = await callGetApiTolls(originCity, destCity, category);
-          gaUsados++;
-          await sleep(1500);
-          if (ga && ga.notFound) {
-            await sleep(3000);
-            const retry = await callGetApiTolls(originCity, destCity, category);
-            gaUsados++;
-            if (retry && !retry.notFound) { ga = retry; }
-            await sleep(1500);
-          }
-          if (ga && !ga.notFound) { ida = ga; errored = false; }
-        } catch (gaErr) {
-          console.error('[GetAPI] Fallback falló para', ruta.codigo, ejes, 'ejes:', gaErr.message);
-        }
-      }
-
-      // Vuelta = mismo valor que ida (peajes iguales en ambas direcciones)
       pjUpsertToll(db, ruta.id, ejes, ida, ida, { error: errored && !ida });
       if (cancelado) break;
     }
@@ -1714,9 +1690,7 @@ async function calcularPeajes(content, db, cfg, rutas, { force = false } = {}) {
   saveDatabase(db, { syncOnly: ['routeTolls'] });
   modal.close();
 
-  const tgInfo = `TollGuru: ${tgUsados} llamadas (~${tgUsados * 5} tx de 5.000/mes).`;
-  const gaInfo = gaUsados > 0 ? ` GetAPI fallback: ${gaUsados} llamadas.` : '';
-  const resumen = `Completado: ${tollTargets.length} ruta(s) procesadas. ${tgInfo}${gaInfo}`;
+  const resumen = `Completado: ${tollTargets.length} ruta(s). TollGuru: ${tgUsados} llamadas (~${tgUsados * 5} tx de 5.000/mes).`;
   showAlert(cancelado ? 'Cálculo cancelado (avance guardado)' : resumen);
   renderPeajesAuto(content, db, cfg);
 }
