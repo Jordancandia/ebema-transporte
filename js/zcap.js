@@ -5,7 +5,7 @@ import { getDatabase, getTariffConfig, truckCapKg, getOrigenGroups, getGroupRepI
 import { calcularCostoRuta } from './tarifas-engine.js';
 import { formatCLP, escapeHtml } from './utils.js';
 
-console.log('[ZCAP MODULE] cargado v20260701t');
+console.log('[ZCAP MODULE] cargado v20260703a');
 const TRUCK_ORDER = ['Camión 5 Ton', 'Camión 10 Ton', 'Camión 15 Ton', 'Camión 28 Ton'];
 
 let zcapFiltCentro = '';
