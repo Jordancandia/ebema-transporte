@@ -1610,7 +1610,7 @@ async function calcularPeajes(content, db, cfg, rutas, { force = false } = {}) {
       [2, 3].forEach(ejes => pjUpsertToll(db, ruta.id, ejes, null, null, { error: true }));
       continue;
     }
-    tollTargets.push({ ruta, originCity: cd.comuna.trim(), destCity: ruta.comuna.trim() });
+    tollTargets.push({ ruta, originCity: cd.comuna.trim() + ', Chile', destCity: ruta.comuna.trim() + ', Chile' });
   }
 
   const modal = createProgressModal(tollTargets.length);
