@@ -12,6 +12,29 @@ let zcapFiltCentro = '';
 let zcapFiltClasif = '';
 let zcapFiltTruck  = '';
 let zcapFiltRuta   = '';
+let zcapPaginaV    = 0;
+const ZCAP_PAGE    = 50;
+
+function renderPagerZ(total, pagina) {
+  if (total <= ZCAP_PAGE) return '';
+  const totalPags = Math.ceil(total / ZCAP_PAGE);
+  const desde = pagina * ZCAP_PAGE + 1;
+  const hasta  = Math.min((pagina + 1) * ZCAP_PAGE, total);
+  const dp = pagina === 0 ? 'disabled opacity-40 cursor-default' : 'hover:bg-surface-container-high cursor-pointer';
+  const dn = pagina >= totalPags - 1 ? 'disabled opacity-40 cursor-default' : 'hover:bg-surface-container-high cursor-pointer';
+  return `<div class="flex items-center justify-between mt-sm pt-sm border-t border-outline-variant text-[12px] text-secondary">
+    <span>${desde.toLocaleString('es-CL')}–${hasta.toLocaleString('es-CL')} de ${total.toLocaleString('es-CL')} filas</span>
+    <div class="flex items-center gap-xs">
+      <button id="zcapv-pag-prev" class="px-sm py-xs border border-outline-variant rounded ${dp}" ${pagina === 0 ? 'disabled' : ''}>
+        <span class="material-symbols-outlined text-[16px] align-middle">chevron_left</span>
+      </button>
+      <span class="px-sm">Pág. ${pagina + 1} / ${totalPags}</span>
+      <button id="zcapv-pag-next" class="px-sm py-xs border border-outline-variant rounded ${dn}" ${pagina >= totalPags - 1 ? 'disabled' : ''}>
+        <span class="material-symbols-outlined text-[16px] align-middle">chevron_right</span>
+      </button>
+    </div>
+  </div>`;
+}
 
 export function renderZcapView(container) {
   console.log('[ZCAP] renderZcapView llamado');
@@ -119,6 +142,7 @@ export function renderZcapView(container) {
       ? '<span class="inline-flex px-1.5 py-0.5 rounded text-[10px] font-bold bg-green-100 text-green-800">REG</span>'
       : '<span class="inline-flex px-1.5 py-0.5 rounded text-[10px] font-bold bg-blue-100 text-blue-800">INTER</span>';
 
+    const pageRows = rows.slice(zcapPaginaV * ZCAP_PAGE, (zcapPaginaV + 1) * ZCAP_PAGE);
     return `
       <div class="text-[12px] text-secondary mb-sm">${rutas.length} ruta(s) × ${trucks.length} tipo(s) = ${rows.length} combinaciones</div>
       <div class="bg-surface border border-outline-variant overflow-x-auto rounded">
@@ -135,8 +159,9 @@ export function renderZcapView(container) {
             </tr>
           </thead>
           <tbody class="font-body-md text-body-md">
-            ${rows.map((r, i) => {
-              const zebra = Math.floor(i / trucks.length) % 2 === 0 ? '' : 'bg-surface-container-lowest';
+            ${pageRows.map((r, i) => {
+              const globalIdx = zcapPaginaV * ZCAP_PAGE + i;
+              const zebra = Math.floor(globalIdx / trucks.length) % 2 === 0 ? '' : 'bg-surface-container-lowest';
               return `<tr class="border-b border-outline-variant ${zebra}">
                 <td class="p-md font-data-mono text-data-mono ${r.firstTruck ? 'font-bold' : 'text-secondary'}">${r.firstTruck ? escapeHtml(r.centroId) : ''}</td>
                 <td class="p-md font-data-mono text-data-mono ${r.firstTruck ? 'font-bold' : 'text-secondary'}">${r.firstTruck ? escapeHtml(r.rutaCodigo) : ''}</td>
@@ -149,7 +174,8 @@ export function renderZcapView(container) {
             }).join('')}
           </tbody>
         </table>
-      </div>`;
+      </div>
+      ${renderPagerZ(rows.length, zcapPaginaV)}`;
   }
 
   function render() {
@@ -207,16 +233,22 @@ export function renderZcapView(container) {
     `;
 
     container.querySelector('#zcap-v-centro')?.addEventListener('change', e => {
-      zcapFiltCentro = e.target.value; render();
+      zcapFiltCentro = e.target.value; zcapPaginaV = 0; render();
     });
     container.querySelector('#zcap-v-clasif')?.addEventListener('change', e => {
-      zcapFiltClasif = e.target.value; render();
+      zcapFiltClasif = e.target.value; zcapPaginaV = 0; render();
     });
     container.querySelector('#zcap-v-truck')?.addEventListener('change', e => {
-      zcapFiltTruck = e.target.value; render();
+      zcapFiltTruck = e.target.value; zcapPaginaV = 0; render();
     });
     container.querySelector('#zcap-v-ruta')?.addEventListener('input', e => {
-      zcapFiltRuta = e.target.value; render();
+      zcapFiltRuta = e.target.value; zcapPaginaV = 0; render();
+    });
+    container.querySelector('#zcapv-pag-prev')?.addEventListener('click', () => {
+      zcapPaginaV = Math.max(0, zcapPaginaV - 1); render();
+    });
+    container.querySelector('#zcapv-pag-next')?.addEventListener('click', () => {
+      zcapPaginaV++; render();
     });
   }
 

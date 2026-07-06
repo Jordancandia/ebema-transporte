@@ -6,7 +6,7 @@ import { CAP_LIST, truckTypesWithCap, calcularMatrizCostos } from './tarifas-eng
 import { formatCLP, parseCSV, showAlert, toCSV, downloadFile, escapeHtml } from './utils.js';
 import { supabase } from './supabase-client.js';
 import { getField } from './zonas-transporte.js';
-import { renderZcapView } from './zcap.js?v=20260703a';
+import { renderZcapView } from './zcap.js?v=20260706a';
 
 let activeSub = 'peajes';
 
@@ -33,6 +33,11 @@ let tarifaCentroFiltro = '';
 let zintFiltroCentro = '';
 let zintFiltroCapKg  = '';
 let zintFiltroComuna = '';
+
+// Paginación Motor de Costo y Motor de Costo Interregional
+let zcapPagina = 0;
+let zintPagina = 0;
+const MC_PAGE  = 50;
 
 // ---------- Helpers genéricos ----------
 function setPath(obj, path, value) {
@@ -2913,6 +2918,27 @@ function renderVariables(content, db, cfg) {
 // ============================================================
 // MOTOR ACTUARIAL: RESULTADOS Y EXPORTACIÓN
 // ============================================================
+function renderPager(total, pagina, perPage, idPrev, idNext) {
+  if (total <= perPage) return '';
+  const totalPags = Math.ceil(total / perPage);
+  const desde = pagina * perPage + 1;
+  const hasta  = Math.min((pagina + 1) * perPage, total);
+  const disablePrev = pagina === 0 ? 'disabled opacity-40 cursor-default' : 'hover:bg-surface-container-high cursor-pointer';
+  const disableNext = pagina >= totalPags - 1 ? 'disabled opacity-40 cursor-default' : 'hover:bg-surface-container-high cursor-pointer';
+  return `<div class="flex items-center justify-between mt-sm pt-sm border-t border-outline-variant text-[12px] text-secondary">
+    <span>${desde.toLocaleString('es-CL')}–${hasta.toLocaleString('es-CL')} de ${total.toLocaleString('es-CL')} filas</span>
+    <div class="flex items-center gap-xs">
+      <button id="${idPrev}" class="px-sm py-xs border border-outline-variant rounded ${disablePrev}" ${pagina === 0 ? 'disabled' : ''}>
+        <span class="material-symbols-outlined text-[16px] align-middle">chevron_left</span>
+      </button>
+      <span class="px-sm">Pág. ${pagina + 1} / ${totalPags}</span>
+      <button id="${idNext}" class="px-sm py-xs border border-outline-variant rounded ${disableNext}" ${pagina >= totalPags - 1 ? 'disabled' : ''}>
+        <span class="material-symbols-outlined text-[16px] align-middle">chevron_right</span>
+      </button>
+    </div>
+  </div>`;
+}
+
 function renderResultados(content, db, cfg) {
   const groups = getOrigenGroups(db);
   let matriz = calcularMatrizCostos(db, cfg);
@@ -3000,7 +3026,7 @@ function renderResultados(content, db, cfg) {
           </thead>
           <tbody class="font-body-md text-body-md">
             ${matriz.length === 0 ? `<tr><td colspan="${HEADERS.length}" class="p-md text-center text-secondary">Sin resultados para los filtros seleccionados.</td></tr>` :
-              matriz.map(m => {
+              matriz.slice(zcapPagina * MC_PAGE, (zcapPagina + 1) * MC_PAGE).map(m => {
                 const partEntry = participacion[m.ruta.id] || participacion[m.ruta.codigo];
                 const pct = partEntry?.pct || 0;
 
@@ -3038,21 +3064,24 @@ function renderResultados(content, db, cfg) {
           </tbody>
         </table>
       </div>
+      ${renderPager(matriz.length, zcapPagina, MC_PAGE, 'zcap-pag-prev', 'zcap-pag-next')}
     </div>
   `;
 
   document.getElementById('zcap-f-centro').addEventListener('change', (e) => {
-    zcapFiltroCentro = e.target.value;
+    zcapFiltroCentro = e.target.value; zcapPagina = 0;
     renderResultados(content, db, cfg);
   });
   document.getElementById('zcap-f-capkg').addEventListener('change', (e) => {
-    zcapFiltroCapKg = e.target.value;
+    zcapFiltroCapKg = e.target.value; zcapPagina = 0;
     renderResultados(content, db, cfg);
   });
   document.getElementById('zcap-f-comuna')?.addEventListener('input', e => {
-    zcapFiltroComuna = e.target.value;
+    zcapFiltroComuna = e.target.value; zcapPagina = 0;
     renderResultados(content, db, cfg);
   });
+  document.getElementById('zcap-pag-prev')?.addEventListener('click', () => { zcapPagina = Math.max(0, zcapPagina - 1); renderResultados(content, db, cfg); });
+  document.getElementById('zcap-pag-next')?.addEventListener('click', () => { zcapPagina = Math.min(Math.ceil(matriz.length / MC_PAGE) - 1, zcapPagina + 1); renderResultados(content, db, cfg); });
 
   document.getElementById('zcap-actualizar').addEventListener('click', () => {
     const conZcap = syncTarifasZcap(db, cfg, zcapFiltroCentro);
@@ -3172,7 +3201,7 @@ function renderResultadosInter(content, db, cfg) {
           </thead>
           <tbody class="font-data-mono text-data-mono">
             ${matriz.length === 0 ? `<tr><td colspan="${HEADERS_INT.length}" class="p-lg text-center text-secondary">Sin rutas interregionales activas.</td></tr>` :
-              matriz.map(m => {
+              matriz.slice(zintPagina * MC_PAGE, (zintPagina + 1) * MC_PAGE).map(m => {
                 const grupoNombre = groups.find(g => g.grupo === m.ruta.origen_grupo)?.nombre || m.ruta.origen_grupo || '';
                 const capLabel = m.capKg ? `${Number(m.capKg).toLocaleString('es-CL')} Kg` : '—';
                 const seguros  = (m.item3_soapKm || 0) + (m.item4_seguroKm || 0);
@@ -3191,41 +3220,4 @@ function renderResultadosInter(content, db, cfg) {
                   <td class="p-md text-right">${formatCLP(m.item5_mantKm)}</td>
                   <td class="p-md text-right">${formatCLP(m.item6_neumKm)}</td>
                   <td class="p-md text-right">${formatCLP(m.item7_gpsKm)}</td>
-                  <td class="p-md text-right">${formatCLP(m.item8_choferBaseDiario)}</td>
-                  <td class="p-md text-right">${formatCLP(m.item9_varChofer)}</td>
-                  <td class="p-md text-right font-bold">${(m.factorRuta || 1).toFixed(2)}</td>
-                  <td class="p-md text-right">${formatCLP(m.costoVuelta)}</td>
-                  <td class="p-md text-right font-bold">${formatCLP(m.item10_costoRutaTotal)}</td>
-                  <td class="p-md text-right font-bold text-primary">${formatCLP(m.item11_costoKmFinal)}</td>
-                </tr>`;
-              }).join('')}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  `;
-
-  document.getElementById('zint-f-centro')?.addEventListener('change', e => { zintFiltroCentro = e.target.value; renderResultadosInter(content, db, cfg); });
-  document.getElementById('zint-f-capkg')?.addEventListener('change',  e => { zintFiltroCapKg  = e.target.value; renderResultadosInter(content, db, cfg); });
-  document.getElementById('zint-f-destino')?.addEventListener('input', e => { zintFiltroComuna = e.target.value; renderResultadosInter(content, db, cfg); });
-
-  document.getElementById('zint-export')?.addEventListener('click', () => {
-    const rows = matriz.map(m => {
-      const grupoNombre = groups.find(g => g.grupo === m.ruta.origen_grupo)?.nombre || m.ruta.origen_grupo || '';
-      const capLabel = m.capKg ? `${Number(m.capKg).toLocaleString('es-CL')} Kg` : '';
-      const seguros  = (m.item3_soapKm || 0) + (m.item4_seguroKm || 0);
-      const extraTotal = m.extraCostsRuta?.reduce((s, c) => s + (Number(c.costo_ida) || 0) + (Number(c.costo_vuelta) || 0), 0) || 0;
-      return [
-        grupoNombre, m.ruta.codigo, m.ruta.destino || '', capLabel, m.km,
-        Math.round(m.item1_peajes), Math.round(m.combIda || 0), Math.round(m.combVuelta || 0),
-        Math.round(seguros), Math.round(extraTotal),
-        Math.round(m.item5_mantKm), Math.round(m.item6_neumKm), Math.round(m.item7_gpsKm),
-        Math.round(m.item8_choferBaseDiario), Math.round(m.item9_varChofer),
-        (m.factorRuta || 1).toFixed(2),
-        Math.round(m.costoVuelta || 0), Math.round(m.item10_costoRutaTotal), Math.round(m.item11_costoKmFinal)
-      ];
-    });
-    downloadFile(`motor_costo_interregional_${Date.now()}.csv`, toCSV(HEADERS_INT, rows));
-    showAlert('CSV Motor de Costo Interregional exportado');
-  });
-}
+                  <td class="p-md text-right">${formatCLP(m.item8_choferBaseDiario
