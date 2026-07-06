@@ -1064,7 +1064,7 @@ function renderPeajesInterregionales(content, db, cfg) {
     } else {
       rutasTarget = [...new Set(rows.map(r => r.ruta))];
     }
-    calcularPeajes(content, db, cfg, rutasTarget);
+    calcularPeajes(content, db, cfg, rutasTarget, { renderFn: renderPeajesInterregionales });
   });
 
   document.getElementById('pji-batch').addEventListener('click', () => {
@@ -1080,13 +1080,13 @@ function renderPeajesInterregionales(content, db, cfg) {
       return;
     }
     if (!confirm(`Procesar ${pendientes.length} ruta(s) pendientes en lote?\n\nLas rutas se procesarán secuencialmente con un breve intervalo.`)) return;
-    calcularPeajes(content, db, cfg, pendientes);
+    calcularPeajes(content, db, cfg, pendientes, { renderFn: renderPeajesInterregionales });
   });
 
   content.querySelectorAll('.pji-calc-row').forEach(btn => {
     btn.addEventListener('click', () => {
       const ruta = routes.find(r => r.id === btn.dataset.calcRoute);
-      if (ruta) calcularPeajes(content, db, cfg, [ruta]);
+      if (ruta) calcularPeajes(content, db, cfg, [ruta], { renderFn: renderPeajesInterregionales });
     });
   });
 }
@@ -1556,7 +1556,7 @@ function createProgressModal(total) {
 }
 
 // Orquesta el cálculo de peajes con TollGuru como única fuente.
-async function calcularPeajes(content, db, cfg, rutas, { force = false } = {}) {
+async function calcularPeajes(content, db, cfg, rutas, { force = false, renderFn = null } = {}) {
   if (!rutas || rutas.length === 0) {
     showAlert('No hay rutas para calcular con los filtros actuales', 'error');
     return;
@@ -1654,7 +1654,7 @@ async function calcularPeajes(content, db, cfg, rutas, { force = false } = {}) {
 
   const resumen = `Completado: ${tollTargets.length} ruta(s). TollGuru: ${tgUsados} llamadas (~${tgUsados * 5} tx de 5.000/mes).`;
   showAlert(cancelado ? 'Cálculo cancelado (avance guardado)' : resumen);
-  renderPeajesAuto(content, db, cfg);
+  (renderFn || renderPeajesAuto)(content, db, cfg);
 }
 
 // ---------- Calcular KM vía Google Distance Matrix ----------
