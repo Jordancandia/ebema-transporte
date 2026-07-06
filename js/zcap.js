@@ -1,8 +1,8 @@
 // Vista ZCAP — Costo de Servicio por Centro Logístico, Ruta y Tipo de Camión
 // Regional:       ZCAP = costosBase[capKg].fijo + km × ratePerKm
 // Interregional:  ZCAP = item10_costoRutaTotal
-import { getDatabase, getTariffConfig, truckCapKg, getOrigenGroups, getGroupRepId, TRUCK_BASE_TYPES } from './data.js?v=20260630a';
-import { calcularCostoRuta } from './tarifas-engine.js';
+import { getDatabase, getTariffConfig, truckCapKg, getOrigenGroups, getGroupRepId, TRUCK_BASE_TYPES } from './data.js?v=20260703b';
+import { calcularCostoRuta } from './tarifas-engine.js?v=20260703b';
 import { formatCLP, escapeHtml } from './utils.js';
 
 console.log('[ZCAP MODULE] cargado v20260703a');
