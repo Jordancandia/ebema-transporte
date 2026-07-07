@@ -6,7 +6,7 @@ import { CAP_LIST, truckTypesWithCap, calcularMatrizCostos } from './tarifas-eng
 import { formatCLP, parseCSV, showAlert, toCSV, downloadFile, escapeHtml } from './utils.js';
 import { supabase } from './supabase-client.js';
 import { getField } from './zonas-transporte.js';
-import { renderZcapView } from './zcap.js?v=20260703a';
+import { renderZcapView } from './zcap.js?v=20260707a';
 
 let activeSub = 'peajes';
 
@@ -3077,8 +3077,11 @@ function renderResultados(content, db, cfg) {
     renderResultados(content, db, cfg);
   });
   document.getElementById('zcap-f-comuna')?.addEventListener('input', e => {
+    const pos = e.target.selectionStart;
     zcapFiltroComuna = e.target.value; zcapPagina = 0;
     renderResultados(content, db, cfg);
+    const inp = document.getElementById('zcap-f-comuna');
+    if (inp) { inp.focus(); inp.setSelectionRange(pos, pos); }
   });
   document.getElementById('zcap-pag-prev')?.addEventListener('click', () => { zcapPagina = Math.max(0, zcapPagina - 1); renderResultados(content, db, cfg); });
   document.getElementById('zcap-pag-next')?.addEventListener('click', () => { zcapPagina = Math.min(Math.ceil(matriz.length / MC_PAGE) - 1, zcapPagina + 1); renderResultados(content, db, cfg); });
@@ -3237,7 +3240,13 @@ function renderResultadosInter(content, db, cfg) {
 
   document.getElementById('zint-f-centro')?.addEventListener('change', e => { zintFiltroCentro = e.target.value; zintPagina = 0; renderResultadosInter(content, db, cfg); });
   document.getElementById('zint-f-capkg')?.addEventListener('change',  e => { zintFiltroCapKg  = e.target.value; zintPagina = 0; renderResultadosInter(content, db, cfg); });
-  document.getElementById('zint-f-destino')?.addEventListener('input', e => { zintFiltroComuna = e.target.value; zintPagina = 0; renderResultadosInter(content, db, cfg); });
+  document.getElementById('zint-f-destino')?.addEventListener('input', e => {
+    const pos = e.target.selectionStart;
+    zintFiltroComuna = e.target.value; zintPagina = 0;
+    renderResultadosInter(content, db, cfg);
+    const inp = document.getElementById('zint-f-destino');
+    if (inp) { inp.focus(); inp.setSelectionRange(pos, pos); }
+  });
   document.getElementById('zint-pag-prev')?.addEventListener('click', () => { zintPagina = Math.max(0, zintPagina - 1); renderResultadosInter(content, db, cfg); });
   document.getElementById('zint-pag-next')?.addEventListener('click', () => { zintPagina = Math.min(Math.ceil(matriz.length / MC_PAGE) - 1, zintPagina + 1); renderResultadosInter(content, db, cfg); });
 

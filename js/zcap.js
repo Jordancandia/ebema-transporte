@@ -242,7 +242,10 @@ export function renderZcapView(container) {
       zcapFiltTruck = e.target.value; zcapPaginaV = 0; render();
     });
     container.querySelector('#zcap-v-ruta')?.addEventListener('input', e => {
+      const pos = e.target.selectionStart;
       zcapFiltRuta = e.target.value; zcapPaginaV = 0; render();
+      const inp = container.querySelector('#zcap-v-ruta');
+      if (inp) { inp.focus(); inp.setSelectionRange(pos, pos); }
     });
     container.querySelector('#zcapv-pag-prev')?.addEventListener('click', () => {
       zcapPaginaV = Math.max(0, zcapPaginaV - 1); render();
