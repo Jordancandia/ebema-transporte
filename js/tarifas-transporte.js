@@ -2789,24 +2789,14 @@ function renderParticipacion(content, db, cfg) {
   const routes = (db.routes || []).filter(r => r.activo);
   const grupos = getOrigenGroups(db);
 
-  // ── Mapear oficina → origen_grupo (igual lógica que computeOficinaGrupos) ──
-  const oficToGrupo = {};
-  histData.forEach(h => {
-    if (oficToGrupo[h.oficina]) return;
-    const freq = {};
-    histData.filter(r => r.oficina === h.oficina).forEach(r => {
-      const route = routes.find(rt => rt.id === r.idRuta || rt.codigo === r.idRuta);
-      if (route?.origen_grupo) freq[route.origen_grupo] = (freq[route.origen_grupo] || 0) + 1;
-    });
-    const top = Object.entries(freq).sort((a, b) => b[1] - a[1])[0];
-    oficToGrupo[h.oficina] = top ? top[0] : `Centro ${h.oficina}`;
+  // ── Índice de rutas ───────────────────────────────────────────────────────
+  const routeByIdP = new Map();
+  routes.forEach(r => {
+    if (r.id)     routeByIdP.set(r.id, r);
+    if (r.codigo) routeByIdP.set(r.codigo, r);
   });
 
-  // Grupos únicos con datos
-  const centros = [...new Set(Object.values(oficToGrupo))].sort();
-
-  // Detectar STGO y SAN BERNARDO dinámicamente por ID de centro (no por nombre)
-  // SANTIAGO = centros 1001, 1002, 1003 | SAN BERNARDO = centro 1005
+  // ── Detectar STGO y SAN BERNARDO por ID de centro (robusto) ─────────────
   const STGO_IDS = ['1001','1002','1003'];
   const SB_IDS   = ['1005'];
   const stgoGrupoObj = grupos.find(g => g.centroIds.some(id => STGO_IDS.includes(String(id))));
@@ -2814,67 +2804,72 @@ function renderParticipacion(content, db, cfg) {
   const STGO_SB_GRUPOS = [stgoGrupoObj?.grupo, sbGrupoObj?.grupo].filter(Boolean);
   const tieneStgoSb = !!(stgoGrupoObj && sbGrupoObj && stgoGrupoObj.grupo !== sbGrupoObj.grupo);
 
+  // ── Grupos disponibles en el histórico (via ruta.origen_grupo directo) ───
+  const centrosEnHistorico = new Set();
+  histData.forEach(h => {
+    const ruta = routeByIdP.get(h.idRuta);
+    if (ruta?.origen_grupo) centrosEnHistorico.add(ruta.origen_grupo);
+  });
+  // Si histData no tiene rutas mapeables, caer a todos los grupos de la BD
+  const centros = centrosEnHistorico.size > 0
+    ? [...centrosEnHistorico].sort()
+    : grupos.map(g => g.grupo);
+
+  // Construir dropdown combinando STGO+SB si ambos existen
   const centrosDropdown = tieneStgoSb
     ? centros.filter(c => !STGO_SB_GRUPOS.includes(c)).concat(['__STGO_SB__'])
     : centros;
+
   function labelCentro(c) {
-    if (c === '__STGO_SB__') return `${stgoGrupoObj?.nombre || 'Santiago'} + ${sbGrupoObj?.nombre || 'San Bernardo'}`;
+    if (c === '__STGO_SB__')
+      return `${stgoGrupoObj?.nombre || 'Santiago'} + ${sbGrupoObj?.nombre || 'San Bernardo'}`;
     const g = grupos.find(go => go.grupo === c);
     return g?.nombre || String(c).replace(/_/g, ' ');
   }
 
-  let participacionFiltroCentro = '';
+  let participacionFiltroCentro = tieneStgoSb ? '__STGO_SB__' : (centrosDropdown[0] || '');
 
-  // Mapa de zonas para rollup Sector → COMUNA
+  // ── Mapa de zonas para rollup Sector → COMUNA ────────────────────────────
   const zonasByIdP = new Map((db.transportZones || []).map(z => [z.zona, z]));
-  // Índice de rutas por id y por codigo
-  const routeByIdP = new Map();
-  routes.forEach(r => { if (r.id) routeByIdP.set(r.id, r); if (r.codigo) routeByIdP.set(r.codigo, r); });
 
   function calcParticipacion(grupoInput) {
-    // Soporte para grupo combinado SANTIAGO + SAN BERNARDO
     const grupos_calc = grupoInput === '__STGO_SB__' ? STGO_SB_GRUPOS : [grupoInput];
-    const esCombi = grupos_calc.length > 1;
+    const esCombi     = grupos_calc.length > 1;
 
-    const grupoRows = histData.filter(h => grupos_calc.includes(oficToGrupo[h.oficina]));
-    if (!grupoRows.length) return [];
-
-    // Centro IDs combinados de todos los grupos involucrados
-    const centroIdsCombined = new Set();
+    // IDs de centros involucrados (para filtro secundario por origenId)
+    const grupoCentroIds = new Set();
     grupos_calc.forEach(gn => {
       const gObj = grupos.find(go => go.grupo === gn);
-      if (gObj) gObj.centroIds.forEach(id => centroIdsCombined.add(id));
+      if (gObj) gObj.centroIds.forEach(id => grupoCentroIds.add(String(id)));
     });
-    const centroIds = [...centroIdsCombined];
 
-    // Paso 1: Agregar toneladas/clientes/obras.
-    // Clave: en modo combinado usa id_zona_transporte para fusionar rutas
-    // de distintos centros que apuntan a la misma zona (mismo destino).
-    // En modo individual usa idRuta.
+    // Filtrar histData directamente por ruta.origen_grupo (sin depender de oficToGrupo)
+    const grupoRows = histData.filter(h => {
+      const ruta = routeByIdP.get(h.idRuta);
+      if (!ruta) return false;
+      return grupos_calc.includes(ruta.origen_grupo) ||
+             grupoCentroIds.has(String(ruta.origenId));
+    });
+    if (!grupoRows.length) return [];
+
+    // Paso 1: Agregar por clave de fusión
+    // Modo combinado: clave = id_zona_transporte ?? destino.toUpperCase() (fusiona rutas al mismo destino)
+    // Modo individual: clave = idRuta (una fila por ruta)
     const rawMap = new Map();
     grupoRows.forEach(h => {
       const ruta = routeByIdP.get(h.idRuta);
       if (!ruta || ruta.clasificRuta !== 'Regional') return;
-      // Filtrar: la ruta debe pertenecer a alguno de los grupos calculados
-      if (!grupos_calc.includes(ruta.origen_grupo)) {
-        // Fallback: verificar por origenId si origen_grupo no está seteado
-        if (!centroIds.length || !centroIds.includes(String(ruta.origenId))) return;
-      }
 
-      // Clave de agrupación: en modo combinado usar zona o destino para fusionar rutas
-      // de distintos centros que van al mismo lugar
-      const zonaKey   = ruta.id_zona_transporte;
+      const zonaKey    = ruta.id_zona_transporte;
       const destinoKey = (ruta.destino || ruta.nombre || '').trim().toUpperCase();
-      const mapKey = esCombi
-        ? (zonaKey || destinoKey || h.idRuta)
-        : h.idRuta;
+      const mapKey     = esCombi ? (zonaKey || destinoKey || h.idRuta) : h.idRuta;
 
       if (!rawMap.has(mapKey)) {
         rawMap.set(mapKey, { mapKey, ruta, clientes: new Set(), obras: new Set(), ton: 0 });
       }
       const e = rawMap.get(mapKey);
-      // Preferir ruta de SANTIAGO como representativa (datos maestros del grupo principal)
-      if (esCombi && ruta.origen_grupo === 'SANTIAGO' && e.ruta.origen_grupo !== 'SANTIAGO') {
+      // Preferir la ruta del grupo principal (STGO) como representativa
+      if (esCombi && stgoGrupoObj && ruta.origen_grupo === stgoGrupoObj.grupo && e.ruta.origen_grupo !== stgoGrupoObj.grupo) {
         e.ruta = ruta;
       }
       if (h.idCliente && h.idCliente !== '-') e.clientes.add(h.idCliente);
@@ -2882,7 +2877,7 @@ function renderParticipacion(content, db, cfg) {
       e.ton += h.ton;
     });
 
-    // Paso 2: Identificar rutas COMUNA y construir mapa zonaId → mapKey (para rollup)
+    // Paso 2: mapa zonaId → mapKey (para rollup Sector → COMUNA)
     const comunaZonaToKey = new Map();
     rawMap.forEach((e, key) => {
       if ((e.ruta.tipo || '').toUpperCase() === 'COMUNA' && e.ruta.id_zona_transporte) {
@@ -2890,7 +2885,7 @@ function renderParticipacion(content, db, cfg) {
       }
     });
 
-    // Paso 3: Inicializar routeMap solo con rutas COMUNA
+    // Paso 3: routeMap solo con COMUNA
     const routeMap = new Map();
     rawMap.forEach((e, key) => {
       if ((e.ruta.tipo || '').toUpperCase() === 'COMUNA') {
@@ -2898,11 +2893,11 @@ function renderParticipacion(content, db, cfg) {
       }
     });
 
-    // Paso 4: Rollup Sector → COMUNA padre (vía zone.comuna = zonaId de la COMUNA padre)
-    rawMap.forEach((e) => {
+    // Paso 4: rollup Sector → COMUNA padre
+    rawMap.forEach(e => {
       if ((e.ruta.tipo || '').toLowerCase() !== 'sector') return;
       const zone = zonasByIdP.get(e.ruta.id_zona_transporte);
-      if (!zone || !zone.comuna) return;
+      if (!zone?.comuna) return;
       const parentKey = comunaZonaToKey.get(zone.comuna);
       if (!parentKey) return;
       const parent = routeMap.get(parentKey);
@@ -2912,9 +2907,7 @@ function renderParticipacion(content, db, cfg) {
       e.obras.forEach(o => parent.obras.add(o));
     });
 
-    // Paso 5: PESO por grupo de característica (NORMAL sum 100%, EXTREMA/ISLA sum 100%)
-    // En modo combinado (STGO+SB), el total es la suma de AMBOS centros → el denominador
-    // incluye toneladas de Santiago Y San Bernardo para cada categoría.
+    // Paso 5: PESO — en modo combinado el denominador es la suma TOTAL de ambos centros
     const catTon = {};
     routeMap.forEach(e => {
       const cat = (e.ruta.caracteristica || 'NORMAL').toUpperCase();
@@ -2925,19 +2918,18 @@ function renderParticipacion(content, db, cfg) {
       .map(e => {
         const cat = (e.ruta.caracteristica || 'NORMAL').toUpperCase();
         return {
-          rutaId: e.ruta?.id || e.mapKey,
-          rutaCodigo: e.ruta?.codigo || e.mapKey,
-          ruta: e.ruta,
-          clientes: e.clientes.size,
-          obras: e.obras.size,
-          toneladas: e.ton,
-          peso: e.ton / (catTon[cat] || 1),
-          caracteristica: e.ruta.caracteristica || 'NORMAL'
+          rutaId:       e.ruta?.id    || e.mapKey,
+          rutaCodigo:   e.ruta?.codigo || e.mapKey,
+          ruta:         e.ruta,
+          clientes:     e.clientes.size,
+          obras:        e.obras.size,
+          toneladas:    e.ton,
+          peso:         e.ton / (catTon[cat] || 1),
+          caracteristica: e.ruta?.caracteristica || 'NORMAL'
         };
       })
       .sort((a, b) => b.toneladas - a.toneladas);
   }
-
   function render(centroId) {
     const results = centroId ? calcParticipacion(centroId) : [];
     const totalTon = results.reduce((s, r) => s + r.toneladas, 0);
