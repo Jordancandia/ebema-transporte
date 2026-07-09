@@ -6,7 +6,7 @@ import { CAP_LIST, truckTypesWithCap, calcularMatrizCostos } from './tarifas-eng
 import { formatCLP, parseCSV, showAlert, toCSV, downloadFile, escapeHtml } from './utils.js';
 import { supabase } from './supabase-client.js';
 import { getField } from './zonas-transporte.js';
-import { renderZcapView } from './zcap.js?v=20260707a';
+import { renderZcapView } from './zcap.js?v=20260709a';
 
 let activeSub = 'peajes';
 
@@ -135,10 +135,15 @@ function parseCapKgFromCSV(val) {
   return n;
 }
 
+// Subs que pertenecen al grupo Peajes (muestran tab bar propio)
+const PEAJES_SUBS = ['peajes', 'peajes-inter', 'concesiones'];
+
 // ---------- Vista principal ----------
 export function renderTariffTransportView(container) {
   const db = getDatabase();
   const cfg = getTariffConfig(db);
+
+  const inPeajes = PEAJES_SUBS.includes(activeSub);
 
   container.innerHTML = `
     <div class="mb-xl">
@@ -146,29 +151,24 @@ export function renderTariffTransportView(container) {
       <p class="font-body-lg text-body-lg text-secondary">Gestione las variables operacionales y monetarias que alimentan el motor de costos (ZCAP) por ruta y tipo de camión.</p>
     </div>
 
+    ${inPeajes ? `
     <div class="flex gap-sm mb-lg border-b border-outline-variant pb-sm overflow-x-auto" id="tt-subtabs">
-      ${subTabButton('peajes', 'toll', 'Peajes Regionales')}
-      ${subTabButton('peajes-inter', 'alt_route', 'Peajes Interregionales')}
-      ${subTabButton('camiones', 'local_shipping', 'Tarifas por Camión')}
-      ${subTabButton('combustibles', 'local_gas_station', 'Combustibles y Rendimientos')}
-      ${subTabButton('seguros', 'shield', 'Seguros y Permisos')}
-      ${subTabButton('costos-extras', 'add_circle', 'Costos Extras')}
-      ${subTabButton('participacion', 'donut_large', 'Participación Rutas')}
-      ${subTabButton('variables', 'tune', 'Variables Generales')}
-      ${subTabButton('resultados', 'calculate', 'Motor de Costo')}
-      ${subTabButton('resultados-inter', 'map', 'Motor de Costo Interregional')}
-      ${subTabButton('zcap', 'price_check', 'ZCAP')}
-    </div>
+      ${subTabButton('peajes',       'toll',            'Peajes Regionales')}
+      ${subTabButton('peajes-inter', 'alt_route',       'Peajes Interregionales')}
+      ${subTabButton('concesiones',  'account_balance', 'Administrador de Concesiones')}
+    </div>` : ''}
 
     <div id="tt-content"></div>
   `;
 
-  document.querySelectorAll('.tt-subtab').forEach(btn => {
-    btn.addEventListener('click', () => {
-      activeSub = btn.dataset.sub;
-      renderSub();
+  if (inPeajes) {
+    document.querySelectorAll('.tt-subtab').forEach(btn => {
+      btn.addEventListener('click', () => {
+        activeSub = btn.dataset.sub;
+        renderSub();
+      });
     });
-  });
+  }
 
   renderSub();
 
@@ -181,17 +181,18 @@ export function renderTariffTransportView(container) {
 
     const content = document.getElementById('tt-content');
     switch (activeSub) {
-      case 'peajes': renderPeajes(content, db, cfg); break;
-      case 'peajes-inter': renderPeajesInterregionales(content, db, cfg); break;
-      case 'camiones': renderTarifasCamion(content, db, cfg); break;
-      case 'combustibles': renderCombustibles(content, db, cfg); break;
-      case 'seguros': renderSeguros(content, db, cfg); break;
-      case 'costos-extras': renderCostosExtras(content, db, cfg); break;
-      case 'participacion': renderParticipacion(content, db, cfg); break;
-      case 'variables': renderVariables(content, db, cfg); break;
-      case 'resultados': renderResultados(content, db, cfg); break;
+      case 'peajes':         renderPeajes(content, db, cfg); break;
+      case 'peajes-inter':   renderPeajesInterregionales(content, db, cfg); break;
+      case 'concesiones':    renderAdminConcesiones(content, db); break;
+      case 'camiones':       renderTarifasCamion(content, db, cfg); break;
+      case 'combustibles':   renderCombustibles(content, db, cfg); break;
+      case 'seguros':        renderSeguros(content, db, cfg); break;
+      case 'costos-extras':  renderCostosExtras(content, db, cfg); break;
+      case 'participacion':  renderParticipacion(content, db, cfg); break;
+      case 'variables':      renderVariables(content, db, cfg); break;
+      case 'resultados':     renderResultados(content, db, cfg); break;
       case 'resultados-inter': renderResultadosInter(content, db, cfg); break;
-      case 'zcap': renderZcapView(content); break;
+      case 'zcap':           renderZcapView(content); break;
     }
 
     // Listener delegado para todas las celdas editables con data-path
@@ -594,6 +595,139 @@ function pjGetTollRow(db, routeId, ejes) {
 
 function tollNumInput(routeId, ejes, field, value) {
   return `<input type="number" step="any" class="${inputCls}" data-toll-route="${routeId}" data-toll-ejes="${ejes}" data-toll-field="${field}" value="${value ?? 0}">`;
+}
+
+// ---------- Administrador de Concesiones ----------
+const CONCESIONES_CHILE = [
+  // Ruta 5 Norte
+  { nombre: 'COPSA', ruta: 'Ruta 5 Norte', tramo: 'Los Vilos – La Serena', region: 'Coquimbo', tipo: 'Autopista', activa: true },
+  { nombre: 'COVICORVI', ruta: 'Ruta 5 Norte', tramo: 'La Serena – Vallenar', region: 'Atacama', tipo: 'Autopista', activa: true },
+  { nombre: 'Nuevo Camino', ruta: 'Ruta 5 Norte', tramo: 'Vallenar – Caldera', region: 'Atacama', tipo: 'Autopista', activa: true },
+  // Ruta 5 Sur
+  { nombre: 'Autopista del Itata', ruta: 'Ruta 5 Sur', tramo: 'Talca – Chillán', region: 'Maule / Ñuble', tipo: 'Autopista', activa: true },
+  { nombre: 'Ruta del Maipo', ruta: 'Ruta 5 Sur', tramo: 'Chillán – Collipulli', region: 'Ñuble / La Araucanía', tipo: 'Autopista', activa: true },
+  { nombre: 'COVISUR', ruta: 'Ruta 5 Sur', tramo: 'Collipulli – Temuco', region: 'La Araucanía', tipo: 'Autopista', activa: true },
+  { nombre: 'Ruta de la Araucanía', ruta: 'Ruta 5 Sur', tramo: 'Temuco – Río Bueno', region: 'La Araucanía / Los Ríos', tipo: 'Autopista', activa: true },
+  { nombre: 'Ruta de los Ríos', ruta: 'Ruta 5 Sur', tramo: 'Río Bueno – Puerto Montt', region: 'Los Ríos / Los Lagos', tipo: 'Autopista', activa: true },
+  // RM - Autopistas Urbanas
+  { nombre: 'Autopista Central', ruta: 'Ruta 5 / Norte-Sur', tramo: 'Autopista Urbana Norte-Sur', region: 'Región Metropolitana', tipo: 'Urbana TAG', activa: true },
+  { nombre: 'Costanera Norte', ruta: 'Ruta 78', tramo: 'Costanera Norte expreso', region: 'Región Metropolitana', tipo: 'Urbana TAG', activa: true },
+  { nombre: 'Vespucio Norte Express', ruta: 'Américo Vespucio Norte', tramo: 'Avenida Las Rejas – El Salto', region: 'Región Metropolitana', tipo: 'Urbana TAG', activa: true },
+  { nombre: 'Américo Vespucio Sur Express', ruta: 'Américo Vespucio Sur', tramo: 'Lo Ovalle – Príncipe de Gales', region: 'Región Metropolitana', tipo: 'Urbana TAG', activa: true },
+  { nombre: 'Autopista Vespucio Oriente', ruta: 'Américo Vespucio Oriente', tramo: 'Las Vizcachas – El Salto', region: 'Región Metropolitana', tipo: 'Urbana TAG', activa: true },
+  { nombre: 'Túnel San Cristóbal', ruta: 'Ruta Sin Número', tramo: 'Providencia – Recoleta', region: 'Región Metropolitana', tipo: 'Túnel', activa: true },
+  { nombre: 'Acceso Nororiente', ruta: 'Ruta G-21', tramo: 'Príncipe de Gales – Av. El Golf', region: 'Región Metropolitana', tipo: 'Urbana TAG', activa: true },
+  // Ruta 68 / Valparaíso
+  { nombre: 'Rutas del Pacífico', ruta: 'Ruta 68', tramo: 'Santiago – Valparaíso / Viña', region: 'Valparaíso', tipo: 'Autopista', activa: true },
+  { nombre: 'Litoral Central', ruta: 'Ruta 68', tramo: 'Casablanca – Larapinta', region: 'Valparaíso', tipo: 'Autopista', activa: true },
+  // Ruta 57 / Los Andes
+  { nombre: 'Autopista Los Libertadores', ruta: 'Ruta 57 CH', tramo: 'Santiago – Los Andes', region: 'Valparaíso', tipo: 'Autopista', activa: true },
+  // Ruta 60 / Túnel El Melón
+  { nombre: 'Túnel El Melón', ruta: 'Ruta 60 CH', tramo: 'Nogales – Calera (Túnel)', region: 'Valparaíso', tipo: 'Túnel', activa: true },
+  // Otras
+  { nombre: 'Autopista del Sol', ruta: 'Ruta 78', tramo: 'Santiago – San Antonio', region: 'Región Metropolitana', tipo: 'Autopista', activa: true },
+  { nombre: 'Variante Melipilla', ruta: 'Ruta 78', tramo: 'Santiago – Melipilla', region: 'Región Metropolitana', tipo: 'Autopista', activa: true },
+];
+
+function renderAdminConcesiones(content) {
+  const regiones = [...new Set(CONCESIONES_CHILE.map(c => c.region))];
+
+  let filtroRegion = '';
+  let filtroTipo   = '';
+  let filtroBuscar = '';
+
+  function render() {
+    let lista = CONCESIONES_CHILE.filter(c => {
+      if (filtroRegion && c.region !== filtroRegion) return false;
+      if (filtroTipo   && c.tipo   !== filtroTipo)   return false;
+      if (filtroBuscar) {
+        const q = filtroBuscar.toLowerCase();
+        if (!c.nombre.toLowerCase().includes(q) && !c.tramo.toLowerCase().includes(q) && !c.ruta.toLowerCase().includes(q)) return false;
+      }
+      return true;
+    });
+
+    const tipos = [...new Set(CONCESIONES_CHILE.map(c => c.tipo))];
+    const tipoBadge = t => {
+      if (t === 'Urbana TAG') return '<span class="inline-flex px-1.5 py-0.5 rounded text-[10px] font-bold bg-blue-100 text-blue-800">TAG</span>';
+      if (t === 'Túnel')      return '<span class="inline-flex px-1.5 py-0.5 rounded text-[10px] font-bold bg-purple-100 text-purple-800">TÚNEL</span>';
+      return '<span class="inline-flex px-1.5 py-0.5 rounded text-[10px] font-bold bg-green-100 text-green-800">AUTOPISTA</span>';
+    };
+
+    content.innerHTML = `
+      <div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm">
+        <div class="flex items-center gap-sm mb-md border-b border-outline-variant pb-sm">
+          <span class="material-symbols-outlined text-primary">account_balance</span>
+          <h2 class="font-headline-sm text-headline-sm font-bold text-on-surface">Administrador de Concesiones de Peajes — Chile</h2>
+        </div>
+        <p class="text-[12px] text-secondary mb-md">
+          Concesionarias de peajes en Chile que son consultadas por <strong>TollGuru</strong> al calcular los costos de ruta del sistema.
+          Total: <strong>${CONCESIONES_CHILE.length}</strong> concesiones activas.
+        </p>
+
+        <div class="flex flex-wrap gap-md items-end mb-md">
+          <div class="space-y-xs">
+            <label class="font-label-caps text-label-caps text-secondary block">REGIÓN</label>
+            <select id="con-f-region" class="border border-[#CED4DA] p-sm font-body-md text-body-md bg-white w-56">
+              <option value="">Todas</option>
+              ${regiones.map(r => `<option value="${escapeHtml(r)}" ${filtroRegion === r ? 'selected' : ''}>${escapeHtml(r)}</option>`).join('')}
+            </select>
+          </div>
+          <div class="space-y-xs">
+            <label class="font-label-caps text-label-caps text-secondary block">TIPO</label>
+            <select id="con-f-tipo" class="border border-[#CED4DA] p-sm font-body-md text-body-md bg-white w-40">
+              <option value="">Todos</option>
+              ${tipos.map(t => `<option value="${escapeHtml(t)}" ${filtroTipo === t ? 'selected' : ''}>${escapeHtml(t)}</option>`).join('')}
+            </select>
+          </div>
+          <div class="space-y-xs">
+            <label class="font-label-caps text-label-caps text-secondary block">BUSCAR</label>
+            <input id="con-f-buscar" type="text" placeholder="Nombre, ruta o tramo..."
+              value="${escapeHtml(filtroBuscar)}"
+              class="border border-[#CED4DA] p-sm font-body-md text-body-md bg-white w-52">
+          </div>
+        </div>
+
+        <div class="bg-surface border border-outline-variant overflow-x-auto rounded">
+          <table class="w-full border-collapse text-[12px]">
+            <thead>
+              <tr class="bg-surface-container-high text-left border-b border-outline-variant">
+                <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Concesionaria</th>
+                <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Ruta</th>
+                <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Tramo</th>
+                <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Región</th>
+                <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Tipo</th>
+              </tr>
+            </thead>
+            <tbody class="font-body-md text-body-md">
+              ${lista.length === 0
+                ? `<tr><td colspan="5" class="p-md text-center text-secondary">Sin resultados para los filtros seleccionados.</td></tr>`
+                : lista.map((c, i) => `
+                  <tr class="border-b border-outline-variant ${i % 2 === 0 ? '' : 'bg-surface-container-lowest'}">
+                    <td class="p-md font-bold text-on-surface">${escapeHtml(c.nombre)}</td>
+                    <td class="p-md font-data-mono text-data-mono text-secondary">${escapeHtml(c.ruta)}</td>
+                    <td class="p-md">${escapeHtml(c.tramo)}</td>
+                    <td class="p-md text-secondary">${escapeHtml(c.region)}</td>
+                    <td class="p-md">${tipoBadge(c.tipo)}</td>
+                  </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>
+        <p class="text-[11px] text-secondary mt-sm">Fuente: TollGuru API — datos actualizados según consultas del sistema.</p>
+      </div>
+    `;
+
+    content.querySelector('#con-f-region')?.addEventListener('change', e => { filtroRegion = e.target.value; render(); });
+    content.querySelector('#con-f-tipo')?.addEventListener('change',   e => { filtroTipo   = e.target.value; render(); });
+    content.querySelector('#con-f-buscar')?.addEventListener('input',  e => {
+      const pos = e.target.selectionStart;
+      filtroBuscar = e.target.value; render();
+      const inp = content.querySelector('#con-f-buscar');
+      if (inp) { inp.focus(); inp.setSelectionRange(pos, pos); }
+    });
+  }
+
+  render();
 }
 
 // Vista combinada: cálculo automático (route_tolls) + registro manual (cfg.peajes)
@@ -3141,7 +3275,6 @@ function renderResultados(content, db, cfg) {
 // ============================================================
 // SUB-MÓDULO: MOTOR DE COSTO INTERREGIONAL
 // ============================================================
-function renderResultadosInter(content, db, cfg) {
   const groups = getOrigenGroups(db);
   let matriz = calcularMatrizCostos(db, cfg);
   // Solo rutas INTERREGIONALES (cualquier tipo)

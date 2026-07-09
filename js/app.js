@@ -4,7 +4,7 @@ import { renderTransportsView } from './transports.js';
 import { renderRoutesView, setRoutesSubTab } from './routes.js?v=20260708a';
 import { renderRatesView } from './rates.js';
 import { renderRolesView } from './roles.js';
-import { renderTariffTransportView, setActiveSub } from './tarifas-transporte.js?v=20260708a';
+import { renderTariffTransportView, setActiveSub } from './tarifas-transporte.js?v=20260709a';
 import { renderClientTariffView, setActiveSubC } from './tarifas-clientes.js?v=20260708a';
 import { showAlert, formatRut, validateRut, formatPhone } from './utils.js';
 
@@ -945,7 +945,6 @@ const SIDEBAR_MENU = [
 // se enlazan a la vista existente mas cercana (se construyen en fases siguientes).
 const SUB_ALIAS = {
   'transports':         { transportistas: null, flota: null, conductores: null },
-  'tarifas-transporte': { concesiones: 'peajes' },
   'tarifas-clientes':   { zfmp: 'resultados', zfmi: 'resultados' },
 };
 
@@ -959,7 +958,7 @@ function sidebarNavHTML() {
         <div class="sidebar-group" data-group="${entry.group}">
           <a class="sidebar-group-toggle flex items-center gap-md px-md py-sm text-secondary hover:text-primary hover:bg-surface-container-high transition-colors rounded-lg cursor-pointer select-none">
             <span class="material-symbols-outlined">${entry.icon}</span>
-            <span class="font-body-md text-body-md flex-1">${entry.label}</span>
+            <span class="font-body-md text-body-md flex-1 font-bold">${entry.label}</span>
             <span class="material-symbols-outlined text-[18px] transition-transform sidebar-chevron">expand_more</span>
           </a>
           <div class="sidebar-group-children hidden mt-xs space-y-[2px]">
@@ -974,7 +973,7 @@ function sidebarNavHTML() {
     return `
       <a class="${NAV_BASE_ITEM}" data-tab="${entry.tab}" id="nav-${entry.tab}">
         <span class="material-symbols-outlined">${entry.icon}</span>
-        <span class="font-body-md text-body-md">${entry.label}</span>
+        <span class="font-body-md text-body-md font-bold">${entry.label}</span>
       </a>`;
   }).join('');
 }
