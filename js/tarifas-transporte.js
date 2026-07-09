@@ -2815,35 +2815,34 @@ function renderParticipacion(content, db, cfg) {
     ? [...centrosEnHistorico].sort()
     : grupos.map(g => g.grupo);
 
-  // Construir dropdown combinando STGO+SB si ambos existen
-  const centrosDropdown = tieneStgoSb
-    ? centros.filter(c => !STGO_SB_GRUPOS.includes(c)).concat(['__STGO_SB__'])
-    : centros;
+  // Dropdown: mostrar TODOS los centros separados (STGO y SB aparecen individualmente)
+  const centrosDropdown = centros;
 
   function labelCentro(c) {
-    if (c === '__STGO_SB__')
-      return `${stgoGrupoObj?.nombre || 'Santiago'} + ${sbGrupoObj?.nombre || 'San Bernardo'}`;
     const g = grupos.find(go => go.grupo === c);
     return g?.nombre || String(c).replace(/_/g, ' ');
   }
 
-  let participacionFiltroCentro = tieneStgoSb ? '__STGO_SB__' : (centrosDropdown[0] || '');
+  let participacionFiltroCentro = centrosDropdown[0] || '';
 
   // ── Mapa de zonas para rollup Sector → COMUNA ────────────────────────────
   const zonasByIdP = new Map((db.transportZones || []).map(z => [z.zona, z]));
 
   function calcParticipacion(grupoInput) {
-    const grupos_calc = grupoInput === '__STGO_SB__' ? STGO_SB_GRUPOS : [grupoInput];
-    const esCombi     = grupos_calc.length > 1;
+    // Si el grupo seleccionado es STGO o SB, siempre combinar ambos para el cálculo
+    // (mismos destinos/zonas → la participación se calcula sobre el total combinado
+    //  y se aplica igual a cada centro por separado)
+    const esStgoSb = tieneStgoSb && STGO_SB_GRUPOS.includes(grupoInput);
+    const grupos_calc = esStgoSb ? STGO_SB_GRUPOS : [grupoInput];
 
-    // IDs de centros involucrados (para filtro secundario por origenId)
+    // IDs de centros involucrados
     const grupoCentroIds = new Set();
     grupos_calc.forEach(gn => {
       const gObj = grupos.find(go => go.grupo === gn);
       if (gObj) gObj.centroIds.forEach(id => grupoCentroIds.add(String(id)));
     });
 
-    // Filtrar histData directamente por ruta.origen_grupo (sin depender de oficToGrupo)
+    // Filtrar histData directamente por ruta.origen_grupo
     const grupoRows = histData.filter(h => {
       const ruta = routeByIdP.get(h.idRuta);
       if (!ruta) return false;
@@ -2852,9 +2851,9 @@ function renderParticipacion(content, db, cfg) {
     });
     if (!grupoRows.length) return [];
 
-    // Paso 1: Agregar por clave de fusión
-    // Modo combinado: clave = id_zona_transporte ?? destino.toUpperCase() (fusiona rutas al mismo destino)
-    // Modo individual: clave = idRuta (una fila por ruta)
+    // Paso 1: Acumular toneladas por destino.
+    // Clave = id_zona_transporte ?? destino.toUpperCase()
+    // Esto fusiona las rutas de STGO y SB que van al mismo lugar.
     const rawMap = new Map();
     grupoRows.forEach(h => {
       const ruta = routeByIdP.get(h.idRuta);
@@ -2862,14 +2861,14 @@ function renderParticipacion(content, db, cfg) {
 
       const zonaKey    = ruta.id_zona_transporte;
       const destinoKey = (ruta.destino || ruta.nombre || '').trim().toUpperCase();
-      const mapKey     = esCombi ? (zonaKey || destinoKey || h.idRuta) : h.idRuta;
+      const mapKey     = zonaKey || destinoKey || h.idRuta;
 
       if (!rawMap.has(mapKey)) {
         rawMap.set(mapKey, { mapKey, ruta, clientes: new Set(), obras: new Set(), ton: 0 });
       }
       const e = rawMap.get(mapKey);
-      // Preferir la ruta del grupo principal (STGO) como representativa
-      if (esCombi && stgoGrupoObj && ruta.origen_grupo === stgoGrupoObj.grupo && e.ruta.origen_grupo !== stgoGrupoObj.grupo) {
+      // Preferir la ruta de STGO como representativa (datos maestros)
+      if (stgoGrupoObj && ruta.origen_grupo === stgoGrupoObj.grupo && e.ruta.origen_grupo !== stgoGrupoObj.grupo) {
         e.ruta = ruta;
       }
       if (h.idCliente && h.idCliente !== '-') e.clientes.add(h.idCliente);
@@ -2907,7 +2906,7 @@ function renderParticipacion(content, db, cfg) {
       e.obras.forEach(o => parent.obras.add(o));
     });
 
-    // Paso 5: PESO — en modo combinado el denominador es la suma TOTAL de ambos centros
+    // Paso 5: PESO — denominador = total combinado STGO+SB por categoría
     const catTon = {};
     routeMap.forEach(e => {
       const cat = (e.ruta.caracteristica || 'NORMAL').toUpperCase();
@@ -2918,13 +2917,13 @@ function renderParticipacion(content, db, cfg) {
       .map(e => {
         const cat = (e.ruta.caracteristica || 'NORMAL').toUpperCase();
         return {
-          rutaId:       e.ruta?.id    || e.mapKey,
-          rutaCodigo:   e.ruta?.codigo || e.mapKey,
-          ruta:         e.ruta,
-          clientes:     e.clientes.size,
-          obras:        e.obras.size,
-          toneladas:    e.ton,
-          peso:         e.ton / (catTon[cat] || 1),
+          rutaId:         e.ruta?.id     || e.mapKey,
+          rutaCodigo:     e.ruta?.codigo || e.mapKey,
+          ruta:           e.ruta,
+          clientes:       e.clientes.size,
+          obras:          e.obras.size,
+          toneladas:      e.ton,
+          peso:           e.ton / (catTon[cat] || 1),
           caracteristica: e.ruta?.caracteristica || 'NORMAL'
         };
       })
