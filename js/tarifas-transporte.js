@@ -30,6 +30,13 @@ let pjiFiltroRevision = false;
 let zcapFiltroCentro  = ''; // origen_grupo (Centro Origen); '' = todos
 let zcapFiltroCapKg   = ''; // '5000'|'10000'|'15000'|'28000'; '' = todos
 let zcapFiltroComuna  = ''; // texto libre sobre destino; '' = todos
+
+// Motor de Costo unificado
+let mcTipoRuta  = 'regional';  // 'regional' | 'interregional' | 'todas'
+let mcCentros   = new Set();   // Set<string> de origen_grupo; vacío = todos
+let mcCapKg     = '';
+let mcComuna    = '';
+let mcPagina    = 0;
 let tarifaCentroFiltro = '';
 
 // Estado de filtros de la vista "Motor de Costo Interregional"
@@ -190,8 +197,12 @@ export function renderTariffTransportView(container) {
       case 'costos-extras':  renderCostosExtras(content, db, cfg); break;
       case 'participacion':  renderParticipacion(content, db, cfg); break;
       case 'variables':      renderVariables(content, db, cfg); break;
-      case 'resultados':     renderResultados(content, db, cfg); break;
-      case 'resultados-inter': renderResultadosInter(content, db, cfg); break;
+      case 'resultados':
+        mcTipoRuta = 'regional'; mcPagina = 0;
+        renderResultados(content, db, cfg); break;
+      case 'resultados-inter':
+        mcTipoRuta = 'interregional'; mcPagina = 0;
+        renderResultados(content, db, cfg); break;
       case 'zcap':           renderZcapView(content); break;
     }
 
@@ -3186,332 +3197,282 @@ function renderVariables(content, db, cfg) {
 // ============================================================
 function renderResultados(content, db, cfg) {
   const groups = getOrigenGroups(db);
-  let matriz = calcularMatrizCostos(db, cfg);
-  // Solo rutas REGIONAL + COMUNA
-  matriz = matriz.filter(m => (m.ruta.tipo || '').toUpperCase() === 'COMUNA' && m.ruta.clasificRuta === 'Regional');
-  if (zcapFiltroCentro) matriz = matriz.filter(m => m.ruta.origen_grupo === zcapFiltroCentro);
-  if (zcapFiltroCapKg)  matriz = matriz.filter(m => String(m.truckType?.capKg) === zcapFiltroCapKg);
-  if (zcapFiltroComuna) {
-    const q = zcapFiltroComuna.toLowerCase();
-    matriz = matriz.filter(m => (m.ruta.destino || m.ruta.nombre || '').toLowerCase().includes(q));
+  let todaMatriz = calcularMatrizCostos(db, cfg);
+
+  // ── filtrar por tipo de ruta
+  if (mcTipoRuta === 'regional') {
+    todaMatriz = todaMatriz.filter(m =>
+      (m.ruta.tipo || '').toUpperCase() === 'COMUNA' && m.ruta.clasificRuta === 'Regional');
+  } else if (mcTipoRuta === 'interregional') {
+    todaMatriz = todaMatriz.filter(m => m.ruta.clasificRuta === 'Interregional');
   }
 
-  const grupoSel = groups.find(g => g.grupo === zcapFiltroCentro);
-  const participacion = cfg.participacionRutas || {};
-  const groupMap = {};
-  groups.forEach(g => { groupMap[g.grupo] = g.nombre; });
+  // ── filtrar por centros seleccionados (multi-select)
+  if (mcCentros.size > 0) {
+    todaMatriz = todaMatriz.filter(m => mcCentros.has(m.ruta.origen_grupo));
+  }
 
-  // Mapa de costos extras: zona_id + ejes → { ida, vuelta } (aplica a cualquier ruta con ese id_zona_transporte)
+  // ── destinos disponibles según centros (para datalist)
+  const destinoSet = new Set(todaMatriz.map(m => m.ruta.destino || m.ruta.nombre || '').filter(Boolean));
+
+  // ── filtro tipo camión
+  if (mcCapKg) todaMatriz = todaMatriz.filter(m => String(m.truckType?.capKg) === mcCapKg);
+
+  // ── filtro texto destino
+  if (mcComuna) {
+    const q = mcComuna.toLowerCase();
+    todaMatriz = todaMatriz.filter(m => (m.ruta.destino || m.ruta.nombre || '').toLowerCase().includes(q));
+  }
+
+  const showPeso  = mcTipoRuta !== 'interregional';
+  const groupMap  = {};
+  groups.forEach(g => { groupMap[g.grupo] = g.nombre; });
+  const participacion = cfg.participacionRutas || {};
+
+  // ── mapa costos extras
   const extraCostsMap = new Map();
   (db.extraCosts || []).filter(c => c.activo !== false).forEach(c => {
     const key = `${c.zona_id}__${c.ejes}`;
     const prev = extraCostsMap.get(key) || { ida: 0, vuelta: 0 };
-    extraCostsMap.set(key, {
-      ida:    prev.ida    + (Number(c.costo_ida)    || 0),
-      vuelta: prev.vuelta + (Number(c.costo_vuelta) || 0)
-    });
+    extraCostsMap.set(key, { ida: prev.ida + (Number(c.costo_ida) || 0), vuelta: prev.vuelta + (Number(c.costo_vuelta) || 0) });
   });
   function getExtraTotal(ruta, capKg) {
-    const ejes = capKg <= 10000 ? 2 : 3;
+    const ejes  = capKg <= 10000 ? 2 : 3;
     const entry = extraCostsMap.get(`${ruta.id_zona_transporte}__${ejes}`);
     return entry ? entry.ida + entry.vuelta : 0;
   }
 
-  const HEADERS = ['Centro', 'ID Ruta', 'Destino', 'Clasificación', 'Tipo Camión (Kg)', 'KM', 'Peajes', 'Comb. Ida', 'Comb. Vuelta', 'Seguros (SOAP+Seg)', 'Costos Extras', 'Mantención', 'Neumáticos', 'GPS', 'Rem. Chofer', 'Var. Chofer', 'Factor Ruta', 'Costo Vuelta', 'Costo Ruta Total', 'Costo/KM Final', 'Peso', 'Tarifa Ponderada'];
+  const HEADERS_BASE = ['Centro','ID Ruta','Destino','Clasificación','Tipo Camión (Kg)','KM',
+    'Peajes','Comb. Ida','Comb. Vuelta','Seguros','Costos Extras',
+    'Mantención','Neumáticos','GPS','Rem. Chofer','Var. Chofer',
+    'Factor','Costo Vuelta','Costo Total','Costo/KM'];
+  const HEADERS = showPeso ? [...HEADERS_BASE, 'Peso', 'T. Ponderada'] : HEADERS_BASE;
+
+  function centrosLabel() {
+    if (mcCentros.size === 0) return 'Todos los centros';
+    if (mcCentros.size === 1) return groups.find(g => mcCentros.has(g.grupo))?.nombre || '1 centro';
+    return `${mcCentros.size} centros seleccionados`;
+  }
 
   content.innerHTML = `
     <div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm mb-lg">
+
       <div class="flex items-center justify-between mb-md border-b border-outline-variant pb-sm">
         <div class="flex items-center gap-sm">
           <span class="material-symbols-outlined text-primary">calculate</span>
-          <h2 class="font-headline-sm text-headline-sm font-bold text-on-surface">Motor de Costo — Resultados por Ruta</h2>
+          <h2 class="font-headline-sm text-headline-sm font-bold text-on-surface">Motor de Costo — Resultados</h2>
         </div>
         <div class="flex items-center gap-sm">
-          <button id="zcap-actualizar" class="bg-primary hover:bg-[#930007] text-white font-bold px-md py-sm rounded flex items-center gap-sm text-xs uppercase">
+          ${mcTipoRuta !== 'interregional' ? `
+          <button id="mc-actualizar" class="bg-primary hover:bg-[#930007] text-white font-bold px-md py-sm rounded flex items-center gap-sm text-xs uppercase">
             <span class="material-symbols-outlined text-[18px]">refresh</span> Actualizar Tarifas
-          </button>
-          <button id="zcap-export" class="bg-surface border border-outline-variant hover:bg-surface-container-high text-on-surface font-bold px-md py-sm rounded flex items-center gap-sm text-xs uppercase">
+          </button>` : ''}
+          <button id="mc-export" class="bg-surface border border-outline-variant hover:bg-surface-container-high text-on-surface font-bold px-md py-sm rounded flex items-center gap-sm text-xs uppercase">
             <span class="material-symbols-outlined text-[18px]">download</span> Exportar CSV
           </button>
         </div>
       </div>
-      <p class="text-[12px] text-secondary mb-md">Desglose por ruta y tipo de camión. <strong>Costo Vuelta</strong> = Σ ítems × factor ruta (costo puro). <strong>Costo Ruta Total</strong> = Costo Vuelta / (1 − margen%) = precio de venta. <strong>Tarifa Ponderada</strong> = (Costo Ruta Total / km×2) × peso ruta.</p>
 
+      <!-- Toggle tipo de ruta -->
+      <div class="flex items-center gap-xs mb-md">
+        <span class="font-label-caps text-label-caps text-secondary mr-sm text-[11px] uppercase">Tipo:</span>
+        ${[['regional','Regional'],['interregional','Interregional'],['todas','Todas']].map(([val,lbl]) => `
+        <button class="mc-tipo-btn px-md py-xs rounded border text-[12px] font-bold uppercase transition-colors ${mcTipoRuta === val
+          ? 'bg-primary text-white border-primary'
+          : 'bg-white border-outline-variant text-on-surface hover:bg-surface-container-high'}"
+          data-tipo="${val}">${lbl}</button>`).join('')}
+      </div>
+
+      <!-- Filtros -->
       <div class="flex flex-wrap items-end gap-md mb-md">
+
+        <!-- Multi-select centros -->
+        <div class="relative">
+          <label class="font-label-caps text-label-caps text-secondary block mb-xs">CENTRO ORIGEN</label>
+          <button id="mc-centro-btn" class="border border-[#CED4DA] px-sm py-[9px] bg-white text-left w-56 font-body-md text-body-md flex justify-between items-center gap-sm">
+            <span id="mc-centro-label">${centrosLabel()}</span>
+            <span class="material-symbols-outlined text-[18px] text-secondary flex-shrink-0">expand_more</span>
+          </button>
+          <div id="mc-centro-panel" class="hidden absolute z-50 bg-white border border-[#CED4DA] shadow-lg w-64 max-h-72 overflow-y-auto mt-1">
+            <label class="flex items-center gap-sm p-sm hover:bg-surface-container-high cursor-pointer border-b border-outline-variant">
+              <input type="checkbox" id="mc-c-all" ${mcCentros.size === 0 ? 'checked' : ''}>
+              <span class="font-body-md text-body-md font-bold">Todos</span>
+            </label>
+            ${groups.map(g => `
+            <label class="flex items-center gap-sm p-sm hover:bg-surface-container-high cursor-pointer">
+              <input type="checkbox" class="mc-c-item" value="${escapeHtml(g.grupo)}" ${mcCentros.has(g.grupo) ? 'checked' : ''}>
+              <span class="font-body-md text-body-md">${escapeHtml(g.nombre)}</span>
+            </label>`).join('')}
+          </div>
+        </div>
+
+        <!-- Tipo camión -->
         <div>
-          <label class="font-label-caps text-label-caps text-secondary block">CENTRO ORIGEN</label>
-          <select id="zcap-f-centro" class="border border-[#CED4DA] p-sm font-body-md text-body-md bg-white w-56">
+          <label class="font-label-caps text-label-caps text-secondary block mb-xs">TIPO CAMIÓN (KG)</label>
+          <select id="mc-f-capkg" class="border border-[#CED4DA] p-sm font-body-md text-body-md bg-white w-44">
             <option value="">Todos</option>
-            ${groups.map(g => `<option value="${g.grupo}" ${zcapFiltroCentro === g.grupo ? 'selected' : ''}>${g.nombre}</option>`).join('')}
+            <option value="5000"  ${mcCapKg === '5000'  ? 'selected' : ''}>5.000 Kg</option>
+            <option value="10000" ${mcCapKg === '10000' ? 'selected' : ''}>10.000 Kg</option>
+            <option value="15000" ${mcCapKg === '15000' ? 'selected' : ''}>15.000 Kg</option>
+            <option value="28000" ${mcCapKg === '28000' ? 'selected' : ''}>28.000 Kg</option>
           </select>
         </div>
+
+        <!-- Búsqueda destino (datalist filtrado por centros) -->
         <div>
-          <label class="font-label-caps text-label-caps text-secondary block">TIPO CAMIÓN (KG)</label>
-          <select id="zcap-f-capkg" class="border border-[#CED4DA] p-sm font-body-md text-body-md bg-white w-44">
-            <option value="">Todos</option>
-            <option value="5000"  ${zcapFiltroCapKg === '5000'  ? 'selected' : ''}>5.000 Kg</option>
-            <option value="10000" ${zcapFiltroCapKg === '10000' ? 'selected' : ''}>10.000 Kg</option>
-            <option value="15000" ${zcapFiltroCapKg === '15000' ? 'selected' : ''}>15.000 Kg</option>
-            <option value="28000" ${zcapFiltroCapKg === '28000' ? 'selected' : ''}>28.000 Kg</option>
-          </select>
+          <label class="font-label-caps text-label-caps text-secondary block mb-xs">BUSCAR DESTINO</label>
+          <input id="mc-f-comuna" type="text" list="mc-destinos-list"
+            placeholder="Filtrar destino..." value="${escapeHtml(mcComuna)}"
+            class="border border-[#CED4DA] p-sm font-body-md text-body-md bg-white w-52">
+          <datalist id="mc-destinos-list">
+            ${[...destinoSet].sort().map(d => `<option value="${escapeHtml(d)}">`).join('')}
+          </datalist>
         </div>
-        <div>
-          <label class="font-label-caps text-label-caps text-secondary block">BUSCAR COMUNA</label>
-          <input id="zcap-f-comuna" type="text" placeholder="Filtrar destino..." value="${escapeHtml(zcapFiltroComuna)}"
-            class="border border-[#CED4DA] p-sm font-body-md text-body-md bg-white w-44">
-        </div>
-      </div>
 
-      <div class="bg-surface border border-outline-variant overflow-hidden rounded overflow-x-auto">
-        <table class="w-full zebra-table border-collapse">
-          <thead>
-            <tr class="bg-surface-container-high text-left border-b border-outline-variant">
-              ${HEADERS.map(h => `<th class="p-md font-label-caps text-label-caps text-secondary uppercase${h === 'KM' || h !== 'Centro' && h !== 'Ruta' && h !== 'Clasificación' ? ' text-right' : ''}">${h}</th>`).join('')}
-            </tr>
-          </thead>
-          <tbody class="font-body-md text-body-md">
-            ${matriz.length === 0 ? `<tr><td colspan="${HEADERS.length}" class="p-md text-center text-secondary">Sin resultados para los filtros seleccionados.</td></tr>` :
-              matriz.slice(zcapPagina * MC_PAGE, (zcapPagina + 1) * MC_PAGE).map(m => {
-                const partEntry = participacion[m.ruta.id] || participacion[m.ruta.codigo];
-                const pct = partEntry?.pct || 0;
-
-                const tarifaPonderada = ((m.item11_costoKmFinal || 0) * pct / 100);
-                const grupoNombre = groupMap[m.ruta.origen_grupo] || m.ruta.origen_grupo;
-                const seguros = (m.item3_soapKm || 0) + (m.item4_seguroKm || 0);
-                const factorLabel = m.factorRuta != null ? m.factorRuta.toFixed(2) : '1.00';
-                const capKg = m.truckType?.capKg || 0;
-                const capLabel = capKg ? capKg.toLocaleString('es-CL') : '—';
-                const extraTotal = getExtraTotal(m.ruta, capKg);
-                return `<tr class="border-b border-outline-variant">
-                <td class="p-md font-bold text-nowrap">${grupoNombre}</td>
-                <td class="p-md font-data-mono text-data-mono font-bold">${m.ruta.codigo}</td>
-                <td class="p-md">${m.ruta.destino || ''}</td>
-                <td class="p-md">${m.ruta.clasificRuta || ''}</td>
-                <td class="p-md text-right font-data-mono text-data-mono">${capLabel}</td>
-                <td class="p-md text-right font-data-mono text-data-mono">${m.km}</td>
-                <td class="p-md text-right font-data-mono text-data-mono">${formatCLP(m.item1_peajes)}</td>
-                <td class="p-md text-right font-data-mono text-data-mono">${formatCLP(m.combIda)}</td>
-                <td class="p-md text-right font-data-mono text-data-mono">${formatCLP(m.combVuelta)}</td>
-                <td class="p-md text-right font-data-mono text-data-mono">${formatCLP(seguros)}</td>
-                <td class="p-md text-right font-data-mono text-data-mono ${extraTotal > 0 ? 'text-amber-700 font-bold' : ''}">${extraTotal > 0 ? formatCLP(extraTotal) : '—'}</td>
-                <td class="p-md text-right font-data-mono text-data-mono">${formatCLP(m.item5_mantKm)}</td>
-                <td class="p-md text-right font-data-mono text-data-mono">${formatCLP(m.item6_neumKm)}</td>
-                <td class="p-md text-right font-data-mono text-data-mono">${formatCLP(m.item7_gpsKm)}</td>
-                <td class="p-md text-right font-data-mono text-data-mono">${formatCLP(m.item8_choferBaseDiario)}</td>
-                <td class="p-md text-right font-data-mono text-data-mono">${formatCLP(m.item9_varChofer)}</td>
-                <td class="p-md text-right font-data-mono text-data-mono font-bold">${factorLabel}</td>
-                <td class="p-md text-right font-data-mono text-data-mono">${formatCLP(m.costoVuelta)}</td>
-                <td class="p-md text-right font-data-mono text-data-mono font-bold">${formatCLP(m.item10_costoRutaTotal)}</td>
-                <td class="p-md text-right font-data-mono text-data-mono">${formatCLP(m.item11_costoKmFinal)}</td>
-                <td class="p-md text-right font-data-mono text-data-mono">${pct.toFixed(2)}%</td>
-                <td class="p-md text-right font-data-mono text-data-mono">${formatCLP(Math.round(tarifaPonderada))}</td>
-              </tr>`}).join('')}
-          </tbody>
-        </table>
-      </div>
-      ${renderPager(matriz.length, zcapPagina, MC_PAGE, 'zcap-pag-prev', 'zcap-pag-next')}
-    </div>
-  `;
-
-  document.getElementById('zcap-f-centro').addEventListener('change', (e) => {
-    zcapFiltroCentro = e.target.value; zcapPagina = 0;
-    renderResultados(content, db, cfg);
-  });
-  document.getElementById('zcap-f-capkg').addEventListener('change', (e) => {
-    zcapFiltroCapKg = e.target.value; zcapPagina = 0;
-    renderResultados(content, db, cfg);
-  });
-  document.getElementById('zcap-f-comuna')?.addEventListener('input', e => {
-    const pos = e.target.selectionStart;
-    zcapFiltroComuna = e.target.value; zcapPagina = 0;
-    renderResultados(content, db, cfg);
-    const inp = document.getElementById('zcap-f-comuna');
-    if (inp) { inp.focus(); inp.setSelectionRange(pos, pos); }
-  });
-  document.getElementById('zcap-pag-prev')?.addEventListener('click', () => { zcapPagina = Math.max(0, zcapPagina - 1); renderResultados(content, db, cfg); });
-  document.getElementById('zcap-pag-next')?.addEventListener('click', () => { zcapPagina = Math.min(Math.ceil(matriz.length / MC_PAGE) - 1, zcapPagina + 1); renderResultados(content, db, cfg); });
-
-  document.getElementById('zcap-actualizar').addEventListener('click', () => {
-    const conZcap = syncTarifasZcap(db, cfg, zcapFiltroCentro);
-    const msg = grupoSel
-      ? `Tarifas actualizadas desde el Motor de Costo para ${grupoSel.nombre} (${conZcap.size} tipo(s) de camión)`
-      : `Tarifas actualizadas desde el Motor de Costo para ${conZcap.size} tipo(s) de camión en todos los Centros Origen`;
-    showAlert(msg);
-    renderResultados(content, db, cfg);
-  });
-
-  document.getElementById('zcap-export').addEventListener('click', () => {
-    const headers = ['Grupo_Centro', 'ID_Ruta', 'Destino', 'Clasificacion', 'Tipo_Camion_Kg', 'KM', 'Peajes', 'Comb_Ida', 'Comb_Vuelta', 'Seguros_SOAP', 'Costos_Extras', 'Mantencion', 'Neumaticos', 'GPS', 'Rem_Chofer', 'Var_Chofer', 'Factor_Ruta', 'Costo_Ruta_Total', 'Costo_KM_Final', 'Peso_Pct', 'Tarifa_Ponderada'];
-    const rows = matriz.map(m => {
-      const grupoNombre = groupMap[m.ruta.origen_grupo] || m.ruta.origen_grupo;
-      const partEntry = participacion[m.ruta.id] || participacion[m.ruta.codigo];
-      const pct = partEntry?.pct || 0;
-      const tarifaPonderada = ((m.item11_costoKmFinal || 0) * pct / 100);
-      const seguros = (m.item3_soapKm || 0) + (m.item4_seguroKm || 0);
-      const capKgCsv = m.truckType?.capKg || 0;
-      const extraTotalCsv = getExtraTotal(m.ruta, capKgCsv);
-      return [
-        grupoNombre,
-        m.ruta.codigo,
-        m.ruta.destino || '',
-        m.ruta.clasificRuta || '',
-        capKgCsv || '',
-        m.km,
-        Math.round(m.item1_peajes),
-        Math.round(m.combIda || 0),
-        Math.round(m.combVuelta || 0),
-        Math.round(seguros),
-        Math.round(extraTotalCsv),
-        Math.round(m.item5_mantKm),
-        Math.round(m.item6_neumKm),
-        Math.round(m.item7_gpsKm),
-        Math.round(m.item8_choferBaseDiario),
-        Math.round(m.item9_varChofer),
-        (m.factorRuta || 1).toFixed(2),
-        Math.round(m.costoVuelta || 0),
-        Math.round(m.item10_costoRutaTotal),
-        Math.round(m.item11_costoKmFinal),
-        pct.toFixed(2),
-        Math.round(tarifaPonderada)
-      ];
-    });
-    downloadFile(`motor_costo_${Date.now()}.csv`, toCSV(headers, rows));
-    showAlert('Archivo CSV del Motor de Costo exportado');
-  });
-}
-
-// ============================================================
-// SUB-MÓDULO: MOTOR DE COSTO INTERREGIONAL
-// ============================================================
-function renderResultadosInter(content, db, cfg) {
-  const groups = getOrigenGroups(db);
-  let matriz = calcularMatrizCostos(db, cfg);
-  // Solo rutas INTERREGIONALES (cualquier tipo)
-  matriz = matriz.filter(m => m.ruta.clasificRuta === 'Interregional');
-  if (zintFiltroCentro) matriz = matriz.filter(m => m.ruta.origen_grupo === zintFiltroCentro);
-  if (zintFiltroCapKg)  matriz = matriz.filter(m => String(m.truckType?.capKg) === zintFiltroCapKg);
-  if (zintFiltroComuna) {
-    const q = zintFiltroComuna.toLowerCase();
-    matriz = matriz.filter(m => (m.ruta.destino || m.ruta.nombre || '').toLowerCase().includes(q));
-  }
-
-  const HEADERS_INT = ['Centro', 'ID Ruta', 'Destino', 'Tipo Camión (Kg)', 'KM',
-    'Peajes', 'Comb. Ida', 'Comb. Vuelta', 'Seguros (SOAP+Seg)', 'Costos Extras',
-    'Mantención', 'Neumáticos', 'GPS', 'Rem. Chofer', 'Var. Chofer',
-    'Factor Ruta', 'Costo Vuelta', 'Costo Ruta Total', 'Costo/KM Final'];
-
-  content.innerHTML = `
-    <div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm mb-lg">
-      <div class="flex items-center justify-between mb-md border-b border-outline-variant pb-sm">
-        <div class="flex items-center gap-sm">
-          <span class="material-symbols-outlined text-primary">map</span>
-          <h2 class="font-headline-sm text-headline-sm font-bold text-on-surface">Motor de Costo — Rutas Interregionales</h2>
-        </div>
-        <button id="zint-export" class="bg-surface border border-outline-variant hover:bg-surface-container-high text-on-surface font-bold px-md py-sm rounded flex items-center gap-sm text-xs uppercase">
-          <span class="material-symbols-outlined text-[18px]">download</span> Exportar CSV
+        <!-- Limpiar filtros -->
+        <button id="mc-reset" class="border border-outline-variant px-md py-sm text-[12px] text-secondary hover:bg-surface-container-high rounded flex items-center gap-xs">
+          <span class="material-symbols-outlined text-[16px]">filter_alt_off</span> Limpiar
         </button>
       </div>
-      <p class="text-[12px] text-secondary mb-md"><strong>Costo Vuelta</strong> = Σ ítems × factor ruta. <strong>Costo Ruta Total</strong> = Costo Vuelta / (1 − margen%). <strong>Costo/KM</strong> = Costo Ruta Total / (km × 2). Sin peso ni tarifa ponderada.</p>
 
-      <div class="flex flex-wrap items-end gap-md mb-md">
-        <div>
-          <label class="font-label-caps text-label-caps text-secondary block">CENTRO ORIGEN</label>
-          <select id="zint-f-centro" class="border border-[#CED4DA] p-sm font-body-md text-body-md bg-white w-56">
-            <option value="">Todos</option>
-            ${groups.map(g => `<option value="${g.grupo}" ${zintFiltroCentro === g.grupo ? 'selected' : ''}>${g.nombre}</option>`).join('')}
-          </select>
-        </div>
-        <div>
-          <label class="font-label-caps text-label-caps text-secondary block">TIPO CAMIÓN (KG)</label>
-          <select id="zint-f-capkg" class="border border-[#CED4DA] p-sm font-body-md text-body-md bg-white w-44">
-            <option value="">Todos</option>
-            <option value="5000"  ${zintFiltroCapKg === '5000'  ? 'selected' : ''}>5.000 Kg</option>
-            <option value="10000" ${zintFiltroCapKg === '10000' ? 'selected' : ''}>10.000 Kg</option>
-            <option value="15000" ${zintFiltroCapKg === '15000' ? 'selected' : ''}>15.000 Kg</option>
-            <option value="28000" ${zintFiltroCapKg === '28000' ? 'selected' : ''}>28.000 Kg</option>
-          </select>
-        </div>
-        <div>
-          <label class="font-label-caps text-label-caps text-secondary block">BUSCAR DESTINO</label>
-          <input id="zint-f-destino" type="text" placeholder="Filtrar destino..." value="${escapeHtml(zintFiltroComuna)}"
-            class="border border-[#CED4DA] p-sm font-body-md text-body-md bg-white w-44">
-        </div>
-      </div>
+      <div class="text-[12px] text-secondary mb-sm">${todaMatriz.length} fila(s) encontrada(s)</div>
 
-      <div class="text-[12px] text-secondary mb-sm">${matriz.length} fila(s) encontrada(s)</div>
-
+      <!-- Tabla -->
       <div class="bg-surface border border-outline-variant overflow-hidden rounded overflow-x-auto">
         <table class="w-full zebra-table border-collapse text-[12px]">
           <thead>
             <tr class="bg-surface-container-high text-left border-b border-outline-variant">
-              ${HEADERS_INT.map(h => `<th class="p-md font-label-caps text-label-caps text-secondary uppercase text-right first:text-left">${h}</th>`).join('')}
+              ${HEADERS.map((h, i) => `<th class="p-md font-label-caps text-label-caps text-secondary uppercase whitespace-nowrap${i > 2 ? ' text-right' : ''}">${h}</th>`).join('')}
             </tr>
           </thead>
           <tbody class="font-data-mono text-data-mono">
-            ${matriz.length === 0 ? `<tr><td colspan="${HEADERS_INT.length}" class="p-lg text-center text-secondary">Sin rutas interregionales activas.</td></tr>` :
-              matriz.slice(zintPagina * MC_PAGE, (zintPagina + 1) * MC_PAGE).map(m => {
-                const grupoNombre = groups.find(g => g.grupo === m.ruta.origen_grupo)?.nombre || m.ruta.origen_grupo || '';
-                const capLabel = m.capKg ? `${Number(m.capKg).toLocaleString('es-CL')} Kg` : '—';
-                const seguros  = (m.item3_soapKm || 0) + (m.item4_seguroKm || 0);
-                const extraTotal = m.extraCostsRuta?.reduce((s, c) => s + (Number(c.costo_ida) || 0) + (Number(c.costo_vuelta) || 0), 0) || 0;
-                return `<tr class="border-b border-outline-variant">
-                  <td class="p-md font-bold text-nowrap text-left">${grupoNombre}</td>
-                  <td class="p-md text-left">${m.ruta.codigo}</td>
-                  <td class="p-md text-left">${m.ruta.destino || ''}</td>
-                  <td class="p-md text-right">${capLabel}</td>
-                  <td class="p-md text-right">${m.km}</td>
-                  <td class="p-md text-right">${formatCLP(m.item1_peajes)}</td>
-                  <td class="p-md text-right">${formatCLP(m.combIda)}</td>
-                  <td class="p-md text-right">${formatCLP(m.combVuelta)}</td>
-                  <td class="p-md text-right">${formatCLP(seguros)}</td>
-                  <td class="p-md text-right ${extraTotal > 0 ? 'text-amber-700 font-bold' : ''}">${extraTotal > 0 ? formatCLP(extraTotal) : '—'}</td>
-                  <td class="p-md text-right">${formatCLP(m.item5_mantKm)}</td>
-                  <td class="p-md text-right">${formatCLP(m.item6_neumKm)}</td>
-                  <td class="p-md text-right">${formatCLP(m.item7_gpsKm)}</td>
-                  <td class="p-md text-right">${formatCLP(m.item8_choferBaseDiario)}</td>
-                  <td class="p-md text-right">${formatCLP(m.item9_varChofer)}</td>
-                  <td class="p-md text-right font-bold">${(m.factorRuta || 1).toFixed(2)}</td>
-                  <td class="p-md text-right">${formatCLP(m.costoVuelta)}</td>
-                  <td class="p-md text-right font-bold">${formatCLP(m.item10_costoRutaTotal)}</td>
-                  <td class="p-md text-right font-bold text-primary">${formatCLP(m.item11_costoKmFinal)}</td>
-                </tr>`;
-              }).join('')}
+            ${todaMatriz.length === 0
+              ? `<tr><td colspan="${HEADERS.length}" class="p-md text-center text-secondary">Sin resultados para los filtros seleccionados.</td></tr>`
+              : todaMatriz.slice(mcPagina * MC_PAGE, (mcPagina + 1) * MC_PAGE).map(m => {
+                  const partEntry  = participacion[m.ruta.id] || participacion[m.ruta.codigo];
+                  const pct        = partEntry?.pct || 0;
+                  const tarifaPond = Math.round((m.item11_costoKmFinal || 0) * pct / 100);
+                  const grupoNombre = groupMap[m.ruta.origen_grupo] || m.ruta.origen_grupo;
+                  const seguros    = (m.item3_soapKm || 0) + (m.item4_seguroKm || 0);
+                  const capKg      = m.truckType?.capKg || m.capKg || 0;
+                  const capLabel   = capKg ? capKg.toLocaleString('es-CL') : '—';
+                  const extraTotal = getExtraTotal(m.ruta, capKg);
+                  const esInter    = m.ruta.clasificRuta === 'Interregional';
+                  return `<tr class="border-b border-outline-variant${esInter ? ' bg-blue-50/30' : ''}">
+                    <td class="p-md font-bold whitespace-nowrap">${grupoNombre}</td>
+                    <td class="p-md">${m.ruta.codigo}</td>
+                    <td class="p-md whitespace-nowrap">${m.ruta.destino || ''}</td>
+                    <td class="p-md text-right">${m.ruta.clasificRuta || ''}</td>
+                    <td class="p-md text-right">${capLabel}</td>
+                    <td class="p-md text-right">${m.km}</td>
+                    <td class="p-md text-right">${formatCLP(m.item1_peajes)}</td>
+                    <td class="p-md text-right">${formatCLP(m.combIda)}</td>
+                    <td class="p-md text-right">${formatCLP(m.combVuelta)}</td>
+                    <td class="p-md text-right">${formatCLP(seguros)}</td>
+                    <td class="p-md text-right ${extraTotal > 0 ? 'text-amber-700 font-bold' : ''}">${extraTotal > 0 ? formatCLP(extraTotal) : '—'}</td>
+                    <td class="p-md text-right">${formatCLP(m.item5_mantKm)}</td>
+                    <td class="p-md text-right">${formatCLP(m.item6_neumKm)}</td>
+                    <td class="p-md text-right">${formatCLP(m.item7_gpsKm)}</td>
+                    <td class="p-md text-right">${formatCLP(m.item8_choferBaseDiario)}</td>
+                    <td class="p-md text-right">${formatCLP(m.item9_varChofer)}</td>
+                    <td class="p-md text-right font-bold">${(m.factorRuta || 1).toFixed(2)}</td>
+                    <td class="p-md text-right">${formatCLP(m.costoVuelta)}</td>
+                    <td class="p-md text-right font-bold">${formatCLP(m.item10_costoRutaTotal)}</td>
+                    <td class="p-md text-right font-bold text-primary">${formatCLP(m.item11_costoKmFinal)}</td>
+                    ${showPeso ? `
+                    <td class="p-md text-right">${esInter ? '—' : pct.toFixed(2) + '%'}</td>
+                    <td class="p-md text-right">${esInter ? '—' : formatCLP(tarifaPond)}</td>` : ''}
+                  </tr>`;
+                }).join('')}
           </tbody>
         </table>
       </div>
-      ${renderPager(matriz.length, zintPagina, MC_PAGE, 'zint-pag-prev', 'zint-pag-next')}
+      ${renderPager(todaMatriz.length, mcPagina, MC_PAGE, 'mc-pag-prev', 'mc-pag-next')}
     </div>
   `;
 
-  document.getElementById('zint-f-centro')?.addEventListener('change', e => { zintFiltroCentro = e.target.value; zintPagina = 0; renderResultadosInter(content, db, cfg); });
-  document.getElementById('zint-f-capkg')?.addEventListener('change',  e => { zintFiltroCapKg  = e.target.value; zintPagina = 0; renderResultadosInter(content, db, cfg); });
-  document.getElementById('zint-f-destino')?.addEventListener('input', e => {
+  // ── Toggle tipo ruta
+  content.querySelectorAll('.mc-tipo-btn').forEach(btn => {
+    btn.addEventListener('click', () => { mcTipoRuta = btn.dataset.tipo; mcPagina = 0; renderResultados(content, db, cfg); });
+  });
+
+  // ── Multi-select centros
+  const centroBtn   = document.getElementById('mc-centro-btn');
+  const centroPanel = document.getElementById('mc-centro-panel');
+  centroBtn?.addEventListener('click', e => { e.stopPropagation(); centroPanel.classList.toggle('hidden'); });
+  document.addEventListener('click', () => centroPanel?.classList.add('hidden'), { once: true });
+
+  document.getElementById('mc-c-all')?.addEventListener('change', () => {
+    mcCentros.clear();
+    content.querySelectorAll('.mc-c-item').forEach(cb => cb.checked = false);
+    mcPagina = 0;
+    renderResultados(content, db, cfg);
+  });
+  content.querySelectorAll('.mc-c-item').forEach(cb => {
+    cb.addEventListener('change', () => {
+      mcCentros.clear();
+      content.querySelectorAll('.mc-c-item:checked').forEach(c => mcCentros.add(c.value));
+      mcPagina = 0;
+      renderResultados(content, db, cfg);
+    });
+  });
+
+  // ── Tipo camión
+  document.getElementById('mc-f-capkg')?.addEventListener('change', e => { mcCapKg = e.target.value; mcPagina = 0; renderResultados(content, db, cfg); });
+
+  // ── Destino
+  document.getElementById('mc-f-comuna')?.addEventListener('input', e => {
     const pos = e.target.selectionStart;
-    zintFiltroComuna = e.target.value; zintPagina = 0;
-    renderResultadosInter(content, db, cfg);
-    const inp = document.getElementById('zint-f-destino');
+    mcComuna = e.target.value; mcPagina = 0;
+    renderResultados(content, db, cfg);
+    const inp = document.getElementById('mc-f-comuna');
     if (inp) { inp.focus(); inp.setSelectionRange(pos, pos); }
   });
-  document.getElementById('zint-pag-prev')?.addEventListener('click', () => { zintPagina = Math.max(0, zintPagina - 1); renderResultadosInter(content, db, cfg); });
-  document.getElementById('zint-pag-next')?.addEventListener('click', () => { zintPagina = Math.min(Math.ceil(matriz.length / MC_PAGE) - 1, zintPagina + 1); renderResultadosInter(content, db, cfg); });
 
-  document.getElementById('zint-export')?.addEventListener('click', () => {
-    const rows = matriz.map(m => {
-      const grupoNombre = groups.find(g => g.grupo === m.ruta.origen_grupo)?.nombre || m.ruta.origen_grupo || '';
-      const capLabel = m.capKg ? `${Number(m.capKg).toLocaleString('es-CL')} Kg` : '';
-      const seguros  = (m.item3_soapKm || 0) + (m.item4_seguroKm || 0);
-      const extraTotal = m.extraCostsRuta?.reduce((s, c) => s + (Number(c.costo_ida) || 0) + (Number(c.costo_vuelta) || 0), 0) || 0;
-      return [
-        grupoNombre, m.ruta.codigo, m.ruta.destino || '', capLabel, m.km,
+  // ── Limpiar
+  document.getElementById('mc-reset')?.addEventListener('click', () => {
+    mcCentros.clear(); mcCapKg = ''; mcComuna = ''; mcPagina = 0;
+    renderResultados(content, db, cfg);
+  });
+
+  // ── Paginación
+  document.getElementById('mc-pag-prev')?.addEventListener('click', () => { mcPagina = Math.max(0, mcPagina - 1); renderResultados(content, db, cfg); });
+  document.getElementById('mc-pag-next')?.addEventListener('click', () => { mcPagina = Math.min(Math.ceil(todaMatriz.length / MC_PAGE) - 1, mcPagina + 1); renderResultados(content, db, cfg); });
+
+  // ── Actualizar tarifas (solo Regional)
+  document.getElementById('mc-actualizar')?.addEventListener('click', () => {
+    const centroArg = mcCentros.size === 1 ? [...mcCentros][0] : '';
+    const conZcap = syncTarifasZcap(db, cfg, centroArg);
+    showAlert(`Tarifas actualizadas — ${conZcap.size} tipo(s) de camión sincronizado(s)`);
+    renderResultados(content, db, cfg);
+  });
+
+  // ── Exportar CSV
+  document.getElementById('mc-export')?.addEventListener('click', () => {
+    const csvH = [...HEADERS_BASE, ...(showPeso ? ['Peso_Pct','Tarifa_Ponderada'] : [])];
+    const rows = todaMatriz.map(m => {
+      const grupoNombre = groupMap[m.ruta.origen_grupo] || m.ruta.origen_grupo;
+      const partEntry   = participacion[m.ruta.id] || participacion[m.ruta.codigo];
+      const pct         = partEntry?.pct || 0;
+      const tarifaPond  = Math.round((m.item11_costoKmFinal || 0) * pct / 100);
+      const seguros     = (m.item3_soapKm || 0) + (m.item4_seguroKm || 0);
+      const capKg       = m.truckType?.capKg || m.capKg || 0;
+      const extraT      = getExtraTotal(m.ruta, capKg);
+      const esInter     = m.ruta.clasificRuta === 'Interregional';
+      const row = [
+        grupoNombre, m.ruta.codigo, m.ruta.destino || '', m.ruta.clasificRuta || '',
+        capKg || '', m.km,
         Math.round(m.item1_peajes), Math.round(m.combIda || 0), Math.round(m.combVuelta || 0),
-        Math.round(seguros), Math.round(extraTotal),
+        Math.round(seguros), Math.round(extraT),
         Math.round(m.item5_mantKm), Math.round(m.item6_neumKm), Math.round(m.item7_gpsKm),
         Math.round(m.item8_choferBaseDiario), Math.round(m.item9_varChofer),
         (m.factorRuta || 1).toFixed(2),
         Math.round(m.costoVuelta || 0), Math.round(m.item10_costoRutaTotal), Math.round(m.item11_costoKmFinal)
       ];
+      if (showPeso) row.push(esInter ? '' : pct.toFixed(2), esInter ? '' : tarifaPond);
+      return row;
     });
-    downloadFile(`motor_costo_interregional_${Date.now()}.csv`, toCSV(HEADERS_INT, rows));
-    showAlert('CSV Motor de Costo Interregional exportado');
+    downloadFile(`motor_costo_${mcTipoRuta}_${Date.now()}.csv`, toCSV(csvH, rows));
+    showAlert('CSV exportado');
   });
 }
