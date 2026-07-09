@@ -48,7 +48,7 @@ export function calcularCostoRuta(db, cfg, ruta, capKg) {
   // Ítems configurados manualmente en la pestaña "Costos Extras", por ruta y tipo de eje.
   // Se suman directamente a los costos de ida y vuelta antes del factor de ruta.
   const extraCostsRuta = (db.extraCosts || []).filter(c =>
-    c.route_id === ruta.id && Number(c.ejes) === ejes && c.activo !== false
+    c.destino === ruta.destino && Number(c.ejes) === ejes && c.activo !== false
   );
   const itemExtraIda    = extraCostsRuta.reduce((s, c) => s + (Number(c.costo_ida)    || 0), 0);
   const itemExtraVuelta = extraCostsRuta.reduce((s, c) => s + (Number(c.costo_vuelta) || 0), 0);
