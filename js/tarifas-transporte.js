@@ -224,60 +224,65 @@ function renderCostosExtras(content, db, cfg) {
   const grupos  = getOrigenGroups(db);
   const routes  = (db.routes || []).filter(r => r.activo);
   db.extraCosts = db.extraCosts || [];
+  const zonesById = new Map((db.transportZones || []).map(z => [z.zona, z]));
 
   // ── Filtros ──
   let ceFiltroCentro = window._ceFiltroCentro || '';
+  let ceFiltroBuscar = window._ceFiltroBuscar || '';
   let ceFiltroEjes   = window._ceFiltroEjes   || '';
-  let ceFiltroClasif = window._ceFiltroClasif || '';
-  let ceFiltroComuna = window._ceFiltroComuna || '';
 
-  // Obtener destinos únicos de las rutas activas, opcionalmente filtrados por centro
-  function getDestinosList(centroGrupo) {
-    let r = routes;
+  // Zonas disponibles, opcionalmente filtradas por centro
+  function getZonasList(centroGrupo) {
+    let r = routes.filter(rt => rt.id_zona_transporte);
     if (centroGrupo) {
       const g = grupos.find(g => g.grupo === centroGrupo);
       const ids = g ? g.centroIds : [];
-      r = routes.filter(rt => ids.includes(rt.origenId) || rt.origen_grupo === centroGrupo);
+      r = r.filter(rt => ids.includes(rt.origenId) || rt.origen_grupo === centroGrupo);
     }
     const seen = new Set();
     return r
-      .filter(rt => rt.destino)
-      .map(rt => rt.destino)
-      .filter(d => { if (seen.has(d)) return false; seen.add(d); return true; })
-      .sort();
+      .filter(rt => { if (seen.has(rt.id_zona_transporte)) return false; seen.add(rt.id_zona_transporte); return true; })
+      .map(rt => {
+        const z = zonesById.get(rt.id_zona_transporte);
+        return {
+          id: rt.id_zona_transporte,
+          label: z ? (z.denominacion || z.comuna || rt.id_zona_transporte) : rt.id_zona_transporte
+        };
+      })
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }
+
+  function zonaLabel(zona_id) {
+    const z = zonesById.get(zona_id);
+    return z ? (z.denominacion || z.comuna || zona_id) : zona_id;
   }
 
   function getRows() {
     let rows = db.extraCosts.filter(c => c.activo !== false);
     if (ceFiltroCentro) {
-      const destinos = new Set(getDestinosList(ceFiltroCentro));
-      rows = rows.filter(c => destinos.has(c.destino));
+      const zonaIds = new Set(getZonasList(ceFiltroCentro).map(z => z.id));
+      rows = rows.filter(c => zonaIds.has(c.zona_id));
     }
     if (ceFiltroEjes)   rows = rows.filter(c => Number(c.ejes) === Number(ceFiltroEjes));
-    if (ceFiltroClasif) {
-      const rutasClasif = routes.filter(r => r.clasificRuta === ceFiltroClasif).map(r => r.destino);
-      rows = rows.filter(c => rutasClasif.includes(c.destino));
-    }
-    if (ceFiltroComuna) {
-      const term = ceFiltroComuna.toLowerCase();
-      rows = rows.filter(c => (c.destino || '').toLowerCase().includes(term));
+    if (ceFiltroBuscar) {
+      const term = ceFiltroBuscar.toLowerCase();
+      rows = rows.filter(c => zonaLabel(c.zona_id).toLowerCase().includes(term) || c.zona_id?.toLowerCase().includes(term));
     }
     return rows;
   }
 
   function rerender() {
     window._ceFiltroCentro = ceFiltroCentro;
+    window._ceFiltroBuscar = ceFiltroBuscar;
     window._ceFiltroEjes   = ceFiltroEjes;
-    window._ceFiltroClasif = ceFiltroClasif;
-    window._ceFiltroComuna = ceFiltroComuna;
     renderCostosExtras(content, db, cfg);
   }
 
-  const rows       = getRows();
-  const totalExtras    = db.extraCosts.filter(c => c.activo !== false).length;
-  const totalDestinos  = [...new Set(db.extraCosts.filter(c => c.activo !== false).map(c => c.destino))].length;
-  const sumaTotal      = rows.reduce((s, c) => s + (Number(c.costo_ida) || 0) + (Number(c.costo_vuelta) || 0), 0);
-  const centrosOrigen  = grupos.map(g => ({ id: g.grupo, nombre: g.nombre }));
+  const rows          = getRows();
+  const totalExtras   = db.extraCosts.filter(c => c.activo !== false).length;
+  const totalZonas    = [...new Set(db.extraCosts.filter(c => c.activo !== false).map(c => c.zona_id))].length;
+  const sumaTotal     = rows.reduce((s, c) => s + (Number(c.costo_ida) || 0) + (Number(c.costo_vuelta) || 0), 0);
+  const centrosOrigen = grupos.map(g => ({ id: g.grupo, nombre: g.nombre }));
 
   content.innerHTML = `
     <datalist id="ce-items-list">
@@ -287,11 +292,11 @@ function renderCostosExtras(content, db, cfg) {
     <div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm mb-lg">
       <div class="flex items-center gap-sm mb-md border-b border-outline-variant pb-sm">
         <span class="material-symbols-outlined text-primary">add_circle</span>
-        <h2 class="font-headline-sm text-headline-sm font-bold text-on-surface">Costos Extras por Destino</h2>
+        <h2 class="font-headline-sm text-headline-sm font-bold text-on-surface">Costos Extras por Zona de Transporte</h2>
       </div>
       <p class="text-[12px] text-secondary mb-md">
-        Ítems de costo adicionales por <b>destino</b> y tipo de eje (BARCAZA, TRAVESÍA, escolta, etc.).
-        Se aplican automáticamente a <b>cualquier ruta</b> que tenga ese destino, como ítem 1b en el motor ZCAP.
+        Ítems de costo adicionales por <b>zona de transporte</b> y tipo de eje (BARCAZA, TRAVESÍA, escolta, etc.).
+        Se aplican automáticamente a <b>cualquier ruta</b> que tenga asignada esa zona, como ítem 1b en el motor ZCAP.
       </p>
 
       <div class="grid grid-cols-1 md:grid-cols-3 gap-md mb-md">
@@ -300,8 +305,8 @@ function renderCostosExtras(content, db, cfg) {
           <p class="font-headline-sm text-headline-sm font-bold text-on-surface">${totalExtras}</p>
         </div>
         <div class="bg-surface-container-low p-md rounded">
-          <p class="font-label-caps text-label-caps text-secondary">Destinos con Costos Extras</p>
-          <p class="font-headline-sm text-headline-sm font-bold text-on-surface">${totalDestinos}</p>
+          <p class="font-label-caps text-label-caps text-secondary">Zonas con Costos Extras</p>
+          <p class="font-headline-sm text-headline-sm font-bold text-on-surface">${totalZonas}</p>
         </div>
         <div class="bg-surface-container-low p-md rounded">
           <p class="font-label-caps text-label-caps text-secondary">Total Visible (Ida + Vuelta)</p>
@@ -318,17 +323,9 @@ function renderCostosExtras(content, db, cfg) {
           </select>
         </div>
         <div class="space-y-xs">
-          <label class="font-label-caps text-label-caps text-secondary block">TIPO</label>
-          <select id="ce-f-clasif" class="border border-[#CED4DA] p-sm font-body-md text-body-md bg-white w-44">
-            <option value="">Todos</option>
-            <option value="Regional" ${ceFiltroClasif === 'Regional' ? 'selected' : ''}>Regional</option>
-            <option value="Interregional" ${ceFiltroClasif === 'Interregional' ? 'selected' : ''}>Interregional</option>
-          </select>
-        </div>
-        <div class="space-y-xs">
-          <label class="font-label-caps text-label-caps text-secondary block">BUSCAR DESTINO</label>
-          <input id="ce-f-comuna" type="text" placeholder="Ej: Puerto Montt…" value="${escapeHtml(ceFiltroComuna)}"
-            class="border border-[#CED4DA] p-sm font-body-md text-body-md bg-white w-48">
+          <label class="font-label-caps text-label-caps text-secondary block">BUSCAR ZONA</label>
+          <input id="ce-f-buscar" type="text" placeholder="Nombre o código de zona…" value="${escapeHtml(ceFiltroBuscar)}"
+            class="border border-[#CED4DA] p-sm font-body-md text-body-md bg-white w-52">
         </div>
         <div class="space-y-xs">
           <label class="font-label-caps text-label-caps text-secondary block">TIPO CAMIÓN</label>
@@ -348,7 +345,8 @@ function renderCostosExtras(content, db, cfg) {
         <table class="w-full zebra-table border-collapse">
           <thead>
             <tr class="bg-surface-container-high text-left border-b border-outline-variant">
-              <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Destino</th>
+              <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Zona (ID)</th>
+              <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Denominación</th>
               <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Tipo Camión</th>
               <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Ítem de Costo</th>
               <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-right">Costo Ida</th>
@@ -359,11 +357,13 @@ function renderCostosExtras(content, db, cfg) {
           </thead>
           <tbody class="font-body-md text-body-md">
             ${rows.length === 0
-              ? `<tr><td colspan="7" class="p-md text-center text-secondary">No hay costos extras registrados. Usa "Agregar Ítem" para crear uno.</td></tr>`
+              ? `<tr><td colspan="8" class="p-md text-center text-secondary">No hay costos extras registrados. Usa "Agregar Ítem" para crear uno.</td></tr>`
               : rows.map(ce => {
                   const total = (Number(ce.costo_ida) || 0) + (Number(ce.costo_vuelta) || 0);
+                  const zLabel = zonaLabel(ce.zona_id);
                   return `<tr class="border-b border-outline-variant">
-                    <td class="p-md font-bold">${escapeHtml(ce.destino || '—')}</td>
+                    <td class="p-md font-data-mono text-data-mono text-secondary">${escapeHtml(ce.zona_id || '—')}</td>
+                    <td class="p-md font-bold">${escapeHtml(zLabel)}</td>
                     <td class="p-md">${CE_EJES_LABELS[ce.ejes] || ce.ejes}</td>
                     <td class="p-md">
                       <span class="inline-flex items-center px-2 py-1 rounded bg-secondary-container text-on-secondary-container font-label-caps text-[11px]">
@@ -392,11 +392,10 @@ function renderCostosExtras(content, db, cfg) {
   // Filtros
   content.querySelector('#ce-f-centro')?.addEventListener('change', e => { ceFiltroCentro = e.target.value; rerender(); });
   content.querySelector('#ce-f-ejes')?.addEventListener('change',   e => { ceFiltroEjes   = e.target.value; rerender(); });
-  content.querySelector('#ce-f-clasif')?.addEventListener('change', e => { ceFiltroClasif = e.target.value; rerender(); });
-  content.querySelector('#ce-f-comuna')?.addEventListener('input',  e => {
+  content.querySelector('#ce-f-buscar')?.addEventListener('input',  e => {
     const pos = e.target.selectionStart;
-    ceFiltroComuna = e.target.value; rerender();
-    const inp = content.querySelector('#ce-f-comuna');
+    ceFiltroBuscar = e.target.value; rerender();
+    const inp = content.querySelector('#ce-f-buscar');
     if (inp) { inp.focus(); inp.setSelectionRange(pos, pos); }
   });
 
@@ -420,7 +419,7 @@ function renderCostosExtras(content, db, cfg) {
   // ── Modal agregar / editar ──────────────────────────────────────────────────
   function abrirModalCE(ce) {
     const esNuevo = !ce;
-    const destinosAll = getDestinosList('');
+    const zonasAll = getZonasList('');
     const el = document.createElement('div');
     el.className = 'fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-md';
     el.innerHTML = `
@@ -432,12 +431,12 @@ function renderCostosExtras(content, db, cfg) {
 
         <div class="space-y-md">
           <div>
-            <label class="font-label-caps text-label-caps text-secondary block mb-xs">DESTINO</label>
-            <select id="ce-m-destino" class="w-full border border-[#CED4DA] p-sm font-body-md text-body-md bg-white">
-              <option value="">— Seleccionar destino —</option>
-              ${destinosAll.map(d => `<option value="${escapeHtml(d)}" ${ce && ce.destino === d ? 'selected' : ''}>${escapeHtml(d)}</option>`).join('')}
+            <label class="font-label-caps text-label-caps text-secondary block mb-xs">ZONA DE TRANSPORTE</label>
+            <select id="ce-m-zona" class="w-full border border-[#CED4DA] p-sm font-body-md text-body-md bg-white">
+              <option value="">— Seleccionar zona —</option>
+              ${zonasAll.map(z => `<option value="${escapeHtml(z.id)}" ${ce && ce.zona_id === z.id ? 'selected' : ''}>${escapeHtml(z.id)} — ${escapeHtml(z.label)}</option>`).join('')}
             </select>
-            <p class="text-[11px] text-secondary mt-xs">El costo se aplicará a <b>todas las rutas</b> que tengan este destino.</p>
+            <p class="text-[11px] text-secondary mt-xs">El costo se aplicará a <b>todas las rutas</b> que tengan asignada esta zona.</p>
           </div>
           <div>
             <label class="font-label-caps text-label-caps text-secondary block mb-xs">TIPO DE CAMIÓN</label>
@@ -480,25 +479,25 @@ function renderCostosExtras(content, db, cfg) {
     el.querySelector('#ce-m-cancel').addEventListener('click', () => el.remove());
 
     el.querySelector('#ce-m-save').addEventListener('click', () => {
-      const destino    = el.querySelector('#ce-m-destino').value.trim();
+      const zona_id    = el.querySelector('#ce-m-zona').value.trim();
       const ejes       = Number(el.querySelector('#ce-m-ejes').value);
       const item       = el.querySelector('#ce-m-item').value.trim().toUpperCase();
       const costo_ida  = Number(el.querySelector('#ce-m-ida').value)    || 0;
       const costo_vuelta = Number(el.querySelector('#ce-m-vuelta').value) || 0;
 
-      if (!destino) { alert('Selecciona un destino.'); return; }
+      if (!zona_id) { alert('Selecciona una zona de transporte.'); return; }
       if (!item)    { alert('Ingresa un ítem de costo (ej: BARCAZA).'); return; }
 
       const now = new Date().toISOString();
       if (esNuevo) {
         db.extraCosts.push({
-          id: `ce_${destino.replace(/\s+/g,'_')}_${ejes}_${Date.now()}`,
-          destino, ejes, item,
+          id: `ce_${zona_id}_${ejes}_${Date.now()}`,
+          zona_id, ejes, item,
           costo_ida, costo_vuelta, activo: true,
           created_at: now, updated_at: now
         });
       } else {
-        Object.assign(ce, { destino, ejes, item, costo_ida, costo_vuelta, updated_at: now });
+        Object.assign(ce, { zona_id, ejes, item, costo_ida, costo_vuelta, updated_at: now });
       }
 
       saveDatabase(db);
@@ -3040,10 +3039,10 @@ function renderResultados(content, db, cfg) {
   const groupMap = {};
   groups.forEach(g => { groupMap[g.grupo] = g.nombre; });
 
-  // Mapa de costos extras: destino + ejes → { ida, vuelta } (aplica a cualquier ruta con ese destino)
+  // Mapa de costos extras: zona_id + ejes → { ida, vuelta } (aplica a cualquier ruta con ese id_zona_transporte)
   const extraCostsMap = new Map();
   (db.extraCosts || []).filter(c => c.activo !== false).forEach(c => {
-    const key = `${c.destino}__${c.ejes}`;
+    const key = `${c.zona_id}__${c.ejes}`;
     const prev = extraCostsMap.get(key) || { ida: 0, vuelta: 0 };
     extraCostsMap.set(key, {
       ida:    prev.ida    + (Number(c.costo_ida)    || 0),
@@ -3052,7 +3051,7 @@ function renderResultados(content, db, cfg) {
   });
   function getExtraTotal(ruta, capKg) {
     const ejes = capKg <= 10000 ? 2 : 3;
-    const entry = extraCostsMap.get(`${ruta.destino}__${ejes}`);
+    const entry = extraCostsMap.get(`${ruta.id_zona_transporte}__${ejes}`);
     return entry ? entry.ida + entry.vuelta : 0;
   }
 
