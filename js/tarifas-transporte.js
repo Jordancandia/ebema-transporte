@@ -1,12 +1,12 @@
 // PANTALLA 1: Administrador de Tarifas Transporte — SIT EBEMA
 // Sub-módulos: Peajes, Combustibles y Rendimientos, Seguros y Permisos,
 // Variables Generales y Motor de Costo (ZCAP) con exportación CSV.
-import { getDatabase, saveDatabase, getCentreName, getTariffConfig, getClientTariffConfig, truckCapKg, getOrigenGroups, getGroupRepId, buildTruckTypes, TRUCK_BASE_TYPES } from './data.js?v=20260703b';
-import { CAP_LIST, truckTypesWithCap, calcularMatrizCostos } from './tarifas-engine.js?v=20260703b';
+import { getDatabase, saveDatabase, getCentreName, getTariffConfig, getClientTariffConfig, truckCapKg, getOrigenGroups, getGroupRepId, buildTruckTypes, TRUCK_BASE_TYPES } from './data.js?v=20260709b';
+import { CAP_LIST, truckTypesWithCap, calcularMatrizCostos } from './tarifas-engine.js?v=20260709b';
 import { formatCLP, parseCSV, showAlert, toCSV, downloadFile, escapeHtml } from './utils.js';
 import { supabase } from './supabase-client.js';
 import { getField } from './zonas-transporte.js';
-import { renderZcapView } from './zcap.js?v=20260709a';
+import { renderZcapView } from './zcap.js?v=20260709b';
 
 let activeSub = 'peajes';
 
@@ -2828,7 +2828,7 @@ function renderParticipacion(content, db, cfg) {
   function calcParticipacion(grupoInput) {
     // Soporte para grupo combinado SANTIAGO + SAN BERNARDO
     const grupos_calc = grupoInput === '__STGO_SB__' ? STGO_SB_GRUPOS : [grupoInput];
-    const grupo = grupoInput === '__STGO_SB__' ? null : grupoInput;
+    const esCombi = grupos_calc.length > 1;
 
     const grupoRows = histData.filter(h => grupos_calc.includes(oficToGrupo[h.oficina]));
     if (!grupoRows.length) return [];
@@ -2841,53 +2841,65 @@ function renderParticipacion(content, db, cfg) {
     });
     const centroIds = [...centroIdsCombined];
 
-    // Paso 1: Agregar toneladas/clientes/obras por idRuta para todas las rutas Regionales
+    // Paso 1: Agregar toneladas/clientes/obras.
+    // Clave: en modo combinado usa id_zona_transporte para fusionar rutas
+    // de distintos centros que apuntan a la misma zona (mismo destino).
+    // En modo individual usa idRuta.
     const rawMap = new Map();
     grupoRows.forEach(h => {
       const ruta = routeByIdP.get(h.idRuta);
       if (!ruta || ruta.clasificRuta !== 'Regional') return;
-      // Filtrar: la ruta debe pertenecer al centro del grupo seleccionado
       if (centroIds.length && !centroIds.includes(ruta.origenId) && !grupos_calc.includes(ruta.origen_grupo)) return;
-      if (!rawMap.has(h.idRuta)) {
-        rawMap.set(h.idRuta, { idRuta: h.idRuta, ruta, clientes: new Set(), obras: new Set(), ton: 0 });
+
+      // Clave de agrupación
+      const mapKey = (esCombi && ruta.id_zona_transporte) ? ruta.id_zona_transporte : h.idRuta;
+
+      if (!rawMap.has(mapKey)) {
+        rawMap.set(mapKey, { mapKey, ruta, clientes: new Set(), obras: new Set(), ton: 0 });
       }
-      const e = rawMap.get(h.idRuta);
+      const e = rawMap.get(mapKey);
+      // Preferir ruta de SANTIAGO como representativa (datos maestros del grupo principal)
+      if (esCombi && ruta.origen_grupo === 'SANTIAGO' && e.ruta.origen_grupo !== 'SANTIAGO') {
+        e.ruta = ruta;
+      }
       if (h.idCliente && h.idCliente !== '-') e.clientes.add(h.idCliente);
       if (h.idObra    && h.idObra    !== '-') e.obras.add(h.idObra);
       e.ton += h.ton;
     });
 
-    // Paso 2: Identificar rutas COMUNA y construir mapa zonaId → rutaId (para rollup)
-    const comunaZonaToRutaId = new Map();
-    rawMap.forEach((e, idRuta) => {
+    // Paso 2: Identificar rutas COMUNA y construir mapa zonaId → mapKey (para rollup)
+    const comunaZonaToKey = new Map();
+    rawMap.forEach((e, key) => {
       if ((e.ruta.tipo || '').toUpperCase() === 'COMUNA' && e.ruta.id_zona_transporte) {
-        comunaZonaToRutaId.set(e.ruta.id_zona_transporte, idRuta);
+        comunaZonaToKey.set(e.ruta.id_zona_transporte, key);
       }
     });
 
     // Paso 3: Inicializar routeMap solo con rutas COMUNA
     const routeMap = new Map();
-    rawMap.forEach((e, idRuta) => {
+    rawMap.forEach((e, key) => {
       if ((e.ruta.tipo || '').toUpperCase() === 'COMUNA') {
-        routeMap.set(idRuta, { idRuta, ruta: e.ruta, clientes: new Set(e.clientes), obras: new Set(e.obras), ton: e.ton });
+        routeMap.set(key, { mapKey: key, ruta: e.ruta, clientes: new Set(e.clientes), obras: new Set(e.obras), ton: e.ton });
       }
     });
 
     // Paso 4: Rollup Sector → COMUNA padre (vía zone.comuna = zonaId de la COMUNA padre)
-    rawMap.forEach((e, idRuta) => {
+    rawMap.forEach((e) => {
       if ((e.ruta.tipo || '').toLowerCase() !== 'sector') return;
       const zone = zonasByIdP.get(e.ruta.id_zona_transporte);
       if (!zone || !zone.comuna) return;
-      const parentRutaId = comunaZonaToRutaId.get(zone.comuna);
-      if (!parentRutaId) return;
-      const parent = routeMap.get(parentRutaId);
+      const parentKey = comunaZonaToKey.get(zone.comuna);
+      if (!parentKey) return;
+      const parent = routeMap.get(parentKey);
       if (!parent) return;
       parent.ton += e.ton;
       e.clientes.forEach(c => parent.clientes.add(c));
       e.obras.forEach(o => parent.obras.add(o));
     });
 
-    // Paso 5: PESO por grupo de característica (NORMAL sum 100%, EXTREMA/ISLA sum 100% dentro de su grupo)
+    // Paso 5: PESO por grupo de característica (NORMAL sum 100%, EXTREMA/ISLA sum 100%)
+    // En modo combinado (STGO+SB), el total es la suma de AMBOS centros → el denominador
+    // incluye toneladas de Santiago Y San Bernardo para cada categoría.
     const catTon = {};
     routeMap.forEach(e => {
       const cat = (e.ruta.caracteristica || 'NORMAL').toUpperCase();
@@ -2898,8 +2910,8 @@ function renderParticipacion(content, db, cfg) {
       .map(e => {
         const cat = (e.ruta.caracteristica || 'NORMAL').toUpperCase();
         return {
-          rutaId: e.ruta?.id || e.idRuta,
-          rutaCodigo: e.ruta?.codigo || e.idRuta,
+          rutaId: e.ruta?.id || e.mapKey,
+          rutaCodigo: e.ruta?.codigo || e.mapKey,
           ruta: e.ruta,
           clientes: e.clientes.size,
           obras: e.obras.size,
