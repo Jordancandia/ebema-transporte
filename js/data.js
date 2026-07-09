@@ -789,6 +789,34 @@ export function getDatabase() {
     migrado = true;
   }
 
+  // Migración: Costos Extra — convertir route_id / destino → zona_id
+  if (parsed.extraCosts && parsed.routes) {
+    parsed.extraCosts.forEach(ce => {
+      if (ce.zona_id) return; // ya migrado
+      if (ce.route_id) {
+        // Versión original: tenía route_id → buscar la ruta y tomar su id_zona_transporte
+        const ruta = parsed.routes.find(r => r.id === ce.route_id);
+        if (ruta && ruta.id_zona_transporte) {
+          ce.zona_id = ruta.id_zona_transporte;
+        } else {
+          ce.zona_id = ce.route_id; // fallback: usar el propio id como zona_id
+        }
+        delete ce.route_id;
+        migrado = true;
+      } else if (ce.destino) {
+        // Versión intermedia: tenía destino texto → buscar una ruta con ese destino
+        const ruta = parsed.routes.find(r => r.destino === ce.destino && r.id_zona_transporte);
+        if (ruta) {
+          ce.zona_id = ruta.id_zona_transporte;
+        } else {
+          ce.zona_id = ce.destino; // fallback
+        }
+        delete ce.destino;
+        migrado = true;
+      }
+    });
+  }
+
   // Migración: Asegurar que existe la colección de Troncales
   if (!parsed.troncales) {
     parsed.troncales = defaultData.troncales ? JSON.parse(JSON.stringify(defaultData.troncales)) : [];
