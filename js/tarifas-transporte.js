@@ -2805,16 +2805,22 @@ function renderParticipacion(content, db, cfg) {
   // Grupos únicos con datos
   const centros = [...new Set(Object.values(oficToGrupo))].sort();
 
-  // SANTIAGO (1001,1002,1003) y SAN BERNARDO (1005) comparten los mismos destinos
-  // → se agrupan en una sola opción del dropdown
-  const STGO_SB_GRUPOS = ['SANTIAGO', 'SAN BERNARDO'];
-  const tieneStgoSb = STGO_SB_GRUPOS.every(g => centros.includes(g));
+  // Detectar STGO y SAN BERNARDO dinámicamente por ID de centro (no por nombre)
+  // SANTIAGO = centros 1001, 1002, 1003 | SAN BERNARDO = centro 1005
+  const STGO_IDS = ['1001','1002','1003'];
+  const SB_IDS   = ['1005'];
+  const stgoGrupoObj = grupos.find(g => g.centroIds.some(id => STGO_IDS.includes(String(id))));
+  const sbGrupoObj   = grupos.find(g => g.centroIds.some(id => SB_IDS.includes(String(id))));
+  const STGO_SB_GRUPOS = [stgoGrupoObj?.grupo, sbGrupoObj?.grupo].filter(Boolean);
+  const tieneStgoSb = !!(stgoGrupoObj && sbGrupoObj && stgoGrupoObj.grupo !== sbGrupoObj.grupo);
+
   const centrosDropdown = tieneStgoSb
     ? centros.filter(c => !STGO_SB_GRUPOS.includes(c)).concat(['__STGO_SB__'])
     : centros;
   function labelCentro(c) {
-    return c === '__STGO_SB__' ? 'Santiago + San Bernardo'
-      : String(c).replace(/_/g, ' ').split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ');
+    if (c === '__STGO_SB__') return `${stgoGrupoObj?.nombre || 'Santiago'} + ${sbGrupoObj?.nombre || 'San Bernardo'}`;
+    const g = grupos.find(go => go.grupo === c);
+    return g?.nombre || String(c).replace(/_/g, ' ');
   }
 
   let participacionFiltroCentro = '';
@@ -2849,10 +2855,19 @@ function renderParticipacion(content, db, cfg) {
     grupoRows.forEach(h => {
       const ruta = routeByIdP.get(h.idRuta);
       if (!ruta || ruta.clasificRuta !== 'Regional') return;
-      if (centroIds.length && !centroIds.includes(ruta.origenId) && !grupos_calc.includes(ruta.origen_grupo)) return;
+      // Filtrar: la ruta debe pertenecer a alguno de los grupos calculados
+      if (!grupos_calc.includes(ruta.origen_grupo)) {
+        // Fallback: verificar por origenId si origen_grupo no está seteado
+        if (!centroIds.length || !centroIds.includes(String(ruta.origenId))) return;
+      }
 
-      // Clave de agrupación
-      const mapKey = (esCombi && ruta.id_zona_transporte) ? ruta.id_zona_transporte : h.idRuta;
+      // Clave de agrupación: en modo combinado usar zona o destino para fusionar rutas
+      // de distintos centros que van al mismo lugar
+      const zonaKey   = ruta.id_zona_transporte;
+      const destinoKey = (ruta.destino || ruta.nombre || '').trim().toUpperCase();
+      const mapKey = esCombi
+        ? (zonaKey || destinoKey || h.idRuta)
+        : h.idRuta;
 
       if (!rawMap.has(mapKey)) {
         rawMap.set(mapKey, { mapKey, ruta, clientes: new Set(), obras: new Set(), ton: 0 });
