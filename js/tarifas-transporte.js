@@ -2829,11 +2829,19 @@ function renderParticipacion(content, db, cfg) {
   const zonasByIdP = new Map((db.transportZones || []).map(z => [z.zona, z]));
 
   function calcParticipacion(grupoInput) {
-    // Si el grupo seleccionado es STGO o SB, siempre combinar ambos para el cálculo
-    // (mismos destinos/zonas → la participación se calcula sobre el total combinado
-    //  y se aplica igual a cada centro por separado)
-    const esStgoSb = tieneStgoSb && STGO_SB_GRUPOS.includes(grupoInput);
+    // Detectar si el grupo seleccionado pertenece al conjunto STGO/SB por centroIds
+    // (robusto ante diferencias de mayúsculas o nombres exactos en la BD)
+    const selObj = grupos.find(g => g.grupo === grupoInput);
+    const selIds  = (selObj?.centroIds || []).map(String);
+    const TODOS_STGOSB_IDS = ['1001','1002','1003','1005'];
+    const esStgoSb = tieneStgoSb && selIds.some(id => TODOS_STGOSB_IDS.includes(id));
     const grupos_calc = esStgoSb ? STGO_SB_GRUPOS : [grupoInput];
+
+    console.log('[PARTICIPACION] grupo seleccionado:', grupoInput,
+      '| esStgoSb:', esStgoSb,
+      '| grupos_calc:', grupos_calc,
+      '| STGO_SB_GRUPOS:', STGO_SB_GRUPOS,
+      '| tieneStgoSb:', tieneStgoSb);
 
     // IDs de centros involucrados
     const grupoCentroIds = new Set();
