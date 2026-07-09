@@ -2699,6 +2699,7 @@ function renderSeguros(content, db, cfg) {
 // ============================================================
 function renderParticipacion(content, db, cfg) {
   const histData = getClientTariffConfig(db).historico || [];
+  console.log('[PARTICIPACION] histData.length =', histData.length);
   if (histData.length === 0) {
     // Sin histórico: mostrar participación guardada si existe
     const partGuardada = cfg.participacionRutas || {};
