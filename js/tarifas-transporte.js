@@ -3275,6 +3275,7 @@ function renderResultados(content, db, cfg) {
 // ============================================================
 // SUB-MÓDULO: MOTOR DE COSTO INTERREGIONAL
 // ============================================================
+function renderResultadosInter(content, db, cfg) {
   const groups = getOrigenGroups(db);
   let matriz = calcularMatrizCostos(db, cfg);
   // Solo rutas INTERREGIONALES (cualquier tipo)
