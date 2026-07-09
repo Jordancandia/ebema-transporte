@@ -2656,14 +2656,12 @@ function renderParticipacion(content, db, cfg) {
               <div class="bg-surface border border-outline-variant overflow-x-auto rounded">
                 <table class="w-full zebra-table border-collapse">
                   <thead><tr class="bg-surface-container-high border-b border-outline-variant">
-                    <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Ruta</th>
                     <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Destino</th>
                     <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Caract.</th>
                     <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-right">PESO %</th>
                   </tr></thead>
                   <tbody class="font-body-md text-body-md">
                     ${filas.map(r => `<tr class="border-b border-outline-variant">
-                      <td class="p-md font-bold">${escapeHtml(r.codigo)}</td>
                       <td class="p-md">${escapeHtml(r.destino)}</td>
                       <td class="p-md">${escapeHtml(r.caracteristica || 'NORMAL')}</td>
                       <td class="p-md text-right font-data-mono font-bold">${r.pct}%</td>
@@ -2704,6 +2702,18 @@ function renderParticipacion(content, db, cfg) {
   // Grupos únicos con datos
   const centros = [...new Set(Object.values(oficToGrupo))].sort();
 
+  // SANTIAGO (1001,1002,1003) y SAN BERNARDO (1005) comparten los mismos destinos
+  // → se agrupan en una sola opción del dropdown
+  const STGO_SB_GRUPOS = ['SANTIAGO', 'SAN BERNARDO'];
+  const tieneStgoSb = STGO_SB_GRUPOS.every(g => centros.includes(g));
+  const centrosDropdown = tieneStgoSb
+    ? centros.filter(c => !STGO_SB_GRUPOS.includes(c)).concat(['__STGO_SB__'])
+    : centros;
+  function labelCentro(c) {
+    return c === '__STGO_SB__' ? 'Santiago + San Bernardo'
+      : String(c).replace(/_/g, ' ').split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ');
+  }
+
   let participacionFiltroCentro = '';
 
   // Mapa de zonas para rollup Sector → COMUNA
@@ -2712,13 +2722,21 @@ function renderParticipacion(content, db, cfg) {
   const routeByIdP = new Map();
   routes.forEach(r => { if (r.id) routeByIdP.set(r.id, r); if (r.codigo) routeByIdP.set(r.codigo, r); });
 
-  function calcParticipacion(grupo) {
-    const grupoRows = histData.filter(h => oficToGrupo[h.oficina] === grupo);
+  function calcParticipacion(grupoInput) {
+    // Soporte para grupo combinado SANTIAGO + SAN BERNARDO
+    const grupos_calc = grupoInput === '__STGO_SB__' ? STGO_SB_GRUPOS : [grupoInput];
+    const grupo = grupoInput === '__STGO_SB__' ? null : grupoInput;
+
+    const grupoRows = histData.filter(h => grupos_calc.includes(oficToGrupo[h.oficina]));
     if (!grupoRows.length) return [];
 
-    // Solo rutas que pertenecen al centro seleccionado
-    const g = grupos.find(g => g.grupo === grupo);
-    const centroIds = g ? g.centroIds : [];
+    // Centro IDs combinados de todos los grupos involucrados
+    const centroIdsCombined = new Set();
+    grupos_calc.forEach(gn => {
+      const gObj = grupos.find(go => go.grupo === gn);
+      if (gObj) gObj.centroIds.forEach(id => centroIdsCombined.add(id));
+    });
+    const centroIds = [...centroIdsCombined];
 
     // Paso 1: Agregar toneladas/clientes/obras por idRuta para todas las rutas Regionales
     const rawMap = new Map();
@@ -2726,7 +2744,7 @@ function renderParticipacion(content, db, cfg) {
       const ruta = routeByIdP.get(h.idRuta);
       if (!ruta || ruta.clasificRuta !== 'Regional') return;
       // Filtrar: la ruta debe pertenecer al centro del grupo seleccionado
-      if (centroIds.length && !centroIds.includes(ruta.origenId) && ruta.origen_grupo !== grupo) return;
+      if (centroIds.length && !centroIds.includes(ruta.origenId) && !grupos_calc.includes(ruta.origen_grupo)) return;
       if (!rawMap.has(h.idRuta)) {
         rawMap.set(h.idRuta, { idRuta: h.idRuta, ruta, clientes: new Set(), obras: new Set(), ton: 0 });
       }
@@ -2809,9 +2827,9 @@ function renderParticipacion(content, db, cfg) {
         <div class="flex gap-sm items-end mb-md">
           <div class="space-y-xs">
             <label class="font-label-caps text-label-caps text-secondary block">CENTRO ORIGEN</label>
-            <select id="part-f-centro" class="border border-[#CED4DA] p-sm font-body-md text-body-md bg-white w-48">
+            <select id="part-f-centro" class="border border-[#CED4DA] p-sm font-body-md text-body-md bg-white w-64">
               <option value="">Seleccione un centro</option>
-              ${centros.map(c => `<option value="${escapeHtml(c)}" ${c === centroId ? 'selected' : ''}>${escapeHtml(c)}</option>`).join('')}
+              ${centrosDropdown.map(c => `<option value="${escapeHtml(c)}" ${c === centroId ? 'selected' : ''}>${escapeHtml(labelCentro(c))}</option>`).join('')}
             </select>
           </div>
         </div>
@@ -2822,7 +2840,6 @@ function renderParticipacion(content, db, cfg) {
             <thead>
               <tr class="bg-surface-container-high text-left border-b border-outline-variant">
                 <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-right">#</th>
-                <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Ruta</th>
                 <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Destino</th>
                 <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Caract.</th>
                 <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-right">Clientes</th>
@@ -2842,7 +2859,6 @@ function renderParticipacion(content, db, cfg) {
                 const pesoPct = (r.peso * 100).toFixed(2);
                 return `<tr class="border-b border-outline-variant">
                   <td class="p-md text-right text-secondary font-data-mono text-data-mono">${idx + 1}</td>
-                  <td class="p-md font-bold">${escapeHtml(r.ruta?.codigo || r.rutaId)}</td>
                   <td class="p-md">${escapeHtml(r.ruta?.destino || '')}</td>
                   <td class="p-md"><span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold ${badgeCls}">${r.caracteristica === 'NORMAL' ? 'NORMAL' : r.caracteristica === 'ISLA' ? 'ISLA' : 'EXTREMA'}</span></td>
                   <td class="p-md text-right">${r.clientes}</td>
@@ -2864,7 +2880,7 @@ function renderParticipacion(content, db, cfg) {
                   const catRows = results.filter(r => (r.ruta.caracteristica || 'NORMAL').toUpperCase() === cat);
                   const catTon = catRows.reduce((s, r) => s + r.toneladas, 0);
                   return `<tr class="bg-surface-container-high border-t border-outline-variant">
-                    <td colspan="6" class="p-md font-bold text-right">Subtotal ${cat}</td>
+                    <td colspan="5" class="p-md font-bold text-right">Subtotal ${cat}</td>
                     <td class="p-md font-bold font-data-mono text-data-mono text-right">${catTon.toLocaleString('es-CL', { maximumFractionDigits: 1 })} ton</td>
                     <td class="p-md font-bold font-data-mono text-data-mono text-right">100%</td>
                     <td class="p-md"></td>
