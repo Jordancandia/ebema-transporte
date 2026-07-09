@@ -921,7 +921,6 @@ const SIDEBAR_MENU = [
       { tab: 'tarifas-transporte', sub: 'costos-extras', icon: 'add_circle',        label: 'Costos Extras' },
       { tab: 'tarifas-transporte', sub: 'participacion', icon: 'donut_large',       label: 'Participacion de Rutas' },
       { tab: 'tarifas-transporte', sub: 'variables',     icon: 'tune',              label: 'Variables Generales' },
-      { tab: 'tarifas-transporte', sub: 'concesiones',   icon: 'account_balance',   label: 'Admin. de Concesiones' },
       { tab: 'tarifas-transporte', sub: 'resultados',    icon: 'speed',             label: 'Motor de Costos' },
       { tab: 'tarifas-transporte', sub: 'camiones',      icon: 'local_shipping',    label: 'Tarifas por Camion' },
     ]
