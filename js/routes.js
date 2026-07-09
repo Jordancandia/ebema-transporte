@@ -52,6 +52,9 @@ function fillComunaSelectRoutes(selectEl, region, selected) {
 
 let editingRouteId = null;
 let currentRoutesSubTab = 'rutas';
+
+// Permite fijar el subtab activo desde el menu lateral (app.js) antes de renderizar
+export function setRoutesSubTab(sub) { currentRoutesSubTab = sub; }
 let currentFiltroSinGeoref = false;
 let currentFiltroOrigenRuta = '';
 

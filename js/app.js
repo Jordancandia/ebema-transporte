@@ -1,16 +1,17 @@
 import { getDatabase, saveDatabase, initDatabase } from './data.js?v=20260703b';
 import { supabase } from './supabase-client.js';
 import { renderTransportsView } from './transports.js';
-import { renderRoutesView } from './routes.js';
+import { renderRoutesView, setRoutesSubTab } from './routes.js?v=20260708a';
 import { renderRatesView } from './rates.js';
 import { renderRolesView } from './roles.js';
-import { renderTariffTransportView } from './tarifas-transporte.js?v=20260707a';
-import { renderClientTariffView } from './tarifas-clientes.js?v=20260622b';
+import { renderTariffTransportView, setActiveSub } from './tarifas-transporte.js?v=20260708a';
+import { renderClientTariffView, setActiveSubC } from './tarifas-clientes.js?v=20260708a';
 import { showAlert, formatRut, validateRut, formatPhone } from './utils.js';
 
 const SESSION_KEY = 'ebema_user_session';
 let currentSession = null;
 let currentTab = 'rates'; // Cotizador activo por defecto
+let currentSub = null;    // Submenu activo del sidebar (null = item simple)
 
 // Estado de la pantalla de autenticación ('login', 'register', 'recover')
 let authState = 'login';
@@ -894,6 +895,91 @@ function renderRecoverView() {
 }
 
 // ==========================================================================
+// MENU LATERAL - estructura declarativa con grupos desplegables
+// ==========================================================================
+const SIDEBAR_MENU = [
+  { tab: 'rates', icon: 'payments', label: 'Cotizador Despacho' },
+  {
+    group: 'proveedores', icon: 'groups', label: 'Proveedores', children: [
+      { tab: 'transports', sub: 'transportistas', icon: 'badge',          label: 'Transportistas' },
+      { tab: 'transports', sub: 'flota',          icon: 'local_shipping', label: 'Flota Camiones' },
+      { tab: 'transports', sub: 'conductores',    icon: 'person',         label: 'Conductores' },
+    ]
+  },
+  {
+    group: 'rutas', icon: 'route', label: 'Rutas de Transporte', children: [
+      { tab: 'routes', sub: 'centros', icon: 'location_on', label: 'Centros Logisticos' },
+      { tab: 'routes', sub: 'rutas',   icon: 'route',       label: 'Rutas' },
+      { tab: 'routes', sub: 'zonas',   icon: 'map',         label: 'Zonas de Transportes' },
+    ]
+  },
+  {
+    group: 'tarifas-transporte', icon: 'calculate', label: 'Tarifas Transporte', children: [
+      { tab: 'tarifas-transporte', sub: 'peajes',        icon: 'toll',              label: 'Peajes' },
+      { tab: 'tarifas-transporte', sub: 'combustibles',  icon: 'local_gas_station', label: 'Combustibles y Rendimientos' },
+      { tab: 'tarifas-transporte', sub: 'seguros',       icon: 'shield',            label: 'Seguros y Permisos' },
+      { tab: 'tarifas-transporte', sub: 'costos-extras', icon: 'add_circle',        label: 'Costos Extras' },
+      { tab: 'tarifas-transporte', sub: 'participacion', icon: 'donut_large',       label: 'Participacion de Rutas' },
+      { tab: 'tarifas-transporte', sub: 'variables',     icon: 'tune',              label: 'Variables Generales' },
+      { tab: 'tarifas-transporte', sub: 'concesiones',   icon: 'account_balance',   label: 'Admin. de Concesiones' },
+      { tab: 'tarifas-transporte', sub: 'resultados',    icon: 'speed',             label: 'Motor de Costos' },
+      { tab: 'tarifas-transporte', sub: 'camiones',      icon: 'local_shipping',    label: 'Tarifas por Camion' },
+    ]
+  },
+  {
+    group: 'tarifas-clientes', icon: 'request_quote', label: 'Tarifas Clientes', children: [
+      { tab: 'tarifas-clientes', sub: 'historico',     icon: 'history',       label: 'Historico (6M)' },
+      { tab: 'tarifas-clientes', sub: 'consolidacion', icon: 'inventory',     label: 'Consolidacion' },
+      { tab: 'tarifas-clientes', sub: 'densidad',      icon: 'location_on',   label: 'Densidad Logistica' },
+      { tab: 'tarifas-clientes', sub: 'especiales',    icon: 'star',          label: 'Frecuencia y Especiales' },
+      { tab: 'tarifas-clientes', sub: 'cluster',       icon: 'map',           label: 'Cluster' },
+      { tab: 'tarifas-clientes', sub: 'zfmp',          icon: 'request_quote', label: 'ZFMP' },
+      { tab: 'tarifas-clientes', sub: 'zfmi',          icon: 'request_quote', label: 'ZFMI / ZFMX' },
+    ]
+  },
+  { tab: 'roles', icon: 'admin_panel_settings', label: 'Roles y Perfiles' },
+];
+
+// Subtab real del modulo destino para cada submenu del sidebar.
+// null = el modulo no distingue subtab aun; los que no tienen vista propia
+// se enlazan a la vista existente mas cercana (se construyen en fases siguientes).
+const SUB_ALIAS = {
+  'transports':         { transportistas: null, flota: null, conductores: null },
+  'tarifas-transporte': { concesiones: 'peajes' },
+  'tarifas-clientes':   { zfmp: 'resultados', zfmi: 'resultados' },
+};
+
+const NAV_BASE_ITEM  = 'sidebar-item flex items-center gap-md px-md py-sm text-secondary hover:text-primary hover:bg-surface-container-high transition-colors rounded-lg cursor-pointer';
+const NAV_BASE_CHILD = 'sidebar-item flex items-center gap-sm pl-xl pr-md py-xs text-secondary hover:text-primary hover:bg-surface-container-high transition-colors rounded-lg cursor-pointer text-[13px]';
+
+function sidebarNavHTML() {
+  return SIDEBAR_MENU.map(entry => {
+    if (entry.group) {
+      return `
+        <div class="sidebar-group" data-group="${entry.group}">
+          <a class="sidebar-group-toggle flex items-center gap-md px-md py-sm text-secondary hover:text-primary hover:bg-surface-container-high transition-colors rounded-lg cursor-pointer select-none">
+            <span class="material-symbols-outlined">${entry.icon}</span>
+            <span class="font-body-md text-body-md flex-1">${entry.label}</span>
+            <span class="material-symbols-outlined text-[18px] transition-transform sidebar-chevron">expand_more</span>
+          </a>
+          <div class="sidebar-group-children hidden mt-xs space-y-[2px]">
+            ${entry.children.map(c => `
+              <a class="${NAV_BASE_CHILD}" data-tab="${c.tab}" data-sub="${c.sub}">
+                <span class="material-symbols-outlined text-[16px]">${c.icon}</span>
+                <span>${c.label}</span>
+              </a>`).join('')}
+          </div>
+        </div>`;
+    }
+    return `
+      <a class="${NAV_BASE_ITEM}" data-tab="${entry.tab}" id="nav-${entry.tab}">
+        <span class="material-symbols-outlined">${entry.icon}</span>
+        <span class="font-body-md text-body-md">${entry.label}</span>
+      </a>`;
+  }).join('');
+}
+
+// ==========================================================================
 // SHELL DEL DASHBOARD DE SIT EBEMA
 // ==========================================================================
 function renderDashboardShell() {
@@ -905,44 +991,8 @@ function renderDashboardShell() {
         <p class="text-label-caps font-label-caps text-secondary uppercase tracking-wider">Logistics Admin</p>
       </div>
       
-      <div class="space-y-base flex-1" id="sidebar-nav-container">
-        <!-- Cotizador (Costs) -->
-        <a class="sidebar-item flex items-center gap-md px-md py-sm text-secondary hover:text-primary hover:bg-surface-container-high transition-colors rounded-lg cursor-pointer" data-tab="rates" id="nav-rates">
-          <span class="material-symbols-outlined">payments</span>
-          <span class="font-body-md text-body-md">Cotizador</span>
-        </a>
-
-        <!-- Proveedores de Transporte -->
-        <a class="sidebar-item flex items-center gap-md px-md py-sm text-secondary hover:text-primary hover:bg-surface-container-high transition-colors rounded-lg cursor-pointer" data-tab="transports" id="nav-transports">
-          <span class="material-symbols-outlined">groups</span>
-          <span class="font-body-md text-body-md">Proveedores</span>
-        </a>
-
-        <!-- Rutas de Transporte (Routes + Centros SAP) -->
-        <a class="sidebar-item flex items-center gap-md px-md py-sm text-secondary hover:text-primary hover:bg-surface-container-high transition-colors rounded-lg cursor-pointer" data-tab="routes" id="nav-routes">
-          <span class="material-symbols-outlined">route</span>
-          <span class="font-body-md text-body-md">Rutas de Transporte</span>
-        </a>
-
-        <!-- Roles y Perfiles -->
-        <a class="sidebar-item flex items-center gap-md px-md py-sm text-secondary hover:text-primary hover:bg-surface-container-high transition-colors rounded-lg cursor-pointer" data-tab="roles" id="nav-roles">
-          <span class="material-symbols-outlined">admin_panel_settings</span>
-          <span class="font-body-md text-body-md">Roles y Perfiles</span>
-        </a>
-
-
-        <!-- Administrador de Tarifas Transporte -->
-        <a class="sidebar-item flex items-center gap-md px-md py-sm text-secondary hover:text-primary hover:bg-surface-container-high transition-colors rounded-lg cursor-pointer" data-tab="tarifas-transporte" id="nav-tarifas-transporte">
-          <span class="material-symbols-outlined">calculate</span>
-          <span class="font-body-md text-body-md">Tarifas Transporte</span>
-        </a>
-
-        <!-- Administrador de Tarifas Clientes -->
-        <a class="sidebar-item flex items-center gap-md px-md py-sm text-secondary hover:text-primary hover:bg-surface-container-high transition-colors rounded-lg cursor-pointer" data-tab="tarifas-clientes" id="nav-tarifas-clientes">
-          <span class="material-symbols-outlined">request_quote</span>
-          <span class="font-body-md text-body-md">Tarifas Clientes</span>
-        </a>
-
+      <div class="space-y-base flex-1 overflow-y-auto pr-xs" id="sidebar-nav-container">
+        ${sidebarNavHTML()}
       </div>
 
       <div class="mt-auto space-y-base border-t border-surface-variant pt-lg">
@@ -999,46 +1049,83 @@ function renderDashboardShell() {
   document.getElementById('btn-logout').addEventListener('click', handleLogout);
 
 
-  // Enrutamiento de pestañas del Sidebar
+  // Enrutamiento de pestañas del Sidebar (hojas con data-tab)
   document.querySelectorAll('.sidebar-item').forEach(item => {
     item.addEventListener('click', (e) => {
       const tabName = e.currentTarget.getAttribute('data-tab');
-      switchTab(tabName);
+      const subName = e.currentTarget.getAttribute('data-sub') || null;
+      switchTab(tabName, subName);
+    });
+  });
+
+  // Toggle de grupos desplegables
+  document.querySelectorAll('.sidebar-group-toggle').forEach(toggle => {
+    toggle.addEventListener('click', (e) => {
+      const grp = e.currentTarget.closest('.sidebar-group');
+      const children = grp.querySelector('.sidebar-group-children');
+      const chevron  = grp.querySelector('.sidebar-chevron');
+      const abrir = children.classList.contains('hidden');
+      children.classList.toggle('hidden', !abrir);
+      chevron.style.transform = abrir ? 'rotate(180deg)' : '';
     });
   });
 
   // Cargar pestaña inicial
-  switchTab(currentTab);
+  switchTab(currentTab, currentSub);
 }
 
-function switchTab(tabName) {
+const NAV_ACTIVE_ADD    = ['bg-primary-container', 'text-on-primary-container', 'font-semibold'];
+const NAV_ACTIVE_REMOVE = ['text-secondary', 'hover:text-primary', 'hover:bg-surface-container-high'];
+
+function switchTab(tabName, subName = null) {
   currentTab = tabName;
+  currentSub = subName;
 
-  // Restaurar clases inactivas
+  // Restaurar estado inactivo en todos los items (sin perder indentacion)
   document.querySelectorAll('.sidebar-item').forEach(item => {
-    item.className = "sidebar-item flex items-center gap-md px-md py-sm text-secondary hover:text-primary hover:bg-surface-container-high transition-colors rounded-lg cursor-pointer active:scale-95";
+    item.classList.remove(...NAV_ACTIVE_ADD);
+    item.classList.add(...NAV_ACTIVE_REMOVE);
   });
+  document.querySelectorAll('.sidebar-group-toggle').forEach(t => t.classList.remove('text-primary', 'font-semibold'));
 
-  const activeNav = document.getElementById(`nav-${tabName}`);
+  // Activar el item correspondiente (hoja simple o submenu)
+  const selector = subName
+    ? `.sidebar-item[data-tab="${tabName}"][data-sub="${subName}"]`
+    : `.sidebar-item[data-tab="${tabName}"]:not([data-sub])`;
+  const activeNav = document.querySelector(selector);
   if (activeNav) {
-    // Aplicar la clase activa de Google Stitch
-    activeNav.className = "sidebar-item flex items-center gap-md px-md py-sm bg-primary-container text-on-primary-container rounded-lg font-semibold opacity-90 transition-all duration-150 cursor-pointer";
+    activeNav.classList.remove(...NAV_ACTIVE_REMOVE);
+    activeNav.classList.add(...NAV_ACTIVE_ADD);
+    // Expandir y destacar el grupo padre si corresponde
+    const grp = activeNav.closest('.sidebar-group');
+    if (grp) {
+      grp.querySelector('.sidebar-group-children').classList.remove('hidden');
+      const chev = grp.querySelector('.sidebar-chevron');
+      if (chev) chev.style.transform = 'rotate(180deg)';
+      grp.querySelector('.sidebar-group-toggle').classList.add('text-primary', 'font-semibold');
+    }
   }
+
+  // Resolver alias de subtab (submenus que apuntan a vistas existentes)
+  const aliasMap = SUB_ALIAS[tabName] || {};
+  const alias = subName != null ? (aliasMap[subName] !== undefined ? aliasMap[subName] : subName) : null;
 
   const pageTitle = document.getElementById('current-page-title');
   const stage = document.getElementById('stage-area');
+  const subLabel = activeNav && subName ? ` — ${activeNav.textContent.trim()}` : '';
 
   switch (tabName) {
     case 'rates':
-      pageTitle.textContent = 'Cotizador de Tarifas';
+      pageTitle.textContent = 'Cotizador Despacho';
       renderRatesView(stage);
       break;
     case 'transports':
-      pageTitle.textContent = 'Gestión de Transportes';
+      pageTitle.textContent = 'Proveedores' + subLabel;
       renderTransportsView(stage);
       break;
     case 'routes':
-      pageTitle.textContent = 'Rutas de Transporte';
+      pageTitle.textContent = 'Rutas de Transporte' + subLabel;
+      if (alias) setRoutesSubTab(alias);
       renderRoutesView(stage);
       break;
     case 'roles':
@@ -1046,11 +1133,13 @@ function switchTab(tabName) {
       renderRolesView(stage);
       break;
     case 'tarifas-transporte':
-      pageTitle.textContent = 'Administrador de Tarifas Transporte';
+      pageTitle.textContent = 'Tarifas Transporte' + subLabel;
+      if (alias) setActiveSub(alias);
       renderTariffTransportView(stage);
       break;
     case 'tarifas-clientes':
-      pageTitle.textContent = 'Administrador de Tarifas Clientes';
+      pageTitle.textContent = 'Tarifas Clientes' + subLabel;
+      if (alias) setActiveSubC(alias);
       renderClientTariffView(stage);
       break;
   }

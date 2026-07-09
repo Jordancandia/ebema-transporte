@@ -10,6 +10,9 @@ import { renderZcapView } from './zcap.js?v=20260707a';
 
 let activeSub = 'peajes';
 
+// Permite fijar el subtab activo desde el menu lateral (app.js) antes de renderizar
+export function setActiveSub(sub) { activeSub = sub; }
+
 // Estado de filtros de la vista "Peajes por Ruta — Cálculo Automático"
 let pjFiltroTexto = '';
 let pjFiltroComuna = '';

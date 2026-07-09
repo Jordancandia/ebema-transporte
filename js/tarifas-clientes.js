@@ -15,6 +15,9 @@ let clusterFiltGrupo  = 'all';
 let clusterFiltTipo   = 'all';
 let clusterFiltClasif = 'all';
 let activeSubC        = 'historico';
+
+// Permite fijar el subtab activo desde el menu lateral (app.js) antes de renderizar
+export function setActiveSubC(sub) { activeSubC = sub; }
 // Mapa Oficina Entrega (SAP) → origen_grupo (nombre de ciudad/grupo)
 // Calculado al cargar CSV cruzando con db.routes.origen_grupo
 let oficinaToGrupo    = {};
