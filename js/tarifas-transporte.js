@@ -2718,45 +2718,103 @@ function renderParticipacion(content, db, cfg) {
     // Mostrar participación guardada agrupada por ruta
     const routes = db.routes || [];
     const grupos = getOrigenGroups(db);
-    const centros = [...new Set(grupos.map(g => g.grupo))].sort();
     const allGroups = getOrigenGroups(db);
 
+    // Detectar STGO y SB por IDs de centro
+    const stgoObj = allGroups.find(g => g.centroIds.some(id => ['1001','1002','1003'].includes(String(id))));
+    const sbObj   = allGroups.find(g => g.centroIds.some(id => ['1005'].includes(String(id))));
+    const hayStgoSb = !!(stgoObj && sbObj);
+
+    const centros = [...new Set(allGroups.map(g => g.grupo))].sort();
     let fallbackFiltroCentro = '';
 
     const rowsPart = clavesPart.map(k => {
       const e = partGuardada[k];
       const ruta = routes.find(r => r.codigo === k || r.id === k);
-      return { codigo: k, ruta, pct: e.pct, caracteristica: e.caracteristica, grupo: ruta?.origen_grupo || '—', destino: ruta?.destino || '' };
+      return { codigo: k, ruta, pct: e.pct, caracteristica: e.caracteristica, grupo: ruta?.origen_grupo || '—', destino: ruta?.destino || '', zona: ruta?.id_zona_transporte || '' };
     }).sort((a, b) => b.pct - a.pct);
+
+    // Igualar participación STGO ↔ SB:
+    // Para cada destino/zona en STGO, encontrar la ruta correspondiente en SB y asignarle el mismo %.
+    function igualarStgoSb() {
+      if (!hayStgoSb) return 0;
+      const stgoRows = rowsPart.filter(r => r.grupo === stgoObj.grupo);
+      const sbRows   = rowsPart.filter(r => r.grupo === sbObj.grupo);
+      let cambios = 0;
+
+      stgoRows.forEach(sr => {
+        // Buscar ruta equivalente en SB por zona o destino
+        const match = sbRows.find(sbr =>
+          (sr.zona && sbr.zona && sr.zona === sbr.zona) ||
+          (sr.destino && sbr.destino && sr.destino.trim().toUpperCase() === sbr.destino.trim().toUpperCase())
+        );
+        if (match && match.pct !== sr.pct) {
+          // Copiar % de STGO a SB
+          const entry = { pct: sr.pct, peso: sr.pct / 100, cluster: sr.pct >= 30 ? 1 : sr.pct >= 10 ? 2 : 3, caracteristica: match.caracteristica };
+          cfg.participacionRutas[match.codigo] = entry;
+          if (match.ruta?.id && match.ruta.id !== match.codigo) cfg.participacionRutas[match.ruta.id] = entry;
+          match.pct = sr.pct;
+          cambios++;
+        }
+        // También buscar rutas SB sin equivalente STGO (mismo destino, agregar con mismo %)
+      });
+
+      // Rutas SB sin match en STGO: buscar si hay en STGO mismo destino
+      sbRows.forEach(sbr => {
+        const match = stgoRows.find(sr =>
+          (sr.zona && sbr.zona && sr.zona === sbr.zona) ||
+          (sr.destino && sbr.destino && sr.destino.trim().toUpperCase() === sbr.destino.trim().toUpperCase())
+        );
+        if (match && sbr.pct !== match.pct) {
+          const entry = { pct: match.pct, peso: match.pct / 100, cluster: match.pct >= 30 ? 1 : match.pct >= 10 ? 2 : 3, caracteristica: sbr.caracteristica };
+          cfg.participacionRutas[sbr.codigo] = entry;
+          if (sbr.ruta?.id && sbr.ruta.id !== sbr.codigo) cfg.participacionRutas[sbr.ruta.id] = entry;
+          sbr.pct = match.pct;
+          cambios++;
+        }
+      });
+
+      if (cambios > 0) saveDatabase(db);
+      return cambios;
+    }
 
     function renderFallback(filtroCentro) {
       const rowsFiltradas = filtroCentro ? rowsPart.filter(r => r.grupo === filtroCentro) : rowsPart;
-      // Agrupar por centro
       const porCentro = {};
       rowsFiltradas.forEach(r => { (porCentro[r.grupo] = porCentro[r.grupo] || []).push(r); });
 
       content.innerHTML = `
         <div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm">
-          <div class="flex items-center gap-sm mb-md border-b border-outline-variant pb-sm">
-            <span class="material-symbols-outlined text-primary">donut_large</span>
-            <h2 class="font-headline-sm text-headline-sm font-bold text-on-surface">Participación Rutas (datos guardados)</h2>
+          <div class="flex items-center justify-between mb-md border-b border-outline-variant pb-sm">
+            <div class="flex items-center gap-sm">
+              <span class="material-symbols-outlined text-primary">donut_large</span>
+              <h2 class="font-headline-sm text-headline-sm font-bold text-on-surface">Participación Rutas (datos guardados)</h2>
+            </div>
+            ${hayStgoSb ? `
+            <button id="part-igualar-stgosb" class="bg-primary hover:bg-[#930007] text-white font-bold px-md py-sm rounded flex items-center gap-xs text-[12px] uppercase">
+              <span class="material-symbols-outlined text-[18px]">sync</span>
+              Igualar ${escapeHtml(stgoObj.nombre)} ↔ ${escapeHtml(sbObj.nombre)}
+            </button>` : ''}
           </div>
           <div class="bg-amber-50 border border-amber-200 text-amber-800 text-[12px] p-sm rounded mb-md">
-            Mostrando participación previamente guardada. Para recalcular, cargue el CSV histórico en <b>Tarifas Clientes → Histórico</b>.
+            Mostrando participación guardada. ${hayStgoSb ? `Use <b>"Igualar ${escapeHtml(stgoObj.nombre)} ↔ ${escapeHtml(sbObj.nombre)}"</b> para sincronizar ambos centros con el mismo porcentaje por destino.` : 'Para recalcular, cargue el CSV histórico en <b>Tarifas Clientes → Histórico</b>.'}
           </div>
           <div class="flex gap-sm items-end mb-md">
-            <div class="space-y-xs">
-              <label class="font-label-caps text-label-caps text-secondary block">CENTRO ORIGEN</label>
+            <div>
+              <label class="font-label-caps text-label-caps text-secondary block mb-xs">CENTRO ORIGEN</label>
               <select id="part-fb-centro" class="border border-[#CED4DA] p-sm font-body-md text-body-md bg-white w-56">
                 <option value="">Todos los centros</option>
-                ${centros.map(c => `<option value="${escapeHtml(c)}" ${c === filtroCentro ? 'selected' : ''}>${escapeHtml(c)}</option>`).join('')}
+                ${centros.map(c => {
+                  const g = allGroups.find(go => go.grupo === c);
+                  return `<option value="${escapeHtml(c)}" ${c === filtroCentro ? 'selected' : ''}>${escapeHtml(g?.nombre || c)}</option>`;
+                }).join('')}
               </select>
             </div>
           </div>
           ${Object.entries(porCentro).map(([grupo, filas]) => {
             const gNombre = allGroups.find(g => g.grupo === grupo)?.nombre || grupo;
             return `<div class="mb-lg">
-              <h3 class="font-body-lg font-bold mb-xs">${gNombre}</h3>
+              <h3 class="font-body-lg font-bold mb-xs">${escapeHtml(gNombre)}</h3>
               <div class="bg-surface border border-outline-variant overflow-x-auto rounded">
                 <table class="w-full zebra-table border-collapse">
                   <thead><tr class="bg-surface-container-high border-b border-outline-variant">
@@ -2780,6 +2838,16 @@ function renderParticipacion(content, db, cfg) {
       document.getElementById('part-fb-centro')?.addEventListener('change', e => {
         fallbackFiltroCentro = e.target.value;
         renderFallback(fallbackFiltroCentro);
+      });
+
+      document.getElementById('part-igualar-stgosb')?.addEventListener('click', () => {
+        const n = igualarStgoSb();
+        if (n > 0) {
+          showAlert(`✓ ${n} destino(s) sincronizado(s): ${sbObj.nombre} ahora tiene el mismo % que ${stgoObj.nombre}.`);
+          renderFallback(fallbackFiltroCentro);
+        } else {
+          showAlert('Los centros ya tienen la misma participación por destino.');
+        }
       });
     }
 
@@ -2938,9 +3006,8 @@ function renderParticipacion(content, db, cfg) {
       })
       .sort((a, b) => b.toneladas - a.toneladas);
   }
-  function render(centroId) {
-    const results = centroId ? calcParticipacion(centroId) : [];
-    const totalTon = results.reduce((s, r) => s + r.toneladas, 0);
+  function render() {
+    const results = partCentrosSelec.size > 0 ? calcParticipacionMulti(partCentrosSelec) : [];
 
     content.innerHTML = `
       <div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm">
@@ -2949,18 +3016,24 @@ function renderParticipacion(content, db, cfg) {
           <h2 class="font-headline-sm text-headline-sm font-bold text-on-surface">Participación Rutas</h2>
         </div>
         <p class="text-[12px] text-secondary mb-md">
-          Ranking de rutas Regionales + COMUNA por toneladas movilizadas (histórico 6 meses). Las rutas tipo Sector
-          suman sus toneladas a la COMUNA padre. El Peso es la fracción que representa cada ruta sobre el total del centro.
-          Los datos provienen de <b>Tarifas Clientes → Histórico</b>.
+          Ranking de rutas Regionales por toneladas. SANTIAGO y SAN BERNARDO siempre se calculan en conjunto
+          (mismos destinos, % sobre total combinado). Puedes seleccionar uno o varios centros.
         </p>
 
         <div class="flex gap-sm items-end mb-md">
-          <div class="space-y-xs">
-            <label class="font-label-caps text-label-caps text-secondary block">CENTRO ORIGEN</label>
-            <select id="part-f-centro" class="border border-[#CED4DA] p-sm font-body-md text-body-md bg-white w-64">
-              <option value="">Seleccione un centro</option>
-              ${centrosDropdown.map(c => `<option value="${escapeHtml(c)}" ${c === centroId ? 'selected' : ''}>${escapeHtml(labelCentro(c))}</option>`).join('')}
-            </select>
+          <div class="relative">
+            <label class="font-label-caps text-label-caps text-secondary block mb-xs">CENTRO ORIGEN</label>
+            <button id="part-centro-btn" class="border border-[#CED4DA] px-sm py-[9px] bg-white text-left w-64 font-body-md text-body-md flex justify-between items-center gap-sm">
+              <span id="part-centro-label">${partCentrosLabel()}</span>
+              <span class="material-symbols-outlined text-[18px] text-secondary flex-shrink-0">expand_more</span>
+            </button>
+            <div id="part-centro-panel" class="hidden absolute z-50 bg-white border border-[#CED4DA] shadow-lg w-72 max-h-72 overflow-y-auto mt-1">
+              ${centrosDropdown.map(c => `
+              <label class="flex items-center gap-sm p-sm hover:bg-surface-container-high cursor-pointer border-b border-outline-variant last:border-0">
+                <input type="checkbox" class="part-c-item" value="${escapeHtml(c)}" ${partCentrosSelec.has(c) ? 'checked' : ''}>
+                <span class="font-body-md text-body-md">${escapeHtml(labelCentro(c))}</span>
+              </label>`).join('')}
+            </div>
           </div>
         </div>
 
@@ -2981,16 +3054,17 @@ function renderParticipacion(content, db, cfg) {
             </thead>
             <tbody class="font-body-md text-body-md">
               ${results.map((r, idx) => {
-                const maxTon = results.length > 0 ? results[0].toneladas : 1;
+                const maxTon = results[0].toneladas || 1;
                 const barWidth = Math.min(100, (r.toneladas / maxTon) * 100);
-                const badgeCls = r.caracteristica === 'NORMAL' ? 'bg-surface-container-high text-secondary border border-outline-variant'
+                const badgeCls = r.caracteristica === 'NORMAL'
+                  ? 'bg-surface-container-high text-secondary border border-outline-variant'
                   : r.caracteristica === 'ISLA' ? 'bg-blue-100 text-blue-800 border border-blue-300'
                   : 'bg-amber-100 text-amber-800 border border-amber-300';
                 const pesoPct = (r.peso * 100).toFixed(2);
                 return `<tr class="border-b border-outline-variant">
                   <td class="p-md text-right text-secondary font-data-mono text-data-mono">${idx + 1}</td>
                   <td class="p-md">${escapeHtml(r.ruta?.destino || '')}</td>
-                  <td class="p-md"><span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold ${badgeCls}">${r.caracteristica === 'NORMAL' ? 'NORMAL' : r.caracteristica === 'ISLA' ? 'ISLA' : 'EXTREMA'}</span></td>
+                  <td class="p-md"><span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold ${badgeCls}">${r.caracteristica}</span></td>
                   <td class="p-md text-right">${r.clientes}</td>
                   <td class="p-md text-right">${r.obras}</td>
                   <td class="p-md text-right font-data-mono text-data-mono">${r.toneladas.toLocaleString('es-CL', { maximumFractionDigits: 1 })}</td>
@@ -3005,15 +3079,15 @@ function renderParticipacion(content, db, cfg) {
             </tbody>
             <tfoot>
               ${(() => {
-                const cats = [...new Set(results.map(r => (r.ruta.caracteristica || 'NORMAL').toUpperCase()))].sort();
+                const cats = [...new Set(results.map(r => (r.caracteristica || 'NORMAL').toUpperCase()))].sort();
                 return cats.map(cat => {
-                  const catRows = results.filter(r => (r.ruta.caracteristica || 'NORMAL').toUpperCase() === cat);
-                  const catTon = catRows.reduce((s, r) => s + r.toneladas, 0);
+                  const catRows = results.filter(r => (r.caracteristica || 'NORMAL').toUpperCase() === cat);
+                  const catTon  = catRows.reduce((s, r) => s + r.toneladas, 0);
                   return `<tr class="bg-surface-container-high border-t border-outline-variant">
                     <td colspan="5" class="p-md font-bold text-right">Subtotal ${cat}</td>
                     <td class="p-md font-bold font-data-mono text-data-mono text-right">${catTon.toLocaleString('es-CL', { maximumFractionDigits: 1 })} ton</td>
                     <td class="p-md font-bold font-data-mono text-data-mono text-right">100%</td>
-                    <td class="p-md"></td>
+                    <td></td>
                   </tr>`;
                 }).join('');
               })()}
@@ -3025,23 +3099,30 @@ function renderParticipacion(content, db, cfg) {
             <span class="material-symbols-outlined text-[18px]">save</span> Guardar Participación
           </button>
         </div>
-        ` : '<p class="text-secondary mt-md">Seleccione un centro para ver la participación de rutas.</p>'}
+        ` : '<p class="text-secondary mt-md">Seleccione al menos un centro para ver la participación de rutas.</p>'}
       </div>
     `;
 
-    const centroSelect = document.getElementById('part-f-centro');
-    if (centroSelect) {
-      centroSelect.addEventListener('change', (e) => {
-        participacionFiltroCentro = e.target.value;
-        render(e.target.value || null);
+    // Multi-select listeners
+    const centroBtnEl   = document.getElementById('part-centro-btn');
+    const centroPanelEl = document.getElementById('part-centro-panel');
+    centroBtnEl?.addEventListener('click', e => { e.stopPropagation(); centroPanelEl.classList.toggle('hidden'); });
+    document.addEventListener('click', () => centroPanelEl?.classList.add('hidden'), { once: true });
+    content.querySelectorAll('.part-c-item').forEach(cb => {
+      cb.addEventListener('change', () => {
+        partCentrosSelec.clear();
+        content.querySelectorAll('.part-c-item:checked').forEach(c => partCentrosSelec.add(c.value));
+        document.getElementById('part-centro-label').textContent = partCentrosLabel();
+        render();
       });
-    }
+    });
 
+    // Guardar participación
     const guardarBtn = document.getElementById('part-guardar');
     if (guardarBtn) {
       guardarBtn.addEventListener('click', () => {
         if (!results || results.length === 0) {
-          showAlert('Seleccione un centro para guardar la participación.', 'error'); return;
+          showAlert('Seleccione al menos un centro para guardar la participación.', 'error'); return;
         }
         try {
           cfg.participacionRutas = cfg.participacionRutas || {};
@@ -3065,7 +3146,7 @@ function renderParticipacion(content, db, cfg) {
     }
   }
 
-  render(null);
+  render();
 }
 
 // ============================================================
