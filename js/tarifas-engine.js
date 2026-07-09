@@ -39,7 +39,11 @@ export function calcularCostoRuta(db, cfg, ruta, capKg) {
     peajeVuelta = Number(tollRow.peaje_vuelta) || 0;
   } else {
     const peajesRuta = (cfg.peajes || []).filter(p => p.rutaId === ruta.id && Number(p.ejes) === ejes);
-    peajeIda = peajesRuta.reduce((s, p) => s + (Number(p.valorPeaje) || 0), 0);
+    peajeIda = peajesRuta.reduce((s, p) => {
+      const varPct = cfg.concesionesVariacion?.[p.concesionaria];
+      const factor = (varPct != null && varPct !== 0) ? (1 + varPct / 100) : 1;
+      return s + (Number(p.valorPeaje) || 0) * factor;
+    }, 0);
     peajeVuelta = peajeIda;
   }
   const item1_peajes = peajeIda + peajeVuelta;

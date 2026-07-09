@@ -183,7 +183,7 @@ export function renderTariffTransportView(container) {
     switch (activeSub) {
       case 'peajes':         renderPeajes(content, db, cfg); break;
       case 'peajes-inter':   renderPeajesInterregionales(content, db, cfg); break;
-      case 'concesiones':    renderAdminConcesiones(content, db); break;
+      case 'concesiones':    renderAdminConcesiones(content, db, cfg); break;
       case 'camiones':       renderTarifasCamion(content, db, cfg); break;
       case 'combustibles':   renderCombustibles(content, db, cfg); break;
       case 'seguros':        renderSeguros(content, db, cfg); break;
@@ -559,12 +559,20 @@ const CONCESIONES_CHILE = [
   { nombre: 'Variante Melipilla', ruta: 'Ruta 78', tramo: 'Santiago – Melipilla', region: 'Región Metropolitana', tipo: 'Autopista', activa: true },
 ];
 
-function renderAdminConcesiones(content) {
+function renderAdminConcesiones(content, db, cfg) {
+  cfg.concesionesVariacion = cfg.concesionesVariacion || {};
+
   const regiones = [...new Set(CONCESIONES_CHILE.map(c => c.region))];
 
   let filtroRegion = '';
   let filtroTipo   = '';
   let filtroBuscar = '';
+  let _pendingChanges = {};  // variaciones editadas aún no guardadas
+
+  // Contar rutas afectadas por concesión (según cfg.peajes)
+  function rutasAfectadas(nombreConcesion) {
+    return new Set((cfg.peajes || []).filter(p => p.concesionaria === nombreConcesion).map(p => p.rutaId)).size;
+  }
 
   function render() {
     let lista = CONCESIONES_CHILE.filter(c => {
@@ -584,16 +592,34 @@ function renderAdminConcesiones(content) {
       return '<span class="inline-flex px-1.5 py-0.5 rounded text-[10px] font-bold bg-green-100 text-green-800">AUTOPISTA</span>';
     };
 
+    const hayVariaciones = Object.keys(cfg.concesionesVariacion).some(k => cfg.concesionesVariacion[k]);
+
     content.innerHTML = `
       <div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm">
-        <div class="flex items-center gap-sm mb-md border-b border-outline-variant pb-sm">
-          <span class="material-symbols-outlined text-primary">account_balance</span>
-          <h2 class="font-headline-sm text-headline-sm font-bold text-on-surface">Administrador de Concesiones de Peajes — Chile</h2>
+        <div class="flex items-center justify-between mb-md border-b border-outline-variant pb-sm">
+          <div class="flex items-center gap-sm">
+            <span class="material-symbols-outlined text-primary">account_balance</span>
+            <h2 class="font-headline-sm text-headline-sm font-bold text-on-surface">Administrador de Concesiones de Peajes — Chile</h2>
+          </div>
+          <button id="con-guardar" class="bg-primary hover:bg-[#930007] text-white font-bold px-md py-sm rounded flex items-center gap-xs text-[12px] uppercase">
+            <span class="material-symbols-outlined text-[18px]">save</span> Guardar Variaciones
+          </button>
         </div>
-        <p class="text-[12px] text-secondary mb-md">
-          Concesionarias de peajes en Chile que son consultadas por <strong>TollGuru</strong> al calcular los costos de ruta del sistema.
-          Total: <strong>${CONCESIONES_CHILE.length}</strong> concesiones activas.
-        </p>
+
+        <div class="flex items-start gap-md mb-md">
+          <div class="flex-1">
+            <p class="text-[12px] text-secondary">
+              Concesionarias consultadas por <strong>TollGuru</strong>. La columna <b>Variación Anual %</b> registra
+              el aumento tarifario informado por cada concesión (Decreto MOP). Al guardar, el motor aplica
+              el factor a los peajes manuales de las plazas asociadas.
+            </p>
+          </div>
+          ${hayVariaciones ? `
+          <div class="bg-amber-50 border border-amber-200 text-amber-800 text-[11px] p-sm rounded shrink-0">
+            <span class="material-symbols-outlined text-[14px] align-middle">info</span>
+            Variaciones activas — afectan el Motor de Costo
+          </div>` : ''}
+        </div>
 
         <div class="flex flex-wrap gap-md items-end mb-md">
           <div class="space-y-xs">
@@ -627,26 +653,54 @@ function renderAdminConcesiones(content) {
                 <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Tramo</th>
                 <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Región</th>
                 <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Tipo</th>
+                <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-right">Rutas c/Peaje</th>
+                <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-center" style="min-width:140px">Variación Anual %</th>
               </tr>
             </thead>
             <tbody class="font-body-md text-body-md">
               ${lista.length === 0
-                ? `<tr><td colspan="5" class="p-md text-center text-secondary">Sin resultados para los filtros seleccionados.</td></tr>`
-                : lista.map((c, i) => `
+                ? `<tr><td colspan="7" class="p-md text-center text-secondary">Sin resultados para los filtros seleccionados.</td></tr>`
+                : lista.map((c, i) => {
+                  const varActual = cfg.concesionesVariacion[c.nombre] ?? '';
+                  const afectadas = rutasAfectadas(c.nombre);
+                  const hasVar = varActual !== '' && Number(varActual) !== 0;
+                  return `
                   <tr class="border-b border-outline-variant ${i % 2 === 0 ? '' : 'bg-surface-container-lowest'}">
                     <td class="p-md font-bold text-on-surface">${escapeHtml(c.nombre)}</td>
                     <td class="p-md font-data-mono text-data-mono text-secondary">${escapeHtml(c.ruta)}</td>
                     <td class="p-md">${escapeHtml(c.tramo)}</td>
                     <td class="p-md text-secondary">${escapeHtml(c.region)}</td>
                     <td class="p-md">${tipoBadge(c.tipo)}</td>
-                  </tr>`).join('')}
+                    <td class="p-md text-right">
+                      ${afectadas > 0
+                        ? `<span class="inline-flex px-1.5 py-0.5 rounded text-[10px] font-bold bg-surface-container-high text-secondary">${afectadas}</span>`
+                        : '<span class="text-secondary">—</span>'}
+                    </td>
+                    <td class="p-md text-center">
+                      <div class="flex items-center justify-center gap-xs">
+                        <input
+                          type="number" step="0.1" min="0" max="100"
+                          placeholder="0.0"
+                          value="${escapeHtml(String(varActual))}"
+                          data-nombre="${escapeHtml(c.nombre)}"
+                          class="con-var-input border border-[#CED4DA] p-xs font-data-mono text-data-mono bg-white w-20 text-right ${hasVar ? 'border-amber-400 bg-amber-50' : ''}">
+                        <span class="text-secondary font-bold">%</span>
+                        ${hasVar ? `<span class="inline-flex px-1 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-700">+${Number(varActual).toFixed(1)}%</span>` : ''}
+                      </div>
+                    </td>
+                  </tr>`;
+                }).join('')}
             </tbody>
           </table>
         </div>
-        <p class="text-[11px] text-secondary mt-sm">Fuente: TollGuru API — datos actualizados según consultas del sistema.</p>
+        <p class="text-[11px] text-secondary mt-sm">
+          La variación se aplica a los <b>peajes manuales</b> registrados en la pestaña Peajes Regionales que tengan asignada la concesionaria.
+          Los peajes calculados por TollGuru reflejan precios actuales de la API.
+        </p>
       </div>
     `;
 
+    // Filtros
     content.querySelector('#con-f-region')?.addEventListener('change', e => { filtroRegion = e.target.value; render(); });
     content.querySelector('#con-f-tipo')?.addEventListener('change',   e => { filtroTipo   = e.target.value; render(); });
     content.querySelector('#con-f-buscar')?.addEventListener('input',  e => {
@@ -654,6 +708,32 @@ function renderAdminConcesiones(content) {
       filtroBuscar = e.target.value; render();
       const inp = content.querySelector('#con-f-buscar');
       if (inp) { inp.focus(); inp.setSelectionRange(pos, pos); }
+    });
+
+    // Inputs de variación: acumular cambios sin perder foco
+    content.querySelectorAll('.con-var-input').forEach(inp => {
+      inp.addEventListener('change', e => {
+        _pendingChanges[e.target.dataset.nombre] = e.target.value === '' ? null : Number(e.target.value);
+      });
+    });
+
+    // Guardar
+    content.querySelector('#con-guardar')?.addEventListener('click', () => {
+      // Leer todos los inputs visibles + cambios pendientes
+      content.querySelectorAll('.con-var-input').forEach(inp => {
+        _pendingChanges[inp.dataset.nombre] = inp.value === '' ? null : Number(inp.value);
+      });
+      Object.entries(_pendingChanges).forEach(([nombre, val]) => {
+        if (val === null || val === 0) {
+          delete cfg.concesionesVariacion[nombre];
+        } else {
+          cfg.concesionesVariacion[nombre] = val;
+        }
+      });
+      _pendingChanges = {};
+      saveDatabase(db);
+      showAlert('✓ Variaciones de concesiones guardadas');
+      render();
     });
   }
 
