@@ -2067,31 +2067,51 @@ function truckNumInput(id, field, value) {
 // Devuelve un Set con los ids de tipos de camión que sí tienen rutas activas
 // (y por tanto valor ZCAP vigente).
 function syncTarifasZcap(db, cfg, grupoFiltro = '') {
-  const groups = getOrigenGroups(db).filter(g => !grupoFiltro || g.grupo === grupoFiltro);
-  const matriz = calcularMatrizCostos(db, cfg);
-  const margenPct = Number(cfg.variables.margenGanancia) || 0;
+  const allGroups  = getOrigenGroups(db);
+  const grupos_filt = grupoFiltro ? allGroups.filter(g => g.grupo === grupoFiltro) : allGroups;
+  const matriz     = calcularMatrizCostos(db, cfg);
   const participacion = cfg.participacionRutas || {};
-  const conZcap = new Set();
-  let cambios = false;
+  const conZcap    = new Set();
+  let cambios      = false;
 
-  // Tarifa base = Σ(costoKmFinal × peso%) si hay participación guardada;
-  // si no hay (todos peso=0), usa el promedio simple de costoKmFinal (fallback Motor de Costo)
-  function tarifaBase(items) {
-    const sumaPond = items.reduce((s, m) => {
-      const p = participacion[m.ruta.id] || participacion[m.ruta.codigo];
-      return s + (m.item11_costoKmFinal || 0) * ((p?.pct || 0) / 100);
-    }, 0);
-    if (sumaPond > 0) return sumaPond;
-    // Fallback: promedio simple de costoKmFinal del Motor de Costo
-    const total = items.reduce((s, m) => s + (m.item11_costoKmFinal || 0), 0);
-    return items.length ? total / items.length : 0;
+  // SANTIAGO y SAN BERNARDO comparten estructura de tarifas → combinar rutas
+  const STGO_SB = ['SANTIAGO', 'SAN BERNARDO'];
+  const stgoGroup = allGroups.find(g => g.grupo === 'SANTIAGO');
+  const sbGroup   = allGroups.find(g => g.grupo === 'SAN BERNARDO');
+
+  function metricas(items) {
+    const norm = items.filter(m => (m.ruta.caracteristica || 'NORMAL').toUpperCase() === 'NORMAL');
+    const esp  = items.filter(m => (m.ruta.caracteristica || 'NORMAL').toUpperCase() !== 'NORMAL');
+    function pond(sub) {
+      return sub.reduce((s, m) => {
+        const p = participacion[m.ruta.id] || participacion[m.ruta.codigo];
+        return s + (m.item11_costoKmFinal || 0) * ((p?.pct || 0) / 100);
+      }, 0);
+    }
+    function prom(sub) {
+      return sub.length ? sub.reduce((s, m) => s + (m.item11_costoKmFinal || 0), 0) / sub.length : 0;
+    }
+    return {
+      pondNorm: Math.round(pond(norm)) || Math.round(prom(norm)),
+      promNorm: Math.round(prom(norm)),
+      pondEsp:  Math.round(pond(esp))  || Math.round(prom(esp)),
+      promEsp:  Math.round(prom(esp)),
+      hasEsp:   esp.length > 0,
+      hasItems: items.length > 0
+    };
   }
 
-  groups.forEach(g => {
+  grupos_filt.forEach(g => {
+    // SAN BERNARDO: sus rutas se procesan junto con SANTIAGO → skip individual
+    if (g.grupo === 'SAN BERNARDO' && stgoGroup) return;
+
+    // Grupos a incluir en el cálculo
+    const gruposCalc = (g.grupo === 'SANTIAGO' && sbGroup) ? STGO_SB : [g.grupo];
+
     const rows = (db.truckTypes || []).filter(t => t.Id_centro === g.repId);
     rows.forEach(t => {
       const items = matriz.filter(m =>
-        m.ruta.origen_grupo === g.grupo &&
+        gruposCalc.includes(m.ruta.origen_grupo) &&
         m.capKg === truckCapKg(t.type) &&
         (m.ruta.tipo || '').toUpperCase() === 'COMUNA' &&
         m.ruta.clasificRuta === 'Regional'
@@ -2099,15 +2119,22 @@ function syncTarifasZcap(db, cfg, grupoFiltro = '') {
       if (items.length === 0) return;
       conZcap.add(t.id);
 
-      const itemsNormal  = items.filter(m => (m.ruta.caracteristica || 'NORMAL').toUpperCase() === 'NORMAL');
-      const itemsExtrema = items.filter(m => (m.ruta.caracteristica || 'NORMAL').toUpperCase() !== 'NORMAL');
+      const mx = metricas(items);
 
-      const ratePerKm = Math.round(tarifaBase(itemsNormal));
-      if (t.ratePerKm !== ratePerKm) { t.ratePerKm = ratePerKm; cambios = true; }
-
-      if (itemsExtrema.length > 0) {
-        const ratePerKmExtrema = Math.round(tarifaBase(itemsExtrema));
-        if (t.ratePerKmExtrema !== ratePerKmExtrema) { t.ratePerKmExtrema = ratePerKmExtrema; cambios = true; }
+      if (t.ratePerKmPond !== mx.pondNorm) { t.ratePerKmPond = mx.pondNorm; cambios = true; }
+      if (t.ratePerKmProm !== mx.promNorm) { t.ratePerKmProm = mx.promNorm; cambios = true; }
+      if (t.ratePerKm     !== mx.pondNorm) { t.ratePerKm     = mx.pondNorm; cambios = true; } // compat
+      if (mx.hasEsp) {
+        if (t.ratePerKmExtrPond !== mx.pondEsp) { t.ratePerKmExtrPond = mx.pondEsp; cambios = true; }
+        if (t.ratePerKmExtrProm !== mx.promEsp) { t.ratePerKmExtrProm = mx.promEsp; cambios = true; }
+        if (t.ratePerKmExtrema  !== mx.pondEsp) { t.ratePerKmExtrema  = mx.pondEsp; cambios = true; } // compat
+      }
+      // AJUSTADA: solo auto-inicializar si aún no tiene valor manual
+      if (t.rateAjustNorm === undefined || t.rateAjustNorm === null) {
+        t.rateAjustNorm = mx.pondNorm; cambios = true;
+      }
+      if (mx.hasEsp && (t.rateAjustEsp === undefined || t.rateAjustEsp === null)) {
+        t.rateAjustEsp = mx.pondEsp; cambios = true;
       }
     });
   });
@@ -2118,18 +2145,32 @@ function syncTarifasZcap(db, cfg, grupoFiltro = '') {
 
 function renderTarifasCamion(content, db, cfg) {
   const allGroups = getOrigenGroups(db);
-  const groups = tarifaCentroFiltro
-    ? allGroups.filter(g => g.grupo === tarifaCentroFiltro)
+  const conZcap   = syncTarifasZcap(db, cfg);
+
+  // SANTIAGO + SAN BERNARDO → grupo combinado
+  const STGO_SB = ['SANTIAGO', 'SAN BERNARDO'];
+  const stgoG   = allGroups.find(g => g.grupo === 'SANTIAGO');
+  const sbG     = allGroups.find(g => g.grupo === 'SAN BERNARDO');
+  const tieneStgoSb = !!(stgoG && sbG);
+
+  // Lista de grupos para dropdown (sin SAN BERNARDO si va combinado)
+  const gruposDropdown = tieneStgoSb
+    ? allGroups.filter(g => g.grupo !== 'SAN BERNARDO')
     : allGroups;
-  const conZcap = syncTarifasZcap(db, cfg);
+
+  // Lista de grupos a renderizar
+  let gruposRender = tarifaCentroFiltro
+    ? allGroups.filter(g => g.grupo === tarifaCentroFiltro || (tarifaCentroFiltro === '__STGO_SB__' && STGO_SB.includes(g.grupo)))
+    : allGroups;
+  // Excluir SAN BERNARDO individual si va combinado
+  if (tieneStgoSb) gruposRender = gruposRender.filter(g => g.grupo !== 'SAN BERNARDO');
 
   const routes = (db.routes || []).filter(r => r.activo);
-  const centrosConExtrema = new Map();
-  allGroups.forEach(g => {
-    const centroIds = g.centroIds || [];
-    const tiene = routes.some(r => centroIds.includes(r.origenId) && r.caracteristica && r.caracteristica !== 'NORMAL');
-    if (tiene) centrosConExtrema.set(g.repId, true);
-  });
+
+  // ¿Tiene rutas especiales el centro (o combinado)?
+  function tieneEspeciales(gruposCalc) {
+    return routes.some(r => gruposCalc.includes(r.origen_grupo) && r.caracteristica && r.caracteristica !== 'NORMAL');
+  }
 
   content.innerHTML = `
     <div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm">
@@ -2137,61 +2178,102 @@ function renderTarifasCamion(content, db, cfg) {
         <span class="material-symbols-outlined text-primary">local_shipping</span>
         <h2 class="font-headline-sm text-headline-sm font-bold text-on-surface">Tarifas de Transporte por Centro y Tipo de Camión</h2>
       </div>
-      <p class="text-[12px] text-secondary mb-md">Define cómo se paga al transportista. Km Base, Costo Base y Tarifa Base KM son editables. La columna Tarifa KM Extrema/Isla aparece solo si el centro tiene rutas con característica ISLA o EXTREMA. Tarifa/KM se calcula desde el Motor de Costo (solo lectura).</p>
+      <p class="text-[12px] text-secondary mb-md">
+        KM Base, Costo Base y Tarifa Base KM son editables. Las columnas ZCAP (Ponderada, Promedio) se calculan
+        automáticamente desde el Motor de Costo. Las Tarifas Ajustadas se inicializan con ZCAP y pueden editarse manualmente.
+      </p>
 
       <div class="flex items-end gap-sm mb-md">
         <div class="space-y-xs">
           <label class="font-label-caps text-label-caps text-secondary block">CENTRO ORIGEN</label>
-          <select id="tt-f-centro" class="border border-[#CED4DA] p-sm font-body-md text-body-md bg-white w-52">
+          <select id="tt-f-centro" class="border border-[#CED4DA] p-sm font-body-md text-body-md bg-white w-56">
             <option value="">Todos</option>
-            ${allGroups.map(g => `<option value="${escapeHtml(g.grupo)}" ${g.grupo === tarifaCentroFiltro ? 'selected' : ''}>${escapeHtml(g.nombre)}</option>`).join('')}
+            ${tieneStgoSb ? `<option value="__STGO_SB__" ${tarifaCentroFiltro === '__STGO_SB__' ? 'selected' : ''}>Santiago + San Bernardo</option>` : ''}
+            ${gruposDropdown.filter(g => !STGO_SB.includes(g.grupo) || !tieneStgoSb).map(g =>
+              `<option value="${escapeHtml(g.grupo)}" ${g.grupo === tarifaCentroFiltro ? 'selected' : ''}>${escapeHtml(g.nombre)}</option>`).join('')}
           </select>
         </div>
       </div>
 
-      ${groups.map(g => {
+      ${gruposRender.map(g => {
+        // Para SANTIAGO combinado, incluir ambos grupos en cálculo
+        const gruposCalc = (g.grupo === 'SANTIAGO' && tieneStgoSb) ? STGO_SB : [g.grupo];
         const rows = (db.truckTypes || []).filter(t => t.Id_centro === g.repId).sort((a, b) => truckCapKg(a.type) - truckCapKg(b.type));
-        const integrantes = g.centros.length > 1
-          ? ` <span class="text-secondary text-[12px]">(${g.centros.map(c => c.nombre).join(', ')})</span>`
-          : '';
-        const tieneExtrema = centrosConExtrema.has(g.repId);
-        const colCount = tieneExtrema ? 7 : 6;
+        const tieneEsp = tieneEspeciales(gruposCalc);
+
+        // Nombre del grupo
+        let nombreGrupo = g.nombre;
+        let subtituloGrupo = `(${g.centroIds.join(', ')})`;
+        if (g.grupo === 'SANTIAGO' && tieneStgoSb) {
+          nombreGrupo    = 'Santiago + San Bernardo';
+          const sbIds = sbG ? sbG.centroIds : [];
+          subtituloGrupo = `(${[...g.centroIds, ...sbIds].join(', ')})`;
+        }
+
+        const colCount = tieneEsp ? 11 : 9;
         return `
-        <div class="mb-lg">
+        <div class="mb-xl">
           <div class="flex items-center justify-between mb-xs">
-            <h3 class="font-body-lg text-body-lg font-bold text-on-surface">${g.nombre} <span class="text-secondary font-data-mono text-[12px]">(${g.centroIds.join(', ')})</span>${integrantes}</h3>
+            <h3 class="font-body-lg font-bold text-on-surface">${escapeHtml(nombreGrupo)} <span class="text-secondary font-data-mono text-[12px]">${subtituloGrupo}</span></h3>
             ${rows.length === 0 ? `
-            <button class="tt-add-types bg-primary hover:bg-[#930007] text-white font-bold px-md py-xs rounded flex items-center gap-xs text-[11px] uppercase" data-grupo="${g.grupo}">
-              <span class="material-symbols-outlined text-[16px]">add</span> Agregar tipo de camión
+            <button class="tt-add-types bg-primary hover:bg-[#930007] text-white font-bold px-md py-xs rounded flex items-center gap-xs text-[11px] uppercase" data-grupo="${escapeHtml(g.grupo)}">
+              <span class="material-symbols-outlined text-[16px]">add</span> Agregar tipos
             </button>` : ''}
           </div>
-          <div class="bg-surface border border-outline-variant overflow-hidden rounded">
-            <table class="w-full zebra-table border-collapse">
+          <div class="bg-surface border border-outline-variant overflow-x-auto rounded">
+            <table class="w-full border-collapse text-[12px]">
               <thead>
                 <tr class="bg-surface-container-high text-left border-b border-outline-variant">
-                  <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Tipo de Camión</th>
-                  <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Capacidad</th>
-                  <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-right">Km Base</th>
-                  <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-right">Costo Base</th>
-                  <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-right">Tarifa Base KM</th>
-                  ${tieneExtrema ? '<th class="p-md font-label-caps text-label-caps text-secondary uppercase text-right">Tarifa KM Extrema/Isla</th>' : ''}
-                  <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-right">Tarifa / KM Normal</th>
+                  <th class="p-md font-label-caps text-label-caps text-secondary uppercase whitespace-nowrap">Tipo Camión</th>
+                  <th class="p-md font-label-caps text-label-caps text-secondary uppercase whitespace-nowrap text-right">Cap.</th>
+                  <th class="p-md font-label-caps text-label-caps text-secondary uppercase whitespace-nowrap text-right">a. KM Base</th>
+                  <th class="p-md font-label-caps text-label-caps text-secondary uppercase whitespace-nowrap text-right">b. Costo Base</th>
+                  <th class="p-md font-label-caps text-label-caps text-secondary uppercase whitespace-nowrap text-right">c. T. Base KM</th>
+                  <th class="p-md font-label-caps text-label-caps text-secondary uppercase whitespace-nowrap text-right bg-blue-50">d. Normal Pond.</th>
+                  <th class="p-md font-label-caps text-label-caps text-secondary uppercase whitespace-nowrap text-right bg-blue-50">e. Normal Prom.</th>
+                  ${tieneEsp ? `
+                  <th class="p-md font-label-caps text-label-caps text-secondary uppercase whitespace-nowrap text-right bg-amber-50">f. Esp. Pond.</th>
+                  <th class="p-md font-label-caps text-label-caps text-secondary uppercase whitespace-nowrap text-right bg-amber-50">g. Esp. Prom.</th>` : ''}
+                  <th class="p-md font-label-caps text-label-caps text-secondary uppercase whitespace-nowrap text-right bg-green-50">h. Ajust. Normal</th>
+                  ${tieneEsp ? `<th class="p-md font-label-caps text-label-caps text-secondary uppercase whitespace-nowrap text-right bg-green-50">i. Ajust. Especial</th>` : ''}
                 </tr>
               </thead>
               <tbody class="font-body-md text-body-md">
-                ${rows.length === 0 ? `<tr><td colspan="${colCount}" class="p-md text-center text-secondary">Sin tipos de camión configurados para este centro. Use "Agregar tipo de camión" para crear los 4 tipos estándar (5/10/15/28 Ton).</td></tr>` :
-                  rows.map(t => `
-                  <tr class="border-b border-outline-variant">
-                    <td class="p-md font-bold">${t.type}</td>
-                    <td class="p-md">${t.capacityTons}</td>
-                    <td class="p-md w-28">${truckNumInput(t.id, 'Kmbase', t.Kmbase)}</td>
-                    <td class="p-md w-32">${truckNumInput(t.id, 'baseKM', t.baseKM)}</td>
-                    <td class="p-md w-32">${truckNumInput(t.id, 'baseRate', t.baseRate)}</td>
-                    ${tieneExtrema ? `<td class="p-md w-28 text-right font-data-mono">${formatCLP(t.ratePerKmExtrema || 0)}</td>` : ''}
-                    <td class="p-md w-28 text-right font-data-mono">${formatCLP(t.ratePerKm)}${conZcap.has(t.id) ? '' : `<div class="text-[11px] text-secondary normal-case">Sin rutas activas</div>`}</td>
-                  </tr>`).join('')}
+                ${rows.length === 0
+                  ? `<tr><td colspan="${colCount}" class="p-md text-center text-secondary">Sin tipos de camión. Use "Agregar tipos" para crear los 4 estándar (5/10/15/28 Ton).</td></tr>`
+                  : rows.map(t => {
+                    const hasZcap = conZcap.has(t.id);
+                    const pondN   = t.ratePerKmPond    || 0;
+                    const promN   = t.ratePerKmProm    || 0;
+                    const pondE   = t.ratePerKmExtrPond || 0;
+                    const promE   = t.ratePerKmExtrProm || 0;
+                    const ajN     = t.rateAjustNorm    ?? pondN;
+                    const ajE     = t.rateAjustEsp     ?? pondE;
+                    const noData  = !hasZcap ? '<div class="text-[10px] text-secondary">Sin rutas</div>' : '';
+                    return `
+                    <tr class="border-b border-outline-variant">
+                      <td class="p-md font-bold whitespace-nowrap">${t.type}</td>
+                      <td class="p-md text-right text-secondary">${t.capacityTons}</td>
+                      <td class="p-md w-24">${truckNumInput(t.id, 'Kmbase',   t.Kmbase)}</td>
+                      <td class="p-md w-28">${truckNumInput(t.id, 'baseKM',   t.baseKM)}</td>
+                      <td class="p-md w-28">${truckNumInput(t.id, 'baseRate', t.baseRate)}</td>
+                      <td class="p-md text-right font-data-mono bg-blue-50">${hasZcap ? formatCLP(pondN) : '—'}${noData}</td>
+                      <td class="p-md text-right font-data-mono bg-blue-50">${hasZcap ? formatCLP(promN) : '—'}</td>
+                      ${tieneEsp ? `
+                      <td class="p-md text-right font-data-mono bg-amber-50">${pondE > 0 ? formatCLP(pondE) : '—'}</td>
+                      <td class="p-md text-right font-data-mono bg-amber-50">${promE > 0 ? formatCLP(promE) : '—'}</td>` : ''}
+                      <td class="p-md w-28 bg-green-50">${truckNumInput(t.id, 'rateAjustNorm', ajN)}</td>
+                      ${tieneEsp ? `<td class="p-md w-28 bg-green-50">${truckNumInput(t.id, 'rateAjustEsp', ajE)}</td>` : ''}
+                    </tr>`;
+                  }).join('')}
               </tbody>
             </table>
+          </div>
+
+          <div class="flex gap-sm mt-xs text-[11px] text-secondary">
+            <span class="inline-flex items-center gap-1"><span class="w-3 h-3 bg-blue-50 border border-blue-200 inline-block rounded"></span> ZCAP calculado (solo lectura)</span>
+            <span class="inline-flex items-center gap-1"><span class="w-3 h-3 bg-amber-50 border border-amber-200 inline-block rounded"></span> Rutas extremas/isla</span>
+            <span class="inline-flex items-center gap-1"><span class="w-3 h-3 bg-green-50 border border-green-200 inline-block rounded"></span> Editable — tarifa oficial</span>
           </div>
         </div>`;
       }).join('')}
@@ -2200,24 +2282,24 @@ function renderTarifasCamion(content, db, cfg) {
 
   content.querySelectorAll('[data-truck-id]').forEach(inp => {
     inp.addEventListener('change', (e) => {
-      const id = e.target.dataset.truckId;
+      const id    = e.target.dataset.truckId;
       const field = e.target.dataset.truckField;
-      const val = e.target.value === '' ? 0 : Number(e.target.value);
-      const row = (db.truckTypes || []).find(t => t.id === id);
+      const val   = e.target.value === '' ? 0 : Number(e.target.value);
+      const row   = (db.truckTypes || []).find(t => t.id === id);
       if (row) row[field] = val;
       saveDatabase(db);
       if (field === 'Kmbase') renderTarifasCamion(content, db, cfg);
     });
   });
 
-  document.getElementById('tt-f-centro').addEventListener('change', (e) => {
+  document.getElementById('tt-f-centro')?.addEventListener('change', (e) => {
     tarifaCentroFiltro = e.target.value;
     renderTarifasCamion(content, db, cfg);
   });
 
   content.querySelectorAll('.tt-add-types').forEach(btn => {
     btn.addEventListener('click', () => {
-      const grupo = getOrigenGroups(db).find(g => g.grupo === btn.dataset.grupo);
+      const grupo  = getOrigenGroups(db).find(g => g.grupo === btn.dataset.grupo);
       if (!grupo) return;
       const centro = (db.logisticsCentres || []).find(c => c.id === grupo.repId);
       if (!centro) return;
