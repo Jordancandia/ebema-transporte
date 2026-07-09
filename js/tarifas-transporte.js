@@ -1,7 +1,7 @@
 // PANTALLA 1: Administrador de Tarifas Transporte — SIT EBEMA
 // Sub-módulos: Peajes, Combustibles y Rendimientos, Seguros y Permisos,
 // Variables Generales y Motor de Costo (ZCAP) con exportación CSV.
-import { getDatabase, saveDatabase, getCentreName, getTariffConfig, getClientTariffConfig, truckCapKg, getOrigenGroups, getGroupRepId, buildTruckTypes, TRUCK_BASE_TYPES } from './data.js?v=20260709b';
+import { getDatabase, saveDatabase, getCentreName, getTariffConfig, getClientTariffConfig, truckCapKg, getOrigenGroups, getGroupRepId, buildTruckTypes, TRUCK_BASE_TYPES, loadHistorico } from './data.js?v=20260709b';
 import { CAP_LIST, truckTypesWithCap, calcularMatrizCostos } from './tarifas-engine.js?v=20260709b';
 import { formatCLP, parseCSV, showAlert, toCSV, downloadFile, escapeHtml } from './utils.js';
 import { supabase } from './supabase-client.js';
@@ -2698,278 +2698,103 @@ function renderSeguros(content, db, cfg) {
 // SUB-MÓDULO 4a: PARTICIPACIÓN RUTAS
 // ============================================================
 function renderParticipacion(content, db, cfg) {
-  const histData = getClientTariffConfig(db).historico || [];
-  console.log('[PARTICIPACION] histData.length =', histData.length);
-  if (histData.length === 0) {
-    // Sin histórico: mostrar participación guardada si existe
-    const partGuardada = cfg.participacionRutas || {};
-    const clavesPart = Object.keys(partGuardada).filter(k => !k.startsWith('r1')); // solo códigos, no UUIDs
-    if (clavesPart.length === 0) {
-      content.innerHTML = `
-        <div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm">
-          <div class="flex items-center gap-sm mb-md">
-            <span class="material-symbols-outlined text-primary">donut_large</span>
-            <h2 class="font-headline-sm text-headline-sm font-bold text-on-surface">Participación Rutas</h2>
-          </div>
-          <p class="text-secondary">No hay datos históricos cargados. Diríjase a <b>Tarifas Clientes → Histórico</b> para cargar el archivo CSV de 6 meses.</p>
-        </div>`;
-      return;
-    }
-    // Mostrar participación guardada agrupada por ruta
-    const routes = db.routes || [];
-    const grupos = getOrigenGroups(db);
-    const allGroups = getOrigenGroups(db);
+  // ── Estado local ─────────────────────────────────────────────────────────
+  let partCentrosSelec = new Set();  // grupos seleccionados (vacío = ninguno)
+  let histDataLocal = getClientTariffConfig(db).historico || [];
 
-    // Detectar STGO y SB por IDs de centro
-    const stgoObj = allGroups.find(g => g.centroIds.some(id => ['1001','1002','1003'].includes(String(id))));
-    const sbObj   = allGroups.find(g => g.centroIds.some(id => ['1005'].includes(String(id))));
-    const hayStgoSb = !!(stgoObj && sbObj);
+  // ── Helpers de rutas/grupos ───────────────────────────────────────────────
+  const routes  = (db.routes || []).filter(r => r.activo);
+  const grupos  = getOrigenGroups(db);
 
-    const centros = [...new Set(allGroups.map(g => g.grupo))].sort();
-    let fallbackFiltroCentro = '';
-
-    const rowsPart = clavesPart.map(k => {
-      const e = partGuardada[k];
-      const ruta = routes.find(r => r.codigo === k || r.id === k);
-      return { codigo: k, ruta, pct: e.pct, caracteristica: e.caracteristica, grupo: ruta?.origen_grupo || '—', destino: ruta?.destino || '', zona: ruta?.id_zona_transporte || '' };
-    }).sort((a, b) => b.pct - a.pct);
-
-    // Igualar participación STGO ↔ SB:
-    // Para cada destino/zona en STGO, encontrar la ruta correspondiente en SB y asignarle el mismo %.
-    function igualarStgoSb() {
-      if (!hayStgoSb) return 0;
-      const stgoRows = rowsPart.filter(r => r.grupo === stgoObj.grupo);
-      const sbRows   = rowsPart.filter(r => r.grupo === sbObj.grupo);
-      let cambios = 0;
-
-      stgoRows.forEach(sr => {
-        // Buscar ruta equivalente en SB por zona o destino
-        const match = sbRows.find(sbr =>
-          (sr.zona && sbr.zona && sr.zona === sbr.zona) ||
-          (sr.destino && sbr.destino && sr.destino.trim().toUpperCase() === sbr.destino.trim().toUpperCase())
-        );
-        if (match && match.pct !== sr.pct) {
-          // Copiar % de STGO a SB
-          const entry = { pct: sr.pct, peso: sr.pct / 100, cluster: sr.pct >= 30 ? 1 : sr.pct >= 10 ? 2 : 3, caracteristica: match.caracteristica };
-          cfg.participacionRutas[match.codigo] = entry;
-          if (match.ruta?.id && match.ruta.id !== match.codigo) cfg.participacionRutas[match.ruta.id] = entry;
-          match.pct = sr.pct;
-          cambios++;
-        }
-        // También buscar rutas SB sin equivalente STGO (mismo destino, agregar con mismo %)
-      });
-
-      // Rutas SB sin match en STGO: buscar si hay en STGO mismo destino
-      sbRows.forEach(sbr => {
-        const match = stgoRows.find(sr =>
-          (sr.zona && sbr.zona && sr.zona === sbr.zona) ||
-          (sr.destino && sbr.destino && sr.destino.trim().toUpperCase() === sbr.destino.trim().toUpperCase())
-        );
-        if (match && sbr.pct !== match.pct) {
-          const entry = { pct: match.pct, peso: match.pct / 100, cluster: match.pct >= 30 ? 1 : match.pct >= 10 ? 2 : 3, caracteristica: sbr.caracteristica };
-          cfg.participacionRutas[sbr.codigo] = entry;
-          if (sbr.ruta?.id && sbr.ruta.id !== sbr.codigo) cfg.participacionRutas[sbr.ruta.id] = entry;
-          sbr.pct = match.pct;
-          cambios++;
-        }
-      });
-
-      if (cambios > 0) saveDatabase(db);
-      return cambios;
-    }
-
-    function renderFallback(filtroCentro) {
-      const rowsFiltradas = filtroCentro ? rowsPart.filter(r => r.grupo === filtroCentro) : rowsPart;
-      const porCentro = {};
-      rowsFiltradas.forEach(r => { (porCentro[r.grupo] = porCentro[r.grupo] || []).push(r); });
-
-      content.innerHTML = `
-        <div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm">
-          <div class="flex items-center justify-between mb-md border-b border-outline-variant pb-sm">
-            <div class="flex items-center gap-sm">
-              <span class="material-symbols-outlined text-primary">donut_large</span>
-              <h2 class="font-headline-sm text-headline-sm font-bold text-on-surface">Participación Rutas (datos guardados)</h2>
-            </div>
-            ${hayStgoSb ? `
-            <button id="part-igualar-stgosb" class="bg-primary hover:bg-[#930007] text-white font-bold px-md py-sm rounded flex items-center gap-xs text-[12px] uppercase">
-              <span class="material-symbols-outlined text-[18px]">sync</span>
-              Igualar ${escapeHtml(stgoObj.nombre)} ↔ ${escapeHtml(sbObj.nombre)}
-            </button>` : ''}
-          </div>
-          <div class="bg-amber-50 border border-amber-200 text-amber-800 text-[12px] p-sm rounded mb-md">
-            Mostrando participación guardada. ${hayStgoSb ? `Use <b>"Igualar ${escapeHtml(stgoObj.nombre)} ↔ ${escapeHtml(sbObj.nombre)}"</b> para sincronizar ambos centros con el mismo porcentaje por destino.` : 'Para recalcular, cargue el CSV histórico en <b>Tarifas Clientes → Histórico</b>.'}
-          </div>
-          <div class="flex gap-sm items-end mb-md">
-            <div>
-              <label class="font-label-caps text-label-caps text-secondary block mb-xs">CENTRO ORIGEN</label>
-              <select id="part-fb-centro" class="border border-[#CED4DA] p-sm font-body-md text-body-md bg-white w-56">
-                <option value="">Todos los centros</option>
-                ${centros.map(c => {
-                  const g = allGroups.find(go => go.grupo === c);
-                  return `<option value="${escapeHtml(c)}" ${c === filtroCentro ? 'selected' : ''}>${escapeHtml(g?.nombre || c)}</option>`;
-                }).join('')}
-              </select>
-            </div>
-          </div>
-          ${Object.entries(porCentro).map(([grupo, filas]) => {
-            const gNombre = allGroups.find(g => g.grupo === grupo)?.nombre || grupo;
-            return `<div class="mb-lg">
-              <h3 class="font-body-lg font-bold mb-xs">${escapeHtml(gNombre)}</h3>
-              <div class="bg-surface border border-outline-variant overflow-x-auto rounded">
-                <table class="w-full zebra-table border-collapse">
-                  <thead><tr class="bg-surface-container-high border-b border-outline-variant">
-                    <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Destino</th>
-                    <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Caract.</th>
-                    <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-right">PESO %</th>
-                  </tr></thead>
-                  <tbody class="font-body-md text-body-md">
-                    ${filas.map(r => `<tr class="border-b border-outline-variant">
-                      <td class="p-md">${escapeHtml(r.destino)}</td>
-                      <td class="p-md">${escapeHtml(r.caracteristica || 'NORMAL')}</td>
-                      <td class="p-md text-right font-data-mono font-bold">${r.pct}%</td>
-                    </tr>`).join('')}
-                  </tbody>
-                </table>
-              </div>
-            </div>`;
-          }).join('')}
-        </div>`;
-
-      document.getElementById('part-fb-centro')?.addEventListener('change', e => {
-        fallbackFiltroCentro = e.target.value;
-        renderFallback(fallbackFiltroCentro);
-      });
-
-      document.getElementById('part-igualar-stgosb')?.addEventListener('click', () => {
-        const n = igualarStgoSb();
-        if (n > 0) {
-          showAlert(`✓ ${n} destino(s) sincronizado(s): ${sbObj.nombre} ahora tiene el mismo % que ${stgoObj.nombre}.`);
-          renderFallback(fallbackFiltroCentro);
-        } else {
-          showAlert('Los centros ya tienen la misma participación por destino.');
-        }
-      });
-    }
-
-    renderFallback(fallbackFiltroCentro);
-    return;
-  }
-
-  const routes = (db.routes || []).filter(r => r.activo);
-  const grupos = getOrigenGroups(db);
-
-  // ── Índice de rutas ───────────────────────────────────────────────────────
   const routeByIdP = new Map();
   routes.forEach(r => {
     if (r.id)     routeByIdP.set(r.id, r);
     if (r.codigo) routeByIdP.set(r.codigo, r);
   });
 
-  // ── Detectar STGO y SAN BERNARDO por ID de centro (robusto) ─────────────
   const STGO_IDS = ['1001','1002','1003'];
   const SB_IDS   = ['1005'];
   const stgoGrupoObj = grupos.find(g => g.centroIds.some(id => STGO_IDS.includes(String(id))));
   const sbGrupoObj   = grupos.find(g => g.centroIds.some(id => SB_IDS.includes(String(id))));
   const STGO_SB_GRUPOS = [stgoGrupoObj?.grupo, sbGrupoObj?.grupo].filter(Boolean);
-  const tieneStgoSb = !!(stgoGrupoObj && sbGrupoObj && stgoGrupoObj.grupo !== sbGrupoObj.grupo);
+  const tieneStgoSb    = !!(stgoGrupoObj && sbGrupoObj && stgoGrupoObj.grupo !== sbGrupoObj.grupo);
 
-  // ── Grupos disponibles en el histórico (via ruta.origen_grupo directo) ───
-  const centrosEnHistorico = new Set();
-  histData.forEach(h => {
-    const ruta = routeByIdP.get(h.idRuta);
-    if (ruta?.origen_grupo) centrosEnHistorico.add(ruta.origen_grupo);
-  });
-  // Si histData no tiene rutas mapeables, caer a todos los grupos de la BD
-  const centros = centrosEnHistorico.size > 0
-    ? [...centrosEnHistorico].sort()
-    : grupos.map(g => g.grupo);
-
-  // Dropdown: mostrar TODOS los centros separados (STGO y SB aparecen individualmente)
-  const centrosDropdown = centros;
+  const zonasByIdP = new Map((db.transportZones || []).map(z => [z.zona, z]));
 
   function labelCentro(c) {
     const g = grupos.find(go => go.grupo === c);
     return g?.nombre || String(c).replace(/_/g, ' ');
   }
 
-  let participacionFiltroCentro = centrosDropdown[0] || '';
+  function centrosDropdownList() {
+    const enHist = new Set();
+    histDataLocal.forEach(h => {
+      const ruta = routeByIdP.get(h.idRuta);
+      if (ruta?.origen_grupo) enHist.add(ruta.origen_grupo);
+    });
+    return enHist.size > 0 ? [...enHist].sort() : grupos.map(g => g.grupo);
+  }
 
-  // ── Mapa de zonas para rollup Sector → COMUNA ────────────────────────────
-  const zonasByIdP = new Map((db.transportZones || []).map(z => [z.zona, z]));
+  function partCentrosLabel() {
+    if (partCentrosSelec.size === 0) return 'Seleccione centro(s)';
+    if (partCentrosSelec.size === 1) return labelCentro([...partCentrosSelec][0]);
+    return `${partCentrosSelec.size} centros`;
+  }
 
-  function calcParticipacion(grupoInput) {
-    // Detectar si el grupo seleccionado pertenece al conjunto STGO/SB por centroIds
-    // (robusto ante diferencias de mayúsculas o nombres exactos en la BD)
-    const selObj = grupos.find(g => g.grupo === grupoInput);
-    const selIds  = (selObj?.centroIds || []).map(String);
-    const TODOS_STGOSB_IDS = ['1001','1002','1003','1005'];
-    const esStgoSb = tieneStgoSb && selIds.some(id => TODOS_STGOSB_IDS.includes(id));
-    const grupos_calc = esStgoSb ? STGO_SB_GRUPOS : [grupoInput];
+  // ── Cálculo de participación ──────────────────────────────────────────────
+  function calcParticipacion(gruposCalc) {
+    // gruposCalc: array de origen_grupo a combinar
+    // Si alguno es STGO o SB, combinamos ambos automáticamente
+    const expanded = new Set(gruposCalc);
+    const selIds = gruposCalc.flatMap(gn => {
+      const gObj = grupos.find(go => go.grupo === gn);
+      return (gObj?.centroIds || []).map(String);
+    });
+    const TODOS_IDS = [...STGO_IDS, ...SB_IDS];
+    if (tieneStgoSb && selIds.some(id => TODOS_IDS.includes(id))) {
+      STGO_SB_GRUPOS.forEach(g => expanded.add(g));
+    }
 
-    console.log('[PARTICIPACION] grupo seleccionado:', grupoInput,
-      '| esStgoSb:', esStgoSb,
-      '| grupos_calc:', grupos_calc,
-      '| STGO_SB_GRUPOS:', STGO_SB_GRUPOS,
-      '| tieneStgoSb:', tieneStgoSb);
-
-    // IDs de centros involucrados
     const grupoCentroIds = new Set();
-    grupos_calc.forEach(gn => {
+    [...expanded].forEach(gn => {
       const gObj = grupos.find(go => go.grupo === gn);
       if (gObj) gObj.centroIds.forEach(id => grupoCentroIds.add(String(id)));
     });
 
-    // Filtrar histData directamente por ruta.origen_grupo
-    const grupoRows = histData.filter(h => {
+    const grupoRows = histDataLocal.filter(h => {
       const ruta = routeByIdP.get(h.idRuta);
       if (!ruta) return false;
-      return grupos_calc.includes(ruta.origen_grupo) ||
-             grupoCentroIds.has(String(ruta.origenId));
+      return expanded.has(ruta.origen_grupo) || grupoCentroIds.has(String(ruta.origenId));
     });
     if (!grupoRows.length) return [];
 
-    // Paso 1: Acumular toneladas por destino.
-    // Clave = id_zona_transporte ?? destino.toUpperCase()
-    // Esto fusiona las rutas de STGO y SB que van al mismo lugar.
+    // Acumular toneladas por destino (id_zona_transporte como clave primaria)
     const rawMap = new Map();
     grupoRows.forEach(h => {
       const ruta = routeByIdP.get(h.idRuta);
       if (!ruta || ruta.clasificRuta !== 'Regional') return;
-
-      const zonaKey    = ruta.id_zona_transporte;
-      const destinoKey = (ruta.destino || ruta.nombre || '').trim().toUpperCase();
-      const mapKey     = zonaKey || destinoKey || h.idRuta;
-
+      const mapKey = ruta.id_zona_transporte || (ruta.destino || '').trim().toUpperCase() || h.idRuta;
       if (!rawMap.has(mapKey)) {
         rawMap.set(mapKey, { mapKey, ruta, clientes: new Set(), obras: new Set(), ton: 0 });
       }
       const e = rawMap.get(mapKey);
-      // Preferir la ruta de STGO como representativa (datos maestros)
-      if (stgoGrupoObj && ruta.origen_grupo === stgoGrupoObj.grupo && e.ruta.origen_grupo !== stgoGrupoObj.grupo) {
-        e.ruta = ruta;
-      }
+      if (stgoGrupoObj && ruta.origen_grupo === stgoGrupoObj.grupo && e.ruta.origen_grupo !== stgoGrupoObj.grupo) e.ruta = ruta;
       if (h.idCliente && h.idCliente !== '-') e.clientes.add(h.idCliente);
       if (h.idObra    && h.idObra    !== '-') e.obras.add(h.idObra);
       e.ton += h.ton;
     });
 
-    // Paso 2: mapa zonaId → mapKey (para rollup Sector → COMUNA)
+    // Rollup Sector → COMUNA
     const comunaZonaToKey = new Map();
     rawMap.forEach((e, key) => {
-      if ((e.ruta.tipo || '').toUpperCase() === 'COMUNA' && e.ruta.id_zona_transporte) {
+      if ((e.ruta.tipo || '').toUpperCase() === 'COMUNA' && e.ruta.id_zona_transporte)
         comunaZonaToKey.set(e.ruta.id_zona_transporte, key);
-      }
     });
-
-    // Paso 3: routeMap solo con COMUNA
     const routeMap = new Map();
     rawMap.forEach((e, key) => {
-      if ((e.ruta.tipo || '').toUpperCase() === 'COMUNA') {
+      if ((e.ruta.tipo || '').toUpperCase() === 'COMUNA')
         routeMap.set(key, { mapKey: key, ruta: e.ruta, clientes: new Set(e.clientes), obras: new Set(e.obras), ton: e.ton });
-      }
     });
-
-    // Paso 4: rollup Sector → COMUNA padre
     rawMap.forEach(e => {
       if ((e.ruta.tipo || '').toLowerCase() !== 'sector') return;
       const zone = zonasByIdP.get(e.ruta.id_zona_transporte);
@@ -2983,7 +2808,7 @@ function renderParticipacion(content, db, cfg) {
       e.obras.forEach(o => parent.obras.add(o));
     });
 
-    // Paso 5: PESO — denominador = total combinado STGO+SB por categoría
+    // PESO por categoría (denominador = total combinado)
     const catTon = {};
     routeMap.forEach(e => {
       const cat = (e.ruta.caracteristica || 'NORMAL').toUpperCase();
@@ -2991,36 +2816,90 @@ function renderParticipacion(content, db, cfg) {
     });
 
     return [...routeMap.values()]
-      .map(e => {
-        const cat = (e.ruta.caracteristica || 'NORMAL').toUpperCase();
-        return {
-          rutaId:         e.ruta?.id     || e.mapKey,
-          rutaCodigo:     e.ruta?.codigo || e.mapKey,
-          ruta:           e.ruta,
-          clientes:       e.clientes.size,
-          obras:          e.obras.size,
-          toneladas:      e.ton,
-          peso:           e.ton / (catTon[cat] || 1),
-          caracteristica: e.ruta?.caracteristica || 'NORMAL'
-        };
-      })
+      .map(e => ({
+        rutaId:         e.ruta?.id     || e.mapKey,
+        rutaCodigo:     e.ruta?.codigo || e.mapKey,
+        ruta:           e.ruta,
+        clientes:       e.clientes.size,
+        obras:          e.obras.size,
+        toneladas:      e.ton,
+        peso:           e.ton / (catTon[(e.ruta?.caracteristica || 'NORMAL').toUpperCase()] || 1),
+        caracteristica: e.ruta?.caracteristica || 'NORMAL'
+      }))
       .sort((a, b) => b.toneladas - a.toneladas);
   }
+
+  // ── Botón sincronizar histórico ──────────────────────────────────────────
+  function syncBtn() {
+    return `<button id="part-sync-hist" class="border border-primary text-primary hover:bg-primary hover:text-white font-bold px-md py-sm rounded flex items-center gap-xs text-[12px] uppercase transition-colors">
+      <span class="material-symbols-outlined text-[18px]">refresh</span>
+      Actualizar Histórico
+    </button>`;
+  }
+
+  function bindSyncBtn() {
+    document.getElementById('part-sync-hist')?.addEventListener('click', async () => {
+      const btn = document.getElementById('part-sync-hist');
+      if (btn) { btn.disabled = true; btn.textContent = 'Cargando...'; }
+      try {
+        const fresh = await loadHistorico();
+        if (fresh && fresh.length > 0) {
+          histDataLocal = fresh;
+          getClientTariffConfig(db).historico = fresh;
+          showAlert(`✓ Histórico actualizado: ${fresh.length} registros.`);
+          render();
+        } else {
+          showAlert('No hay datos históricos en caché. Cargue el CSV en Tarifas Clientes → Histórico.', 'error');
+          if (btn) { btn.disabled = false; btn.innerHTML = '<span class="material-symbols-outlined text-[18px]">refresh</span> Actualizar Histórico'; }
+        }
+      } catch (err) {
+        showAlert('Error al cargar histórico: ' + err.message, 'error');
+        if (btn) { btn.disabled = false; btn.innerHTML = '<span class="material-symbols-outlined text-[18px]">refresh</span> Actualizar Histórico'; }
+      }
+    });
+  }
+
+  // ── Dropdown multi-select helpers ─────────────────────────────────────────
+  function bindCentroDropdown() {
+    const centroBtnEl   = document.getElementById('part-centro-btn');
+    const centroPanelEl = document.getElementById('part-centro-panel');
+    centroBtnEl?.addEventListener('click', e => { e.stopPropagation(); centroPanelEl?.classList.toggle('hidden'); });
+    const closePanel = () => centroPanelEl?.classList.add('hidden');
+    document.addEventListener('click', closePanel, { once: true });
+    content.querySelectorAll('.part-c-item').forEach(cb => {
+      cb.addEventListener('change', () => {
+        partCentrosSelec.clear();
+        content.querySelectorAll('.part-c-item:checked').forEach(c => partCentrosSelec.add(c.value));
+        document.getElementById('part-centro-label').textContent = partCentrosLabel();
+        render();
+      });
+    });
+  }
+
+  // ── Render principal ──────────────────────────────────────────────────────
   function render() {
-    const results = partCentrosSelec.size > 0 ? calcParticipacionMulti(partCentrosSelec) : [];
+    const centros = centrosDropdownList();
+    const hasHist = histDataLocal.length > 0;
+    const results = (hasHist && partCentrosSelec.size > 0)
+      ? calcParticipacion([...partCentrosSelec])
+      : [];
 
     content.innerHTML = `
       <div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm">
-        <div class="flex items-center gap-sm mb-md border-b border-outline-variant pb-sm">
-          <span class="material-symbols-outlined text-primary">donut_large</span>
-          <h2 class="font-headline-sm text-headline-sm font-bold text-on-surface">Participación Rutas</h2>
+        <div class="flex items-center justify-between mb-md border-b border-outline-variant pb-sm flex-wrap gap-sm">
+          <div class="flex items-center gap-sm">
+            <span class="material-symbols-outlined text-primary">donut_large</span>
+            <h2 class="font-headline-sm text-headline-sm font-bold text-on-surface">Participación Rutas</h2>
+          </div>
+          ${syncBtn()}
         </div>
-        <p class="text-[12px] text-secondary mb-md">
-          Ranking de rutas Regionales por toneladas. SANTIAGO y SAN BERNARDO siempre se calculan en conjunto
-          (mismos destinos, % sobre total combinado). Puedes seleccionar uno o varios centros.
-        </p>
 
-        <div class="flex gap-sm items-end mb-md">
+        ${!hasHist ? `<div class="bg-amber-50 border border-amber-200 text-amber-800 text-[12px] p-sm rounded mb-md">
+          Sin datos históricos en caché. Presione <b>Actualizar Histórico</b> o cargue el CSV en
+          <b>Tarifas Clientes → Histórico</b>.
+        </div>` : ''}
+
+        <div class="flex gap-sm items-end mb-md flex-wrap">
           <div class="relative">
             <label class="font-label-caps text-label-caps text-secondary block mb-xs">CENTRO ORIGEN</label>
             <button id="part-centro-btn" class="border border-[#CED4DA] px-sm py-[9px] bg-white text-left w-64 font-body-md text-body-md flex justify-between items-center gap-sm">
@@ -3028,7 +2907,7 @@ function renderParticipacion(content, db, cfg) {
               <span class="material-symbols-outlined text-[18px] text-secondary flex-shrink-0">expand_more</span>
             </button>
             <div id="part-centro-panel" class="hidden absolute z-50 bg-white border border-[#CED4DA] shadow-lg w-72 max-h-72 overflow-y-auto mt-1">
-              ${centrosDropdown.map(c => `
+              ${centros.map(c => `
               <label class="flex items-center gap-sm p-sm hover:bg-surface-container-high cursor-pointer border-b border-outline-variant last:border-0">
                 <input type="checkbox" class="part-c-item" value="${escapeHtml(c)}" ${partCentrosSelec.has(c) ? 'checked' : ''}>
                 <span class="font-body-md text-body-md">${escapeHtml(labelCentro(c))}</span>
@@ -3054,24 +2933,22 @@ function renderParticipacion(content, db, cfg) {
             </thead>
             <tbody class="font-body-md text-body-md">
               ${results.map((r, idx) => {
-                const maxTon = results[0].toneladas || 1;
-                const barWidth = Math.min(100, (r.toneladas / maxTon) * 100);
+                const barWidth = Math.min(100, (r.toneladas / (results[0].toneladas || 1)) * 100);
                 const badgeCls = r.caracteristica === 'NORMAL'
                   ? 'bg-surface-container-high text-secondary border border-outline-variant'
                   : r.caracteristica === 'ISLA' ? 'bg-blue-100 text-blue-800 border border-blue-300'
                   : 'bg-amber-100 text-amber-800 border border-amber-300';
-                const pesoPct = (r.peso * 100).toFixed(2);
                 return `<tr class="border-b border-outline-variant">
                   <td class="p-md text-right text-secondary font-data-mono text-data-mono">${idx + 1}</td>
                   <td class="p-md">${escapeHtml(r.ruta?.destino || '')}</td>
                   <td class="p-md"><span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold ${badgeCls}">${r.caracteristica}</span></td>
                   <td class="p-md text-right">${r.clientes}</td>
                   <td class="p-md text-right">${r.obras}</td>
-                  <td class="p-md text-right font-data-mono text-data-mono">${r.toneladas.toLocaleString('es-CL', { maximumFractionDigits: 1 })}</td>
-                  <td class="p-md text-right font-bold font-data-mono text-data-mono">${pesoPct}%</td>
+                  <td class="p-md text-right font-data-mono text-data-mono">${r.toneladas.toLocaleString('es-CL',{maximumFractionDigits:1})}</td>
+                  <td class="p-md text-right font-bold font-data-mono text-data-mono">${(r.peso*100).toFixed(2)}%</td>
                   <td class="p-md">
                     <div class="w-24 h-2.5 bg-surface-container-high rounded-full overflow-hidden">
-                      <div class="h-full rounded-full bg-primary" style="width: ${barWidth}%"></div>
+                      <div class="h-full rounded-full bg-primary" style="width:${barWidth}%"></div>
                     </div>
                   </td>
                 </tr>`;
@@ -3079,14 +2956,13 @@ function renderParticipacion(content, db, cfg) {
             </tbody>
             <tfoot>
               ${(() => {
-                const cats = [...new Set(results.map(r => (r.caracteristica || 'NORMAL').toUpperCase()))].sort();
+                const cats = [...new Set(results.map(r => (r.caracteristica||'NORMAL').toUpperCase()))].sort();
                 return cats.map(cat => {
-                  const catRows = results.filter(r => (r.caracteristica || 'NORMAL').toUpperCase() === cat);
-                  const catTon  = catRows.reduce((s, r) => s + r.toneladas, 0);
+                  const catTon = results.filter(r=>(r.caracteristica||'NORMAL').toUpperCase()===cat).reduce((s,r)=>s+r.toneladas,0);
                   return `<tr class="bg-surface-container-high border-t border-outline-variant">
                     <td colspan="5" class="p-md font-bold text-right">Subtotal ${cat}</td>
-                    <td class="p-md font-bold font-data-mono text-data-mono text-right">${catTon.toLocaleString('es-CL', { maximumFractionDigits: 1 })} ton</td>
-                    <td class="p-md font-bold font-data-mono text-data-mono text-right">100%</td>
+                    <td class="p-md font-bold font-data-mono text-data-mono text-right">${catTon.toLocaleString('es-CL',{maximumFractionDigits:1})} ton</td>
+                    <td class="p-md font-bold text-right">100%</td>
                     <td></td>
                   </tr>`;
                 }).join('');
@@ -3099,49 +2975,31 @@ function renderParticipacion(content, db, cfg) {
             <span class="material-symbols-outlined text-[18px]">save</span> Guardar Participación
           </button>
         </div>
-        ` : '<p class="text-secondary mt-md">Seleccione al menos un centro para ver la participación de rutas.</p>'}
+        ` : `<p class="text-secondary mt-md">${
+          !hasHist
+            ? 'Presione <b>Actualizar Histórico</b> para cargar los datos.'
+            : 'Seleccione al menos un centro para calcular la participación.'
+        }</p>`}
       </div>
     `;
 
-    // Multi-select listeners
-    const centroBtnEl   = document.getElementById('part-centro-btn');
-    const centroPanelEl = document.getElementById('part-centro-panel');
-    centroBtnEl?.addEventListener('click', e => { e.stopPropagation(); centroPanelEl.classList.toggle('hidden'); });
-    document.addEventListener('click', () => centroPanelEl?.classList.add('hidden'), { once: true });
-    content.querySelectorAll('.part-c-item').forEach(cb => {
-      cb.addEventListener('change', () => {
-        partCentrosSelec.clear();
-        content.querySelectorAll('.part-c-item:checked').forEach(c => partCentrosSelec.add(c.value));
-        document.getElementById('part-centro-label').textContent = partCentrosLabel();
-        render();
-      });
-    });
+    bindSyncBtn();
+    bindCentroDropdown();
 
-    // Guardar participación
     const guardarBtn = document.getElementById('part-guardar');
     if (guardarBtn) {
       guardarBtn.addEventListener('click', () => {
-        if (!results || results.length === 0) {
-          showAlert('Seleccione al menos un centro para guardar la participación.', 'error'); return;
-        }
+        if (!results || results.length === 0) { showAlert('Seleccione al menos un centro para guardar la participación.', 'error'); return; }
         try {
           cfg.participacionRutas = cfg.participacionRutas || {};
           results.forEach(r => {
-            const entry = {
-              pct: Math.round(r.peso * 10000) / 100,
-              peso: r.peso,
-              cluster: r.peso >= 0.30 ? 1 : r.peso >= 0.10 ? 2 : 3,
-              caracteristica: r.caracteristica
-            };
+            const entry = { pct: Math.round(r.peso * 10000) / 100, peso: r.peso, cluster: r.peso >= 0.30 ? 1 : r.peso >= 0.10 ? 2 : 3, caracteristica: r.caracteristica };
             cfg.participacionRutas[r.rutaId] = entry;
-            if (r.rutaCodigo && r.rutaCodigo !== r.rutaId)
-              cfg.participacionRutas[r.rutaCodigo] = entry;
+            if (r.rutaCodigo && r.rutaCodigo !== r.rutaId) cfg.participacionRutas[r.rutaCodigo] = entry;
           });
           saveDatabase(db);
           showAlert(`✓ Participación guardada: ${results.length} ruta(s).`);
-        } catch(err) {
-          showAlert('Error al guardar: ' + err.message, 'error');
-        }
+        } catch(err) { showAlert('Error al guardar: ' + err.message, 'error'); }
       });
     }
   }
