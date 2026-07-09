@@ -2720,6 +2720,11 @@ function renderParticipacion(content, db, cfg) {
   const tieneStgoSb    = !!(stgoGrupoObj && sbGrupoObj && stgoGrupoObj.grupo !== sbGrupoObj.grupo);
 
   const zonasByIdP = new Map((db.transportZones || []).map(z => [z.zona, z]));
+  function zonaDenominacion(id_zona) {
+    if (!id_zona) return '';
+    const z = zonasByIdP.get(id_zona);
+    return z?.denominacion || id_zona;
+  }
 
   function labelCentro(c) {
     const g = grupos.find(go => go.grupo === c);
@@ -2727,12 +2732,8 @@ function renderParticipacion(content, db, cfg) {
   }
 
   function centrosDropdownList() {
-    const enHist = new Set();
-    histDataLocal.forEach(h => {
-      const ruta = routeByIdP.get(h.idRuta);
-      if (ruta?.origen_grupo) enHist.add(ruta.origen_grupo);
-    });
-    return enHist.size > 0 ? [...enHist].sort() : grupos.map(g => g.grupo);
+    // Siempre todos los grupos registrados en la BD
+    return grupos.map(g => g.grupo);
   }
 
   function partCentrosLabel() {
@@ -2773,8 +2774,8 @@ function renderParticipacion(content, db, cfg) {
     grupoRows.forEach(h => {
       const ruta = routeByIdP.get(h.idRuta);
       if (!ruta) return;
-      if (ruta.clasificRuta !== 'Regional') return;
-      if ((ruta.tipo || '').toUpperCase() !== 'COMUNA') return;
+      if ((ruta.clasificRuta || 'Regional').toLowerCase() !== 'regional') return;
+      if ((ruta.tipo || '').toLowerCase() !== 'comuna') return;
       const mapKey = ruta.id_zona_transporte || (ruta.destino || '').trim().toUpperCase() || h.idRuta;
       if (!routeMap.has(mapKey)) {
         routeMap.set(mapKey, { mapKey, ruta, clientes: new Set(), obras: new Set(), ton: 0 });
@@ -2802,7 +2803,8 @@ function renderParticipacion(content, db, cfg) {
         obras:          e.obras.size,
         toneladas:      e.ton,
         peso:           e.ton / (catTon[(e.ruta?.caracteristica || 'NORMAL').toUpperCase()] || 1),
-        caracteristica: e.ruta?.caracteristica || 'NORMAL'
+        caracteristica: e.ruta?.caracteristica || 'NORMAL',
+        zonaTransporte: zonaDenominacion(e.ruta?.id_zona_transporte)
       }))
       .sort((a, b) => b.toneladas - a.toneladas);
   }
@@ -2901,7 +2903,7 @@ function renderParticipacion(content, db, cfg) {
               <tr class="bg-surface-container-high text-left border-b border-outline-variant">
                 <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-right">#</th>
                 <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Destino</th>
-                <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Caract.</th>
+                <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Zona Transporte</th>
                 <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-right">Clientes</th>
                 <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-right">Obras</th>
                 <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-right">Toneladas</th>
@@ -2919,7 +2921,7 @@ function renderParticipacion(content, db, cfg) {
                 return `<tr class="border-b border-outline-variant">
                   <td class="p-md text-right text-secondary font-data-mono text-data-mono">${idx + 1}</td>
                   <td class="p-md">${escapeHtml(r.ruta?.destino || '')}</td>
-                  <td class="p-md"><span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold ${badgeCls}">${r.caracteristica}</span></td>
+                  <td class="p-md text-secondary">${escapeHtml(r.zonaTransporte)}</td>
                   <td class="p-md text-right">${r.clientes}</td>
                   <td class="p-md text-right">${r.obras}</td>
                   <td class="p-md text-right font-data-mono text-data-mono">${r.toneladas.toLocaleString('es-CL',{maximumFractionDigits:1})}</td>
