@@ -2768,44 +2768,22 @@ function renderParticipacion(content, db, cfg) {
     });
     if (!grupoRows.length) return [];
 
-    // Acumular toneladas por destino (id_zona_transporte como clave primaria)
-    const rawMap = new Map();
+    // Solo rutas Regional + COMUNA
+    const routeMap = new Map();
     grupoRows.forEach(h => {
       const ruta = routeByIdP.get(h.idRuta);
-      if (!ruta || ruta.clasificRuta !== 'Regional') return;
+      if (!ruta) return;
+      if (ruta.clasificRuta !== 'Regional') return;
+      if ((ruta.tipo || '').toUpperCase() !== 'COMUNA') return;
       const mapKey = ruta.id_zona_transporte || (ruta.destino || '').trim().toUpperCase() || h.idRuta;
-      if (!rawMap.has(mapKey)) {
-        rawMap.set(mapKey, { mapKey, ruta, clientes: new Set(), obras: new Set(), ton: 0 });
+      if (!routeMap.has(mapKey)) {
+        routeMap.set(mapKey, { mapKey, ruta, clientes: new Set(), obras: new Set(), ton: 0 });
       }
-      const e = rawMap.get(mapKey);
+      const e = routeMap.get(mapKey);
       if (stgoGrupoObj && ruta.origen_grupo === stgoGrupoObj.grupo && e.ruta.origen_grupo !== stgoGrupoObj.grupo) e.ruta = ruta;
       if (h.idCliente && h.idCliente !== '-') e.clientes.add(h.idCliente);
       if (h.idObra    && h.idObra    !== '-') e.obras.add(h.idObra);
       e.ton += h.ton;
-    });
-
-    // Rollup Sector → COMUNA
-    const comunaZonaToKey = new Map();
-    rawMap.forEach((e, key) => {
-      if ((e.ruta.tipo || '').toUpperCase() === 'COMUNA' && e.ruta.id_zona_transporte)
-        comunaZonaToKey.set(e.ruta.id_zona_transporte, key);
-    });
-    const routeMap = new Map();
-    rawMap.forEach((e, key) => {
-      if ((e.ruta.tipo || '').toUpperCase() === 'COMUNA')
-        routeMap.set(key, { mapKey: key, ruta: e.ruta, clientes: new Set(e.clientes), obras: new Set(e.obras), ton: e.ton });
-    });
-    rawMap.forEach(e => {
-      if ((e.ruta.tipo || '').toLowerCase() !== 'sector') return;
-      const zone = zonasByIdP.get(e.ruta.id_zona_transporte);
-      if (!zone?.comuna) return;
-      const parentKey = comunaZonaToKey.get(zone.comuna);
-      if (!parentKey) return;
-      const parent = routeMap.get(parentKey);
-      if (!parent) return;
-      parent.ton += e.ton;
-      e.clientes.forEach(c => parent.clientes.add(c));
-      e.obras.forEach(o => parent.obras.add(o));
     });
 
     // PESO por categoría (denominador = total combinado)
