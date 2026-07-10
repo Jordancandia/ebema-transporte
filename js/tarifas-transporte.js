@@ -2513,9 +2513,10 @@ function renderCombustibles(content, db, cfg) {
         delete cfg.combustibles[repId].cneMes;
         delete cfg.combustibles[repId].cneAnio;
       } else if (field === 'iva') {
-        // Solo actualizar ivaPct, no cambia fuente ni fecha
+        // IVA no puede ser 0; si se borra o pone 0, restaurar 19%
         const val = Number(input.value);
-        cfg.combustibles[repId].ivaPct = isNaN(val) ? 0 : val;
+        cfg.combustibles[repId].ivaPct = (!val || isNaN(val) || val <= 0) ? 19 : val;
+        input.value = cfg.combustibles[repId].ivaPct; // reflejar corrección en campo
       } else if (field === 'fecha') {
         cfg.combustibles[repId].fuente = 'manual';
       }
@@ -2557,6 +2558,8 @@ function renderCombustibles(content, db, cfg) {
         cfg.combustibles[g.repId].cneRegion   = entry.region;
         cfg.combustibles[g.repId].cneMes      = entry.mes;
         cfg.combustibles[g.repId].cneAnio     = entry.anio;
+        // Garantizar IVA siempre configurado
+        if (!cfg.combustibles[g.repId].ivaPct) cfg.combustibles[g.repId].ivaPct = 19;
         actualizados++;
       });
 

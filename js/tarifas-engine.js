@@ -63,8 +63,9 @@ export function calcularCostoRuta(db, cfg, ruta, capKg) {
   const rend = cfg.rendimientos[capKey] || { cargado: 1, vacio: 1 };
   const fuel = cfg.combustibles[cfgId] || {};
   const precioLitro = Number(fuel.precioLitro) || 0;
-  const ivaPct = fuel.ivaPct != null ? Number(fuel.ivaPct) : 19; // default 19% si no está configurado
-  const precioLitroNeto = ivaPct > 0 ? precioLitro / (1 + ivaPct / 100) : precioLitro;
+  // IVA combustible: siempre 19% salvo que esté explícitamente configurado a otro valor positivo
+  const ivaPct = (fuel.ivaPct != null && Number(fuel.ivaPct) > 0) ? Number(fuel.ivaPct) : 19;
+  const precioLitroNeto = precioLitro / (1 + ivaPct / 100);
   const combIda = rend.cargado > 0 ? (km / rend.cargado) * precioLitroNeto : 0;
   const combVuelta = rend.vacio > 0 ? (km / rend.vacio) * precioLitroNeto : 0;
   const item2_combustible = combIda + combVuelta;
