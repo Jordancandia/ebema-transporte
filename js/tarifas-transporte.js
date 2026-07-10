@@ -2976,6 +2976,7 @@ function renderParticipacion(content, db, cfg) {
   // ── Render principal ──────────────────────────────────────────────────────
   function render() {
     const hasHist = histDataLocal.length > 0;
+    console.log('[PART] tieneStgoSb:', tieneStgoSb, '| stgoGrupo:', stgoGrupoObj?.grupo, '| sbGrupo:', sbGrupoObj?.grupo, '| grupos:', grupos.map(g=>g.grupo));
 
     // Determinar grupos a mostrar y cuáles se combinan STGO+SB
     const gruposMostrar = [];
@@ -2995,6 +2996,7 @@ function renderParticipacion(content, db, cfg) {
       }
     });
 
+    console.log('[PART] gruposMostrar:', gruposMostrar.map(g=>g.nombre), '| hasHist:', hasHist, '| histLen:', histDataLocal.length);
     content.innerHTML = `
       <div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm mb-lg">
         <div class="flex items-center justify-between flex-wrap gap-sm">
