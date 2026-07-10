@@ -2792,11 +2792,13 @@ function renderParticipacion(content, db, cfg) {
     });
 
     // 2. Rutas candidatas del maestro: tipo=COMUNA + clasificRuta=Regional
-    const rutasCandidatas = routes.filter(r =>
-      (r.tipo || '').toLowerCase() === 'comuna' &&
-      r.clasificRuta === 'Regional' &&
-      (expanded.has(r.origen_grupo) || grupoCentroIds.has(String(r.origenId)))
-    );
+    //    Priorizar origen_grupo; usar origenId solo si origen_grupo no está definido
+    const rutasCandidatas = routes.filter(r => {
+      if ((r.tipo || '').toLowerCase() !== 'comuna') return false;
+      if (r.clasificRuta !== 'Regional') return false;
+      if (r.origen_grupo) return expanded.has(r.origen_grupo);
+      return grupoCentroIds.has(String(r.origenId));
+    });
 
     // 3. Set de códigos válidos para filtrar histData
     const codigosValidos = new Set();
@@ -2865,9 +2867,10 @@ function renderParticipacion(content, db, cfg) {
     if (filtroGrupo) {
       const filtroObj = grupos.find(go => go.grupo === filtroGrupo);
       const filtroCentroIds = new Set((filtroObj?.centroIds || []).map(String));
-      rutasMostrar = rutasCandidatas.filter(r =>
-        r.origen_grupo === filtroGrupo || filtroCentroIds.has(String(r.origenId))
-      );
+      rutasMostrar = rutasCandidatas.filter(r => {
+        if (r.origen_grupo) return r.origen_grupo === filtroGrupo;
+        return filtroCentroIds.has(String(r.origenId));
+      });
     }
 
     // 7. Agrupar por zona, aplicando zoneRemap para que BDO routes lean la entry canónica
