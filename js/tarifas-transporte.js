@@ -2762,11 +2762,8 @@ function renderParticipacion(content, db, cfg) {
       if (gObj) gObj.centroIds.forEach(id => grupoCentroIds.add(String(id)));
     });
 
-    const grupoRows = histDataLocal.filter(h => {
-      const ruta = routeByIdP.get(h.idRuta);
-      if (!ruta) return false;
-      return expanded.has(ruta.origen_grupo) || grupoCentroIds.has(String(ruta.origenId));
-    });
+    // Filtrar por centroId del registro histórico (fuente de verdad)
+    const grupoRows = histDataLocal.filter(h => grupoCentroIds.has(String(h.centroId)));
     if (!grupoRows.length) return [];
 
     // Solo rutas Regional + COMUNA
@@ -2804,7 +2801,7 @@ function renderParticipacion(content, db, cfg) {
         toneladas:      e.ton,
         peso:           e.ton / (catTon[(e.ruta?.caracteristica || 'NORMAL').toUpperCase()] || 1),
         caracteristica: e.ruta?.caracteristica || 'NORMAL',
-        zonaTransporte: zonaDenominacion(e.ruta?.id_zona_transporte)
+        zonaTransporte: e.ruta?.id_zona_transporte || ''
       }))
       .sort((a, b) => b.toneladas - a.toneladas);
   }
