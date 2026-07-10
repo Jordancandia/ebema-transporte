@@ -2906,19 +2906,50 @@ function renderParticipacion(content, db, cfg) {
   }
 
   // ── Render tabla de un centro ─────────────────────────────────────────────
-  function tablaHtml(nombre, results) {
+  const PART_PAGE = 50;
+  function tablaHtml(nombre, results, mostrarTodas = false) {
+    const uid = nombre.replace(/[^a-z0-9]/gi, '_');
     if (!results.length) return `
       <div class="bg-surface-container-lowest border border-outline-variant p-md mb-md shadow-sm">
         <h3 class="font-body-lg font-bold text-on-surface mb-xs">${escapeHtml(nombre)}</h3>
         <p class="text-secondary text-[12px]">Sin rutas Regional+COMUNA con zona registrada en el histórico.</p>
       </div>`;
 
-    const totalTon = results.reduce((s, r) => s + r.toneladas, 0);
+    const totalTon   = results.reduce((s, r) => s + r.toneladas, 0);
+    const visible    = mostrarTodas ? results : results.slice(0, PART_PAGE);
+    const hayMas     = !mostrarTodas && results.length > PART_PAGE;
+    const conTon     = results.filter(r => r.toneladas > 0).length;
+
+    function fila(r, idx) {
+      const barW = Math.min(100, (r.toneladas / (results[0].toneladas || 1)) * 100);
+      return `<tr class="border-b border-outline-variant${r.toneladas === 0 ? ' opacity-50' : ''}">
+        <td class="p-sm text-right text-secondary font-data-mono text-[11px]">${idx+1}</td>
+        <td class="p-sm font-data-mono text-[11px] text-primary font-bold">${escapeHtml(r.rutaCodigo)}</td>
+        <td class="p-sm">${escapeHtml(r.ruta?.destino || '')}</td>
+        <td class="p-sm text-secondary text-[11px]">${escapeHtml(r.zonaTransporte)}</td>
+        <td class="p-sm text-right">${r.clientes}</td>
+        <td class="p-sm text-right">${r.obras}</td>
+        <td class="p-sm text-right font-data-mono text-[11px]">${r.toneladas > 0 ? r.toneladas.toLocaleString('es-CL',{maximumFractionDigits:1}) : '—'}</td>
+        <td class="p-sm text-right font-bold font-data-mono text-[11px]">${r.peso > 0 ? (r.peso*100).toFixed(2)+'%' : '—'}</td>
+        <td class="p-sm">
+          ${r.toneladas > 0 ? `<div class="w-20 h-2 bg-surface-container-high rounded-full overflow-hidden"><div class="h-full rounded-full bg-primary" style="width:${barW}%"></div></div>` : ''}
+        </td>
+      </tr>`;
+    }
+
     return `
-      <div class="bg-surface-container-lowest border border-outline-variant shadow-sm mb-lg">
-        <div class="flex items-center justify-between px-lg pt-md pb-sm border-b border-outline-variant">
-          <h3 class="font-body-lg font-bold text-on-surface">${escapeHtml(nombre)}</h3>
-          <span class="font-data-mono text-[11px] text-secondary">${results.length} rutas · ${totalTon.toLocaleString('es-CL',{maximumFractionDigits:1})} ton</span>
+      <div class="border-2 border-outline-variant shadow-sm mb-xl rounded overflow-hidden" id="part-tabla-${uid}">
+        <div class="flex items-center justify-between px-lg pt-md pb-sm border-b-2 border-primary bg-surface-container-high">
+          <div class="flex items-center gap-sm">
+            <span class="material-symbols-outlined text-primary text-[20px]">route</span>
+            <h3 class="font-headline-sm font-bold text-on-surface">${escapeHtml(nombre)}</h3>
+          </div>
+          <div class="flex items-center gap-md">
+            <span class="font-data-mono text-[11px] text-secondary">${conTon} rutas con histórico · ${totalTon.toLocaleString('es-CL',{maximumFractionDigits:1})} ton · ${results.length} total</span>
+            <button class="part-guardar-centro border border-primary text-primary hover:bg-primary hover:text-white font-bold px-md py-xs rounded flex items-center gap-xs text-[11px] uppercase transition-colors" data-grupo="${escapeHtml(nombre)}">
+              <span class="material-symbols-outlined text-[14px]">save</span> Guardar
+            </button>
+          </div>
         </div>
         <div class="overflow-x-auto">
           <table class="w-full zebra-table border-collapse">
@@ -2935,29 +2966,12 @@ function renderParticipacion(content, db, cfg) {
                 <th class="p-sm font-label-caps text-label-caps text-secondary uppercase">Barra</th>
               </tr>
             </thead>
-            <tbody class="font-body-md text-body-md">
-              ${results.map((r, idx) => {
-                const barW = Math.min(100, (r.toneladas / (results[0].toneladas || 1)) * 100);
-                return `<tr class="border-b border-outline-variant">
-                  <td class="p-sm text-right text-secondary font-data-mono text-[11px]">${idx+1}</td>
-                  <td class="p-sm font-data-mono text-[11px] text-primary font-bold">${escapeHtml(r.rutaCodigo)}</td>
-                  <td class="p-sm">${escapeHtml(r.ruta?.destino || '')}</td>
-                  <td class="p-sm text-secondary text-[11px]">${escapeHtml(r.zonaTransporte)}</td>
-                  <td class="p-sm text-right">${r.clientes}</td>
-                  <td class="p-sm text-right">${r.obras}</td>
-                  <td class="p-sm text-right font-data-mono text-[11px]">${r.toneladas.toLocaleString('es-CL',{maximumFractionDigits:1})}</td>
-                  <td class="p-sm text-right font-bold font-data-mono text-[11px]">${(r.peso*100).toFixed(2)}%</td>
-                  <td class="p-sm">
-                    <div class="w-20 h-2 bg-surface-container-high rounded-full overflow-hidden">
-                      <div class="h-full rounded-full bg-primary" style="width:${barW}%"></div>
-                    </div>
-                  </td>
-                </tr>`;
-              }).join('')}
+            <tbody class="font-body-md text-body-md" id="part-tbody-${uid}">
+              ${visible.map((r, idx) => fila(r, idx)).join('')}
             </tbody>
             <tfoot>
               <tr class="bg-surface-container-high border-t-2 border-outline-variant font-bold">
-                <td colspan="6" class="p-sm text-right">Total</td>
+                <td colspan="6" class="p-sm text-right">Total histórico</td>
                 <td class="p-sm text-right font-data-mono text-[11px]">${totalTon.toLocaleString('es-CL',{maximumFractionDigits:1})}</td>
                 <td class="p-sm text-right font-data-mono text-[11px]">100%</td>
                 <td></td>
@@ -2965,19 +2979,19 @@ function renderParticipacion(content, db, cfg) {
             </tfoot>
           </table>
         </div>
-        <div class="px-lg py-sm flex justify-end">
-          <button class="part-guardar-centro bg-primary hover:bg-[#930007] text-white font-bold px-md py-xs rounded flex items-center gap-xs text-[11px] uppercase" data-grupo="${escapeHtml(nombre)}">
-            <span class="material-symbols-outlined text-[16px]">save</span> Guardar
+        ${hayMas ? `
+        <div class="px-lg py-sm flex items-center gap-sm border-t border-outline-variant bg-surface-container-lowest">
+          <span class="text-[11px] text-secondary">Mostrando ${PART_PAGE} de ${results.length} rutas (${results.length - PART_PAGE} sin histórico ocultas)</span>
+          <button class="part-ver-todas ml-auto border border-outline-variant text-secondary hover:bg-surface-container-high px-md py-xs rounded text-[11px] uppercase" data-uid="${uid}" data-nombre="${escapeHtml(nombre)}">
+            Ver todas (${results.length})
           </button>
-        </div>
+        </div>` : ''}
       </div>`;
   }
 
   // ── Render principal ──────────────────────────────────────────────────────
   function render() {
     const hasHist = histDataLocal.length > 0;
-    console.log('[PART] tieneStgoSb:', tieneStgoSb, '| stgoGrupo:', stgoGrupoObj?.grupo, '| sbGrupo:', sbGrupoObj?.grupo, '| grupos:', grupos.map(g=>g.grupo));
-
     // Determinar grupos a mostrar y cuáles se combinan STGO+SB
     const gruposMostrar = [];
     const yaProcesados  = new Set();
@@ -3040,6 +3054,38 @@ function renderParticipacion(content, db, cfg) {
         showAlert('Error: ' + err.message, 'error');
         if (btn) { btn.disabled = false; btn.innerHTML = '<span class="material-symbols-outlined text-[18px]">refresh</span> Actualizar Histórico'; }
       }
+    });
+
+    // ── "Ver todas" por tabla
+    content.querySelectorAll('.part-ver-todas').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const nombre = btn.dataset.nombre;
+        const gm = gruposMostrar.find(g => g.nombre === nombre);
+        if (!gm) return;
+        const results = calcGrupo(gm.grupos, gm.filtroGrupo || null);
+        const uid = nombre.replace(/[^a-z0-9]/gi, '_');
+        const tbody = document.getElementById('part-tbody-' + uid);
+        if (tbody) {
+          // Re-render fila a fila (inyectar directamente)
+          const PART_PAGE_LOCAL = 50;
+          function fila2(r, idx) {
+            const barW = Math.min(100, (r.toneladas / (results[0].toneladas || 1)) * 100);
+            return \`<tr class="border-b border-outline-variant\${r.toneladas === 0 ? ' opacity-50' : ''}">
+              <td class="p-sm text-right text-secondary font-data-mono text-[11px]">\${idx+1}</td>
+              <td class="p-sm font-data-mono text-[11px] text-primary font-bold">\${escapeHtml(r.rutaCodigo)}</td>
+              <td class="p-sm">\${escapeHtml(r.ruta?.destino || '')}</td>
+              <td class="p-sm text-secondary text-[11px]">\${escapeHtml(r.zonaTransporte)}</td>
+              <td class="p-sm text-right">\${r.clientes}</td>
+              <td class="p-sm text-right">\${r.obras}</td>
+              <td class="p-sm text-right font-data-mono text-[11px]">\${r.toneladas > 0 ? r.toneladas.toLocaleString('es-CL',{maximumFractionDigits:1}) : '—'}</td>
+              <td class="p-sm text-right font-bold font-data-mono text-[11px]">\${r.peso > 0 ? (r.peso*100).toFixed(2)+'%' : '—'}</td>
+              <td class="p-sm">\${r.toneladas > 0 ? \`<div class="w-20 h-2 bg-surface-container-high rounded-full overflow-hidden"><div class="h-full rounded-full bg-primary" style="width:\${barW}%"></div></div>\` : ''}</td>
+            </tr>\`;
+          }
+          tbody.innerHTML = results.map((r, i) => fila2(r, i)).join('');
+          btn.closest('div').remove();
+        }
+      });
     });
 
     content.querySelectorAll('.part-guardar-centro').forEach(btn => {
