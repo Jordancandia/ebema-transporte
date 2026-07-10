@@ -2698,19 +2698,17 @@ function renderSeguros(content, db, cfg) {
 // SUB-MÓDULO 4a: PARTICIPACIÓN RUTAS
 // ============================================================
 function renderParticipacion(content, db, cfg) {
-  // ── Estado local ─────────────────────────────────────────────────────────
-  let partCentrosSelec = new Set();  // grupos seleccionados (vacío = ninguno)
+  // ── Estado ────────────────────────────────────────────────────────────────
   let histDataLocal = getClientTariffConfig(db).historico || [];
-  console.log('[PARTICIPACION] histDataLocal al inicio:', histDataLocal.length);
 
-  // ── Helpers de rutas/grupos ───────────────────────────────────────────────
-  const routes  = (db.routes || []).filter(r => r.activo);
-  const grupos  = getOrigenGroups(db);
-
-  const routeByIdP = new Map();
+  // ── Helpers ───────────────────────────────────────────────────────────────
+  const routes       = (db.routes || []).filter(r => r.activo);
+  const grupos       = getOrigenGroups(db);
+  const zonasByIdP   = new Map((db.transportZones || []).map(z => [z.zona, z]));
+  const routeByIdP   = new Map();
   routes.forEach(r => {
-    if (r.id)     routeByIdP.set(r.id, r);
-    if (r.codigo) routeByIdP.set(r.codigo, r);
+    if (r.id)     routeByIdP.set(String(r.id).toUpperCase(),     r);
+    if (r.codigo) routeByIdP.set(String(r.codigo).toUpperCase(), r);
   });
 
   const STGO_IDS = ['1001','1002','1003'];
@@ -2720,55 +2718,37 @@ function renderParticipacion(content, db, cfg) {
   const STGO_SB_GRUPOS = [stgoGrupoObj?.grupo, sbGrupoObj?.grupo].filter(Boolean);
   const tieneStgoSb    = !!(stgoGrupoObj && sbGrupoObj && stgoGrupoObj.grupo !== sbGrupoObj.grupo);
 
-  const zonasByIdP = new Map((db.transportZones || []).map(z => [z.zona, z]));
-  function zonaDenominacion(id_zona) {
-    if (!id_zona) return '';
-    const z = zonasByIdP.get(id_zona);
-    return z?.denominacion || id_zona;
+  const normRegion = s => (s || '').toLowerCase()
+    .replace(/región\s+(de\s+la\s+|de\s+los\s+|de\s+|del\s+)?/i, '')
+    .replace(/región/i, '').replace(/metro\w*/i, 'metropolitana').trim();
+
+  function regionOK(zonaRegion, centroRegiones) {
+    if (!zonaRegion || centroRegiones.size === 0) return true;
+    const zn = normRegion(zonaRegion);
+    return [...centroRegiones].some(cr => zn.includes(cr) || cr.includes(zn));
   }
 
-  function labelCentro(c) {
-    const g = grupos.find(go => go.grupo === c);
-    return g?.nombre || String(c).replace(/_/g, ' ');
-  }
-
-  function centrosDropdownList() {
-    // Siempre todos los grupos registrados en la BD
-    return grupos.map(g => g.grupo);
-  }
-
-  function partCentrosLabel() {
-    if (partCentrosSelec.size === 0) return 'Todos los centros';
-    if (partCentrosSelec.size === 1) return labelCentro([...partCentrosSelec][0]);
-    return `${partCentrosSelec.size} centros`;
-  }
-
-  // ── Cálculo de participación ──────────────────────────────────────────────
-  function calcParticipacion(gruposCalc) {
-    // gruposCalc: array de origen_grupo a combinar
-    // Si alguno es STGO o SB, combinamos ambos automáticamente
+  // ── Calcular participación para un conjunto de grupos ────────────────────
+  function calcGrupo(gruposCalc) {
+    // Expandir STGO+SB si aplica
     const expanded = new Set(gruposCalc);
     const selIds = gruposCalc.flatMap(gn => {
       const gObj = grupos.find(go => go.grupo === gn);
       return (gObj?.centroIds || []).map(String);
     });
-    const TODOS_IDS = [...STGO_IDS, ...SB_IDS];
-    if (tieneStgoSb && selIds.some(id => TODOS_IDS.includes(id))) {
+    if (tieneStgoSb && selIds.some(id => [...STGO_IDS, ...SB_IDS].includes(id))) {
       STGO_SB_GRUPOS.forEach(g => expanded.add(g));
     }
 
+    // IDs de centros involucrados
     const grupoCentroIds = new Set();
     [...expanded].forEach(gn => {
       const gObj = grupos.find(go => go.grupo === gn);
-      if (gObj) gObj.centroIds.forEach(id => grupoCentroIds.add(String(id)));
+      (gObj?.centroIds || []).forEach(id => grupoCentroIds.add(String(id)));
     });
 
-    // Regiones de los centros seleccionados (normalizado para comparación flexible)
+    // Regiones de los centros (normalizado)
     const centroRegiones = new Set();
-    const normRegion = s => (s || '').toLowerCase()
-      .replace(/región\s+(de\s+la\s+|de\s+los\s+|de\s+|del\s+)?/i, '')
-      .replace(/región/i, '').replace(/metro\w*/i, 'metropolitana').trim();
-
     [...expanded].forEach(gn => {
       const gObj = grupos.find(go => go.grupo === gn);
       (gObj?.centroIds || []).forEach(cid => {
@@ -2777,35 +2757,25 @@ function renderParticipacion(content, db, cfg) {
       });
     });
 
-    function regionOK(zonaRegion) {
-      if (!zonaRegion || centroRegiones.size === 0) return true; // sin datos → dejar pasar
-      const zn = normRegion(zonaRegion);
-      return [...centroRegiones].some(cr => zn.includes(cr) || cr.includes(zn));
-    }
-
-    // Construir Set de códigos de rutas válidas:
-    // origen del centro + destino en misma región + zona registrada + tipo COMUNA
+    // Set de códigos de rutas válidas: origen en centro + zona en misma región + tipo COMUNA
     const codigosValidos = new Set();
     routes.forEach(r => {
       if (!r.id_zona_transporte) return;
       const enGrupo = expanded.has(r.origen_grupo) || grupoCentroIds.has(String(r.origenId));
       if (!enGrupo) return;
       const zona = zonasByIdP.get(r.id_zona_transporte);
-      if (!regionOK(zona?.region)) return;
+      if (!regionOK(zona?.region, centroRegiones)) return;
       if ((r.tipo || '').toLowerCase() !== 'comuna') return;
       if (r.id)     codigosValidos.add(String(r.id).toUpperCase());
       if (r.codigo) codigosValidos.add(String(r.codigo).toUpperCase());
     });
-    console.log('[PARTICIPACION] regiones:', [...centroRegiones], '| codigosValidos:', codigosValidos.size);
 
-    // Filtrar histData por los códigos de ruta válidos
+    // Acumular toneladas por destino (usando histData filtrado por codigosValidos)
     const routeMap = new Map();
-    let _dbgOK=0;
     histDataLocal.forEach(h => {
       if (!codigosValidos.has(String(h.idRuta).toUpperCase())) return;
-      const ruta = routeByIdP.get(h.idRuta);
+      const ruta = routeByIdP.get(String(h.idRuta).toUpperCase());
       if (!ruta) return;
-      _dbgOK++;
       const mapKey = ruta.id_zona_transporte || (ruta.destino || '').trim().toUpperCase() || h.idRuta;
       if (!routeMap.has(mapKey)) {
         routeMap.set(mapKey, { mapKey, ruta, clientes: new Set(), obras: new Set(), ton: 0 });
@@ -2817,8 +2787,7 @@ function renderParticipacion(content, db, cfg) {
       e.ton += h.ton;
     });
 
-    console.log('[PARTICIPACION] OK:', _dbgOK, '| routeMap:', routeMap.size);
-    // PESO por categoría (denominador = total combinado)
+    // PESO por categoría
     const catTon = {};
     routeMap.forEach(e => {
       const cat = (e.ruta.caracteristica || 'NORMAL').toUpperCase();
@@ -2828,28 +2797,124 @@ function renderParticipacion(content, db, cfg) {
     return [...routeMap.values()]
       .map(e => ({
         rutaId:         e.ruta?.id     || e.mapKey,
-        rutaCodigo:     e.ruta?.codigo || e.mapKey,
+        rutaCodigo:     e.ruta?.codigo || '',
         ruta:           e.ruta,
         clientes:       e.clientes.size,
         obras:          e.obras.size,
         toneladas:      e.ton,
         peso:           e.ton / (catTon[(e.ruta?.caracteristica || 'NORMAL').toUpperCase()] || 1),
         caracteristica: e.ruta?.caracteristica || 'NORMAL',
-        zonaTransporte: e.ruta?.id_zona_transporte || '',
-        codigo:        e.ruta?.codigo || ''
+        zonaTransporte: e.ruta?.id_zona_transporte || ''
       }))
       .sort((a, b) => b.toneladas - a.toneladas);
   }
 
-  // ── Botón sincronizar histórico ──────────────────────────────────────────
-  function syncBtn() {
-    return `<button id="part-sync-hist" class="border border-primary text-primary hover:bg-primary hover:text-white font-bold px-md py-sm rounded flex items-center gap-xs text-[12px] uppercase transition-colors">
-      <span class="material-symbols-outlined text-[18px]">refresh</span>
-      Actualizar Histórico
-    </button>`;
+  // ── Render tabla de un centro ─────────────────────────────────────────────
+  function tablaHtml(nombre, results) {
+    if (!results.length) return `
+      <div class="bg-surface-container-lowest border border-outline-variant p-md mb-md shadow-sm">
+        <h3 class="font-body-lg font-bold text-on-surface mb-xs">${escapeHtml(nombre)}</h3>
+        <p class="text-secondary text-[12px]">Sin rutas Regional+COMUNA con zona registrada en el histórico.</p>
+      </div>`;
+
+    const totalTon = results.reduce((s, r) => s + r.toneladas, 0);
+    return `
+      <div class="bg-surface-container-lowest border border-outline-variant shadow-sm mb-lg">
+        <div class="flex items-center justify-between px-lg pt-md pb-sm border-b border-outline-variant">
+          <h3 class="font-body-lg font-bold text-on-surface">${escapeHtml(nombre)}</h3>
+          <span class="font-data-mono text-[11px] text-secondary">${results.length} rutas · ${totalTon.toLocaleString('es-CL',{maximumFractionDigits:1})} ton</span>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full zebra-table border-collapse">
+            <thead>
+              <tr class="bg-surface-container-high text-left border-b border-outline-variant">
+                <th class="p-sm font-label-caps text-label-caps text-secondary uppercase text-right w-8">#</th>
+                <th class="p-sm font-label-caps text-label-caps text-secondary uppercase">Cód. Ruta</th>
+                <th class="p-sm font-label-caps text-label-caps text-secondary uppercase">Destino</th>
+                <th class="p-sm font-label-caps text-label-caps text-secondary uppercase">Zona</th>
+                <th class="p-sm font-label-caps text-label-caps text-secondary uppercase text-right">Clientes</th>
+                <th class="p-sm font-label-caps text-label-caps text-secondary uppercase text-right">Obras</th>
+                <th class="p-sm font-label-caps text-label-caps text-secondary uppercase text-right">Toneladas</th>
+                <th class="p-sm font-label-caps text-label-caps text-secondary uppercase text-right">Peso</th>
+                <th class="p-sm font-label-caps text-label-caps text-secondary uppercase">Barra</th>
+              </tr>
+            </thead>
+            <tbody class="font-body-md text-body-md">
+              ${results.map((r, idx) => {
+                const barW = Math.min(100, (r.toneladas / (results[0].toneladas || 1)) * 100);
+                return `<tr class="border-b border-outline-variant">
+                  <td class="p-sm text-right text-secondary font-data-mono text-[11px]">${idx+1}</td>
+                  <td class="p-sm font-data-mono text-[11px] text-primary font-bold">${escapeHtml(r.rutaCodigo)}</td>
+                  <td class="p-sm">${escapeHtml(r.ruta?.destino || '')}</td>
+                  <td class="p-sm text-secondary text-[11px]">${escapeHtml(r.zonaTransporte)}</td>
+                  <td class="p-sm text-right">${r.clientes}</td>
+                  <td class="p-sm text-right">${r.obras}</td>
+                  <td class="p-sm text-right font-data-mono text-[11px]">${r.toneladas.toLocaleString('es-CL',{maximumFractionDigits:1})}</td>
+                  <td class="p-sm text-right font-bold font-data-mono text-[11px]">${(r.peso*100).toFixed(2)}%</td>
+                  <td class="p-sm">
+                    <div class="w-20 h-2 bg-surface-container-high rounded-full overflow-hidden">
+                      <div class="h-full rounded-full bg-primary" style="width:${barW}%"></div>
+                    </div>
+                  </td>
+                </tr>`;
+              }).join('')}
+            </tbody>
+            <tfoot>
+              <tr class="bg-surface-container-high border-t-2 border-outline-variant font-bold">
+                <td colspan="6" class="p-sm text-right">Total</td>
+                <td class="p-sm text-right font-data-mono text-[11px]">${totalTon.toLocaleString('es-CL',{maximumFractionDigits:1})}</td>
+                <td class="p-sm text-right font-data-mono text-[11px]">100%</td>
+                <td></td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+        <div class="px-lg py-sm flex justify-end">
+          <button class="part-guardar-centro bg-primary hover:bg-[#930007] text-white font-bold px-md py-xs rounded flex items-center gap-xs text-[11px] uppercase" data-grupo="${escapeHtml(nombre)}">
+            <span class="material-symbols-outlined text-[16px]">save</span> Guardar
+          </button>
+        </div>
+      </div>`;
   }
 
-  function bindSyncBtn() {
+  // ── Render principal ──────────────────────────────────────────────────────
+  function render() {
+    const hasHist = histDataLocal.length > 0;
+
+    // Determinar grupos a mostrar y cuáles se combinan STGO+SB
+    const gruposMostrar = [];
+    const yaProcesados  = new Set();
+    grupos.forEach(g => {
+      if (yaProcesados.has(g.grupo)) return;
+      if (tieneStgoSb && STGO_SB_GRUPOS.includes(g.grupo)) {
+        // Agregar cada uno por separado (mismos resultados, calculados en conjunto)
+        gruposMostrar.push({ nombre: g.nombre || g.grupo, grupos: STGO_SB_GRUPOS });
+        STGO_SB_GRUPOS.forEach(x => yaProcesados.add(x));
+      } else {
+        gruposMostrar.push({ nombre: g.nombre || g.grupo, grupos: [g.grupo] });
+        yaProcesados.add(g.grupo);
+      }
+    });
+
+    content.innerHTML = `
+      <div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm mb-lg">
+        <div class="flex items-center justify-between flex-wrap gap-sm">
+          <div class="flex items-center gap-sm">
+            <span class="material-symbols-outlined text-primary">donut_large</span>
+            <h2 class="font-headline-sm text-headline-sm font-bold text-on-surface">Participación Rutas</h2>
+            ${hasHist ? `<span class="text-[11px] text-secondary font-data-mono">${histDataLocal.length.toLocaleString('es-CL')} registros · Histórico 6M</span>` : ''}
+          </div>
+          <button id="part-sync-hist" class="border border-primary text-primary hover:bg-primary hover:text-white font-bold px-md py-sm rounded flex items-center gap-xs text-[12px] uppercase transition-colors">
+            <span class="material-symbols-outlined text-[18px]">refresh</span> Actualizar Histórico
+          </button>
+        </div>
+      </div>
+      ${!hasHist ? `
+      <div class="bg-amber-50 border border-amber-200 text-amber-800 text-[12px] p-md rounded">
+        Sin datos históricos. Presione <b>Actualizar Histórico</b> o cargue el CSV en <b>Tarifas Clientes → Histórico</b>.
+      </div>` : gruposMostrar.map(gm => tablaHtml(gm.nombre, calcGrupo(gm.grupos))).join('')}
+    `;
+
     document.getElementById('part-sync-hist')?.addEventListener('click', async () => {
       const btn = document.getElementById('part-sync-hist');
       if (btn) { btn.disabled = true; btn.textContent = 'Cargando...'; }
@@ -2861,180 +2926,50 @@ function renderParticipacion(content, db, cfg) {
           showAlert(`✓ Histórico actualizado: ${fresh.length} registros.`);
           render();
         } else {
-          showAlert('No hay datos históricos en caché. Cargue el CSV en Tarifas Clientes → Histórico.', 'error');
+          showAlert('No hay datos en caché. Cargue el CSV en Tarifas Clientes → Histórico.', 'error');
           if (btn) { btn.disabled = false; btn.innerHTML = '<span class="material-symbols-outlined text-[18px]">refresh</span> Actualizar Histórico'; }
         }
       } catch (err) {
-        showAlert('Error al cargar histórico: ' + err.message, 'error');
+        showAlert('Error: ' + err.message, 'error');
         if (btn) { btn.disabled = false; btn.innerHTML = '<span class="material-symbols-outlined text-[18px]">refresh</span> Actualizar Histórico'; }
       }
     });
-  }
 
-  // ── Dropdown multi-select helpers ─────────────────────────────────────────
-  function bindCentroDropdown() {
-    const centroBtnEl   = document.getElementById('part-centro-btn');
-    const centroPanelEl = document.getElementById('part-centro-panel');
-    centroBtnEl?.addEventListener('click', e => { e.stopPropagation(); centroPanelEl?.classList.toggle('hidden'); });
-    const closePanel = () => centroPanelEl?.classList.add('hidden');
-    document.addEventListener('click', closePanel, { once: true });
-    content.querySelectorAll('.part-c-item').forEach(cb => {
-      cb.addEventListener('change', () => {
-        partCentrosSelec.clear();
-        content.querySelectorAll('.part-c-item:checked').forEach(c => partCentrosSelec.add(c.value));
-        document.getElementById('part-centro-label').textContent = partCentrosLabel();
-        render();
-      });
-    });
-  }
-
-  // ── Render principal ──────────────────────────────────────────────────────
-  function render() {
-    const centros = centrosDropdownList();
-    const hasHist = histDataLocal.length > 0;
-    // Vacío = todos los centros; con selección = solo los seleccionados
-    const gruposActivos = partCentrosSelec.size > 0
-      ? [...partCentrosSelec]
-      : grupos.map(g => g.grupo);
-    const results = hasHist ? calcParticipacion(gruposActivos) : [];
-
-    content.innerHTML = `
-      <div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm">
-        <div class="flex items-center justify-between mb-md border-b border-outline-variant pb-sm flex-wrap gap-sm">
-          <div class="flex items-center gap-sm">
-            <span class="material-symbols-outlined text-primary">donut_large</span>
-            <h2 class="font-headline-sm text-headline-sm font-bold text-on-surface">Participación Rutas</h2>
-          </div>
-          ${syncBtn()}
-        </div>
-
-        ${!hasHist ? `<div class="bg-amber-50 border border-amber-200 text-amber-800 text-[12px] p-sm rounded mb-md">
-          Sin datos históricos en caché. Presione <b>Actualizar Histórico</b> o cargue el CSV en
-          <b>Tarifas Clientes → Histórico</b>.
-        </div>` : ''}
-
-        <div class="flex gap-sm items-end mb-md flex-wrap">
-          <div class="relative">
-            <label class="font-label-caps text-label-caps text-secondary block mb-xs">CENTRO ORIGEN</label>
-            <button id="part-centro-btn" class="border border-[#CED4DA] px-sm py-[9px] bg-white text-left w-64 font-body-md text-body-md flex justify-between items-center gap-sm">
-              <span id="part-centro-label">${partCentrosLabel()}</span>
-              <span class="material-symbols-outlined text-[18px] text-secondary flex-shrink-0">expand_more</span>
-            </button>
-            <div id="part-centro-panel" class="hidden absolute z-50 bg-white border border-[#CED4DA] shadow-lg w-72 max-h-72 overflow-y-auto mt-1">
-              ${centros.map(c => `
-              <label class="flex items-center gap-sm p-sm hover:bg-surface-container-high cursor-pointer border-b border-outline-variant last:border-0">
-                <input type="checkbox" class="part-c-item" value="${escapeHtml(c)}" ${partCentrosSelec.has(c) ? 'checked' : ''}>
-                <span class="font-body-md text-body-md">${escapeHtml(labelCentro(c))}</span>
-              </label>`).join('')}
-            </div>
-          </div>
-        </div>
-
-        ${results.length > 0 ? `
-        <div class="bg-surface border border-outline-variant overflow-hidden rounded overflow-x-auto">
-          <table class="w-full zebra-table border-collapse">
-            <thead>
-              <tr class="bg-surface-container-high text-left border-b border-outline-variant">
-                <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-right">#</th>
-                <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Destino</th>
-                <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Zona Transporte</th>
-                <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-right">Clientes</th>
-                <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-right">Obras</th>
-                <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-right">Toneladas</th>
-                <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-right">PESO</th>
-                <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Barra</th>
-              </tr>
-            </thead>
-            <tbody class="font-body-md text-body-md">
-              ${results.map((r, idx) => {
-                const barWidth = Math.min(100, (r.toneladas / (results[0].toneladas || 1)) * 100);
-                const badgeCls = r.caracteristica === 'NORMAL'
-                  ? 'bg-surface-container-high text-secondary border border-outline-variant'
-                  : r.caracteristica === 'ISLA' ? 'bg-blue-100 text-blue-800 border border-blue-300'
-                  : 'bg-amber-100 text-amber-800 border border-amber-300';
-                return `<tr class="border-b border-outline-variant">
-                  <td class="p-md text-right text-secondary font-data-mono text-data-mono">${idx + 1}</td>
-                  <td class="p-md">${escapeHtml(r.ruta?.destino || '')}</td>
-                  <td class="p-md text-secondary">${escapeHtml(r.zonaTransporte)}</td>
-                  <td class="p-md text-right">${r.clientes}</td>
-                  <td class="p-md text-right">${r.obras}</td>
-                  <td class="p-md text-right font-data-mono text-data-mono">${r.toneladas.toLocaleString('es-CL',{maximumFractionDigits:1})}</td>
-                  <td class="p-md text-right font-bold font-data-mono text-data-mono">${(r.peso*100).toFixed(2)}%</td>
-                  <td class="p-md">
-                    <div class="w-24 h-2.5 bg-surface-container-high rounded-full overflow-hidden">
-                      <div class="h-full rounded-full bg-primary" style="width:${barWidth}%"></div>
-                    </div>
-                  </td>
-                </tr>`;
-              }).join('')}
-            </tbody>
-            <tfoot>
-              ${(() => {
-                const cats = [...new Set(results.map(r => (r.caracteristica||'NORMAL').toUpperCase()))].sort();
-                return cats.map(cat => {
-                  const catTon = results.filter(r=>(r.caracteristica||'NORMAL').toUpperCase()===cat).reduce((s,r)=>s+r.toneladas,0);
-                  return `<tr class="bg-surface-container-high border-t border-outline-variant">
-                    <td colspan="5" class="p-md font-bold text-right">Subtotal ${cat}</td>
-                    <td class="p-md font-bold font-data-mono text-data-mono text-right">${catTon.toLocaleString('es-CL',{maximumFractionDigits:1})} ton</td>
-                    <td class="p-md font-bold text-right">100%</td>
-                    <td></td>
-                  </tr>`;
-                }).join('');
-              })()}
-            </tfoot>
-          </table>
-        </div>
-        <div class="flex gap-sm mt-md">
-          <button id="part-guardar" class="bg-primary hover:bg-[#930007] text-white font-bold px-md py-sm rounded flex items-center gap-xs text-[12px] uppercase">
-            <span class="material-symbols-outlined text-[18px]">save</span> Guardar Participación
-          </button>
-        </div>
-        ` : `<p class="text-secondary mt-md">${
-          !hasHist
-            ? 'Presione <b>Actualizar Histórico</b> para cargar los datos.'
-            : 'No hay rutas Regional+COMUNA para los centros seleccionados.'
-        }</p>`}
-      </div>
-    `;
-
-    bindSyncBtn();
-    bindCentroDropdown();
-
-    const guardarBtn = document.getElementById('part-guardar');
-    if (guardarBtn) {
-      guardarBtn.addEventListener('click', () => {
-        if (!results || results.length === 0) { showAlert('Seleccione al menos un centro para guardar la participación.', 'error'); return; }
+    content.querySelectorAll('.part-guardar-centro').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const grupoNombre = btn.dataset.grupo;
+        const gm = gruposMostrar.find(g => g.nombre === grupoNombre);
+        if (!gm) return;
+        const results = calcGrupo(gm.grupos);
+        if (!results.length) { showAlert('Sin datos para guardar.', 'error'); return; }
         try {
           cfg.participacionRutas = cfg.participacionRutas || {};
           results.forEach(r => {
             const entry = { pct: Math.round(r.peso * 10000) / 100, peso: r.peso, cluster: r.peso >= 0.30 ? 1 : r.peso >= 0.10 ? 2 : 3, caracteristica: r.caracteristica };
-            cfg.participacionRutas[r.rutaId] = entry;
-            if (r.rutaCodigo && r.rutaCodigo !== r.rutaId) cfg.participacionRutas[r.rutaCodigo] = entry;
+            cfg.participacionRutas[r.rutaId]     = entry;
+            cfg.participacionRutas[r.rutaCodigo] = entry;
           });
           saveDatabase(db);
-          showAlert(`✓ Participación guardada: ${results.length} ruta(s).`);
-        } catch(err) { showAlert('Error al guardar: ' + err.message, 'error'); }
+          showAlert(`✓ Participación guardada: ${results.length} rutas de ${grupoNombre}.`);
+        } catch (err) { showAlert('Error: ' + err.message, 'error'); }
       });
-    }
+    });
   }
 
-  // Auto-cargar histórico desde IndexedDB si no hay datos en memoria
+  // Auto-cargar histórico desde IndexedDB al abrir la vista
   if (histDataLocal.length === 0) {
+    content.innerHTML = `<div class="flex items-center gap-sm text-secondary p-lg"><span class="material-symbols-outlined animate-spin">refresh</span> Cargando histórico...</div>`;
     loadHistorico().then(fresh => {
-      console.log('[PARTICIPACION] auto-load desde IndexedDB:', fresh ? fresh.length : 0);
       if (fresh && fresh.length > 0) {
         histDataLocal = fresh;
         getClientTariffConfig(db).historico = fresh;
-        render();
       }
-    }).catch(err => console.warn('[PARTICIPACION] error auto-load:', err));
+      render();
+    }).catch(() => render());
+  } else {
+    render();
   }
-
-  render();
 }
-
-// ============================================================
-// SUB-MÓDULO 4: VARIABLES GENERALES
 // ============================================================
 function renderVariables(content, db, cfg) {
   const centres = db.logisticsCentres;
