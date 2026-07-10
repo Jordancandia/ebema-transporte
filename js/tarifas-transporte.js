@@ -2791,9 +2791,10 @@ function renderParticipacion(content, db, cfg) {
       (gObj?.centroIds || []).forEach(id => grupoCentroIds.add(String(id)));
     });
 
-    // 2. Rutas candidatas del maestro para los grupos expandidos (tipo=COMUNA)
+    // 2. Rutas candidatas del maestro: tipo=COMUNA + clasificRuta=Regional
     const rutasCandidatas = routes.filter(r =>
       (r.tipo || '').toLowerCase() === 'comuna' &&
+      r.clasificRuta === 'Regional' &&
       (expanded.has(r.origen_grupo) || grupoCentroIds.has(String(r.origenId)))
     );
 
