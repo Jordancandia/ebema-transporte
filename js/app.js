@@ -4,7 +4,7 @@ import { renderTransportsView } from './transports.js';
 import { renderRoutesView, setRoutesSubTab } from './routes.js?v=20260708a';
 import { renderRatesView } from './rates.js';
 import { renderRolesView } from './roles.js';
-import { renderTariffTransportView, setActiveSub } from './tarifas-transporte.js?v=20260710e';
+import { renderTariffTransportView, setActiveSub } from './tarifas-transporte.js?v=20260710f';
 import { renderClientTariffView, setActiveSubC } from './tarifas-clientes.js?v=20260708a';
 import { showAlert, formatRut, validateRut, formatPhone } from './utils.js';
 
@@ -922,6 +922,7 @@ const SIDEBAR_MENU = [
       { tab: 'tarifas-transporte', sub: 'participacion', icon: 'donut_large',       label: 'Participacion de Rutas' },
       { tab: 'tarifas-transporte', sub: 'variables',     icon: 'tune',              label: 'Variables Generales' },
       { tab: 'tarifas-transporte', sub: 'resultados',    icon: 'speed',             label: 'Motor de Costos' },
+      { tab: 'tarifas-transporte', sub: 'zcap',          icon: 'table_chart',       label: 'ZCAP' },
       { tab: 'tarifas-transporte', sub: 'camiones',      icon: 'local_shipping',    label: 'Tarifas por Camion' },
     ]
   },
