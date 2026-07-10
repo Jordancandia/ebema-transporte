@@ -2862,8 +2862,16 @@ function renderParticipacion(content, db, cfg) {
       }
     }
 
-    // 5. Total toneladas para calcular PESO (combinado STGO+SB, sin duplicados)
-    const totalTon = [...zonaTon.values()].reduce((s, e) => s + e.ton, 0);
+    // 5. Total toneladas por categoría (NORMAL vs ESPECIAL=ISLA/EXTREMA)
+    //    El PESO% se calcula sobre el pool de su propia categoría.
+    let totalTonNormal   = 0;
+    let totalTonEspecial = 0;
+    for (const e of zonaTon.values()) {
+      const repRuta   = Object.values(e.rutasByGrupo)[0];
+      const isEspec   = ['ISLA','EXTREMA'].includes((repRuta?.caracteristica || '').toUpperCase());
+      if (isEspec) totalTonEspecial += e.ton;
+      else         totalTonNormal   += e.ton;
+    }
 
     // 6. Rutas a mostrar: partir del maestro filtrado por filtroGrupo
     let rutasMostrar = rutasCandidatas;
@@ -2906,8 +2914,13 @@ function renderParticipacion(content, db, cfg) {
           clientes:       e?.clientes.size || 0,
           obras:          e?.obras.size    || 0,
           toneladas:      ton,
-          peso:           totalTon > 0 ? ton / totalTon : 0,
-          zonaTransporte: ruta.id_zona_transporte || ''
+          peso: (() => {
+            const isEspec = ['ISLA','EXTREMA'].includes((ruta.caracteristica || '').toUpperCase());
+            const total   = isEspec ? totalTonEspecial : totalTonNormal;
+            return total > 0 ? ton / total : 0;
+          })(),
+          zonaTransporte:  ruta.id_zona_transporte || '',
+          caracteristica:  ruta.caracteristica || 'NORMAL'
         };
       })
       .sort((a, b) => b.toneladas - a.toneladas ||
@@ -2933,7 +2946,12 @@ function renderParticipacion(content, db, cfg) {
       return `<tr class="border-b border-outline-variant">
         <td class="p-sm text-right text-secondary font-data-mono text-[11px]">${idx+1}</td>
         <td class="p-sm font-data-mono text-[11px] text-primary font-bold">${escapeHtml(r.rutaCodigo)}</td>
-        <td class="p-sm">${escapeHtml(r.ruta?.destino || '')}</td>
+        <td class="p-sm">
+          ${escapeHtml(r.ruta?.destino || '')}
+          ${['ISLA','EXTREMA'].includes((r.caracteristica||'').toUpperCase())
+            ? `<span class="ml-xs inline-flex px-1 py-0.5 rounded text-[9px] font-bold ${r.caracteristica.toUpperCase()==='ISLA' ? 'bg-blue-100 text-blue-700' : 'bg-orange-100 text-orange-700'}">${r.caracteristica.toUpperCase()}</span>`
+            : ''}
+        </td>
         <td class="p-sm text-secondary text-[11px]">${escapeHtml(r.zonaTransporte)}</td>
         <td class="p-sm text-right">${r.clientes}</td>
         <td class="p-sm text-right">${r.obras}</td>
