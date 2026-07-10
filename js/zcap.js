@@ -1,229 +1,279 @@
 // Vista ZCAP — Costo de Servicio por Centro Logístico, Ruta y Tipo de Camión
-// Regional:       ZCAP = costosBase[capKg].fijo + km × ratePerKm
-// Interregional:  ZCAP = item10_costoRutaTotal
-import { getDatabase, getTariffConfig, truckCapKg, getOrigenGroups, getGroupRepId, TRUCK_BASE_TYPES } from './data.js?v=20260703b';
+// Regional:       ZCAP = Costo Base + km × Tarifa/KM
+// Interregional:  ZCAP = item10_costoRutaTotal (motor completo)
+// Troncales:      ZCAP = motor completo para rutas definidas por el usuario
+import { getDatabase, saveDatabase, getTariffConfig, truckCapKg, getOrigenGroups, TRUCK_BASE_TYPES } from './data.js?v=20260703b';
 import { calcularCostoRuta } from './tarifas-engine.js?v=20260703b';
 import { formatCLP, escapeHtml } from './utils.js';
 
-console.log('[ZCAP MODULE] cargado v20260703a');
 const TRUCK_ORDER = ['Camión 5 Ton', 'Camión 10 Ton', 'Camión 15 Ton', 'Camión 28 Ton'];
+const ZCAP_PAGE   = 50;
 
-let zcapFiltCentro = '';
-let zcapFiltTipo   = ''; // 'regional'|'interregional'|'troncales'|'' (todas)
-let zcapFiltTruck  = '';
-let zcapFiltRuta   = '';
-let zcapPaginaV    = 0;
-const ZCAP_PAGE    = 50;
+let zcapFiltTipo  = 'regional';   // 'regional'|'interregional'|'troncales'|'todas'
+let zcapFiltTruck = '';
+let zcapFiltRuta  = '';
+let zcapTabCentro = '__todos__';  // grupo activo; '__todos__' = todos
+let zcapPagina    = 0;
 
-function renderPagerZ(total, pagina) {
+// ── Helpers ────────────────────────────────────────────────────────────────
+function renderPagerZ(total, pagina, prevId, nextId) {
   if (total <= ZCAP_PAGE) return '';
   const totalPags = Math.ceil(total / ZCAP_PAGE);
   const desde = pagina * ZCAP_PAGE + 1;
   const hasta  = Math.min((pagina + 1) * ZCAP_PAGE, total);
-  const dp = pagina === 0 ? 'disabled opacity-40 cursor-default' : 'hover:bg-surface-container-high cursor-pointer';
-  const dn = pagina >= totalPags - 1 ? 'disabled opacity-40 cursor-default' : 'hover:bg-surface-container-high cursor-pointer';
+  const dp = pagina === 0 ? 'opacity-40 cursor-default' : 'hover:bg-surface-container-high cursor-pointer';
+  const dn = pagina >= totalPags - 1 ? 'opacity-40 cursor-default' : 'hover:bg-surface-container-high cursor-pointer';
   return `<div class="flex items-center justify-between mt-sm pt-sm border-t border-outline-variant text-[12px] text-secondary">
     <span>${desde.toLocaleString('es-CL')}–${hasta.toLocaleString('es-CL')} de ${total.toLocaleString('es-CL')} filas</span>
     <div class="flex items-center gap-xs">
-      <button id="zcapv-pag-prev" class="px-sm py-xs border border-outline-variant rounded ${dp}" ${pagina === 0 ? 'disabled' : ''}>
+      <button id="${prevId}" class="px-sm py-xs border border-outline-variant rounded ${dp}" ${pagina===0?'disabled':''}>
         <span class="material-symbols-outlined text-[16px] align-middle">chevron_left</span>
       </button>
-      <span class="px-sm">Pág. ${pagina + 1} / ${totalPags}</span>
-      <button id="zcapv-pag-next" class="px-sm py-xs border border-outline-variant rounded ${dn}" ${pagina >= totalPags - 1 ? 'disabled' : ''}>
+      <span class="px-sm">Pág. ${pagina+1} / ${totalPags}</span>
+      <button id="${nextId}" class="px-sm py-xs border border-outline-variant rounded ${dn}" ${pagina>=totalPags-1?'disabled':''}>
         <span class="material-symbols-outlined text-[16px] align-middle">chevron_right</span>
       </button>
     </div>
   </div>`;
 }
 
-export function renderZcapView(container) {
-  console.log('[ZCAP] renderZcapView llamado');
-  const db  = getDatabase();
-  const _t5 = db.truckTypes?.find(t => t.Id_centro === '1003' && t.type === 'Camión 5 Ton');
-  console.log('[ZCAP] 5T-1003 → Kmbase:', _t5?.Kmbase, '| baseKM:', _t5?.baseKM, '| baseRate:', _t5?.baseRate, '| ratePerKm:', _t5?.ratePerKm);
-  const cfg = getTariffConfig(db);
-  const centres  = (db.logisticsCentres || []).sort((a, b) => String(a.id).localeCompare(String(b.id)));
-  const grupos   = getOrigenGroups(db);
-  const allRoutes = (db.routes || []).filter(r => r.activo);
+function clasifBadge(ruta, troncalesSet) {
+  if (troncalesSet.has(ruta.codigo))
+    return '<span class="inline-flex px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-800">TRONC</span>';
+  return ruta.clasificRuta === 'Regional'
+    ? '<span class="inline-flex px-1.5 py-0.5 rounded text-[10px] font-bold bg-green-100 text-green-800">REG</span>'
+    : '<span class="inline-flex px-1.5 py-0.5 rounded text-[10px] font-bold bg-blue-100 text-blue-800">INTER</span>';
+}
 
-  function getGrupoForCentro(centroId) {
-    const cd = centres.find(c => c.id === centroId);
-    return grupos.find(g => g.grupo === (cd?.origen_grupo || ''));
+// ── Cálculo ZCAP ───────────────────────────────────────────────────────────
+function calcZcapRow(db, cfg, ruta, truck, troncalesSet) {
+  const km        = Number(ruta.km) || 0;
+  const esTroncal = troncalesSet.has(ruta.codigo);
+
+  if (!esTroncal && ruta.clasificRuta === 'Regional') {
+    const defaultBase = TRUCK_BASE_TYPES.find(b => b.type === truck.type)?.baseRate || 0;
+    const costoBase   = Number(truck.baseRate) || defaultBase;
+    const isExtrema   = ['ISLA','EXTREMA'].includes((ruta.caracteristica||'').toUpperCase());
+    const rate = isExtrema
+      ? (Number(truck.ratePerKmExtrema) || Number(truck.ratePerKm) || 0)
+      : (Number(truck.ratePerKm) || 0);
+    const kmBase = Number(truck.Kmbase) || 0;
+    const baseKM = Number(truck.baseKM)  || 0;
+    if (kmBase > 0) return (costoBase + baseKM) + Math.max(0, km - kmBase) * rate;
+    return costoBase + km * rate;
   }
+  // Interregional o Troncal → motor completo
+  const capKg = truckCapKg(truck.type);
+  if (!capKg) return 0;
+  try { return calcularCostoRuta(db, cfg, ruta, capKg).item10_costoRutaTotal || 0; }
+  catch (_) { return 0; }
+}
 
-  function getTruckTypes(repId) {
-    return (db.truckTypes || [])
-      .filter(t => t.Id_centro === repId)
-      .sort((a, b) => TRUCK_ORDER.indexOf(a.type) - TRUCK_ORDER.indexOf(b.type));
-  }
-
-  function calcZcapRow(ruta, truck) {
-    const km = Number(ruta.km) || 0;
-    const esTroncal = (ruta.tipo || '').toUpperCase() !== 'COMUNA';
-    if (!esTroncal && (ruta.clasificRuta || '') === 'Regional') {
-      // Costo base: usa truck.baseRate si está guardado; sino usa el default de TRUCK_BASE_TYPES
-      const defaultBase = TRUCK_BASE_TYPES.find(b => b.type === truck.type)?.baseRate || 0;
-      const costoBase = Number(truck.baseRate) || defaultBase;
-      // Tarifa/KM: Normal o Extrema/Isla según característica de la ruta
-      const isExtrema = ['ISLA', 'EXTREMA'].includes((ruta.caracteristica || '').toUpperCase());
-      const rate = isExtrema
-        ? (Number(truck.ratePerKmExtrema) || Number(truck.ratePerKm) || 0)
-        : (Number(truck.ratePerKm) || 0);
-      // Km Base: si el centro tiene Kmbase configurado, aplica tramo base + tramo variable
-      const kmBase = Number(truck.Kmbase) || 0;
-      const baseKM  = Number(truck.baseKM)  || 0;
-      if (kmBase > 0) {
-        // [Costo Base + Tarifa Base KM] + [max(0, km - kmBase) × rate]
-        const kmExcedente = Math.max(0, km - kmBase);
-        const _res = (costoBase + baseKM) + kmExcedente * rate;
-        if (ruta.codigo === 'SGO128') console.log('[ZCAP-T] SGO128 ×', truck.type, '→ KMBASE PATH  km:', km, 'kmBase:', kmBase, 'excedente:', kmExcedente, 'result:', _res);
-        return _res;
-      }
-      const _res2 = costoBase + km * rate;
-      if (ruta.codigo === 'SGO128') console.log('[ZCAP-T] SGO128 ×', truck.type, '→ FALLBACK PATH  km:', km, 'kmBase:', kmBase, 'result:', _res2);
-      // Sin Km Base: fórmula estándar
-      return _res2;
-    } else {
-      // Interregional: motor de costo (ya incluye todos los costos)
-      const capKg = truckCapKg(truck.type);
-      if (!capKg) return 0;
-      try {
-        const result = calcularCostoRuta(db, cfg, ruta, capKg);
-        return result.item10_costoRutaTotal || 0;
-      } catch (_) { return 0; }
-    }
-  }
-
-  function renderTable(centroId) {
-    const centro = centres.find(c => c.id === centroId);
-    if (!centro) return '<p class="text-secondary p-md">Seleccione un centro logístico.</p>';
-
-    const grupo = getGrupoForCentro(centroId);
-    if (!grupo) return '<p class="text-secondary p-md">Centro sin grupo de origen configurado.</p>';
-
-    const repId  = grupo.repId;
-    let trucks   = getTruckTypes(repId);
-    console.log('[ZCAP-T] trucks repId:', repId, trucks.map(t => `${t.type}[Kmbase=${t.Kmbase}]`).join(', '));
-    if (zcapFiltTruck) trucks = trucks.filter(t => t.type === zcapFiltTruck);
-
-    let rutas = allRoutes.filter(r => r.origen_grupo === centro.origen_grupo);
-    if (zcapFiltTipo === 'regional')       rutas = rutas.filter(r => r.clasificRuta === 'Regional' && (r.tipo || '').toUpperCase() === 'COMUNA');
-    else if (zcapFiltTipo === 'interregional') rutas = rutas.filter(r => r.clasificRuta === 'Interregional');
-    else if (zcapFiltTipo === 'troncales') rutas = rutas.filter(r => (r.tipo || '').toUpperCase() !== 'COMUNA');
-    if (zcapFiltRuta)   rutas = rutas.filter(r =>
-      r.codigo?.toLowerCase().includes(zcapFiltRuta.toLowerCase()) ||
-      r.destino?.toLowerCase().includes(zcapFiltRuta.toLowerCase())
+// ── Tabla de resultados ────────────────────────────────────────────────────
+function renderTablaRutas(db, cfg, grupos, rutas, troncalesSet) {
+  let rutasFilt = [...rutas];
+  if (zcapFiltRuta) {
+    const q = zcapFiltRuta.toLowerCase();
+    rutasFilt = rutasFilt.filter(r =>
+      r.codigo?.toLowerCase().includes(q) || r.destino?.toLowerCase().includes(q)
     );
-    rutas = rutas.sort((a, b) => (a.codigo || '').localeCompare(b.codigo || ''));
+  }
+  rutasFilt.sort((a, b) => (a.codigo||'').localeCompare(b.codigo||''));
+  if (!rutasFilt.length)
+    return '<p class="text-secondary text-[12px] p-md">Sin rutas para los filtros seleccionados.</p>';
 
-    if (rutas.length === 0 || trucks.length === 0) {
-      return '<p class="text-secondary p-md">Sin rutas o tipos de camión para los filtros seleccionados.</p>';
-    }
-
-    // Construir filas: una fila por ruta × tipo de camión
-    const rows = [];
-    rutas.forEach(ruta => {
-      trucks.forEach((truck, ti) => {
-        const zcap = calcZcapRow(ruta, truck);
-        rows.push({
-          centroId: centro.id,
-          centroNombre: centro.nombre,
-          rutaId: ruta.id,
-          rutaCodigo: ruta.codigo,
-          destino: ruta.destino || '',
-          clasif: ruta.clasificRuta || '',
-          ruta,
-          caracteristica: ruta.caracteristica || 'NORMAL',
-          km: Number(ruta.km) || 0,
-          truckType: truck.type,
-          zcap,
-          firstTruck: ti === 0
-        });
+  const rows = [];
+  rutasFilt.forEach(ruta => {
+    const grupo = grupos.find(g =>
+      g.grupo === ruta.origen_grupo ||
+      (g.centroIds||[]).map(String).includes(String(ruta.origenId))
+    );
+    if (!grupo) return;
+    let trucks = (db.truckTypes||[])
+      .filter(t => t.Id_centro === grupo.repId)
+      .sort((a,b) => TRUCK_ORDER.indexOf(a.type) - TRUCK_ORDER.indexOf(b.type));
+    if (zcapFiltTruck) trucks = trucks.filter(t => t.type === zcapFiltTruck);
+    if (!trucks.length) return;
+    trucks.forEach((truck, ti) => {
+      rows.push({
+        ruta, grupo, truck,
+        zcap: calcZcapRow(db, cfg, ruta, truck, troncalesSet),
+        firstTruck: ti === 0,
+        truckCount: trucks.length
       });
     });
+  });
 
-    const clasifBadge = (ruta) => {
-      const esTroncal = (ruta.tipo || '').toUpperCase() !== 'COMUNA';
-      if (esTroncal) return '<span class="inline-flex px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-800">TRONC</span>';
-      return ruta.clasificRuta === 'Regional'
-        ? '<span class="inline-flex px-1.5 py-0.5 rounded text-[10px] font-bold bg-green-100 text-green-800">REG</span>'
-        : '<span class="inline-flex px-1.5 py-0.5 rounded text-[10px] font-bold bg-blue-100 text-blue-800">INTER</span>';
-    };
+  if (!rows.length)
+    return '<p class="text-secondary text-[12px] p-md">Sin combinaciones ruta × camión.</p>';
 
-    const pageRows = rows.slice(zcapPaginaV * ZCAP_PAGE, (zcapPaginaV + 1) * ZCAP_PAGE);
-    return `
-      <div class="text-[12px] text-secondary mb-sm">${rutas.length} ruta(s) × ${trucks.length} tipo(s) = ${rows.length} combinaciones</div>
-      <div class="bg-surface border border-outline-variant overflow-x-auto rounded">
-        <table class="w-full border-collapse text-[12px]">
-          <thead>
-            <tr class="bg-surface-container-high text-left border-b border-outline-variant">
-              <th class="p-md font-label-caps text-label-caps text-secondary uppercase">ID Centro</th>
-              <th class="p-md font-label-caps text-label-caps text-secondary uppercase">ID Ruta</th>
-              <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Denominación Ruta</th>
-              <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Clasif.</th>
-              <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-right">KM</th>
-              <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Tipo Camión</th>
-              <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-right">Costo Ruta ZCAP</th>
-            </tr>
-          </thead>
-          <tbody class="font-body-md text-body-md">
-            ${pageRows.map((r, i) => {
-              const globalIdx = zcapPaginaV * ZCAP_PAGE + i;
-              const zebra = Math.floor(globalIdx / trucks.length) % 2 === 0 ? '' : 'bg-surface-container-lowest';
-              return `<tr class="border-b border-outline-variant ${zebra}">
-                <td class="p-md font-data-mono text-data-mono ${r.firstTruck ? 'font-bold' : 'text-secondary'}">${r.firstTruck ? escapeHtml(r.centroId) : ''}</td>
-                <td class="p-md font-data-mono text-data-mono ${r.firstTruck ? 'font-bold' : 'text-secondary'}">${r.firstTruck ? escapeHtml(r.rutaCodigo) : ''}</td>
-                <td class="p-md ${r.firstTruck ? '' : 'text-secondary'}">${r.firstTruck ? escapeHtml(r.destino) : ''}</td>
-                <td class="p-md">${r.firstTruck ? clasifBadge(r.ruta) : ''}</td>
-                <td class="p-md text-right font-data-mono">${r.firstTruck ? r.km : ''}</td>
-                <td class="p-md">${escapeHtml(r.truckType)}</td>
-                <td class="p-md text-right font-data-mono font-bold text-primary">${r.zcap > 0 ? formatCLP(Math.round(r.zcap)) : '<span class="text-secondary font-normal">—</span>'}</td>
-              </tr>`;
-            }).join('')}
-          </tbody>
-        </table>
+  const pageRows = rows.slice(zcapPagina * ZCAP_PAGE, (zcapPagina+1) * ZCAP_PAGE);
+  return `
+    <div class="text-[12px] text-secondary mb-sm">${rutasFilt.length} ruta(s) — ${rows.length} combinaciones</div>
+    <div class="bg-surface border border-outline-variant overflow-x-auto rounded">
+      <table class="w-full border-collapse text-[12px]">
+        <thead>
+          <tr class="bg-surface-container-high text-left border-b border-outline-variant">
+            <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Centro</th>
+            <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Cód. Ruta</th>
+            <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Destino</th>
+            <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Tipo</th>
+            <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-right">KM</th>
+            <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Tipo Camión</th>
+            <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-right">ZCAP</th>
+          </tr>
+        </thead>
+        <tbody class="font-body-md text-body-md">
+          ${pageRows.map((r, i) => {
+            const gi = zcapPagina * ZCAP_PAGE + i;
+            const z  = Math.floor(gi / (r.truckCount||1)) % 2 === 0 ? '' : 'bg-surface-container-lowest';
+            return `<tr class="border-b border-outline-variant ${z}">
+              <td class="p-md font-data-mono text-[11px] ${r.firstTruck?'font-bold':'text-secondary'}">${r.firstTruck ? escapeHtml(r.grupo.nombre||r.grupo.grupo) : ''}</td>
+              <td class="p-md font-data-mono text-[11px] ${r.firstTruck?'font-bold text-primary':'text-secondary'}">${r.firstTruck ? escapeHtml(r.ruta.codigo||'') : ''}</td>
+              <td class="p-md ${r.firstTruck?'':'text-secondary text-[11px]'}">${r.firstTruck ? escapeHtml(r.ruta.destino||'') : ''}</td>
+              <td class="p-md">${r.firstTruck ? clasifBadge(r.ruta, troncalesSet) : ''}</td>
+              <td class="p-md text-right font-data-mono text-[11px]">${r.firstTruck ? (Number(r.ruta.km)||0) : ''}</td>
+              <td class="p-md text-[11px]">${escapeHtml(r.truck.type)}</td>
+              <td class="p-md text-right font-data-mono font-bold text-primary">${r.zcap>0 ? formatCLP(Math.round(r.zcap)) : '<span class="text-secondary font-normal">—</span>'}</td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>
+    </div>
+    ${renderPagerZ(rows.length, zcapPagina, 'zcap-prev', 'zcap-next')}`;
+}
+
+// ── Panel config Troncales ─────────────────────────────────────────────────
+function renderPanelTroncales(cfg, db, container, onChangeFn) {
+  const panel = container.querySelector('#zcap-troncales-config');
+  if (!panel) return;
+  const list      = cfg.variables.troncalesRoutes || [];
+  const allRoutes = (db.routes||[]).filter(r => r.activo);
+
+  panel.innerHTML = `
+    <div class="bg-amber-50 border border-amber-200 rounded p-md mb-md">
+      <div class="flex items-center gap-sm mb-sm">
+        <span class="material-symbols-outlined text-amber-700 text-[18px]">settings</span>
+        <span class="font-bold text-[13px] text-amber-900">Rutas Troncales (${list.length})</span>
+        <span class="text-[11px] text-amber-700 italic ml-sm">Usan Motor de Costo completo para ZCAP</span>
       </div>
-      ${renderPagerZ(rows.length, zcapPaginaV)}`;
+      <div class="flex gap-sm mb-sm">
+        <input id="zcap-tronc-input" type="text" placeholder="Código de ruta (ej: CON518)"
+          list="zcap-tronc-list"
+          class="border border-amber-300 bg-white p-sm font-data-mono text-[12px] w-52 rounded">
+        <datalist id="zcap-tronc-list">
+          ${allRoutes.map(r => `<option value="${escapeHtml(r.codigo||'')}"></option>`).join('')}
+        </datalist>
+        <button id="zcap-tronc-add"
+          class="bg-amber-600 hover:bg-amber-700 text-white font-bold px-md py-sm rounded text-[12px] flex items-center gap-xs">
+          <span class="material-symbols-outlined text-[16px]">add</span> Agregar
+        </button>
+      </div>
+      <div class="flex flex-wrap gap-xs">
+        ${list.map(cod => {
+          const ruta = allRoutes.find(r => r.codigo === cod);
+          return `<span class="inline-flex items-center gap-xs bg-amber-100 border border-amber-300 rounded px-sm py-xs text-[11px] font-data-mono font-bold text-amber-900">
+            ${escapeHtml(cod)}${ruta ? ` <span class="font-normal text-amber-700 text-[10px]">${escapeHtml(ruta.destino||'')}</span>` : ''}
+            <button class="zcap-tronc-rm hover:text-red-600 ml-xs" data-cod="${escapeHtml(cod)}">
+              <span class="material-symbols-outlined text-[13px]">close</span>
+            </button>
+          </span>`;
+        }).join('')}
+        ${!list.length ? '<span class="text-[11px] text-amber-600 italic">Sin rutas configuradas</span>' : ''}
+      </div>
+    </div>`;
+
+  panel.querySelector('#zcap-tronc-add')?.addEventListener('click', () => {
+    const inp = panel.querySelector('#zcap-tronc-input');
+    const cod = (inp?.value||'').trim().toUpperCase();
+    if (!cod) return;
+    if (!cfg.variables.troncalesRoutes.includes(cod)) {
+      cfg.variables.troncalesRoutes.push(cod);
+      saveDatabase(db);
+    }
+    if (inp) inp.value = '';
+    renderPanelTroncales(cfg, db, container, onChangeFn);
+    onChangeFn();
+  });
+
+  panel.querySelectorAll('.zcap-tronc-rm').forEach(btn => {
+    btn.addEventListener('click', () => {
+      cfg.variables.troncalesRoutes = cfg.variables.troncalesRoutes.filter(c => c !== btn.dataset.cod);
+      saveDatabase(db);
+      renderPanelTroncales(cfg, db, container, onChangeFn);
+      onChangeFn();
+    });
+  });
+}
+
+// ── Render tabla central ───────────────────────────────────────────────────
+function renderContenido(db, cfg, grupos, container) {
+  const troncalesSet = new Set(cfg.variables?.troncalesRoutes || []);
+  const allRoutes    = (db.routes||[]).filter(r => r.activo);
+
+  let rutas;
+  if      (zcapFiltTipo === 'regional')       rutas = allRoutes.filter(r => r.clasificRuta==='Regional'      && !troncalesSet.has(r.codigo));
+  else if (zcapFiltTipo === 'interregional')  rutas = allRoutes.filter(r => r.clasificRuta==='Interregional' && !troncalesSet.has(r.codigo));
+  else if (zcapFiltTipo === 'troncales')      rutas = allRoutes.filter(r => troncalesSet.has(r.codigo));
+  else                                         rutas = allRoutes;
+
+  if (zcapTabCentro !== '__todos__') {
+    const g   = grupos.find(go => go.grupo === zcapTabCentro);
+    const ids = new Set((g?.centroIds||[]).map(String));
+    rutas = rutas.filter(r => r.origen_grupo === zcapTabCentro || ids.has(String(r.origenId)));
   }
+
+  const el = container.querySelector('#zcap-contenido');
+  if (!el) return;
+  el.innerHTML = renderTablaRutas(db, cfg, grupos, rutas, troncalesSet);
+  el.querySelector('#zcap-prev')?.addEventListener('click', () => { zcapPagina = Math.max(0, zcapPagina-1); renderContenido(db,cfg,grupos,container); });
+  el.querySelector('#zcap-next')?.addEventListener('click', () => { zcapPagina++; renderContenido(db,cfg,grupos,container); });
+}
+
+// ── Entry point ────────────────────────────────────────────────────────────
+export function renderZcapView(container) {
+  const db  = getDatabase();
+  const cfg = getTariffConfig(db);
+  if (!cfg.variables) cfg.variables = {};
+  if (!cfg.variables.troncalesRoutes) cfg.variables.troncalesRoutes = [];
+  const grupos = getOrigenGroups(db);
 
   function render() {
     container.innerHTML = `
       <div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm">
         <div class="flex items-center gap-sm mb-md border-b border-outline-variant pb-sm">
           <span class="material-symbols-outlined text-primary">price_check</span>
-          <h2 class="font-headline-sm text-headline-sm font-bold text-on-surface">ZCAP — Costo de Servicio por Centro y Ruta</h2>
+          <h2 class="font-headline-sm text-headline-sm font-bold text-on-surface">ZCAP — Costo de Servicio por Ruta y Tipo de Camión</h2>
         </div>
-        <p class="text-[12px] text-secondary mb-md">
-          <b>Rutas Regionales:</b> ZCAP = Costo Base (Variables Generales) + km × Tarifa/KM Normal. &nbsp;
-          <b>Rutas Interregionales:</b> ZCAP = Costo Ruta Total (Motor de Costo Interregional).
-        </p>
 
+        <!-- Toggle tipo -->
+        <div class="flex items-center gap-xs mb-md flex-wrap">
+          <span class="font-label-caps text-label-caps text-secondary mr-sm text-[11px]">TIPO:</span>
+          ${[['regional','Regional'],['interregional','Interregional'],['troncales','Troncales'],['todas','Todas']].map(([v,l]) => `
+          <button class="zcap-tipo-btn px-md py-xs rounded border text-[12px] font-bold uppercase transition-colors ${zcapFiltTipo===v
+            ? 'bg-primary text-white border-primary'
+            : 'bg-white border-outline-variant text-on-surface hover:bg-surface-container-high'}" data-tipo="${v}">${l}</button>`).join('')}
+        </div>
+
+        <!-- Panel troncales -->
+        <div id="zcap-troncales-config" class="${zcapFiltTipo==='troncales'?'':'hidden'}"></div>
+
+        <!-- Tabs por centro -->
+        <div class="flex gap-xs mb-md flex-wrap border-b border-outline-variant pb-sm">
+          ${[{grupo:'__todos__', nombre:'Todos'}, ...grupos].map(g => `
+          <button class="zcap-tab-btn px-md py-xs rounded-t border text-[12px] font-bold uppercase transition-colors ${zcapTabCentro===g.grupo
+            ? 'bg-primary text-white border-primary'
+            : 'bg-white border-outline-variant text-on-surface hover:bg-surface-container-high'}"
+            data-tab="${escapeHtml(g.grupo)}">${escapeHtml(g.nombre||g.grupo)}</button>`).join('')}
+        </div>
+
+        <!-- Filtros secundarios -->
         <div class="flex flex-wrap gap-md items-end mb-md">
-          <div class="space-y-xs">
-            <label class="font-label-caps text-label-caps text-secondary block">CENTRO LOGÍSTICO</label>
-            <select id="zcap-v-centro" class="border border-[#CED4DA] p-sm font-body-md text-body-md bg-white w-64">
-              <option value="">Seleccione un centro</option>
-              ${centres.map(c => {
-                const g = getGrupoForCentro(c.id);
-                return `<option value="${escapeHtml(c.id)}" ${c.id === zcapFiltCentro ? 'selected' : ''}>${escapeHtml(c.id)} — ${escapeHtml(c.nombre)}${g && g.grupo !== c.nombre ? ` (${escapeHtml(g.grupo)})` : ''}</option>`;
-              }).join('')}
-            </select>
-          </div>
-          <div class="space-y-xs">
-            <label class="font-label-caps text-label-caps text-secondary block">TIPO DE RUTA</label>
-            <div class="flex gap-xs">
-              ${[['','Todas'],['regional','Regional'],['interregional','Interregional'],['troncales','Troncales']].map(([val,lbl]) => `
-              <button class="zcap-tipo-btn px-md py-sm rounded border text-[12px] font-bold uppercase transition-colors ${zcapFiltTipo === val
-                ? 'bg-primary text-white border-primary'
-                : 'bg-white border-outline-variant text-on-surface hover:bg-surface-container-high'}"
-                data-tipo="${val}">${lbl}</button>`).join('')}
-            </div>
-          </div>
           <div class="space-y-xs">
             <label class="font-label-caps text-label-caps text-secondary block">TIPO CAMIÓN</label>
             <select id="zcap-v-truck" class="border border-[#CED4DA] p-sm font-body-md text-body-md bg-white w-44">
               <option value="">Todos</option>
-              ${TRUCK_ORDER.map(t => `<option value="${t}" ${zcapFiltTruck === t ? 'selected' : ''}>${t}</option>`).join('')}
+              ${TRUCK_ORDER.map(t => `<option value="${t}" ${zcapFiltTruck===t?'selected':''}>${t}</option>`).join('')}
             </select>
           </div>
           <div class="space-y-xs">
@@ -234,34 +284,43 @@ export function renderZcapView(container) {
           </div>
         </div>
 
-        <div id="zcap-v-tabla">
-          ${zcapFiltCentro
-            ? renderTable(zcapFiltCentro)
-            : '<p class="text-secondary">Seleccione un centro logístico para ver los costos ZCAP.</p>'}
-        </div>
-      </div>
-    `;
+        <!-- Tabla -->
+        <div id="zcap-contenido"></div>
+      </div>`;
 
-    container.querySelector('#zcap-v-centro')?.addEventListener('change', e => {
-      zcapFiltCentro = e.target.value; zcapPaginaV = 0; render();
-    });
+    if (zcapFiltTipo === 'troncales') {
+      renderPanelTroncales(cfg, db, container, () => renderContenido(db, cfg, grupos, container));
+    }
+    renderContenido(db, cfg, grupos, container);
+
+    // Listeners tipo
     container.querySelectorAll('.zcap-tipo-btn').forEach(btn => {
-      btn.addEventListener('click', () => { zcapFiltTipo = btn.dataset.tipo; zcapPaginaV = 0; render(); });
+      btn.addEventListener('click', () => { zcapFiltTipo = btn.dataset.tipo; zcapPagina = 0; render(); });
     });
+
+    // Listeners tabs
+    container.querySelectorAll('.zcap-tab-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        zcapTabCentro = btn.dataset.tab; zcapPagina = 0;
+        container.querySelectorAll('.zcap-tab-btn').forEach(b => {
+          b.className = `zcap-tab-btn px-md py-xs rounded-t border text-[12px] font-bold uppercase transition-colors ${b.dataset.tab===zcapTabCentro
+            ? 'bg-primary text-white border-primary'
+            : 'bg-white border-outline-variant text-on-surface hover:bg-surface-container-high'}`;
+        });
+        renderContenido(db, cfg, grupos, container);
+      });
+    });
+
     container.querySelector('#zcap-v-truck')?.addEventListener('change', e => {
-      zcapFiltTruck = e.target.value; zcapPaginaV = 0; render();
+      zcapFiltTruck = e.target.value; zcapPagina = 0; renderContenido(db, cfg, grupos, container);
     });
+
     container.querySelector('#zcap-v-ruta')?.addEventListener('input', e => {
       const pos = e.target.selectionStart;
-      zcapFiltRuta = e.target.value; zcapPaginaV = 0; render();
+      zcapFiltRuta = e.target.value; zcapPagina = 0;
+      renderContenido(db, cfg, grupos, container);
       const inp = container.querySelector('#zcap-v-ruta');
       if (inp) { inp.focus(); inp.setSelectionRange(pos, pos); }
-    });
-    container.querySelector('#zcapv-pag-prev')?.addEventListener('click', () => {
-      zcapPaginaV = Math.max(0, zcapPaginaV - 1); render();
-    });
-    container.querySelector('#zcapv-pag-next')?.addEventListener('click', () => {
-      zcapPaginaV++; render();
     });
   }
 
