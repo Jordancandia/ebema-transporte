@@ -9,7 +9,7 @@ console.log('[ZCAP MODULE] cargado v20260703a');
 const TRUCK_ORDER = ['Camión 5 Ton', 'Camión 10 Ton', 'Camión 15 Ton', 'Camión 28 Ton'];
 
 let zcapFiltCentro = '';
-let zcapFiltClasif = '';
+let zcapFiltTipo   = ''; // 'regional'|'interregional'|'troncales'|'' (todas)
 let zcapFiltTruck  = '';
 let zcapFiltRuta   = '';
 let zcapPaginaV    = 0;
@@ -59,7 +59,8 @@ export function renderZcapView(container) {
 
   function calcZcapRow(ruta, truck) {
     const km = Number(ruta.km) || 0;
-    if ((ruta.clasificRuta || '') === 'Regional') {
+    const esTroncal = (ruta.tipo || '').toUpperCase() !== 'COMUNA';
+    if (!esTroncal && (ruta.clasificRuta || '') === 'Regional') {
       // Costo base: usa truck.baseRate si está guardado; sino usa el default de TRUCK_BASE_TYPES
       const defaultBase = TRUCK_BASE_TYPES.find(b => b.type === truck.type)?.baseRate || 0;
       const costoBase = Number(truck.baseRate) || defaultBase;
@@ -106,7 +107,9 @@ export function renderZcapView(container) {
     if (zcapFiltTruck) trucks = trucks.filter(t => t.type === zcapFiltTruck);
 
     let rutas = allRoutes.filter(r => r.origen_grupo === centro.origen_grupo);
-    if (zcapFiltClasif) rutas = rutas.filter(r => r.clasificRuta === zcapFiltClasif);
+    if (zcapFiltTipo === 'regional')       rutas = rutas.filter(r => r.clasificRuta === 'Regional' && (r.tipo || '').toUpperCase() === 'COMUNA');
+    else if (zcapFiltTipo === 'interregional') rutas = rutas.filter(r => r.clasificRuta === 'Interregional');
+    else if (zcapFiltTipo === 'troncales') rutas = rutas.filter(r => (r.tipo || '').toUpperCase() !== 'COMUNA');
     if (zcapFiltRuta)   rutas = rutas.filter(r =>
       r.codigo?.toLowerCase().includes(zcapFiltRuta.toLowerCase()) ||
       r.destino?.toLowerCase().includes(zcapFiltRuta.toLowerCase())
@@ -129,6 +132,7 @@ export function renderZcapView(container) {
           rutaCodigo: ruta.codigo,
           destino: ruta.destino || '',
           clasif: ruta.clasificRuta || '',
+          ruta,
           caracteristica: ruta.caracteristica || 'NORMAL',
           km: Number(ruta.km) || 0,
           truckType: truck.type,
@@ -138,9 +142,13 @@ export function renderZcapView(container) {
       });
     });
 
-    const clasifBadge = c => c === 'Regional'
-      ? '<span class="inline-flex px-1.5 py-0.5 rounded text-[10px] font-bold bg-green-100 text-green-800">REG</span>'
-      : '<span class="inline-flex px-1.5 py-0.5 rounded text-[10px] font-bold bg-blue-100 text-blue-800">INTER</span>';
+    const clasifBadge = (ruta) => {
+      const esTroncal = (ruta.tipo || '').toUpperCase() !== 'COMUNA';
+      if (esTroncal) return '<span class="inline-flex px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-800">TRONC</span>';
+      return ruta.clasificRuta === 'Regional'
+        ? '<span class="inline-flex px-1.5 py-0.5 rounded text-[10px] font-bold bg-green-100 text-green-800">REG</span>'
+        : '<span class="inline-flex px-1.5 py-0.5 rounded text-[10px] font-bold bg-blue-100 text-blue-800">INTER</span>';
+    };
 
     const pageRows = rows.slice(zcapPaginaV * ZCAP_PAGE, (zcapPaginaV + 1) * ZCAP_PAGE);
     return `
@@ -166,7 +174,7 @@ export function renderZcapView(container) {
                 <td class="p-md font-data-mono text-data-mono ${r.firstTruck ? 'font-bold' : 'text-secondary'}">${r.firstTruck ? escapeHtml(r.centroId) : ''}</td>
                 <td class="p-md font-data-mono text-data-mono ${r.firstTruck ? 'font-bold' : 'text-secondary'}">${r.firstTruck ? escapeHtml(r.rutaCodigo) : ''}</td>
                 <td class="p-md ${r.firstTruck ? '' : 'text-secondary'}">${r.firstTruck ? escapeHtml(r.destino) : ''}</td>
-                <td class="p-md">${r.firstTruck ? clasifBadge(r.clasif) : ''}</td>
+                <td class="p-md">${r.firstTruck ? clasifBadge(r.ruta) : ''}</td>
                 <td class="p-md text-right font-data-mono">${r.firstTruck ? r.km : ''}</td>
                 <td class="p-md">${escapeHtml(r.truckType)}</td>
                 <td class="p-md text-right font-data-mono font-bold text-primary">${r.zcap > 0 ? formatCLP(Math.round(r.zcap)) : '<span class="text-secondary font-normal">—</span>'}</td>
@@ -202,12 +210,14 @@ export function renderZcapView(container) {
             </select>
           </div>
           <div class="space-y-xs">
-            <label class="font-label-caps text-label-caps text-secondary block">CLASIFICACIÓN</label>
-            <select id="zcap-v-clasif" class="border border-[#CED4DA] p-sm font-body-md text-body-md bg-white w-44">
-              <option value="">Todas</option>
-              <option value="Regional"      ${zcapFiltClasif === 'Regional'      ? 'selected' : ''}>Regional</option>
-              <option value="Interregional" ${zcapFiltClasif === 'Interregional' ? 'selected' : ''}>Interregional</option>
-            </select>
+            <label class="font-label-caps text-label-caps text-secondary block">TIPO DE RUTA</label>
+            <div class="flex gap-xs">
+              ${[['','Todas'],['regional','Regional'],['interregional','Interregional'],['troncales','Troncales']].map(([val,lbl]) => `
+              <button class="zcap-tipo-btn px-md py-sm rounded border text-[12px] font-bold uppercase transition-colors ${zcapFiltTipo === val
+                ? 'bg-primary text-white border-primary'
+                : 'bg-white border-outline-variant text-on-surface hover:bg-surface-container-high'}"
+                data-tipo="${val}">${lbl}</button>`).join('')}
+            </div>
           </div>
           <div class="space-y-xs">
             <label class="font-label-caps text-label-caps text-secondary block">TIPO CAMIÓN</label>
@@ -235,8 +245,8 @@ export function renderZcapView(container) {
     container.querySelector('#zcap-v-centro')?.addEventListener('change', e => {
       zcapFiltCentro = e.target.value; zcapPaginaV = 0; render();
     });
-    container.querySelector('#zcap-v-clasif')?.addEventListener('change', e => {
-      zcapFiltClasif = e.target.value; zcapPaginaV = 0; render();
+    container.querySelectorAll('.zcap-tipo-btn').forEach(btn => {
+      btn.addEventListener('click', () => { zcapFiltTipo = btn.dataset.tipo; zcapPaginaV = 0; render(); });
     });
     container.querySelector('#zcap-v-truck')?.addEventListener('change', e => {
       zcapFiltTruck = e.target.value; zcapPaginaV = 0; render();
