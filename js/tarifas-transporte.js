@@ -2763,17 +2763,17 @@ function renderParticipacion(content, db, cfg) {
       if (gObj) gObj.centroIds.forEach(id => grupoCentroIds.add(String(id)));
     });
 
-    // Filtrar por centroId del registro histórico (fuente de verdad)
-    const grupoRows = histDataLocal.filter(h => grupoCentroIds.has(String(h.centroId)));
-    console.log('[PARTICIPACION] gruposCalc:', gruposCalc, '| grupoCentroIds:', [...grupoCentroIds], '| grupoRows:', grupoRows.length, '| sample centroId:', histDataLocal[0]?.centroId);
-    if (!grupoRows.length) return [];
-
+    // Filtrar histData: la ruta debe pertenecer a uno de los grupos/centros seleccionados
+    // h.oficina = código SAP del centro; lo vinculamos via ruta.origen_grupo
     // Solo rutas Regional + COMUNA
-    let _dbgNoRuta=0, _dbgNoRegional=0, _dbgNoComuna=0, _dbgOK=0;
     const routeMap = new Map();
-    grupoRows.forEach(h => {
+    let _dbgNoRuta=0, _dbgNoGrupo=0, _dbgNoRegional=0, _dbgNoComuna=0, _dbgOK=0;
+    histDataLocal.forEach(h => {
       const ruta = routeByIdP.get(h.idRuta);
       if (!ruta) { _dbgNoRuta++; return; }
+      // Verificar que la ruta pertenece a uno de los grupos/centros seleccionados
+      const enGrupo = expanded.has(ruta.origen_grupo) || grupoCentroIds.has(String(ruta.origenId));
+      if (!enGrupo) { _dbgNoGrupo++; return; }
       if ((ruta.clasificRuta || 'Regional').toLowerCase() !== 'regional') { _dbgNoRegional++; return; }
       if ((ruta.tipo || '').toLowerCase() !== 'comuna') { _dbgNoComuna++; return; }
       _dbgOK++;
@@ -2788,7 +2788,7 @@ function renderParticipacion(content, db, cfg) {
       e.ton += h.ton;
     });
 
-    console.log('[PARTICIPACION] filtros → noRuta:', _dbgNoRuta, '| noRegional:', _dbgNoRegional, '| noComuna:', _dbgNoComuna, '| OK:', _dbgOK, '| routeMap size:', routeMap.size);
+    console.log('[PARTICIPACION] grupos:', [...expanded], '| noRuta:', _dbgNoRuta, '| noGrupo:', _dbgNoGrupo, '| noRegional:', _dbgNoRegional, '| noComuna:', _dbgNoComuna, '| OK:', _dbgOK, '| routeMap:', routeMap.size);
     // PESO por categoría (denominador = total combinado)
     const catTon = {};
     routeMap.forEach(e => {
