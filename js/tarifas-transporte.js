@@ -2701,6 +2701,7 @@ function renderParticipacion(content, db, cfg) {
   // ── Estado local ─────────────────────────────────────────────────────────
   let partCentrosSelec = new Set();  // grupos seleccionados (vacío = ninguno)
   let histDataLocal = getClientTariffConfig(db).historico || [];
+  console.log('[PARTICIPACION] histDataLocal al inicio:', histDataLocal.length);
 
   // ── Helpers de rutas/grupos ───────────────────────────────────────────────
   const routes  = (db.routes || []).filter(r => r.activo);
@@ -2979,6 +2980,18 @@ function renderParticipacion(content, db, cfg) {
         } catch(err) { showAlert('Error al guardar: ' + err.message, 'error'); }
       });
     }
+  }
+
+  // Auto-cargar histórico desde IndexedDB si no hay datos en memoria
+  if (histDataLocal.length === 0) {
+    loadHistorico().then(fresh => {
+      console.log('[PARTICIPACION] auto-load desde IndexedDB:', fresh ? fresh.length : 0);
+      if (fresh && fresh.length > 0) {
+        histDataLocal = fresh;
+        getClientTariffConfig(db).historico = fresh;
+        render();
+      }
+    }).catch(err => console.warn('[PARTICIPACION] error auto-load:', err));
   }
 
   render();
