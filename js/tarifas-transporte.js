@@ -2765,15 +2765,18 @@ function renderParticipacion(content, db, cfg) {
 
     // Filtrar por centroId del registro histórico (fuente de verdad)
     const grupoRows = histDataLocal.filter(h => grupoCentroIds.has(String(h.centroId)));
+    console.log('[PARTICIPACION] gruposCalc:', gruposCalc, '| grupoCentroIds:', [...grupoCentroIds], '| grupoRows:', grupoRows.length, '| sample centroId:', histDataLocal[0]?.centroId);
     if (!grupoRows.length) return [];
 
     // Solo rutas Regional + COMUNA
+    let _dbgNoRuta=0, _dbgNoRegional=0, _dbgNoComuna=0, _dbgOK=0;
     const routeMap = new Map();
     grupoRows.forEach(h => {
       const ruta = routeByIdP.get(h.idRuta);
-      if (!ruta) return;
-      if ((ruta.clasificRuta || 'Regional').toLowerCase() !== 'regional') return;
-      if ((ruta.tipo || '').toLowerCase() !== 'comuna') return;
+      if (!ruta) { _dbgNoRuta++; return; }
+      if ((ruta.clasificRuta || 'Regional').toLowerCase() !== 'regional') { _dbgNoRegional++; return; }
+      if ((ruta.tipo || '').toLowerCase() !== 'comuna') { _dbgNoComuna++; return; }
+      _dbgOK++;
       const mapKey = ruta.id_zona_transporte || (ruta.destino || '').trim().toUpperCase() || h.idRuta;
       if (!routeMap.has(mapKey)) {
         routeMap.set(mapKey, { mapKey, ruta, clientes: new Set(), obras: new Set(), ton: 0 });
@@ -2785,6 +2788,7 @@ function renderParticipacion(content, db, cfg) {
       e.ton += h.ton;
     });
 
+    console.log('[PARTICIPACION] filtros → noRuta:', _dbgNoRuta, '| noRegional:', _dbgNoRegional, '| noComuna:', _dbgNoComuna, '| OK:', _dbgOK, '| routeMap size:', routeMap.size);
     // PESO por categoría (denominador = total combinado)
     const catTon = {};
     routeMap.forEach(e => {
