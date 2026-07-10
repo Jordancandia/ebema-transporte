@@ -203,7 +203,7 @@ export function defaultTariffConfig() {
       mantencion: { ciclo: 20000, costos: {} }, // { 'centroId|capKg': costo }
       chofer: { sueldoMinimo: {}, diasHabiles: 22, comisionPct: 5 }, // sueldoMinimo: { centroId: monto }
       factorRuta: { NORMAL: 1.00, ISLA: 1.35, EXTREMA: 1.50 },
-      troncalesRoutes: []   // códigos de ruta definidos como Troncales
+      troncalesRoutes: [],   // códigos de ruta definidos como Troncales
       costosBase: {
         '5000':  { fijo: 30000,  kmAdicional: 46000 },
         '10000': { fijo: 30000,  kmAdicional: 76000 },
