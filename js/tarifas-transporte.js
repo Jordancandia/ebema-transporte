@@ -2729,7 +2729,7 @@ function renderParticipacion(content, db, cfg) {
   }
 
   // ── Calcular participación para un conjunto de grupos ────────────────────
-  function calcGrupo(gruposCalc) {
+  function calcGrupo(gruposCalc, filtroGrupo = null) {
     // Expandir STGO+SB si aplica
     const expanded = new Set(gruposCalc);
     const selIds = gruposCalc.flatMap(gn => {
@@ -2794,7 +2794,7 @@ function renderParticipacion(content, db, cfg) {
       catTon[cat] = (catTon[cat] || 0) + e.ton;
     });
 
-    return [...routeMap.values()]
+    let allResults = [...routeMap.values()]
       .map(e => ({
         rutaId:         e.ruta?.id     || e.mapKey,
         rutaCodigo:     e.ruta?.codigo || '',
@@ -2807,6 +2807,12 @@ function renderParticipacion(content, db, cfg) {
         zonaTransporte: e.ruta?.id_zona_transporte || ''
       }))
       .sort((a, b) => b.toneladas - a.toneladas);
+
+    // Filtrar por grupo específico si se pide (STGO vs SB muestran rutas propias pero % combinado)
+    if (filtroGrupo) {
+      allResults = allResults.filter(r => r.ruta?.origen_grupo === filtroGrupo);
+    }
+    return allResults;
   }
 
   // ── Render tabla de un centro ─────────────────────────────────────────────
@@ -2890,7 +2896,7 @@ function renderParticipacion(content, db, cfg) {
         // Una tabla por cada centro STGO/SB, pero ambas calculan con el par combinado
         STGO_SB_GRUPOS.forEach(gn => {
           const gObj = grupos.find(go => go.grupo === gn);
-          gruposMostrar.push({ nombre: gObj?.nombre || gn, grupos: STGO_SB_GRUPOS });
+          gruposMostrar.push({ nombre: gObj?.nombre || gn, grupos: STGO_SB_GRUPOS, filtroGrupo: gn });
         });
         STGO_SB_GRUPOS.forEach(x => yaProcesados.add(x));
       } else {
@@ -2915,7 +2921,7 @@ function renderParticipacion(content, db, cfg) {
       ${!hasHist ? `
       <div class="bg-amber-50 border border-amber-200 text-amber-800 text-[12px] p-md rounded">
         Sin datos históricos. Presione <b>Actualizar Histórico</b> o cargue el CSV en <b>Tarifas Clientes → Histórico</b>.
-      </div>` : gruposMostrar.map(gm => tablaHtml(gm.nombre, calcGrupo(gm.grupos))).join('')}
+      </div>` : gruposMostrar.map(gm => tablaHtml(gm.nombre, calcGrupo(gm.grupos, gm.filtroGrupo || null))).join('')}
     `;
 
     document.getElementById('part-sync-hist')?.addEventListener('click', async () => {
