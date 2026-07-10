@@ -2777,6 +2777,7 @@ function renderParticipacion(content, db, cfg) {
       if ((ruta.clasificRuta || 'Regional').toLowerCase() !== 'regional') { _dbgNoRegional++; return; }
       if ((ruta.tipo || '').toLowerCase() !== 'comuna') { _dbgNoComuna++; return; }
       _dbgOK++;
+      if (_dbgOK <= 5) console.log('[PART-RUTA]', { idRuta: h.idRuta, destino: ruta.destino, clasificRuta: ruta.clasificRuta, tipo: ruta.tipo, origen_grupo: ruta.origen_grupo });
       const mapKey = ruta.id_zona_transporte || (ruta.destino || '').trim().toUpperCase() || h.idRuta;
       if (!routeMap.has(mapKey)) {
         routeMap.set(mapKey, { mapKey, ruta, clientes: new Set(), obras: new Set(), ton: 0 });
