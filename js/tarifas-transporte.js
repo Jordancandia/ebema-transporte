@@ -2833,14 +2833,12 @@ function renderParticipacion(content, db, cfg) {
       // Agregar rutas del centro que no tienen histData (ton=0) para mostrar cobertura completa
       const zonasEnResultados = new Set(allResults.map(r => r.zonaTransporte));
       routes.forEach(r => {
-        const esBDO116 = (r.codigo || r.id || '').toString().toUpperCase() === 'BDO116';
-        if (!r.id_zona_transporte) { if(esBDO116) console.warn('[BDO116] sin id_zona_transporte'); return; }
-        if ((r.tipo || '').toLowerCase() !== 'comuna') { if(esBDO116) console.warn('[BDO116] tipo='+r.tipo); return; }
+        if (!r.id_zona_transporte) return;
+        if ((r.tipo || '').toLowerCase() !== 'comuna') return;
         const enGrupo = r.origen_grupo === filtroGrupo || filtroCentroIds.has(String(r.origenId));
-        if (!enGrupo) { if(esBDO116) console.warn('[BDO116] no enGrupo, origen_grupo='+r.origen_grupo+' origenId='+r.origenId+' filtroGrupo='+filtroGrupo+' filtroCentroIds=',[...filtroCentroIds]); return; }
-        const zona = zonasByIdP.get(r.id_zona_transporte);
-        if (!regionOK(zona?.region, centroRegiones)) { if(esBDO116) console.warn('[BDO116] region KO zona='+zona?.region+' centros=',[...centroRegiones]); return; }
-        if (zonasEnResultados.has(r.id_zona_transporte)) { if(esBDO116) console.warn('[BDO116] zona ya en resultados:'+r.id_zona_transporte); return; }
+        if (!enGrupo) return;
+        // Sin filtro de región aquí: se muestran todas las rutas tipo COMUNA del centro
+        if (zonasEnResultados.has(r.id_zona_transporte)) return;
         allResults.push({
           rutaId:         r.id     || r.codigo || '',
           rutaCodigo:     r.codigo || '',
@@ -3434,8 +3432,12 @@ function renderResultados(content, db, cfg) {
   document.getElementById('mc-export')?.addEventListener('click', () => {
     const csvH = [...HEADERS_BASE, ...(showPeso ? ['Peso_Pct','Tarifa_Ponderada'] : [])];
     const rows = todaMatriz.map(m => {
-      const grupoNombre = groupMap[m.ruta.origen_grupo] || m.ruta.origen_grupo;
-      const partEntry   = participacion[m.ruta.id] || participacion[m.ruta.codigo];
+      const grupoNombre = m._merged
+        ? (groupMap[m.ruta.origen_grupo] || m.ruta.origen_grupo) + '+SB'
+        : (groupMap[m.ruta.origen_grupo] || m.ruta.origen_grupo);
+      const partEntry   = participacion[m.ruta.id] || participacion[m.ruta.codigo]
+        || (m.ruta._allCodigos||[]).reduce((f,c)=>f||participacion[c],null)
+        || (m.ruta._allIds||[]).reduce((f,id)=>f||participacion[id],null);
       const pct         = partEntry?.pct || 0;
       const tarifaPond  = Math.round((m.item11_costoKmFinal || 0) * pct / 100);
       const seguros     = (m.item3_soapKm || 0) + (m.item4_seguroKm || 0);
