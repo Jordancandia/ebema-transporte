@@ -2136,7 +2136,9 @@ function syncTarifasZcap(db, cfg, grupoFiltro = '') {
     const esp  = items.filter(m => (m.ruta.caracteristica || 'NORMAL').toUpperCase() !== 'NORMAL');
     function pond(sub) {
       return sub.reduce((s, m) => {
-        const p = participacion[m.ruta.id] || participacion[m.ruta.codigo];
+        const p = participacion[m.ruta.id] || participacion[m.ruta.codigo]
+          || (m.ruta._allCodigos||[]).reduce((f,c) => f || participacion[c], null)
+          || (m.ruta._allIds||[]).reduce((f,id) => f || participacion[id], null);
         return s + (m.item11_costoKmFinal || 0) * ((p?.pct || 0) / 100);
       }, 0);
     }
@@ -2907,9 +2909,15 @@ function renderParticipacion(content, db, cfg) {
           );
           if (match) rutaCodigo = match[1]?.codigo || rutaCodigo;
         }
+        // Todos los ids/codigos de rutas en esta zona (incluye rutas SB en vista STGO+SB)
+        const _zonaRutas = e ? Object.values(e.rutasByGrupo) : [ruta];
+        const _allRutaIds    = [...new Set(_zonaRutas.map(r => r.id).filter(Boolean))];
+        const _allRutaCodigos = [...new Set(_zonaRutas.map(r => r.codigo).filter(Boolean))];
         return {
           rutaId:         ruta.id || key,
           rutaCodigo,
+          _allRutaIds,
+          _allRutaCodigos,
           ruta,
           clientes:       e?.clientes.size || 0,
           obras:          e?.obras.size    || 0,
@@ -3105,6 +3113,9 @@ function renderParticipacion(content, db, cfg) {
             const entry = { pct: Math.round(r.peso * 10000) / 100, peso: r.peso, cluster: r.peso >= 0.30 ? 1 : r.peso >= 0.10 ? 2 : 3, caracteristica: r.caracteristica };
             cfg.participacionRutas[r.rutaId]     = entry;
             cfg.participacionRutas[r.rutaCodigo] = entry;
+            // También guardar para todas las rutas de la zona (rutas SB en vista STGO+SB combinada)
+            (r._allRutaIds    || []).forEach(id => { if (id) cfg.participacionRutas[id] = entry; });
+            (r._allRutaCodigos || []).forEach(c  => { if (c)  cfg.participacionRutas[c]  = entry; });
           });
           saveDatabase(db);
           showAlert(`✓ Participación guardada: ${results.length} rutas de ${grupoNombre}.`);
