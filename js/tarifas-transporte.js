@@ -2776,7 +2776,7 @@ function renderParticipacion(content, db, cfg) {
 
   // ── Calcular participación para un conjunto de grupos ────────────────────
   function calcGrupo(gruposCalc, filtroGrupo = null) {
-    // Expandir STGO+SB si aplica
+    // 1. Expandir STGO+SB si aplica
     const expanded = new Set(gruposCalc);
     const selIds = gruposCalc.flatMap(gn => {
       const gObj = grupos.find(go => go.grupo === gn);
@@ -2785,130 +2785,127 @@ function renderParticipacion(content, db, cfg) {
     if (tieneStgoSb && selIds.some(id => [...STGO_IDS, ...SB_IDS].includes(id))) {
       STGO_SB_GRUPOS.forEach(g => expanded.add(g));
     }
-
-    // IDs de centros involucrados
     const grupoCentroIds = new Set();
     [...expanded].forEach(gn => {
       const gObj = grupos.find(go => go.grupo === gn);
       (gObj?.centroIds || []).forEach(id => grupoCentroIds.add(String(id)));
     });
 
-    // Regiones de los centros (normalizado)
-    const centroRegiones = new Set();
-    [...expanded].forEach(gn => {
-      const gObj = grupos.find(go => go.grupo === gn);
-      (gObj?.centroIds || []).forEach(cid => {
-        const cd = (db.logisticsCentres || []).find(c => String(c.id) === String(cid));
-        if (cd?.region) centroRegiones.add(normRegion(cd.region));
-      });
-    });
+    // 2. Rutas candidatas del maestro para los grupos expandidos (tipo=COMUNA)
+    const rutasCandidatas = routes.filter(r =>
+      (r.tipo || '').toLowerCase() === 'comuna' &&
+      (expanded.has(r.origen_grupo) || grupoCentroIds.has(String(r.origenId)))
+    );
 
-    // Set de códigos de rutas válidas: origen en centro + zona en misma región + tipo COMUNA
+    // 3. Set de códigos válidos para filtrar histData
     const codigosValidos = new Set();
-    routes.forEach(r => {
-      if (!r.id_zona_transporte) return;
-      const enGrupo = expanded.has(r.origen_grupo) || grupoCentroIds.has(String(r.origenId));
-      if (!enGrupo) return;
-      const zona = zonasByIdP.get(r.id_zona_transporte);
-      if (!regionOK(zona?.region, centroRegiones)) return;
-      if ((r.tipo || '').toLowerCase() !== 'comuna') return;
+    rutasCandidatas.forEach(r => {
       if (r.id)     codigosValidos.add(String(r.id).toUpperCase());
       if (r.codigo) codigosValidos.add(String(r.codigo).toUpperCase());
     });
 
-    // Acumular toneladas por destino (usando histData filtrado por codigosValidos)
-    const routeMap = new Map();
+    // 4. Acumular toneladas por zona desde histData
+    const zonaTon = new Map(); // id_zona_transporte → { ton, clientes, obras, rutasByGrupo }
     histDataLocal.forEach(h => {
       if (!codigosValidos.has(String(h.idRuta).toUpperCase())) return;
       const ruta = routeByIdP.get(String(h.idRuta).toUpperCase());
       if (!ruta) return;
-      const mapKey = ruta.id_zona_transporte || (ruta.destino || '').trim().toUpperCase() || h.idRuta;
-      if (!routeMap.has(mapKey)) {
-        routeMap.set(mapKey, { mapKey, ruta: null, rutasByGrupo: {}, clientes: new Set(), obras: new Set(), ton: 0 });
-      }
-      const e = routeMap.get(mapKey);
-      // Guardar ruta por grupo para poder mostrar el código correcto por centro
-      const grupoKey = ruta.origen_grupo || `_id_${ruta.origenId}`;
-      if (!e.rutasByGrupo) e.rutasByGrupo = {};
-      if (!e.rutasByGrupo[grupoKey]) e.rutasByGrupo[grupoKey] = ruta;
-      if (!e.ruta) e.ruta = ruta;
+      const key = ruta.id_zona_transporte || (ruta.destino || '').trim().toUpperCase() || h.idRuta;
+      if (!zonaTon.has(key)) zonaTon.set(key, { ton: 0, clientes: new Set(), obras: new Set(), rutasByGrupo: {} });
+      const e = zonaTon.get(key);
+      e.ton += h.ton;
       if (h.idCliente && h.idCliente !== '-') e.clientes.add(h.idCliente);
       if (h.idObra    && h.idObra    !== '-') e.obras.add(h.idObra);
-      e.ton += h.ton;
+      const gk = ruta.origen_grupo || `_id_${ruta.origenId}`;
+      if (!e.rutasByGrupo[gk]) e.rutasByGrupo[gk] = ruta;
     });
 
-    // PESO por categoría
-    const catTon = {};
-    routeMap.forEach(e => {
-      const cat = (e.ruta.caracteristica || 'NORMAL').toUpperCase();
-      catTon[cat] = (catTon[cat] || 0) + e.ton;
-    });
-
-    let allResults = [...routeMap.values()]
-      .map(e => ({
-        rutaId:         e.ruta?.id     || e.mapKey,
-        rutaCodigo:     e.ruta?.codigo || '',
-        ruta:           e.ruta,
-        rutasByGrupo:   e.rutasByGrupo || {},
-        clientes:       e.clientes.size,
-        obras:          e.obras.size,
-        toneladas:      e.ton,
-        peso:           e.ton / (catTon[(e.ruta?.caracteristica || 'NORMAL').toUpperCase()] || 1),
-        caracteristica: e.ruta?.caracteristica || 'NORMAL',
-        zonaTransporte: e.ruta?.id_zona_transporte || ''
-      }))
-      .sort((a, b) => b.toneladas - a.toneladas);
-
-    // Filtrar por grupo específico: mostrar ruta del centro, pero mantener PESO % combinado
-    if (filtroGrupo) {
-      const filtroGrupoObj = grupos.find(go => go.grupo === filtroGrupo);
-      const filtroCentroIds = new Set((filtroGrupoObj?.centroIds || []).map(String));
-
-      allResults = allResults.filter(r => {
-        const entries = Object.entries(r.rutasByGrupo || {});
-        const myEntry = entries.find(([k, v]) =>
-          k === filtroGrupo || filtroCentroIds.has(String(v?.origenId))
-        );
-        if (!myEntry) return false;
-        r.ruta       = myEntry[1] || r.ruta;
-        r.rutaCodigo = myEntry[1]?.codigo || r.rutaCodigo;
-        r.rutaId     = myEntry[1]?.id     || r.rutaId;
-        return true;
-      });
-
-      // Agregar rutas del centro que no tienen histData (ton=0) para mostrar cobertura completa
-      const zonasEnResultados = new Set(allResults.map(r => r.zonaTransporte));
-      routes.forEach(r => {
-        if (!r.id_zona_transporte) return;
-        if ((r.tipo || '').toLowerCase() !== 'comuna') return;
-        if ((r.clasificRuta || 'Regional') !== 'Regional') return;
-        // Solo rutas cuyo origen_grupo coincide exactamente con el centro (sin fallback origenId para evitar rutas cruzadas)
-        if (r.origen_grupo !== filtroGrupo && !filtroCentroIds.has(String(r.origenId))) return;
-        // Filtro de región: excluye destinos fuera de la región del centro (ej. Angol para SAN BERNARDO)
-        const zona = zonasByIdP.get(r.id_zona_transporte);
-        if (zona?.region && centroRegiones.size > 0 && !regionOK(zona.region, centroRegiones)) return;
-        if (zonasEnResultados.has(r.id_zona_transporte)) return;
-        allResults.push({
-          rutaId:         r.id     || r.codigo || '',
-          rutaCodigo:     r.codigo || '',
-          ruta:           r,
-          rutasByGrupo:   { [filtroGrupo]: r },
-          clientes:       0,
-          obras:          0,
-          toneladas:      0,
-          peso:           0,
-          caracteristica: r.caracteristica || 'NORMAL',
-          zonaTransporte: r.id_zona_transporte || ''
-        });
-        zonasEnResultados.add(r.id_zona_transporte);
-      });
-
-      // Re-ordenar: primero por toneladas desc, luego alfabético
-      allResults.sort((a, b) => b.toneladas - a.toneladas || (a.ruta?.destino || '').localeCompare(b.ruta?.destino || '', 'es'));
+    // 4b. STGO+SB: fusionar zonas con el mismo destino pero distinto id_zona_transporte
+    //     (p.ej. SGO161 y BDO161 con zonas diferentes pero ambas = Providencia)
+    //     Así peso % queda IGUAL en la tabla SANTIAGO y en la de SAN BERNARDO.
+    const zoneRemap = new Map(); // key secundaria → key canónica
+    if (tieneStgoSb && stgoGrupoObj && sbGrupoObj &&
+        expanded.has(stgoGrupoObj.grupo) && expanded.has(sbGrupoObj.grupo)) {
+      // Agrupar keys de zonaTon por destino normalizado
+      const destinoKeys = new Map();
+      for (const [key, e] of zonaTon.entries()) {
+        const repRuta = Object.values(e.rutasByGrupo)[0];
+        const destino = (repRuta?.destino || '').trim().toUpperCase();
+        if (!destino) continue;
+        if (!destinoKeys.has(destino)) destinoKeys.set(destino, []);
+        destinoKeys.get(destino).push(key);
+      }
+      // Fusionar keys que comparten destino
+      for (const keys of destinoKeys.values()) {
+        if (keys.length <= 1) continue;
+        // Key canónica: la que tiene data del grupo STGO (para que la tabla STGO siempre lea la canónica)
+        const canonKey = keys.find(k =>
+          Object.keys(zonaTon.get(k).rutasByGrupo).includes(stgoGrupoObj.grupo)
+        ) || keys[0];
+        const canonEntry = zonaTon.get(canonKey);
+        for (const k of keys) {
+          if (k === canonKey) continue;
+          const e = zonaTon.get(k);
+          canonEntry.ton += e.ton;
+          e.clientes.forEach(c => canonEntry.clientes.add(c));
+          e.obras.forEach(o => canonEntry.obras.add(o));
+          Object.assign(canonEntry.rutasByGrupo, e.rutasByGrupo);
+          zoneRemap.set(k, canonKey); // redirigir búsquedas: key SB → key STGO
+          zonaTon.delete(k);           // eliminar para no duplicar en totalTon
+        }
+      }
     }
-    return allResults;
-  }
 
+    // 5. Total toneladas para calcular PESO (combinado STGO+SB, sin duplicados)
+    const totalTon = [...zonaTon.values()].reduce((s, e) => s + e.ton, 0);
+
+    // 6. Rutas a mostrar: partir del maestro filtrado por filtroGrupo
+    let rutasMostrar = rutasCandidatas;
+    if (filtroGrupo) {
+      const filtroObj = grupos.find(go => go.grupo === filtroGrupo);
+      const filtroCentroIds = new Set((filtroObj?.centroIds || []).map(String));
+      rutasMostrar = rutasCandidatas.filter(r =>
+        r.origen_grupo === filtroGrupo || filtroCentroIds.has(String(r.origenId))
+      );
+    }
+
+    // 7. Agrupar por zona, aplicando zoneRemap para que BDO routes lean la entry canónica
+    const zonaVista = new Map(); // canonKey → ruta representativa
+    rutasMostrar.forEach(r => {
+      const rawKey = r.id_zona_transporte || (r.destino || '').trim().toUpperCase() || r.codigo;
+      const key    = zoneRemap.get(rawKey) || rawKey;
+      if (!zonaVista.has(key)) zonaVista.set(key, r);
+    });
+
+    // 8. Construir resultados
+    return [...zonaVista.entries()]
+      .map(([key, ruta]) => {
+        const e    = zonaTon.get(key);  // usa canonKey → tonnage combinado
+        const ton  = e?.ton || 0;
+        // Para rutaCodigo: usar la ruta del filtroGrupo si hay merge de histórico
+        let rutaCodigo = ruta.codigo || '';
+        if (e?.rutasByGrupo && filtroGrupo) {
+          const filtroObj = grupos.find(go => go.grupo === filtroGrupo);
+          const filtroCentroIds = new Set((filtroObj?.centroIds || []).map(String));
+          const match = Object.entries(e.rutasByGrupo).find(([k, v]) =>
+            k === filtroGrupo || filtroCentroIds.has(String(v?.origenId))
+          );
+          if (match) rutaCodigo = match[1]?.codigo || rutaCodigo;
+        }
+        return {
+          rutaId:         ruta.id || key,
+          rutaCodigo,
+          ruta,
+          clientes:       e?.clientes.size || 0,
+          obras:          e?.obras.size    || 0,
+          toneladas:      ton,
+          peso:           totalTon > 0 ? ton / totalTon : 0,
+          zonaTransporte: ruta.id_zona_transporte || ''
+        };
+      })
+      .sort((a, b) => b.toneladas - a.toneladas ||
+        (a.ruta?.destino || '').localeCompare(b.ruta?.destino || '', 'es'));
+  }
   // ── Render tabla de un centro ─────────────────────────────────────────────
   const PART_PAGE = 50;
   function tablaHtml(nombre, results, mostrarTodas = false) {
