@@ -2745,6 +2745,7 @@ function renderSeguros(content, db, cfg) {
 function renderParticipacion(content, db, cfg) {
   // ── Estado ────────────────────────────────────────────────────────────────
   let histDataLocal = getClientTariffConfig(db).historico || [];
+  const tablasExpandidas = new Set(); // tablas con "Ver todas" activado
 
   // ── Helpers ───────────────────────────────────────────────────────────────
   const routes       = (db.routes || []).filter(r => r.activo);
@@ -3033,7 +3034,7 @@ function renderParticipacion(content, db, cfg) {
       ${!hasHist ? `
       <div class="bg-amber-50 border border-amber-200 text-amber-800 text-[12px] p-md rounded">
         Sin datos históricos. Presione <b>Actualizar Histórico</b> o cargue el CSV en <b>Tarifas Clientes → Histórico</b>.
-      </div>` : gruposMostrar.map(gm => tablaHtml(gm.nombre, calcGrupo(gm.grupos, gm.filtroGrupo || null))).join('')}
+      </div>` : gruposMostrar.map(gm => tablaHtml(gm.nombre, calcGrupo(gm.grupos, gm.filtroGrupo || null), tablasExpandidas.has(gm.nombre))).join('')}
     `;
 
     document.getElementById('part-sync-hist')?.addEventListener('click', async () => {
@@ -3056,35 +3057,11 @@ function renderParticipacion(content, db, cfg) {
       }
     });
 
-    // ── "Ver todas" por tabla
+    // ── "Ver todas" por tabla — agrega al set y re-renderiza
     content.querySelectorAll('.part-ver-todas').forEach(btn => {
       btn.addEventListener('click', () => {
-        const nombre = btn.dataset.nombre;
-        const gm = gruposMostrar.find(g => g.nombre === nombre);
-        if (!gm) return;
-        const results = calcGrupo(gm.grupos, gm.filtroGrupo || null);
-        const uid = nombre.replace(/[^a-z0-9]/gi, '_');
-        const tbody = document.getElementById('part-tbody-' + uid);
-        if (tbody) {
-          // Re-render fila a fila (inyectar directamente)
-          const PART_PAGE_LOCAL = 50;
-          function fila2(r, idx) {
-            const barW = Math.min(100, (r.toneladas / (results[0].toneladas || 1)) * 100);
-            return \`<tr class="border-b border-outline-variant\${r.toneladas === 0 ? ' opacity-50' : ''}">
-              <td class="p-sm text-right text-secondary font-data-mono text-[11px]">\${idx+1}</td>
-              <td class="p-sm font-data-mono text-[11px] text-primary font-bold">\${escapeHtml(r.rutaCodigo)}</td>
-              <td class="p-sm">\${escapeHtml(r.ruta?.destino || '')}</td>
-              <td class="p-sm text-secondary text-[11px]">\${escapeHtml(r.zonaTransporte)}</td>
-              <td class="p-sm text-right">\${r.clientes}</td>
-              <td class="p-sm text-right">\${r.obras}</td>
-              <td class="p-sm text-right font-data-mono text-[11px]">\${r.toneladas > 0 ? r.toneladas.toLocaleString('es-CL',{maximumFractionDigits:1}) : '—'}</td>
-              <td class="p-sm text-right font-bold font-data-mono text-[11px]">\${r.peso > 0 ? (r.peso*100).toFixed(2)+'%' : '—'}</td>
-              <td class="p-sm">\${r.toneladas > 0 ? \`<div class="w-20 h-2 bg-surface-container-high rounded-full overflow-hidden"><div class="h-full rounded-full bg-primary" style="width:\${barW}%"></div></div>\` : ''}</td>
-            </tr>\`;
-          }
-          tbody.innerHTML = results.map((r, i) => fila2(r, i)).join('');
-          btn.closest('div').remove();
-        }
+        tablasExpandidas.add(btn.dataset.nombre);
+        render();
       });
     });
 
