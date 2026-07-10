@@ -2943,14 +2943,16 @@ function renderParticipacion(content, db, cfg) {
 
     function fila(r, idx) {
       const barW = Math.min(100, (r.toneladas / (results[0].toneladas || 1)) * 100);
+      const _caract = (r.caracteristica || '').toUpperCase();
+      const _isEspec = ['ISLA','EXTREMA'].includes(_caract);
+      const _especColor = _caract === 'ISLA' ? 'bg-blue-100 text-blue-700' : 'bg-orange-100 text-orange-700';
+      const _especBadge = _isEspec ? '<span class="ml-xs inline-flex px-1 py-0.5 rounded text-[9px] font-bold ' + _especColor + '">' + _caract + '</span>' : '';
       return `<tr class="border-b border-outline-variant">
         <td class="p-sm text-right text-secondary font-data-mono text-[11px]">${idx+1}</td>
         <td class="p-sm font-data-mono text-[11px] text-primary font-bold">${escapeHtml(r.rutaCodigo)}</td>
         <td class="p-sm">
           ${escapeHtml(r.ruta?.destino || '')}
-          ${['ISLA','EXTREMA'].includes((r.caracteristica||'').toUpperCase())
-            ? `<span class="ml-xs inline-flex px-1 py-0.5 rounded text-[9px] font-bold ${r.caracteristica.toUpperCase()==='ISLA' ? 'bg-blue-100 text-blue-700' : 'bg-orange-100 text-orange-700'}">${r.caracteristica.toUpperCase()}</span>`
-            : ''}
+          ${_especBadge}
         </td>
         <td class="p-sm text-secondary text-[11px]">${escapeHtml(r.zonaTransporte)}</td>
         <td class="p-sm text-right">${r.clientes}</td>
