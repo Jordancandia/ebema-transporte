@@ -4,7 +4,7 @@ import { renderTransportsView } from './transports.js';
 import { renderRoutesView, setRoutesSubTab } from './routes.js?v=20260708a';
 import { renderRatesView } from './rates.js';
 import { renderRolesView } from './roles.js';
-import { renderTariffTransportView, setActiveSub } from './tarifas-transporte.js?v=20260709g';
+import { renderTariffTransportView, setActiveSub } from './tarifas-transporte.js?v=20260709h';
 import { renderClientTariffView, setActiveSubC } from './tarifas-clientes.js?v=20260708a';
 import { showAlert, formatRut, validateRut, formatPhone } from './utils.js';
 

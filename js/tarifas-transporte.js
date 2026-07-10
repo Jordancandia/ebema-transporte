@@ -2738,7 +2738,7 @@ function renderParticipacion(content, db, cfg) {
   }
 
   function partCentrosLabel() {
-    if (partCentrosSelec.size === 0) return 'Seleccione centro(s)';
+    if (partCentrosSelec.size === 0) return 'Todos los centros';
     if (partCentrosSelec.size === 1) return labelCentro([...partCentrosSelec][0]);
     return `${partCentrosSelec.size} centros`;
   }
@@ -2858,9 +2858,11 @@ function renderParticipacion(content, db, cfg) {
   function render() {
     const centros = centrosDropdownList();
     const hasHist = histDataLocal.length > 0;
-    const results = (hasHist && partCentrosSelec.size > 0)
-      ? calcParticipacion([...partCentrosSelec])
-      : [];
+    // Vacío = todos los centros; con selección = solo los seleccionados
+    const gruposActivos = partCentrosSelec.size > 0
+      ? [...partCentrosSelec]
+      : grupos.map(g => g.grupo);
+    const results = hasHist ? calcParticipacion(gruposActivos) : [];
 
     content.innerHTML = `
       <div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm">
@@ -2956,7 +2958,7 @@ function renderParticipacion(content, db, cfg) {
         ` : `<p class="text-secondary mt-md">${
           !hasHist
             ? 'Presione <b>Actualizar Histórico</b> para cargar los datos.'
-            : 'Seleccione al menos un centro para calcular la participación.'
+            : 'No hay rutas Regional+COMUNA para los centros seleccionados.'
         }</p>`}
       </div>
     `;
