@@ -2778,10 +2778,14 @@ function renderParticipacion(content, db, cfg) {
       if (!ruta) return;
       const mapKey = ruta.id_zona_transporte || (ruta.destino || '').trim().toUpperCase() || h.idRuta;
       if (!routeMap.has(mapKey)) {
-        routeMap.set(mapKey, { mapKey, ruta, clientes: new Set(), obras: new Set(), ton: 0 });
+        routeMap.set(mapKey, { mapKey, ruta: null, rutasByGrupo: {}, clientes: new Set(), obras: new Set(), ton: 0 });
       }
       const e = routeMap.get(mapKey);
-      if (stgoGrupoObj && ruta.origen_grupo === stgoGrupoObj.grupo && e.ruta.origen_grupo !== stgoGrupoObj.grupo) e.ruta = ruta;
+      // Guardar ruta por grupo para poder mostrar el código correcto por centro
+      const grupoKey = ruta.origen_grupo || `_id_${ruta.origenId}`;
+      if (!e.rutasByGrupo) e.rutasByGrupo = {};
+      if (!e.rutasByGrupo[grupoKey]) e.rutasByGrupo[grupoKey] = ruta;
+      if (!e.ruta) e.ruta = ruta;
       if (h.idCliente && h.idCliente !== '-') e.clientes.add(h.idCliente);
       if (h.idObra    && h.idObra    !== '-') e.obras.add(h.idObra);
       e.ton += h.ton;
@@ -2799,6 +2803,7 @@ function renderParticipacion(content, db, cfg) {
         rutaId:         e.ruta?.id     || e.mapKey,
         rutaCodigo:     e.ruta?.codigo || '',
         ruta:           e.ruta,
+        rutasByGrupo:   e.rutasByGrupo || {},
         clientes:       e.clientes.size,
         obras:          e.obras.size,
         toneladas:      e.ton,
@@ -2808,14 +2813,24 @@ function renderParticipacion(content, db, cfg) {
       }))
       .sort((a, b) => b.toneladas - a.toneladas);
 
-    // Filtrar por grupo específico si se pide (STGO vs SB muestran rutas propias pero % combinado)
+    // Filtrar por grupo específico: mostrar ruta del centro, pero mantener PESO % combinado
     if (filtroGrupo) {
       const filtroGrupoObj = grupos.find(go => go.grupo === filtroGrupo);
       const filtroCentroIds = new Set((filtroGrupoObj?.centroIds || []).map(String));
-      allResults = allResults.filter(r =>
-        r.ruta?.origen_grupo === filtroGrupo ||
-        filtroCentroIds.has(String(r.ruta?.origenId))
-      );
+      allResults = allResults.filter(r => {
+        // Buscar la ruta que pertenece a este centro específico
+        const entries = Object.entries(r.rutasByGrupo || {});
+        const myEntry = entries.find(([k, v]) =>
+          k === filtroGrupo || filtroCentroIds.has(String(v?.origenId))
+        );
+        if (!myEntry) return false;
+        // Sobreescribir con la ruta del centro (código BDO en SB, SGO en STGO)
+        r.ruta      = myEntry[1] || r.ruta;
+        r.rutaCodigo = myEntry[1]?.codigo || r.rutaCodigo;
+        r.rutaId     = myEntry[1]?.id     || r.rutaId;
+        // PESO % NO se toca — sigue siendo el del total combinado
+        return true;
+      });
     }
     return allResults;
   }
