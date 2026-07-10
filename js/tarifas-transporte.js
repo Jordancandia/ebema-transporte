@@ -2887,8 +2887,11 @@ function renderParticipacion(content, db, cfg) {
     grupos.forEach(g => {
       if (yaProcesados.has(g.grupo)) return;
       if (tieneStgoSb && STGO_SB_GRUPOS.includes(g.grupo)) {
-        // Agregar cada uno por separado (mismos resultados, calculados en conjunto)
-        gruposMostrar.push({ nombre: g.nombre || g.grupo, grupos: STGO_SB_GRUPOS });
+        // Una tabla por cada centro STGO/SB, pero ambas calculan con el par combinado
+        STGO_SB_GRUPOS.forEach(gn => {
+          const gObj = grupos.find(go => go.grupo === gn);
+          gruposMostrar.push({ nombre: gObj?.nombre || gn, grupos: STGO_SB_GRUPOS });
+        });
         STGO_SB_GRUPOS.forEach(x => yaProcesados.add(x));
       } else {
         gruposMostrar.push({ nombre: g.nombre || g.grupo, grupos: [g.grupo] });
