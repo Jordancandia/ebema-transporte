@@ -2763,21 +2763,28 @@ function renderParticipacion(content, db, cfg) {
       if (gObj) gObj.centroIds.forEach(id => grupoCentroIds.add(String(id)));
     });
 
-    // Filtrar histData: la ruta debe pertenecer a uno de los grupos/centros seleccionados
-    // h.oficina = código SAP del centro; lo vinculamos via ruta.origen_grupo
-    // Solo rutas Regional + COMUNA
+    // Construir Set de códigos de rutas válidas para los centros seleccionados:
+    // Regional + COMUNA + con id_zona_transporte registrado (proxy de ruta regional configurada)
+    const codigosValidos = new Set();
+    routes.forEach(r => {
+      const enGrupo = expanded.has(r.origen_grupo) || grupoCentroIds.has(String(r.origenId));
+      if (!enGrupo) return;
+      if ((r.clasificRuta || 'Regional').toLowerCase() !== 'regional') return;
+      if ((r.tipo || '').toLowerCase() !== 'comuna') return;
+      if (!r.id_zona_transporte) return;
+      if (r.id)     codigosValidos.add(String(r.id).toUpperCase());
+      if (r.codigo) codigosValidos.add(String(r.codigo).toUpperCase());
+    });
+    console.log('[PARTICIPACION] codigosValidos para', [...expanded], ':', codigosValidos.size);
+
+    // Filtrar histData por los códigos de ruta válidos
     const routeMap = new Map();
-    let _dbgNoRuta=0, _dbgNoGrupo=0, _dbgNoRegional=0, _dbgNoComuna=0, _dbgOK=0;
+    let _dbgOK=0;
     histDataLocal.forEach(h => {
+      if (!codigosValidos.has(String(h.idRuta).toUpperCase())) return;
       const ruta = routeByIdP.get(h.idRuta);
-      if (!ruta) { _dbgNoRuta++; return; }
-      // Verificar que la ruta pertenece a uno de los grupos/centros seleccionados
-      const enGrupo = expanded.has(ruta.origen_grupo) || grupoCentroIds.has(String(ruta.origenId));
-      if (!enGrupo) { _dbgNoGrupo++; return; }
-      if ((ruta.clasificRuta || 'Regional').toLowerCase() !== 'regional') { _dbgNoRegional++; return; }
-      if ((ruta.tipo || '').toLowerCase() !== 'comuna') { _dbgNoComuna++; return; }
+      if (!ruta) return;
       _dbgOK++;
-      if (_dbgOK <= 5) console.log('[PART-RUTA]', { idRuta: h.idRuta, destino: ruta.destino, clasificRuta: ruta.clasificRuta, tipo: ruta.tipo, origen_grupo: ruta.origen_grupo });
       const mapKey = ruta.id_zona_transporte || (ruta.destino || '').trim().toUpperCase() || h.idRuta;
       if (!routeMap.has(mapKey)) {
         routeMap.set(mapKey, { mapKey, ruta, clientes: new Set(), obras: new Set(), ton: 0 });
@@ -2789,7 +2796,7 @@ function renderParticipacion(content, db, cfg) {
       e.ton += h.ton;
     });
 
-    console.log('[PARTICIPACION] grupos:', [...expanded], '| noRuta:', _dbgNoRuta, '| noGrupo:', _dbgNoGrupo, '| noRegional:', _dbgNoRegional, '| noComuna:', _dbgNoComuna, '| OK:', _dbgOK, '| routeMap:', routeMap.size);
+    console.log('[PARTICIPACION] OK:', _dbgOK, '| routeMap:', routeMap.size);
     // PESO por categoría (denominador = total combinado)
     const catTon = {};
     routeMap.forEach(e => {
@@ -2807,7 +2814,8 @@ function renderParticipacion(content, db, cfg) {
         toneladas:      e.ton,
         peso:           e.ton / (catTon[(e.ruta?.caracteristica || 'NORMAL').toUpperCase()] || 1),
         caracteristica: e.ruta?.caracteristica || 'NORMAL',
-        zonaTransporte: e.ruta?.id_zona_transporte || ''
+        zonaTransporte: e.ruta?.id_zona_transporte || '',
+        codigo:        e.ruta?.codigo || ''
       }))
       .sort((a, b) => b.toneladas - a.toneladas);
   }
