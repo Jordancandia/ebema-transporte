@@ -2763,19 +2763,33 @@ function renderParticipacion(content, db, cfg) {
       if (gObj) gObj.centroIds.forEach(id => grupoCentroIds.add(String(id)));
     });
 
-    // Construir Set de códigos de rutas válidas para los centros seleccionados:
-    // Regional + COMUNA + con id_zona_transporte registrado (proxy de ruta regional configurada)
+    // Regiones de los centros seleccionados (ej: 'Metropolitana', 'Biobío')
+    const centroRegiones = new Set();
+    [...expanded].forEach(gn => {
+      const gObj = grupos.find(go => go.grupo === gn);
+      (gObj?.centroIds || []).forEach(cid => {
+        const cd = (db.logisticsCentres || []).find(c => String(c.id) === String(cid));
+        if (cd?.region) centroRegiones.add(cd.region);
+      });
+    });
+
+    // Construir Set de códigos de rutas válidas:
+    // origen del centro seleccionado + destino en la misma región del centro + zona registrada
     const codigosValidos = new Set();
     routes.forEach(r => {
+      if (!r.id_zona_transporte) return;
+      // Debe originar en el centro seleccionado
       const enGrupo = expanded.has(r.origen_grupo) || grupoCentroIds.has(String(r.origenId));
       if (!enGrupo) return;
-      if ((r.clasificRuta || 'Regional').toLowerCase() !== 'regional') return;
+      // Si la zona tiene región definida, debe coincidir con la región del centro
+      const zona = zonasByIdP.get(r.id_zona_transporte);
+      if (zona?.region && centroRegiones.size > 0 && !centroRegiones.has(zona.region)) return;
+      // Solo tipo COMUNA (no sectores)
       if ((r.tipo || '').toLowerCase() !== 'comuna') return;
-      if (!r.id_zona_transporte) return;
       if (r.id)     codigosValidos.add(String(r.id).toUpperCase());
       if (r.codigo) codigosValidos.add(String(r.codigo).toUpperCase());
     });
-    console.log('[PARTICIPACION] codigosValidos para', [...expanded], ':', codigosValidos.size);
+    console.log('[PARTICIPACION] regiones:', [...centroRegiones], '| codigosValidos:', codigosValidos.size);
 
     // Filtrar histData por los códigos de ruta válidos
     const routeMap = new Map();
