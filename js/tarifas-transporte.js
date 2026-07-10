@@ -2070,6 +2070,47 @@ function truckNumInput(id, field, value) {
   return `<input type="number" step="any" class="${inputCls}" data-truck-id="${id}" data-truck-field="${field}" value="${value ?? 0}">`;
 }
 
+
+// Combina filas de STGO+SB por zona+capKg (promedia costos),
+// evitando duplicar destinos en Motor de Costos y en Tarifa por Camión.
+function mergeStgoSbMatriz(rows, stgoGrupo, sbGrupo) {
+  const PAIR      = new Set([stgoGrupo, sbGrupo]);
+  const pairRows  = rows.filter(m => PAIR.has(m.ruta?.origen_grupo));
+  const otherRows = rows.filter(m => !PAIR.has(m.ruta?.origen_grupo));
+
+  const AVG_FIELDS = ['km','item1_peajes','combIda','combVuelta',
+    'item3_soapKm','item4_seguroKm','item5_mantKm','item6_neumKm',
+    'item7_gpsKm','item8_choferBaseDiario','item9_varChofer',
+    'costoVuelta','item10_costoRutaTotal','item11_costoKmFinal','factorRuta'];
+
+  const byZona = new Map();
+  pairRows.forEach(m => {
+    const key = `${m.ruta.id_zona_transporte || m.ruta.destino || m.ruta.codigo}__${m.capKg || ''}`;
+    if (!byZona.has(key)) byZona.set(key, []);
+    byZona.get(key).push(m);
+  });
+
+  const merged = [...byZona.values()].map(group => {
+    if (group.length === 1) return group[0];
+    const first = group[0];
+    const avg   = f => group.reduce((s, r) => s + (Number(r[f]) || 0), 0) / group.length;
+    const result = { ...first };
+    AVG_FIELDS.forEach(f => { result[f] = avg(f); });
+    result.ruta = {
+      ...first.ruta,
+      origen_grupo: stgoGrupo,
+      codigo:       group.map(r => r.ruta.codigo).join('/'),
+      destino:      first.ruta.destino,
+      _allCodigos:  group.map(r => r.ruta.codigo),
+      _allIds:      group.map(r => r.ruta.id).filter(Boolean),
+    };
+    result._merged = true;
+    return result;
+  });
+
+  return [...otherRows, ...merged];
+}
+
 // Recalcula Tarifa/KM (costo/km final del Motor de Costo + margen de ganancia,
 // promedio de rutas activas del Centro Origen para esa capacidad) y Tarifa
 // Base (Tarifa/KM x Km Base) para cada tipo de camión, persistiendo en
@@ -2121,12 +2162,16 @@ function syncTarifasZcap(db, cfg, grupoFiltro = '') {
 
     const rows = (db.truckTypes || []).filter(t => t.Id_centro === g.repId);
     rows.forEach(t => {
-      const items = matriz.filter(m =>
+      let items = matriz.filter(m =>
         gruposCalc.includes(m.ruta.origen_grupo) &&
         m.capKg === truckCapKg(t.type) &&
         (m.ruta.tipo || '').toUpperCase() === 'COMUNA' &&
         m.ruta.clasificRuta === 'Regional'
       );
+      // Merge STGO+SB por destino para evitar doble conteo en ponderación
+      if (gruposCalc.length > 1 && stgoGroup && sbGroup) {
+        items = mergeStgoSbMatriz(items, stgoGroup.grupo, sbGroup.grupo);
+      }
       if (items.length === 0) return;
       conZcap.add(t.id);
 
@@ -3193,6 +3238,17 @@ function renderResultados(content, db, cfg) {
     todaMatriz = todaMatriz.filter(m => mcCentros.has(m.ruta.origen_grupo));
   }
 
+  // ── Merge STGO+SB cuando ambos están en la vista (evita filas duplicadas por destino)
+  const _stgoG = groups.find(g => g.centroIds.some(id => ['1001','1002','1003'].includes(String(id))));
+  const _sbG   = groups.find(g => g.centroIds.some(id => ['1005'].includes(String(id))));
+  const _ambosEnVista = _stgoG && _sbG && (
+    mcCentros.size === 0 ||
+    (mcCentros.has(_stgoG.grupo) && mcCentros.has(_sbG.grupo))
+  );
+  if (_ambosEnVista && mcTipoRuta !== 'interregional') {
+    todaMatriz = mergeStgoSbMatriz(todaMatriz, _stgoG.grupo, _sbG.grupo);
+  }
+
   // ── destinos disponibles según centros (para datalist)
   const destinoSet = new Set(todaMatriz.map(m => m.ruta.destino || m.ruta.nombre || '').filter(Boolean));
 
@@ -3330,10 +3386,14 @@ function renderResultados(content, db, cfg) {
             ${todaMatriz.length === 0
               ? `<tr><td colspan="${HEADERS.length}" class="p-md text-center text-secondary">Sin resultados para los filtros seleccionados.</td></tr>`
               : todaMatriz.slice(mcPagina * MC_PAGE, (mcPagina + 1) * MC_PAGE).map(m => {
-                  const partEntry  = participacion[m.ruta.id] || participacion[m.ruta.codigo];
+                  const partEntry  = participacion[m.ruta.id] || participacion[m.ruta.codigo]
+                    || (m.ruta._allCodigos||[]).reduce((f,c)=>f||participacion[c],null)
+                    || (m.ruta._allIds||[]).reduce((f,id)=>f||participacion[id],null);
                   const pct        = partEntry?.pct || 0;
                   const tarifaPond = Math.round((m.item11_costoKmFinal || 0) * pct / 100);
-                  const grupoNombre = groupMap[m.ruta.origen_grupo] || m.ruta.origen_grupo;
+                  const grupoNombre = m._merged
+                    ? (groupMap[m.ruta.origen_grupo] || m.ruta.origen_grupo) + '+SB'
+                    : (groupMap[m.ruta.origen_grupo] || m.ruta.origen_grupo);
                   const seguros    = (m.item3_soapKm || 0) + (m.item4_seguroKm || 0);
                   const capKg      = m.truckType?.capKg || m.capKg || 0;
                   const capLabel   = capKg ? capKg.toLocaleString('es-CL') : '—';
