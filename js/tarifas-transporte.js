@@ -3255,6 +3255,21 @@ function renderVariables(content, db, cfg) {
 // ============================================================
 function renderResultados(content, db, cfg) {
   const groups = getOrigenGroups(db);
+
+  // ── STGO+SB: construir lista de centros para el dropdown unificando ambos
+  const _stgoG = groups.find(g => g.centroIds.some(id => ['1001','1002','1003'].includes(String(id))));
+  const _sbG   = groups.find(g => g.centroIds.some(id => ['1005'].includes(String(id))));
+  const tieneStgoSb = !!((_stgoG) && (_sbG));
+  // groupsDisplay: reemplaza STGO+SB por una sola entrada combinada
+  const groupsDisplay = tieneStgoSb
+    ? [
+        ...groups.filter(g => g !== _stgoG && g !== _sbG),
+        { grupo: '__STGO_SB__', nombre: 'Santiago + San Bernardo',
+          centroIds: [...(_stgoG?.centroIds||[]), ...(_sbG?.centroIds||[])],
+          repId: _stgoG?.repId }
+      ].sort((a, b) => (a.nombre||'').localeCompare(b.nombre||'', 'es'))
+    : groups;
+
   let todaMatriz = calcularMatrizCostos(db, cfg);
 
   // ── filtrar por tipo de ruta
@@ -3265,19 +3280,25 @@ function renderResultados(content, db, cfg) {
     todaMatriz = todaMatriz.filter(m => m.ruta.clasificRuta === 'Interregional');
   }
 
-  // ── filtrar por centros seleccionados (multi-select)
+  // ── filtrar por centros seleccionados
   if (mcCentros.size > 0) {
-    todaMatriz = todaMatriz.filter(m => mcCentros.has(m.ruta.origen_grupo));
+    // __STGO_SB__ expande a ambos grupos
+    const gruposEfectivos = new Set(mcCentros);
+    if (gruposEfectivos.has('__STGO_SB__') && tieneStgoSb) {
+      gruposEfectivos.delete('__STGO_SB__');
+      if (_stgoG) gruposEfectivos.add(_stgoG.grupo);
+      if (_sbG)   gruposEfectivos.add(_sbG.grupo);
+    }
+    todaMatriz = todaMatriz.filter(m => gruposEfectivos.has(m.ruta.origen_grupo));
   }
 
-  // ── Merge STGO+SB cuando ambos están en la vista (evita filas duplicadas por destino)
-  const _stgoG = groups.find(g => g.centroIds.some(id => ['1001','1002','1003'].includes(String(id))));
-  const _sbG   = groups.find(g => g.centroIds.some(id => ['1005'].includes(String(id))));
-  const _ambosEnVista = _stgoG && _sbG && (
+  // ── Merge STGO+SB siempre que ambos estén en la vista (regional e interregional)
+  const _ambosEnVista = tieneStgoSb && (
     mcCentros.size === 0 ||
-    (mcCentros.has(_stgoG.grupo) && mcCentros.has(_sbG.grupo))
+    mcCentros.has('__STGO_SB__') ||
+    (mcCentros.has(_stgoG?.grupo) && mcCentros.has(_sbG?.grupo))
   );
-  if (_ambosEnVista && mcTipoRuta !== 'interregional') {
+  if (_ambosEnVista) {
     todaMatriz = mergeStgoSbMatriz(todaMatriz, _stgoG.grupo, _sbG.grupo);
   }
 
@@ -3319,7 +3340,7 @@ function renderResultados(content, db, cfg) {
 
   function centrosLabel() {
     if (mcCentros.size === 0) return 'Todos los centros';
-    if (mcCentros.size === 1) return groups.find(g => mcCentros.has(g.grupo))?.nombre || '1 centro';
+    if (mcCentros.size === 1) return groupsDisplay.find(g => mcCentros.has(g.grupo))?.nombre || '1 centro';
     return `${mcCentros.size} centros seleccionados`;
   }
 
@@ -3367,7 +3388,7 @@ function renderResultados(content, db, cfg) {
               <input type="checkbox" id="mc-c-all" ${mcCentros.size === 0 ? 'checked' : ''}>
               <span class="font-body-md text-body-md font-bold">Todos</span>
             </label>
-            ${groups.map(g => `
+            ${groupsDisplay.map(g => `
             <label class="flex items-center gap-sm p-sm hover:bg-surface-container-high cursor-pointer">
               <input type="checkbox" class="mc-c-item" value="${escapeHtml(g.grupo)}" ${mcCentros.has(g.grupo) ? 'checked' : ''}>
               <span class="font-body-md text-body-md">${escapeHtml(g.nombre)}</span>
