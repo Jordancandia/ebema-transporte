@@ -2997,6 +2997,12 @@ function renderParticipacion(content, db, cfg) {
     });
 
     console.log('[PART] gruposMostrar:', gruposMostrar.map(g=>g.nombre), '| hasHist:', hasHist, '| histLen:', histDataLocal.length);
+    if (hasHist) {
+      gruposMostrar.forEach(gm => {
+        const r = calcGrupo(gm.grupos, gm.filtroGrupo || null);
+        console.log('[PART] TABLA', gm.nombre, '| filtroGrupo:', gm.filtroGrupo, '| resultados:', r.length, '| primeraRuta:', r[0]?.rutaCodigo);
+      });
+    }
     content.innerHTML = `
       <div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm mb-lg">
         <div class="flex items-center justify-between flex-wrap gap-sm">
