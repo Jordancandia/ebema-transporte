@@ -2881,9 +2881,12 @@ function renderParticipacion(content, db, cfg) {
       routes.forEach(r => {
         if (!r.id_zona_transporte) return;
         if ((r.tipo || '').toLowerCase() !== 'comuna') return;
-        const enGrupo = r.origen_grupo === filtroGrupo || filtroCentroIds.has(String(r.origenId));
-        if (!enGrupo) return;
-        // Sin filtro de región aquí: se muestran todas las rutas tipo COMUNA del centro
+        if ((r.clasificRuta || 'Regional') !== 'Regional') return;
+        // Solo rutas cuyo origen_grupo coincide exactamente con el centro (sin fallback origenId para evitar rutas cruzadas)
+        if (r.origen_grupo !== filtroGrupo && !filtroCentroIds.has(String(r.origenId))) return;
+        // Filtro de región: excluye destinos fuera de la región del centro (ej. Angol para SAN BERNARDO)
+        const zona = zonasByIdP.get(r.id_zona_transporte);
+        if (zona?.region && centroRegiones.size > 0 && !regionOK(zona.region, centroRegiones)) return;
         if (zonasEnResultados.has(r.id_zona_transporte)) return;
         allResults.push({
           rutaId:         r.id     || r.codigo || '',
@@ -2923,15 +2926,15 @@ function renderParticipacion(content, db, cfg) {
 
     function fila(r, idx) {
       const barW = Math.min(100, (r.toneladas / (results[0].toneladas || 1)) * 100);
-      return `<tr class="border-b border-outline-variant${r.toneladas === 0 ? ' opacity-50' : ''}">
+      return `<tr class="border-b border-outline-variant">
         <td class="p-sm text-right text-secondary font-data-mono text-[11px]">${idx+1}</td>
         <td class="p-sm font-data-mono text-[11px] text-primary font-bold">${escapeHtml(r.rutaCodigo)}</td>
         <td class="p-sm">${escapeHtml(r.ruta?.destino || '')}</td>
         <td class="p-sm text-secondary text-[11px]">${escapeHtml(r.zonaTransporte)}</td>
         <td class="p-sm text-right">${r.clientes}</td>
         <td class="p-sm text-right">${r.obras}</td>
-        <td class="p-sm text-right font-data-mono text-[11px]">${r.toneladas > 0 ? r.toneladas.toLocaleString('es-CL',{maximumFractionDigits:1}) : '—'}</td>
-        <td class="p-sm text-right font-bold font-data-mono text-[11px]">${r.peso > 0 ? (r.peso*100).toFixed(2)+'%' : '—'}</td>
+        <td class="p-sm text-right font-data-mono text-[11px]">${r.toneladas.toLocaleString('es-CL',{maximumFractionDigits:1})}</td>
+        <td class="p-sm text-right font-bold font-data-mono text-[11px]">${(r.peso*100).toFixed(2)}%</td>
         <td class="p-sm">
           ${r.toneladas > 0 ? `<div class="w-20 h-2 bg-surface-container-high rounded-full overflow-hidden"><div class="h-full rounded-full bg-primary" style="width:${barW}%"></div></div>` : ''}
         </td>
