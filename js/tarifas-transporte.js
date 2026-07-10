@@ -2817,20 +2817,46 @@ function renderParticipacion(content, db, cfg) {
     if (filtroGrupo) {
       const filtroGrupoObj = grupos.find(go => go.grupo === filtroGrupo);
       const filtroCentroIds = new Set((filtroGrupoObj?.centroIds || []).map(String));
+
       allResults = allResults.filter(r => {
-        // Buscar la ruta que pertenece a este centro específico
         const entries = Object.entries(r.rutasByGrupo || {});
         const myEntry = entries.find(([k, v]) =>
           k === filtroGrupo || filtroCentroIds.has(String(v?.origenId))
         );
         if (!myEntry) return false;
-        // Sobreescribir con la ruta del centro (código BDO en SB, SGO en STGO)
-        r.ruta      = myEntry[1] || r.ruta;
+        r.ruta       = myEntry[1] || r.ruta;
         r.rutaCodigo = myEntry[1]?.codigo || r.rutaCodigo;
         r.rutaId     = myEntry[1]?.id     || r.rutaId;
-        // PESO % NO se toca — sigue siendo el del total combinado
         return true;
       });
+
+      // Agregar rutas del centro que no tienen histData (ton=0) para mostrar cobertura completa
+      const zonasEnResultados = new Set(allResults.map(r => r.zonaTransporte));
+      routes.forEach(r => {
+        if (!r.id_zona_transporte) return;
+        if ((r.tipo || '').toLowerCase() !== 'comuna') return;
+        const enGrupo = r.origen_grupo === filtroGrupo || filtroCentroIds.has(String(r.origenId));
+        if (!enGrupo) return;
+        const zona = zonasByIdP.get(r.id_zona_transporte);
+        if (!regionOK(zona?.region, centroRegiones)) return;
+        if (zonasEnResultados.has(r.id_zona_transporte)) return; // ya está
+        allResults.push({
+          rutaId:         r.id     || r.codigo || '',
+          rutaCodigo:     r.codigo || '',
+          ruta:           r,
+          rutasByGrupo:   { [filtroGrupo]: r },
+          clientes:       0,
+          obras:          0,
+          toneladas:      0,
+          peso:           0,
+          caracteristica: r.caracteristica || 'NORMAL',
+          zonaTransporte: r.id_zona_transporte || ''
+        });
+        zonasEnResultados.add(r.id_zona_transporte);
+      });
+
+      // Re-ordenar: primero por toneladas desc, luego alfabético
+      allResults.sort((a, b) => b.toneladas - a.toneladas || (a.ruta?.destino || '').localeCompare(b.ruta?.destino || '', 'es'));
     }
     return allResults;
   }
