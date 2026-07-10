@@ -2810,7 +2810,12 @@ function renderParticipacion(content, db, cfg) {
 
     // Filtrar por grupo específico si se pide (STGO vs SB muestran rutas propias pero % combinado)
     if (filtroGrupo) {
-      allResults = allResults.filter(r => r.ruta?.origen_grupo === filtroGrupo);
+      const filtroGrupoObj = grupos.find(go => go.grupo === filtroGrupo);
+      const filtroCentroIds = new Set((filtroGrupoObj?.centroIds || []).map(String));
+      allResults = allResults.filter(r =>
+        r.ruta?.origen_grupo === filtroGrupo ||
+        filtroCentroIds.has(String(r.ruta?.origenId))
+      );
     }
     return allResults;
   }
