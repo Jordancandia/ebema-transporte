@@ -2833,13 +2833,14 @@ function renderParticipacion(content, db, cfg) {
       // Agregar rutas del centro que no tienen histData (ton=0) para mostrar cobertura completa
       const zonasEnResultados = new Set(allResults.map(r => r.zonaTransporte));
       routes.forEach(r => {
-        if (!r.id_zona_transporte) return;
-        if ((r.tipo || '').toLowerCase() !== 'comuna') return;
+        const esBDO116 = (r.codigo || r.id || '').toString().toUpperCase() === 'BDO116';
+        if (!r.id_zona_transporte) { if(esBDO116) console.warn('[BDO116] sin id_zona_transporte'); return; }
+        if ((r.tipo || '').toLowerCase() !== 'comuna') { if(esBDO116) console.warn('[BDO116] tipo='+r.tipo); return; }
         const enGrupo = r.origen_grupo === filtroGrupo || filtroCentroIds.has(String(r.origenId));
-        if (!enGrupo) return;
+        if (!enGrupo) { if(esBDO116) console.warn('[BDO116] no enGrupo, origen_grupo='+r.origen_grupo+' origenId='+r.origenId+' filtroGrupo='+filtroGrupo+' filtroCentroIds=',[...filtroCentroIds]); return; }
         const zona = zonasByIdP.get(r.id_zona_transporte);
-        if (!regionOK(zona?.region, centroRegiones)) return;
-        if (zonasEnResultados.has(r.id_zona_transporte)) return; // ya está
+        if (!regionOK(zona?.region, centroRegiones)) { if(esBDO116) console.warn('[BDO116] region KO zona='+zona?.region+' centros=',[...centroRegiones]); return; }
+        if (zonasEnResultados.has(r.id_zona_transporte)) { if(esBDO116) console.warn('[BDO116] zona ya en resultados:'+r.id_zona_transporte); return; }
         allResults.push({
           rutaId:         r.id     || r.codigo || '',
           rutaCodigo:     r.codigo || '',
