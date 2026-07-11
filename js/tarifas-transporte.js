@@ -2111,6 +2111,112 @@ function mergeStgoSbMatriz(rows, stgoGrupo, sbGrupo) {
   return [...otherRows, ...merged];
 }
 
+// Calcula pesos de participación frescos desde el histórico de toneladas.
+// Replica la lógica core de calcGrupo: agrega toneladas por zona, fusiona
+// STGO+SB, y devuelve un mapa { [rutaId|rutaCodigo]: {pct, peso} }.
+// Retorna null si no hay datos históricos disponibles.
+function computeParticipacionFresh(db) {
+  const histData = (getClientTariffConfig(db).historico || []);
+  if (!histData.length) return null;
+
+  const routes   = (db.routes || []).filter(r => r.activo);
+  const grupos   = getOrigenGroups(db);
+  const STGO_IDS = ['1001','1002','1003'];
+  const SB_IDS   = ['1005'];
+  const stgoGrupoObj = grupos.find(g => g.centroIds.some(id => STGO_IDS.includes(String(id))));
+  const sbGrupoObj   = grupos.find(g => g.centroIds.some(id => SB_IDS.includes(String(id))));
+  const tieneStgoSb  = !!(stgoGrupoObj && sbGrupoObj);
+
+  const routeByIdP = new Map();
+  routes.forEach(r => {
+    if (r.id)     routeByIdP.set(String(r.id).toUpperCase(), r);
+    if (r.codigo) routeByIdP.set(String(r.codigo).toUpperCase(), r);
+  });
+
+  const result = {};
+
+  grupos.forEach(g => {
+    // SAN BERNARDO se procesa junto a SANTIAGO en la lógica combinada
+    if (tieneStgoSb && sbGrupoObj && g.grupo === sbGrupoObj.grupo) return;
+
+    const gruposCalc  = (tieneStgoSb && stgoGrupoObj && g.grupo === stgoGrupoObj.grupo)
+      ? [stgoGrupoObj, sbGrupoObj] : [g];
+    const expanded    = new Set(gruposCalc.map(go => go.grupo));
+    const centroIds   = new Set(gruposCalc.flatMap(go => (go.centroIds || []).map(String)));
+
+    // Rutas candidatas: COMUNA + Regional del grupo
+    const candidatas = routes.filter(r => {
+      if ((r.tipo || '').toLowerCase() !== 'comuna') return false;
+      if (r.clasificRuta !== 'Regional') return false;
+      if (r.origen_grupo) return expanded.has(r.origen_grupo);
+      return centroIds.has(String(r.origenId));
+    });
+    const codigosValidos = new Set();
+    candidatas.forEach(r => {
+      if (r.id)     codigosValidos.add(String(r.id).toUpperCase());
+      if (r.codigo) codigosValidos.add(String(r.codigo).toUpperCase());
+    });
+
+    // Acumular toneladas por zona
+    const zonaTon = new Map(); // key → { ton, rutas: Set<ruta> }
+    histData.forEach(h => {
+      if (!codigosValidos.has(String(h.idRuta).toUpperCase())) return;
+      const ruta = routeByIdP.get(String(h.idRuta).toUpperCase());
+      if (!ruta) return;
+      const key = ruta.id_zona_transporte || (ruta.destino || '').trim().toUpperCase() || h.idRuta;
+      if (!zonaTon.has(key)) zonaTon.set(key, { ton: 0, rutas: new Map() });
+      const e = zonaTon.get(key);
+      e.ton += h.ton;
+      if (!e.rutas.has(ruta.id)) e.rutas.set(ruta.id, ruta);
+    });
+
+    // STGO+SB: fusionar zonas con mismo destino
+    if (tieneStgoSb && gruposCalc.length > 1) {
+      const destMap = new Map();
+      for (const [key, e] of zonaTon.entries()) {
+        const destino = ([...e.rutas.values()][0]?.destino || '').trim().toUpperCase();
+        if (!destino) continue;
+        if (!destMap.has(destino)) destMap.set(destino, []);
+        destMap.get(destino).push(key);
+      }
+      for (const keys of destMap.values()) {
+        if (keys.length <= 1) continue;
+        const canonKey = keys[0];
+        const canon = zonaTon.get(canonKey);
+        for (const k of keys.slice(1)) {
+          const e = zonaTon.get(k);
+          canon.ton += e.ton;
+          e.rutas.forEach((r, id) => { if (!canon.rutas.has(id)) canon.rutas.set(id, r); });
+          zonaTon.delete(k);
+        }
+      }
+    }
+
+    // Calcular totales por pool (NORMAL vs ISLA/EXTREMA)
+    let totalNorm = 0, totalEsp = 0;
+    for (const e of zonaTon.values()) {
+      const rep = [...e.rutas.values()][0];
+      if (['ISLA','EXTREMA'].includes((rep?.caracteristica || '').toUpperCase())) totalEsp += e.ton;
+      else totalNorm += e.ton;
+    }
+
+    // Asignar pct a cada ruta en la zona
+    for (const e of zonaTon.values()) {
+      const rep    = [...e.rutas.values()][0];
+      const isEsp  = ['ISLA','EXTREMA'].includes((rep?.caracteristica || '').toUpperCase());
+      const total  = isEsp ? totalEsp : totalNorm;
+      const pct    = total > 0 ? Math.round((e.ton / total) * 10000) / 100 : 0;
+      const entry  = { pct, peso: pct / 100 };
+      e.rutas.forEach(r => {
+        if (r.id)     result[r.id]     = entry;
+        if (r.codigo) result[r.codigo] = entry;
+      });
+    }
+  });
+
+  return result;
+}
+
 // Recalcula Tarifa/KM (costo/km final del Motor de Costo + margen de ganancia,
 // promedio de rutas activas del Centro Origen para esa capacidad) y Tarifa
 // Base (Tarifa/KM x Km Base) para cada tipo de camión, persistiendo en
@@ -2122,7 +2228,8 @@ function syncTarifasZcap(db, cfg, grupoFiltro = '') {
   const allGroups  = getOrigenGroups(db);
   const grupos_filt = grupoFiltro ? allGroups.filter(g => g.grupo === grupoFiltro) : allGroups;
   const matriz     = calcularMatrizCostos(db, cfg);
-  const participacion = cfg.participacionRutas || {};
+  // Usar participación fresca desde histórico; si no hay datos usar la guardada
+  const participacion = computeParticipacionFresh(db) || cfg.participacionRutas || {};
   const conZcap    = new Set();
   let cambios      = false;
 
@@ -3354,7 +3461,8 @@ function renderResultados(content, db, cfg) {
   const showPeso  = mcTipoRuta !== 'interregional';
   const groupMap  = {};
   groups.forEach(g => { groupMap[g.grupo] = g.nombre; });
-  const participacion = cfg.participacionRutas || {};
+  // Usar participación fresca desde histórico; si no hay datos usar la guardada
+  const participacion = computeParticipacionFresh(db) || cfg.participacionRutas || {};
 
   // ── mapa costos extras
   const extraCostsMap = new Map();
