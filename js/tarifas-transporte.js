@@ -3461,8 +3461,8 @@ function renderResultados(content, db, cfg) {
   const showPeso  = mcTipoRuta !== 'interregional';
   const groupMap  = {};
   groups.forEach(g => { groupMap[g.grupo] = g.nombre; });
-  // Participación siempre fresca desde histórico; 0% si no hay datos
-  const participacion = computeParticipacionFresh(db) || {};
+  // Participación desde valores guardados (actualizada vía botón Actualizar Tarifas)
+  const participacion = cfg.participacionRutas || {};
 
   // ── mapa costos extras
   const extraCostsMap = new Map();
@@ -3679,11 +3679,28 @@ function renderResultados(content, db, cfg) {
   document.getElementById('mc-pag-next')?.addEventListener('click', () => { mcPagina = Math.min(Math.ceil(todaMatriz.length / MC_PAGE) - 1, mcPagina + 1); renderResultados(content, db, cfg); });
 
   // ── Actualizar tarifas (solo Regional)
-  document.getElementById('mc-actualizar')?.addEventListener('click', () => {
-    const centroArg = mcCentros.size === 1 ? [...mcCentros][0] : '';
-    const conZcap = syncTarifasZcap(db, cfg, centroArg);
-    showAlert(`Tarifas actualizadas — ${conZcap.size} tipo(s) de camión sincronizado(s)`);
-    renderResultados(content, db, cfg);
+  document.getElementById('mc-actualizar')?.addEventListener('click', async () => {
+    const btn = document.getElementById('mc-actualizar');
+    if (btn) { btn.disabled = true; btn.textContent = 'Calculando...'; }
+    try {
+      // Cargar histórico si no está disponible aún
+      if (!getClientTariffConfig(db).historico?.length) {
+        const fresh = await loadHistorico();
+        if (fresh?.length) getClientTariffConfig(db).historico = fresh;
+      }
+      // Guardar participación fresca en cfg antes de sincronizar ZCAP
+      const partFresh = computeParticipacionFresh(db);
+      if (partFresh && Object.keys(partFresh).length > 0) {
+        cfg.participacionRutas = partFresh;
+        saveDatabase(db);
+      }
+      const centroArg = mcCentros.size === 1 ? [...mcCentros][0] : '';
+      const conZcap = syncTarifasZcap(db, cfg, centroArg);
+      showAlert(`Tarifas actualizadas — ${conZcap.size} tipo(s) de camión sincronizado(s)`);
+      renderResultados(content, db, cfg);
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = 'Actualizar Tarifas'; }
+    }
   });
 
   // ── Exportar CSV
