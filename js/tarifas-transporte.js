@@ -2228,8 +2228,8 @@ function syncTarifasZcap(db, cfg, grupoFiltro = '') {
   const allGroups  = getOrigenGroups(db);
   const grupos_filt = grupoFiltro ? allGroups.filter(g => g.grupo === grupoFiltro) : allGroups;
   const matriz     = calcularMatrizCostos(db, cfg);
-  // Usar participación fresca desde histórico; si no hay datos usar la guardada
-  const participacion = computeParticipacionFresh(db) || cfg.participacionRutas || {};
+  // Participación siempre fresca desde histórico; 0% si no hay datos
+  const participacion = computeParticipacionFresh(db) || {};
   const conZcap    = new Set();
   let cambios      = false;
 
@@ -3461,8 +3461,8 @@ function renderResultados(content, db, cfg) {
   const showPeso  = mcTipoRuta !== 'interregional';
   const groupMap  = {};
   groups.forEach(g => { groupMap[g.grupo] = g.nombre; });
-  // Usar participación fresca desde histórico; si no hay datos usar la guardada
-  const participacion = computeParticipacionFresh(db) || cfg.participacionRutas || {};
+  // Participación siempre fresca desde histórico; 0% si no hay datos
+  const participacion = computeParticipacionFresh(db) || {};
 
   // ── mapa costos extras
   const extraCostsMap = new Map();
