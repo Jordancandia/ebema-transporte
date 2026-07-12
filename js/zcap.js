@@ -51,15 +51,13 @@ function calcZcapRow(db, cfg, ruta, truck, troncalesSet) {
   const esTroncal = troncalesSet.has(ruta.codigo);
 
   if (!esTroncal && ruta.clasificRuta === 'Regional') {
+    // ZCAP Regional = Costo Base + km × Tarifa/KM
     const defaultBase = TRUCK_BASE_TYPES.find(b => b.type === truck.type)?.baseRate || 0;
     const costoBase   = Number(truck.baseRate) || defaultBase;
     const isExtrema   = ['ISLA','EXTREMA'].includes((ruta.caracteristica||'').toUpperCase());
     const rate = isExtrema
       ? (Number(truck.ratePerKmExtrema) || Number(truck.ratePerKm) || 0)
       : (Number(truck.ratePerKm) || 0);
-    const kmBase = Number(truck.Kmbase) || 0;
-    const baseKM = Number(truck.baseKM)  || 0;
-    if (kmBase > 0) return (costoBase + baseKM) + Math.max(0, km - kmBase) * rate;
     return costoBase + km * rate;
   }
   // Interregional o Troncal → motor completo
@@ -84,10 +82,9 @@ function renderTablaRutas(db, cfg, grupos, rutas, troncalesSet) {
 
   const rows = [];
   rutasFilt.forEach(ruta => {
-    const grupo = grupos.find(g =>
-      g.grupo === ruta.origen_grupo ||
-      (g.centroIds||[]).map(String).includes(String(ruta.origenId))
-    );
+    // Priorizar origenId (ID numérico, seteado por sistema) sobre origen_grupo (string, puede tener datos incorrectos)
+    const grupo = grupos.find(g => (g.centroIds||[]).map(String).includes(String(ruta.origenId)))
+      || grupos.find(g => g.grupo === ruta.origen_grupo);
     if (!grupo) return;
     let trucks = (db.truckTypes||[])
       .filter(t => t.Id_centro === grupo.repId)
