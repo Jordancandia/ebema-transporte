@@ -56,13 +56,14 @@ function calcZcapRow(db, cfg, ruta, truck, troncalesSet) {
     //     Si km ≤ KMBase → tarifa plana = B + C  (sin extra km)
     //   Sin KM Base (KMBase=0): B.CostoBase + km × D.Tarifa/KM
     const defaultBase = TRUCK_BASE_TYPES.find(b => b.type === truck.type)?.baseRate || 0;
-    const costoBase   = Number(truck.baseRate) || defaultBase;  // C: T.Base KM
-    const baseCosto   = Number(truck.baseKM)  || 0;             // B: Costo Base
+    // Usar ?? para no tratar 0 como "sin valor" — baseRate=0 es válido para 28 Ton
+    const costoBase   = truck.baseRate != null ? Number(truck.baseRate) : defaultBase;  // C: T.Base KM
+    const baseCosto   = truck.baseKM   != null ? Number(truck.baseKM)   : 0;            // B: Costo Base
     const isExtrema   = ['ISLA','EXTREMA'].includes((ruta.caracteristica||'').toUpperCase());
     const rate = isExtrema
       ? (Number(truck.ratePerKmExtrema) || Number(truck.ratePerKm) || 0)
       : (Number(truck.ratePerKm) || 0);
-    const kmBase = Number(truck.Kmbase) || 0;
+    const kmBase = truck.Kmbase != null ? Number(truck.Kmbase) : 0;
     // Siempre: B + C + max(0, km − KMBase) × D
     // KMBase=0 → extra = km×D (sin tramo fijo). KMBase>0 y km≤KMBase → extra=0 (tarifa plana B+C)
     return (costoBase + baseCosto) + Math.max(0, km - kmBase) * rate;
