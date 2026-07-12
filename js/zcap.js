@@ -149,13 +149,10 @@ function exportZcapCSV(db, cfg, grupos, rutas, troncalesSet) {
 
 // ── Tabla de resultados ────────────────────────────────────────────────────
 function renderTablaRutas(db, cfg, grupos, rutas, troncalesSet) {
-  const { rows, rutasFilt } = buildZcapRows(db, cfg, grupos, rutas, troncalesSet);
+  const { rows, rutasFilt, sinConfig = [] } = buildZcapRows(db, cfg, grupos, rutas, troncalesSet);
 
-  if (!rutasFilt.length)
+  if (!rutasFilt.length && !sinConfig.length)
     return '<p class="text-secondary text-[12px] p-md">Sin rutas para los filtros seleccionados.</p>';
-
-  if (!rows.length)
-    return '<p class="text-secondary text-[12px] p-md">Sin combinaciones ruta × camión.</p>';
 
   const esTroncalView = zcapFiltTipo === 'troncales';
   const pageRows = rows.slice(zcapPagina * ZCAP_PAGE, (zcapPagina+1) * ZCAP_PAGE);
