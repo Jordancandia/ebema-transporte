@@ -95,19 +95,18 @@ function buildZcapRows(db, cfg, grupos, rutas, troncalesSet) {
   }
   rutasFilt.sort((a, b) => (a.codigo||'').localeCompare(b.codigo||''));
   const rows = [];
-  const sinConfig = [];  // rutas sin grupo o sin camiones configurados
   rutasFilt.forEach(ruta => {
     const skipOrigenId = String(ruta.origenId) === '1000';
     const grupo = (!skipOrigenId && grupos.find(g => (g.centroIds||[]).map(String).includes(String(ruta.origenId))))
       || grupos.find(g => g.grupo === ruta.origen_grupo);
-    if (!grupo) { sinConfig.push({ ruta, razon: 'Sin centro logístico asociado' }); return; }
+    if (!grupo) return;
     const tariffGrupoNombre = GRUPO_TARIFF_SOURCE[grupo.grupo] || grupo.grupo;
     const tariffGrupo = grupos.find(g => g.grupo === tariffGrupoNombre) || grupo;
     let trucks = (db.truckTypes||[])
       .filter(t => t.Id_centro === tariffGrupo.repId)
       .sort((a,b) => TRUCK_ORDER.indexOf(a.type) - TRUCK_ORDER.indexOf(b.type));
     if (zcapFiltTruck) trucks = trucks.filter(t => t.type === zcapFiltTruck);
-    if (!trucks.length) { sinConfig.push({ ruta, grupo, razon: 'Sin Tarifas por Camión configuradas para ' + (tariffGrupo.nombre||tariffGrupo.grupo) }); return; }
+    if (!trucks.length) return;
     trucks.forEach((truck, ti) => {
       rows.push({
         ruta, grupo, truck,
@@ -117,7 +116,7 @@ function buildZcapRows(db, cfg, grupos, rutas, troncalesSet) {
       });
     });
   });
-  return { rows, rutasFilt, sinConfig };
+  return { rows, rutasFilt };
 }
 
 // ── Exportar CSV con los datos actuales filtrados ──────────────────────────
@@ -149,25 +148,17 @@ function exportZcapCSV(db, cfg, grupos, rutas, troncalesSet) {
 
 // ── Tabla de resultados ────────────────────────────────────────────────────
 function renderTablaRutas(db, cfg, grupos, rutas, troncalesSet) {
-  const { rows, rutasFilt, sinConfig = [] } = buildZcapRows(db, cfg, grupos, rutas, troncalesSet);
+  const { rows, rutasFilt } = buildZcapRows(db, cfg, grupos, rutas, troncalesSet);
 
-  if (!rutasFilt.length && !sinConfig.length)
+  if (!rutasFilt.length)
     return '<p class="text-secondary text-[12px] p-md">Sin rutas para los filtros seleccionados.</p>';
+
+  if (!rows.length)
+    return '<p class="text-secondary text-[12px] p-md">Sin combinaciones ruta × camión.</p>';
 
   const esTroncalView = zcapFiltTipo === 'troncales';
   const pageRows = rows.slice(zcapPagina * ZCAP_PAGE, (zcapPagina+1) * ZCAP_PAGE);
-  const alertaSinConfig = sinConfig.length ? `
-    <div class="mb-sm">
-      ${sinConfig.map(s => `
-        <div class="flex items-center gap-xs text-[11px] bg-amber-50 border border-amber-300 rounded px-sm py-xs mb-xs text-amber-800">
-          <span class="material-symbols-outlined text-[14px]">warning</span>
-          <span class="font-data-mono font-bold">${escapeHtml(s.ruta.codigo||'')}</span>
-          <span>${escapeHtml(s.ruta.destino||'')}</span>
-          <span class="text-amber-600">— ${escapeHtml(s.razon)}</span>
-          ${esTroncalView ? `<button class="zcap-row-rm ml-auto text-amber-700 hover:text-red-600" data-cod="${escapeHtml(s.ruta.codigo||'')}" title="Quitar de troncales"><span class="material-symbols-outlined text-[14px]">remove_circle_outline</span></button>` : ''}
-        </div>`).join('')}
-    </div>` : '';
-  return alertaSinConfig + `
+  return `
     <div class="text-[12px] text-secondary mb-sm">${rutasFilt.length} ruta(s) — ${rows.length} combinaciones</div>
     <div class="bg-surface border border-outline-variant overflow-x-auto rounded">
       <table class="w-full border-collapse text-[12px]">
