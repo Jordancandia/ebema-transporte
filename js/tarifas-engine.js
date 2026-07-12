@@ -18,7 +18,10 @@ export function truckTypesWithCap(db, centroId) {
 
 // Calcula el detalle completo de costos (12 pasos del motor actuarial) para
 // una ruta + capacidad de camión (kg) determinadas.
-export function calcularCostoRuta(db, cfg, ruta, capKg) {
+// opciones.soloIda=true → Peajes y Combustible se calculan solo sobre el tramo IDA
+//   (útil para rutas Troncales en las que el camión no regresa al origen).
+export function calcularCostoRuta(db, cfg, ruta, capKg, opciones = {}) {
+  const { soloIda = false } = opciones;
   const centroId = ruta.origenId;
   // Configuración compartida por Centro Origen (grupo): resuelve "por detrás"
   // al centro representante del grupo (ej. Santiago = 1001/1002/1003 -> 1003).
@@ -46,7 +49,8 @@ export function calcularCostoRuta(db, cfg, ruta, capKg) {
     }, 0);
     peajeVuelta = peajeIda;
   }
-  const item1_peajes = peajeIda + peajeVuelta;
+  // soloIda: solo cobra el tramo de ida (rutas troncales sin retorno al origen)
+  const item1_peajes = soloIda ? peajeIda : peajeIda + peajeVuelta;
 
   // --- 1b. Costos Extra por ruta (BARCAZA, TRAVESÍA, acarreo, etc.) ---
   // Ítems configurados manualmente en la pestaña "Costos Extras", por ruta y tipo de eje.
@@ -56,7 +60,7 @@ export function calcularCostoRuta(db, cfg, ruta, capKg) {
   );
   const itemExtraIda    = extraCostsRuta.reduce((s, c) => s + (Number(c.costo_ida)    || 0), 0);
   const itemExtraVuelta = extraCostsRuta.reduce((s, c) => s + (Number(c.costo_vuelta) || 0), 0);
-  const item1b_costosExtra = itemExtraIda + itemExtraVuelta;
+  const item1b_costosExtra = soloIda ? itemExtraIda : itemExtraIda + itemExtraVuelta;
 
   // --- 2. Combustible (cargado ida + vacío vuelta) ---
   // Se descuenta el IVA al precio: precio neto = precioLitro / (1 + ivaPct/100)
@@ -68,7 +72,7 @@ export function calcularCostoRuta(db, cfg, ruta, capKg) {
   const precioLitroNeto = precioLitro / (1 + ivaPct / 100);
   const combIda = rend.cargado > 0 ? (km / rend.cargado) * precioLitroNeto : 0;
   const combVuelta = rend.vacio > 0 ? (km / rend.vacio) * precioLitroNeto : 0;
-  const item2_combustible = combIda + combVuelta;
+  const item2_combustible = soloIda ? combIda : combIda + combVuelta;
 
   // KM mensuales/anuales ofrecidos (denominador de prorrateos)
   const kmMensual = Number(cfg.kmOfrecidos[kmKey]) || 0;

@@ -78,7 +78,9 @@ function calcZcapRow(db, cfg, ruta, truck, troncalesSet) {
   // Interregional o Troncal → motor completo
   const capKg = truckCapKg(truck.type);
   if (!capKg) return 0;
-  try { return calcularCostoRuta(db, cfg, ruta, capKg).item10_costoRutaTotal || 0; }
+  // soloIda: ruta troncal marcada con toggle IDA en el panel de configuración
+  const soloIda = esTroncal && (cfg.variables?.troncalesSoloIda || []).includes(ruta.codigo);
+  try { return calcularCostoRuta(db, cfg, ruta, capKg, { soloIda }).item10_costoRutaTotal || 0; }
   catch (_) { return 0; }
 }
 
@@ -219,8 +221,16 @@ function renderPanelTroncales(cfg, db, container, onChangeFn) {
       <div class="flex flex-wrap gap-xs">
         ${list.map(cod => {
           const ruta = allRoutes.find(r => r.codigo === cod);
+          const isSoloIda = (cfg.variables?.troncalesSoloIda || []).includes(cod);
           return `<span class="inline-flex items-center gap-xs bg-amber-100 border border-amber-300 rounded px-sm py-xs text-[11px] font-data-mono font-bold text-amber-900">
             ${escapeHtml(cod)}${ruta ? ` <span class="font-normal text-amber-700 text-[10px]">${escapeHtml(ruta.destino||'')}</span>` : ''}
+            <button class="zcap-tronc-ida ml-xs px-xs rounded text-[9px] font-bold border transition-colors ${isSoloIda
+              ? 'bg-blue-500 border-blue-600 text-white'
+              : 'bg-white border-amber-400 text-amber-700 hover:bg-amber-50'}"
+              data-cod="${escapeHtml(cod)}"
+              title="${isSoloIda ? 'Modo: solo IDA — clic para cambiar a IDA+VUELTA' : 'Modo: IDA+VUELTA — clic para cambiar a solo IDA'}">
+              ${isSoloIda ? 'IDA' : 'IDA+V'}
+            </button>
             <button class="zcap-tronc-rm hover:text-red-600 ml-xs" data-cod="${escapeHtml(cod)}">
               <span class="material-symbols-outlined text-[13px]">close</span>
             </button>
@@ -243,9 +253,23 @@ function renderPanelTroncales(cfg, db, container, onChangeFn) {
     onChangeFn();
   });
 
+  panel.querySelectorAll('.zcap-tronc-ida').forEach(btn => {
+    btn.addEventListener('click', () => {
+      if (!cfg.variables.troncalesSoloIda) cfg.variables.troncalesSoloIda = [];
+      const idx = cfg.variables.troncalesSoloIda.indexOf(btn.dataset.cod);
+      if (idx >= 0) cfg.variables.troncalesSoloIda.splice(idx, 1);
+      else cfg.variables.troncalesSoloIda.push(btn.dataset.cod);
+      saveDatabase(db);
+      renderPanelTroncales(cfg, db, container, onChangeFn);
+      onChangeFn();
+    });
+  });
+
   panel.querySelectorAll('.zcap-tronc-rm').forEach(btn => {
     btn.addEventListener('click', () => {
       cfg.variables.troncalesRoutes = cfg.variables.troncalesRoutes.filter(c => c !== btn.dataset.cod);
+      if (cfg.variables.troncalesSoloIda)
+        cfg.variables.troncalesSoloIda = cfg.variables.troncalesSoloIda.filter(c => c !== btn.dataset.cod);
       saveDatabase(db);
       renderPanelTroncales(cfg, db, container, onChangeFn);
       onChangeFn();
