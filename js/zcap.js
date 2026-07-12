@@ -90,8 +90,10 @@ function renderTablaRutas(db, cfg, grupos, rutas, troncalesSet) {
 
   const rows = [];
   rutasFilt.forEach(ruta => {
-    // Priorizar origenId (ID numérico, seteado por sistema) sobre origen_grupo (string, puede tener datos incorrectos)
-    const grupo = grupos.find(g => (g.centroIds||[]).map(String).includes(String(ruta.origenId)))
+    // origenId=1000 es un ID genérico legacy (no identifica un centro real) → usar origen_grupo.
+    // Para IDs reales (≠1000), priorizar origenId sobre origen_grupo (que puede tener datos incorrectos).
+    const skipOrigenId = String(ruta.origenId) === '1000';
+    const grupo = (!skipOrigenId && grupos.find(g => (g.centroIds||[]).map(String).includes(String(ruta.origenId))))
       || grupos.find(g => g.grupo === ruta.origen_grupo);
     if (!grupo) return;
     let trucks = (db.truckTypes||[])
@@ -224,7 +226,7 @@ function renderContenido(db, cfg, grupos, container) {
 
   if (zcapTabCentro !== '__todos__') {
     const g   = grupos.find(go => go.grupo === zcapTabCentro);
-    const ids = new Set((g?.centroIds||[]).map(String));
+    const ids = new Set((g?.centroIds||[]).map(String).filter(id => id !== '1000'));
     rutas = rutas.filter(r => r.origen_grupo === zcapTabCentro || ids.has(String(r.origenId)));
   }
 
