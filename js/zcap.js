@@ -51,14 +51,21 @@ function calcZcapRow(db, cfg, ruta, truck, troncalesSet) {
   const esTroncal = troncalesSet.has(ruta.codigo);
 
   if (!esTroncal && ruta.clasificRuta === 'Regional') {
-    // ZCAP Regional = Costo Base + km × Tarifa/KM
+    // ZCAP Regional:
+    //   Con KM Base: B.CostoBase + C.TBaseKM + max(0, km − KMBase) × D.Tarifa/KM
+    //     Si km ≤ KMBase → tarifa plana = B + C  (sin extra km)
+    //   Sin KM Base (KMBase=0): B.CostoBase + km × D.Tarifa/KM
     const defaultBase = TRUCK_BASE_TYPES.find(b => b.type === truck.type)?.baseRate || 0;
-    const costoBase   = Number(truck.baseRate) || defaultBase;
+    const costoBase   = Number(truck.baseRate) || defaultBase;  // C: T.Base KM
+    const baseCosto   = Number(truck.baseKM)  || 0;             // B: Costo Base
     const isExtrema   = ['ISLA','EXTREMA'].includes((ruta.caracteristica||'').toUpperCase());
     const rate = isExtrema
       ? (Number(truck.ratePerKmExtrema) || Number(truck.ratePerKm) || 0)
       : (Number(truck.ratePerKm) || 0);
-    return costoBase + km * rate;
+    const kmBase = Number(truck.Kmbase) || 0;
+    // Siempre: B + C + max(0, km − KMBase) × D
+    // KMBase=0 → extra = km×D (sin tramo fijo). KMBase>0 y km≤KMBase → extra=0 (tarifa plana B+C)
+    return (costoBase + baseCosto) + Math.max(0, km - kmBase) * rate;
   }
   // Interregional o Troncal → motor completo
   const capKg = truckCapKg(truck.type);
