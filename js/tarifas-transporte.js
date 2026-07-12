@@ -3612,4 +3612,127 @@ function renderResultados(content, db, cfg) {
                     <td class="p-md text-right">${formatCLP(m.item5_mantKm)}</td>
                     <td class="p-md text-right">${formatCLP(m.item6_neumKm)}</td>
                     <td class="p-md text-right">${formatCLP(m.item7_gpsKm)}</td>
-   
+                    <td class="p-md text-right">${formatCLP(m.item8_choferBaseDiario)}</td>
+                    <td class="p-md text-right">${formatCLP(m.item9_varChofer)}</td>
+                    <td class="p-md text-right font-bold">${(m.factorRuta || 1).toFixed(2)}</td>
+                    <td class="p-md text-right">${formatCLP(m.costoVuelta)}</td>
+                    <td class="p-md text-right font-bold">${formatCLP(m.item10_costoRutaTotal)}</td>
+                    <td class="p-md text-right font-bold text-primary">${formatCLP(m.item11_costoKmFinal)}</td>
+                    ${showPeso ? `
+                    <td class="p-md text-right">${esInter ? '—' : pct.toFixed(2) + '%'}</td>
+                    <td class="p-md text-right">${esInter ? '—' : formatCLP(tarifaPond)}</td>` : ''}
+                  </tr>`;
+                }).join('')}
+          </tbody>
+        </table>
+      </div>
+      ${renderPager(todaMatriz.length, mcPagina, MC_PAGE, 'mc-pag-prev', 'mc-pag-next')}
+    </div>
+  `;
+
+  // ── Toggle tipo ruta
+  content.querySelectorAll('.mc-tipo-btn').forEach(btn => {
+    btn.addEventListener('click', () => { mcTipoRuta = btn.dataset.tipo; mcPagina = 0; renderResultados(content, db, cfg); });
+  });
+
+  // ── Multi-select centros
+  const centroBtn   = document.getElementById('mc-centro-btn');
+  const centroPanel = document.getElementById('mc-centro-panel');
+  centroBtn?.addEventListener('click', e => { e.stopPropagation(); centroPanel.classList.toggle('hidden'); });
+  document.addEventListener('click', () => centroPanel?.classList.add('hidden'), { once: true });
+
+  document.getElementById('mc-c-all')?.addEventListener('change', () => {
+    mcCentros.clear();
+    content.querySelectorAll('.mc-c-item').forEach(cb => cb.checked = false);
+    mcPagina = 0;
+    renderResultados(content, db, cfg);
+  });
+  content.querySelectorAll('.mc-c-item').forEach(cb => {
+    cb.addEventListener('change', () => {
+      mcCentros.clear();
+      content.querySelectorAll('.mc-c-item:checked').forEach(c => mcCentros.add(c.value));
+      mcPagina = 0;
+      renderResultados(content, db, cfg);
+    });
+  });
+
+  // ── Tipo camión
+  document.getElementById('mc-f-capkg')?.addEventListener('change', e => { mcCapKg = e.target.value; mcPagina = 0; renderResultados(content, db, cfg); });
+
+  // ── Destino
+  document.getElementById('mc-f-comuna')?.addEventListener('input', e => {
+    const pos = e.target.selectionStart;
+    mcComuna = e.target.value; mcPagina = 0;
+    renderResultados(content, db, cfg);
+    const inp = document.getElementById('mc-f-comuna');
+    if (inp) { inp.focus(); inp.setSelectionRange(pos, pos); }
+  });
+
+  // ── Limpiar
+  document.getElementById('mc-reset')?.addEventListener('click', () => {
+    mcCentros.clear(); mcCapKg = ''; mcComuna = ''; mcPagina = 0;
+    renderResultados(content, db, cfg);
+  });
+
+  // ── Paginación
+  document.getElementById('mc-pag-prev')?.addEventListener('click', () => { mcPagina = Math.max(0, mcPagina - 1); renderResultados(content, db, cfg); });
+  document.getElementById('mc-pag-next')?.addEventListener('click', () => { mcPagina = Math.min(Math.ceil(todaMatriz.length / MC_PAGE) - 1, mcPagina + 1); renderResultados(content, db, cfg); });
+
+  // ── Actualizar tarifas (solo Regional)
+  document.getElementById('mc-actualizar')?.addEventListener('click', async () => {
+    const btn = document.getElementById('mc-actualizar');
+    if (btn) { btn.disabled = true; btn.textContent = 'Calculando...'; }
+    try {
+      // Cargar histórico si no está disponible aún
+      if (!getClientTariffConfig(db).historico?.length) {
+        const fresh = await loadHistorico();
+        if (fresh?.length) getClientTariffConfig(db).historico = fresh;
+      }
+      // Guardar participación fresca en cfg antes de sincronizar ZCAP
+      const partFresh = computeParticipacionFresh(db);
+      if (partFresh && Object.keys(partFresh).length > 0) {
+        cfg.participacionRutas = partFresh;
+        saveDatabase(db);
+      }
+      const centroArg = mcCentros.size === 1 ? [...mcCentros][0] : '';
+      const conZcap = syncTarifasZcap(db, cfg, centroArg);
+      showAlert(`Tarifas actualizadas — ${conZcap.size} tipo(s) de camión sincronizado(s)`);
+      renderResultados(content, db, cfg);
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = 'Actualizar Tarifas'; }
+    }
+  });
+
+  // ── Exportar CSV
+  document.getElementById('mc-export')?.addEventListener('click', () => {
+    const csvH = [...HEADERS_BASE, ...(showPeso ? ['Peso_Pct','Tarifa_Ponderada'] : [])];
+    const rows = todaMatriz.map(m => {
+      const grupoNombre = m._merged
+        ? (groupMap[m.ruta.origen_grupo] || m.ruta.origen_grupo) + '+SB'
+        : (groupMap[m.ruta.origen_grupo] || m.ruta.origen_grupo);
+      const partEntry   = participacion[m.ruta.id] || participacion[m.ruta.codigo]
+        || (m.ruta._allCodigos||[]).reduce((f,c)=>f||participacion[c],null)
+        || (m.ruta._allIds||[]).reduce((f,id)=>f||participacion[id],null);
+      const pct         = partEntry?.pct || 0;
+      const tarifaPond  = Math.round((m.item11_costoKmFinal || 0) * pct / 100);
+      const seguros     = (m.item3_soapKm || 0) + (m.item4_seguroKm || 0);
+      const capKg       = m.truckType?.capKg || m.capKg || 0;
+      const extraT      = getExtraTotal(m.ruta, capKg);
+      const esInter     = m.ruta.clasificRuta === 'Interregional';
+      const row = [
+        grupoNombre, m.ruta.codigo, m.ruta.destino || '', m.ruta.clasificRuta || '',
+        capKg || '', m.km,
+        Math.round(m.item1_peajes), Math.round(m.combIda || 0), Math.round(m.combVuelta || 0),
+        Math.round(seguros), Math.round(extraT),
+        Math.round(m.item5_mantKm), Math.round(m.item6_neumKm), Math.round(m.item7_gpsKm),
+        Math.round(m.item8_choferBaseDiario), Math.round(m.item9_varChofer),
+        (m.factorRuta || 1).toFixed(2),
+        Math.round(m.costoVuelta || 0), Math.round(m.item10_costoRutaTotal), Math.round(m.item11_costoKmFinal)
+      ];
+      if (showPeso) row.push(esInter ? '' : pct.toFixed(2), esInter ? '' : tarifaPond);
+      return row;
+    });
+    downloadFile(`motor_costo_${mcTipoRuta}_${Date.now()}.csv`, toCSV(csvH, rows));
+    showAlert('CSV exportado');
+  });
+}
