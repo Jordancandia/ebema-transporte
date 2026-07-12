@@ -315,4 +315,18 @@ export function renderZcapView(container) {
       });
     });
 
-    container.querySelector('#zcap
+    container.querySelector('#zcap-v-truck')?.addEventListener('change', e => {
+      zcapFiltTruck = e.target.value; zcapPagina = 0; renderContenido(db, cfg, grupos, container);
+    });
+
+    container.querySelector('#zcap-v-ruta')?.addEventListener('input', e => {
+      const pos = e.target.selectionStart;
+      zcapFiltRuta = e.target.value; zcapPagina = 0;
+      renderContenido(db, cfg, grupos, container);
+      const inp = container.querySelector('#zcap-v-ruta');
+      if (inp) { inp.focus(); inp.setSelectionRange(pos, pos); }
+    });
+  }
+
+  render();
+}
