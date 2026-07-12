@@ -82,8 +82,8 @@ function calcZcapRow(db, cfg, ruta, truck, troncalesSet) {
   catch (_) { return 0; }
 }
 
-// ── Tabla de resultados ────────────────────────────────────────────────────
-function renderTablaRutas(db, cfg, grupos, rutas, troncalesSet) {
+// ── Builder de filas ZCAP (compartido por tabla y exportación CSV) ──────────
+function buildZcapRows(db, cfg, grupos, rutas, troncalesSet) {
   let rutasFilt = [...rutas];
   if (zcapFiltRuta) {
     const q = zcapFiltRuta.toLowerCase();
@@ -92,18 +92,12 @@ function renderTablaRutas(db, cfg, grupos, rutas, troncalesSet) {
     );
   }
   rutasFilt.sort((a, b) => (a.codigo||'').localeCompare(b.codigo||''));
-  if (!rutasFilt.length)
-    return '<p class="text-secondary text-[12px] p-md">Sin rutas para los filtros seleccionados.</p>';
-
   const rows = [];
   rutasFilt.forEach(ruta => {
-    // origenId=1000 es un ID genérico legacy (no identifica un centro real) → usar origen_grupo.
-    // Para IDs reales (≠1000), priorizar origenId sobre origen_grupo (que puede tener datos incorrectos).
     const skipOrigenId = String(ruta.origenId) === '1000';
     const grupo = (!skipOrigenId && grupos.find(g => (g.centroIds||[]).map(String).includes(String(ruta.origenId))))
       || grupos.find(g => g.grupo === ruta.origen_grupo);
     if (!grupo) return;
-    // Algunos grupos comparten config de tarifas con otro grupo (ej. SAN BERNARDO → SANTIAGO)
     const tariffGrupoNombre = GRUPO_TARIFF_SOURCE[grupo.grupo] || grupo.grupo;
     const tariffGrupo = grupos.find(g => g.grupo === tariffGrupoNombre) || grupo;
     let trucks = (db.truckTypes||[])
@@ -120,6 +114,42 @@ function renderTablaRutas(db, cfg, grupos, rutas, troncalesSet) {
       });
     });
   });
+  return { rows, rutasFilt };
+}
+
+// ── Exportar CSV con los datos actuales filtrados ──────────────────────────
+function exportZcapCSV(db, cfg, grupos, rutas, troncalesSet) {
+  const { rows } = buildZcapRows(db, cfg, grupos, rutas, troncalesSet);
+  if (!rows.length) return;
+  const sep = ';';
+  const cols = ['Centro','Cod Ruta','Destino','Clasificacion','Tipo','KM','Tipo Camion','ZCAP'];
+  const lines = [cols.join(sep)];
+  rows.forEach(r => {
+    lines.push([
+      r.grupo.nombre || r.grupo.grupo,
+      r.ruta.codigo || '',
+      r.ruta.destino || '',
+      r.ruta.clasificRuta || '',
+      r.ruta.tipo || '',
+      Number(r.ruta.km) || 0,
+      r.truck.type,
+      r.zcap > 0 ? Math.round(r.zcap) : 0
+    ].map(v => '"' + String(v).replace(/"/g, '\\"') + '"').join(sep));
+  });
+  const blob = new Blob(['\uFEFF' + lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href = url; a.download = 'zcap_' + zcapTabCentro + '_' + zcapFiltTipo + '.csv';
+  document.body.appendChild(a); a.click();
+  document.body.removeChild(a); URL.revokeObjectURL(url);
+}
+
+// ── Tabla de resultados ────────────────────────────────────────────────────
+function renderTablaRutas(db, cfg, grupos, rutas, troncalesSet) {
+  const { rows, rutasFilt } = buildZcapRows(db, cfg, grupos, rutas, troncalesSet);
+
+  if (!rutasFilt.length)
+    return '<p class="text-secondary text-[12px] p-md">Sin rutas para los filtros seleccionados.</p>';
 
   if (!rows.length)
     return '<p class="text-secondary text-[12px] p-md">Sin combinaciones ruta × camión.</p>';
@@ -299,6 +329,18 @@ export function renderZcapView(container) {
               value="${escapeHtml(zcapFiltRuta)}"
               class="border border-[#CED4DA] p-sm font-body-md text-body-md bg-white w-48">
           </div>
+          <div class="flex items-end gap-sm ml-auto">
+            <button id="zcap-btn-actualizar"
+              class="flex items-center gap-xs px-md py-sm border border-outline-variant bg-white hover:bg-surface-container-high rounded text-[12px] font-bold text-on-surface transition-colors">
+              <span class="material-symbols-outlined text-[16px]">refresh</span>
+              Actualizar Tarifas
+            </button>
+            <button id="zcap-btn-csv"
+              class="flex items-center gap-xs px-md py-sm border border-primary bg-primary hover:bg-primary/90 rounded text-[12px] font-bold text-white transition-colors">
+              <span class="material-symbols-outlined text-[16px]">download</span>
+              Descargar CSV
+            </button>
+          </div>
         </div>
 
         <!-- Tabla -->
@@ -338,6 +380,26 @@ export function renderZcapView(container) {
       renderContenido(db, cfg, grupos, container);
       const inp = container.querySelector('#zcap-v-ruta');
       if (inp) { inp.focus(); inp.setSelectionRange(pos, pos); }
+    });
+
+    container.querySelector('#zcap-btn-actualizar')?.addEventListener('click', () => {
+      render();
+    });
+
+    container.querySelector('#zcap-btn-csv')?.addEventListener('click', () => {
+      const troncalesSet2 = new Set(cfg.variables?.troncalesRoutes || []);
+      const allRoutes2    = (db.routes||[]).filter(r => r.activo);
+      let rutas2;
+      if      (zcapFiltTipo === 'regional')       rutas2 = allRoutes2.filter(r => r.clasificRuta==='Regional'      && !troncalesSet2.has(r.codigo));
+      else if (zcapFiltTipo === 'interregional')  rutas2 = allRoutes2.filter(r => r.clasificRuta==='Interregional' && !troncalesSet2.has(r.codigo));
+      else if (zcapFiltTipo === 'troncales')      rutas2 = allRoutes2.filter(r => troncalesSet2.has(r.codigo));
+      else                                         rutas2 = allRoutes2;
+      if (zcapTabCentro !== '__todos__') {
+        const g2   = grupos.find(go => go.grupo === zcapTabCentro);
+        const ids2 = new Set((g2?.centroIds||[]).map(String).filter(id => id !== '1000'));
+        rutas2 = rutas2.filter(r => r.origen_grupo === zcapTabCentro || ids2.has(String(r.origenId)));
+      }
+      exportZcapCSV(db, cfg, grupos, rutas2, troncalesSet2);
     });
   }
 
