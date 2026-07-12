@@ -272,6 +272,7 @@ export async function initDatabase() {
     TABLE_MAP.forEach((t, i) => {
       const remoteRows = results[i] || [];
       const localRows  = localBackup[t.local] || [];
+
       if (localRows.length > remoteRows.length && t.pk) {
         const remoteKeys = new Set(remoteRows.map(r => String(r[t.pk])));
         const pending    = localRows.filter(r => !remoteKeys.has(String(r[t.pk])));

@@ -1,4 +1,4 @@
-import { getDatabase, saveDatabase, getOrigenGroups } from './data.js?v=20260710n';
+import { getDatabase, saveDatabase, getOrigenGroups } from './data.js?v=20260712a';
 import { showAlert, escapeHtml } from './utils.js';
 
 const CAPACIDADES = ['5', '10', '15', '28'];

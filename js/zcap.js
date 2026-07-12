@@ -2,8 +2,8 @@
 // Regional:       ZCAP = Costo Base + km × Tarifa/KM
 // Interregional:  ZCAP = item10_costoRutaTotal (motor completo)
 // Troncales:      ZCAP = motor completo para rutas definidas por el usuario
-import { getDatabase, saveDatabase, getTariffConfig, truckCapKg, getOrigenGroups, TRUCK_BASE_TYPES } from './data.js?v=20260710n';
-import { calcularCostoRuta } from './tarifas-engine.js?v=20260710n';
+import { getDatabase, saveDatabase, getTariffConfig, truckCapKg, getOrigenGroups, TRUCK_BASE_TYPES } from './data.js?v=20260712a';
+import { calcularCostoRuta } from './tarifas-engine.js?v=20260712a';
 import { formatCLP, escapeHtml } from './utils.js';
 
 const TRUCK_ORDER = ['Camión 5 Ton', 'Camión 10 Ton', 'Camión 15 Ton', 'Camión 28 Ton'];
@@ -315,18 +315,4 @@ export function renderZcapView(container) {
       });
     });
 
-    container.querySelector('#zcap-v-truck')?.addEventListener('change', e => {
-      zcapFiltTruck = e.target.value; zcapPagina = 0; renderContenido(db, cfg, grupos, container);
-    });
-
-    container.querySelector('#zcap-v-ruta')?.addEventListener('input', e => {
-      const pos = e.target.selectionStart;
-      zcapFiltRuta = e.target.value; zcapPagina = 0;
-      renderContenido(db, cfg, grupos, container);
-      const inp = container.querySelector('#zcap-v-ruta');
-      if (inp) { inp.focus(); inp.setSelectionRange(pos, pos); }
-    });
-  }
-
-  render();
-}
+    container.querySelector('#zcap
