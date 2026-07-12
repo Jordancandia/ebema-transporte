@@ -79,7 +79,8 @@ function calcZcapRow(db, cfg, ruta, truck, troncalesSet) {
   const capKg = truckCapKg(truck.type);
   if (!capKg) return 0;
   // soloIda: ruta troncal marcada con toggle IDA en el panel de configuración
-  const soloIda = esTroncal && (cfg.variables?.troncalesSoloIda || []).includes(ruta.codigo);
+  const soloIdaKey = ruta.codigo + '||' + truck.type;
+  const soloIda = esTroncal && (cfg.variables?.troncalesSoloIda || []).includes(soloIdaKey);
   try { return calcularCostoRuta(db, cfg, ruta, capKg, { soloIda }).item10_costoRutaTotal || 0; }
   catch (_) { return 0; }
 }
@@ -106,6 +107,11 @@ function buildZcapRows(db, cfg, grupos, rutas, troncalesSet) {
       .filter(t => t.Id_centro === tariffGrupo.repId)
       .sort((a,b) => TRUCK_ORDER.indexOf(a.type) - TRUCK_ORDER.indexOf(b.type));
     if (zcapFiltTruck) trucks = trucks.filter(t => t.type === zcapFiltTruck);
+    // Para troncales: excluir combos ruta+camión que el usuario eliminó individualmente
+    if (troncalesSet.has(ruta.codigo)) {
+      const excluidas = new Set(cfg.variables?.troncalesExcluidas || []);
+      trucks = trucks.filter(t => !excluidas.has(ruta.codigo + '||' + t.type));
+    }
     if (!trucks.length) return;
     trucks.forEach((truck, ti) => {
       rows.push({
@@ -180,20 +186,24 @@ function renderTablaRutas(db, cfg, grupos, rutas, troncalesSet) {
             const z  = Math.floor(gi / (r.truckCount||1)) % 2 === 0 ? '' : 'bg-surface-container-lowest';
             let modoCel = '';
             if (esTroncalView) {
-              const isSoloIda = (cfg.variables?.troncalesSoloIda || []).includes(r.ruta.codigo);
+              const idaKey = r.ruta.codigo + '||' + r.truck.type;
+              const isSoloIda = (cfg.variables?.troncalesSoloIda || []).includes(idaKey);
               modoCel = `<td class="p-md">
                 <div class="flex items-center gap-xs">
                   <button class="zcap-row-ida px-sm py-[2px] rounded text-[10px] font-bold border transition-colors ${isSoloIda
                     ? 'bg-blue-500 border-blue-600 text-white'
                     : 'bg-white border-outline-variant text-on-surface hover:bg-surface-container-high'}"
                     data-cod="${escapeHtml(r.ruta.codigo||'')}"
+                    data-truck="${escapeHtml(r.truck.type)}"
                     title="${isSoloIda
-                      ? 'Modo IDA: peajes y combustible solo tramo ida. Clic para IDA+VUELTA'
-                      : 'Modo IDA+VUELTA: cálculo completo. Clic para cambiar a solo IDA'}">
+                      ? 'Solo IDA: peajes y combustible solo tramo ida. Clic → IDA+VUELTA'
+                      : 'IDA+VUELTA: cálculo completo. Clic → solo IDA'}">
                     ${isSoloIda ? 'IDA' : 'IDA+V'}
                   </button>
                   <button class="zcap-row-rm text-secondary hover:text-red-600 transition-colors"
-                    data-cod="${escapeHtml(r.ruta.codigo||'')}" title="Quitar de troncales">
+                    data-cod="${escapeHtml(r.ruta.codigo||'')}"
+                    data-truck="${escapeHtml(r.truck.type)}"
+                    title="Quitar este camión de troncales">
                     <span class="material-symbols-outlined text-[16px] align-middle">remove_circle_outline</span>
                   </button>
                 </div>
@@ -242,15 +252,7 @@ function renderPanelTroncales(cfg, db, container, onChangeFn) {
           <span class="material-symbols-outlined text-[16px]">add</span> Agregar
         </button>
       </div>
-      <div class="flex flex-wrap gap-xs">
-        ${list.map(cod => {
-          const ruta = allRoutes.find(r => r.codigo === cod);
-          return `<span class="inline-flex items-center gap-xs bg-amber-100 border border-amber-300 rounded px-sm py-xs text-[11px] font-data-mono font-bold text-amber-900">
-            ${escapeHtml(cod)}${ruta ? ` <span class="font-normal text-amber-700 text-[10px]">${escapeHtml(ruta.destino||'')}</span>` : ''}
-          </span>`;
-        }).join('')}
-        ${!list.length ? '<span class="text-[11px] text-amber-600 italic">Sin rutas — agrégalas con el campo de arriba. Usa la tabla para configurar IDA/IDA+V o quitar.</span>' : ''}
-      </div>
+      ${list.length ? `<div class="text-[11px] text-amber-700 italic">Rutas activas: ${list.join(', ')} — configurar IDA/IDA+V o quitar desde la tabla.</div>` : '<div class="text-[11px] text-amber-600 italic">Sin rutas troncales. Agrégalas con el campo de arriba.</div>'}
     </div>`;
 
   panel.querySelector('#zcap-tronc-add')?.addEventListener('click', () => {
@@ -298,18 +300,23 @@ function renderContenido(db, cfg, grupos, container) {
   el.querySelectorAll('.zcap-row-ida').forEach(btn => {
     btn.addEventListener('click', () => {
       if (!cfg.variables.troncalesSoloIda) cfg.variables.troncalesSoloIda = [];
-      const idx = cfg.variables.troncalesSoloIda.indexOf(btn.dataset.cod);
+      const key = btn.dataset.cod + '||' + btn.dataset.truck;
+      const idx = cfg.variables.troncalesSoloIda.indexOf(key);
       if (idx >= 0) cfg.variables.troncalesSoloIda.splice(idx, 1);
-      else cfg.variables.troncalesSoloIda.push(btn.dataset.cod);
+      else cfg.variables.troncalesSoloIda.push(key);
       saveDatabase(db);
       renderContenido(db, cfg, grupos, container);
     });
   });
   el.querySelectorAll('.zcap-row-rm').forEach(btn => {
     btn.addEventListener('click', () => {
-      cfg.variables.troncalesRoutes = cfg.variables.troncalesRoutes.filter(c => c !== btn.dataset.cod);
+      const key = btn.dataset.cod + '||' + btn.dataset.truck;
+      if (!cfg.variables.troncalesExcluidas) cfg.variables.troncalesExcluidas = [];
+      if (!cfg.variables.troncalesExcluidas.includes(key))
+        cfg.variables.troncalesExcluidas.push(key);
+      // Limpiar soloIda de esta combinación
       if (cfg.variables.troncalesSoloIda)
-        cfg.variables.troncalesSoloIda = cfg.variables.troncalesSoloIda.filter(c => c !== btn.dataset.cod);
+        cfg.variables.troncalesSoloIda = cfg.variables.troncalesSoloIda.filter(k => k !== key);
       saveDatabase(db);
       renderContenido(db, cfg, grupos, container);
       reRenderPanel();
@@ -323,6 +330,7 @@ export function renderZcapView(container) {
   const cfg = getTariffConfig(db);
   if (!cfg.variables) cfg.variables = {};
   if (!cfg.variables.troncalesRoutes) cfg.variables.troncalesRoutes = [];
+  if (!cfg.variables.troncalesExcluidas) cfg.variables.troncalesExcluidas = [];
   const grupos = getOrigenGroups(db);
 
   function render() {
