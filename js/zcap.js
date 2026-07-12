@@ -156,6 +156,7 @@ function renderTablaRutas(db, cfg, grupos, rutas, troncalesSet) {
   if (!rows.length)
     return '<p class="text-secondary text-[12px] p-md">Sin combinaciones ruta × camión.</p>';
 
+  const esTroncalView = zcapFiltTipo === 'troncales';
   const pageRows = rows.slice(zcapPagina * ZCAP_PAGE, (zcapPagina+1) * ZCAP_PAGE);
   return `
     <div class="text-[12px] text-secondary mb-sm">${rutasFilt.length} ruta(s) — ${rows.length} combinaciones</div>
@@ -170,12 +171,38 @@ function renderTablaRutas(db, cfg, grupos, rutas, troncalesSet) {
             <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-right">KM</th>
             <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Tipo Camión</th>
             <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-right">ZCAP</th>
+            ${esTroncalView ? '<th class="p-md font-label-caps text-label-caps text-secondary uppercase">Modo / Acción</th>' : ''}
           </tr>
         </thead>
         <tbody class="font-body-md text-body-md">
           ${pageRows.map((r, i) => {
             const gi = zcapPagina * ZCAP_PAGE + i;
             const z  = Math.floor(gi / (r.truckCount||1)) % 2 === 0 ? '' : 'bg-surface-container-lowest';
+            let modoCel = '';
+            if (esTroncalView) {
+              if (r.firstTruck) {
+                const isSoloIda = (cfg.variables?.troncalesSoloIda || []).includes(r.ruta.codigo);
+                modoCel = `<td class="p-md">
+                  <div class="flex items-center gap-xs">
+                    <button class="zcap-row-ida px-sm py-[2px] rounded text-[10px] font-bold border transition-colors ${isSoloIda
+                      ? 'bg-blue-500 border-blue-600 text-white'
+                      : 'bg-white border-outline-variant text-on-surface hover:bg-surface-container-high'}"
+                      data-cod="${escapeHtml(r.ruta.codigo||'')}"
+                      title="${isSoloIda
+                        ? 'Modo IDA: peajes y combustible solo tramo ida. Clic para IDA+VUELTA'
+                        : 'Modo IDA+VUELTA: cálculo completo. Clic para cambiar a solo IDA'}">
+                      ${isSoloIda ? 'IDA' : 'IDA+V'}
+                    </button>
+                    <button class="zcap-row-rm text-secondary hover:text-red-600 transition-colors"
+                      data-cod="${escapeHtml(r.ruta.codigo||'')}" title="Quitar de troncales">
+                      <span class="material-symbols-outlined text-[16px] align-middle">remove_circle_outline</span>
+                    </button>
+                  </div>
+                </td>`;
+              } else {
+                modoCel = '<td class="p-md"></td>';
+              }
+            }
             return `<tr class="border-b border-outline-variant ${z}">
               <td class="p-md font-data-mono text-[11px] ${r.firstTruck?'font-bold':'text-secondary'}">${r.firstTruck ? escapeHtml(r.grupo.nombre||r.grupo.grupo) : ''}</td>
               <td class="p-md font-data-mono text-[11px] ${r.firstTruck?'font-bold text-primary':'text-secondary'}">${r.firstTruck ? escapeHtml(r.ruta.codigo||'') : ''}</td>
@@ -184,6 +211,7 @@ function renderTablaRutas(db, cfg, grupos, rutas, troncalesSet) {
               <td class="p-md text-right font-data-mono text-[11px]">${r.firstTruck ? (Number(r.ruta.km)||0) : ''}</td>
               <td class="p-md text-[11px]">${escapeHtml(r.truck.type)}</td>
               <td class="p-md text-right font-data-mono font-bold text-primary">${r.zcap>0 ? formatCLP(Math.round(r.zcap)) : '<span class="text-secondary font-normal">—</span>'}</td>
+              ${modoCel}
             </tr>`;
           }).join('')}
         </tbody>
@@ -221,22 +249,11 @@ function renderPanelTroncales(cfg, db, container, onChangeFn) {
       <div class="flex flex-wrap gap-xs">
         ${list.map(cod => {
           const ruta = allRoutes.find(r => r.codigo === cod);
-          const isSoloIda = (cfg.variables?.troncalesSoloIda || []).includes(cod);
           return `<span class="inline-flex items-center gap-xs bg-amber-100 border border-amber-300 rounded px-sm py-xs text-[11px] font-data-mono font-bold text-amber-900">
             ${escapeHtml(cod)}${ruta ? ` <span class="font-normal text-amber-700 text-[10px]">${escapeHtml(ruta.destino||'')}</span>` : ''}
-            <button class="zcap-tronc-ida ml-xs px-xs rounded text-[9px] font-bold border transition-colors ${isSoloIda
-              ? 'bg-blue-500 border-blue-600 text-white'
-              : 'bg-white border-amber-400 text-amber-700 hover:bg-amber-50'}"
-              data-cod="${escapeHtml(cod)}"
-              title="${isSoloIda ? 'Modo: solo IDA — clic para cambiar a IDA+VUELTA' : 'Modo: IDA+VUELTA — clic para cambiar a solo IDA'}">
-              ${isSoloIda ? 'IDA' : 'IDA+V'}
-            </button>
-            <button class="zcap-tronc-rm hover:text-red-600 ml-xs" data-cod="${escapeHtml(cod)}">
-              <span class="material-symbols-outlined text-[13px]">close</span>
-            </button>
           </span>`;
         }).join('')}
-        ${!list.length ? '<span class="text-[11px] text-amber-600 italic">Sin rutas configuradas</span>' : ''}
+        ${!list.length ? '<span class="text-[11px] text-amber-600 italic">Sin rutas — agrégalas con el campo de arriba. Usa la tabla para configurar IDA/IDA+V o quitar.</span>' : ''}
       </div>
     </div>`;
 
@@ -251,29 +268,6 @@ function renderPanelTroncales(cfg, db, container, onChangeFn) {
     if (inp) inp.value = '';
     renderPanelTroncales(cfg, db, container, onChangeFn);
     onChangeFn();
-  });
-
-  panel.querySelectorAll('.zcap-tronc-ida').forEach(btn => {
-    btn.addEventListener('click', () => {
-      if (!cfg.variables.troncalesSoloIda) cfg.variables.troncalesSoloIda = [];
-      const idx = cfg.variables.troncalesSoloIda.indexOf(btn.dataset.cod);
-      if (idx >= 0) cfg.variables.troncalesSoloIda.splice(idx, 1);
-      else cfg.variables.troncalesSoloIda.push(btn.dataset.cod);
-      saveDatabase(db);
-      renderPanelTroncales(cfg, db, container, onChangeFn);
-      onChangeFn();
-    });
-  });
-
-  panel.querySelectorAll('.zcap-tronc-rm').forEach(btn => {
-    btn.addEventListener('click', () => {
-      cfg.variables.troncalesRoutes = cfg.variables.troncalesRoutes.filter(c => c !== btn.dataset.cod);
-      if (cfg.variables.troncalesSoloIda)
-        cfg.variables.troncalesSoloIda = cfg.variables.troncalesSoloIda.filter(c => c !== btn.dataset.cod);
-      saveDatabase(db);
-      renderPanelTroncales(cfg, db, container, onChangeFn);
-      onChangeFn();
-    });
   });
 }
 
@@ -299,6 +293,32 @@ function renderContenido(db, cfg, grupos, container) {
   el.innerHTML = renderTablaRutas(db, cfg, grupos, rutas, troncalesSet);
   el.querySelector('#zcap-prev')?.addEventListener('click', () => { zcapPagina = Math.max(0, zcapPagina-1); renderContenido(db,cfg,grupos,container); });
   el.querySelector('#zcap-next')?.addEventListener('click', () => { zcapPagina++; renderContenido(db,cfg,grupos,container); });
+
+  // Listeners para toggle IDA/IDA+V y quitar de troncales (columna Modo en vista Troncales)
+  const reRenderPanel = () => {
+    if (zcapFiltTipo === 'troncales')
+      renderPanelTroncales(cfg, db, container, () => renderContenido(db, cfg, grupos, container));
+  };
+  el.querySelectorAll('.zcap-row-ida').forEach(btn => {
+    btn.addEventListener('click', () => {
+      if (!cfg.variables.troncalesSoloIda) cfg.variables.troncalesSoloIda = [];
+      const idx = cfg.variables.troncalesSoloIda.indexOf(btn.dataset.cod);
+      if (idx >= 0) cfg.variables.troncalesSoloIda.splice(idx, 1);
+      else cfg.variables.troncalesSoloIda.push(btn.dataset.cod);
+      saveDatabase(db);
+      renderContenido(db, cfg, grupos, container);
+    });
+  });
+  el.querySelectorAll('.zcap-row-rm').forEach(btn => {
+    btn.addEventListener('click', () => {
+      cfg.variables.troncalesRoutes = cfg.variables.troncalesRoutes.filter(c => c !== btn.dataset.cod);
+      if (cfg.variables.troncalesSoloIda)
+        cfg.variables.troncalesSoloIda = cfg.variables.troncalesSoloIda.filter(c => c !== btn.dataset.cod);
+      saveDatabase(db);
+      renderContenido(db, cfg, grupos, container);
+      reRenderPanel();
+    });
+  });
 }
 
 // ── Entry point ────────────────────────────────────────────────────────────
@@ -314,7 +334,7 @@ export function renderZcapView(container) {
       <div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm">
         <div class="flex items-center gap-sm mb-md border-b border-outline-variant pb-sm">
           <span class="material-symbols-outlined text-primary">price_check</span>
-          <h2 class="font-headline-sm text-headline-sm font-bold text-on-surface">ZCAP — Costo de Servicio por Ruta y Tipo de Camión</h2>
+          <h2 class="font-headline-sm text-headline-sm font-bold text-on-surface">Tarifas Rutas — Costo de Servicio por Ruta y Tipo de Camión</h2>
         </div>
 
         <!-- Toggle tipo -->

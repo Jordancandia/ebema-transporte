@@ -922,8 +922,8 @@ const SIDEBAR_MENU = [
       { tab: 'tarifas-transporte', sub: 'participacion', icon: 'donut_large',       label: 'Participacion de Rutas' },
       { tab: 'tarifas-transporte', sub: 'variables',     icon: 'tune',              label: 'Variables Generales' },
       { tab: 'tarifas-transporte', sub: 'resultados',    icon: 'speed',             label: 'Motor de Costos' },
-      { tab: 'tarifas-transporte', sub: 'zcap',          icon: 'table_chart',       label: 'ZCAP' },
       { tab: 'tarifas-transporte', sub: 'camiones',      icon: 'local_shipping',    label: 'Tarifas por Camion' },
+      { tab: 'tarifas-transporte', sub: 'zcap',          icon: 'table_chart',       label: 'Tarifas Rutas' },
     ]
   },
   {
