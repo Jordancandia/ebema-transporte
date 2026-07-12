@@ -58,8 +58,8 @@ export function buildTruckTypes(centres, baseTypes = TRUCK_BASE_TYPES) {
         capacityTons: b.capacityTons,
         baseRate: Number(b.baseRate) || 0,
         ratePerKm: Number(b.ratePerKm) || 0,
-        Kmbase: 50,
-        baseKM: Number(b.baseRate) || 0
+        Kmbase: 0,
+        baseKM: 0
       });
     });
   });
