@@ -9,6 +9,13 @@ import { formatCLP, escapeHtml } from './utils.js';
 const TRUCK_ORDER = ['Camión 5 Ton', 'Camión 10 Ton', 'Camión 15 Ton', 'Camión 28 Ton'];
 const ZCAP_PAGE   = 50;
 
+// Grupos que comparten configuración de Tarifas por Camión con otro grupo.
+// La clave es el grupo origen de la ruta; el valor es el grupo cuya config se usa.
+// Ej: rutas BDO (SAN BERNARDO) usan los truckTypes configurados en SANTIAGO.
+const GRUPO_TARIFF_SOURCE = {
+  'SAN BERNARDO': 'SANTIAGO',
+};
+
 let zcapFiltTipo  = 'regional';   // 'regional'|'interregional'|'troncales'|'todas'
 let zcapFiltTruck = '';
 let zcapFiltRuta  = '';
@@ -96,8 +103,11 @@ function renderTablaRutas(db, cfg, grupos, rutas, troncalesSet) {
     const grupo = (!skipOrigenId && grupos.find(g => (g.centroIds||[]).map(String).includes(String(ruta.origenId))))
       || grupos.find(g => g.grupo === ruta.origen_grupo);
     if (!grupo) return;
+    // Algunos grupos comparten config de tarifas con otro grupo (ej. SAN BERNARDO → SANTIAGO)
+    const tariffGrupoNombre = GRUPO_TARIFF_SOURCE[grupo.grupo] || grupo.grupo;
+    const tariffGrupo = grupos.find(g => g.grupo === tariffGrupoNombre) || grupo;
     let trucks = (db.truckTypes||[])
-      .filter(t => t.Id_centro === grupo.repId)
+      .filter(t => t.Id_centro === tariffGrupo.repId)
       .sort((a,b) => TRUCK_ORDER.indexOf(a.type) - TRUCK_ORDER.indexOf(b.type));
     if (zcapFiltTruck) trucks = trucks.filter(t => t.type === zcapFiltTruck);
     if (!trucks.length) return;
