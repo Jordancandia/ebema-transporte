@@ -95,18 +95,19 @@ function buildZcapRows(db, cfg, grupos, rutas, troncalesSet) {
   }
   rutasFilt.sort((a, b) => (a.codigo||'').localeCompare(b.codigo||''));
   const rows = [];
+  const sinConfig = [];  // rutas sin grupo o sin camiones configurados
   rutasFilt.forEach(ruta => {
     const skipOrigenId = String(ruta.origenId) === '1000';
     const grupo = (!skipOrigenId && grupos.find(g => (g.centroIds||[]).map(String).includes(String(ruta.origenId))))
       || grupos.find(g => g.grupo === ruta.origen_grupo);
-    if (!grupo) return;
+    if (!grupo) { sinConfig.push({ ruta, razon: 'Sin centro logístico asociado' }); return; }
     const tariffGrupoNombre = GRUPO_TARIFF_SOURCE[grupo.grupo] || grupo.grupo;
     const tariffGrupo = grupos.find(g => g.grupo === tariffGrupoNombre) || grupo;
     let trucks = (db.truckTypes||[])
       .filter(t => t.Id_centro === tariffGrupo.repId)
       .sort((a,b) => TRUCK_ORDER.indexOf(a.type) - TRUCK_ORDER.indexOf(b.type));
     if (zcapFiltTruck) trucks = trucks.filter(t => t.type === zcapFiltTruck);
-    if (!trucks.length) return;
+    if (!trucks.length) { sinConfig.push({ ruta, grupo, razon: 'Sin Tarifas por Camión configuradas para ' + (tariffGrupo.nombre||tariffGrupo.grupo) }); return; }
     trucks.forEach((truck, ti) => {
       rows.push({
         ruta, grupo, truck,
@@ -116,7 +117,7 @@ function buildZcapRows(db, cfg, grupos, rutas, troncalesSet) {
       });
     });
   });
-  return { rows, rutasFilt };
+  return { rows, rutasFilt, sinConfig };
 }
 
 // ── Exportar CSV con los datos actuales filtrados ──────────────────────────
@@ -158,7 +159,18 @@ function renderTablaRutas(db, cfg, grupos, rutas, troncalesSet) {
 
   const esTroncalView = zcapFiltTipo === 'troncales';
   const pageRows = rows.slice(zcapPagina * ZCAP_PAGE, (zcapPagina+1) * ZCAP_PAGE);
-  return `
+  const alertaSinConfig = sinConfig.length ? `
+    <div class="mb-sm">
+      ${sinConfig.map(s => `
+        <div class="flex items-center gap-xs text-[11px] bg-amber-50 border border-amber-300 rounded px-sm py-xs mb-xs text-amber-800">
+          <span class="material-symbols-outlined text-[14px]">warning</span>
+          <span class="font-data-mono font-bold">${escapeHtml(s.ruta.codigo||'')}</span>
+          <span>${escapeHtml(s.ruta.destino||'')}</span>
+          <span class="text-amber-600">— ${escapeHtml(s.razon)}</span>
+          ${esTroncalView ? `<button class="zcap-row-rm ml-auto text-amber-700 hover:text-red-600" data-cod="${escapeHtml(s.ruta.codigo||'')}" title="Quitar de troncales"><span class="material-symbols-outlined text-[14px]">remove_circle_outline</span></button>` : ''}
+        </div>`).join('')}
+    </div>` : '';
+  return alertaSinConfig + `
     <div class="text-[12px] text-secondary mb-sm">${rutasFilt.length} ruta(s) — ${rows.length} combinaciones</div>
     <div class="bg-surface border border-outline-variant overflow-x-auto rounded">
       <table class="w-full border-collapse text-[12px]">
@@ -180,28 +192,24 @@ function renderTablaRutas(db, cfg, grupos, rutas, troncalesSet) {
             const z  = Math.floor(gi / (r.truckCount||1)) % 2 === 0 ? '' : 'bg-surface-container-lowest';
             let modoCel = '';
             if (esTroncalView) {
-              if (r.firstTruck) {
-                const isSoloIda = (cfg.variables?.troncalesSoloIda || []).includes(r.ruta.codigo);
-                modoCel = `<td class="p-md">
-                  <div class="flex items-center gap-xs">
-                    <button class="zcap-row-ida px-sm py-[2px] rounded text-[10px] font-bold border transition-colors ${isSoloIda
-                      ? 'bg-blue-500 border-blue-600 text-white'
-                      : 'bg-white border-outline-variant text-on-surface hover:bg-surface-container-high'}"
-                      data-cod="${escapeHtml(r.ruta.codigo||'')}"
-                      title="${isSoloIda
-                        ? 'Modo IDA: peajes y combustible solo tramo ida. Clic para IDA+VUELTA'
-                        : 'Modo IDA+VUELTA: cálculo completo. Clic para cambiar a solo IDA'}">
-                      ${isSoloIda ? 'IDA' : 'IDA+V'}
-                    </button>
-                    <button class="zcap-row-rm text-secondary hover:text-red-600 transition-colors"
-                      data-cod="${escapeHtml(r.ruta.codigo||'')}" title="Quitar de troncales">
-                      <span class="material-symbols-outlined text-[16px] align-middle">remove_circle_outline</span>
-                    </button>
-                  </div>
-                </td>`;
-              } else {
-                modoCel = '<td class="p-md"></td>';
-              }
+              const isSoloIda = (cfg.variables?.troncalesSoloIda || []).includes(r.ruta.codigo);
+              modoCel = `<td class="p-md">
+                <div class="flex items-center gap-xs">
+                  <button class="zcap-row-ida px-sm py-[2px] rounded text-[10px] font-bold border transition-colors ${isSoloIda
+                    ? 'bg-blue-500 border-blue-600 text-white'
+                    : 'bg-white border-outline-variant text-on-surface hover:bg-surface-container-high'}"
+                    data-cod="${escapeHtml(r.ruta.codigo||'')}"
+                    title="${isSoloIda
+                      ? 'Modo IDA: peajes y combustible solo tramo ida. Clic para IDA+VUELTA'
+                      : 'Modo IDA+VUELTA: cálculo completo. Clic para cambiar a solo IDA'}">
+                    ${isSoloIda ? 'IDA' : 'IDA+V'}
+                  </button>
+                  <button class="zcap-row-rm text-secondary hover:text-red-600 transition-colors"
+                    data-cod="${escapeHtml(r.ruta.codigo||'')}" title="Quitar de troncales">
+                    <span class="material-symbols-outlined text-[16px] align-middle">remove_circle_outline</span>
+                  </button>
+                </div>
+              </td>`;
             }
             return `<tr class="border-b border-outline-variant ${z}">
               <td class="p-md font-data-mono text-[11px] ${r.firstTruck?'font-bold':'text-secondary'}">${r.firstTruck ? escapeHtml(r.grupo.nombre||r.grupo.grupo) : ''}</td>
