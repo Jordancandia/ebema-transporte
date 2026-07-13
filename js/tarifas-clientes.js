@@ -1,8 +1,8 @@
 // MÓDULO: Administrador de Tarifas Clientes — SIT EBEMA v2.1
 // Vistas: Histórico (6M) | Consolidación | Densidad Logística | Frecuencia y Especiales | Cluster | Resultados
-import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig, saveHistorico, loadHistorico } from './data.js?v=20260712b';
-import { CAP_LIST, truckTypesWithCap, calcularCostoRuta } from './tarifas-engine.js?v=20260712b';
-import { formatCLP, showAlert, toCSV, downloadFile, formatDateDDMMYYYY } from './utils.js';
+import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig, saveHistorico, loadHistorico, getOrigenGroups } from './data.js?v=20260712c';
+import { CAP_LIST, truckTypesWithCap, calcularCostoRuta } from './tarifas-engine.js?v=20260712c';
+import { formatCLP, showAlert, toCSV, downloadFile, formatDateDDMMYYYY, escapeHtml } from './utils.js';
 
 // ─────────────────────────────────────────────────────────────
 // ESTADO DE MÓDULO
@@ -558,114 +558,172 @@ function buildDensidadData(db, rowsGrupo) {
 }
 
 function renderDensidad(content, db, ccfg) {
-  if (!histData.length) { content.innerHTML = `<div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm">${noDataBanner()}</div>`; return; }
+  if (!histData.length) {
+    content.innerHTML = `<div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm">${noDataBanner()}</div>`;
+    return;
+  }
 
-  const grupos = allGroups();
-  const filtro      = ccfg.densidadFiltro      || grupos[0] || 'all';
-  const filtroTipo  = ccfg.densidadFiltroTipo  || 'Regional';
-  const rowsGrupo   = filtro === 'all' ? histData : histData.filter(r => getCentroGroup(r.oficina) === filtro);
+  const grupos = getOrigenGroups(db); // [{ grupo, centroIds, ... }]
 
-  // Filtrar rutas según tipo (Regional, Interregional, etc.) — mismo criterio que Participación Ruta
-  const rowsFiltrados = filtroTipo === 'all'
-    ? rowsGrupo
-    : rowsGrupo.filter(r => {
-        const route = findRoute(db, r.idRuta);
-        return (route?.clasificRuta || route?.tipo || '').toLowerCase().includes(filtroTipo.toLowerCase());
-      });
+  // Lookup ruta por código/id
+  const routeByCode = new Map();
+  (db.routes || []).filter(r => r.activo).forEach(r => {
+    if (r.codigo) routeByCode.set(String(r.codigo).toUpperCase(), r);
+    if (r.id)     routeByCode.set(String(r.id).toUpperCase(), r);
+  });
 
-  // Tipos disponibles para el selector (desde las rutas del histData del centro)
-  const tiposDisp = [...new Set(rowsGrupo.map(r => {
-    const route = findRoute(db, r.idRuta);
-    return route?.clasificRuta || route?.tipo || '';
-  }).filter(Boolean))].sort();
+  // Construir datos de densidad por centro
+  function buildCentroData(grupoObj) {
+    const { grupo, centroIds } = grupoObj;
+    const centroIdSet = new Set((centroIds || []).map(String));
 
-  const routeData  = buildDensidadData(db, rowsFiltrados);
-  const centroTon  = routeData.reduce((s, r) => s + r.ton, 0);
-  // Clientes/obras únicos a nivel de centro (desde rowsGrupo, no agregados)
-  const centroClientes = new Set(rowsGrupo.map(r => r.idCliente).filter(x => x && x !== '-')).size;
-  const centroObras    = new Set(rowsGrupo.map(r => r.idObra).filter(x => x && x !== '-')).size;
+    // Rutas candidatas: tipo=Comuna Y clasificRuta=Regional para este centro
+    const centroRoutes = (db.routes || []).filter(r => {
+      if (!r.activo) return false;
+      if ((r.tipo || '').toLowerCase() !== 'comuna') return false;
+      if (r.clasificRuta !== 'Regional') return false;
+      if (r.origen_grupo) return r.origen_grupo === grupo;
+      return centroIdSet.has(String(r.origenId));
+    });
+    if (!centroRoutes.length) return null;
 
-  const withDensidad = routeData.map(r => {
-    const pctCli  = centroClientes > 0 ? (r.clientes / centroClientes) * 100 : 0;
-    const pctObra = centroObras    > 0 ? (r.obras    / centroObras)    * 100 : 0;
-    const pctTon  = centroTon      > 0 ? (r.ton      / centroTon)      * 100 : 0;
-    return { ...r, pctCli, pctObra, pctTon, densidad: (pctCli + pctObra + pctTon) / 3 };
-  }).sort((a, b) => b.densidad - a.densidad);
+    const validCodes = new Set();
+    centroRoutes.forEach(r => {
+      if (r.codigo) validCodes.add(String(r.codigo).toUpperCase());
+      if (r.id)     validCodes.add(String(r.id).toUpperCase());
+    });
 
-  const maxDen = withDensidad[0]?.densidad || 1;
+    // Acumular stats desde histData
+    const routeStats = new Map(); // codigo -> { route, clientes, obras, ton }
+    const totClientes = new Set();
+    const totObras    = new Set();
+    let totTon = 0;
 
-  content.innerHTML = `
-    <div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm">
-      <div class="flex items-center justify-between mb-md border-b border-outline-variant pb-sm flex-wrap gap-sm">
+    histData.forEach(h => {
+      if (!validCodes.has(String(h.idRuta).toUpperCase())) return;
+      const route = routeByCode.get(String(h.idRuta).toUpperCase());
+      if (!route) return;
+      const key = route.codigo || String(h.idRuta);
+      if (!routeStats.has(key)) routeStats.set(key, { route, clientes: new Set(), obras: new Set(), ton: 0 });
+      const s = routeStats.get(key);
+      if (h.idCliente && h.idCliente !== '-') { s.clientes.add(h.idCliente); totClientes.add(h.idCliente); }
+      if (h.idObra    && h.idObra    !== '-') { s.obras.add(h.idObra);       totObras.add(h.idObra); }
+      s.ton += h.ton;
+      totTon += h.ton;
+    });
+
+    // Incluir rutas sin histórico (densidad 0)
+    centroRoutes.forEach(r => {
+      const key = r.codigo || String(r.id);
+      if (!routeStats.has(key)) routeStats.set(key, { route: r, clientes: new Set(), obras: new Set(), ton: 0 });
+    });
+
+    const baseCli = totClientes.size || 1;
+    const baseObr = totObras.size    || 1;
+    const baseTon = totTon           || 1;
+
+    const rows = [...routeStats.values()].map(s => {
+      const pctCli  = (s.clientes.size / baseCli) * 100;
+      const pctObra = (s.obras.size    / baseObr) * 100;
+      const pctTon  = (s.ton           / baseTon) * 100;
+      return {
+        codigo:   s.route.codigo || '',
+        destino:  s.route.destino || '',
+        zona:     s.route.id_zona_transporte || '',
+        clientes: s.clientes.size,
+        obras:    s.obras.size,
+        ton:      s.ton,
+        pctCli, pctObra, pctTon,
+        densidad: (pctCli + pctObra + pctTon) / 3
+      };
+    }).sort((a, b) => b.densidad - a.densidad);
+
+    return { grupo, rows, totalClientes: totClientes.size, totalObras: totObras.size, totalTon: totTon };
+  }
+
+  const centrosData = grupos.map(buildCentroData).filter(Boolean);
+
+  if (!centrosData.length) {
+    content.innerHTML = `<div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm">${noDataBanner('No se encontraron rutas tipo=Comuna + clasificación=Regional para los centros configurados.')}</div>`;
+    return;
+  }
+
+  function tablaHtml(cd) {
+    const maxDen = cd.rows[0]?.densidad || 1;
+    const conHist = cd.rows.filter(r => r.ton > 0).length;
+    return `
+    <div class="border-2 border-outline-variant shadow-sm mb-xl rounded overflow-hidden">
+      <div class="flex items-center justify-between px-lg pt-md pb-sm border-b-2 border-primary bg-surface-container-high flex-wrap gap-sm">
         <div class="flex items-center gap-sm">
-          <span class="material-symbols-outlined text-primary">location_on</span>
-          <h2 class="font-headline-sm text-headline-sm font-bold text-on-surface">Densidad Logística — Rutas Comunas</h2>
+          <span class="material-symbols-outlined text-primary text-[20px]">location_on</span>
+          <h3 class="font-headline-sm font-bold text-on-surface">${escapeHtml(cd.grupo)}</h3>
         </div>
-        <div class="flex items-center gap-sm flex-wrap">
-          <label class="font-label-caps text-label-caps text-secondary uppercase text-[11px]">Centro:</label>
-          <select id="den-filtro" class="${selectCls}">
-            <option value="all" ${filtro === 'all' ? 'selected' : ''}>Todos</option>
-            ${grupos.map(g => `<option value="${g}" ${filtro === g ? 'selected' : ''}>${g}</option>`).join('')}
-          </select>
-          <label class="font-label-caps text-label-caps text-secondary uppercase text-[11px]">Tipo ruta:</label>
-          <select id="den-filtro-tipo" class="${selectCls}">
-            <option value="all" ${filtroTipo === 'all' ? 'selected' : ''}>Todos</option>
-            ${tiposDisp.map(t => `<option value="${t}" ${filtroTipo === t ? 'selected' : ''}>${t}</option>`).join('')}
-          </select>
-        </div>
+        <span class="font-data-mono text-[11px] text-secondary">${conHist} rutas con histórico · ${cd.totalTon.toLocaleString('es-CL',{maximumFractionDigits:1})} ton · ${cd.rows.length} total</span>
       </div>
-      <p class="text-[12px] text-secondary mb-md">Indicador = promedio de (% clientes únicos + % obras únicas + % toneladas) respecto al total del centro. Los sectores se suman a su comuna padre via zonas de transporte.</p>
-      <div class="grid grid-cols-3 gap-sm mb-md">
-        ${statCard('Clientes únicos', centroClientes.toLocaleString(), 'person')}
-        ${statCard('Obras únicas',    centroObras.toLocaleString(),    'construction')}
-        ${statCard('Ton. Comunas',    centroTon.toFixed(1) + ' T',     'scale')}
+      <div class="px-md py-sm flex gap-lg border-b border-outline-variant bg-surface-container-lowest text-[12px] text-secondary">
+        <span><b>${cd.totalClientes}</b> clientes únicos</span>
+        <span><b>${cd.totalObras}</b> obras únicas</span>
+        <span><b>${cd.totalTon.toFixed(1)} T</b> acumuladas</span>
+        <span class="text-[10px] italic">Densidad = promedio(% clientes + % obras + % toneladas)</span>
       </div>
-      <div class="bg-surface border border-outline-variant rounded overflow-x-auto">
+      <div class="overflow-x-auto">
         <table class="w-full border-collapse text-[12px]">
-          <thead><tr class="bg-surface-container-high border-b border-outline-variant text-left">
-            <th class="p-md font-label-caps text-secondary uppercase">#</th>
-            <th class="p-md font-label-caps text-secondary uppercase">Ruta</th>
-            <th class="p-md font-label-caps text-secondary uppercase">Tipo</th>
-            <th class="p-md font-label-caps text-secondary uppercase text-right">Clientes</th>
-            <th class="p-md font-label-caps text-secondary uppercase text-right">Obras</th>
-            <th class="p-md font-label-caps text-secondary uppercase text-right">Ton</th>
-            <th class="p-md font-label-caps text-secondary uppercase text-right">Densidad</th>
-            <th class="p-md font-label-caps text-secondary uppercase w-32">Barra</th>
-          </tr></thead>
+          <thead>
+            <tr class="bg-surface-container-high text-left border-b border-outline-variant">
+              <th class="p-sm font-label-caps text-secondary uppercase text-right w-8">#</th>
+              <th class="p-sm font-label-caps text-secondary uppercase">Cód. Ruta</th>
+              <th class="p-sm font-label-caps text-secondary uppercase">Destino</th>
+              <th class="p-sm font-label-caps text-secondary uppercase">Zona</th>
+              <th class="p-sm font-label-caps text-secondary uppercase text-right">Clientes</th>
+              <th class="p-sm font-label-caps text-secondary uppercase text-right">Obras</th>
+              <th class="p-sm font-label-caps text-secondary uppercase text-right">Toneladas</th>
+              <th class="p-sm font-label-caps text-secondary uppercase text-right">Densidad</th>
+              <th class="p-sm font-label-caps text-secondary uppercase">Barra</th>
+            </tr>
+          </thead>
           <tbody class="divide-y divide-outline-variant">
-            ${withDensidad.length === 0
-              ? `<tr><td colspan="8" class="p-md text-center text-secondary">No hay datos para este filtro.</td></tr>`
-              : withDensidad.map((r, i) => {
-                  const bc = r.densidad >= 15 ? '#b5000b' : r.densidad >= 5 ? '#d97706' : '#6b7280';
-                  const bw = Math.min(r.densidad / maxDen * 100, 100);
-                  return `<tr class="hover:bg-surface-container-low">
-                    <td class="p-md text-secondary">${i + 1}</td>
-                    <td class="p-md font-bold">${r.idRuta}${r.destino !== r.idRuta ? ` <span class="font-normal text-secondary">— ${r.destino}</span>` : ''}</td>
-                    <td class="p-md"><span class="text-[10px] px-xs py-px rounded border border-outline-variant">${r.tipo}</span></td>
-                    <td class="p-md text-right font-data-mono">${r.clientes} <span class="text-secondary text-[10px]">(${r.pctCli.toFixed(1)}%)</span></td>
-                    <td class="p-md text-right font-data-mono">${r.obras} <span class="text-secondary text-[10px]">(${r.pctObra.toFixed(1)}%)</span></td>
-                    <td class="p-md text-right font-data-mono">${r.ton.toFixed(1)} <span class="text-secondary text-[10px]">(${r.pctTon.toFixed(1)}%)</span></td>
-                    <td class="p-md text-right font-data-mono font-bold" style="color:${bc}">${r.densidad.toFixed(2)}%</td>
-                    <td class="p-md"><div class="h-2 bg-surface-container-high rounded overflow-hidden"><div class="h-2 rounded" style="width:${bw}%;background:${bc}"></div></div></td>
-                  </tr>`;
-                }).join('')}
+            ${cd.rows.map((r, i) => {
+              const bc = r.densidad >= 15 ? '#b5000b' : r.densidad >= 5 ? '#d97706' : '#6b7280';
+              const bw = Math.min(r.densidad / maxDen * 100, 100);
+              return `<tr class="border-b border-outline-variant hover:bg-surface-container-low">
+                <td class="p-sm text-right text-secondary font-data-mono text-[11px]">${i+1}</td>
+                <td class="p-sm font-data-mono text-[11px] text-primary font-bold">${escapeHtml(r.codigo)}</td>
+                <td class="p-sm">${escapeHtml(r.destino)}</td>
+                <td class="p-sm text-secondary text-[11px]">${escapeHtml(r.zona)}</td>
+                <td class="p-sm text-right font-data-mono text-[11px]">${r.clientes} <span class="text-secondary">(${r.pctCli.toFixed(1)}%)</span></td>
+                <td class="p-sm text-right font-data-mono text-[11px]">${r.obras} <span class="text-secondary">(${r.pctObra.toFixed(1)}%)</span></td>
+                <td class="p-sm text-right font-data-mono text-[11px]">${r.ton.toFixed(1)} <span class="text-secondary">(${r.pctTon.toFixed(1)}%)</span></td>
+                <td class="p-sm text-right font-bold font-data-mono text-[11px]" style="color:${bc}">${r.densidad.toFixed(2)}%</td>
+                <td class="p-sm"><div class="w-20 h-2 bg-surface-container-high rounded-full overflow-hidden"><div class="h-full rounded-full" style="width:${bw}%;background:${bc}"></div></div></td>
+              </tr>`;
+            }).join('')}
           </tbody>
+          <tfoot>
+            <tr class="bg-surface-container-high border-t-2 border-outline-variant font-bold">
+              <td colspan="4" class="p-sm text-right">Total</td>
+              <td class="p-sm text-right font-data-mono text-[11px]">${cd.totalClientes}</td>
+              <td class="p-sm text-right font-data-mono text-[11px]">${cd.totalObras}</td>
+              <td class="p-sm text-right font-data-mono text-[11px]">${cd.totalTon.toFixed(1)} T</td>
+              <td colspan="2"></td>
+            </tr>
+          </tfoot>
         </table>
       </div>
+    </div>`;
+  }
+
+  content.innerHTML = `
+    <div>
+      <div class="flex items-center gap-sm mb-lg">
+        <span class="material-symbols-outlined text-primary">location_on</span>
+        <h2 class="font-headline-sm font-bold text-on-surface">Densidad Logística — Rutas Regionales por Centro</h2>
+        <span class="text-[11px] text-secondary ml-auto">Solo rutas tipo=Comuna + clasificación=Regional</span>
+      </div>
+      ${centrosData.map(cd => tablaHtml(cd)).join('')}
     </div>
   `;
-
-  document.getElementById('den-filtro')?.addEventListener('change', (e) => {
-    ccfg.densidadFiltro = e.target.value;
-    saveDatabase(db);
-    renderDensidad(content, db, ccfg);
-  });
-  document.getElementById('den-filtro-tipo')?.addEventListener('change', (e) => {
-    ccfg.densidadFiltroTipo = e.target.value;
-    saveDatabase(db);
-    renderDensidad(content, db, ccfg);
-  });
 }
+
 
 // ═══════════════════════════════════════════════════════════════
 // VISTA 4: FRECUENCIA Y ESPECIALES (clusters dinámicos)
