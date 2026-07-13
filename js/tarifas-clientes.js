@@ -1598,7 +1598,7 @@ function renderZfmi(content, db, cfg, ccfg) {
       minTruckType: truck.type || (capKg / 1000 + 'T'),
       zfmiZcap:     zcap,
       zfmiKilos:    kilosMin,
-      zfmi:         (zcap > 0 && kilosMin > 0) ? zcap / kilosMin : null
+      zfmi:         zcap > 0 ? zcap : null
     });
   });
 
@@ -1614,7 +1614,7 @@ function renderZfmi(content, db, cfg, ccfg) {
     const bkt             = capKg / 1000;
     const factorPct       = getPath(ccfg, `consolidacionObjetivo.${grupoKey}.${bkt}`, 80);
     const kilosConsolidar = capKg * (factorPct / 100);
-    const zfmx            = (zcap > 0 && kilosConsolidar > 0) ? zcap / kilosConsolidar : null;
+    const zfmx            = zcap > 0 ? zcap : null;
     const rutaCodigo      = ruta.codigo || String(ruta.id || '');
     const zfmiData        = zfmiByRuta.get(rutaCodigo);
     // Tarifa Express = ZCAP × (1 + recargo%) donde recargo se configura por centro en Frecuencia
@@ -1678,7 +1678,7 @@ function renderZfmi(content, db, cfg, ccfg) {
     (zfmiFiltCentro === v ? 'bg-primary text-white border-primary' : 'bg-white border-outline-variant text-on-surface hover:bg-surface-container-high');
 
   const fmtKg = (n) => n != null ? n.toLocaleString('es-CL', { maximumFractionDigits: 0 }) + ' kg' : '—';
-  const fmtPct = (n) => n != null ? '$' + n.toLocaleString('es-CL', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '<span class="text-secondary">—</span>';
+  const fmtPct = (n) => n != null ? '$' + Math.round(n).toLocaleString('es-CL') : '<span class="text-secondary">—</span>';
 
   // ── Filas tabla ───────────────────────────────────────────────────────────
   const rowsHtml = pageRows.length === 0
@@ -1789,8 +1789,8 @@ function renderZfmi(content, db, cfg, ccfg) {
                 ['Centro Origen', false], ['ID Ruta', false], ['Destino', false],
                 ['Tipo', false], ['Clasificación', false], ['Dist. KM', true],
                 ['Cluster', false], ['Tipo Camión', false], ['Camión Mínimo', false],
-                ['ZCAP', true], ['ZFMI Tarif.Min', true], ['ZFMX Tarif.Max', true],
-                ['Tarifa Express', true], ['Factor Cons.', true],
+                ['ZCAP', true], ['ZFMI $ Min', true], ['ZFMX $ Max', true],
+                ['Express $', true], ['Factor Cons.', true],
                 ['Kilos Consol.', true], ['Kilos Tarif.Min', true]
               ].map(([h, right]) =>
                 '<th class="p-sm font-label-caps text-secondary uppercase text-[10px]' + (right ? ' text-right' : '') + '">' + h + '</th>'
@@ -1805,8 +1805,8 @@ function renderZfmi(content, db, cfg, ccfg) {
       // ── Leyenda fórmulas ────────────────────────────────────────────────────
       '<div class="text-[11px] text-secondary mt-sm flex flex-wrap gap-lg">' +
         '<span><b>Camión Mínimo</b> = truck de menor capacidad del centro</span>' +
-        '<span><b>ZFMI $/kg</b> = ZCAP(Camión Mín.) ÷ Kilos Tarif.Min</span>' +
-        '<span><b>ZFMX $/kg</b> = ZCAP ÷ Kilos Consol.</span>' +
+        '<span><b>ZFMI $</b> = ZCAP del Camión Mínimo</span>' +
+        '<span><b>ZFMX $</b> = ZCAP del camión (mismo que vista ZCAP)</span>' +
         '<span><b>Tarifa Express</b> = ZCAP × (1 + Recargo Exclusividad %)</span>' +
       '</div>' +
     '</div>';
@@ -1856,10 +1856,10 @@ function renderZfmi(content, db, cfg, ccfg) {
       r.centroOrigen, r.idRuta, r.destino, r.tipo, r.clasificacion, r.km,
       r.cluster ? clusterNombre(ccfg, r.cluster) : '',
       r.tipoCamion, r.camionMinimo,
-      r.zcap             !== null ? r.zcap.toFixed(2)            : '',
-      r.zfmi             !== null ? r.zfmi.toFixed(4)            : '',
-      r.zfmx             !== null ? r.zfmx.toFixed(4)            : '',
-      r.tarifaExpress    !== null ? r.tarifaExpress.toFixed(4)   : '',
+      r.zcap             !== null ? Math.round(r.zcap)            : '',
+      r.zfmi             !== null ? Math.round(r.zfmi)           : '',
+      r.zfmx             !== null ? Math.round(r.zfmx)           : '',
+      r.tarifaExpress    !== null ? Math.round(r.tarifaExpress)  : '',
       r.factorPct.toFixed(1),
       r.kilosConsolidar !== null  ? r.kilosConsolidar.toFixed(0) : '',
       r.kilosTarifaMin  !== null  ? r.kilosTarifaMin.toFixed(0)  : ''
