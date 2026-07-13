@@ -20,6 +20,11 @@ let zfmpFiltCentro  = 'all';
 let zfmpFiltCamion  = '';
 let zfmpBuscar      = '';
 let zfmpPagina      = 0;
+let zfmiFiltClasif  = 'todas';
+let zfmiFiltCentro  = 'all';
+let zfmiFiltCamion  = '';
+let zfmiBuscar      = '';
+let zfmiPagina      = 0;
 let activeSubC        = 'historico';
 
 // Permite fijar el subtab activo desde el menu lateral (app.js) antes de renderizar
@@ -269,6 +274,7 @@ export function renderClientTariffView(container) {
       case 'especiales':    renderEspeciales(content, db, ccfg);     break;
       case 'cluster':       renderCluster(content, db, ccfg);        break;
       case 'resultados':    renderResultados(content, db, cfg, ccfg);break;
+      case 'zfmi':          renderZfmi(content, db, cfg, ccfg);break;
     }
     content.addEventListener('change', (e) => {
       const path = e.target.dataset.path;
