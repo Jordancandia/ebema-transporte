@@ -5,7 +5,7 @@ import { renderRoutesView, setRoutesSubTab } from './routes.js?v=20260708a';
 import { renderRatesView } from './rates.js';
 import { renderRolesView } from './roles.js';
 import { renderTariffTransportView, setActiveSub } from './tarifas-transporte.js?v=20260712d';
-import { renderClientTariffView, setActiveSubC } from './tarifas-clientes.js?v=20260712i';
+import { renderClientTariffView, setActiveSubC } from './tarifas-clientes.js?v=20260712j';
 import { showAlert, formatRut, validateRut, formatPhone } from './utils.js';
 
 const SESSION_KEY = 'ebema_user_session';
@@ -933,7 +933,7 @@ const SIDEBAR_MENU = [
       { tab: 'tarifas-clientes', sub: 'especiales',    icon: 'star',          label: 'Frecuencia y Especiales' },
       { tab: 'tarifas-clientes', sub: 'cluster',       icon: 'map',           label: 'Cluster' },
       { tab: 'tarifas-clientes', sub: 'zfmp',          icon: 'request_quote', label: 'Tarifas $/Kg' },
-      { tab: 'tarifas-clientes', sub: 'zfmi',          icon: 'request_quote', label: 'ZFMI / ZFMX' },
+      { tab: 'tarifas-clientes', sub: 'zfmi',          icon: 'request_quote', label: 'Tarifa Min/Max' },
     ]
   },
   { tab: 'roles', icon: 'admin_panel_settings', label: 'Roles y Perfiles' },
@@ -944,7 +944,7 @@ const SIDEBAR_MENU = [
 // se enlazan a la vista existente mas cercana (se construyen en fases siguientes).
 const SUB_ALIAS = {
   'transports':         { transportistas: null, flota: null, conductores: null },
-  'tarifas-clientes':   { zfmp: 'resultados', zfmi: 'resultados' },
+  'tarifas-clientes':   { zfmp: 'resultados', zfmi: 'zfmi' },
 };
 
 const NAV_BASE_ITEM  = 'sidebar-item flex items-center gap-md px-md py-sm text-secondary hover:text-primary hover:bg-surface-container-high transition-colors rounded-lg cursor-pointer';

@@ -1,8 +1,8 @@
 // MÓDULO: Administrador de Tarifas Clientes — SIT EBEMA v2.1
 // Vistas: Histórico (6M) | Consolidación | Densidad Logística | Frecuencia y Especiales | Cluster | Resultados
-import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig, saveHistorico, loadHistorico, getOrigenGroups } from './data.js?v=20260712i';
-import { CAP_LIST, truckTypesWithCap, calcularCostoRuta } from './tarifas-engine.js?v=20260712i';
-import { buildZcapMap } from './zcap.js?v=20260712i';
+import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig, saveHistorico, loadHistorico, getOrigenGroups } from './data.js?v=20260712j';
+import { CAP_LIST, truckTypesWithCap, calcularCostoRuta } from './tarifas-engine.js?v=20260712j';
+import { buildZcapMap } from './zcap.js?v=20260712j';
 import { formatCLP, showAlert, toCSV, downloadFile, formatDateDDMMYYYY, escapeHtml } from './utils.js';
 
 // ─────────────────────────────────────────────────────────────
@@ -1545,5 +1545,312 @@ function renderResultados(content, db, cfg, ccfg) {
       r.zfmp    !== null ? r.zfmp.toFixed(4)    : ''
     ]);
     downloadFile('tarifas_kg_' + Date.now() + '.csv', toCSV(headers, data));
+  });
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+// VISTA 7: TARIFA MIN/MAX  (ZFMI/ZFMX por ruta × tipo de camión)
+// ═══════════════════════════════════════════════════════════════
+const ZFMI_PAGE = 50;
+
+function renderZfmi(content, db, cfg, ccfg) {
+  const zcapMap = buildZcapMap(db, cfg); // "rutaCodigo||truckType" → { zcap, truck, ruta }
+
+  // ── Paso 1: Camión mínimo (menor capKg) por grupo ────────────────────────
+  const minCapKgByGrupo = new Map();
+  zcapMap.forEach(({ truck, ruta }) => {
+    const grupo = ruta.origen_grupo || '';
+    const capKg = truck.capKg != null ? truck.capKg
+                : (Number(String(truck.type).match(/(\d+)/)?.[1] || 0) * 1000);
+    if (!minCapKgByGrupo.has(grupo) || capKg < minCapKgByGrupo.get(grupo)) {
+      minCapKgByGrupo.set(grupo, capKg);
+    }
+  });
+
+  // ── Paso 2: ZFMI por ruta (usando el camión mínimo del grupo) ────────────
+  // Una sola entrada por rutaCodigo — la del truck con menor capKg
+  const zfmiByRuta = new Map();
+  zcapMap.forEach(({ zcap, truck, ruta }) => {
+    const grupo    = ruta.origen_grupo || '';
+    const grupoKey = grupo.replace(/\s/g, '_');
+    const capKg    = truck.capKg != null ? truck.capKg
+                   : (Number(String(truck.type).match(/(\d+)/)?.[1] || 0) * 1000);
+    if (capKg !== minCapKgByGrupo.get(grupo)) return;
+    const rutaCodigo = ruta.codigo || String(ruta.id || '');
+    if (zfmiByRuta.has(rutaCodigo)) return; // ya guardado
+    const bkt       = capKg / 1000;
+    const factorPct = getPath(ccfg, `consolidacionObjetivo.${grupoKey}.${bkt}`, 80);
+    const kilosMin  = capKg * (factorPct / 100);
+    zfmiByRuta.set(rutaCodigo, {
+      minTruckType: truck.type || (capKg / 1000 + 'T'),
+      zfmiZcap:     zcap,
+      zfmiKilos:    kilosMin,
+      zfmi:         (zcap > 0 && kilosMin > 0) ? zcap / kilosMin : null
+    });
+  });
+
+  // ── Paso 3: Construir todas las filas ─────────────────────────────────────
+  const allRows = [];
+  zcapMap.forEach(({ zcap, truck, ruta }) => {
+    const grupo    = ruta.origen_grupo || '';
+    const grupoKey = grupo.replace(/\s/g, '_');
+    const cluster  = ccfg.comunaCluster[String(ruta.id || '')] ||
+                     ccfg.comunaCluster[String(ruta.codigo || '')] || '';
+    const capKg    = truck.capKg != null ? truck.capKg
+                   : (Number(String(truck.type).match(/(\d+)/)?.[1] || 0) * 1000);
+    const bkt             = capKg / 1000;
+    const factorPct       = getPath(ccfg, `consolidacionObjetivo.${grupoKey}.${bkt}`, 80);
+    const kilosConsolidar = capKg * (factorPct / 100);
+    const zfmx            = (zcap > 0 && kilosConsolidar > 0) ? zcap / kilosConsolidar : null;
+    const rutaCodigo      = ruta.codigo || String(ruta.id || '');
+    const zfmiData        = zfmiByRuta.get(rutaCodigo);
+    // Tarifa Express = ZCAP / capKg (tasa sin consolidar — paga camión completo)
+    const tarifaExpress   = (zcap > 0 && capKg > 0) ? zcap / capKg : null;
+
+    allRows.push({
+      centroOrigen:   grupo,
+      idRuta:         rutaCodigo,
+      destino:        ruta.destino || '',
+      tipo:           ruta.tipo || '',
+      clasificacion:  ruta.clasificRuta || '',
+      km:             Number(ruta.km) || 0,
+      cluster,
+      tipoCamion:     truck.type || (bkt + 'T'),
+      capKg,
+      camionMinimo:   zfmiData?.minTruckType || '—',
+      zcap,
+      zfmi:           zfmiData?.zfmi ?? null,
+      zfmx,
+      tarifaExpress,
+      factorPct,
+      kilosConsolidar,
+      kilosTarifaMin: zfmiData?.zfmiKilos ?? null
+    });
+  });
+
+  if (!allRows.length) {
+    content.innerHTML = '<div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm">' +
+      noDataBanner('No hay rutas activas con tipos de camión configurados.') + '</div>';
+    return;
+  }
+
+  // ── Centros únicos (tabs) ─────────────────────────────────────────────────
+  const centros = [...new Set(allRows.map(r => r.centroOrigen))].filter(Boolean).sort();
+
+  // ── Filtrado ──────────────────────────────────────────────────────────────
+  const buscarNorm = zfmiBuscar.trim().toLowerCase();
+  const filtered = allRows.filter(r => {
+    if (zfmiFiltClasif !== 'todas') {
+      const cl = (r.clasificacion || '').toLowerCase();
+      if (zfmiFiltClasif === 'regional'      && cl !== 'regional')      return false;
+      if (zfmiFiltClasif === 'interregional' && cl !== 'interregional') return false;
+    }
+    if (zfmiFiltCentro !== 'all' && r.centroOrigen !== zfmiFiltCentro)  return false;
+    if (zfmiFiltCamion && String(r.capKg) !== zfmiFiltCamion)           return false;
+    if (buscarNorm && !r.idRuta.toLowerCase().includes(buscarNorm) &&
+        !r.destino.toLowerCase().includes(buscarNorm))                   return false;
+    return true;
+  });
+
+  const totalPags = Math.max(1, Math.ceil(filtered.length / ZFMI_PAGE));
+  if (zfmiPagina >= totalPags) zfmiPagina = 0;
+  const pageRows  = filtered.slice(zfmiPagina * ZFMI_PAGE, (zfmiPagina + 1) * ZFMI_PAGE);
+
+  // ── Helpers UI ────────────────────────────────────────────────────────────
+  const selCls    = 'border border-[#CED4DA] px-sm py-[7px] text-[12px] bg-white rounded focus:border-primary focus:ring-0';
+  const tabCls    = (active) => 'px-md py-xs border rounded text-[12px] font-bold uppercase transition-colors ' +
+    (active ? 'bg-primary text-white border-primary' : 'bg-white border-outline-variant text-on-surface hover:bg-surface-container-high');
+  const centroCls = (v) => 'zfmi-ctab px-sm py-xs border rounded text-[11px] font-bold uppercase transition-colors ' +
+    (zfmiFiltCentro === v ? 'bg-primary text-white border-primary' : 'bg-white border-outline-variant text-on-surface hover:bg-surface-container-high');
+
+  const fmtKg = (n) => n != null ? n.toLocaleString('es-CL', { maximumFractionDigits: 0 }) + ' kg' : '—';
+  const fmtPct = (n) => n != null ? '$' + n.toLocaleString('es-CL', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '<span class="text-secondary">—</span>';
+
+  // ── Filas tabla ───────────────────────────────────────────────────────────
+  const rowsHtml = pageRows.length === 0
+    ? '<tr><td colspan="15" class="p-md text-center text-secondary">Sin resultados.</td></tr>'
+    : pageRows.map(r => {
+        const clColor  = r.cluster ? (clusterColor(ccfg, r.cluster) || '#9ca3af') : '#d1d5db';
+        const clNombre = r.cluster ? escapeHtml(clusterNombre(ccfg, r.cluster)) : '—';
+        return '<tr class="hover:bg-surface-container-low border-b border-outline-variant text-[12px]">' +
+          '<td class="p-sm text-[11px] text-secondary whitespace-nowrap">'    + escapeHtml(r.centroOrigen) + '</td>' +
+          '<td class="p-sm font-data-mono font-bold text-primary text-[11px]">' + escapeHtml(r.idRuta) + '</td>' +
+          '<td class="p-sm whitespace-nowrap">'                               + escapeHtml(r.destino) + '</td>' +
+          '<td class="p-sm text-[11px]"><span class="border border-outline-variant px-xs py-px rounded">' + escapeHtml(r.tipo) + '</span></td>' +
+          '<td class="p-sm text-[11px] text-secondary">'                      + escapeHtml(r.clasificacion) + '</td>' +
+          '<td class="p-sm text-right font-data-mono text-[11px]">'           + r.km.toLocaleString('es-CL') + '</td>' +
+          '<td class="p-sm">' +
+            '<div class="flex items-center gap-xs">' +
+              '<span class="inline-block w-2 h-2 rounded-full flex-shrink-0" style="background:' + clColor + '"></span>' +
+              '<span class="text-[11px]">' + clNombre + '</span>' +
+            '</div>' +
+          '</td>' +
+          '<td class="p-sm text-[11px]"><span class="border border-outline-variant px-xs py-px rounded font-data-mono">' + escapeHtml(r.tipoCamion) + '</span></td>' +
+          '<td class="p-sm text-[11px]"><span class="border border-[#e2c56a] bg-[#fef9ec] text-[#92640a] px-xs py-px rounded font-data-mono">' + escapeHtml(r.camionMinimo) + '</span></td>' +
+          '<td class="p-sm text-right font-data-mono text-[11px]">'           + (r.zcap !== null ? formatCLP(r.zcap) : '<span class="text-secondary">—</span>') + '</td>' +
+          '<td class="p-sm text-right font-bold font-data-mono text-[11px] text-green-700">' + fmtPct(r.zfmi) + '</td>' +
+          '<td class="p-sm text-right font-bold font-data-mono text-[11px] text-primary">'   + fmtPct(r.zfmx) + '</td>' +
+          '<td class="p-sm text-right font-bold font-data-mono text-[11px] text-orange-600">' + fmtPct(r.tarifaExpress) + '</td>' +
+          '<td class="p-sm text-right font-data-mono text-[11px]">'           + r.factorPct.toFixed(1) + '%</td>' +
+          '<td class="p-sm text-right font-data-mono text-[11px]">'           + fmtKg(r.kilosConsolidar) + '</td>' +
+          '<td class="p-sm text-right font-data-mono text-[11px] text-secondary">' + fmtKg(r.kilosTarifaMin) + '</td>' +
+        '</tr>';
+      }).join('');
+
+  // ── Paginador ─────────────────────────────────────────────────────────────
+  const desde   = zfmiPagina * ZFMI_PAGE + 1;
+  const hasta   = Math.min((zfmiPagina + 1) * ZFMI_PAGE, filtered.length);
+  const prevDis = zfmiPagina === 0 ? 'disabled opacity-40 cursor-default' : 'hover:bg-surface-container-high cursor-pointer';
+  const nextDis = zfmiPagina >= totalPags - 1 ? 'disabled opacity-40 cursor-default' : 'hover:bg-surface-container-high cursor-pointer';
+  const pager   =
+    '<div class="flex items-center justify-between mt-sm flex-wrap gap-sm">' +
+      '<span class="text-[12px] text-secondary">Mostrando ' + desde + '–' + hasta + ' de ' + filtered.length + '</span>' +
+      '<div class="flex items-center gap-xs">' +
+        '<button id="zfmi-pag-prev" class="px-sm py-xs border border-outline-variant rounded text-[12px] ' + prevDis + '"' + (zfmiPagina === 0 ? ' disabled' : '') + '>‹ Ant.</button>' +
+        '<span class="px-sm text-[12px]">Pág. ' + (zfmiPagina + 1) + ' / ' + totalPags + '</span>' +
+        '<button id="zfmi-pag-next" class="px-sm py-xs border border-outline-variant rounded text-[12px] ' + nextDis + '"' + (zfmiPagina >= totalPags - 1 ? ' disabled' : '') + '>Sig. ›</button>' +
+      '</div>' +
+    '</div>';
+
+  content.innerHTML =
+    '<div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm">' +
+
+      // ── Header ─────────────────────────────────────────────────────────────
+      '<div class="flex items-center justify-between mb-md border-b border-outline-variant pb-sm flex-wrap gap-sm">' +
+        '<div class="flex items-center gap-sm">' +
+          '<span class="material-symbols-outlined text-primary">request_quote</span>' +
+          '<h2 class="font-headline-sm text-headline-sm font-bold text-on-surface">Tarifa Min / Max</h2>' +
+        '</div>' +
+        '<div class="flex items-center gap-sm">' +
+          '<button id="btn-zfmi-download" class="bg-primary hover:bg-[#930007] text-white font-bold px-md py-sm rounded flex items-center gap-xs text-[12px] uppercase">' +
+            '<span class="material-symbols-outlined text-[18px]">download</span> Descargar CSV' +
+          '</button>' +
+        '</div>' +
+      '</div>' +
+
+      // ── Tabs clasificación ──────────────────────────────────────────────────
+      '<div class="flex items-center gap-xs mb-sm flex-wrap">' +
+        '<span class="text-[11px] text-secondary font-bold uppercase mr-xs">Tipo:</span>' +
+        [['todas','Todas'],['regional','Regional'],['interregional','Interregional']].map(([v,l]) =>
+          '<button class="zfmi-ctipo ' + tabCls(zfmiFiltClasif === v) + '" data-v="' + v + '">' + l + '</button>'
+        ).join('') +
+      '</div>' +
+
+      // ── Tabs centros ───────────────────────────────────────────────────────
+      '<div class="flex items-center gap-xs mb-md flex-wrap">' +
+        '<button class="' + centroCls('all') + '" data-c="all">Todos</button>' +
+        centros.map(c =>
+          '<button class="' + centroCls(c) + '" data-c="' + escapeHtml(c) + '">' + escapeHtml(c) + '</button>'
+        ).join('') +
+      '</div>' +
+
+      // ── Filtros fila ────────────────────────────────────────────────────────
+      '<div class="flex flex-wrap items-end gap-md mb-md">' +
+        '<div>' +
+          '<label class="font-label-caps text-label-caps text-secondary block mb-xs text-[10px] uppercase">Tipo Camión</label>' +
+          '<select id="zfmi-f-camion" class="' + selCls + ' w-40">' +
+            '<option value=""' + (!zfmiFiltCamion ? ' selected' : '') + '>Todos</option>' +
+            [5000,10000,15000,28000].map(kg =>
+              '<option value="' + kg + '"' + (zfmiFiltCamion === String(kg) ? ' selected' : '') + '>' + (kg/1000).toLocaleString('es-CL') + '.000 Kg</option>'
+            ).join('') +
+          '</select>' +
+        '</div>' +
+        '<div>' +
+          '<label class="font-label-caps text-label-caps text-secondary block mb-xs text-[10px] uppercase">Buscar Ruta / Destino</label>' +
+          '<input id="zfmi-f-buscar" type="text" placeholder="Código o destino..." value="' + escapeHtml(zfmiBuscar) + '" ' +
+            'class="' + selCls + ' w-52">' +
+        '</div>' +
+        '<button id="zfmi-reset" class="border border-outline-variant px-md py-[7px] text-[12px] text-secondary hover:bg-surface-container-high rounded flex items-center gap-xs">' +
+          '<span class="material-symbols-outlined text-[16px]">filter_alt_off</span> Limpiar' +
+        '</button>' +
+        '<span class="ml-auto text-[12px] text-secondary">' + filtered.length + ' fila(s)</span>' +
+      '</div>' +
+
+      // ── Tabla ───────────────────────────────────────────────────────────────
+      '<div class="bg-surface border border-outline-variant rounded overflow-x-auto">' +
+        '<table class="w-full border-collapse">' +
+          '<thead>' +
+            '<tr class="bg-surface-container-high border-b border-outline-variant text-left">' +
+              [
+                ['Centro Origen', false], ['ID Ruta', false], ['Destino', false],
+                ['Tipo', false], ['Clasificación', false], ['Dist. KM', true],
+                ['Cluster', false], ['Tipo Camión', false], ['Camión Mínimo', false],
+                ['ZCAP', true], ['ZFMI Tarif.Min', true], ['ZFMX Tarif.Max', true],
+                ['Tarifa Express', true], ['Factor Cons.', true],
+                ['Kilos Consol.', true], ['Kilos Tarif.Min', true]
+              ].map(([h, right]) =>
+                '<th class="p-sm font-label-caps text-secondary uppercase text-[10px]' + (right ? ' text-right' : '') + '">' + h + '</th>'
+              ).join('') +
+            '</tr>' +
+          '</thead>' +
+          '<tbody class="divide-y divide-outline-variant">' + rowsHtml + '</tbody>' +
+        '</table>' +
+      '</div>' +
+      pager +
+
+      // ── Leyenda fórmulas ────────────────────────────────────────────────────
+      '<div class="text-[11px] text-secondary mt-sm flex flex-wrap gap-lg">' +
+        '<span><b>Camión Mínimo</b> = truck de menor capacidad del centro</span>' +
+        '<span><b>ZFMI $/kg</b> = ZCAP(Camión Mín.) ÷ Kilos Tarif.Min</span>' +
+        '<span><b>ZFMX $/kg</b> = ZCAP ÷ Kilos Consol.</span>' +
+        '<span><b>Tarifa Express</b> = ZCAP ÷ Cap.Camión (sin consolidar)</span>' +
+      '</div>' +
+    '</div>';
+
+  // ── Eventos ───────────────────────────────────────────────────────────────
+
+  content.querySelectorAll('.zfmi-ctipo').forEach(btn => {
+    btn.addEventListener('click', () => { zfmiFiltClasif = btn.dataset.v; zfmiPagina = 0; renderZfmi(content, db, cfg, ccfg); });
+  });
+
+  content.querySelectorAll('.zfmi-ctab').forEach(btn => {
+    btn.addEventListener('click', () => { zfmiFiltCentro = btn.dataset.c; zfmiPagina = 0; renderZfmi(content, db, cfg, ccfg); });
+  });
+
+  document.getElementById('zfmi-f-camion')?.addEventListener('change', e => {
+    zfmiFiltCamion = e.target.value; zfmiPagina = 0; renderZfmi(content, db, cfg, ccfg);
+  });
+
+  document.getElementById('zfmi-f-buscar')?.addEventListener('input', e => {
+    const pos = e.target.selectionStart;
+    zfmiBuscar = e.target.value; zfmiPagina = 0;
+    renderZfmi(content, db, cfg, ccfg);
+    const el = document.getElementById('zfmi-f-buscar');
+    if (el) { el.focus(); el.setSelectionRange(pos, pos); }
+  });
+
+  document.getElementById('zfmi-reset')?.addEventListener('click', () => {
+    zfmiFiltClasif = 'todas'; zfmiFiltCentro = 'all'; zfmiFiltCamion = ''; zfmiBuscar = ''; zfmiPagina = 0;
+    renderZfmi(content, db, cfg, ccfg);
+  });
+
+  document.getElementById('zfmi-pag-prev')?.addEventListener('click', () => {
+    zfmiPagina = Math.max(0, zfmiPagina - 1); renderZfmi(content, db, cfg, ccfg);
+  });
+  document.getElementById('zfmi-pag-next')?.addEventListener('click', () => {
+    zfmiPagina = Math.min(totalPags - 1, zfmiPagina + 1); renderZfmi(content, db, cfg, ccfg);
+  });
+
+  // Descargar CSV
+  document.getElementById('btn-zfmi-download')?.addEventListener('click', () => {
+    const headers = [
+      'Centro Origen','ID Ruta','Destino','Tipo','Clasificacion','Dist KM','Cluster',
+      'Tipo Camion','Camion Minimo','ZCAP','ZFMI Tarif.Min','ZFMX Tarif.Max',
+      'Tarifa Express','Factor Consolidacion %','Kilos a Consolidar','Kilos Tarifa Minima'
+    ];
+    const data = filtered.map(r => [
+      r.centroOrigen, r.idRuta, r.destino, r.tipo, r.clasificacion, r.km,
+      r.cluster ? clusterNombre(ccfg, r.cluster) : '',
+      r.tipoCamion, r.camionMinimo,
+      r.zcap             !== null ? r.zcap.toFixed(2)            : '',
+      r.zfmi             !== null ? r.zfmi.toFixed(4)            : '',
+      r.zfmx             !== null ? r.zfmx.toFixed(4)            : '',
+      r.tarifaExpress    !== null ? r.tarifaExpress.toFixed(4)   : '',
+      r.factorPct.toFixed(1),
+      r.kilosConsolidar !== null  ? r.kilosConsolidar.toFixed(0) : '',
+      r.kilosTarifaMin  !== null  ? r.kilosTarifaMin.toFixed(0)  : ''
+    ]);
+    downloadFile('tarifa_min_max_' + Date.now() + '.csv', toCSV(headers, data));
   });
 }
