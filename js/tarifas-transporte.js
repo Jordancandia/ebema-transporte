@@ -2078,7 +2078,7 @@ function mergeStgoSbMatriz(rows, stgoGrupo, sbGrupo) {
   const pairRows  = rows.filter(m => PAIR.has(m.ruta?.origen_grupo));
   const otherRows = rows.filter(m => !PAIR.has(m.ruta?.origen_grupo));
 
-  const AVG_FIELDS = ['item1_peajes','combIda','combVuelta',
+  const AVG_FIELDS = ['km','item1_peajes','combIda','combVuelta',
     'item3_soapKm','item4_seguroKm','item5_mantKm','item6_neumKm',
     'item7_gpsKm','item8_choferBaseDiario','item9_varChofer',
     'costoVuelta','item10_costoRutaTotal','item11_costoKmFinal','factorRuta'];
