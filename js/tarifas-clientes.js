@@ -1022,6 +1022,52 @@ function asignarClustersCentro(rows, ccfg) {
 // ═══════════════════════════════════════════════════════════════
 // VISTA 5: CLUSTER — por centro, solo Regional+Comuna
 // ═══════════════════════════════════════════════════════════════
+// ── Motor Cluster Operativo (complemento homologable) ──────────────────────
+const EJES_OP_DEFAULT = {
+  NORTE: { alias:'Norte',  rangos:[[315,360],[0,45]] },
+  ESTE:  { alias:'Este',   rangos:[[45,135]] },
+  SUR:   { alias:'Sur',    rangos:[[135,225]] },
+  OESTE: { alias:'Oeste',  rangos:[[225,315]] },
+};
+const EJES_OP = {
+  '1100': {
+    NORTE:{ alias:'Norte (Ruta 5 Norte)', rangos:[[310,360],[0,50]] },
+    ESTE: { alias:'Austral-Costa',        rangos:[[50,160]] },
+    SUR:  { alias:'Sur-Isla',             rangos:[[160,310]] },
+  },
+};
+const FREC_OP = {
+  C1:{frecuencia:'Diaria (Fija)',       flota:'Flota Propia'},
+  C2:{frecuencia:'L-Mi-V (Frecuencial)',flota:'Flota Propia'},
+  C3:{frecuencia:'Ma-Ju (Arrastre)',    flota:'Flota Propia (Hub)'},
+  C4:{frecuencia:'A Demanda',           flota:'Servicio Extra'},
+  SPOT_LOCAL:{frecuencia:'A Demanda (SLA 48h)', flota:'Servicio Extra (FTL)'},
+};
+function clOpAzimut(latO,lonO,latD,lonD){
+  const r=Math.PI/180,l1=latO*r,l2=latD*r,dl=(lonD-lonO)*r;
+  const x=Math.sin(dl)*Math.cos(l2), y=Math.cos(l1)*Math.sin(l2)-Math.sin(l1)*Math.cos(l2)*Math.cos(dl);
+  return (Math.atan2(x,y)/r+360)%360;
+}
+function ejeOpDe(az,carta){
+  if(az==null) return {eje:'—',alias:'Sin geo'};
+  for(const [cod,cfg] of Object.entries(carta||EJES_OP_DEFAULT))
+    for(const [lo,hi] of cfg.rangos) if(az>=lo&&az<hi) return {eje:cod,alias:cfg.alias};
+  return {eje:'—',alias:'Sin eje'};
+}
+function densKeyToCx(key){
+  if(!key) return null;
+  if(key==='spot'||key==='SPOT'||key==='SPOT_LOCAL') return 'SPOT_LOCAL';
+  const n=parseInt(key,10); return isNaN(n)?null:('C'+n);
+}
+function clusterOpDe(eje,key){
+  const cx=densKeyToCx(key);
+  const e=(eje&&eje!=='—')?eje:'';
+  if(!cx) return {cluster:e?(e+'-SD'):'—',frecuencia:'—',flota:'—'};
+  if(cx==='SPOT_LOCAL'){const f=FREC_OP.SPOT_LOCAL;return {cluster:'SPOT_LOCAL',frecuencia:f.frecuencia,flota:f.flota};}
+  const f=FREC_OP[cx]||{frecuencia:'—',flota:'—'};
+  return {cluster:e?(e+'-'+cx):cx,frecuencia:f.frecuencia,flota:f.flota};
+}
+
 function renderCluster(content, db, ccfg) {
   if (!histData.length) {
     content.innerHTML = '<div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm">' + noDataBanner() + '</div>';
@@ -1039,8 +1085,11 @@ function renderCluster(content, db, ccfg) {
 
   // ── Construir datos de densidad por centro (igual que renderDensidad) ────
   function buildCentroData(grupoObj) {
-    const { grupo, centroIds } = grupoObj;
+    const { grupo, centroIds, centros, repId } = grupoObj;
     const centroIdSet = new Set((centroIds || []).map(String));
+    const _repCd  = (centros||[]).find(cd => String(cd.id)===String(repId)) || (centros||[])[0] || {};
+    const _origLat = parseFloat(_repCd.lat); const _origLon = parseFloat(_repCd.lon);
+    const _carta  = EJES_OP[String(repId)] || EJES_OP_DEFAULT;
 
     const centroRoutes = (db.routes || []).filter(r => {
       if (!r.activo) return false;
@@ -1091,6 +1140,9 @@ function renderCluster(content, db, ccfg) {
       const pctTon   = (s.ton           / baseTon) * 100;
       const densidad = (pctCli + pctObra + pctTon) / 3;
       const caract   = (s.route.caracteristica || '').toUpperCase();
+      const _dLat = parseFloat(s.route.lat), _dLon = parseFloat(s.route.lon);
+      const _az = (!isNaN(_origLat) && !isNaN(_dLat)) ? clOpAzimut(_origLat,_origLon,_dLat,_dLon) : null;
+      const _ejeInfo = ejeOpDe(_az, _carta);
       return {
         rutaId:     String(s.route.id     || ''),
         rutaCodigo: String(s.route.codigo || ''),
@@ -1102,7 +1154,8 @@ function renderCluster(content, db, ccfg) {
         lat:  parseFloat(s.route.lat)  || null,
         lon:  parseFloat(s.route.lon)  || null,
         cluster: ccfg.comunaCluster[String(s.route.id || '')] ||
-                 ccfg.comunaCluster[String(s.route.codigo || '')] || ''
+                 ccfg.comunaCluster[String(s.route.codigo || '')] || '',
+        eje: _ejeInfo.eje, ejeAlias: _ejeInfo.alias
       };
     }).sort((a, b) => {
       // 1) Por cluster: numérico asc (1, 2, 3), luego 'spot', luego sin asignar
@@ -1159,6 +1212,7 @@ function renderCluster(content, db, ccfg) {
         ccfg.clusters.map(c =>
           '<option value="' + c.key + '"' + (r.cluster === c.key ? ' selected' : '') + '>' + escapeHtml(c.nombre) + '</option>'
         ).join('');
+      const op = clusterOpDe(r.eje, r.cluster);
       return '<tr class="hover:bg-surface-container-low border-b border-outline-variant">' +
         '<td class="p-sm text-right text-secondary font-data-mono text-[11px] w-8">' + (i + 1) + '</td>' +
         '<td class="p-sm font-data-mono text-[11px] text-primary font-bold">' + escapeHtml(r.rutaCodigo) + '</td>' +
@@ -1176,11 +1230,16 @@ function renderCluster(content, db, ccfg) {
             '<select class="cl-assign border border-[#CED4DA] px-xs py-px text-[11px] bg-white rounded w-full" ' +
               'data-ruta-id="' + escapeHtml(r.rutaId) + '" ' +
               'data-ruta-cod="' + escapeHtml(r.rutaCodigo) + '" ' +
+              'data-eje="' + escapeHtml(r.eje||'') + '" ' +
               'data-grupo="' + escapeHtml(cd.grupo) + '">' +
               opts +
             '</select>' +
           '</div>' +
         '</td>' +
+        '<td class="p-sm text-[11px] cl-op-eje" title="' + escapeHtml(r.ejeAlias||'') + '">' + escapeHtml(r.eje||'—') + '</td>' +
+        '<td class="p-sm text-[11px] font-bold cl-op-cluster">' + escapeHtml(op.cluster) + '</td>' +
+        '<td class="p-sm text-[11px] cl-op-frec">' + escapeHtml(op.frecuencia) + '</td>' +
+        '<td class="p-sm text-[11px] cl-op-flota">' + escapeHtml(op.flota) + '</td>' +
       '</tr>';
     }).join('');
 
@@ -1210,6 +1269,10 @@ function renderCluster(content, db, ccfg) {
               '<th class="p-sm font-label-caps text-secondary uppercase">Zona</th>' +
               '<th class="p-sm font-label-caps text-secondary uppercase text-right">Densidad %</th>' +
               '<th class="p-sm font-label-caps text-secondary uppercase">Cluster</th>' +
+              '<th class="p-sm font-label-caps text-secondary uppercase">Eje Vial</th>' +
+              '<th class="p-sm font-label-caps text-secondary uppercase">Cluster Op.</th>' +
+              '<th class="p-sm font-label-caps text-secondary uppercase">Frecuencia</th>' +
+              '<th class="p-sm font-label-caps text-secondary uppercase">Flota</th>' +
             '</tr>' +
           '</thead>' +
           '<tbody class="divide-y divide-outline-variant">' +
@@ -1236,6 +1299,12 @@ function renderCluster(content, db, ccfg) {
     '</div>';
 
   // ── Evento: cambio de cluster individual ────────────────────────────────
+  function updateOpCells(sel) {
+    const tr = sel.closest('tr'); if (!tr) return;
+    const op = clusterOpDe(sel.dataset.eje || '', sel.value);
+    const set = (cls,val) => { const el = tr.querySelector(cls); if (el) el.textContent = val; };
+    set('.cl-op-cluster', op.cluster); set('.cl-op-frec', op.frecuencia); set('.cl-op-flota', op.flota);
+  }
   content.querySelectorAll('.cl-assign').forEach(sel => {
     sel.addEventListener('change', () => {
       const rutaId  = sel.dataset.rutaId;
@@ -1250,6 +1319,7 @@ function renderCluster(content, db, ccfg) {
       // Actualizar dot de color en la misma fila sin re-render
       const dot = sel.closest('td')?.querySelector('.cl-dot');
       if (dot) dot.style.background = sel.value ? (clusterColor(ccfg, sel.value) || '#9ca3af') : '#d1d5db';
+      updateOpCells(sel);
     });
   });
 
@@ -1276,6 +1346,7 @@ function renderCluster(content, db, ccfg) {
             else          { if (rid) delete ccfg.comunaCluster[rid];  if (rcd) delete ccfg.comunaCluster[rcd]; }
             const dot = s.closest('td')?.querySelector('.cl-dot');
             if (dot) dot.style.background = s.value ? (clusterColor(ccfg, s.value) || '#9ca3af') : '#d1d5db';
+            updateOpCells(s);
           });
         });
         document.getElementById('cl-card-' + uid)?.querySelectorAll('.cl-guardar-centro').forEach(b => {

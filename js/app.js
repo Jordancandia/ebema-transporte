@@ -5,8 +5,7 @@ import { renderRoutesView, setRoutesSubTab } from './routes.js?v=20260708a';
 import { renderRatesView } from './rates.js';
 import { renderRolesView } from './roles.js';
 import { renderTariffTransportView, setActiveSub } from './tarifas-transporte.js?v=20260713a';
-import { renderClientTariffView, setActiveSubC } from './tarifas-clientes.js?v=20260713a';
-import { renderClusterRutasView } from './cluster-rutas.js?v=20260713a';
+import { renderClientTariffView, setActiveSubC } from './tarifas-clientes.js?v=20260713b';
 import { showAlert, formatRut, validateRut, formatPhone } from './utils.js';
 
 const SESSION_KEY = 'ebema_user_session';
@@ -1412,7 +1411,6 @@ function switchTab(tabName, subName = null) {
       break;
     case 'tarifas-clientes':
       pageTitle.textContent = 'Tarifas Clientes' + subLabel;
-      if (subName === 'cluster') { renderClusterRutasView(stage); break; }
       if (alias) setActiveSubC(alias);
       renderClientTariffView(stage);
       break;
