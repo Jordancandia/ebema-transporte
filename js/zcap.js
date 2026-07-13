@@ -2,8 +2,8 @@
 // Regional:       ZCAP = Costo Base + km × Tarifa/KM
 // Interregional:  ZCAP = item10_costoRutaTotal (motor completo)
 // Troncales:      ZCAP = motor completo para rutas definidas por el usuario
-import { getDatabase, saveDatabase, getTariffConfig, truckCapKg, getOrigenGroups, TRUCK_BASE_TYPES } from './data.js?v=20260712d';
-import { calcularCostoRuta } from './tarifas-engine.js?v=20260712d';
+import { getDatabase, saveDatabase, getTariffConfig, truckCapKg, getOrigenGroups, TRUCK_BASE_TYPES } from './data.js?v=20260712i';
+import { calcularCostoRuta } from './tarifas-engine.js?v=20260712i';
 import { formatCLP, escapeHtml } from './utils.js';
 
 const TRUCK_ORDER = ['Camión 5 Ton', 'Camión 10 Ton', 'Camión 15 Ton', 'Camión 28 Ton'];
@@ -53,7 +53,7 @@ function clasifBadge(ruta, troncalesSet) {
 }
 
 // ── Cálculo ZCAP ───────────────────────────────────────────────────────────
-function calcZcapRow(db, cfg, ruta, truck, troncalesSet) {
+export function calcZcapRow(db, cfg, ruta, truck, troncalesSet) {
   const km        = Number(ruta.km) || 0;
   const esTroncal = troncalesSet.has(ruta.codigo);
 
