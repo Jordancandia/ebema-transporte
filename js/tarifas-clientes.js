@@ -1,7 +1,7 @@
 // MÓDULO: Administrador de Tarifas Clientes — SIT EBEMA v2.1
 // Vistas: Histórico (6M) | Consolidación | Densidad Logística | Frecuencia y Especiales | Cluster | Resultados
-import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig, saveHistorico, loadHistorico, getOrigenGroups } from './data.js?v=20260712f';
-import { CAP_LIST, truckTypesWithCap, calcularCostoRuta } from './tarifas-engine.js?v=20260712f';
+import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig, saveHistorico, loadHistorico, getOrigenGroups } from './data.js?v=20260712g';
+import { CAP_LIST, truckTypesWithCap, calcularCostoRuta } from './tarifas-engine.js?v=20260712g';
 import { formatCLP, showAlert, toCSV, downloadFile, formatDateDDMMYYYY, escapeHtml } from './utils.js';
 
 // ─────────────────────────────────────────────────────────────
@@ -14,7 +14,11 @@ let histFilterEstado  = 'all';
 let clusterFiltGrupo  = 'all';
 let clusterFiltTipo   = 'all';
 let clusterFiltClasif = 'all';
-let zfmpFiltCentro   = 'all';
+let zfmpFiltClasif  = 'todas';
+let zfmpFiltCentro  = 'all';
+let zfmpFiltCamion  = '';
+let zfmpBuscar      = '';
+let zfmpPagina      = 0;
 let activeSubC        = 'historico';
 
 // Permite fijar el subtab activo desde el menu lateral (app.js) antes de renderizar
@@ -1290,43 +1294,35 @@ function renderCluster(content, db, ccfg) {
 // ═══════════════════════════════════════════════════════════════
 // VISTA 6: TARIFAS $/KG  (ZFMP por ruta × tipo de camión)
 // ═══════════════════════════════════════════════════════════════
+const ZFMP_PAGE = 50;
+
 function renderResultados(content, db, cfg, ccfg) {
-  // ── Construir todas las combinaciones ruta × tipo camión ────────────────
-  const rutas  = (db.routes || []).filter(r => r.activo);
+  // ── Construir TODAS las combinaciones ruta × tipo camión ─────────────────
   const allRows = [];
+  (db.routes || []).filter(r => r.activo).forEach(ruta => {
+    const grupo    = ruta.origen_grupo || '';
+    const grupoKey = grupo.replace(/\s/g, '_');
+    const cluster  = ccfg.comunaCluster[String(ruta.id || '')] ||
+                     ccfg.comunaCluster[String(ruta.codigo || '')] || '';
 
-  rutas.forEach(ruta => {
-    const grupo          = ruta.origen_grupo || '';
-    const grupoKey       = grupo.replace(/\s/g, '_');
-    const tipos          = truckTypesWithCap(db, ruta.origenId);
-    const cluster        = ccfg.comunaCluster[String(ruta.id || '')] ||
-                           ccfg.comunaCluster[String(ruta.codigo || '')] || '';
-
-    tipos.forEach(t => {
-      const capKg        = t.capKg;                        // ej. 5000, 10000
-      const bkt          = capKg / 1000;                   // 5, 10, 15, 28
-      const factorPct    = getPath(ccfg, `consolidacionObjetivo.${grupoKey}.${bkt}`, 80);
-      const kilosConsolidar = capKg * (factorPct / 100);   // cap_kg × factor
-
+    truckTypesWithCap(db, ruta.origenId).forEach(t => {
+      const capKg           = t.capKg;
+      const bkt             = capKg / 1000;
+      const factorPct       = getPath(ccfg, `consolidacionObjetivo.${grupoKey}.${bkt}`, 80);
+      const kilosConsolidar = capKg * (factorPct / 100);
       let zcap = null;
       try { zcap = calcularCostoRuta(db, cfg, ruta, capKg).zcap; } catch (_) {}
-
       const zfmp = (zcap !== null && kilosConsolidar > 0) ? zcap / kilosConsolidar : null;
 
       allRows.push({
-        centroOrigen:    grupo,
-        idRuta:          ruta.codigo || String(ruta.id || ''),
-        destino:         ruta.destino || '',
-        tipo:            ruta.tipo || '',
-        clasificacion:   ruta.clasificRuta || '',
-        km:              Number(ruta.km) || 0,
-        cluster,
-        tipoCamion:      t.type || CAP_LABELS[bkt] || (bkt + 'T'),
-        capKg,
-        zcap,
-        factorPct,
-        kilosConsolidar,
-        zfmp
+        centroOrigen:  grupo,
+        idRuta:        ruta.codigo || String(ruta.id || ''),
+        destino:       ruta.destino || '',
+        tipo:          ruta.tipo || '',
+        clasificacion: ruta.clasificRuta || '',
+        km:            Number(ruta.km) || 0,
+        cluster, capKg, factorPct, kilosConsolidar, zcap, zfmp,
+        tipoCamion: t.type || (bkt + 'T')
       });
     });
   });
@@ -1337,114 +1333,210 @@ function renderResultados(content, db, cfg, ccfg) {
     return;
   }
 
-  // ── Centros disponibles para filtro ──────────────────────────────────────
+  // ── Centros únicos (para tabs) ────────────────────────────────────────────
   const centros = [...new Set(allRows.map(r => r.centroOrigen))].filter(Boolean).sort();
 
-  // ── Filas filtradas ───────────────────────────────────────────────────────
-  const rows = zfmpFiltCentro === 'all'
-    ? allRows
-    : allRows.filter(r => r.centroOrigen === zfmpFiltCentro);
+  // ── Filtrado ──────────────────────────────────────────────────────────────
+  const buscarNorm = zfmpBuscar.trim().toLowerCase();
+  const filtered = allRows.filter(r => {
+    if (zfmpFiltClasif !== 'todas') {
+      const cl = (r.clasificacion || '').toLowerCase();
+      if (zfmpFiltClasif === 'regional'      && cl !== 'regional')      return false;
+      if (zfmpFiltClasif === 'interregional' && cl !== 'interregional') return false;
+    }
+    if (zfmpFiltCentro !== 'all' && r.centroOrigen !== zfmpFiltCentro) return false;
+    if (zfmpFiltCamion && String(r.capKg) !== zfmpFiltCamion)          return false;
+    if (buscarNorm && !r.idRuta.toLowerCase().includes(buscarNorm) &&
+        !r.destino.toLowerCase().includes(buscarNorm))                  return false;
+    return true;
+  });
 
-  // ── Selector de centros ───────────────────────────────────────────────────
-  const selCentro =
-    '<select id="zfmp-filt-centro" class="border border-[#CED4DA] px-sm py-xs text-[12px] bg-white rounded focus:border-primary focus:ring-0">' +
-      '<option value="all"' + (zfmpFiltCentro === 'all' ? ' selected' : '') + '>Todos los centros</option>' +
-      centros.map(c =>
-        '<option value="' + escapeHtml(c) + '"' + (zfmpFiltCentro === c ? ' selected' : '') + '>' + escapeHtml(c) + '</option>'
-      ).join('') +
-    '</select>';
+  const totalPags  = Math.max(1, Math.ceil(filtered.length / ZFMP_PAGE));
+  if (zfmpPagina >= totalPags) zfmpPagina = 0;
+  const pageRows   = filtered.slice(zfmpPagina * ZFMP_PAGE, (zfmpPagina + 1) * ZFMP_PAGE);
 
-  // ── HTML tabla ────────────────────────────────────────────────────────────
-  const rowsHtml = rows.map(r => {
-    const clColor  = r.cluster ? (clusterColor(ccfg, r.cluster) || '#9ca3af') : '#d1d5db';
-    const clNombre = r.cluster ? escapeHtml(clusterNombre(ccfg, r.cluster)) : '<span class="text-secondary">—</span>';
-    const clDot    = '<span class="inline-block w-2 h-2 rounded-full mr-xs flex-shrink-0" style="background:' + clColor + '"></span>';
-    return '<tr class="hover:bg-surface-container-low border-b border-outline-variant text-[12px]">' +
-      '<td class="p-sm text-[11px] text-secondary">' + escapeHtml(r.centroOrigen) + '</td>' +
-      '<td class="p-sm font-data-mono font-bold text-primary text-[11px]">' + escapeHtml(r.idRuta) + '</td>' +
-      '<td class="p-sm">' + escapeHtml(r.destino) + '</td>' +
-      '<td class="p-sm text-[11px]"><span class="border border-outline-variant px-xs py-px rounded">' + escapeHtml(r.tipo) + '</span></td>' +
-      '<td class="p-sm text-[11px] text-secondary">' + escapeHtml(r.clasificacion) + '</td>' +
-      '<td class="p-sm text-right font-data-mono text-[11px]">' + r.km.toLocaleString('es-CL') + '</td>' +
-      '<td class="p-sm"><div class="flex items-center gap-xs">' + clDot + clNombre + '</div></td>' +
-      '<td class="p-sm text-[11px]"><span class="border border-outline-variant px-xs py-px rounded font-data-mono">' + escapeHtml(r.tipoCamion) + '</span></td>' +
-      '<td class="p-sm text-right font-data-mono text-[11px]">' + (r.zcap !== null ? formatCLP(r.zcap) : '<span class="text-secondary">—</span>') + '</td>' +
-      '<td class="p-sm text-right font-data-mono text-[11px]">' + r.factorPct.toFixed(1) + '%</td>' +
-      '<td class="p-sm text-right font-data-mono text-[11px]">' + r.kilosConsolidar.toLocaleString('es-CL', { maximumFractionDigits: 0 }) + ' kg</td>' +
-      '<td class="p-sm text-right font-bold font-data-mono text-[11px]' + (r.zfmp !== null ? ' text-primary' : '') + '">' +
-        (r.zfmp !== null ? '$' + r.zfmp.toLocaleString('es-CL', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '<span class="text-secondary">—</span>') +
-      '</td>' +
-    '</tr>';
-  }).join('');
+  // ── Helpers UI ────────────────────────────────────────────────────────────
+  const selCls  = 'border border-[#CED4DA] px-sm py-[7px] text-[12px] bg-white rounded focus:border-primary focus:ring-0';
+  const tabCls  = (active) => 'px-md py-xs border rounded text-[12px] font-bold uppercase transition-colors ' +
+    (active ? 'bg-primary text-white border-primary' : 'bg-white border-outline-variant text-on-surface hover:bg-surface-container-high');
+  const centroCls = (v) => 'zfmp-ctab px-sm py-xs border rounded text-[11px] font-bold uppercase transition-colors ' +
+    (zfmpFiltCentro === v ? 'bg-primary text-white border-primary' : 'bg-white border-outline-variant text-on-surface hover:bg-surface-container-high');
+
+  // Filas de tabla
+  const rowsHtml = pageRows.length === 0
+    ? '<tr><td colspan="12" class="p-md text-center text-secondary">Sin resultados.</td></tr>'
+    : pageRows.map(r => {
+        const clColor  = r.cluster ? (clusterColor(ccfg, r.cluster) || '#9ca3af') : '#d1d5db';
+        const clNombre = r.cluster ? escapeHtml(clusterNombre(ccfg, r.cluster)) : '—';
+        return '<tr class="hover:bg-surface-container-low border-b border-outline-variant text-[12px]">' +
+          '<td class="p-sm text-[11px] text-secondary whitespace-nowrap">' + escapeHtml(r.centroOrigen) + '</td>' +
+          '<td class="p-sm font-data-mono font-bold text-primary text-[11px]">' + escapeHtml(r.idRuta) + '</td>' +
+          '<td class="p-sm whitespace-nowrap">' + escapeHtml(r.destino) + '</td>' +
+          '<td class="p-sm text-[11px]"><span class="border border-outline-variant px-xs py-px rounded">' + escapeHtml(r.tipo) + '</span></td>' +
+          '<td class="p-sm text-[11px] text-secondary">' + escapeHtml(r.clasificacion) + '</td>' +
+          '<td class="p-sm text-right font-data-mono text-[11px]">' + r.km.toLocaleString('es-CL') + '</td>' +
+          '<td class="p-sm">' +
+            '<div class="flex items-center gap-xs">' +
+              '<span class="inline-block w-2 h-2 rounded-full flex-shrink-0" style="background:' + clColor + '"></span>' +
+              '<span class="text-[11px]">' + clNombre + '</span>' +
+            '</div>' +
+          '</td>' +
+          '<td class="p-sm text-[11px]"><span class="border border-outline-variant px-xs py-px rounded font-data-mono">' + escapeHtml(r.tipoCamion) + '</span></td>' +
+          '<td class="p-sm text-right font-data-mono text-[11px]">' + (r.zcap !== null ? formatCLP(r.zcap) : '<span class="text-secondary">—</span>') + '</td>' +
+          '<td class="p-sm text-right font-data-mono text-[11px]">' + r.factorPct.toFixed(1) + '%</td>' +
+          '<td class="p-sm text-right font-data-mono text-[11px]">' + r.kilosConsolidar.toLocaleString('es-CL', { maximumFractionDigits: 0 }) + ' kg</td>' +
+          '<td class="p-sm text-right font-bold font-data-mono text-[11px] text-primary">' +
+            (r.zfmp !== null
+              ? '$' + r.zfmp.toLocaleString('es-CL', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+              : '<span class="text-secondary font-normal">—</span>') +
+          '</td>' +
+        '</tr>';
+      }).join('');
+
+  // Paginador
+  const desde   = zfmpPagina * ZFMP_PAGE + 1;
+  const hasta   = Math.min((zfmpPagina + 1) * ZFMP_PAGE, filtered.length);
+  const prevDis = zfmpPagina === 0 ? 'disabled opacity-40 cursor-default' : 'hover:bg-surface-container-high cursor-pointer';
+  const nextDis = zfmpPagina >= totalPags - 1 ? 'disabled opacity-40 cursor-default' : 'hover:bg-surface-container-high cursor-pointer';
+  const pager   =
+    '<div class="flex items-center justify-between mt-sm flex-wrap gap-sm">' +
+      '<span class="text-[12px] text-secondary">Mostrando ' + desde + '–' + hasta + ' de ' + filtered.length + '</span>' +
+      '<div class="flex items-center gap-xs">' +
+        '<button id="zfmp-pag-prev" class="px-sm py-xs border border-outline-variant rounded text-[12px] ' + prevDis + '"' + (zfmpPagina === 0 ? ' disabled' : '') + '>‹ Ant.</button>' +
+        '<span class="px-sm text-[12px]">Pág. ' + (zfmpPagina + 1) + ' / ' + totalPags + '</span>' +
+        '<button id="zfmp-pag-next" class="px-sm py-xs border border-outline-variant rounded text-[12px] ' + nextDis + '"' + (zfmpPagina >= totalPags - 1 ? ' disabled' : '') + '>Sig. ›</button>' +
+      '</div>' +
+    '</div>';
 
   content.innerHTML =
     '<div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm">' +
 
-      // Header
+      // ── Header ─────────────────────────────────────────────────────────────
       '<div class="flex items-center justify-between mb-md border-b border-outline-variant pb-sm flex-wrap gap-sm">' +
         '<div class="flex items-center gap-sm">' +
           '<span class="material-symbols-outlined text-primary">price_change</span>' +
           '<h2 class="font-headline-sm text-headline-sm font-bold text-on-surface">Tarifas $/Kg</h2>' +
         '</div>' +
-        '<div class="flex items-center gap-sm flex-wrap">' +
-          '<span class="text-[12px] text-secondary">' + rows.length + ' combinaciones</span>' +
-          selCentro +
-          '<button id="btn-zfmp-download" class="flex items-center gap-xs border border-secondary text-secondary hover:bg-surface-container-high font-bold px-md py-sm rounded text-[11px] uppercase tracking-wider">' +
-            '<span class="material-symbols-outlined text-[16px]">download</span> Descargar CSV' +
+        '<div class="flex items-center gap-sm">' +
+          '<button id="btn-zfmp-download" class="bg-primary hover:bg-[#930007] text-white font-bold px-md py-sm rounded flex items-center gap-xs text-[12px] uppercase">' +
+            '<span class="material-symbols-outlined text-[18px]">download</span> Descargar CSV' +
           '</button>' +
         '</div>' +
       '</div>' +
 
-      // Fórmula info
-      '<div class="text-[11px] text-secondary mb-md flex flex-wrap gap-lg">' +
-        '<span><b>KILOS A CONSOLIDAR</b> = Cap. Camión × Factor Consolidación</span>' +
-        '<span><b>ZFMP ($/kg)</b> = ZCAP / Kilos a Consolidar</span>' +
+      // ── Tabs clasificación ──────────────────────────────────────────────────
+      '<div class="flex items-center gap-xs mb-sm flex-wrap">' +
+        '<span class="text-[11px] text-secondary font-bold uppercase mr-xs">Tipo:</span>' +
+        [['todas','Todas'],['regional','Regional'],['interregional','Interregional']].map(([v,l]) =>
+          '<button class="zfmp-ctipo ' + tabCls(zfmpFiltClasif === v) + '" data-v="' + v + '">' + l + '</button>'
+        ).join('') +
       '</div>' +
 
-      // Tabla
+      // ── Tabs centros ───────────────────────────────────────────────────────
+      '<div class="flex items-center gap-xs mb-md flex-wrap">' +
+        '<button class="' + centroCls('all') + '" data-c="all">Todos</button>' +
+        centros.map(c =>
+          '<button class="' + centroCls(c) + '" data-c="' + escapeHtml(c) + '">' + escapeHtml(c) + '</button>'
+        ).join('') +
+      '</div>' +
+
+      // ── Filtros fila ────────────────────────────────────────────────────────
+      '<div class="flex flex-wrap items-end gap-md mb-md">' +
+        '<div>' +
+          '<label class="font-label-caps text-label-caps text-secondary block mb-xs text-[10px] uppercase">Tipo Camión</label>' +
+          '<select id="zfmp-f-camion" class="' + selCls + ' w-40">' +
+            '<option value=""' + (!zfmpFiltCamion ? ' selected' : '') + '>Todos</option>' +
+            [5000,10000,15000,28000].map(kg =>
+              '<option value="' + kg + '"' + (zfmpFiltCamion === String(kg) ? ' selected' : '') + '>' + (kg/1000).toLocaleString('es-CL') + '.000 Kg</option>'
+            ).join('') +
+          '</select>' +
+        '</div>' +
+        '<div>' +
+          '<label class="font-label-caps text-label-caps text-secondary block mb-xs text-[10px] uppercase">Buscar Ruta / Destino</label>' +
+          '<input id="zfmp-f-buscar" type="text" placeholder="Código o destino..." value="' + escapeHtml(zfmpBuscar) + '" ' +
+            'class="' + selCls + ' w-52">' +
+        '</div>' +
+        '<button id="zfmp-reset" class="border border-outline-variant px-md py-[7px] text-[12px] text-secondary hover:bg-surface-container-high rounded flex items-center gap-xs">' +
+          '<span class="material-symbols-outlined text-[16px]">filter_alt_off</span> Limpiar' +
+        '</button>' +
+        '<span class="ml-auto text-[12px] text-secondary">' + filtered.length + ' fila(s)</span>' +
+      '</div>' +
+
+      // ── Tabla ───────────────────────────────────────────────────────────────
       '<div class="bg-surface border border-outline-variant rounded overflow-x-auto">' +
         '<table class="w-full border-collapse">' +
           '<thead>' +
-            '<tr class="bg-surface-container-high border-b border-outline-variant text-left sticky top-0">' +
-              '<th class="p-sm font-label-caps text-secondary uppercase text-[10px]">Centro Origen</th>' +
-              '<th class="p-sm font-label-caps text-secondary uppercase text-[10px]">ID Ruta</th>' +
-              '<th class="p-sm font-label-caps text-secondary uppercase text-[10px]">Destino</th>' +
-              '<th class="p-sm font-label-caps text-secondary uppercase text-[10px]">Tipo</th>' +
-              '<th class="p-sm font-label-caps text-secondary uppercase text-[10px]">Clasificación</th>' +
-              '<th class="p-sm font-label-caps text-secondary uppercase text-[10px] text-right">Dist. KM</th>' +
-              '<th class="p-sm font-label-caps text-secondary uppercase text-[10px]">Cluster</th>' +
-              '<th class="p-sm font-label-caps text-secondary uppercase text-[10px]">Tipo Camión</th>' +
-              '<th class="p-sm font-label-caps text-secondary uppercase text-[10px] text-right">ZCAP</th>' +
-              '<th class="p-sm font-label-caps text-secondary uppercase text-[10px] text-right">Factor Cons.</th>' +
-              '<th class="p-sm font-label-caps text-secondary uppercase text-[10px] text-right">Kilos Consol.</th>' +
-              '<th class="p-sm font-label-caps text-secondary uppercase text-[10px] text-right">ZFMP $/kg</th>' +
+            '<tr class="bg-surface-container-high border-b border-outline-variant text-left">' +
+              ['Centro Origen','ID Ruta','Destino','Tipo','Clasificación','Dist. KM',
+               'Cluster','Tipo Camión','ZCAP','Factor Cons.','Kilos Consol.','ZFMP $/kg'].map((h, i) =>
+                '<th class="p-sm font-label-caps text-secondary uppercase text-[10px]' + (i >= 5 ? ' text-right' : '') + '">' + h + '</th>'
+              ).join('') +
             '</tr>' +
           '</thead>' +
-          '<tbody class="divide-y divide-outline-variant">' +
-            rowsHtml +
-          '</tbody>' +
+          '<tbody class="divide-y divide-outline-variant">' + rowsHtml + '</tbody>' +
         '</table>' +
+      '</div>' +
+      pager +
+
+      // Fórmula info
+      '<div class="text-[11px] text-secondary mt-sm flex flex-wrap gap-lg">' +
+        '<span><b>Kilos Consol.</b> = Cap. Camión × Factor Consolidación</span>' +
+        '<span><b>ZFMP $/kg</b> = ZCAP ÷ Kilos Consol.</span>' +
       '</div>' +
     '</div>';
 
-  // ── Filtro centro ─────────────────────────────────────────────────────────
-  document.getElementById('zfmp-filt-centro')?.addEventListener('change', e => {
-    zfmpFiltCentro = e.target.value;
+  // ── Eventos ──────────────────────────────────────────────────────────────
+
+  // Tabs clasificación
+  content.querySelectorAll('.zfmp-ctipo').forEach(btn => {
+    btn.addEventListener('click', () => { zfmpFiltClasif = btn.dataset.v; zfmpPagina = 0; renderResultados(content, db, cfg, ccfg); });
+  });
+
+  // Tabs centros
+  content.querySelectorAll('.zfmp-ctab').forEach(btn => {
+    btn.addEventListener('click', () => { zfmpFiltCentro = btn.dataset.c; zfmpPagina = 0; renderResultados(content, db, cfg, ccfg); });
+  });
+
+  // Tipo camión
+  document.getElementById('zfmp-f-camion')?.addEventListener('change', e => {
+    zfmpFiltCamion = e.target.value; zfmpPagina = 0; renderResultados(content, db, cfg, ccfg);
+  });
+
+  // Buscar (preserva cursor)
+  document.getElementById('zfmp-f-buscar')?.addEventListener('input', e => {
+    const pos = e.target.selectionStart;
+    zfmpBuscar = e.target.value; zfmpPagina = 0;
+    renderResultados(content, db, cfg, ccfg);
+    const el = document.getElementById('zfmp-f-buscar');
+    if (el) { el.focus(); el.setSelectionRange(pos, pos); }
+  });
+
+  // Limpiar
+  document.getElementById('zfmp-reset')?.addEventListener('click', () => {
+    zfmpFiltClasif = 'todas'; zfmpFiltCentro = 'all'; zfmpFiltCamion = ''; zfmpBuscar = ''; zfmpPagina = 0;
     renderResultados(content, db, cfg, ccfg);
   });
 
-  // ── Descarga CSV ──────────────────────────────────────────────────────────
+  // Paginación
+  document.getElementById('zfmp-pag-prev')?.addEventListener('click', () => {
+    zfmpPagina = Math.max(0, zfmpPagina - 1); renderResultados(content, db, cfg, ccfg);
+  });
+  document.getElementById('zfmp-pag-next')?.addEventListener('click', () => {
+    zfmpPagina = Math.min(totalPags - 1, zfmpPagina + 1); renderResultados(content, db, cfg, ccfg);
+  });
+
+  // Descargar CSV
   document.getElementById('btn-zfmp-download')?.addEventListener('click', () => {
     const headers = ['Centro Origen','ID Ruta','Destino','Tipo','Clasificacion','Dist KM',
                      'Cluster','Tipo Camion','ZCAP','Factor Consolidacion %','Kilos a Consolidar','ZFMP $/kg'];
-    const data = rows.map(r => [
+    const data = filtered.map(r => [
       r.centroOrigen, r.idRuta, r.destino, r.tipo, r.clasificacion, r.km,
       r.cluster ? clusterNombre(ccfg, r.cluster) : '',
       r.tipoCamion,
-      r.zcap !== null ? r.zcap.toFixed(2) : '',
+      r.zcap    !== null ? r.zcap.toFixed(2)    : '',
       r.factorPct.toFixed(1),
       r.kilosConsolidar.toFixed(0),
-      r.zfmp !== null ? r.zfmp.toFixed(4) : ''
+      r.zfmp    !== null ? r.zfmp.toFixed(4)    : ''
     ]);
     downloadFile('tarifas_kg_' + Date.now() + '.csv', toCSV(headers, data));
   });
