@@ -1157,5 +1157,264 @@ function renderRecoverView() {
       btn.disabled = false;
       return;
     }
+    document.getElementById('recover-step-form').style.display = 'none';
+    const successEl = document.getElementById('recover-step-success');
+    successEl.style.display = 'block';
+    document.getElementById('recover-email-display').textContent = email;
 
-    document.getElementById('r
+    document.getElementById('btn-go-login').addEventListener('click', () => {
+      authState = 'login'; renderAuthView();
+    });
+  });
+}
+
+// ==========================================================================
+// MENU LATERAL - estructura declarativa con grupos desplegables
+// ==========================================================================
+const SIDEBAR_MENU = [
+  { tab: 'rates', icon: 'payments', label: 'Cotizador Despacho' },
+  {
+    group: 'proveedores', icon: 'groups', label: 'Proveedores', children: [
+      { tab: 'transports', sub: 'transportistas', icon: 'badge',          label: 'Transportistas' },
+      { tab: 'transports', sub: 'flota',          icon: 'local_shipping', label: 'Flota Camiones' },
+      { tab: 'transports', sub: 'conductores',    icon: 'person',         label: 'Conductores' },
+    ]
+  },
+  {
+    group: 'rutas', icon: 'route', label: 'Rutas de Transporte', children: [
+      { tab: 'routes', sub: 'centros', icon: 'location_on', label: 'Centros Logisticos' },
+      { tab: 'routes', sub: 'rutas',   icon: 'route',       label: 'Rutas' },
+      { tab: 'routes', sub: 'zonas',   icon: 'map',         label: 'Zonas de Transportes' },
+    ]
+  },
+  {
+    group: 'tarifas-transporte', icon: 'calculate', label: 'Tarifas Transporte', children: [
+      { tab: 'tarifas-transporte', sub: 'peajes',        icon: 'toll',              label: 'Peajes' },
+      { tab: 'tarifas-transporte', sub: 'combustibles',  icon: 'local_gas_station', label: 'Combustibles y Rendimientos' },
+      { tab: 'tarifas-transporte', sub: 'seguros',       icon: 'shield',            label: 'Seguros y Permisos' },
+      { tab: 'tarifas-transporte', sub: 'costos-extras', icon: 'add_circle',        label: 'Costos Extras' },
+      { tab: 'tarifas-transporte', sub: 'variables',     icon: 'tune',              label: 'Variables Generales' },
+      { tab: 'tarifas-transporte', sub: 'resultados',    icon: 'speed',             label: 'Motor de Costos' },
+      { tab: 'tarifas-transporte', sub: 'camiones',      icon: 'local_shipping',    label: 'Tarifas por Camion' },
+      { tab: 'tarifas-transporte', sub: 'zcap',          icon: 'table_chart',       label: 'Tarifas Rutas' },
+    ]
+  },
+  {
+    group: 'tarifas-clientes', icon: 'request_quote', label: 'Tarifas Clientes', children: [
+      { tab: 'tarifas-clientes', sub: 'historico',     icon: 'history',       label: 'Historico (6M)' },
+      { tab: 'tarifas-clientes', sub: 'consolidacion', icon: 'inventory',     label: 'Consolidacion' },
+      { tab: 'tarifas-clientes', sub: 'densidad',      icon: 'location_on',   label: 'Densidad Logistica' },
+      { tab: 'tarifas-clientes', sub: 'especiales',    icon: 'star',          label: 'Frecuencia y Especiales' },
+      { tab: 'tarifas-clientes', sub: 'cluster',       icon: 'map',           label: 'Cluster' },
+      { tab: 'tarifas-clientes', sub: 'zfmp',          icon: 'request_quote', label: 'Tarifas $/Kg' },
+      { tab: 'tarifas-clientes', sub: 'zfmi',          icon: 'request_quote', label: 'Tarifa Min/Max' },
+    ]
+  },
+  { tab: 'roles', icon: 'admin_panel_settings', label: 'Roles y Perfiles' },
+];
+
+// Subtab real del modulo destino para cada submenu del sidebar.
+// null = el modulo no distingue subtab aun; los que no tienen vista propia
+// se enlazan a la vista existente mas cercana (se construyen en fases siguientes).
+const SUB_ALIAS = {
+  'transports':         { transportistas: null, flota: null, conductores: null },
+  'tarifas-clientes':   { zfmp: 'resultados', zfmi: 'zfmi' },
+};
+
+const NAV_BASE_ITEM  = 'sidebar-item flex items-center gap-md px-md py-sm text-secondary hover:text-primary hover:bg-surface-container-high transition-colors rounded-lg cursor-pointer';
+const NAV_BASE_CHILD = 'sidebar-item flex items-center gap-sm pl-xl pr-md py-xs text-secondary hover:text-primary hover:bg-surface-container-high transition-colors rounded-lg cursor-pointer text-[13px]';
+
+function sidebarNavHTML() {
+  return SIDEBAR_MENU.map(entry => {
+    if (entry.group) {
+      return `
+        <div class="sidebar-group" data-group="${entry.group}">
+          <a class="sidebar-group-toggle flex items-center gap-md px-md py-sm text-secondary hover:text-primary hover:bg-surface-container-high transition-colors rounded-lg cursor-pointer select-none">
+            <span class="material-symbols-outlined">${entry.icon}</span>
+            <span class="font-body-md text-body-md flex-1 font-bold">${entry.label}</span>
+            <span class="material-symbols-outlined text-[18px] transition-transform sidebar-chevron">expand_more</span>
+          </a>
+          <div class="sidebar-group-children hidden mt-xs space-y-[2px]">
+            ${entry.children.map(c => `
+              <a class="${NAV_BASE_CHILD}" data-tab="${c.tab}" data-sub="${c.sub}">
+                <span class="material-symbols-outlined text-[16px]">${c.icon}</span>
+                <span>${c.label}</span>
+              </a>`).join('')}
+          </div>
+        </div>`;
+    }
+    return `
+      <a class="${NAV_BASE_ITEM}" data-tab="${entry.tab}" id="nav-${entry.tab}">
+        <span class="material-symbols-outlined">${entry.icon}</span>
+        <span class="font-body-md text-body-md font-bold">${entry.label}</span>
+      </a>`;
+  }).join('');
+}
+
+// ==========================================================================
+// SHELL DEL DASHBOARD DE SIT EBEMA
+// ==========================================================================
+function renderDashboardShell() {
+  appRoot.innerHTML = `
+    <!-- SideNavBar Anchor -->
+    <nav class="flex flex-col h-full py-lg px-md h-full w-64 fixed left-0 top-0 border-r border-surface-variant bg-surface z-50">
+      <div class="mb-xl px-sm flex flex-col gap-xs">
+        <h1 class="text-headline-sm font-headline-sm font-bold text-primary">SIT EBEMA</h1>
+        <p class="text-label-caps font-label-caps text-secondary uppercase tracking-wider">Logistics Admin</p>
+      </div>
+      
+      <div class="space-y-base flex-1 overflow-y-auto pr-xs" id="sidebar-nav-container">
+        ${sidebarNavHTML()}
+      </div>
+
+      <div class="mt-auto space-y-base border-t border-surface-variant pt-lg">
+
+        <a class="flex items-center gap-md px-md py-sm text-secondary hover:text-primary hover:bg-surface-container-high transition-colors rounded-lg cursor-pointer" id="btn-logout">
+          <span class="material-symbols-outlined">logout</span>
+          <span class="font-body-md text-body-md">Logout</span>
+        </a>
+      </div>
+    </nav>
+
+    <!-- TopAppBar Anchor -->
+    <header class="flex justify-between items-center h-16 w-full pl-72 pr-margin-desktop bg-surface/80 backdrop-blur-md sticky top-0 z-40 border-b border-surface-variant">
+      <div class="flex items-center gap-md">
+        <span class="text-headline-sm font-headline-sm font-black text-primary hidden md:block">SIT EBEMA</span>
+        <div class="h-8 w-px bg-surface-variant mx-md"></div>
+        <h2 class="text-headline-sm font-headline-sm text-on-surface" id="current-page-title">Cotizador de Tarifas</h2>
+      </div>
+      
+      <div class="flex items-center gap-lg">
+        <div class="relative hidden lg:block">
+          <span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-secondary">search</span>
+          <input class="pl-10 pr-md py-2 bg-surface-container rounded-lg border-none text-body-md w-64 focus:ring-2 focus:ring-primary/20" placeholder="Buscar..." type="text"/>
+        </div>
+        
+        <div class="flex items-center gap-sm">
+          <button class="p-2 text-secondary hover:text-primary transition-colors hover:bg-surface-container rounded-full cursor-pointer">
+            <span class="material-symbols-outlined">notifications</span>
+          </button>
+          <button class="p-2 text-secondary hover:text-primary transition-colors hover:bg-surface-container rounded-full cursor-pointer">
+            <span class="material-symbols-outlined">help_outline</span>
+          </button>
+          
+          <div class="ml-md flex items-center gap-sm border-l border-outline-variant pl-md">
+            <img alt="Administrator Profile" class="w-8 h-8 rounded-full border border-surface-variant object-cover" src="https://lh3.googleusercontent.com/aida-public/AB6AXuAAiTCyOhKKpto4TzfW6NIN1sv2OnD_9ISi9_9_tuiAbSovN5cnzTELz4Nql3oFKqQtKhma605ToY_Wn_NCRFbTTLlPwqO5mUsoaSuanYh8zDr7tuqBfaVDdqELWJ7hsYGQl0_xbHsbnSyfAJtiMUt8QMjibQpBCKP4HVz8EUYAGiIrmOly9grHxAaCVCvEcLusH9iewFzjlCHudJnFoLRiF6UTfElTfE36J3YYH5nQBtZlQWKZWewp0HE3B2ymMPHWw9X9ic394nY"/>
+            <div class="hidden sm:block text-left">
+              <p class="text-label-caps font-label-caps leading-none font-bold" id="topbar-user-name">${currentSession.name}</p>
+              <p class="text-[10px] text-secondary">${currentSession.role}</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <!-- Main Content Canvas -->
+    <main class="ml-64 p-margin-desktop min-h-[calc(100vh-64px)] bg-background">
+      <div id="stage-area">
+        <!-- Inyectado dinámicamente -->
+      </div>
+    </main>
+  `;
+
+  // Cerrar Sesión (también en el servidor)
+  document.getElementById('btn-logout').addEventListener('click', handleLogout);
+
+
+  // Enrutamiento de pestañas del Sidebar (hojas con data-tab)
+  document.querySelectorAll('.sidebar-item').forEach(item => {
+    item.addEventListener('click', (e) => {
+      const tabName = e.currentTarget.getAttribute('data-tab');
+      const subName = e.currentTarget.getAttribute('data-sub') || null;
+      switchTab(tabName, subName);
+    });
+  });
+
+  // Toggle de grupos desplegables
+  document.querySelectorAll('.sidebar-group-toggle').forEach(toggle => {
+    toggle.addEventListener('click', (e) => {
+      const grp = e.currentTarget.closest('.sidebar-group');
+      const children = grp.querySelector('.sidebar-group-children');
+      const chevron  = grp.querySelector('.sidebar-chevron');
+      const abrir = children.classList.contains('hidden');
+      children.classList.toggle('hidden', !abrir);
+      chevron.style.transform = abrir ? 'rotate(180deg)' : '';
+    });
+  });
+
+  // Cargar pestaña inicial
+  switchTab(currentTab, currentSub);
+}
+
+const NAV_ACTIVE_ADD    = ['bg-primary-container', 'text-on-primary-container', 'font-semibold'];
+const NAV_ACTIVE_REMOVE = ['text-secondary', 'hover:text-primary', 'hover:bg-surface-container-high'];
+
+function switchTab(tabName, subName = null) {
+  currentTab = tabName;
+  currentSub = subName;
+
+  // Restaurar estado inactivo en todos los items (sin perder indentacion)
+  document.querySelectorAll('.sidebar-item').forEach(item => {
+    item.classList.remove(...NAV_ACTIVE_ADD);
+    item.classList.add(...NAV_ACTIVE_REMOVE);
+  });
+  document.querySelectorAll('.sidebar-group-toggle').forEach(t => t.classList.remove('text-primary', 'font-semibold'));
+
+  // Activar el item correspondiente (hoja simple o submenu)
+  const selector = subName
+    ? `.sidebar-item[data-tab="${tabName}"][data-sub="${subName}"]`
+    : `.sidebar-item[data-tab="${tabName}"]:not([data-sub])`;
+  const activeNav = document.querySelector(selector);
+  if (activeNav) {
+    activeNav.classList.remove(...NAV_ACTIVE_REMOVE);
+    activeNav.classList.add(...NAV_ACTIVE_ADD);
+    // Expandir y destacar el grupo padre si corresponde
+    const grp = activeNav.closest('.sidebar-group');
+    if (grp) {
+      grp.querySelector('.sidebar-group-children').classList.remove('hidden');
+      const chev = grp.querySelector('.sidebar-chevron');
+      if (chev) chev.style.transform = 'rotate(180deg)';
+      grp.querySelector('.sidebar-group-toggle').classList.add('text-primary', 'font-semibold');
+    }
+  }
+
+  // Resolver alias de subtab (submenus que apuntan a vistas existentes)
+  const aliasMap = SUB_ALIAS[tabName] || {};
+  const alias = subName != null ? (aliasMap[subName] !== undefined ? aliasMap[subName] : subName) : null;
+
+  const pageTitle = document.getElementById('current-page-title');
+  const stage = document.getElementById('stage-area');
+  const subLabel = activeNav && subName ? ` — ${activeNav.textContent.trim()}` : '';
+
+  switch (tabName) {
+    case 'rates':
+      pageTitle.textContent = 'Cotizador Despacho';
+      renderRatesView(stage);
+      break;
+    case 'transports':
+      pageTitle.textContent = 'Proveedores' + subLabel;
+      renderTransportsView(stage);
+      break;
+    case 'routes':
+      pageTitle.textContent = 'Rutas de Transporte' + subLabel;
+      if (alias) setRoutesSubTab(alias);
+      renderRoutesView(stage);
+      break;
+    case 'roles':
+      pageTitle.textContent = 'Roles y Perfiles';
+      renderRolesView(stage);
+      break;
+    case 'tarifas-transporte':
+      pageTitle.textContent = 'Tarifas Transporte' + subLabel;
+      if (alias) setActiveSub(alias);
+      renderTariffTransportView(stage);
+      break;
+    case 'tarifas-clientes':
+      pageTitle.textContent = 'Tarifas Clientes' + subLabel;
+      if (alias) setActiveSubC(alias);
+      renderClientTariffView(stage);
+      break;
+  }
+}
+
+// Exponer utilidad de limpieza en consola
