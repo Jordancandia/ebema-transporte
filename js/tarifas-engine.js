@@ -144,4 +144,15 @@ export function calcularCostoRuta(db, cfg, ruta, capKg, opciones = {}) {
   };
 }
 
-// Calcula el ZCAP para TODAS las combinaciones rut
+// Calcula el ZCAP para TODAS las combinaciones ruta TODAS las combinaciones ruta x tipo de camión activas
+export function calcularMatrizCostos(db, cfg) {
+  const rutas = db.routes.filter(r => r.activo);
+  const out = [];
+  rutas.forEach(ruta => {
+    const tipos = truckTypesWithCap(db, ruta.origenId);
+    tipos.forEach(t => {
+      out.push({ ruta, truckType: t, ...calcularCostoRuta(db, cfg, ruta, t.capKg) });
+    });
+  });
+  return out;
+}
