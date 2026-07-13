@@ -1841,4 +1841,50 @@ function renderZfmi(content, db, cfg, ccfg) {
     btn.addEventListener('click', () => { zfmiFiltCentro = btn.dataset.c; zfmiPagina = 0; renderZfmi(content, db, cfg, ccfg); });
   });
 
-  document.getElementById('zfmi-f-camion')?
+    document.getElementById('zfmi-f-camion')?.addEventListener('change', e => {
+    zfmiFiltCamion = e.target.value; zfmiPagina = 0; renderZfmi(content, db, cfg, ccfg);
+  });
+
+  // Buscar (preserva cursor)
+  document.getElementById('zfmi-f-buscar')?.addEventListener('input', e => {
+    const pos = e.target.selectionStart;
+    zfmiBuscar = e.target.value; zfmiPagina = 0;
+    renderZfmi(content, db, cfg, ccfg);
+    const el = document.getElementById('zfmi-f-buscar');
+    if (el) { el.focus(); el.setSelectionRange(pos, pos); }
+  });
+
+  // Limpiar
+  document.getElementById('zfmi-reset')?.addEventListener('click', () => {
+    zfmiFiltClasif = 'todas'; zfmiFiltCentro = 'all'; zfmiFiltCamion = ''; zfmiBuscar = ''; zfmiPagina = 0;
+    renderZfmi(content, db, cfg, ccfg);
+  });
+
+  // Paginación
+  document.getElementById('zfmi-pag-prev')?.addEventListener('click', () => {
+    zfmiPagina = Math.max(0, zfmiPagina - 1); renderZfmi(content, db, cfg, ccfg);
+  });
+  document.getElementById('zfmi-pag-next')?.addEventListener('click', () => {
+    zfmiPagina = Math.min(totalPags - 1, zfmiPagina + 1); renderZfmi(content, db, cfg, ccfg);
+  });
+
+  // Descargar CSV
+  document.getElementById('btn-zfmi-download')?.addEventListener('click', () => {
+    const headers = ['Centro Origen','ID Ruta','Destino','Tipo','Clasificacion','Dist KM',
+                     'Cluster','Tipo Camion','Camion Minimo','ZCAP','ZFMI Min','ZFMX Max',
+                     'Express','Factor Consolidacion %','Kilos a Consolidar','Kilos Tarif.Min'];
+    const data = filtered.map(r => [
+      r.centroOrigen, r.idRuta, r.destino, r.tipo, r.clasificacion, r.km,
+      r.cluster ? clusterNombre(ccfg, r.cluster) : '',
+      r.tipoCamion, r.camionMinimo,
+      r.zcap          !== null ? Math.round(r.zcap)          : '',
+      r.zfmi          !== null ? Math.round(r.zfmi)          : '',
+      r.zfmx          !== null ? Math.round(r.zfmx)          : '',
+      r.tarifaExpress !== null ? Math.round(r.tarifaExpress) : '',
+      r.factorPct.toFixed(1),
+      r.kilosConsolidar !== null ? r.kilosConsolidar.toFixed(0) : '',
+      r.kilosTarifaMin  !== null ? r.kilosTarifaMin.toFixed(0)  : ''
+    ]);
+    downloadFile('tarifa_minmax_' + Date.now() + '.csv', toCSV(headers, data));
+  });
+}
