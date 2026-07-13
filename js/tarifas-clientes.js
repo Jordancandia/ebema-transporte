@@ -1036,6 +1036,7 @@ const EJES_OP = {
     SUR:  { alias:'Sur-Isla',             rangos:[[160,310]] },
   },
 };
+const ABSORB_KM = 60; // km max para que una comuna C1/C2 absorba a una C3/C4 en su mismo eje
 const FREC_OP = {
   C1:{frecuencia:'Diaria (Fija)',       flota:'Flota Propia'},
   C2:{frecuencia:'L-Mi-V (Frecuencial)',flota:'Flota Propia'},
@@ -1059,11 +1060,22 @@ function densKeyToCx(key){
   if(key==='spot'||key==='SPOT'||key==='SPOT_LOCAL') return 'SPOT_LOCAL';
   const n=parseInt(key,10); return isNaN(n)?null:('C'+n);
 }
-function clusterOpDe(eje,key){
+function clusterOpDe(eje,key,ctx){
   const cx=densKeyToCx(key);
   const e=(eje&&eje!=='—')?eje:'';
-  if(!cx) return {cluster:e?(e+'-SD'):'—',frecuencia:'—',flota:'—'};
-  if(cx==='SPOT_LOCAL'){const f=FREC_OP.SPOT_LOCAL;return {cluster:'SPOT_LOCAL',frecuencia:f.frecuencia,flota:f.flota};}
+  ctx = ctx || {}; const anchors = ctx.anchors || [];
+  const spot = () => { const f=FREC_OP.SPOT_LOCAL; return {cluster:'SPOT_LOCAL',frecuencia:f.frecuencia,flota:f.flota}; };
+  if(!cx){
+    // Sin densidad Y sin eje (descolgada total) -> SPOT ; con eje pero sin densidad -> pendiente
+    if(!e) return spot();
+    return {cluster:e+'-SD',frecuencia:'—',flota:'—'};
+  }
+  if(cx==='SPOT_LOCAL') return spot();
+  if(cx==='C1' || cx==='C2'){ const f=FREC_OP[cx]; return {cluster:e?(e+'-'+cx):cx,frecuencia:f.frecuencia,flota:f.flota}; }
+  // C3/C4: requieren un ancla C1/C2 en su MISMO eje dentro de ABSORB_KM; si no, descolgada -> SPOT
+  const absorbible = anchors.some(a => a.eje===eje && ctx.lat && ctx.lon && a.lat && a.lon
+                        && haversineKm(ctx.lat, ctx.lon, a.lat, a.lon) <= ABSORB_KM);
+  if(!absorbible) return spot();
   const f=FREC_OP[cx]||{frecuencia:'—',flota:'—'};
   return {cluster:e?(e+'-'+cx):cx,frecuencia:f.frecuencia,flota:f.flota};
 }
@@ -1196,6 +1208,7 @@ function renderCluster(content, db, ccfg) {
     const uid      = cd.grupo.replace(/[^a-z0-9]/gi, '_');
     const asig     = cd.rows.filter(r => r.cluster).length;
     const maxDen   = cd.rows[0]?.densidad || 1;
+    const anchorsOp = cd.rows.filter(r => { const cx=densKeyToCx(r.cluster); return (cx==='C1'||cx==='C2') && r.lat && r.lon; }).map(r => ({lat:r.lat, lon:r.lon, eje:r.eje}));
 
     const rowsHtml = cd.rows.map((r, i) => {
       const bc      = r.densidad >= 15 ? '#b5000b' : r.densidad >= 5 ? '#d97706' : '#6b7280';
@@ -1212,7 +1225,7 @@ function renderCluster(content, db, ccfg) {
         ccfg.clusters.map(c =>
           '<option value="' + c.key + '"' + (r.cluster === c.key ? ' selected' : '') + '>' + escapeHtml(c.nombre) + '</option>'
         ).join('');
-      const op = clusterOpDe(r.eje, r.cluster);
+      const op = clusterOpDe(r.eje, r.cluster, {lat:r.lat, lon:r.lon, anchors:anchorsOp});
       return '<tr class="hover:bg-surface-container-low border-b border-outline-variant">' +
         '<td class="p-sm text-right text-secondary font-data-mono text-[11px] w-8">' + (i + 1) + '</td>' +
         '<td class="p-sm font-data-mono text-[11px] text-primary font-bold">' + escapeHtml(r.rutaCodigo) + '</td>' +
@@ -1299,11 +1312,19 @@ function renderCluster(content, db, ccfg) {
     '</div>';
 
   // ── Evento: cambio de cluster individual ────────────────────────────────
-  function updateOpCells(sel) {
-    const tr = sel.closest('tr'); if (!tr) return;
-    const op = clusterOpDe(sel.dataset.eje || '', sel.value);
-    const set = (cls,val) => { const el = tr.querySelector(cls); if (el) el.textContent = val; };
-    set('.cl-op-cluster', op.cluster); set('.cl-op-frec', op.frecuencia); set('.cl-op-flota', op.flota);
+  function refreshCardOp(grupo) {
+    const cd = centrosData.find(c => c.grupo === grupo); if (!cd) return;
+    const anchorsOp = cd.rows.filter(r => { const cx=densKeyToCx(r.cluster); return (cx==='C1'||cx==='C2') && r.lat && r.lon; }).map(r => ({lat:r.lat, lon:r.lon, eje:r.eje}));
+    const uid = grupo.replace(/[^a-z0-9]/gi, '_');
+    const card = document.getElementById('cl-card-' + uid); if (!card) return;
+    card.querySelectorAll('.cl-assign').forEach(sel => {
+      const r = cd.rows.find(x => String(x.rutaId)===sel.dataset.rutaId || String(x.rutaCodigo)===sel.dataset.rutaCod);
+      if (!r) return;
+      const op = clusterOpDe(r.eje, r.cluster, {lat:r.lat, lon:r.lon, anchors:anchorsOp});
+      const tr = sel.closest('tr'); if (!tr) return;
+      const set = (cls,val) => { const el = tr.querySelector(cls); if (el) el.textContent = val; };
+      set('.cl-op-cluster', op.cluster); set('.cl-op-frec', op.frecuencia); set('.cl-op-flota', op.flota);
+    });
   }
   content.querySelectorAll('.cl-assign').forEach(sel => {
     sel.addEventListener('change', () => {
@@ -1319,7 +1340,11 @@ function renderCluster(content, db, ccfg) {
       // Actualizar dot de color en la misma fila sin re-render
       const dot = sel.closest('td')?.querySelector('.cl-dot');
       if (dot) dot.style.background = sel.value ? (clusterColor(ccfg, sel.value) || '#9ca3af') : '#d1d5db';
-      updateOpCells(sel);
+      const grupo = sel.dataset.grupo;
+      const cd = centrosData.find(c => c.grupo === grupo);
+      const rr = cd && cd.rows.find(x => String(x.rutaId)===sel.dataset.rutaId || String(x.rutaCodigo)===sel.dataset.rutaCod);
+      if (rr) rr.cluster = sel.value;
+      refreshCardOp(grupo);
     });
   });
 
@@ -1346,7 +1371,11 @@ function renderCluster(content, db, ccfg) {
             else          { if (rid) delete ccfg.comunaCluster[rid];  if (rcd) delete ccfg.comunaCluster[rcd]; }
             const dot = s.closest('td')?.querySelector('.cl-dot');
             if (dot) dot.style.background = s.value ? (clusterColor(ccfg, s.value) || '#9ca3af') : '#d1d5db';
-            updateOpCells(s);
+            const g2 = s.dataset.grupo;
+            const cd2 = centrosData.find(c => c.grupo === g2);
+            const rr2 = cd2 && cd2.rows.find(x => String(x.rutaId)===s.dataset.rutaId || String(x.rutaCodigo)===s.dataset.rutaCod);
+            if (rr2) rr2.cluster = s.value;
+            refreshCardOp(g2);
           });
         });
         document.getElementById('cl-card-' + uid)?.querySelectorAll('.cl-guardar-centro').forEach(b => {
