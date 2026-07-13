@@ -1,7 +1,7 @@
 // MÓDULO: Administrador de Tarifas Clientes — SIT EBEMA v2.1
 // Vistas: Histórico (6M) | Consolidación | Densidad Logística | Frecuencia y Especiales | Cluster | Resultados
-import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig, saveHistorico, loadHistorico, getOrigenGroups } from './data.js?v=20260712h';
-import { CAP_LIST, truckTypesWithCap, calcularCostoRuta } from './tarifas-engine.js?v=20260712h';
+import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig, saveHistorico, loadHistorico, getOrigenGroups } from './data.js?v=20260712i';
+import { CAP_LIST, truckTypesWithCap, calcularCostoRuta } from './tarifas-engine.js?v=20260712i';
 import { formatCLP, showAlert, toCSV, downloadFile, formatDateDDMMYYYY, escapeHtml } from './utils.js';
 
 // ─────────────────────────────────────────────────────────────
@@ -1317,9 +1317,26 @@ function renderResultados(content, db, cfg, ccfg) {
       const bkt             = capKg / 1000;
       const factorPct       = getPath(ccfg, `consolidacionObjetivo.${grupoKey}.${bkt}`, 80);
       const kilosConsolidar = capKg * (factorPct / 100);
+
+      // ZCAP: misma lógica que zcap.js (Regional = tarifa base, Interregional = motor)
       let zcap = null;
-      try { zcap = calcularCostoRuta(db, cfg, ruta, capKg).zcap; } catch (_) {}
-      const zfmp = (zcap !== null && kilosConsolidar > 0) ? zcap / kilosConsolidar : null;
+      try {
+        const km = Number(ruta.km) || 0;
+        if (ruta.clasificRuta === 'Regional') {
+          const costoBase = t.baseRate != null ? Number(t.baseRate) : 0;
+          const baseCosto = t.baseKM   != null ? Number(t.baseKM)   : 0;
+          const isExtrema = ['ISLA','EXTREMA'].includes((ruta.caracteristica || '').toUpperCase());
+          const rate      = isExtrema
+            ? (Number(t.ratePerKmExtrema) || Number(t.ratePerKm) || 0)
+            : (Number(t.ratePerKm) || 0);
+          const kmBase    = t.Kmbase != null ? Number(t.Kmbase) : 0;
+          zcap = (costoBase + baseCosto) + Math.max(0, km - kmBase) * rate;
+        } else {
+          zcap = calcularCostoRuta(db, cfg, ruta, capKg).item10_costoRutaTotal || 0;
+        }
+      } catch (_) {}
+
+      const zfmp = (zcap !== null && zcap > 0 && kilosConsolidar > 0) ? zcap / kilosConsolidar : null;
 
       allRows.push({
         centroOrigen:  grupo,
