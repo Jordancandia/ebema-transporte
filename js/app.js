@@ -1211,7 +1211,6 @@ const SIDEBAR_MENU = [
       { tab: 'tarifas-clientes', sub: 'zfmi',          icon: 'request_quote', label: 'Tarifa Min/Max' },
     ]
   },
-  { tab: 'cluster-op', icon: 'hub', label: 'Cluster Operativo' },
   { tab: 'roles', icon: 'admin_panel_settings', label: 'Roles y Perfiles' },
 ];
 
@@ -1402,10 +1401,6 @@ function switchTab(tabName, subName = null) {
       if (alias) setRoutesSubTab(alias);
       renderRoutesView(stage);
       break;
-    case 'cluster-op':
-      pageTitle.textContent = 'Cluster Operativo';
-      renderClusterRutasView(stage);
-      break;
     case 'roles':
       pageTitle.textContent = 'Roles y Perfiles';
       renderRolesView(stage);
@@ -1417,6 +1412,7 @@ function switchTab(tabName, subName = null) {
       break;
     case 'tarifas-clientes':
       pageTitle.textContent = 'Tarifas Clientes' + subLabel;
+      if (subName === 'cluster') { renderClusterRutasView(stage); break; }
       if (alias) setActiveSubC(alias);
       renderClientTariffView(stage);
       break;
