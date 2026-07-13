@@ -43,10 +43,10 @@ const VALIDEZ_A   = '31-12-2026';
 
 // Defaults para clusters iniciales
 const DEFAULT_CLUSTERS = [
-  { key: '1',    nombre: 'Cluster 1 — Alta densidad',   color: '#b5000b', nv: 98, frecuencia: 'Diario',          tipo0000: 0, tipo0000Habilitado: true },
-  { key: '2',    nombre: 'Cluster 2 — Media densidad',  color: '#d97706', nv: 96, frecuencia: 'Bi-semanal',      tipo0000: 0, tipo0000Habilitado: true },
-  { key: '3',    nombre: 'Cluster 3 — Baja densidad',   color: '#16a34a', nv: 95, frecuencia: 'Semanal',         tipo0000: 0, tipo0000Habilitado: false },
-  { key: 'spot', nombre: 'SPOT / Interregional',        color: '#6b7280', nv: 90, frecuencia: 'Según demanda',   tipo0000: 0, tipo0000Habilitado: false }
+  { key: '1',    nombre: 'Cluster 1 — Alta densidad',   color: '#b5000b', nv: 98, frecuencia: 'Diario',          tipo0000: 0, tipo0000Habilitado: true,  pedidosPromedio: 1 },
+  { key: '2',    nombre: 'Cluster 2 — Media densidad',  color: '#d97706', nv: 96, frecuencia: 'Bi-semanal',      tipo0000: 0, tipo0000Habilitado: true,  pedidosPromedio: 1 },
+  { key: '3',    nombre: 'Cluster 3 — Baja densidad',   color: '#16a34a', nv: 95, frecuencia: 'Semanal',         tipo0000: 0, tipo0000Habilitado: false, pedidosPromedio: 1 },
+  { key: 'spot', nombre: 'SPOT / Interregional',        color: '#6b7280', nv: 90, frecuencia: 'Según demanda',   tipo0000: 0, tipo0000Habilitado: false, pedidosPromedio: 1 }
 ];
 const NEXT_CAP = { 5000: 10000, 10000: 15000, 15000: 28000, 28000: 28000 };
 
@@ -812,6 +812,7 @@ function clusterRow(c, idx) {
     <td class="p-md text-center"><input type="color" class="w-10 h-8 border border-outline-variant rounded cursor-pointer" data-path="clusters.${idx}.color" value="${c.color}"></td>
     <td class="p-md"><input type="number" step="0.01" min="0" max="100" class="${iCls} w-20 text-right" data-path="clusters.${idx}.nv" value="${c.nv}"></td>
     <td class="p-md"><input type="text" class="${iCls} w-full" data-path="clusters.${idx}.frecuencia" value="${(c.frecuencia||'').replace(/"/g,'&quot;')}"></td>
+    <td class="p-md"><input type="number" step="0.1" min="0.1" class="${iCls} w-20 text-right" data-path="clusters.${idx}.pedidosPromedio" value="${c.pedidosPromedio ?? 1}"></td>
     <td class="p-md text-center">
       <label class="flex items-center justify-center gap-xs cursor-pointer">
         <input type="checkbox" data-path="clusters.${idx}.tipo0000Habilitado" ${habilitado ? 'checked' : ''} class="w-4 h-4 text-primary border-[#CED4DA] rounded">
@@ -851,6 +852,7 @@ function renderEspeciales(content, db, ccfg) {
             <th class="p-md font-label-caps text-secondary uppercase text-center">Color</th>
             <th class="p-md font-label-caps text-secondary uppercase text-right">NV (%)</th>
             <th class="p-md font-label-caps text-secondary uppercase">Frecuencia</th>
+            <th class="p-md font-label-caps text-secondary uppercase text-right">Ped. Prom.</th>
             <th class="p-md font-label-caps text-secondary uppercase text-center">Tipo 0000</th>
             <th class="p-md font-label-caps text-secondary uppercase text-right">Recargo ($)</th>
             <th class="p-md font-label-caps text-secondary uppercase text-center">Eliminar</th>
@@ -1617,9 +1619,18 @@ function renderZfmi(content, db, cfg, ccfg) {
     const zfmx            = zcap > 0 ? zcap : null;
     const rutaCodigo      = ruta.codigo || String(ruta.id || '');
     const zfmiData        = zfmiByRuta.get(rutaCodigo);
-    // Tarifa Express = ZCAP × (1 + recargo%) donde recargo se configura por centro en Frecuencia
+    // Tarifa Express = ZCAP × (1 + recargo%) — recargo por centro configurado en Frecuencia
     const recargoPct      = getPath(ccfg, `especiales.recargoExclusividad.${grupoKey}`, 0);
     const tarifaExpress   = zcap > 0 ? zcap * (1 + recargoPct / 100) : null;
+    // ZFMI = (Kilos Tarif.Min / Pedidos Prom. del cluster) × ZFMP ($/kg camión actual)
+    // ZFMP = ZCAP / kilosConsolidar  →  ZFMI = zfmiKilos / pedidosProm × (ZCAP / kilosConsolidar)
+    const clusterObj      = ccfg.clusters?.find(c => c.key === cluster);
+    const pedidosPromedio = clusterObj?.pedidosPromedio || 1;
+    const zfmfpKg         = (zcap > 0 && kilosConsolidar > 0) ? zcap / kilosConsolidar : null;
+    const kilosTarifaMin  = zfmiData?.zfmiKilos ?? null;
+    const zfmi            = (kilosTarifaMin != null && zfmfpKg != null && pedidosPromedio > 0)
+                            ? (kilosTarifaMin / pedidosPromedio) * zfmfpKg
+                            : null;
 
     allRows.push({
       centroOrigen:   grupo,
@@ -1633,12 +1644,13 @@ function renderZfmi(content, db, cfg, ccfg) {
       capKg,
       camionMinimo:   zfmiData?.minTruckType || '—',
       zcap,
-      zfmi:           zfmiData?.zfmi ?? null,
+      zfmi,
       zfmx,
       tarifaExpress,
       factorPct,
       kilosConsolidar,
-      kilosTarifaMin: zfmiData?.zfmiKilos ?? null
+      kilosTarifaMin,
+      pedidosPromedio
     });
   });
 
@@ -1805,7 +1817,7 @@ function renderZfmi(content, db, cfg, ccfg) {
       // ── Leyenda fórmulas ────────────────────────────────────────────────────
       '<div class="text-[11px] text-secondary mt-sm flex flex-wrap gap-lg">' +
         '<span><b>Camión Mínimo</b> = truck de menor capacidad del centro</span>' +
-        '<span><b>ZFMI $</b> = ZCAP del Camión Mínimo</span>' +
+        '<span><b>ZFMI $</b> = (Kilos Tarif.Min ÷ Ped.Prom. cluster) × ZFMP $/kg</span>' +
         '<span><b>ZFMX $</b> = ZCAP del camión (mismo que vista ZCAP)</span>' +
         '<span><b>Tarifa Express</b> = ZCAP × (1 + Recargo Exclusividad %)</span>' +
       '</div>' +
