@@ -1,11 +1,11 @@
-import { getDatabase, saveDatabase, initDatabase } from './data.js?v=20260712c';
+import { getDatabase, saveDatabase, initDatabase } from './data.js?v=20260712d';
 import { supabase } from './supabase-client.js';
 import { renderTransportsView } from './transports.js';
 import { renderRoutesView, setRoutesSubTab } from './routes.js?v=20260708a';
 import { renderRatesView } from './rates.js';
 import { renderRolesView } from './roles.js';
-import { renderTariffTransportView, setActiveSub } from './tarifas-transporte.js?v=20260712c';
-import { renderClientTariffView, setActiveSubC } from './tarifas-clientes.js?v=20260712c';
+import { renderTariffTransportView, setActiveSub } from './tarifas-transporte.js?v=20260712d';
+import { renderClientTariffView, setActiveSubC } from './tarifas-clientes.js?v=20260712d';
 import { showAlert, formatRut, validateRut, formatPhone } from './utils.js';
 
 const SESSION_KEY = 'ebema_user_session';
@@ -919,7 +919,6 @@ const SIDEBAR_MENU = [
       { tab: 'tarifas-transporte', sub: 'combustibles',  icon: 'local_gas_station', label: 'Combustibles y Rendimientos' },
       { tab: 'tarifas-transporte', sub: 'seguros',       icon: 'shield',            label: 'Seguros y Permisos' },
       { tab: 'tarifas-transporte', sub: 'costos-extras', icon: 'add_circle',        label: 'Costos Extras' },
-      { tab: 'tarifas-transporte', sub: 'participacion', icon: 'donut_large',       label: 'Participacion de Rutas' },
       { tab: 'tarifas-transporte', sub: 'variables',     icon: 'tune',              label: 'Variables Generales' },
       { tab: 'tarifas-transporte', sub: 'resultados',    icon: 'speed',             label: 'Motor de Costos' },
       { tab: 'tarifas-transporte', sub: 'camiones',      icon: 'local_shipping',    label: 'Tarifas por Camion' },

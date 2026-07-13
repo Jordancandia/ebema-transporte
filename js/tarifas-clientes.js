@@ -1,7 +1,7 @@
 // MÓDULO: Administrador de Tarifas Clientes — SIT EBEMA v2.1
 // Vistas: Histórico (6M) | Consolidación | Densidad Logística | Frecuencia y Especiales | Cluster | Resultados
-import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig, saveHistorico, loadHistorico, getOrigenGroups } from './data.js?v=20260712c';
-import { CAP_LIST, truckTypesWithCap, calcularCostoRuta } from './tarifas-engine.js?v=20260712c';
+import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig, saveHistorico, loadHistorico, getOrigenGroups } from './data.js?v=20260712d';
+import { CAP_LIST, truckTypesWithCap, calcularCostoRuta } from './tarifas-engine.js?v=20260712d';
 import { formatCLP, showAlert, toCSV, downloadFile, formatDateDDMMYYYY, escapeHtml } from './utils.js';
 
 // ─────────────────────────────────────────────────────────────
@@ -563,7 +563,8 @@ function renderDensidad(content, db, ccfg) {
     return;
   }
 
-  const grupos = getOrigenGroups(db); // [{ grupo, centroIds, ... }]
+  const cfg    = getTariffConfig(db);           // necesario para guardar participacionRutas
+  const grupos = getOrigenGroups(db);
 
   // Lookup ruta por código/id
   const routeByCode = new Map();
@@ -572,7 +573,7 @@ function renderDensidad(content, db, ccfg) {
     if (r.id)     routeByCode.set(String(r.id).toUpperCase(), r);
   });
 
-  // Construir datos de densidad por centro
+  // ── Construir datos por centro ──────────────────────────────────────────
   function buildCentroData(grupoObj) {
     const { grupo, centroIds } = grupoObj;
     const centroIdSet = new Set((centroIds || []).map(String));
@@ -594,10 +595,9 @@ function renderDensidad(content, db, ccfg) {
     });
 
     // Acumular stats desde histData
-    const routeStats = new Map(); // codigo -> { route, clientes, obras, ton }
+    const routeStats = new Map(); // codigo → { route, clientes, obras, ton }
     const totClientes = new Set();
     const totObras    = new Set();
-    let totTon = 0;
 
     histData.forEach(h => {
       if (!validCodes.has(String(h.idRuta).toUpperCase())) return;
@@ -609,62 +609,92 @@ function renderDensidad(content, db, ccfg) {
       if (h.idCliente && h.idCliente !== '-') { s.clientes.add(h.idCliente); totClientes.add(h.idCliente); }
       if (h.idObra    && h.idObra    !== '-') { s.obras.add(h.idObra);       totObras.add(h.idObra); }
       s.ton += h.ton;
-      totTon += h.ton;
     });
 
-    // Incluir rutas sin histórico (densidad 0)
+    // Incluir rutas sin histórico (ton=0)
     centroRoutes.forEach(r => {
       const key = r.codigo || String(r.id);
       if (!routeStats.has(key)) routeStats.set(key, { route: r, clientes: new Set(), obras: new Set(), ton: 0 });
     });
 
+    // Pools de toneladas por característica (ISLA y EXTREMA calculan su peso% sobre su propio pool)
+    let totTonNormal = 0, totTonIsla = 0, totTonExtrema = 0;
+    routeStats.forEach(s => {
+      const c = (s.route.caracteristica || '').toUpperCase();
+      if      (c === 'ISLA')    totTonIsla    += s.ton;
+      else if (c === 'EXTREMA') totTonExtrema += s.ton;
+      else                      totTonNormal  += s.ton;
+    });
+    const totTon  = totTonNormal + totTonIsla + totTonExtrema;
     const baseCli = totClientes.size || 1;
     const baseObr = totObras.size    || 1;
     const baseTon = totTon           || 1;
 
     const rows = [...routeStats.values()].map(s => {
-      const pctCli  = (s.clientes.size / baseCli) * 100;
-      const pctObra = (s.obras.size    / baseObr) * 100;
-      const pctTon  = (s.ton           / baseTon) * 100;
+      const caract   = (s.route.caracteristica || '').toUpperCase();
+      const isIsla   = caract === 'ISLA';
+      const isExt    = caract === 'EXTREMA';
+      const pool     = isIsla ? totTonIsla : isExt ? totTonExtrema : totTonNormal;
+      const peso     = pool > 0 ? (s.ton / pool) * 100 : 0;
+      const pctCli   = (s.clientes.size / baseCli) * 100;
+      const pctObra  = (s.obras.size    / baseObr) * 100;
+      const pctTon   = (s.ton           / baseTon) * 100;
+      const densidad = (pctCli + pctObra + pctTon) / 3;
       return {
-        codigo:   s.route.codigo || '',
-        destino:  s.route.destino || '',
-        zona:     s.route.id_zona_transporte || '',
-        clientes: s.clientes.size,
-        obras:    s.obras.size,
-        ton:      s.ton,
-        pctCli, pctObra, pctTon,
-        densidad: (pctCli + pctObra + pctTon) / 3
+        rutaId:     s.route.id     || '',
+        rutaCodigo: s.route.codigo || '',
+        destino:    s.route.destino || '',
+        zona:       s.route.id_zona_transporte || '',
+        caracteristica: caract,
+        clientes:   s.clientes.size,
+        obras:      s.obras.size,
+        ton:        s.ton,
+        pctCli, pctObra, pctTon, peso, densidad
       };
     }).sort((a, b) => b.densidad - a.densidad);
 
-    return { grupo, rows, totalClientes: totClientes.size, totalObras: totObras.size, totalTon: totTon };
+    return { grupo, rows,
+      totalClientes: totClientes.size, totalObras: totObras.size,
+      totTon, totTonNormal, totTonIsla, totTonExtrema };
   }
 
   const centrosData = grupos.map(buildCentroData).filter(Boolean);
 
   if (!centrosData.length) {
-    content.innerHTML = `<div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm">${noDataBanner('No se encontraron rutas tipo=Comuna + clasificación=Regional para los centros configurados.')}</div>`;
+    content.innerHTML = `<div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm">${noDataBanner('No se encontraron rutas tipo=Comuna + clasificación=Regional.')}</div>`;
     return;
   }
 
+  // ── HTML tarjeta por centro ─────────────────────────────────────────────
   function tablaHtml(cd) {
-    const maxDen = cd.rows[0]?.densidad || 1;
+    const maxDen  = cd.rows[0]?.densidad || 1;
     const conHist = cd.rows.filter(r => r.ton > 0).length;
+    const uid     = cd.grupo.replace(/[^a-z0-9]/gi, '_');
+    const poolInfo = [
+      `<b>${cd.totTonNormal.toFixed(1)} T</b> normal`,
+      cd.totTonIsla    > 0 ? `<b>${cd.totTonIsla.toFixed(1)} T</b> isla`    : '',
+      cd.totTonExtrema > 0 ? `<b>${cd.totTonExtrema.toFixed(1)} T</b> extrema` : ''
+    ].filter(Boolean).join(' · ');
+
     return `
-    <div class="border-2 border-outline-variant shadow-sm mb-xl rounded overflow-hidden">
+    <div class="border-2 border-outline-variant shadow-sm mb-xl rounded overflow-hidden" id="den-tabla-${uid}">
       <div class="flex items-center justify-between px-lg pt-md pb-sm border-b-2 border-primary bg-surface-container-high flex-wrap gap-sm">
         <div class="flex items-center gap-sm">
           <span class="material-symbols-outlined text-primary text-[20px]">location_on</span>
           <h3 class="font-headline-sm font-bold text-on-surface">${escapeHtml(cd.grupo)}</h3>
         </div>
-        <span class="font-data-mono text-[11px] text-secondary">${conHist} rutas con histórico · ${cd.totalTon.toLocaleString('es-CL',{maximumFractionDigits:1})} ton · ${cd.rows.length} total</span>
+        <div class="flex items-center gap-md">
+          <span class="font-data-mono text-[11px] text-secondary">${conHist} rutas con histórico · ${cd.totTon.toLocaleString('es-CL',{maximumFractionDigits:1})} ton · ${cd.rows.length} total</span>
+          <button class="den-guardar-centro border border-primary text-primary hover:bg-primary hover:text-white font-bold px-md py-xs rounded flex items-center gap-xs text-[11px] uppercase transition-colors" data-grupo="${escapeHtml(cd.grupo)}">
+            <span class="material-symbols-outlined text-[14px]">save</span> Guardar
+          </button>
+        </div>
       </div>
-      <div class="px-md py-sm flex gap-lg border-b border-outline-variant bg-surface-container-lowest text-[12px] text-secondary">
+      <div class="px-md py-sm flex gap-lg border-b border-outline-variant bg-surface-container-lowest text-[12px] text-secondary flex-wrap">
         <span><b>${cd.totalClientes}</b> clientes únicos</span>
         <span><b>${cd.totalObras}</b> obras únicas</span>
-        <span><b>${cd.totalTon.toFixed(1)} T</b> acumuladas</span>
-        <span class="text-[10px] italic">Densidad = promedio(% clientes + % obras + % toneladas)</span>
+        <span>${poolInfo}</span>
+        <span class="text-[10px] italic ml-auto">Peso% = ton/pool · Densidad = avg(%cli+%obras+%ton)</span>
       </div>
       <div class="overflow-x-auto">
         <table class="w-full border-collapse text-[12px]">
@@ -677,22 +707,27 @@ function renderDensidad(content, db, ccfg) {
               <th class="p-sm font-label-caps text-secondary uppercase text-right">Clientes</th>
               <th class="p-sm font-label-caps text-secondary uppercase text-right">Obras</th>
               <th class="p-sm font-label-caps text-secondary uppercase text-right">Toneladas</th>
-              <th class="p-sm font-label-caps text-secondary uppercase text-right">Densidad</th>
+              <th class="p-sm font-label-caps text-secondary uppercase text-right">Peso %</th>
+              <th class="p-sm font-label-caps text-secondary uppercase text-right">Densidad %</th>
               <th class="p-sm font-label-caps text-secondary uppercase">Barra</th>
             </tr>
           </thead>
           <tbody class="divide-y divide-outline-variant">
             ${cd.rows.map((r, i) => {
-              const bc = r.densidad >= 15 ? '#b5000b' : r.densidad >= 5 ? '#d97706' : '#6b7280';
-              const bw = Math.min(r.densidad / maxDen * 100, 100);
+              const bc       = r.densidad >= 15 ? '#b5000b' : r.densidad >= 5 ? '#d97706' : '#6b7280';
+              const bw       = maxDen > 0 ? Math.min(r.densidad / maxDen * 100, 100) : 0;
+              const isEspec  = ['ISLA','EXTREMA'].includes(r.caracteristica);
+              const specCls  = r.caracteristica === 'ISLA' ? 'bg-blue-100 text-blue-700' : 'bg-orange-100 text-orange-700';
+              const specBadge = isEspec ? `<span class="ml-xs inline-flex px-1 py-0.5 rounded text-[9px] font-bold ${specCls}">${r.caracteristica}</span>` : '';
               return `<tr class="border-b border-outline-variant hover:bg-surface-container-low">
                 <td class="p-sm text-right text-secondary font-data-mono text-[11px]">${i+1}</td>
-                <td class="p-sm font-data-mono text-[11px] text-primary font-bold">${escapeHtml(r.codigo)}</td>
-                <td class="p-sm">${escapeHtml(r.destino)}</td>
+                <td class="p-sm font-data-mono text-[11px] text-primary font-bold">${escapeHtml(r.rutaCodigo)}</td>
+                <td class="p-sm">${escapeHtml(r.destino)}${specBadge}</td>
                 <td class="p-sm text-secondary text-[11px]">${escapeHtml(r.zona)}</td>
                 <td class="p-sm text-right font-data-mono text-[11px]">${r.clientes} <span class="text-secondary">(${r.pctCli.toFixed(1)}%)</span></td>
                 <td class="p-sm text-right font-data-mono text-[11px]">${r.obras} <span class="text-secondary">(${r.pctObra.toFixed(1)}%)</span></td>
                 <td class="p-sm text-right font-data-mono text-[11px]">${r.ton.toFixed(1)} <span class="text-secondary">(${r.pctTon.toFixed(1)}%)</span></td>
+                <td class="p-sm text-right font-bold font-data-mono text-[11px]">${r.peso.toFixed(2)}%</td>
                 <td class="p-sm text-right font-bold font-data-mono text-[11px]" style="color:${bc}">${r.densidad.toFixed(2)}%</td>
                 <td class="p-sm"><div class="w-20 h-2 bg-surface-container-high rounded-full overflow-hidden"><div class="h-full rounded-full" style="width:${bw}%;background:${bc}"></div></div></td>
               </tr>`;
@@ -703,8 +738,8 @@ function renderDensidad(content, db, ccfg) {
               <td colspan="4" class="p-sm text-right">Total</td>
               <td class="p-sm text-right font-data-mono text-[11px]">${cd.totalClientes}</td>
               <td class="p-sm text-right font-data-mono text-[11px]">${cd.totalObras}</td>
-              <td class="p-sm text-right font-data-mono text-[11px]">${cd.totalTon.toFixed(1)} T</td>
-              <td colspan="2"></td>
+              <td class="p-sm text-right font-data-mono text-[11px]">${cd.totTon.toFixed(1)} T</td>
+              <td colspan="3"></td>
             </tr>
           </tfoot>
         </table>
@@ -714,14 +749,36 @@ function renderDensidad(content, db, ccfg) {
 
   content.innerHTML = `
     <div>
-      <div class="flex items-center gap-sm mb-lg">
+      <div class="flex items-center gap-sm mb-lg flex-wrap">
         <span class="material-symbols-outlined text-primary">location_on</span>
-        <h2 class="font-headline-sm font-bold text-on-surface">Densidad Logística — Rutas Regionales por Centro</h2>
-        <span class="text-[11px] text-secondary ml-auto">Solo rutas tipo=Comuna + clasificación=Regional</span>
+        <h2 class="font-headline-sm font-bold text-on-surface">Densidad Logística y Participación de Rutas</h2>
+        <span class="text-[11px] text-secondary ml-auto">Solo rutas tipo=Comuna + Regional · Ordena por Densidad desc</span>
       </div>
       ${centrosData.map(cd => tablaHtml(cd)).join('')}
     </div>
   `;
+
+  // ── Guardar participación al hacer click ────────────────────────────────
+  content.querySelectorAll('.den-guardar-centro').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const grupo = btn.dataset.grupo;
+      const cd    = centrosData.find(c => c.grupo === grupo);
+      if (!cd) return;
+      if (!cfg.participacionRutas) cfg.participacionRutas = {};
+      cd.rows.forEach(r => {
+        const entry = { peso: r.peso / 100, toneladas: r.ton, clientes: r.clientes, obras: r.obras };
+        if (r.rutaId)     cfg.participacionRutas[String(r.rutaId)]     = entry;
+        if (r.rutaCodigo) cfg.participacionRutas[String(r.rutaCodigo)] = entry;
+      });
+      saveDatabase(db);
+      btn.innerHTML = '<span class="material-symbols-outlined text-[14px]">check_circle</span> Guardado';
+      btn.classList.add('bg-primary','text-white');
+      setTimeout(() => {
+        btn.innerHTML = '<span class="material-symbols-outlined text-[14px]">save</span> Guardar';
+        btn.classList.remove('bg-primary','text-white');
+      }, 2000);
+    });
+  });
 }
 
 
