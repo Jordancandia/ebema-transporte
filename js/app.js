@@ -19,9 +19,106 @@ let authState = 'login';
 const appRoot = document.getElementById('app-root');
 
 document.addEventListener('DOMContentLoaded', async () => {
+  // ── Detectar flujo especial por hash de URL ────────────────────────────────
+  // Supabase escribe #access_token=...&type=invite|recovery al redirigir
+  const hashParams = new URLSearchParams(window.location.hash.replace('#', ''));
+  const flowType   = hashParams.get('type'); // 'invite' | 'recovery' | null
+
+  if (flowType === 'invite' || flowType === 'recovery') {
+    // El SDK ya consumió el token del hash y creó la sesión
+    const { data: { session } } = await supabase.auth.getSession();
+    if (session) {
+      // Limpiar el hash de la URL sin recargar la página
+      history.replaceState(null, '', window.location.pathname + window.location.search);
+      renderSetPasswordView(session.user, flowType);
+      return;
+    }
+  }
+
   await checkSession();
   renderApp();
 });
+
+// ── Pantalla: definir contraseña (primer ingreso por invitación) ──────────────
+function renderSetPasswordView(user, flowType) {
+  const label = flowType === 'invite'
+    ? 'Bienvenido — Define tu contraseña corporativa'
+    : 'Restablecer contraseña';
+
+  appRoot.innerHTML = `
+    <div class="min-h-screen flex items-center justify-center bg-background">
+      <div class="bg-white rounded-xl shadow-lg p-8 w-full max-w-sm">
+        <div class="flex items-center gap-sm mb-md">
+          <div style="width:36px;height:36px;background:#b5000b;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:900;color:white">E</div>
+          <div>
+            <div class="font-bold text-primary text-lg leading-none">SIT EBEMA</div>
+            <div class="text-xs text-secondary">Sistema Integrado de Transporte</div>
+          </div>
+        </div>
+        <h2 class="font-bold text-headline-sm mb-xs">${label}</h2>
+        <p class="text-sm text-secondary mb-md">Cuenta: <strong>${user.email}</strong></p>
+
+        <form id="set-pass-form" class="flex flex-col gap-sm" autocomplete="off">
+          <div>
+            <label class="text-xs font-bold text-secondary uppercase tracking-wide block mb-[4px]">Nueva contraseña</label>
+            <input id="sp-pass" type="password" minlength="8" required placeholder="Mínimo 8 caracteres"
+              class="border border-outline-variant rounded px-sm py-xs text-sm w-full focus:outline-none focus:border-primary"/>
+          </div>
+          <div>
+            <label class="text-xs font-bold text-secondary uppercase tracking-wide block mb-[4px]">Confirmar contraseña</label>
+            <input id="sp-confirm" type="password" minlength="8" required placeholder="Repite la contraseña"
+              class="border border-outline-variant rounded px-sm py-xs text-sm w-full focus:outline-none focus:border-primary"/>
+          </div>
+
+          <div id="sp-error" class="hidden bg-error-container text-on-error-container text-xs p-sm rounded"></div>
+
+          <button type="submit" id="sp-btn"
+            class="bg-primary hover:bg-[#930007] text-white rounded px-md py-sm text-sm font-bold mt-xs flex items-center justify-center gap-xs transition-colors">
+            <span class="material-symbols-outlined text-[16px]">lock_reset</span>
+            Activar cuenta y entrar
+          </button>
+        </form>
+      </div>
+    </div>`;
+
+  document.getElementById('set-pass-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const pass    = document.getElementById('sp-pass').value;
+    const confirm = document.getElementById('sp-confirm').value;
+    const errDiv  = document.getElementById('sp-error');
+    const btn     = document.getElementById('sp-btn');
+
+    errDiv.classList.add('hidden');
+
+    if (pass.length < 8) {
+      errDiv.textContent = 'La contraseña debe tener al menos 8 caracteres.';
+      errDiv.classList.remove('hidden');
+      return;
+    }
+    if (pass !== confirm) {
+      errDiv.textContent = 'Las contraseñas no coinciden.';
+      errDiv.classList.remove('hidden');
+      return;
+    }
+
+    btn.disabled = true;
+    btn.innerHTML = '<div style="width:16px;height:16px;border:2px solid rgba(255,255,255,0.3);border-top-color:white;border-radius:50%;animation:spin 0.7s linear infinite"></div> Activando...';
+
+    const { error } = await supabase.auth.updateUser({ password: pass });
+    if (error) {
+      errDiv.textContent = error.message;
+      errDiv.classList.remove('hidden');
+      btn.disabled = false;
+      btn.innerHTML = '<span class="material-symbols-outlined text-[16px]">lock_reset</span> Activar cuenta y entrar';
+      return;
+    }
+
+    // Contraseña definida — continuar con flujo normal
+    showAlert('¡Contraseña definida! Bienvenido al sistema.');
+    await checkSession();
+    renderApp();
+  });
+}
 
 // Verificar sesión real en Supabase y cargar la base de datos compartida
 async function checkSession() {
@@ -437,13 +534,191 @@ function renderLoginView() {
       return showLoginError('No se pudo iniciar sesión: ' + error.message);
     }
 
-    // Resolver el perfil según tipo de cuenta (funcionario o proveedor)
+    // ── MFA obligatorio para funcionarios @ebema.cl ──────────────────────────
+    if (loginType === 'funcionario') {
+      const { data: { session: mfaSession } } = await supabase.auth.getSession();
+      btn.innerHTML = '<div style="width:18px;height:18px;border:2px solid rgba(255,255,255,0.3);border-top-color:white;border-radius:50%;animation:spin 0.7s linear infinite"></div> Enviando código...';
+
+      try {
+        const mfaRes = await supabase.functions.invoke('send-mfa-code', {
+          headers: { Authorization: `Bearer ${mfaSession.access_token}` }
+        });
+        if (mfaRes.error) throw new Error(mfaRes.error.message);
+        renderMfaView(mfaSession);
+      } catch (mfaErr) {
+        showLoginError('No se pudo enviar el código de verificación: ' + mfaErr.message);
+      }
+      return;
+    }
+
+    // Proveedores externos — acceso directo sin MFA
     await checkSession();
     if (!currentSession) {
       return showLoginError('No se pudo cargar su perfil. Intente nuevamente.');
     }
     showAlert(`Bienvenido, ${currentSession.name}`);
     renderApp();
+  });
+}
+
+// ── Pantalla MFA: verificación OTP por correo ────────────────────────────────
+function renderMfaView(session) {
+  appRoot.innerHTML = `
+    <div class="min-h-screen flex items-center justify-center bg-background">
+      <div class="bg-white rounded-xl shadow-lg p-8 w-full max-w-sm text-center">
+
+        <div class="flex items-center justify-center gap-sm mb-md">
+          <div style="width:36px;height:36px;background:#b5000b;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:900;color:white">E</div>
+          <div style="text-align:left">
+            <div class="font-bold text-primary text-lg leading-none">SIT EBEMA</div>
+            <div class="text-xs text-secondary">Verificación de seguridad</div>
+          </div>
+        </div>
+
+        <span class="material-symbols-outlined text-primary" style="font-size:48px">mark_email_read</span>
+        <h2 class="font-bold text-headline-sm mt-xs mb-xs">Doble verificación</h2>
+        <p class="text-sm text-secondary mb-md">
+          Ingresa el código de <strong>6 dígitos</strong> enviado a<br/>
+          <strong>${session.user.email}</strong>
+        </p>
+
+        <input id="otp-code" type="text" maxlength="6" inputmode="numeric" autocomplete="one-time-code"
+          placeholder="· · · · · ·"
+          class="border-2 border-outline-variant rounded-lg text-center text-3xl font-data-mono tracking-[0.4em] w-44 py-sm mx-auto block focus:outline-none focus:border-primary transition-colors"/>
+
+        <div id="otp-error" class="hidden mt-sm bg-error-container text-on-error-container text-xs p-sm rounded mx-auto w-44"></div>
+
+        <button id="btn-verify-otp"
+          class="bg-primary hover:bg-[#930007] text-white rounded px-md py-sm text-sm font-bold mt-md w-full flex items-center justify-center gap-xs transition-colors">
+          <span class="material-symbols-outlined text-[16px]">verified_user</span>
+          Verificar y entrar
+        </button>
+
+        <div class="mt-md border-t border-outline-variant pt-sm">
+          <p class="text-xs text-secondary">¿No recibiste el código?</p>
+          <button id="btn-resend-otp" class="text-primary text-xs font-bold underline mt-xs hover:text-[#930007]">
+            Reenviar código
+          </button>
+          <span id="resend-timer" class="text-secondary text-xs ml-xs hidden">(espera <span id="resend-sec">60</span>s)</span>
+        </div>
+
+        <button id="btn-mfa-back" class="text-secondary text-xs mt-sm underline block mx-auto hover:text-on-surface">
+          Volver al inicio de sesión
+        </button>
+      </div>
+    </div>`;
+
+  // ── Auto-foco y formato ──────────────────────────────────────────────────
+  const otpInput = document.getElementById('otp-code');
+  otpInput.focus();
+  otpInput.addEventListener('input', () => {
+    otpInput.value = otpInput.value.replace(/\D/g, '').slice(0, 6);
+  });
+  otpInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') document.getElementById('btn-verify-otp').click();
+  });
+
+  // ── Timer de reenvío (60s) ────────────────────────────────────────────────
+  let resendTimeout = null;
+  const startResendTimer = () => {
+    const timerEl  = document.getElementById('resend-timer');
+    const secEl    = document.getElementById('resend-sec');
+    const resendBtn = document.getElementById('btn-resend-otp');
+    let   secs     = 60;
+    resendBtn.disabled = true;
+    resendBtn.classList.add('opacity-40', 'cursor-default');
+    timerEl.classList.remove('hidden');
+    resendTimeout = setInterval(() => {
+      secs--;
+      if (secEl) secEl.textContent = secs;
+      if (secs <= 0) {
+        clearInterval(resendTimeout);
+        timerEl.classList.add('hidden');
+        resendBtn.disabled = false;
+        resendBtn.classList.remove('opacity-40', 'cursor-default');
+      }
+    }, 1000);
+  };
+  startResendTimer();
+
+  // ── Verificar código ─────────────────────────────────────────────────────
+  document.getElementById('btn-verify-otp').addEventListener('click', async () => {
+    const code    = otpInput.value.trim();
+    const errDiv  = document.getElementById('otp-error');
+    const btn     = document.getElementById('btn-verify-otp');
+
+    errDiv.classList.add('hidden');
+
+    if (code.length !== 6) {
+      errDiv.textContent = 'Ingresa el código completo de 6 dígitos.';
+      errDiv.classList.remove('hidden');
+      return;
+    }
+
+    btn.disabled = true;
+    btn.innerHTML = '<div style="width:16px;height:16px;border:2px solid rgba(255,255,255,0.3);border-top-color:white;border-radius:50%;animation:spin 0.7s linear infinite"></div> Verificando...';
+
+    try {
+      const res = await supabase.functions.invoke('verify-mfa-code', {
+        body:    { code },
+        headers: { Authorization: `Bearer ${session.access_token}` }
+      });
+
+      if (res.error || !res.data?.verified) {
+        const msg = res.data?.error || 'Código incorrecto. Intente de nuevo.';
+        errDiv.textContent = msg;
+        errDiv.classList.remove('hidden');
+        btn.disabled = false;
+        btn.innerHTML = '<span class="material-symbols-outlined text-[16px]">verified_user</span> Verificar y entrar';
+        otpInput.value = '';
+        otpInput.focus();
+        return;
+      }
+
+      // ✓ Verificado — cargar perfil y entrar
+      await checkSession();
+      if (!currentSession) {
+        errDiv.textContent = 'No se pudo cargar su perfil. Recargue e intente de nuevo.';
+        errDiv.classList.remove('hidden');
+        btn.disabled = false;
+        btn.innerHTML = '<span class="material-symbols-outlined text-[16px]">verified_user</span> Verificar y entrar';
+        return;
+      }
+      showAlert(`Bienvenido, ${currentSession.name}`);
+      renderApp();
+
+    } catch (err) {
+      errDiv.textContent = 'Error de conexión. Intente nuevamente.';
+      errDiv.classList.remove('hidden');
+      btn.disabled = false;
+      btn.innerHTML = '<span class="material-symbols-outlined text-[16px]">verified_user</span> Verificar y entrar';
+    }
+  });
+
+  // ── Reenviar código ──────────────────────────────────────────────────────
+  document.getElementById('btn-resend-otp').addEventListener('click', async () => {
+    const errDiv = document.getElementById('otp-error');
+    errDiv.classList.add('hidden');
+    try {
+      const res = await supabase.functions.invoke('send-mfa-code', {
+        headers: { Authorization: `Bearer ${session.access_token}` }
+      });
+      if (res.error) throw new Error(res.error.message);
+      showAlert('Nuevo código enviado a tu correo.');
+      startResendTimer();
+    } catch (err) {
+      errDiv.textContent = 'No se pudo reenviar el código: ' + err.message;
+      errDiv.classList.remove('hidden');
+    }
+  });
+
+  // ── Volver al login ──────────────────────────────────────────────────────
+  document.getElementById('btn-mfa-back').addEventListener('click', async () => {
+    if (resendTimeout) clearInterval(resendTimeout);
+    await supabase.auth.signOut();
+    currentSession = null;
+    authState = 'login';
+    renderAuthView();
   });
 }
 
@@ -883,264 +1158,4 @@ function renderRecoverView() {
       return;
     }
 
-    document.getElementById('recover-step-form').style.display = 'none';
-    const successEl = document.getElementById('recover-step-success');
-    successEl.style.display = 'block';
-    document.getElementById('recover-email-display').textContent = email;
-
-    document.getElementById('btn-go-login').addEventListener('click', () => {
-      authState = 'login'; renderAuthView();
-    });
-  });
-}
-
-// ==========================================================================
-// MENU LATERAL - estructura declarativa con grupos desplegables
-// ==========================================================================
-const SIDEBAR_MENU = [
-  { tab: 'rates', icon: 'payments', label: 'Cotizador Despacho' },
-  {
-    group: 'proveedores', icon: 'groups', label: 'Proveedores', children: [
-      { tab: 'transports', sub: 'transportistas', icon: 'badge',          label: 'Transportistas' },
-      { tab: 'transports', sub: 'flota',          icon: 'local_shipping', label: 'Flota Camiones' },
-      { tab: 'transports', sub: 'conductores',    icon: 'person',         label: 'Conductores' },
-    ]
-  },
-  {
-    group: 'rutas', icon: 'route', label: 'Rutas de Transporte', children: [
-      { tab: 'routes', sub: 'centros', icon: 'location_on', label: 'Centros Logisticos' },
-      { tab: 'routes', sub: 'rutas',   icon: 'route',       label: 'Rutas' },
-      { tab: 'routes', sub: 'zonas',   icon: 'map',         label: 'Zonas de Transportes' },
-    ]
-  },
-  {
-    group: 'tarifas-transporte', icon: 'calculate', label: 'Tarifas Transporte', children: [
-      { tab: 'tarifas-transporte', sub: 'peajes',        icon: 'toll',              label: 'Peajes' },
-      { tab: 'tarifas-transporte', sub: 'combustibles',  icon: 'local_gas_station', label: 'Combustibles y Rendimientos' },
-      { tab: 'tarifas-transporte', sub: 'seguros',       icon: 'shield',            label: 'Seguros y Permisos' },
-      { tab: 'tarifas-transporte', sub: 'costos-extras', icon: 'add_circle',        label: 'Costos Extras' },
-      { tab: 'tarifas-transporte', sub: 'variables',     icon: 'tune',              label: 'Variables Generales' },
-      { tab: 'tarifas-transporte', sub: 'resultados',    icon: 'speed',             label: 'Motor de Costos' },
-      { tab: 'tarifas-transporte', sub: 'camiones',      icon: 'local_shipping',    label: 'Tarifas por Camion' },
-      { tab: 'tarifas-transporte', sub: 'zcap',          icon: 'table_chart',       label: 'Tarifas Rutas' },
-    ]
-  },
-  {
-    group: 'tarifas-clientes', icon: 'request_quote', label: 'Tarifas Clientes', children: [
-      { tab: 'tarifas-clientes', sub: 'historico',     icon: 'history',       label: 'Historico (6M)' },
-      { tab: 'tarifas-clientes', sub: 'consolidacion', icon: 'inventory',     label: 'Consolidacion' },
-      { tab: 'tarifas-clientes', sub: 'densidad',      icon: 'location_on',   label: 'Densidad Logistica' },
-      { tab: 'tarifas-clientes', sub: 'especiales',    icon: 'star',          label: 'Frecuencia y Especiales' },
-      { tab: 'tarifas-clientes', sub: 'cluster',       icon: 'map',           label: 'Cluster' },
-      { tab: 'tarifas-clientes', sub: 'zfmp',          icon: 'request_quote', label: 'Tarifas $/Kg' },
-      { tab: 'tarifas-clientes', sub: 'zfmi',          icon: 'request_quote', label: 'Tarifa Min/Max' },
-    ]
-  },
-  { tab: 'roles', icon: 'admin_panel_settings', label: 'Roles y Perfiles' },
-];
-
-// Subtab real del modulo destino para cada submenu del sidebar.
-// null = el modulo no distingue subtab aun; los que no tienen vista propia
-// se enlazan a la vista existente mas cercana (se construyen en fases siguientes).
-const SUB_ALIAS = {
-  'transports':         { transportistas: null, flota: null, conductores: null },
-  'tarifas-clientes':   { zfmp: 'resultados', zfmi: 'zfmi' },
-};
-
-const NAV_BASE_ITEM  = 'sidebar-item flex items-center gap-md px-md py-sm text-secondary hover:text-primary hover:bg-surface-container-high transition-colors rounded-lg cursor-pointer';
-const NAV_BASE_CHILD = 'sidebar-item flex items-center gap-sm pl-xl pr-md py-xs text-secondary hover:text-primary hover:bg-surface-container-high transition-colors rounded-lg cursor-pointer text-[13px]';
-
-function sidebarNavHTML() {
-  return SIDEBAR_MENU.map(entry => {
-    if (entry.group) {
-      return `
-        <div class="sidebar-group" data-group="${entry.group}">
-          <a class="sidebar-group-toggle flex items-center gap-md px-md py-sm text-secondary hover:text-primary hover:bg-surface-container-high transition-colors rounded-lg cursor-pointer select-none">
-            <span class="material-symbols-outlined">${entry.icon}</span>
-            <span class="font-body-md text-body-md flex-1 font-bold">${entry.label}</span>
-            <span class="material-symbols-outlined text-[18px] transition-transform sidebar-chevron">expand_more</span>
-          </a>
-          <div class="sidebar-group-children hidden mt-xs space-y-[2px]">
-            ${entry.children.map(c => `
-              <a class="${NAV_BASE_CHILD}" data-tab="${c.tab}" data-sub="${c.sub}">
-                <span class="material-symbols-outlined text-[16px]">${c.icon}</span>
-                <span>${c.label}</span>
-              </a>`).join('')}
-          </div>
-        </div>`;
-    }
-    return `
-      <a class="${NAV_BASE_ITEM}" data-tab="${entry.tab}" id="nav-${entry.tab}">
-        <span class="material-symbols-outlined">${entry.icon}</span>
-        <span class="font-body-md text-body-md font-bold">${entry.label}</span>
-      </a>`;
-  }).join('');
-}
-
-// ==========================================================================
-// SHELL DEL DASHBOARD DE SIT EBEMA
-// ==========================================================================
-function renderDashboardShell() {
-  appRoot.innerHTML = `
-    <!-- SideNavBar Anchor -->
-    <nav class="flex flex-col h-full py-lg px-md h-full w-64 fixed left-0 top-0 border-r border-surface-variant bg-surface z-50">
-      <div class="mb-xl px-sm flex flex-col gap-xs">
-        <h1 class="text-headline-sm font-headline-sm font-bold text-primary">SIT EBEMA</h1>
-        <p class="text-label-caps font-label-caps text-secondary uppercase tracking-wider">Logistics Admin</p>
-      </div>
-      
-      <div class="space-y-base flex-1 overflow-y-auto pr-xs" id="sidebar-nav-container">
-        ${sidebarNavHTML()}
-      </div>
-
-      <div class="mt-auto space-y-base border-t border-surface-variant pt-lg">
-
-        <a class="flex items-center gap-md px-md py-sm text-secondary hover:text-primary hover:bg-surface-container-high transition-colors rounded-lg cursor-pointer" id="btn-logout">
-          <span class="material-symbols-outlined">logout</span>
-          <span class="font-body-md text-body-md">Logout</span>
-        </a>
-      </div>
-    </nav>
-
-    <!-- TopAppBar Anchor -->
-    <header class="flex justify-between items-center h-16 w-full pl-72 pr-margin-desktop bg-surface/80 backdrop-blur-md sticky top-0 z-40 border-b border-surface-variant">
-      <div class="flex items-center gap-md">
-        <span class="text-headline-sm font-headline-sm font-black text-primary hidden md:block">SIT EBEMA</span>
-        <div class="h-8 w-px bg-surface-variant mx-md"></div>
-        <h2 class="text-headline-sm font-headline-sm text-on-surface" id="current-page-title">Cotizador de Tarifas</h2>
-      </div>
-      
-      <div class="flex items-center gap-lg">
-        <div class="relative hidden lg:block">
-          <span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-secondary">search</span>
-          <input class="pl-10 pr-md py-2 bg-surface-container rounded-lg border-none text-body-md w-64 focus:ring-2 focus:ring-primary/20" placeholder="Buscar..." type="text"/>
-        </div>
-        
-        <div class="flex items-center gap-sm">
-          <button class="p-2 text-secondary hover:text-primary transition-colors hover:bg-surface-container rounded-full cursor-pointer">
-            <span class="material-symbols-outlined">notifications</span>
-          </button>
-          <button class="p-2 text-secondary hover:text-primary transition-colors hover:bg-surface-container rounded-full cursor-pointer">
-            <span class="material-symbols-outlined">help_outline</span>
-          </button>
-          
-          <div class="ml-md flex items-center gap-sm border-l border-outline-variant pl-md">
-            <img alt="Administrator Profile" class="w-8 h-8 rounded-full border border-surface-variant object-cover" src="https://lh3.googleusercontent.com/aida-public/AB6AXuAAiTCyOhKKpto4TzfW6NIN1sv2OnD_9ISi9_9_tuiAbSovN5cnzTELz4Nql3oFKqQtKhma605ToY_Wn_NCRFbTTLlPwqO5mUsoaSuanYh8zDr7tuqBfaVDdqELWJ7hsYGQl0_xbHsbnSyfAJtiMUt8QMjibQpBCKP4HVz8EUYAGiIrmOly9grHxAaCVCvEcLusH9iewFzjlCHudJnFoLRiF6UTfElTfE36J3YYH5nQBtZlQWKZWewp0HE3B2ymMPHWw9X9ic394nY"/>
-            <div class="hidden sm:block text-left">
-              <p class="text-label-caps font-label-caps leading-none font-bold" id="topbar-user-name">${currentSession.name}</p>
-              <p class="text-[10px] text-secondary">${currentSession.role}</p>
-            </div>
-          </div>
-        </div>
-      </div>
-    </header>
-
-    <!-- Main Content Canvas -->
-    <main class="ml-64 p-margin-desktop min-h-[calc(100vh-64px)] bg-background">
-      <div id="stage-area">
-        <!-- Inyectado dinámicamente -->
-      </div>
-    </main>
-  `;
-
-  // Cerrar Sesión (también en el servidor)
-  document.getElementById('btn-logout').addEventListener('click', handleLogout);
-
-
-  // Enrutamiento de pestañas del Sidebar (hojas con data-tab)
-  document.querySelectorAll('.sidebar-item').forEach(item => {
-    item.addEventListener('click', (e) => {
-      const tabName = e.currentTarget.getAttribute('data-tab');
-      const subName = e.currentTarget.getAttribute('data-sub') || null;
-      switchTab(tabName, subName);
-    });
-  });
-
-  // Toggle de grupos desplegables
-  document.querySelectorAll('.sidebar-group-toggle').forEach(toggle => {
-    toggle.addEventListener('click', (e) => {
-      const grp = e.currentTarget.closest('.sidebar-group');
-      const children = grp.querySelector('.sidebar-group-children');
-      const chevron  = grp.querySelector('.sidebar-chevron');
-      const abrir = children.classList.contains('hidden');
-      children.classList.toggle('hidden', !abrir);
-      chevron.style.transform = abrir ? 'rotate(180deg)' : '';
-    });
-  });
-
-  // Cargar pestaña inicial
-  switchTab(currentTab, currentSub);
-}
-
-const NAV_ACTIVE_ADD    = ['bg-primary-container', 'text-on-primary-container', 'font-semibold'];
-const NAV_ACTIVE_REMOVE = ['text-secondary', 'hover:text-primary', 'hover:bg-surface-container-high'];
-
-function switchTab(tabName, subName = null) {
-  currentTab = tabName;
-  currentSub = subName;
-
-  // Restaurar estado inactivo en todos los items (sin perder indentacion)
-  document.querySelectorAll('.sidebar-item').forEach(item => {
-    item.classList.remove(...NAV_ACTIVE_ADD);
-    item.classList.add(...NAV_ACTIVE_REMOVE);
-  });
-  document.querySelectorAll('.sidebar-group-toggle').forEach(t => t.classList.remove('text-primary', 'font-semibold'));
-
-  // Activar el item correspondiente (hoja simple o submenu)
-  const selector = subName
-    ? `.sidebar-item[data-tab="${tabName}"][data-sub="${subName}"]`
-    : `.sidebar-item[data-tab="${tabName}"]:not([data-sub])`;
-  const activeNav = document.querySelector(selector);
-  if (activeNav) {
-    activeNav.classList.remove(...NAV_ACTIVE_REMOVE);
-    activeNav.classList.add(...NAV_ACTIVE_ADD);
-    // Expandir y destacar el grupo padre si corresponde
-    const grp = activeNav.closest('.sidebar-group');
-    if (grp) {
-      grp.querySelector('.sidebar-group-children').classList.remove('hidden');
-      const chev = grp.querySelector('.sidebar-chevron');
-      if (chev) chev.style.transform = 'rotate(180deg)';
-      grp.querySelector('.sidebar-group-toggle').classList.add('text-primary', 'font-semibold');
-    }
-  }
-
-  // Resolver alias de subtab (submenus que apuntan a vistas existentes)
-  const aliasMap = SUB_ALIAS[tabName] || {};
-  const alias = subName != null ? (aliasMap[subName] !== undefined ? aliasMap[subName] : subName) : null;
-
-  const pageTitle = document.getElementById('current-page-title');
-  const stage = document.getElementById('stage-area');
-  const subLabel = activeNav && subName ? ` — ${activeNav.textContent.trim()}` : '';
-
-  switch (tabName) {
-    case 'rates':
-      pageTitle.textContent = 'Cotizador Despacho';
-      renderRatesView(stage);
-      break;
-    case 'transports':
-      pageTitle.textContent = 'Proveedores' + subLabel;
-      renderTransportsView(stage);
-      break;
-    case 'routes':
-      pageTitle.textContent = 'Rutas de Transporte' + subLabel;
-      if (alias) setRoutesSubTab(alias);
-      renderRoutesView(stage);
-      break;
-    case 'roles':
-      pageTitle.textContent = 'Roles y Perfiles';
-      renderRolesView(stage);
-      break;
-    case 'tarifas-transporte':
-      pageTitle.textContent = 'Tarifas Transporte' + subLabel;
-      if (alias) setActiveSub(alias);
-      renderTariffTransportView(stage);
-      break;
-    case 'tarifas-clientes':
-      pageTitle.textContent = 'Tarifas Clientes' + subLabel;
-      if (alias) setActiveSubC(alias);
-      renderClientTariffView(stage);
-      break;
-  }
-}
-
-// Exponer utilidad de limpieza en consola
+    document.getElementById('r
