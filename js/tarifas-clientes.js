@@ -1622,14 +1622,23 @@ function renderZfmi(content, db, cfg, ccfg) {
     // Tarifa Express = ZCAP × (1 + recargo%) — recargo por centro configurado en Frecuencia
     const recargoPct      = getPath(ccfg, `especiales.recargoExclusividad.${grupoKey}`, 0);
     const tarifaExpress   = zcap > 0 ? zcap * (1 + recargoPct / 100) : null;
-    // ZFMI = (Kilos Tarif.Min / Pedidos Prom. del cluster) × ZFMP ($/kg camión actual)
-    // ZFMP = ZCAP / kilosConsolidar  →  ZFMI = zfmiKilos / pedidosProm × (ZCAP / kilosConsolidar)
+    // ZFMI: igual para todos los tipos de camión de la misma ruta
+    //   kilosTarifaMin (col) = kilosMin(camión mín) / pedidosPromedio     → ej. 4000/3.5 = 1143 kg
+    //   ZFMP_min             = ZCAP(camión mín) / kilosMin(camión mín)    → $/kg camión mínimo
+    //   ZFMI                 = kilosTarifaMin(col) × ZFMP_min
+    //                        = (zfmiKilos/pedidosProm) × (zfmiZcap/zfmiKilos)
+    //                        = zfmiZcap / pedidosPromedio
     const clusterObj      = ccfg.clusters?.find(c => c.key === cluster);
     const pedidosPromedio = clusterObj?.pedidosPromedio || 1;
-    const zfmfpKg         = (zcap > 0 && kilosConsolidar > 0) ? zcap / kilosConsolidar : null;
-    const kilosTarifaMin  = zfmiData?.zfmiKilos ?? null;
-    const zfmi            = (kilosTarifaMin != null && zfmfpKg != null && pedidosPromedio > 0)
-                            ? (kilosTarifaMin / pedidosPromedio) * zfmfpKg
+    const zfmiKilosBase   = zfmiData?.zfmiKilos ?? null;          // 4000 kg (cap_min × factor)
+    const kilosTarifaMin  = (zfmiKilosBase != null && pedidosPromedio > 0)
+                            ? zfmiKilosBase / pedidosPromedio      // 1143 kg → columna "Kilos Tarif.Min"
+                            : null;
+    const zfmpMinTruck    = (zfmiData?.zfmiZcap > 0 && zfmiKilosBase > 0)
+                            ? zfmiData.zfmiZcap / zfmiKilosBase    // $/kg del camión mínimo
+                            : null;
+    const zfmi            = (kilosTarifaMin != null && zfmpMinTruck != null)
+                            ? kilosTarifaMin * zfmpMinTruck         // = zfmiZcap / pedidosProm
                             : null;
 
     allRows.push({
