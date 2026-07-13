@@ -862,18 +862,24 @@ function renderEspeciales(content, db, ccfg) {
       </div>
 
       <div class="bg-surface border border-outline-variant rounded p-md">
-        <h3 class="font-bold text-[13px] text-on-surface mb-sm">Recargos por Exclusividad</h3>
+        <h3 class="font-bold text-[13px] text-on-surface mb-xs">Recargo por Exclusividad — por Centro</h3>
+        <p class="text-[11px] text-secondary mb-sm">% aplicado sobre ZCAP para calcular Tarifa Express en vista Tarifa Min/Max.</p>
         <div class="grid grid-cols-2 md:grid-cols-4 gap-sm">
-          ${ccfg.clusters.map(c => `
+          ${getOrigenGroups(db).map(g => {
+            const gk = g.grupo.replace(/\\s/g, '_');
+            const val = ccfg.especiales?.recargoExclusividad?.[gk] || 0;
+            return `
             <div class="flex flex-col gap-xs">
-              <label class="font-label-caps text-label-caps text-secondary uppercase text-[10px] flex items-center gap-xs">
-                <span class="inline-block w-2 h-2 rounded-full" style="background:${c.color}"></span>${c.nombre}
-              </label>
-              <input type="number" step="any" min="0"
-                class="border border-[#CED4DA] p-xs font-data-mono text-data-mono text-right focus:border-primary focus:ring-0 bg-white rounded"
-                data-path="especiales.recargoExclusividad.${c.key}"
-                value="${ccfg.especiales?.recargoExclusividad?.[c.key] || 0}">
-            </div>`).join('')}
+              <label class="font-label-caps text-label-caps text-secondary uppercase text-[10px]">${g.nombre || g.grupo}</label>
+              <div class="flex items-center gap-xs">
+                <input type="number" step="any" min="0" max="999"
+                  class="border border-[#CED4DA] p-xs font-data-mono text-data-mono text-right focus:border-primary focus:ring-0 bg-white rounded w-full"
+                  data-path="especiales.recargoExclusividad.${gk}"
+                  value="${val}">
+                <span class="text-[12px] text-secondary font-bold">%</span>
+              </div>
+            </div>`;
+          }).join('')}
         </div>
       </div>
     </div>
@@ -1611,8 +1617,9 @@ function renderZfmi(content, db, cfg, ccfg) {
     const zfmx            = (zcap > 0 && kilosConsolidar > 0) ? zcap / kilosConsolidar : null;
     const rutaCodigo      = ruta.codigo || String(ruta.id || '');
     const zfmiData        = zfmiByRuta.get(rutaCodigo);
-    // Tarifa Express = ZCAP / capKg (tasa sin consolidar — paga camión completo)
-    const tarifaExpress   = (zcap > 0 && capKg > 0) ? zcap / capKg : null;
+    // Tarifa Express = ZCAP × (1 + recargo%) donde recargo se configura por centro en Frecuencia
+    const recargoPct      = getPath(ccfg, `especiales.recargoExclusividad.${grupoKey}`, 0);
+    const tarifaExpress   = zcap > 0 ? zcap * (1 + recargoPct / 100) : null;
 
     allRows.push({
       centroOrigen:   grupo,
@@ -1800,7 +1807,7 @@ function renderZfmi(content, db, cfg, ccfg) {
         '<span><b>Camión Mínimo</b> = truck de menor capacidad del centro</span>' +
         '<span><b>ZFMI $/kg</b> = ZCAP(Camión Mín.) ÷ Kilos Tarif.Min</span>' +
         '<span><b>ZFMX $/kg</b> = ZCAP ÷ Kilos Consol.</span>' +
-        '<span><b>Tarifa Express</b> = ZCAP ÷ Cap.Camión (sin consolidar)</span>' +
+        '<span><b>Tarifa Express</b> = ZCAP × (1 + Recargo Exclusividad %)</span>' +
       '</div>' +
     '</div>';
 
