@@ -325,6 +325,35 @@ function renderContenido(db, cfg, grupos, container) {
 }
 
 // ── Entry point ────────────────────────────────────────────────────────────
+// ── Mapa ZCAP precalculado: "rutaCodigo||truckType" → zcap (igual a vista ZCAP)
+// Usado por otras vistas (Tarifas $/Kg) para leer el mismo valor sin recalcular.
+export function buildZcapMap(db, cfg) {
+  const grupos       = getOrigenGroups(db);
+  const troncalesSet = new Set(cfg.variables?.troncales || []);
+  const rutas        = (db.routes || []).filter(r => r.activo);
+  const map          = new Map();
+
+  rutas.forEach(ruta => {
+    const skipOrigenId = String(ruta.origenId) === '1000';
+    const grupo = (!skipOrigenId && grupos.find(g => (g.centroIds||[]).map(String).includes(String(ruta.origenId))))
+      || grupos.find(g => g.grupo === ruta.origen_grupo);
+    if (!grupo) return;
+
+    const tariffGrupoNombre = GRUPO_TARIFF_SOURCE[grupo.grupo] || grupo.grupo;
+    const tariffGrupo = grupos.find(g => g.grupo === tariffGrupoNombre) || grupo;
+    const trucks = (db.truckTypes || [])
+      .filter(t => t.Id_centro === tariffGrupo.repId)
+      .sort((a, b) => TRUCK_ORDER.indexOf(a.type) - TRUCK_ORDER.indexOf(b.type));
+
+    trucks.forEach(truck => {
+      const key  = (ruta.codigo || '') + '||' + truck.type;
+      const zcap = calcZcapRow(db, cfg, ruta, truck, troncalesSet);
+      map.set(key, { zcap, truck, ruta });
+    });
+  });
+  return map;
+}
+
 export function renderZcapView(container) {
   const db  = getDatabase();
   const cfg = getTariffConfig(db);

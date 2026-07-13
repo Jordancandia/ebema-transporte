@@ -2,7 +2,7 @@
 // Vistas: Histórico (6M) | Consolidación | Densidad Logística | Frecuencia y Especiales | Cluster | Resultados
 import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig, saveHistorico, loadHistorico, getOrigenGroups } from './data.js?v=20260712i';
 import { CAP_LIST, truckTypesWithCap, calcularCostoRuta } from './tarifas-engine.js?v=20260712i';
-import { calcZcapRow } from './zcap.js?v=20260712i';
+import { buildZcapMap } from './zcap.js?v=20260712i';
 import { formatCLP, showAlert, toCSV, downloadFile, formatDateDDMMYYYY, escapeHtml } from './utils.js';
 
 // ─────────────────────────────────────────────────────────────
@@ -1305,37 +1305,31 @@ function renderCluster(content, db, ccfg) {
 const ZFMP_PAGE = 50;
 
 function renderResultados(content, db, cfg, ccfg) {
-  // ── Construir TODAS las combinaciones ruta × tipo camión ─────────────────
-  const allRows = [];
-  (db.routes || []).filter(r => r.activo).forEach(ruta => {
+  // ── Construir combinaciones ruta × tipo camión usando el mismo mapa que vista ZCAP ──
+  const zcapMap  = buildZcapMap(db, cfg);   // "rutaCodigo||truckType" → { zcap, truck, ruta }
+  const allRows  = [];
+
+  zcapMap.forEach(({ zcap, truck, ruta }) => {
     const grupo    = ruta.origen_grupo || '';
     const grupoKey = grupo.replace(/\s/g, '_');
     const cluster  = ccfg.comunaCluster[String(ruta.id || '')] ||
                      ccfg.comunaCluster[String(ruta.codigo || '')] || '';
+    const capKg    = truck.capKg != null ? truck.capKg
+                   : (Number(String(truck.type).match(/(\d+)/)?.[1] || 0) * 1000);
+    const bkt      = capKg / 1000;
+    const factorPct       = getPath(ccfg, `consolidacionObjetivo.${grupoKey}.${bkt}`, 80);
+    const kilosConsolidar = capKg * (factorPct / 100);
+    const zfmp            = (zcap > 0 && kilosConsolidar > 0) ? zcap / kilosConsolidar : null;
 
-    truckTypesWithCap(db, ruta.origenId).forEach(t => {
-      const capKg           = t.capKg;
-      const bkt             = capKg / 1000;
-      const factorPct       = getPath(ccfg, `consolidacionObjetivo.${grupoKey}.${bkt}`, 80);
-      const kilosConsolidar = capKg * (factorPct / 100);
-
-      // ZCAP: valor idéntico al que muestra la vista ZCAP (calcZcapRow de zcap.js)
-      const troncalesSet = new Set(cfg.variables?.troncales || []);
-      let zcap = null;
-      try { zcap = calcZcapRow(db, cfg, ruta, t, troncalesSet) || null; } catch (_) {}
-
-      const zfmp = (zcap !== null && zcap > 0 && kilosConsolidar > 0) ? zcap / kilosConsolidar : null;
-
-      allRows.push({
-        centroOrigen:  grupo,
-        idRuta:        ruta.codigo || String(ruta.id || ''),
-        destino:       ruta.destino || '',
-        tipo:          ruta.tipo || '',
-        clasificacion: ruta.clasificRuta || '',
-        km:            Number(ruta.km) || 0,
-        cluster, capKg, factorPct, kilosConsolidar, zcap, zfmp,
-        tipoCamion: t.type || (bkt + 'T')
-      });
+    allRows.push({
+      centroOrigen:  grupo,
+      idRuta:        ruta.codigo || String(ruta.id || ''),
+      destino:       ruta.destino || '',
+      tipo:          ruta.tipo || '',
+      clasificacion: ruta.clasificRuta || '',
+      km:            Number(ruta.km) || 0,
+      cluster, capKg, factorPct, kilosConsolidar, zcap, zfmp,
+      tipoCamion: truck.type || (bkt + 'T')
     });
   });
 
