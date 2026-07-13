@@ -6,6 +6,7 @@ import { renderRatesView } from './rates.js';
 import { renderRolesView } from './roles.js';
 import { renderTariffTransportView, setActiveSub } from './tarifas-transporte.js?v=20260713a';
 import { renderClientTariffView, setActiveSubC } from './tarifas-clientes.js?v=20260713a';
+import { renderClusterRutasView } from './cluster-rutas.js?v=20260713a';
 import { showAlert, formatRut, validateRut, formatPhone } from './utils.js';
 
 const SESSION_KEY = 'ebema_user_session';
@@ -1210,6 +1211,7 @@ const SIDEBAR_MENU = [
       { tab: 'tarifas-clientes', sub: 'zfmi',          icon: 'request_quote', label: 'Tarifa Min/Max' },
     ]
   },
+  { tab: 'cluster-op', icon: 'hub', label: 'Cluster Operativo' },
   { tab: 'roles', icon: 'admin_panel_settings', label: 'Roles y Perfiles' },
 ];
 
@@ -1399,6 +1401,10 @@ function switchTab(tabName, subName = null) {
       pageTitle.textContent = 'Rutas de Transporte' + subLabel;
       if (alias) setRoutesSubTab(alias);
       renderRoutesView(stage);
+      break;
+    case 'cluster-op':
+      pageTitle.textContent = 'Cluster Operativo';
+      renderClusterRutasView(stage);
       break;
     case 'roles':
       pageTitle.textContent = 'Roles y Perfiles';
