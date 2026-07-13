@@ -1,7 +1,7 @@
 // MÓDULO: Administrador de Tarifas Clientes — SIT EBEMA v2.1
 // Vistas: Histórico (6M) | Consolidación | Densidad Logística | Frecuencia y Especiales | Cluster | Resultados
-import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig, saveHistorico, loadHistorico, getOrigenGroups } from './data.js?v=20260712d';
-import { CAP_LIST, truckTypesWithCap, calcularCostoRuta } from './tarifas-engine.js?v=20260712d';
+import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig, saveHistorico, loadHistorico, getOrigenGroups } from './data.js?v=20260712e';
+import { CAP_LIST, truckTypesWithCap, calcularCostoRuta } from './tarifas-engine.js?v=20260712e';
 import { formatCLP, showAlert, toCSV, downloadFile, formatDateDDMMYYYY, escapeHtml } from './utils.js';
 
 // ─────────────────────────────────────────────────────────────
@@ -912,7 +912,7 @@ function renderEspeciales(content, db, ccfg) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// ASIGNACIÓN AUTOMÁTICA DE CLUSTERS
+// ASIGNACIÓN AUTOMÁTICA DE CLUSTERS (por centro)
 // ─────────────────────────────────────────────────────────────
 function haversineKm(lat1, lon1, lat2, lon2) {
   const R = 6371;
@@ -922,89 +922,42 @@ function haversineKm(lat1, lon1, lat2, lon2) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-function asignarClustersAuto(db, ccfg) {
-  if (!histData.length) return;
-  const grupos = allGroups();
-
-  // 1. Construir datos de densidad por ruta (todas)
-  const allHistData = grupos.length > 0
-    ? histData
-    : [];
-  const rowsPorGrupo = new Map();
-  grupos.forEach(g => {
-    const rows = histData.filter(r => getCentroGroup(r.oficina) === g);
-    if (!rows.length) return;
-    rowsPorGrupo.set(g, buildDensidadData(db, rows));
-  });
-
-  // 2. Mapa ruta → { densidad, clasif, lat, lon }
-  const rutaInfo = new Map();
-  histData.forEach(r => {
-    if (rutaInfo.has(r.idRuta)) return;
-    const route = findRoute(db, r.idRuta);
-    let densidad = 0;
-    const grupo = getCentroGroup(r.oficina);
-    const dataArr = rowsPorGrupo.get(grupo) || [];
-    const found = dataArr.find(d => d.idRuta === r.idRuta);
-    if (found) {
-      const centroClientes = rowsPorGrupo.get(grupo).reduce((s, d) => s + d.clientes, 0) || 1;
-      const centroObras = rowsPorGrupo.get(grupo).reduce((s, d) => s + d.obras, 0) || 1;
-      const centroTon = rowsPorGrupo.get(grupo).reduce((s, d) => s + d.ton, 0) || 1;
-      const pctCli = (found.clientes / centroClientes) * 100;
-      const pctObra = (found.obras / centroObras) * 100;
-      const pctTon = (found.ton / centroTon) * 100;
-      densidad = (pctCli + pctObra + pctTon) / 3;
-    }
-    rutaInfo.set(r.idRuta, {
-      idRuta: r.idRuta,
-      clasif: route?.clasificRuta || '',
-      lat: parseFloat(route?.lat) || null,
-      lon: parseFloat(route?.lon) || null,
-      densidad
-    });
-  });
-
-  // 3. Asignar Interregional → SPOT
-  const sinCluster = [...rutaInfo.values()].filter(r => !ccfg.comunaCluster[r.idRuta]);
-  const interregionales = sinCluster.filter(r => r.clasif === 'Interregional');
-  interregionales.forEach(r => { ccfg.comunaCluster[r.idRuta] = 'spot'; });
-
-  // 4. Regionales restantes: ordenar por densidad y asignar 1, 2, 3
-  const regionales = sinCluster.filter(r => r.clasif !== 'Interregional').sort((a, b) => b.densidad - a.densidad);
-  if (regionales.length === 0) return;
-
-  // Clusters destino (1, 2, 3) ordenados por key numérico
-  const clusterKeys = ccfg.clusters
+// Asigna clusters a las filas de un centro (rows con .densidad, .lat, .lon, .rutaId, .rutaCodigo)
+// Algoritmo: K-means simplificado con distancia mixta (0.6×geo + 0.4×densidad)
+function asignarClustersCentro(rows, ccfg) {
+  const clKeys = ccfg.clusters
     .filter(c => c.key !== 'spot' && !isNaN(parseInt(c.key)))
     .sort((a, b) => parseInt(a.key) - parseInt(b.key))
     .map(c => c.key);
+  if (!clKeys.length || !rows.length) return;
 
-  if (clusterKeys.length === 0) return;
+  const n = rows.length;
+  const k = Math.min(clKeys.length, n);
 
-  // 5. Algoritmo: K-Means simplificado con 3 clusters por densidad + cercanía geográfica
-  const n = regionales.length;
-  const k = Math.min(clusterKeys.length, n);
-
-  // Inicializar centros: distribuir equitativamente por densidad
+  // Inicializar centros de cluster repartidos por densidad (rows ya ordenadas desc)
   const centros = [];
   for (let i = 0; i < k; i++) {
     const idx = Math.floor((i + 0.5) * n / k);
-    centros.push({ lat: regionales[idx].lat || -33.45, lon: regionales[idx].lon || -70.65, densidad: regionales[idx].densidad });
+    centros.push({
+      lat: rows[idx].lat || -38,
+      lon: rows[idx].lon || -72,
+      densidad: rows[idx].densidad
+    });
   }
 
-  // Iterar para estabilizar (máx 10 iteraciones)
   const asignacion = new Array(n).fill(0);
-  for (let iter = 0; iter < 10; iter++) {
+
+  for (let iter = 0; iter < 15; iter++) {
     let cambios = 0;
     for (let i = 0; i < n; i++) {
-      const r = regionales[i];
-      let mejorJ = 0;
-      let mejorDist = Infinity;
+      const r = rows[i];
+      let mejorJ = 0, mejorDist = Infinity;
       for (let j = 0; j < k; j++) {
         const distGeo = (r.lat && r.lon && centros[j].lat && centros[j].lon)
           ? haversineKm(r.lat, r.lon, centros[j].lat, centros[j].lon)
           : 500;
-        const distDen = Math.abs(r.densidad - centros[j].densidad);
+        // Normalizar densidad diff (escala ~0-33) para que sea comparable con distancia km
+        const distDen = Math.abs(r.densidad - centros[j].densidad) * 8;
         const distTotal = distGeo * 0.6 + distDen * 0.4;
         if (distTotal < mejorDist) { mejorDist = distTotal; mejorJ = j; }
       }
@@ -1012,33 +965,36 @@ function asignarClustersAuto(db, ccfg) {
     }
     if (cambios === 0) break;
 
-    // Recalcular centros
+    // Recalcular centroides
     for (let j = 0; j < k; j++) {
-      const miembros = [];
-      let sumLat = 0, sumLon = 0, sumDen = 0, count = 0;
+      let sumLat = 0, sumLon = 0, sumDen = 0, cntGeo = 0, cntDen = 0;
       for (let i = 0; i < n; i++) {
-        if (asignacion[i] === j) {
-          miembros.push(regionales[i]);
-          if (regionales[i].lat && regionales[i].lon) { sumLat += regionales[i].lat; sumLon += regionales[i].lon; count++; }
-          sumDen += regionales[i].densidad;
-        }
+        if (asignacion[i] !== j) continue;
+        if (rows[i].lat && rows[i].lon) { sumLat += rows[i].lat; sumLon += rows[i].lon; cntGeo++; }
+        sumDen += rows[i].densidad; cntDen++;
       }
-      if (miembros.length > 0) {
-        centros[j].lat = count > 0 ? sumLat / count : centros[j].lat;
-        centros[j].lon = count > 0 ? sumLon / count : centros[j].lon;
-        centros[j].densidad = sumDen / miembros.length;
-      }
+      if (cntGeo  > 0) { centros[j].lat = sumLat / cntGeo; centros[j].lon = sumLon / cntGeo; }
+      if (cntDen  > 0)   centros[j].densidad = sumDen / cntDen;
     }
   }
 
-  // Asignar resultados
+  // El cluster con mayor densidad promedio → key más bajo (cluster 1 = más importante)
+  const centrosDen = centros.map((c, j) => ({ j, den: c.densidad }));
+  centrosDen.sort((a, b) => b.den - a.den); // mayor densidad primero
+  const jToKey = {};
+  centrosDen.forEach((cd, rank) => { jToKey[cd.j] = clKeys[rank] || clKeys[clKeys.length - 1]; });
+
+  // Aplicar asignación a las filas y a ccfg.comunaCluster
   for (let i = 0; i < n; i++) {
-    ccfg.comunaCluster[regionales[i].idRuta] = clusterKeys[asignacion[i]];
+    const cl = jToKey[asignacion[i]];
+    rows[i].cluster = cl;
+    if (rows[i].rutaId)     ccfg.comunaCluster[String(rows[i].rutaId)]     = cl;
+    if (rows[i].rutaCodigo) ccfg.comunaCluster[String(rows[i].rutaCodigo)] = cl;
   }
 }
 
 // ═══════════════════════════════════════════════════════════════
-// VISTA 5: CLUSTER (mapa simplificado + filtros)
+// VISTA 5: CLUSTER — por centro, solo Regional+Comuna
 // ═══════════════════════════════════════════════════════════════
 function renderCluster(content, db, ccfg) {
   if (!histData.length) {
@@ -1046,201 +1002,276 @@ function renderCluster(content, db, ccfg) {
     return;
   }
 
-  const grupos = allGroups();
-  const tiposSet = new Set();
-  const clasifSet = new Set();
-  histData.forEach(r => {
-    const route = findRoute(db, r.idRuta);
-    if (route?.tipo) tiposSet.add(route.tipo);
-    if (route?.clasificRuta) clasifSet.add(route.clasificRuta);
-  });
-  const tiposArr = [...tiposSet].sort();
-  const clasifArr = [...clasifSet].sort();
+  const grupos = getOrigenGroups(db);
 
-  const routeMap = new Map();
-  histData.forEach(r => {
-    if (routeMap.has(r.idRuta)) return;
-    const route = findRoute(db, r.idRuta);
-    routeMap.set(r.idRuta, {
-      idRuta:  r.idRuta,
-      destino: route?.destino || r.idRuta,
-      tipo:    route?.tipo || '',
-      clasif:  route?.clasificRuta || '',
-      grupo:   getCentroGroup(r.oficina),
-      cluster: ccfg.comunaCluster[r.idRuta] || '',
-      lat:     parseFloat(route?.lat) || null,
-      lon:     parseFloat(route?.lon) || null
+  // ── Lookup ruta por código / id ──────────────────────────────────────────
+  const routeByCode = new Map();
+  (db.routes || []).filter(r => r.activo).forEach(r => {
+    if (r.codigo) routeByCode.set(String(r.codigo).toUpperCase(), r);
+    if (r.id)     routeByCode.set(String(r.id).toUpperCase(),     r);
+  });
+
+  // ── Construir datos de densidad por centro (igual que renderDensidad) ────
+  function buildCentroData(grupoObj) {
+    const { grupo, centroIds } = grupoObj;
+    const centroIdSet = new Set((centroIds || []).map(String));
+
+    const centroRoutes = (db.routes || []).filter(r => {
+      if (!r.activo) return false;
+      if ((r.tipo || '').toLowerCase() !== 'comuna') return false;
+      if (r.clasificRuta !== 'Regional') return false;
+      if (r.origen_grupo) return r.origen_grupo === grupo;
+      return centroIdSet.has(String(r.origenId));
     });
-  });
+    if (!centroRoutes.length) return null;
 
-  let routes = [...routeMap.values()];
-  if (clusterFiltGrupo  !== 'all') routes = routes.filter(r => r.grupo  === clusterFiltGrupo);
-  if (clusterFiltTipo   !== 'all') routes = routes.filter(r => r.tipo   === clusterFiltTipo);
-  if (clusterFiltClasif !== 'all') routes = routes.filter(r => r.clasif === clusterFiltClasif);
+    const validCodes = new Set();
+    centroRoutes.forEach(r => {
+      if (r.codigo) validCodes.add(String(r.codigo).toUpperCase());
+      if (r.id)     validCodes.add(String(r.id).toUpperCase());
+    });
 
-  const clSelOpts = ccfg.clusters.map(c => '<option value="' + c.key + '">' + c.nombre + '</option>').join('');
+    const routeStats = new Map();
+    const totClientes = new Set();
+    const totObras    = new Set();
 
-  content.innerHTML = `
-    <div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm">
-      <div class="flex items-center justify-between mb-md border-b border-outline-variant pb-sm flex-wrap gap-sm">
-        <div class="flex items-center gap-sm">
-          <span class="material-symbols-outlined text-primary">map</span>
-          <h2 class="font-headline-sm text-headline-sm font-bold text-on-surface">Asignación de Cluster por Ruta</h2>
-        </div>
-        <span class="text-secondary text-[12px]">${routes.length} rutas</span>
-        <button id="btn-auto-cluster" class="flex items-center gap-xs border border-primary text-primary hover:bg-primary/[0.06] font-bold px-md py-sm rounded text-[11px] uppercase tracking-wider">
-          <span class="material-symbols-outlined text-[16px]">auto_awesome</span> Asignar clusters automáticamente
-        </button>
-      </div>
+    histData.forEach(h => {
+      if (!validCodes.has(String(h.idRuta).toUpperCase())) return;
+      const route = routeByCode.get(String(h.idRuta).toUpperCase());
+      if (!route) return;
+      const key = route.codigo || String(h.idRuta);
+      if (!routeStats.has(key)) routeStats.set(key, { route, clientes: new Set(), obras: new Set(), ton: 0 });
+      const s = routeStats.get(key);
+      if (h.idCliente && h.idCliente !== '-') { s.clientes.add(h.idCliente); totClientes.add(h.idCliente); }
+      if (h.idObra    && h.idObra    !== '-') { s.obras.add(h.idObra);       totObras.add(h.idObra); }
+      s.ton += h.ton;
+    });
 
-      <div class="flex items-center gap-sm flex-wrap mb-md">
-        <span class="font-label-caps text-label-caps text-secondary uppercase text-[11px]">Filtros:</span>
-        <select id="cl-fg" class="${selectCls}">
-          <option value="all" ${clusterFiltGrupo === 'all' ? 'selected' : ''}>Todos los centros</option>
-          ${grupos.map(g => '<option value="' + g + '" ' + (clusterFiltGrupo === g ? 'selected' : '') + '>' + g + '</option>').join('')}
-        </select>
-        <select id="cl-ft" class="${selectCls}">
-          <option value="all" ${clusterFiltTipo === 'all' ? 'selected' : ''}>Todos los tipos</option>
-          ${tiposArr.map(t => '<option value="' + t + '" ' + (clusterFiltTipo === t ? 'selected' : '') + '>' + t + '</option>').join('')}
-        </select>
-        <select id="cl-fc" class="${selectCls}">
-          <option value="all" ${clusterFiltClasif === 'all' ? 'selected' : ''}>Todas las clasificaciones</option>
-          ${clasifArr.map(c => '<option value="' + c + '" ' + (clusterFiltClasif === c ? 'selected' : '') + '>' + c + '</option>').join('')}
-        </select>
-      </div>
+    // Incluir rutas sin histórico
+    centroRoutes.forEach(r => {
+      const key = r.codigo || String(r.id);
+      if (!routeStats.has(key)) routeStats.set(key, { route: r, clientes: new Set(), obras: new Set(), ton: 0 });
+    });
 
-      <div class="grid grid-cols-1 lg:grid-cols-2 gap-lg">
-        <div>
-          <div id="cluster-map" class="bg-surface-container-low border border-outline-variant rounded" style="height:420px;min-height:300px"></div>
-          <div class="flex flex-wrap gap-md mt-sm">
-            ${ccfg.clusters.map(c => '<span class="flex items-center gap-xs text-[11px]"><span class="inline-block w-3 h-3 rounded-full" style="background:' + c.color + '"></span>' + c.nombre + '</span>').join('')}
-            <span class="flex items-center gap-xs text-[11px]"><span class="inline-block w-3 h-3 rounded-full bg-gray-300"></span>Sin cluster</span>
-          </div>
-        </div>
+    let totTon = 0;
+    routeStats.forEach(s => { totTon += s.ton; });
+    const baseCli = totClientes.size || 1;
+    const baseObr = totObras.size    || 1;
+    const baseTon = totTon           || 1;
 
-        <div class="bg-surface border border-outline-variant rounded overflow-x-auto" style="max-height:460px;overflow-y:auto">
-          <table class="w-full border-collapse text-[12px]">
-            <thead class="sticky top-0 bg-surface-container-high">
-              <tr class="border-b border-outline-variant text-left">
-                <th class="p-sm font-label-caps text-secondary uppercase">Ruta</th>
-                <th class="p-sm font-label-caps text-secondary uppercase">Tipo</th>
-                <th class="p-sm font-label-caps text-secondary uppercase">Clasif.</th>
-                <th class="p-sm font-label-caps text-secondary uppercase">Cluster</th>
-              </tr>
-            </thead>
-            <tbody class="divide-y divide-outline-variant">
-              ${routes.map(r => {
-                const selVal = r.cluster ? ' value="' + r.cluster + '"' : '';
-                const opts = '<option value="">— Sin cluster —</option>' + ccfg.clusters.map(c =>
-                  '<option value="' + c.key + '"' + (r.cluster === c.key ? ' selected' : '') + '>' + c.nombre + '</option>'
-                ).join('');
-                return '<tr class="hover:bg-surface-container-low">' +
-                  '<td class="p-sm"><span class="font-bold">' + r.idRuta + '</span>' +
-                  (r.destino !== r.idRuta ? '<span class="font-normal text-secondary text-[10px] block">' + r.destino + '</span>' : '') + '</td>' +
-                  '<td class="p-sm"><span class="text-[10px] px-xs py-px rounded border border-outline-variant">' + r.tipo + '</span></td>' +
-                  '<td class="p-sm text-secondary text-[11px]">' + r.clasif + '</td>' +
-                  '<td class="p-sm"><select class="cl-assign border border-[#CED4DA] px-xs py-px text-[11px] bg-white rounded w-full" data-ruta="' + r.idRuta + '">' + opts + '</select></td>' +
-                  '</tr>';
-              }).join('')}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-  `;
+    const rows = [...routeStats.values()].map(s => {
+      const pctCli   = (s.clientes.size / baseCli) * 100;
+      const pctObra  = (s.obras.size    / baseObr) * 100;
+      const pctTon   = (s.ton           / baseTon) * 100;
+      const densidad = (pctCli + pctObra + pctTon) / 3;
+      const caract   = (s.route.caracteristica || '').toUpperCase();
+      return {
+        rutaId:     String(s.route.id     || ''),
+        rutaCodigo: String(s.route.codigo || ''),
+        destino:    s.route.destino || '',
+        zona:       s.route.id_zona_transporte || '',
+        caracteristica: caract,
+        ton:        s.ton,
+        densidad,
+        lat:  parseFloat(s.route.lat)  || null,
+        lon:  parseFloat(s.route.lon)  || null,
+        cluster: ccfg.comunaCluster[String(s.route.id || '')] ||
+                 ccfg.comunaCluster[String(s.route.codigo || '')] || ''
+      };
+    }).sort((a, b) => b.densidad - a.densidad);
 
-  document.getElementById('cl-fg')?.addEventListener('change', e => { clusterFiltGrupo  = e.target.value; renderCluster(content, db, ccfg); });
-  document.getElementById('cl-ft')?.addEventListener('change', e => { clusterFiltTipo   = e.target.value; renderCluster(content, db, ccfg); });
-  document.getElementById('cl-fc')?.addEventListener('change', e => { clusterFiltClasif = e.target.value; renderCluster(content, db, ccfg); });
+    return { grupo, rows, totTon };
+  }
 
-  document.getElementById('btn-auto-cluster')?.addEventListener('click', () => {
-    if (!confirm('¿Asignar clusters automáticamente?\n- Interregionales → SPOT\n- Regionales → según densidad logística + cercanía geográfica\n\nLas rutas ya asignadas manualmente NO se modifican.')) return;
-    asignarClustersAuto(db, ccfg);
-    saveDatabase(db);
-    renderCluster(content, db, ccfg);
-    showAlert('Clusters asignados automáticamente.');
-  });
+  const centrosData = grupos.map(buildCentroData).filter(Boolean);
 
+  if (!centrosData.length) {
+    content.innerHTML = '<div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm">' +
+      noDataBanner('No se encontraron rutas tipo=Comuna + Regional.') + '</div>';
+    return;
+  }
+
+  // ── HTML: leyenda de clusters ────────────────────────────────────────────
+  const leyenda = ccfg.clusters.map(c =>
+    '<span class="flex items-center gap-xs text-[11px]">' +
+    '<span class="inline-block w-3 h-3 rounded-full flex-shrink-0" style="background:' + c.color + '"></span>' +
+    escapeHtml(c.nombre) + '</span>'
+  ).join('') +
+  '<span class="flex items-center gap-xs text-[11px]">' +
+  '<span class="inline-block w-3 h-3 rounded-full bg-gray-300 flex-shrink-0"></span>Sin cluster</span>';
+
+  // ── HTML: tarjeta por centro ─────────────────────────────────────────────
+  function cardHtml(cd) {
+    const uid      = cd.grupo.replace(/[^a-z0-9]/gi, '_');
+    const asig     = cd.rows.filter(r => r.cluster).length;
+    const maxDen   = cd.rows[0]?.densidad || 1;
+
+    const rowsHtml = cd.rows.map((r, i) => {
+      const bc      = r.densidad >= 15 ? '#b5000b' : r.densidad >= 5 ? '#d97706' : '#6b7280';
+      const bw      = maxDen > 0 ? Math.min(r.densidad / maxDen * 100, 100) : 0;
+      const clColor = r.cluster ? (clusterColor(ccfg, r.cluster) || '#9ca3af') : '#d1d5db';
+      const dot     = '<span class="inline-block w-2 h-2 rounded-full flex-shrink-0 cl-dot" style="background:' + clColor + '"></span>';
+      const isEspec   = ['ISLA','EXTREMA'].includes(r.caracteristica);
+      const specBadge = isEspec
+        ? '<span class="ml-xs inline-flex px-1 py-0.5 rounded text-[9px] font-bold ' +
+          (r.caracteristica === 'ISLA' ? 'bg-blue-100 text-blue-700' : 'bg-orange-100 text-orange-700') +
+          '">' + r.caracteristica + '</span>'
+        : '';
+      const opts = '<option value="">— Sin cluster —</option>' +
+        ccfg.clusters.map(c =>
+          '<option value="' + c.key + '"' + (r.cluster === c.key ? ' selected' : '') + '>' + escapeHtml(c.nombre) + '</option>'
+        ).join('');
+      return '<tr class="hover:bg-surface-container-low border-b border-outline-variant">' +
+        '<td class="p-sm text-right text-secondary font-data-mono text-[11px] w-8">' + (i + 1) + '</td>' +
+        '<td class="p-sm font-data-mono text-[11px] text-primary font-bold">' + escapeHtml(r.rutaCodigo) + '</td>' +
+        '<td class="p-sm text-[12px]">' + escapeHtml(r.destino) + specBadge + '</td>' +
+        '<td class="p-sm text-secondary text-[11px]">' + escapeHtml(r.zona) + '</td>' +
+        '<td class="p-sm text-right w-28">' +
+          '<div class="flex items-center gap-xs justify-end">' +
+            '<span class="font-bold font-data-mono text-[11px]" style="color:' + bc + '">' + r.densidad.toFixed(2) + '%</span>' +
+            '<div class="w-12 h-1.5 bg-surface-container-high rounded-full overflow-hidden"><div class="h-full rounded-full" style="width:' + bw + '%;background:' + bc + '"></div></div>' +
+          '</div>' +
+        '</td>' +
+        '<td class="p-sm">' +
+          '<div class="flex items-center gap-xs">' +
+            dot +
+            '<select class="cl-assign border border-[#CED4DA] px-xs py-px text-[11px] bg-white rounded w-full" ' +
+              'data-ruta-id="' + escapeHtml(r.rutaId) + '" ' +
+              'data-ruta-cod="' + escapeHtml(r.rutaCodigo) + '" ' +
+              'data-grupo="' + escapeHtml(cd.grupo) + '">' +
+              opts +
+            '</select>' +
+          '</div>' +
+        '</td>' +
+      '</tr>';
+    }).join('');
+
+    return '<div class="border-2 border-outline-variant shadow-sm mb-xl rounded overflow-hidden" id="cl-card-' + uid + '">' +
+      '<div class="flex items-center justify-between px-lg pt-md pb-sm border-b-2 border-primary bg-surface-container-high flex-wrap gap-sm">' +
+        '<div class="flex items-center gap-sm">' +
+          '<span class="material-symbols-outlined text-primary text-[20px]">hub</span>' +
+          '<h3 class="font-headline-sm font-bold text-on-surface">' + escapeHtml(cd.grupo) + '</h3>' +
+        '</div>' +
+        '<div class="flex items-center gap-sm flex-wrap">' +
+          '<span class="font-data-mono text-[11px] text-secondary">' + asig + '/' + cd.rows.length + ' asignadas · ' + cd.totTon.toFixed(1) + ' ton</span>' +
+          '<button class="cl-auto-centro border border-secondary text-secondary hover:bg-secondary/10 font-bold px-md py-xs rounded flex items-center gap-xs text-[11px] uppercase transition-colors" data-grupo="' + escapeHtml(cd.grupo) + '">' +
+            '<span class="material-symbols-outlined text-[14px]">auto_awesome</span> Auto' +
+          '</button>' +
+          '<button class="cl-guardar-centro border border-primary text-primary hover:bg-primary hover:text-white font-bold px-md py-xs rounded flex items-center gap-xs text-[11px] uppercase transition-colors" data-grupo="' + escapeHtml(cd.grupo) + '">' +
+            '<span class="material-symbols-outlined text-[14px]">save</span> Guardar' +
+          '</button>' +
+        '</div>' +
+      '</div>' +
+      '<div class="overflow-x-auto">' +
+        '<table class="w-full border-collapse text-[12px]">' +
+          '<thead>' +
+            '<tr class="bg-surface-container-high text-left border-b border-outline-variant">' +
+              '<th class="p-sm font-label-caps text-secondary uppercase text-right w-8">#</th>' +
+              '<th class="p-sm font-label-caps text-secondary uppercase">Cód. Ruta</th>' +
+              '<th class="p-sm font-label-caps text-secondary uppercase">Destino</th>' +
+              '<th class="p-sm font-label-caps text-secondary uppercase">Zona</th>' +
+              '<th class="p-sm font-label-caps text-secondary uppercase text-right">Densidad %</th>' +
+              '<th class="p-sm font-label-caps text-secondary uppercase">Cluster</th>' +
+            '</tr>' +
+          '</thead>' +
+          '<tbody class="divide-y divide-outline-variant">' +
+            rowsHtml +
+          '</tbody>' +
+        '</table>' +
+      '</div>' +
+    '</div>';
+  }
+
+  // ── Render HTML ──────────────────────────────────────────────────────────
+  content.innerHTML =
+    '<div>' +
+      '<div class="flex items-center gap-sm mb-md flex-wrap">' +
+        '<span class="material-symbols-outlined text-primary">hub</span>' +
+        '<h2 class="font-headline-sm font-bold text-on-surface">Asignación de Cluster por Ruta</h2>' +
+        '<span class="text-[11px] text-secondary ml-xs">Solo rutas tipo=Comuna + Regional · Agrupado por centro</span>' +
+        '<button id="btn-auto-todos" class="ml-auto flex items-center gap-xs border border-primary text-primary hover:bg-primary/[0.06] font-bold px-md py-sm rounded text-[11px] uppercase tracking-wider">' +
+          '<span class="material-symbols-outlined text-[16px]">auto_awesome</span> Asignar todos automáticamente' +
+        '</button>' +
+      '</div>' +
+      '<div class="flex flex-wrap gap-md mb-lg">' + leyenda + '</div>' +
+      centrosData.map(cd => cardHtml(cd)).join('') +
+    '</div>';
+
+  // ── Evento: cambio de cluster individual ────────────────────────────────
   content.querySelectorAll('.cl-assign').forEach(sel => {
     sel.addEventListener('change', () => {
-      const ruta = sel.dataset.ruta;
-      if (sel.value) ccfg.comunaCluster[ruta] = sel.value;
-      else           delete ccfg.comunaCluster[ruta];
-      saveDatabase(db);
+      const rutaId  = sel.dataset.rutaId;
+      const rutaCod = sel.dataset.rutaCod;
+      if (sel.value) {
+        if (rutaId)  ccfg.comunaCluster[rutaId]  = sel.value;
+        if (rutaCod) ccfg.comunaCluster[rutaCod] = sel.value;
+      } else {
+        if (rutaId)  delete ccfg.comunaCluster[rutaId];
+        if (rutaCod) delete ccfg.comunaCluster[rutaCod];
+      }
+      // Actualizar dot de color en la misma fila sin re-render
+      const dot = sel.closest('td')?.querySelector('.cl-dot');
+      if (dot) dot.style.background = sel.value ? (clusterColor(ccfg, sel.value) || '#9ca3af') : '#d1d5db';
     });
   });
 
-  // Densidad logística por ruta (toneladas acumuladas) para el heat map
-  const routeTonMap = new Map();
-  histData.forEach(r => { routeTonMap.set(r.idRuta, (routeTonMap.get(r.idRuta) || 0) + r.ton); });
-
-  function loadLeafletHeat(cb) {
-    if (typeof L !== 'undefined' && typeof L.heatLayer !== 'undefined') { cb(); return; }
-    if (typeof L !== 'undefined') {
-      // Leaflet cargado pero no heat plugin
-      if (!document.getElementById('leaflet-heat-js')) {
-        const sc = document.createElement('script');
-        sc.id = 'leaflet-heat-js';
-        sc.src = 'https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js';
-        sc.onload = cb;
-        document.head.appendChild(sc);
+  // ── Evento: auto-asignar por centro ─────────────────────────────────────
+  content.querySelectorAll('.cl-auto-centro').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const grupo = btn.dataset.grupo;
+      const cd    = centrosData.find(c => c.grupo === grupo);
+      if (!cd) return;
+      if (!confirm('¿Asignar clusters automáticamente para "' + grupo + '"?\n\nAlgoritmo: densidad logística + cercanía geográfica de comunas\n(Cluster 1 = mayor densidad, rutas cercanas heredan el mismo cluster)')) return;
+      asignarClustersCentro(cd.rows, ccfg);
+      // Re-render solo esa tarjeta
+      const uid  = grupo.replace(/[^a-z0-9]/gi, '_');
+      const card = document.getElementById('cl-card-' + uid);
+      if (card) {
+        const tmp = document.createElement('div');
+        tmp.innerHTML = cardHtml(cd);
+        card.replaceWith(tmp.firstElementChild);
+        // Re-bind eventos en la nueva tarjeta
+        document.getElementById('cl-card-' + uid)?.querySelectorAll('.cl-assign').forEach(s => {
+          s.addEventListener('change', () => {
+            const rid = s.dataset.rutaId; const rcd = s.dataset.rutaCod;
+            if (s.value) { if (rid) ccfg.comunaCluster[rid]=s.value; if (rcd) ccfg.comunaCluster[rcd]=s.value; }
+            else          { if (rid) delete ccfg.comunaCluster[rid];  if (rcd) delete ccfg.comunaCluster[rcd]; }
+            const dot = s.closest('td')?.querySelector('.cl-dot');
+            if (dot) dot.style.background = s.value ? (clusterColor(ccfg, s.value) || '#9ca3af') : '#d1d5db';
+          });
+        });
+        document.getElementById('cl-card-' + uid)?.querySelectorAll('.cl-guardar-centro').forEach(b => {
+          b.addEventListener('click', () => { saveDatabase(db); flashGuardar(b); });
+        });
+        document.getElementById('cl-card-' + uid)?.querySelectorAll('.cl-auto-centro').forEach(b => {
+          b.click; // rebind handled by renderCluster re-call fallback
+        });
       }
-      return;
-    }
-    // Cargar Leaflet primero, luego heat
-    if (!document.getElementById('leaflet-css')) {
-      const css = document.createElement('link');
-      css.id = 'leaflet-css'; css.rel = 'stylesheet';
-      css.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
-      document.head.appendChild(css);
-    }
-    if (!document.getElementById('leaflet-js')) {
-      const sc = document.createElement('script');
-      sc.id = 'leaflet-js';
-      sc.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
-      sc.onload = () => loadLeafletHeat(cb);
-      document.head.appendChild(sc);
-    }
+      showAlert('Clusters asignados para ' + grupo + '.');
+    });
+  });
+
+  // ── Evento: guardar por centro ───────────────────────────────────────────
+  function flashGuardar(btn) {
+    saveDatabase(db);
+    const orig = btn.innerHTML;
+    btn.innerHTML = '<span class="material-symbols-outlined text-[14px]">check_circle</span> Guardado';
+    btn.classList.add('bg-primary', 'text-white');
+    setTimeout(() => { btn.innerHTML = orig; btn.classList.remove('bg-primary','text-white'); }, 2000);
   }
 
-  function initLeafletMap() {
-    const mapEl = document.getElementById('cluster-map');
-    if (!mapEl) return;
-    if (typeof L === 'undefined' || typeof L.heatLayer === 'undefined') {
-      mapEl.innerHTML = '<div class="flex items-center justify-center h-full text-secondary text-[12px]">Cargando mapa...</div>';
-      loadLeafletHeat(() => { if (document.getElementById('cluster-map')) initLeafletMap(); });
-      return;
-    }
-    const withCoords = routes.filter(r => r.lat && r.lon);
-    if (!withCoords.length) {
-      mapEl.innerHTML = '<div class="flex items-center justify-center h-full text-secondary text-[12px] p-md text-center">Las rutas no tienen coordenadas en la base de datos.</div>';
-      return;
-    }
-    if (mapEl._leafletMap) { try { mapEl._leafletMap.remove(); } catch (e) {} }
-    mapEl.innerHTML = '';
-    const map = L.map(mapEl).setView([-35, -71], 5);
-    mapEl._leafletMap = map;
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      attribution: '© OpenStreetMap', maxZoom: 18
-    }).addTo(map);
+  content.querySelectorAll('.cl-guardar-centro').forEach(btn => {
+    btn.addEventListener('click', () => flashGuardar(btn));
+  });
 
-    // — Heat map: intensidad = toneladas acumuladas por ruta —
-    const maxTon = Math.max(...withCoords.map(r => routeTonMap.get(r.idRuta) || 0), 1);
-    const heatPoints = withCoords.map(r => {
-      const intensity = (routeTonMap.get(r.idRuta) || 0) / maxTon;
-      return [r.lat, r.lon, intensity];
-    });
-    L.heatLayer(heatPoints, { radius: 30, blur: 22, maxZoom: 10, gradient: { 0.2: '#3b82f6', 0.5: '#f59e0b', 0.8: '#ef4444' } }).addTo(map);
-
-    // — Marcadores por cluster encima del heat map —
-    withCoords.forEach(r => {
-      const color = r.cluster ? (clusterColor(ccfg, r.cluster) || '#9ca3af') : '#9ca3af';
-      L.circleMarker([r.lat, r.lon], { radius: 6, color, fillColor: color, fillOpacity: 0.85, weight: 1.5 })
-        .addTo(map)
-        .bindPopup('<b>' + r.idRuta + '</b><br>' + r.destino + '<br><small>' + r.tipo + (r.cluster ? ' — ' + clusterNombre(ccfg, r.cluster) : '') + '<br>Ton: ' + (routeTonMap.get(r.idRuta) || 0).toFixed(1) + '</small>');
-    });
-  }
-  initLeafletMap();
+  // ── Evento: auto-asignar TODOS los centros ───────────────────────────────
+  document.getElementById('btn-auto-todos')?.addEventListener('click', () => {
+    if (!confirm('¿Asignar clusters automáticamente para TODOS los centros?\n\nAlgoritmo: densidad logística + cercanía geográfica de comunas\n\nEsto reemplazará todas las asignaciones existentes.')) return;
+    centrosData.forEach(cd => asignarClustersCentro(cd.rows, ccfg));
+    saveDatabase(db);
+    renderCluster(content, db, ccfg);
+    showAlert('Clusters asignados automáticamente para todos los centros.');
+  });
 }
 
 // ═══════════════════════════════════════════════════════════════
