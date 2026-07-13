@@ -1,7 +1,7 @@
 // MÓDULO: Administrador de Tarifas Clientes — SIT EBEMA v2.1
 // Vistas: Histórico (6M) | Consolidación | Densidad Logística | Frecuencia y Especiales | Cluster | Resultados
-import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig, saveHistorico, loadHistorico } from './data.js?v=20260712a';
-import { CAP_LIST, truckTypesWithCap, calcularCostoRuta } from './tarifas-engine.js?v=20260712a';
+import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig, saveHistorico, loadHistorico } from './data.js?v=20260712b';
+import { CAP_LIST, truckTypesWithCap, calcularCostoRuta } from './tarifas-engine.js?v=20260712b';
 import { formatCLP, showAlert, toCSV, downloadFile, formatDateDDMMYYYY } from './utils.js';
 
 // ─────────────────────────────────────────────────────────────
@@ -244,39 +244,17 @@ export function renderClientTariffView(container) {
         ccfg.historico = rows;
         oficinaToGrupo = computeOficinaGrupos(db, rows);
         // Re-renderizar la subvista activa si ya está montada
-        const activeTab = document.querySelector('#ct-subtabs button.border-primary');
-        if (activeTab) activeTab.click();
+        const ctContent = document.getElementById('ct-content');
+        if (ctContent) renderSub();
       }
     });
   }
 
-  container.innerHTML = `
-    <div class="mb-xl">
-      <h1 class="font-headline-lg text-headline-lg text-on-surface">Administrador de Tarifas Clientes</h1>
-      <p class="font-body-lg text-body-lg text-secondary">Análisis histórico, consolidación de flota, densidad logística y estructuración de tarifas por cluster.</p>
-    </div>
-    <div class="flex gap-sm mb-lg border-b border-outline-variant pb-sm overflow-x-auto" id="ct-subtabs">
-      ${subTabButton('historico',     'history',       'Histórico (6M)')}
-      ${subTabButton('consolidacion', 'inventory',     'Consolidación')}
-      ${subTabButton('densidad',      'location_on',   'Densidad Logística')}
-      ${subTabButton('especiales',    'star',          'Frecuencia y Especiales')}
-      ${subTabButton('cluster',       'map',           'Cluster')}
-      ${subTabButton('resultados',    'request_quote', 'Resultados ZFMI/ZFMP')}
-    </div>
-    <div id="ct-content"></div>
-  `;
+  container.innerHTML = `<div id="ct-content"></div>`;
 
-  document.querySelectorAll('.ct-subtab').forEach(btn => {
-    btn.addEventListener('click', () => { activeSubC = btn.dataset.sub; renderSub(); });
-  });
   renderSub();
 
   function renderSub() {
-    document.querySelectorAll('.ct-subtab').forEach(btn => {
-      btn.className = btn.dataset.sub === activeSubC
-        ? 'ct-subtab flex items-center gap-xs px-md py-sm rounded-lg font-bold text-[12px] uppercase tracking-wide bg-primary text-white cursor-pointer whitespace-nowrap'
-        : 'ct-subtab flex items-center gap-xs px-md py-sm rounded-lg font-bold text-[12px] uppercase tracking-wide bg-surface-container-high text-secondary hover:text-primary cursor-pointer whitespace-nowrap';
-    });
     const content = document.getElementById('ct-content');
     switch (activeSubC) {
       case 'historico':     renderHistorico(content, db, ccfg);      break;
@@ -499,10 +477,15 @@ function renderConsolidacion(content, db, ccfg) {
               <tbody class="divide-y divide-outline-variant">
                 ${CAP_BUCKETS.map(bkt => {
                   const s = stats[g][bkt];
-                  if (!s) return `<tr><td class="p-md text-secondary" colspan="7">${CAP_LABELS[bkt]} — sin movimiento</td></tr>`;
-                  const pct = (s.avgFill * 100).toFixed(1);
                   const objKey  = `consolidacionObjetivo.${g.replace(/\s/g,'_')}.${bkt}`;
                   const objetivo = getPath(ccfg, objKey, 80);
+                  if (!s) return `<tr class="hover:bg-surface-container-low">
+                    <td class="p-md font-bold">${CAP_LABELS[bkt]}</td>
+                    <td class="p-md text-secondary text-[11px]" colspan="3">Sin registros</td>
+                    <td class="p-md w-28">${numInput(objKey, objetivo)}</td>
+                    <td colspan="2"></td>
+                  </tr>`;
+                  const pct = (s.avgFill * 100).toFixed(1);
                   const barColor = s.avgFill >= 0.85 ? '#16a34a' : s.avgFill >= 0.65 ? '#d97706' : '#b5000b';
                   return `<tr class="hover:bg-surface-container-low">
                     <td class="p-md font-bold">${CAP_LABELS[bkt]}</td>
@@ -578,10 +561,25 @@ function renderDensidad(content, db, ccfg) {
   if (!histData.length) { content.innerHTML = `<div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm">${noDataBanner()}</div>`; return; }
 
   const grupos = allGroups();
-  const filtro  = ccfg.densidadFiltro || grupos[0] || 'all';
-  const rowsGrupo = filtro === 'all' ? histData : histData.filter(r => getCentroGroup(r.oficina) === filtro);
+  const filtro      = ccfg.densidadFiltro      || grupos[0] || 'all';
+  const filtroTipo  = ccfg.densidadFiltroTipo  || 'Regional';
+  const rowsGrupo   = filtro === 'all' ? histData : histData.filter(r => getCentroGroup(r.oficina) === filtro);
 
-  const routeData  = buildDensidadData(db, rowsGrupo);
+  // Filtrar rutas según tipo (Regional, Interregional, etc.) — mismo criterio que Participación Ruta
+  const rowsFiltrados = filtroTipo === 'all'
+    ? rowsGrupo
+    : rowsGrupo.filter(r => {
+        const route = findRoute(db, r.idRuta);
+        return (route?.clasificRuta || route?.tipo || '').toLowerCase().includes(filtroTipo.toLowerCase());
+      });
+
+  // Tipos disponibles para el selector (desde las rutas del histData del centro)
+  const tiposDisp = [...new Set(rowsGrupo.map(r => {
+    const route = findRoute(db, r.idRuta);
+    return route?.clasificRuta || route?.tipo || '';
+  }).filter(Boolean))].sort();
+
+  const routeData  = buildDensidadData(db, rowsFiltrados);
   const centroTon  = routeData.reduce((s, r) => s + r.ton, 0);
   // Clientes/obras únicos a nivel de centro (desde rowsGrupo, no agregados)
   const centroClientes = new Set(rowsGrupo.map(r => r.idCliente).filter(x => x && x !== '-')).size;
@@ -603,11 +601,16 @@ function renderDensidad(content, db, ccfg) {
           <span class="material-symbols-outlined text-primary">location_on</span>
           <h2 class="font-headline-sm text-headline-sm font-bold text-on-surface">Densidad Logística — Rutas Comunas</h2>
         </div>
-        <div class="flex items-center gap-sm">
+        <div class="flex items-center gap-sm flex-wrap">
           <label class="font-label-caps text-label-caps text-secondary uppercase text-[11px]">Centro:</label>
           <select id="den-filtro" class="${selectCls}">
             <option value="all" ${filtro === 'all' ? 'selected' : ''}>Todos</option>
             ${grupos.map(g => `<option value="${g}" ${filtro === g ? 'selected' : ''}>${g}</option>`).join('')}
+          </select>
+          <label class="font-label-caps text-label-caps text-secondary uppercase text-[11px]">Tipo ruta:</label>
+          <select id="den-filtro-tipo" class="${selectCls}">
+            <option value="all" ${filtroTipo === 'all' ? 'selected' : ''}>Todos</option>
+            ${tiposDisp.map(t => `<option value="${t}" ${filtroTipo === t ? 'selected' : ''}>${t}</option>`).join('')}
           </select>
         </div>
       </div>
@@ -654,6 +657,11 @@ function renderDensidad(content, db, ccfg) {
 
   document.getElementById('den-filtro')?.addEventListener('change', (e) => {
     ccfg.densidadFiltro = e.target.value;
+    saveDatabase(db);
+    renderDensidad(content, db, ccfg);
+  });
+  document.getElementById('den-filtro-tipo')?.addEventListener('change', (e) => {
+    ccfg.densidadFiltroTipo = e.target.value;
     saveDatabase(db);
     renderDensidad(content, db, ccfg);
   });
@@ -1047,24 +1055,45 @@ function renderCluster(content, db, ccfg) {
     });
   });
 
+  // Densidad logística por ruta (toneladas acumuladas) para el heat map
+  const routeTonMap = new Map();
+  histData.forEach(r => { routeTonMap.set(r.idRuta, (routeTonMap.get(r.idRuta) || 0) + r.ton); });
+
+  function loadLeafletHeat(cb) {
+    if (typeof L !== 'undefined' && typeof L.heatLayer !== 'undefined') { cb(); return; }
+    if (typeof L !== 'undefined') {
+      // Leaflet cargado pero no heat plugin
+      if (!document.getElementById('leaflet-heat-js')) {
+        const sc = document.createElement('script');
+        sc.id = 'leaflet-heat-js';
+        sc.src = 'https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js';
+        sc.onload = cb;
+        document.head.appendChild(sc);
+      }
+      return;
+    }
+    // Cargar Leaflet primero, luego heat
+    if (!document.getElementById('leaflet-css')) {
+      const css = document.createElement('link');
+      css.id = 'leaflet-css'; css.rel = 'stylesheet';
+      css.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
+      document.head.appendChild(css);
+    }
+    if (!document.getElementById('leaflet-js')) {
+      const sc = document.createElement('script');
+      sc.id = 'leaflet-js';
+      sc.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
+      sc.onload = () => loadLeafletHeat(cb);
+      document.head.appendChild(sc);
+    }
+  }
+
   function initLeafletMap() {
     const mapEl = document.getElementById('cluster-map');
     if (!mapEl) return;
-    if (typeof L === 'undefined') {
-      if (!document.getElementById('leaflet-css')) {
-        const css = document.createElement('link');
-        css.id = 'leaflet-css'; css.rel = 'stylesheet';
-        css.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
-        document.head.appendChild(css);
-      }
-      if (!document.getElementById('leaflet-js')) {
-        mapEl.innerHTML = '<div class="flex items-center justify-center h-full text-secondary text-[12px]">Cargando mapa...</div>';
-        const sc = document.createElement('script');
-        sc.id = 'leaflet-js';
-        sc.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
-        sc.onload = () => { if (document.getElementById('cluster-map')) initLeafletMap(); };
-        document.head.appendChild(sc);
-      }
+    if (typeof L === 'undefined' || typeof L.heatLayer === 'undefined') {
+      mapEl.innerHTML = '<div class="flex items-center justify-center h-full text-secondary text-[12px]">Cargando mapa...</div>';
+      loadLeafletHeat(() => { if (document.getElementById('cluster-map')) initLeafletMap(); });
       return;
     }
     const withCoords = routes.filter(r => r.lat && r.lon);
@@ -1079,11 +1108,21 @@ function renderCluster(content, db, ccfg) {
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       attribution: '© OpenStreetMap', maxZoom: 18
     }).addTo(map);
+
+    // — Heat map: intensidad = toneladas acumuladas por ruta —
+    const maxTon = Math.max(...withCoords.map(r => routeTonMap.get(r.idRuta) || 0), 1);
+    const heatPoints = withCoords.map(r => {
+      const intensity = (routeTonMap.get(r.idRuta) || 0) / maxTon;
+      return [r.lat, r.lon, intensity];
+    });
+    L.heatLayer(heatPoints, { radius: 30, blur: 22, maxZoom: 10, gradient: { 0.2: '#3b82f6', 0.5: '#f59e0b', 0.8: '#ef4444' } }).addTo(map);
+
+    // — Marcadores por cluster encima del heat map —
     withCoords.forEach(r => {
       const color = r.cluster ? (clusterColor(ccfg, r.cluster) || '#9ca3af') : '#9ca3af';
-      L.circleMarker([r.lat, r.lon], { radius: 7, color, fillColor: color, fillOpacity: 0.85, weight: 1.5 })
+      L.circleMarker([r.lat, r.lon], { radius: 6, color, fillColor: color, fillOpacity: 0.85, weight: 1.5 })
         .addTo(map)
-        .bindPopup('<b>' + r.idRuta + '</b><br>' + r.destino + '<br><small>' + r.tipo + (r.cluster ? ' — ' + clusterNombre(ccfg, r.cluster) : '') + '</small>');
+        .bindPopup('<b>' + r.idRuta + '</b><br>' + r.destino + '<br><small>' + r.tipo + (r.cluster ? ' — ' + clusterNombre(ccfg, r.cluster) : '') + '<br>Ton: ' + (routeTonMap.get(r.idRuta) || 0).toFixed(1) + '</small>');
     });
   }
   initLeafletMap();

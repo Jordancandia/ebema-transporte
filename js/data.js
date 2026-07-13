@@ -1097,3 +1097,4 @@ export function limpiarDatosMaestros() {
   return db;
 }
 // fin de data.js
+                     

@@ -1,7 +1,7 @@
 // Motor Actuarial — Administrador de Tarifas Transporte (SIT EBEMA)
 // Implementa, ruta por ruta y tipo de camión por tipo de camión, el cálculo
 // de costos definido en "PANTALLA 1: ADMINISTRADOR DE TARIFAS TRANSPORTE".
-import { truckCapKg, getGroupRepId } from './data.js?v=20260712a';
+import { truckCapKg, getGroupRepId } from './data.js?v=20260712b';
 
 // Capacidades nominales soportadas (kg)
 export const CAP_LIST = [5000, 10000, 15000, 28000];
@@ -144,15 +144,4 @@ export function calcularCostoRuta(db, cfg, ruta, capKg, opciones = {}) {
   };
 }
 
-// Calcula el ZCAP para TODAS las combinaciones ruta x tipo de camión activas
-export function calcularMatrizCostos(db, cfg) {
-  const rutas = db.routes.filter(r => r.activo);
-  const out = [];
-  rutas.forEach(ruta => {
-    const tipos = truckTypesWithCap(db, ruta.origenId);
-    tipos.forEach(t => {
-      out.push({ ruta, truckType: t, ...calcularCostoRuta(db, cfg, ruta, t.capKg) });
-    });
-  });
-  return out;
-}
+// Calcula el ZCAP para TODAS las combinaciones rut
