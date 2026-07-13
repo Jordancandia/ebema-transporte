@@ -812,7 +812,6 @@ function clusterRow(c, idx) {
     <td class="p-md text-center"><input type="color" class="w-10 h-8 border border-outline-variant rounded cursor-pointer" data-path="clusters.${idx}.color" value="${c.color}"></td>
     <td class="p-md"><input type="number" step="0.01" min="0" max="100" class="${iCls} w-20 text-right" data-path="clusters.${idx}.nv" value="${c.nv}"></td>
     <td class="p-md"><input type="text" class="${iCls} w-full" data-path="clusters.${idx}.frecuencia" value="${(c.frecuencia||'').replace(/"/g,'&quot;')}"></td>
-    <td class="p-md"><input type="number" step="0.1" min="0.1" class="${iCls} w-20 text-right" data-path="clusters.${idx}.pedidosPromedio" value="${c.pedidosPromedio ?? 1}"></td>
     <td class="p-md text-center">
       <label class="flex items-center justify-center gap-xs cursor-pointer">
         <input type="checkbox" data-path="clusters.${idx}.tipo0000Habilitado" ${habilitado ? 'checked' : ''} class="w-4 h-4 text-primary border-[#CED4DA] rounded">
@@ -850,9 +849,9 @@ function renderEspeciales(content, db, ccfg) {
           <thead><tr class="bg-surface-container-high border-b border-outline-variant text-left">
             <th class="p-md font-label-caps text-secondary uppercase">Nombre</th>
             <th class="p-md font-label-caps text-secondary uppercase text-center">Color</th>
-            <th class="p-md font-label-caps text-secondary uppercase text-right">NV (%)</th>
-            <th class="p-md font-label-caps text-secondary uppercase">Frecuencia</th>
             <th class="p-md font-label-caps text-secondary uppercase text-right">Ped. Prom.</th>
+            <th class="p-md font-label-caps text-secondary uppercase">Frecuencia</th>
+            
             <th class="p-md font-label-caps text-secondary uppercase text-center">Tipo 0000</th>
             <th class="p-md font-label-caps text-secondary uppercase text-right">Recargo ($)</th>
             <th class="p-md font-label-caps text-secondary uppercase text-center">Eliminar</th>
@@ -1629,7 +1628,7 @@ function renderZfmi(content, db, cfg, ccfg) {
     //                        = (zfmiKilos/pedidosProm) × (zfmiZcap/zfmiKilos)
     //                        = zfmiZcap / pedidosPromedio
     const clusterObj      = ccfg.clusters?.find(c => c.key === cluster);
-    const pedidosPromedio = clusterObj?.pedidosPromedio || 1;
+    const pedidosPromedio = clusterObj?.nv || 1;
     const zfmiKilosBase   = zfmiData?.zfmiKilos ?? null;          // 4000 kg (cap_min × factor)
     const kilosTarifaMin  = (zfmiKilosBase != null && pedidosPromedio > 0)
                             ? zfmiKilosBase / pedidosPromedio      // 1143 kg → columna "Kilos Tarif.Min"
@@ -1842,49 +1841,4 @@ function renderZfmi(content, db, cfg, ccfg) {
     btn.addEventListener('click', () => { zfmiFiltCentro = btn.dataset.c; zfmiPagina = 0; renderZfmi(content, db, cfg, ccfg); });
   });
 
-  document.getElementById('zfmi-f-camion')?.addEventListener('change', e => {
-    zfmiFiltCamion = e.target.value; zfmiPagina = 0; renderZfmi(content, db, cfg, ccfg);
-  });
-
-  document.getElementById('zfmi-f-buscar')?.addEventListener('input', e => {
-    const pos = e.target.selectionStart;
-    zfmiBuscar = e.target.value; zfmiPagina = 0;
-    renderZfmi(content, db, cfg, ccfg);
-    const el = document.getElementById('zfmi-f-buscar');
-    if (el) { el.focus(); el.setSelectionRange(pos, pos); }
-  });
-
-  document.getElementById('zfmi-reset')?.addEventListener('click', () => {
-    zfmiFiltClasif = 'todas'; zfmiFiltCentro = 'all'; zfmiFiltCamion = ''; zfmiBuscar = ''; zfmiPagina = 0;
-    renderZfmi(content, db, cfg, ccfg);
-  });
-
-  document.getElementById('zfmi-pag-prev')?.addEventListener('click', () => {
-    zfmiPagina = Math.max(0, zfmiPagina - 1); renderZfmi(content, db, cfg, ccfg);
-  });
-  document.getElementById('zfmi-pag-next')?.addEventListener('click', () => {
-    zfmiPagina = Math.min(totalPags - 1, zfmiPagina + 1); renderZfmi(content, db, cfg, ccfg);
-  });
-
-  // Descargar CSV
-  document.getElementById('btn-zfmi-download')?.addEventListener('click', () => {
-    const headers = [
-      'Centro Origen','ID Ruta','Destino','Tipo','Clasificacion','Dist KM','Cluster',
-      'Tipo Camion','Camion Minimo','ZCAP','ZFMI Tarif.Min','ZFMX Tarif.Max',
-      'Tarifa Express','Factor Consolidacion %','Kilos a Consolidar','Kilos Tarifa Minima'
-    ];
-    const data = filtered.map(r => [
-      r.centroOrigen, r.idRuta, r.destino, r.tipo, r.clasificacion, r.km,
-      r.cluster ? clusterNombre(ccfg, r.cluster) : '',
-      r.tipoCamion, r.camionMinimo,
-      r.zcap             !== null ? Math.round(r.zcap)            : '',
-      r.zfmi             !== null ? Math.round(r.zfmi)           : '',
-      r.zfmx             !== null ? Math.round(r.zfmx)           : '',
-      r.tarifaExpress    !== null ? Math.round(r.tarifaExpress)  : '',
-      r.factorPct.toFixed(1),
-      r.kilosConsolidar !== null  ? r.kilosConsolidar.toFixed(0) : '',
-      r.kilosTarifaMin  !== null  ? r.kilosTarifaMin.toFixed(0)  : ''
-    ]);
-    downloadFile('tarifa_min_max_' + Date.now() + '.csv', toCSV(headers, data));
-  });
-}
+  document.getElementById('zfmi-f-camion')?
