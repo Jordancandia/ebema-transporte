@@ -1,7 +1,7 @@
 // MÓDULO: Administrador de Tarifas Clientes — SIT EBEMA v2.1
 // Vistas: Histórico (6M) | Consolidación | Densidad Logística | Frecuencia y Especiales | Cluster | Resultados
-import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig, saveHistorico, loadHistorico, getOrigenGroups } from './data.js?v=20260712g';
-import { CAP_LIST, truckTypesWithCap, calcularCostoRuta } from './tarifas-engine.js?v=20260712g';
+import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig, saveHistorico, loadHistorico, getOrigenGroups } from './data.js?v=20260712h';
+import { CAP_LIST, truckTypesWithCap, calcularCostoRuta } from './tarifas-engine.js?v=20260712h';
 import { formatCLP, showAlert, toCSV, downloadFile, formatDateDDMMYYYY, escapeHtml } from './utils.js';
 
 // ─────────────────────────────────────────────────────────────
@@ -477,31 +477,38 @@ function renderConsolidacion(content, db, ccfg) {
                 <th class="p-md font-label-caps text-secondary uppercase">Barra</th>
                 <th class="p-md font-label-caps text-secondary uppercase text-right">Objetivo (%)</th>
                 <th class="p-md font-label-caps text-secondary uppercase text-right">Ton Total</th>
-                <th class="p-md font-label-caps text-secondary uppercase text-right">Gasto Total</th>
+                <th class="p-md font-label-caps text-secondary uppercase text-right">Participación Ton</th>
               </tr></thead>
               <tbody class="divide-y divide-outline-variant">
-                ${CAP_BUCKETS.map(bkt => {
-                  const s = stats[g][bkt];
-                  const objKey  = `consolidacionObjetivo.${g.replace(/\s/g,'_')}.${bkt}`;
-                  const objetivo = getPath(ccfg, objKey, 80);
-                  if (!s) return `<tr class="hover:bg-surface-container-low">
-                    <td class="p-md font-bold">${CAP_LABELS[bkt]}</td>
-                    <td class="p-md text-secondary text-[11px]" colspan="3">Sin registros</td>
-                    <td class="p-md w-28">${numInput(objKey, objetivo)}</td>
-                    <td colspan="2"></td>
-                  </tr>`;
-                  const pct = (s.avgFill * 100).toFixed(1);
-                  const barColor = s.avgFill >= 0.85 ? '#16a34a' : s.avgFill >= 0.65 ? '#d97706' : '#b5000b';
-                  return `<tr class="hover:bg-surface-container-low">
-                    <td class="p-md font-bold">${CAP_LABELS[bkt]}</td>
-                    <td class="p-md text-right font-data-mono">${s.docs.toLocaleString()}</td>
-                    <td class="p-md text-right font-data-mono font-bold" style="color:${barColor}">${pct}%</td>
-                    <td class="p-md w-40"><div class="h-2 bg-surface-container-high rounded overflow-hidden"><div class="h-2 rounded" style="width:${Math.min(s.avgFill*100,100)}%;background:${barColor}"></div></div></td>
-                    <td class="p-md w-28">${numInput(objKey, objetivo)}</td>
-                    <td class="p-md text-right font-data-mono">${s.totalTon.toFixed(1)} T</td>
-                    <td class="p-md text-right font-data-mono">${formatCLP(s.totalGasto)}</td>
-                  </tr>`;
-                }).join('')}
+                ${(() => {
+                  const totGrupo = CAP_BUCKETS.reduce((s, b) => s + (stats[g][b]?.totalTon || 0), 0);
+                  return CAP_BUCKETS.map(bkt => {
+                    const s = stats[g][bkt];
+                    const objKey  = `consolidacionObjetivo.${g.replace(/\s/g,'_')}.${bkt}`;
+                    const objetivo = getPath(ccfg, objKey, 80);
+                    if (!s) return `<tr class="hover:bg-surface-container-low">
+                      <td class="p-md font-bold">${CAP_LABELS[bkt]}</td>
+                      <td class="p-md text-secondary text-[11px]" colspan="3">Sin registros</td>
+                      <td class="p-md w-28">${numInput(objKey, objetivo)}</td>
+                      <td colspan="2"></td>
+                    </tr>`;
+                    const pct      = (s.avgFill * 100).toFixed(1);
+                    const barColor = s.avgFill >= 0.85 ? '#16a34a' : s.avgFill >= 0.65 ? '#d97706' : '#b5000b';
+                    const partPct  = totGrupo > 0 ? (s.totalTon / totGrupo * 100) : 0;
+                    const partColor = partPct >= 40 ? '#b5000b' : partPct >= 20 ? '#d97706' : '#6b7280';
+                    return `<tr class="hover:bg-surface-container-low">
+                      <td class="p-md font-bold">${CAP_LABELS[bkt]}</td>
+                      <td class="p-md text-right font-data-mono">${s.docs.toLocaleString()}</td>
+                      <td class="p-md text-right font-data-mono font-bold" style="color:${barColor}">${pct}%</td>
+                      <td class="p-md w-40"><div class="h-2 bg-surface-container-high rounded overflow-hidden"><div class="h-2 rounded" style="width:${Math.min(s.avgFill*100,100)}%;background:${barColor}"></div></div></td>
+                      <td class="p-md w-28">${numInput(objKey, objetivo)}</td>
+                      <td class="p-md text-right font-data-mono">${s.totalTon.toFixed(1)} T</td>
+                      <td class="p-md text-right font-data-mono font-bold" style="color:${partColor}">${partPct.toFixed(1)}%
+                        <div class="w-16 h-1.5 bg-surface-container-high rounded-full overflow-hidden inline-block ml-xs align-middle"><div class="h-full rounded-full" style="width:${partPct.toFixed(1)}%;background:${partColor}"></div></div>
+                      </td>
+                    </tr>`;
+                  }).join('');
+                })()}
               </tbody>
             </table>
           </div>
