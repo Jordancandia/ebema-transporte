@@ -1,7 +1,7 @@
 // MÓDULO: Administrador de Tarifas Clientes — SIT EBEMA v2.1
 // Vistas: Histórico (6M) | Consolidación | Densidad Logística | Frecuencia y Especiales | Cluster | Resultados
-import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig, saveHistorico, loadHistorico, getOrigenGroups } from './data.js?v=20260712e';
-import { CAP_LIST, truckTypesWithCap, calcularCostoRuta } from './tarifas-engine.js?v=20260712e';
+import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig, saveHistorico, loadHistorico, getOrigenGroups } from './data.js?v=20260712f';
+import { CAP_LIST, truckTypesWithCap, calcularCostoRuta } from './tarifas-engine.js?v=20260712f';
 import { formatCLP, showAlert, toCSV, downloadFile, formatDateDDMMYYYY, escapeHtml } from './utils.js';
 
 // ─────────────────────────────────────────────────────────────
@@ -14,6 +14,7 @@ let histFilterEstado  = 'all';
 let clusterFiltGrupo  = 'all';
 let clusterFiltTipo   = 'all';
 let clusterFiltClasif = 'all';
+let zfmpFiltCentro   = 'all';
 let activeSubC        = 'historico';
 
 // Permite fijar el subtab activo desde el menu lateral (app.js) antes de renderizar
@@ -1287,126 +1288,164 @@ function renderCluster(content, db, ccfg) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// VISTA 6: RESULTADOS ZFMI / ZFMP
+// VISTA 6: TARIFAS $/KG  (ZFMP por ruta × tipo de camión)
 // ═══════════════════════════════════════════════════════════════
 function renderResultados(content, db, cfg, ccfg) {
-  if (!histData.length) {
-    content.innerHTML = '<div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm">' + noDataBanner() + '</div>';
+  // ── Construir todas las combinaciones ruta × tipo camión ────────────────
+  const rutas  = (db.routes || []).filter(r => r.activo);
+  const allRows = [];
+
+  rutas.forEach(ruta => {
+    const grupo          = ruta.origen_grupo || '';
+    const grupoKey       = grupo.replace(/\s/g, '_');
+    const tipos          = truckTypesWithCap(db, ruta.origenId);
+    const cluster        = ccfg.comunaCluster[String(ruta.id || '')] ||
+                           ccfg.comunaCluster[String(ruta.codigo || '')] || '';
+
+    tipos.forEach(t => {
+      const capKg        = t.capKg;                        // ej. 5000, 10000
+      const bkt          = capKg / 1000;                   // 5, 10, 15, 28
+      const factorPct    = getPath(ccfg, `consolidacionObjetivo.${grupoKey}.${bkt}`, 80);
+      const kilosConsolidar = capKg * (factorPct / 100);   // cap_kg × factor
+
+      let zcap = null;
+      try { zcap = calcularCostoRuta(db, cfg, ruta, capKg).zcap; } catch (_) {}
+
+      const zfmp = (zcap !== null && kilosConsolidar > 0) ? zcap / kilosConsolidar : null;
+
+      allRows.push({
+        centroOrigen:    grupo,
+        idRuta:          ruta.codigo || String(ruta.id || ''),
+        destino:         ruta.destino || '',
+        tipo:            ruta.tipo || '',
+        clasificacion:   ruta.clasificRuta || '',
+        km:              Number(ruta.km) || 0,
+        cluster,
+        tipoCamion:      t.type || CAP_LABELS[bkt] || (bkt + 'T'),
+        capKg,
+        zcap,
+        factorPct,
+        kilosConsolidar,
+        zfmp
+      });
+    });
+  });
+
+  if (!allRows.length) {
+    content.innerHTML = '<div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm">' +
+      noDataBanner('No hay rutas activas con tipos de camión configurados.') + '</div>';
     return;
   }
 
-  const routeStats = new Map();
-  histData.forEach(r => {
-    if (!routeStats.has(r.idRuta)) {
-      routeStats.set(r.idRuta, { idRuta: r.idRuta, ton: 0, docs: new Set(), clientes: new Set(), obras: new Set(), gastoVistos: new Set(), gastoTotal: 0 });
-    }
-    const rs = routeStats.get(r.idRuta);
-    rs.ton += r.ton;
-    rs.docs.add(r.documento);
-    if (r.idCliente && r.idCliente !== '-') rs.clientes.add(r.idCliente);
-    if (r.idObra    && r.idObra    !== '-') rs.obras.add(r.idObra);
-    if (!rs.gastoVistos.has(r.documento)) { rs.gastoVistos.add(r.documento); rs.gastoTotal += r.gasto; }
+  // ── Centros disponibles para filtro ──────────────────────────────────────
+  const centros = [...new Set(allRows.map(r => r.centroOrigen))].filter(Boolean).sort();
+
+  // ── Filas filtradas ───────────────────────────────────────────────────────
+  const rows = zfmpFiltCentro === 'all'
+    ? allRows
+    : allRows.filter(r => r.centroOrigen === zfmpFiltCentro);
+
+  // ── Selector de centros ───────────────────────────────────────────────────
+  const selCentro =
+    '<select id="zfmp-filt-centro" class="border border-[#CED4DA] px-sm py-xs text-[12px] bg-white rounded focus:border-primary focus:ring-0">' +
+      '<option value="all"' + (zfmpFiltCentro === 'all' ? ' selected' : '') + '>Todos los centros</option>' +
+      centros.map(c =>
+        '<option value="' + escapeHtml(c) + '"' + (zfmpFiltCentro === c ? ' selected' : '') + '>' + escapeHtml(c) + '</option>'
+      ).join('') +
+    '</select>';
+
+  // ── HTML tabla ────────────────────────────────────────────────────────────
+  const rowsHtml = rows.map(r => {
+    const clColor  = r.cluster ? (clusterColor(ccfg, r.cluster) || '#9ca3af') : '#d1d5db';
+    const clNombre = r.cluster ? escapeHtml(clusterNombre(ccfg, r.cluster)) : '<span class="text-secondary">—</span>';
+    const clDot    = '<span class="inline-block w-2 h-2 rounded-full mr-xs flex-shrink-0" style="background:' + clColor + '"></span>';
+    return '<tr class="hover:bg-surface-container-low border-b border-outline-variant text-[12px]">' +
+      '<td class="p-sm text-[11px] text-secondary">' + escapeHtml(r.centroOrigen) + '</td>' +
+      '<td class="p-sm font-data-mono font-bold text-primary text-[11px]">' + escapeHtml(r.idRuta) + '</td>' +
+      '<td class="p-sm">' + escapeHtml(r.destino) + '</td>' +
+      '<td class="p-sm text-[11px]"><span class="border border-outline-variant px-xs py-px rounded">' + escapeHtml(r.tipo) + '</span></td>' +
+      '<td class="p-sm text-[11px] text-secondary">' + escapeHtml(r.clasificacion) + '</td>' +
+      '<td class="p-sm text-right font-data-mono text-[11px]">' + r.km.toLocaleString('es-CL') + '</td>' +
+      '<td class="p-sm"><div class="flex items-center gap-xs">' + clDot + clNombre + '</div></td>' +
+      '<td class="p-sm text-[11px]"><span class="border border-outline-variant px-xs py-px rounded font-data-mono">' + escapeHtml(r.tipoCamion) + '</span></td>' +
+      '<td class="p-sm text-right font-data-mono text-[11px]">' + (r.zcap !== null ? formatCLP(r.zcap) : '<span class="text-secondary">—</span>') + '</td>' +
+      '<td class="p-sm text-right font-data-mono text-[11px]">' + r.factorPct.toFixed(1) + '%</td>' +
+      '<td class="p-sm text-right font-data-mono text-[11px]">' + r.kilosConsolidar.toLocaleString('es-CL', { maximumFractionDigits: 0 }) + ' kg</td>' +
+      '<td class="p-sm text-right font-bold font-data-mono text-[11px]' + (r.zfmp !== null ? ' text-primary' : '') + '">' +
+        (r.zfmp !== null ? '$' + r.zfmp.toLocaleString('es-CL', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '<span class="text-secondary">—</span>') +
+      '</td>' +
+    '</tr>';
+  }).join('');
+
+  content.innerHTML =
+    '<div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm">' +
+
+      // Header
+      '<div class="flex items-center justify-between mb-md border-b border-outline-variant pb-sm flex-wrap gap-sm">' +
+        '<div class="flex items-center gap-sm">' +
+          '<span class="material-symbols-outlined text-primary">price_change</span>' +
+          '<h2 class="font-headline-sm text-headline-sm font-bold text-on-surface">Tarifas $/Kg</h2>' +
+        '</div>' +
+        '<div class="flex items-center gap-sm flex-wrap">' +
+          '<span class="text-[12px] text-secondary">' + rows.length + ' combinaciones</span>' +
+          selCentro +
+          '<button id="btn-zfmp-download" class="flex items-center gap-xs border border-secondary text-secondary hover:bg-surface-container-high font-bold px-md py-sm rounded text-[11px] uppercase tracking-wider">' +
+            '<span class="material-symbols-outlined text-[16px]">download</span> Descargar CSV' +
+          '</button>' +
+        '</div>' +
+      '</div>' +
+
+      // Fórmula info
+      '<div class="text-[11px] text-secondary mb-md flex flex-wrap gap-lg">' +
+        '<span><b>KILOS A CONSOLIDAR</b> = Cap. Camión × Factor Consolidación</span>' +
+        '<span><b>ZFMP ($/kg)</b> = ZCAP / Kilos a Consolidar</span>' +
+      '</div>' +
+
+      // Tabla
+      '<div class="bg-surface border border-outline-variant rounded overflow-x-auto">' +
+        '<table class="w-full border-collapse">' +
+          '<thead>' +
+            '<tr class="bg-surface-container-high border-b border-outline-variant text-left sticky top-0">' +
+              '<th class="p-sm font-label-caps text-secondary uppercase text-[10px]">Centro Origen</th>' +
+              '<th class="p-sm font-label-caps text-secondary uppercase text-[10px]">ID Ruta</th>' +
+              '<th class="p-sm font-label-caps text-secondary uppercase text-[10px]">Destino</th>' +
+              '<th class="p-sm font-label-caps text-secondary uppercase text-[10px]">Tipo</th>' +
+              '<th class="p-sm font-label-caps text-secondary uppercase text-[10px]">Clasificación</th>' +
+              '<th class="p-sm font-label-caps text-secondary uppercase text-[10px] text-right">Dist. KM</th>' +
+              '<th class="p-sm font-label-caps text-secondary uppercase text-[10px]">Cluster</th>' +
+              '<th class="p-sm font-label-caps text-secondary uppercase text-[10px]">Tipo Camión</th>' +
+              '<th class="p-sm font-label-caps text-secondary uppercase text-[10px] text-right">ZCAP</th>' +
+              '<th class="p-sm font-label-caps text-secondary uppercase text-[10px] text-right">Factor Cons.</th>' +
+              '<th class="p-sm font-label-caps text-secondary uppercase text-[10px] text-right">Kilos Consol.</th>' +
+              '<th class="p-sm font-label-caps text-secondary uppercase text-[10px] text-right">ZFMP $/kg</th>' +
+            '</tr>' +
+          '</thead>' +
+          '<tbody class="divide-y divide-outline-variant">' +
+            rowsHtml +
+          '</tbody>' +
+        '</table>' +
+      '</div>' +
+    '</div>';
+
+  // ── Filtro centro ─────────────────────────────────────────────────────────
+  document.getElementById('zfmp-filt-centro')?.addEventListener('change', e => {
+    zfmpFiltCentro = e.target.value;
+    renderResultados(content, db, cfg, ccfg);
   });
 
-  const clusterRoutes = {};
-  ccfg.clusters.forEach(c => { clusterRoutes[c.key] = []; });
-  clusterRoutes['__sin__'] = [];
-
-  routeStats.forEach((rs, idRuta) => {
-    const clKey   = ccfg.comunaCluster[idRuta] || '__sin__';
-    const route   = findRoute(db, idRuta);
-    const cluster = clusterByKey(ccfg, clKey);
-    const nv      = cluster?.nv ?? 90;
-    let tarifa = null;
-    if (typeof calcularCostoRuta === 'function' && cluster) {
-      try { tarifa = calcularCostoRuta(db, cfg, idRuta, { nv, tons: rs.ton / Math.max(rs.docs.size, 1) }); } catch (_) {}
-    }
-    const bucket = clusterRoutes[clKey] !== undefined ? clusterRoutes[clKey] : clusterRoutes['__sin__'];
-    bucket.push({ idRuta, destino: route?.destino || idRuta, tipo: route?.tipo || '?', ton: rs.ton, docs: rs.docs.size, clientes: rs.clientes.size, obras: rs.obras.size, gastoReal: rs.gastoTotal, tarifa });
+  // ── Descarga CSV ──────────────────────────────────────────────────────────
+  document.getElementById('btn-zfmp-download')?.addEventListener('click', () => {
+    const headers = ['Centro Origen','ID Ruta','Destino','Tipo','Clasificacion','Dist KM',
+                     'Cluster','Tipo Camion','ZCAP','Factor Consolidacion %','Kilos a Consolidar','ZFMP $/kg'];
+    const data = rows.map(r => [
+      r.centroOrigen, r.idRuta, r.destino, r.tipo, r.clasificacion, r.km,
+      r.cluster ? clusterNombre(ccfg, r.cluster) : '',
+      r.tipoCamion,
+      r.zcap !== null ? r.zcap.toFixed(2) : '',
+      r.factorPct.toFixed(1),
+      r.kilosConsolidar.toFixed(0),
+      r.zfmp !== null ? r.zfmp.toFixed(4) : ''
+    ]);
+    downloadFile('tarifas_kg_' + Date.now() + '.csv', toCSV(headers, data));
   });
-
-  const totalRoutes  = routeStats.size;
-  const sinCluster   = clusterRoutes['__sin__'].length;
-  const assigned     = totalRoutes - sinCluster;
-
-  let html = '<div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm">';
-  html += '<div class="flex items-center justify-between mb-md border-b border-outline-variant pb-sm flex-wrap gap-sm">';
-  html += '<div class="flex items-center gap-sm"><span class="material-symbols-outlined text-primary">request_quote</span>';
-  html += '<h2 class="font-headline-sm text-headline-sm font-bold text-on-surface">Resultados ZFMI / ZFMP</h2></div>';
-  html += '<div class="flex items-center gap-sm text-[12px] text-secondary">';
-  html += '<span>' + assigned + ' / ' + totalRoutes + ' rutas asignadas</span>';
-  html += sinCluster > 0
-    ? '<span class="text-amber-600 font-bold">' + sinCluster + ' sin cluster</span>'
-    : '<span class="text-green-600 font-bold">Completo</span>';
-  html += '</div></div>';
-
-  ccfg.clusters.forEach(c => {
-    const rows = (clusterRoutes[c.key] || []).sort((a, b) => b.ton - a.ton);
-    if (!rows.length) return;
-    const totTon   = rows.reduce((s, r) => s + r.ton,       0);
-    const totDocs  = rows.reduce((s, r) => s + r.docs,      0);
-    const totGasto = rows.reduce((s, r) => s + r.gastoReal, 0);
-    const totCli   = rows.reduce((s, r) => s + r.clientes,  0);
-    html += '<div class="mb-xl">';
-    html += '<div class="flex items-center gap-sm mb-sm flex-wrap">';
-    html += '<span class="inline-block w-4 h-4 rounded-full" style="background:' + c.color + '"></span>';
-    html += '<h3 class="font-bold text-[14px] text-on-surface">' + c.nombre + '</h3>';
-    html += '<span class="text-[11px] text-secondary">NV ' + c.nv + '% · ' + c.frecuencia + ' · ' + rows.length + ' rutas · ' + totTon.toFixed(1) + ' T · ' + formatCLP(totGasto) + '</span>';
-    html += '</div>';
-    html += '<div class="bg-surface border border-outline-variant rounded overflow-x-auto">';
-    html += '<table class="w-full border-collapse text-[12px]">';
-    html += '<thead><tr class="bg-surface-container-high border-b border-outline-variant text-left">';
-    html += '<th class="p-sm font-label-caps text-secondary uppercase">Ruta</th>';
-    html += '<th class="p-sm font-label-caps text-secondary uppercase">Tipo</th>';
-    html += '<th class="p-sm font-label-caps text-secondary uppercase text-right">Ton</th>';
-    html += '<th class="p-sm font-label-caps text-secondary uppercase text-right">Despachos</th>';
-    html += '<th class="p-sm font-label-caps text-secondary uppercase text-right">Clientes</th>';
-    html += '<th class="p-sm font-label-caps text-secondary uppercase text-right">Gasto Real</th>';
-    html += '<th class="p-sm font-label-caps text-secondary uppercase text-right">Tarifa Calc.</th>';
-    html += '</tr></thead><tbody class="divide-y divide-outline-variant">';
-    rows.forEach(r => {
-      html += '<tr class="hover:bg-surface-container-low">';
-      html += '<td class="p-sm"><span class="font-bold">' + r.idRuta + '</span>' + (r.destino !== r.idRuta ? '<span class="font-normal text-secondary text-[10px] ml-xs">— ' + r.destino + '</span>' : '') + '</td>';
-      html += '<td class="p-sm"><span class="text-[10px] px-xs py-px rounded border border-outline-variant">' + r.tipo + '</span></td>';
-      html += '<td class="p-sm text-right font-data-mono">' + r.ton.toFixed(1) + ' T</td>';
-      html += '<td class="p-sm text-right font-data-mono">' + r.docs + '</td>';
-      html += '<td class="p-sm text-right font-data-mono">' + r.clientes + '</td>';
-      html += '<td class="p-sm text-right font-data-mono">' + formatCLP(r.gastoReal) + '</td>';
-      html += '<td class="p-sm text-right font-data-mono">' + (r.tarifa != null ? formatCLP(r.tarifa) : '<span class="text-secondary">—</span>') + '</td>';
-      html += '</tr>';
-    });
-    html += '</tbody><tfoot><tr class="bg-surface-container-low font-bold border-t-2 border-outline-variant">';
-    html += '<td class="p-sm" colspan="2">Total</td>';
-    html += '<td class="p-sm text-right font-data-mono">' + totTon.toFixed(1) + ' T</td>';
-    html += '<td class="p-sm text-right font-data-mono">' + totDocs + '</td>';
-    html += '<td class="p-sm text-right font-data-mono">' + totCli + '</td>';
-    html += '<td class="p-sm text-right font-data-mono">' + formatCLP(totGasto) + '</td>';
-    html += '<td class="p-sm text-right font-data-mono">—</td>';
-    html += '</tr></tfoot></table></div></div>';
-  });
-
-  if (sinCluster > 0) {
-    const sinRows = clusterRoutes['__sin__'].sort((a, b) => b.ton - a.ton);
-    html += '<div class="mb-lg border border-amber-200 rounded p-md bg-amber-50">';
-    html += '<h3 class="font-bold text-[13px] text-amber-800 mb-sm flex items-center gap-xs">';
-    html += '<span class="material-symbols-outlined text-[16px]">warning</span>Sin Cluster Asignado — ' + sinCluster + ' rutas</h3>';
-    html += '<div class="bg-white border border-outline-variant rounded overflow-x-auto">';
-    html += '<table class="w-full border-collapse text-[12px]">';
-    html += '<thead><tr class="bg-surface-container-high border-b border-outline-variant text-left">';
-    html += '<th class="p-sm font-label-caps text-secondary uppercase">Ruta</th><th class="p-sm font-label-caps text-secondary uppercase">Tipo</th>';
-    html += '<th class="p-sm font-label-caps text-secondary uppercase text-right">Ton</th><th class="p-sm font-label-caps text-secondary uppercase text-right">Despachos</th></tr></thead>';
-    html += '<tbody class="divide-y divide-outline-variant">';
-    sinRows.forEach(r => {
-      html += '<tr class="hover:bg-surface-container-low">';
-      html += '<td class="p-sm font-bold">' + r.idRuta + (r.destino !== r.idRuta ? ' <span class="font-normal text-secondary text-[10px]">— ' + r.destino + '</span>' : '') + '</td>';
-      html += '<td class="p-sm"><span class="text-[10px] px-xs py-px rounded border border-outline-variant">' + r.tipo + '</span></td>';
-      html += '<td class="p-sm text-right font-data-mono">' + r.ton.toFixed(1) + ' T</td>';
-      html += '<td class="p-sm text-right font-data-mono">' + r.docs + '</td>';
-      html += '</tr>';
-    });
-    html += '</tbody></table></div></div>';
-  }
-
-  html += '</div>';
-  content.innerHTML = html;
 }
