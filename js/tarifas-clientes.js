@@ -1078,7 +1078,19 @@ function renderCluster(content, db, ccfg) {
         cluster: ccfg.comunaCluster[String(s.route.id || '')] ||
                  ccfg.comunaCluster[String(s.route.codigo || '')] || ''
       };
-    }).sort((a, b) => b.densidad - a.densidad);
+    }).sort((a, b) => {
+      // 1) Por cluster: numérico asc (1, 2, 3), luego 'spot', luego sin asignar
+      const clOrd = cl => {
+        if (!cl) return 999;
+        if (cl === 'spot') return 500;
+        const n = parseInt(cl, 10);
+        return isNaN(n) ? 400 : n;
+      };
+      const ca = clOrd(a.cluster), cb = clOrd(b.cluster);
+      if (ca !== cb) return ca - cb;
+      // 2) Dentro del mismo cluster: densidad desc
+      return b.densidad - a.densidad;
+    });
 
     return { grupo, rows, totTon };
   }
