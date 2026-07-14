@@ -4,6 +4,7 @@ import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig, save
 import { CAP_LIST, truckTypesWithCap, calcularCostoRuta } from './tarifas-engine.js?v=20260712k';
 import { buildZcapMap } from './zcap.js?v=20260712k';
 import { formatCLP, showAlert, toCSV, downloadFile, formatDateDDMMYYYY, escapeHtml } from './utils.js';
+import { supabase } from './supabase-client.js';
 
 // ─────────────────────────────────────────────────────────────
 // ESTADO DE MÓDULO
@@ -1080,6 +1081,41 @@ function clusterOpDe(eje,key,ctx){
   return {cluster:e?(e+'-'+cx):cx,frecuencia:f.frecuencia,flota:f.flota};
 }
 
+// ── Helpers de persistencia Cluster Operativo -> BD (cluster_rutas) ──────
+function anchorsOpFor(cd) {
+  return cd.rows
+    .filter(r => { const cx = densKeyToCx(r.cluster); return (cx === 'C1' || cx === 'C2') && r.lat && r.lon; })
+    .map(r => ({ lat: r.lat, lon: r.lon, eje: r.eje }));
+}
+function buildClusterOpRows(cd) {
+  const anchorsOp = anchorsOpFor(cd);
+  return cd.rows.map(r => {
+    const op = clusterOpDe(r.eje, r.cluster, { lat: r.lat, lon: r.lon, anchors: anchorsOp });
+    const m  = String(r.rutaCodigo || '').match(/^[A-Za-z]+/);
+    return {
+      centro:          cd.repId || '',
+      codigo_origen:   m ? m[0] : '',
+      destino:         r.destino || '',
+      tipo_destino:    'Comuna',
+      comuna_padre:    r.comunaPadre || r.destino || '',
+      clasificacion:   'Regional',
+      region_destino:  r.region || null,
+      densidad:        densKeyToCx(r.cluster),
+      eje_vial:        r.eje || '—',
+      descripcion_eje: r.ejeAlias || null,
+      cluster:         op.cluster,
+      frecuencia:      op.frecuencia,
+      tipo_flota:      op.flota,
+    };
+  });
+}
+async function persistClusterOpDB(cd) {
+  const rows = buildClusterOpRows(cd);
+  if (!rows.length) return;
+  const { error } = await supabase.rpc('fn_upsert_cluster', { p_rows: rows });
+  if (error) throw error;
+}
+
 function renderCluster(content, db, ccfg) {
   if (!histData.length) {
     content.innerHTML = '<div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm">' + noDataBanner() + '</div>';
@@ -1159,6 +1195,8 @@ function renderCluster(content, db, ccfg) {
         rutaId:     String(s.route.id     || ''),
         rutaCodigo: String(s.route.codigo || ''),
         destino:    s.route.destino || '',
+        comunaPadre: s.route.comuna || s.route.destino || '',
+        region:     s.route.region || '',
         zona:       s.route.id_zona_transporte || '',
         caracteristica: caract,
         ton:        s.ton,
@@ -1183,7 +1221,7 @@ function renderCluster(content, db, ccfg) {
       return b.densidad - a.densidad;
     });
 
-    return { grupo, rows, totTon };
+    return { grupo, rows, totTon, repId: String(repId) };
   }
 
   const centrosData = grupos.map(buildCentroData).filter(Boolean);
@@ -1208,7 +1246,7 @@ function renderCluster(content, db, ccfg) {
     const uid      = cd.grupo.replace(/[^a-z0-9]/gi, '_');
     const asig     = cd.rows.filter(r => r.cluster).length;
     const maxDen   = cd.rows[0]?.densidad || 1;
-    const anchorsOp = cd.rows.filter(r => { const cx=densKeyToCx(r.cluster); return (cx==='C1'||cx==='C2') && r.lat && r.lon; }).map(r => ({lat:r.lat, lon:r.lon, eje:r.eje}));
+    const anchorsOp = anchorsOpFor(cd);
 
     const rowsHtml = cd.rows.map((r, i) => {
       const bc      = r.densidad >= 15 ? '#b5000b' : r.densidad >= 5 ? '#d97706' : '#6b7280';
@@ -1314,7 +1352,7 @@ function renderCluster(content, db, ccfg) {
   // ── Evento: cambio de cluster individual ────────────────────────────────
   function refreshCardOp(grupo) {
     const cd = centrosData.find(c => c.grupo === grupo); if (!cd) return;
-    const anchorsOp = cd.rows.filter(r => { const cx=densKeyToCx(r.cluster); return (cx==='C1'||cx==='C2') && r.lat && r.lon; }).map(r => ({lat:r.lat, lon:r.lon, eje:r.eje}));
+    const anchorsOp = anchorsOpFor(cd);
     const uid = grupo.replace(/[^a-z0-9]/gi, '_');
     const card = document.getElementById('cl-card-' + uid); if (!card) return;
     card.querySelectorAll('.cl-assign').forEach(sel => {
@@ -1379,7 +1417,7 @@ function renderCluster(content, db, ccfg) {
           });
         });
         document.getElementById('cl-card-' + uid)?.querySelectorAll('.cl-guardar-centro').forEach(b => {
-          b.addEventListener('click', () => { saveDatabase(db); flashGuardar(b); });
+          b.addEventListener('click', () => flashGuardar(b));
         });
         document.getElementById('cl-card-' + uid)?.querySelectorAll('.cl-auto-centro').forEach(b => {
           b.click; // rebind handled by renderCluster re-call fallback
@@ -1390,12 +1428,28 @@ function renderCluster(content, db, ccfg) {
   });
 
   // ── Evento: guardar por centro ───────────────────────────────────────────
-  function flashGuardar(btn) {
+  async function flashGuardar(btn) {
     saveDatabase(db);
     const orig = btn.innerHTML;
-    btn.innerHTML = '<span class="material-symbols-outlined text-[14px]">check_circle</span> Guardado';
-    btn.classList.add('bg-primary', 'text-white');
-    setTimeout(() => { btn.innerHTML = orig; btn.classList.remove('bg-primary','text-white'); }, 2000);
+    const grupo = btn.dataset.grupo;
+    const cd = centrosData.find(c => c.grupo === grupo);
+    btn.disabled = true;
+    btn.innerHTML = '<span class="material-symbols-outlined text-[14px]">sync</span> Guardando…';
+    try {
+      if (cd) await persistClusterOpDB(cd);
+      btn.innerHTML = '<span class="material-symbols-outlined text-[14px]">check_circle</span> Guardado';
+      btn.classList.add('bg-primary', 'text-white');
+    } catch (e) {
+      console.error('Error al sincronizar cluster_rutas:', e);
+      btn.innerHTML = '<span class="material-symbols-outlined text-[14px]">error</span> Error BD';
+      btn.classList.add('bg-red-600', 'text-white');
+      showAlert('Se guardó localmente, pero falló la sincronización con la base de datos: ' + (e.message || e), 'error');
+    }
+    setTimeout(() => {
+      btn.innerHTML = orig;
+      btn.classList.remove('bg-primary', 'text-white', 'bg-red-600');
+      btn.disabled = false;
+    }, 2500);
   }
 
   content.querySelectorAll('.cl-guardar-centro').forEach(btn => {
@@ -1403,12 +1457,18 @@ function renderCluster(content, db, ccfg) {
   });
 
   // ── Evento: auto-asignar TODOS los centros ───────────────────────────────
-  document.getElementById('btn-auto-todos')?.addEventListener('click', () => {
+  document.getElementById('btn-auto-todos')?.addEventListener('click', async () => {
     if (!confirm('¿Asignar clusters automáticamente para TODOS los centros?\n\nAlgoritmo: densidad logística + cercanía geográfica de comunas\n\nEsto reemplazará todas las asignaciones existentes.')) return;
     centrosData.forEach(cd => asignarClustersCentro(cd.rows, ccfg));
     saveDatabase(db);
+    try {
+      for (const cd of centrosData) await persistClusterOpDB(cd);
+      showAlert('Clusters asignados automáticamente para todos los centros.');
+    } catch (e) {
+      console.error('Error al sincronizar cluster_rutas:', e);
+      showAlert('Clusters asignados localmente, pero falló la sincronización con la base de datos: ' + (e.message || e), 'error');
+    }
     renderCluster(content, db, ccfg);
-    showAlert('Clusters asignados automáticamente para todos los centros.');
   });
 }
 
