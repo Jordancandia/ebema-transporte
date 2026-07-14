@@ -1,6 +1,6 @@
 // MÓDULO: Administrador de Tarifas Clientes — SIT EBEMA v2.1
 // Vistas: Histórico (6M) | Consolidación | Densidad Logística | Frecuencia y Especiales | Cluster | Resultados
-import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig, saveHistorico, loadHistorico, getOrigenGroups } from './data.js?v=20260712k';
+import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig, saveHistorico, loadHistorico, saveHistoricoGlobal, getOrigenGroups } from './data.js?v=20260714a';
 import { CAP_LIST, truckTypesWithCap, calcularCostoRuta } from './tarifas-engine.js?v=20260712k';
 import { buildZcapMap } from './zcap.js?v=20260712k';
 import { formatCLP, showAlert, toCSV, downloadFile, formatDateDDMMYYYY, escapeHtml } from './utils.js';
@@ -404,7 +404,7 @@ function renderHistorico(content, db, ccfg) {
     const file = e.target.files[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = (ev) => {
+    reader.onload = async (ev) => {
       const parsed = parseHistCSV(ev.target.result);
       if (!parsed.length) { showAlert('No se encontraron filas válidas en el CSV.', 'error'); return; }
       histData = parsed;
@@ -414,11 +414,18 @@ function renderHistorico(content, db, ccfg) {
       ccfg.histMeta = { uploadDate: formatDateDDMMYYYY(new Date()), rowCount: parsed.length, fileName: file.name };
       ccfg.historico = parsed;
       saveDatabase(db);
-      saveHistorico(parsed); // guardar en IndexedDB (sin límite localStorage)
+      saveHistorico(parsed); // respaldo local rápido en IndexedDB
       const msg = `${parsed.length.toLocaleString()} filas cargadas y guardadas.`;
       if (parsed.length > 5000) showAlert(`${msg} (Más de 5000 registros — puede afectar el rendimiento al guardar.)`, 'warning');
       else showAlert(msg);
       renderHistorico(content, db, ccfg);
+      // Subir comprimido (gzip) a Supabase para que cualquier usuario con acceso lo
+      // vea al iniciar sesión, sin depender de este navegador.
+      const okSync = await saveHistoricoGlobal(parsed, { fileName: file.name });
+      showAlert(okSync
+        ? 'Histórico sincronizado con la base de datos — visible para todos los usuarios.'
+        : 'El histórico se guardó localmente, pero falló la sincronización con la base de datos.',
+        okSync ? 'success' : 'error');
     };
     reader.readAsText(file, 'windows-1252');
   });
@@ -430,6 +437,7 @@ function renderHistorico(content, db, ccfg) {
     ccfg.historico = [];
     saveDatabase(db);
     saveHistorico([]); // limpiar IndexedDB
+    saveHistoricoGlobal([], {}); // limpiar también la copia compartida en Supabase
     renderHistorico(content, db, ccfg);
   });
   document.getElementById('hist-fg')?.addEventListener('change', (e) => { histFilterGrupo  = e.target.value; histPage = 0; renderHistorico(content, db, ccfg); });
@@ -441,14 +449,41 @@ function renderHistorico(content, db, ccfg) {
 // ═══════════════════════════════════════════════════════════════
 // VISTA 2: CONSOLIDACIÓN
 // ═══════════════════════════════════════════════════════════════
-function renderConsolidacion(content, db, ccfg) {
-  if (!histData.length) { content.innerHTML = `<div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm">${noDataBanner()}</div>`; return; }
-  const grupos = allGroups();
+// Consolidación de flota por centro y tipo de camión (Santiago+San Bernardo fusionados).
+// Reutilizado por renderConsolidacion y por la columna TARIFA CENTRO de Tarifas $/Kg,
+// para que ambas vistas usen exactamente la misma participación% por centro/camión.
+function computeConsolidacionStats() {
+  const grupoReal = allGroups();
+
+  // Santiago + San Bernardo se fusionan en un solo centro consolidado: se suman
+  // sus toneladas por tipo de camión y la participación% se calcula sobre el
+  // total combinado (en vez de dos tablas separadas con 100% cada una).
+  const STGO_SB_MERGE = ['SANTIAGO', 'SAN BERNARDO'];
+  const MERGE_LABEL    = 'SANTIAGO + SAN BERNARDO';
+  const hayStgoSb = STGO_SB_MERGE.every(g => grupoReal.includes(g));
+  const grupos = grupoReal.flatMap(g => {
+    if (hayStgoSb && g === 'SAN BERNARDO') return [];               // se fusiona con SANTIAGO
+    if (hayStgoSb && g === 'SANTIAGO')     return [MERGE_LABEL];    // reemplaza a SANTIAGO
+    return [g];
+  });
+  // Para el grupo fusionado, matchea filas de cualquiera de los 2 centros reales.
+  function grupoMatch(g, oficina) {
+    const real = getCentroGroup(oficina);
+    if (g === MERGE_LABEL) return STGO_SB_MERGE.includes(real);
+    return real === g;
+  }
+  // Resuelve el origen_grupo real de una ruta (SANTIAGO/SAN BERNARDO) a la key de stats
+  // (fusionada si corresponde), para poder buscar su participación%.
+  function resolveGrupoKey(realGrupo) {
+    if (hayStgoSb && STGO_SB_MERGE.includes(realGrupo)) return MERGE_LABEL;
+    return realGrupo;
+  }
+
   const stats = {};
   grupos.forEach(g => {
     stats[g] = {};
     CAP_BUCKETS.forEach(bkt => {
-      const rows = histData.filter(r => getCentroGroup(r.oficina) === g && getCapBucket(r.capTons) === bkt);
+      const rows = histData.filter(r => grupoMatch(g, r.oficina) && getCapBucket(r.capTons) === bkt);
       if (!rows.length) { stats[g][bkt] = null; return; }
       const docMap = new Map();
       rows.forEach(r => {
@@ -460,6 +495,24 @@ function renderConsolidacion(content, db, ccfg) {
       stats[g][bkt]  = { docs: docMap.size, avgFill, totalTon: rows.reduce((s,r) => s + r.ton, 0), totalGasto: [...docMap.values()].reduce((s,d) => s + d.gasto, 0) };
     });
   });
+
+  // Participación% de cada bucket dentro de su propio grupo (igual fórmula que la tabla).
+  const partPct = {};
+  grupos.forEach(g => {
+    const totGrupo = CAP_BUCKETS.reduce((s, b) => s + (stats[g][b]?.totalTon || 0), 0);
+    partPct[g] = {};
+    CAP_BUCKETS.forEach(bkt => {
+      const tt = stats[g][bkt]?.totalTon || 0;
+      partPct[g][bkt] = totGrupo > 0 ? (tt / totGrupo * 100) : 0;
+    });
+  });
+
+  return { grupos, stats, partPct, resolveGrupoKey };
+}
+
+function renderConsolidacion(content, db, ccfg) {
+  if (!histData.length) { content.innerHTML = `<div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm">${noDataBanner()}</div>`; return; }
+  const { grupos, stats } = computeConsolidacionStats();
 
   content.innerHTML = `
     <div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm">
@@ -1116,6 +1169,54 @@ async function persistClusterOpDB(cd) {
   if (error) throw error;
 }
 
+// ── Cluster Operativo homologable, disponible fuera de la vista Cluster ──
+// Reutilizado por Tarifas $/Kg y Tarifa Min/Max para mostrar el MISMO cluster
+// operativo (Eje-Cx / SPOT_LOCAL / SPOT_INTERREGIONAL) que calcula la vista
+// Cluster, en vez del cluster de densidad crudo (1/2/3/spot).
+function computeOpClusterMap(db, ccfg) {
+  const map = new Map();
+  const grupos = getOrigenGroups(db);
+  grupos.forEach(grupoObj => {
+    const { grupo, centroIds, centros, repId } = grupoObj;
+    const centroIdSet = new Set((centroIds || []).map(String));
+    const _repCd   = (centros || []).find(cd => String(cd.id) === String(repId)) || (centros || [])[0] || {};
+    const _origLat = parseFloat(_repCd.lat), _origLon = parseFloat(_repCd.lon);
+    const _carta   = EJES_OP[String(repId)] || EJES_OP_DEFAULT;
+
+    const centroRoutes = (db.routes || []).filter(r => {
+      if (!r.activo) return false;
+      if ((r.tipo || '').toLowerCase() !== 'comuna') return false;
+      if (r.origen_grupo) return r.origen_grupo === grupo;
+      return centroIdSet.has(String(r.origenId));
+    });
+
+    // Interregionales de este centro → SPOT_INTERREGIONAL directo (igual que vista Cluster)
+    centroRoutes.filter(r => r.clasificRuta !== 'Regional').forEach(r => {
+      if (r.id)     map.set(String(r.id), 'SPOT_INTERREGIONAL');
+      if (r.codigo) map.set(String(r.codigo), 'SPOT_INTERREGIONAL');
+    });
+
+    const regionales = centroRoutes.filter(r => r.clasificRuta === 'Regional');
+    const conEje = regionales.map(r => {
+      const _dLat = parseFloat(r.lat), _dLon = parseFloat(r.lon);
+      const _az = (!isNaN(_origLat) && !isNaN(_dLat)) ? clOpAzimut(_origLat, _origLon, _dLat, _dLon) : null;
+      const _ejeInfo = ejeOpDe(_az, _carta);
+      const clusterKey = ccfg.comunaCluster[String(r.id || '')] || ccfg.comunaCluster[String(r.codigo || '')] || '';
+      return { r, eje: _ejeInfo.eje, lat: parseFloat(r.lat) || null, lon: parseFloat(r.lon) || null, clusterKey };
+    });
+    const anchors = conEje
+      .filter(x => { const cx = densKeyToCx(x.clusterKey); return (cx === 'C1' || cx === 'C2') && x.lat && x.lon; })
+      .map(x => ({ lat: x.lat, lon: x.lon, eje: x.eje }));
+
+    conEje.forEach(x => {
+      const op = clusterOpDe(x.eje, x.clusterKey, { lat: x.lat, lon: x.lon, anchors });
+      if (x.r.id)     map.set(String(x.r.id), op.cluster);
+      if (x.r.codigo) map.set(String(x.r.codigo), op.cluster);
+    });
+  });
+  return map;
+}
+
 function renderCluster(content, db, ccfg) {
   if (!histData.length) {
     content.innerHTML = '<div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm">' + noDataBanner() + '</div>';
@@ -1480,13 +1581,14 @@ const ZFMP_PAGE = 50;
 function renderResultados(content, db, cfg, ccfg) {
   // ── Construir combinaciones ruta × tipo camión usando el mismo mapa que vista ZCAP ──
   const zcapMap  = buildZcapMap(db, cfg);   // "rutaCodigo||truckType" → { zcap, truck, ruta }
+  const opClusterMap = computeOpClusterMap(db, ccfg); // mismo cluster operativo que la vista Cluster
   const allRows  = [];
 
   zcapMap.forEach(({ zcap, truck, ruta }) => {
     const grupo    = ruta.origen_grupo || '';
     const grupoKey = grupo.replace(/\s/g, '_');
-    const cluster  = ccfg.comunaCluster[String(ruta.id || '')] ||
-                     ccfg.comunaCluster[String(ruta.codigo || '')] || '';
+    const cluster  = opClusterMap.get(String(ruta.id || '')) ||
+                     opClusterMap.get(String(ruta.codigo || '')) || '';
     const capKg    = truck.capKg != null ? truck.capKg
                    : (Number(String(truck.type).match(/(\d+)/)?.[1] || 0) * 1000);
     const bkt      = capKg / 1000;
@@ -1505,6 +1607,28 @@ function renderResultados(content, db, cfg, ccfg) {
       tipoCamion: truck.type || (bkt + 'T')
     });
   });
+
+  // ── TARIFA CENTRO = Σ ZFMP(ruta,camión) × %Participación(centro,camión) de Consolidado ──
+  // Mismo valor para los 4 tipos de camión de una misma ruta (se prorratea la ruta completa,
+  // no cada fila individual). Usa la misma fusión Santiago+San Bernardo de Consolidado.
+  const { partPct: consolidPartPct, resolveGrupoKey } = computeConsolidacionStats();
+  const zfmpPorRuta = new Map(); // idRuta → { [bktTon]: zfmp }
+  allRows.forEach(r => {
+    if (!zfmpPorRuta.has(r.idRuta)) zfmpPorRuta.set(r.idRuta, { centro: r.centroOrigen, byBkt: {} });
+    zfmpPorRuta.get(r.idRuta).byBkt[r.capKg / 1000] = r.zfmp;
+  });
+  const tarifaCentroPorRuta = new Map();
+  zfmpPorRuta.forEach(({ centro, byBkt }, idRuta) => {
+    const grupoKey  = resolveGrupoKey(centro || '');
+    const pctByBkt  = consolidPartPct[grupoKey] || {};
+    const total = CAP_BUCKETS.reduce((s, bkt) => {
+      const zfmpVal = byBkt[bkt];
+      const pct     = pctByBkt[bkt] || 0;
+      return s + (zfmpVal != null ? zfmpVal * (pct / 100) : 0);
+    }, 0);
+    tarifaCentroPorRuta.set(idRuta, total > 0 ? total : null);
+  });
+  allRows.forEach(r => { r.tarifaCentro = tarifaCentroPorRuta.get(r.idRuta) ?? null; });
 
   if (!allRows.length) {
     content.innerHTML = '<div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm">' +
@@ -1543,10 +1667,9 @@ function renderResultados(content, db, cfg, ccfg) {
 
   // Filas de tabla
   const rowsHtml = pageRows.length === 0
-    ? '<tr><td colspan="12" class="p-md text-center text-secondary">Sin resultados.</td></tr>'
+    ? '<tr><td colspan="13" class="p-md text-center text-secondary">Sin resultados.</td></tr>'
     : pageRows.map(r => {
-        const clColor  = r.cluster ? (clusterColor(ccfg, r.cluster) || '#9ca3af') : '#d1d5db';
-        const clNombre = r.cluster ? escapeHtml(clusterNombre(ccfg, r.cluster)) : '—';
+        const clNombre = r.cluster ? escapeHtml(r.cluster) : '—';
         return '<tr class="hover:bg-surface-container-low border-b border-outline-variant text-[12px]">' +
           '<td class="p-sm text-[11px] text-secondary whitespace-nowrap">' + escapeHtml(r.centroOrigen) + '</td>' +
           '<td class="p-sm font-data-mono font-bold text-primary text-[11px]">' + escapeHtml(r.idRuta) + '</td>' +
@@ -1554,12 +1677,7 @@ function renderResultados(content, db, cfg, ccfg) {
           '<td class="p-sm text-[11px]"><span class="border border-outline-variant px-xs py-px rounded">' + escapeHtml(r.tipo) + '</span></td>' +
           '<td class="p-sm text-[11px] text-secondary">' + escapeHtml(r.clasificacion) + '</td>' +
           '<td class="p-sm text-right font-data-mono text-[11px]">' + r.km.toLocaleString('es-CL') + '</td>' +
-          '<td class="p-sm">' +
-            '<div class="flex items-center gap-xs">' +
-              '<span class="inline-block w-2 h-2 rounded-full flex-shrink-0" style="background:' + clColor + '"></span>' +
-              '<span class="text-[11px]">' + clNombre + '</span>' +
-            '</div>' +
-          '</td>' +
+          '<td class="p-sm text-[11px] font-bold font-data-mono">' + clNombre + '</td>' +
           '<td class="p-sm text-[11px]"><span class="border border-outline-variant px-xs py-px rounded font-data-mono">' + escapeHtml(r.tipoCamion) + '</span></td>' +
           '<td class="p-sm text-right font-data-mono text-[11px]">' + (r.zcap !== null ? formatCLP(r.zcap) : '<span class="text-secondary">—</span>') + '</td>' +
           '<td class="p-sm text-right font-data-mono text-[11px]">' + r.factorPct.toFixed(1) + '%</td>' +
@@ -1567,6 +1685,11 @@ function renderResultados(content, db, cfg, ccfg) {
           '<td class="p-sm text-right font-bold font-data-mono text-[11px] text-primary">' +
             (r.zfmp !== null
               ? '$' + r.zfmp.toLocaleString('es-CL', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+              : '<span class="text-secondary font-normal">—</span>') +
+          '</td>' +
+          '<td class="p-sm text-right font-bold font-data-mono text-[11px]" style="color:#0d47a1">' +
+            (r.tarifaCentro !== null
+              ? '$' + r.tarifaCentro.toLocaleString('es-CL', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
               : '<span class="text-secondary font-normal">—</span>') +
           '</td>' +
         '</tr>';
@@ -1647,7 +1770,7 @@ function renderResultados(content, db, cfg, ccfg) {
           '<thead>' +
             '<tr class="bg-surface-container-high border-b border-outline-variant text-left">' +
               ['Centro Origen','ID Ruta','Destino','Tipo','Clasificación','Dist. KM',
-               'Cluster','Tipo Camión','ZCAP','Factor Cons.','Kilos Consol.','ZFMP $/kg'].map((h, i) =>
+               'Cluster','Tipo Camión','ZCAP','Factor Cons.','Kilos Consol.','ZFMP $/kg','Tarifa Centro'].map((h, i) =>
                 '<th class="p-sm font-label-caps text-secondary uppercase text-[10px]' + (i >= 5 ? ' text-right' : '') + '">' + h + '</th>'
               ).join('') +
             '</tr>' +
@@ -1661,6 +1784,7 @@ function renderResultados(content, db, cfg, ccfg) {
       '<div class="text-[11px] text-secondary mt-sm flex flex-wrap gap-lg">' +
         '<span><b>Kilos Consol.</b> = Cap. Camión × Factor Consolidación</span>' +
         '<span><b>ZFMP $/kg</b> = ZCAP ÷ Kilos Consol.</span>' +
+        '<span><b>Tarifa Centro</b> = Σ (ZFMP camión × %Participación centro/camión de Consolidado) — igual para los 4 camiones de la ruta</span>' +
       '</div>' +
     '</div>';
 
@@ -1707,15 +1831,16 @@ function renderResultados(content, db, cfg, ccfg) {
   // Descargar CSV
   document.getElementById('btn-zfmp-download')?.addEventListener('click', () => {
     const headers = ['Centro Origen','ID Ruta','Destino','Tipo','Clasificacion','Dist KM',
-                     'Cluster','Tipo Camion','ZCAP','Factor Consolidacion %','Kilos a Consolidar','ZFMP $/kg'];
+                     'Cluster','Tipo Camion','ZCAP','Factor Consolidacion %','Kilos a Consolidar','ZFMP $/kg','Tarifa Centro'];
     const data = filtered.map(r => [
       r.centroOrigen, r.idRuta, r.destino, r.tipo, r.clasificacion, r.km,
-      r.cluster ? clusterNombre(ccfg, r.cluster) : '',
+      r.cluster || '',
       r.tipoCamion,
       r.zcap    !== null ? r.zcap.toFixed(2)    : '',
       r.factorPct.toFixed(1),
       r.kilosConsolidar.toFixed(0),
-      r.zfmp    !== null ? r.zfmp.toFixed(4)    : ''
+      r.zfmp         !== null ? r.zfmp.toFixed(4)         : '',
+      r.tarifaCentro !== null ? r.tarifaCentro.toFixed(4) : ''
     ]);
     downloadFile('tarifas_kg_' + Date.now() + '.csv', toCSV(headers, data));
   });
@@ -1729,6 +1854,7 @@ const ZFMI_PAGE = 50;
 
 function renderZfmi(content, db, cfg, ccfg) {
   const zcapMap = buildZcapMap(db, cfg); // "rutaCodigo||truckType" → { zcap, truck, ruta }
+  const opClusterMap = computeOpClusterMap(db, ccfg); // mismo cluster operativo que la vista Cluster
 
   // ── Paso 1: Camión mínimo (menor capKg) por grupo ────────────────────────
   const minCapKgByGrupo = new Map();
@@ -1768,8 +1894,12 @@ function renderZfmi(content, db, cfg, ccfg) {
   zcapMap.forEach(({ zcap, truck, ruta }) => {
     const grupo    = ruta.origen_grupo || '';
     const grupoKey = grupo.replace(/\s/g, '_');
+    // cluster = clave de densidad (1/2/3/spot) — se usa para el factor pedidosPromedio del ZFMI.
+    // clusterOp = cluster operativo homologable (SUR-C1, SPOT_LOCAL, etc.) de la vista Cluster — solo para mostrar.
     const cluster  = ccfg.comunaCluster[String(ruta.id || '')] ||
                      ccfg.comunaCluster[String(ruta.codigo || '')] || '';
+    const clusterOp = opClusterMap.get(String(ruta.id || '')) ||
+                      opClusterMap.get(String(ruta.codigo || '')) || '';
     const capKg    = truck.capKg != null ? truck.capKg
                    : (Number(String(truck.type).match(/(\d+)/)?.[1] || 0) * 1000);
     const bkt             = capKg / 1000;
@@ -1808,6 +1938,7 @@ function renderZfmi(content, db, cfg, ccfg) {
       clasificacion:  ruta.clasificRuta || '',
       km:             Number(ruta.km) || 0,
       cluster,
+      clusterOp,
       tipoCamion:     truck.type || (bkt + 'T'),
       capKg,
       camionMinimo:   zfmiData?.minTruckType || '—',
@@ -1864,8 +1995,7 @@ function renderZfmi(content, db, cfg, ccfg) {
   const rowsHtml = pageRows.length === 0
     ? '<tr><td colspan="15" class="p-md text-center text-secondary">Sin resultados.</td></tr>'
     : pageRows.map(r => {
-        const clColor  = r.cluster ? (clusterColor(ccfg, r.cluster) || '#9ca3af') : '#d1d5db';
-        const clNombre = r.cluster ? escapeHtml(clusterNombre(ccfg, r.cluster)) : '—';
+        const clNombre = r.clusterOp ? escapeHtml(r.clusterOp) : '—';
         return '<tr class="hover:bg-surface-container-low border-b border-outline-variant text-[12px]">' +
           '<td class="p-sm text-[11px] text-secondary whitespace-nowrap">'    + escapeHtml(r.centroOrigen) + '</td>' +
           '<td class="p-sm font-data-mono font-bold text-primary text-[11px]">' + escapeHtml(r.idRuta) + '</td>' +
@@ -1873,12 +2003,7 @@ function renderZfmi(content, db, cfg, ccfg) {
           '<td class="p-sm text-[11px]"><span class="border border-outline-variant px-xs py-px rounded">' + escapeHtml(r.tipo) + '</span></td>' +
           '<td class="p-sm text-[11px] text-secondary">'                      + escapeHtml(r.clasificacion) + '</td>' +
           '<td class="p-sm text-right font-data-mono text-[11px]">'           + r.km.toLocaleString('es-CL') + '</td>' +
-          '<td class="p-sm">' +
-            '<div class="flex items-center gap-xs">' +
-              '<span class="inline-block w-2 h-2 rounded-full flex-shrink-0" style="background:' + clColor + '"></span>' +
-              '<span class="text-[11px]">' + clNombre + '</span>' +
-            '</div>' +
-          '</td>' +
+          '<td class="p-sm text-[11px] font-bold font-data-mono">'            + clNombre + '</td>' +
           '<td class="p-sm text-[11px]"><span class="border border-outline-variant px-xs py-px rounded font-data-mono">' + escapeHtml(r.tipoCamion) + '</span></td>' +
           '<td class="p-sm text-[11px]"><span class="border border-[#e2c56a] bg-[#fef9ec] text-[#92640a] px-xs py-px rounded font-data-mono">' + escapeHtml(r.camionMinimo) + '</span></td>' +
           '<td class="p-sm text-right font-data-mono text-[11px]">'           + (r.zcap !== null ? formatCLP(r.zcap) : '<span class="text-secondary">—</span>') + '</td>' +
@@ -2035,7 +2160,7 @@ function renderZfmi(content, db, cfg, ccfg) {
                      'Express','Factor Consolidacion %','Kilos a Consolidar','Kilos Tarif.Min'];
     const data = filtered.map(r => [
       r.centroOrigen, r.idRuta, r.destino, r.tipo, r.clasificacion, r.km,
-      r.cluster ? clusterNombre(ccfg, r.cluster) : '',
+      r.clusterOp || '',
       r.tipoCamion, r.camionMinimo,
       r.zcap          !== null ? Math.round(r.zcap)          : '',
       r.zfmi          !== null ? Math.round(r.zfmi)          : '',

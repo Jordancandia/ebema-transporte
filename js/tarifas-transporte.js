@@ -529,6 +529,9 @@ function subTabButton(key, icon, label) {
 // ============================================================
 const EJES_LABELS = { 2: '2 Ejes (5 y 10 Ton)', 3: '3 Ejes (15 y 28 Ton)' };
 const PJ_DISPLAY_LIMIT = 500;
+// Desactivado 2026-07-14 a pedido del usuario: la API de peajes (TollGuru) queda deshabilitada.
+// La carga de peajes pasa a ser 100% manual via los campos editables de la tabla.
+const PEAJES_API_DESACTIVADA = true;
 
 function pjGetTollRow(db, routeId, ejes) {
   return (db.routeTolls || []).find(rt => rt.route_id === routeId && Number(rt.ejes) === ejes);
@@ -858,24 +861,8 @@ function renderPeajesAuto(content, db, cfg) {
           </label>
         </div>
         <div class="flex-1"></div>
-        <button id="pj-carga-comuna" class="bg-surface-container-high hover:bg-surface-container text-on-surface font-bold px-md py-sm rounded flex items-center gap-xs text-[12px] uppercase">
-          <span class="material-symbols-outlined text-[18px]">upload_file</span> Carga Masiva por Comuna
-        </button>
         <button id="pj-export" class="bg-surface-container-high hover:bg-surface-container text-on-surface font-bold px-md py-sm rounded flex items-center gap-xs text-[12px] uppercase">
           <span class="material-symbols-outlined text-[18px]">download</span> Exportar CSV
-        </button>
-        <button id="pj-export-cache" class="bg-surface-container-high hover:bg-surface-container text-on-surface font-bold px-md py-sm rounded flex items-center gap-xs text-[12px] uppercase">
-          <span class="material-symbols-outlined text-[18px]">save_alt</span> Exportar Cache API
-        </button>
-        <button id="pj-import-cache" class="bg-surface-container-high hover:bg-surface-container text-on-surface font-bold px-md py-sm rounded flex items-center gap-xs text-[12px] uppercase">
-          <span class="material-symbols-outlined text-[18px]">upload</span> Importar Cache API
-        </button>
-        <input type="file" id="pj-import-cache-input" accept=".csv" class="hidden">
-        <button id="pj-calcular" class="bg-primary hover:bg-[#930007] text-white font-bold px-md py-sm rounded flex items-center gap-xs text-[12px] uppercase">
-          <span class="material-symbols-outlined text-[18px]">calculate</span> Calcular Peajes
-        </button>
-        <button id="pj-batch" class="bg-[#2d3748] hover:bg-[#1a202c] text-white font-bold px-md py-sm rounded flex items-center gap-xs text-[12px] uppercase">
-          <span class="material-symbols-outlined text-[18px]">playlist_add_check</span> Procesar Lote
         </button>
       </div>
 
@@ -883,7 +870,6 @@ function renderPeajesAuto(content, db, cfg) {
         <table class="w-full zebra-table border-collapse">
           <thead>
             <tr class="bg-surface-container-high text-left border-b border-outline-variant">
-              <th class="p-md"><input type="checkbox" id="pj-check-all" title="Seleccionar todas"></th>
               <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Ruta</th>
               <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Origen</th>
               <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Destino</th>
@@ -892,11 +878,10 @@ function renderPeajesAuto(content, db, cfg) {
               <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-right">Peaje Vuelta</th>
               <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-right">KM</th>
               <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-center">Estado</th>
-              <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-center">Acciones</th>
             </tr>
           </thead>
           <tbody class="font-body-md text-body-md">
-            ${displayRows.length === 0 ? `<tr><td colspan="10" class="p-md text-center text-secondary">No hay rutas que coincidan con los filtros.</td></tr>` :
+            ${displayRows.length === 0 ? `<tr><td colspan="8" class="p-md text-center text-secondary">No hay rutas que coincidan con los filtros.</td></tr>` :
               displayRows.map(({ ruta, ejes, toll }) => {
                 const grupo = (grupos.find(g => g.grupo === ruta.origen_grupo) || grupos.find(g => g.centroIds.includes(ruta.origenId)));
                 const origenNombre = grupo ? grupo.nombre : (getCentreName(db, ruta.origenId) || '');
@@ -914,7 +899,6 @@ function renderPeajesAuto(content, db, cfg) {
                 const isNotFound = toll && (toll.notFound || toll.not_found);
                 const trCls = isNotFound ? 'border-b border-outline-variant bg-amber-50' : toll && toll.needs_review ? 'border-b border-outline-variant bg-red-50' : 'border-b border-outline-variant';
                 return `<tr class="${trCls}">
-                  <td class="p-md"><input type="checkbox" class="pj-row-check" data-route-id="${escapeHtml(ruta.id)}"></td>
                   <td class="p-md font-bold">${escapeHtml(ruta.codigo || '')}</td>
                   <td class="p-md">${escapeHtml(origenNombre)}</td>
                   <td class="p-md">${escapeHtml(ruta.destino || '')}</td>
@@ -933,11 +917,6 @@ function renderPeajesAuto(content, db, cfg) {
                   </td>
                   <td class="p-md text-right font-data-mono text-data-mono">${kmTotal}</td>
                   <td class="p-md text-center">${estado}</td>
-                  <td class="p-md text-center">
-                    <button class="pj-calc-row text-secondary hover:text-primary" data-calc-route="${escapeHtml(ruta.id)}" title="Calcular peaje de esta ruta">
-                      <span class="material-symbols-outlined text-[18px]">calculate</span>
-                    </button>
-                  </td>
                 </tr>`;
               }).join('')}
           </tbody>
@@ -973,54 +952,6 @@ function renderPeajesAuto(content, db, cfg) {
   document.getElementById('pj-kpi-pendientes').addEventListener('click', () => { pjFiltroPendientes = !pjFiltroPendientes; if (pjFiltroPendientes) pjFiltroRevision = false; renderPeajesAuto(content, db, cfg); });
   document.getElementById('pj-kpi-revision').addEventListener('click', () => { pjFiltroRevision = !pjFiltroRevision; if (pjFiltroRevision) pjFiltroPendientes = false; renderPeajesAuto(content, db, cfg); });
   document.getElementById('pj-export').addEventListener('click', () => exportPeajesCSV(db, rows));
-  document.getElementById('pj-export-cache').addEventListener('click', () => exportRouteTollsCSV(db));
-  document.getElementById('pj-import-cache').addEventListener('click', () => document.getElementById('pj-import-cache-input').click());
-  document.getElementById('pj-import-cache-input').addEventListener('change', (e) => {
-    if (e.target.files[0]) importRouteTollsCSV(e.target.files[0], db);
-    e.target.value = '';
-  });
-  document.getElementById('pj-carga-comuna').addEventListener('click', () => abrirModalCargaPeajesComuna(content, db, cfg));
-
-  // Select-all checkbox
-  document.getElementById('pj-check-all').addEventListener('change', (e) => {
-    content.querySelectorAll('.pj-row-check').forEach(cb => { cb.checked = e.target.checked; });
-  });
-
-  // Calcular Peajes: solo rutas seleccionadas, o todas las filtradas si ninguna seleccionada
-  document.getElementById('pj-calcular').addEventListener('click', () => {
-    const checked = [...content.querySelectorAll('.pj-row-check:checked')].map(cb => cb.dataset.routeId);
-    let rutasTarget;
-    if (checked.length > 0) {
-      rutasTarget = [...new Set(checked)].map(id => routes.find(r => r.id === id)).filter(Boolean);
-    } else {
-      rutasTarget = [...new Set(rows.map(r => r.ruta))];
-    }
-    calcularPeajes(content, db, cfg, rutasTarget);
-  });
-
-  document.getElementById('pj-batch').addEventListener('click', () => {
-    const pendientes = routes.filter(r => {
-      const hasToll = [2, 3].every(ejes => {
-        const t = pjGetTollRow(db, r.id, ejes);
-        return t && t.calculado_en && !t.needs_review;
-      });
-      return !hasToll;
-    });
-    if (pendientes.length === 0) {
-      showAlert('Todas las rutas tienen peajes calculados. No hay pendientes.', 'info');
-      return;
-    }
-    if (!confirm(`Procesar ${pendientes.length} ruta(s) pendientes en lote?\n\nLas rutas se procesarán secuencialmente con un breve intervalo.`)) return;
-    calcularPeajes(content, db, cfg, pendientes);
-  });
-
-  content.querySelectorAll('[data-calc-route]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const ruta = routes.find(r => r.id === btn.dataset.calcRoute);
-      // force: true — el usuario pidió explícitamente recalcular esta ruta, ignorar caché
-      if (ruta) calcularPeajes(content, db, cfg, [ruta], { force: true });
-    });
-  });
 }
 // ============================================================
 // SUB-MÓDULO 1b: PEAJES INTERREGIONALES
@@ -1126,26 +1057,12 @@ function renderPeajesInterregionales(content, db, cfg) {
           </label>
         </div>
         <div class="flex-1"></div>
-        <button id="pji-export-cache" class="bg-surface-container-high hover:bg-surface-container text-on-surface font-bold px-md py-sm rounded flex items-center gap-xs text-[12px] uppercase">
-          <span class="material-symbols-outlined text-[18px]">save_alt</span> Exportar Cache API
-        </button>
-        <button id="pji-import-cache" class="bg-surface-container-high hover:bg-surface-container text-on-surface font-bold px-md py-sm rounded flex items-center gap-xs text-[12px] uppercase">
-          <span class="material-symbols-outlined text-[18px]">upload</span> Importar Cache API
-        </button>
-        <input type="file" id="pji-import-cache-input" accept=".csv" class="hidden">
-        <button id="pji-calcular" class="bg-primary hover:bg-[#930007] text-white font-bold px-md py-sm rounded flex items-center gap-xs text-[12px] uppercase">
-          <span class="material-symbols-outlined text-[18px]">calculate</span> Calcular Peajes
-        </button>
-        <button id="pji-batch" class="bg-[#2d3748] hover:bg-[#1a202c] text-white font-bold px-md py-sm rounded flex items-center gap-xs text-[12px] uppercase">
-          <span class="material-symbols-outlined text-[18px]">playlist_add_check</span> Procesar Lote
-        </button>
       </div>
 
       <div class="bg-surface border border-outline-variant overflow-hidden rounded overflow-x-auto">
         <table class="w-full zebra-table border-collapse">
           <thead>
             <tr class="bg-surface-container-high text-left border-b border-outline-variant">
-              <th class="p-md"><input type="checkbox" id="pji-check-all" title="Seleccionar todas"></th>
               <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Ruta</th>
               <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Origen</th>
               <th class="p-md font-label-caps text-label-caps text-secondary uppercase">Destino</th>
@@ -1154,11 +1071,10 @@ function renderPeajesInterregionales(content, db, cfg) {
               <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-right">Peaje Vuelta</th>
               <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-right">KM</th>
               <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-center">Estado</th>
-              <th class="p-md font-label-caps text-label-caps text-secondary uppercase text-center">Acciones</th>
             </tr>
           </thead>
           <tbody class="font-body-md text-body-md">
-            ${displayRows.length === 0 ? `<tr><td colspan="10" class="p-md text-center text-secondary">No hay rutas interregionales que coincidan con los filtros.</td></tr>` :
+            ${displayRows.length === 0 ? `<tr><td colspan="8" class="p-md text-center text-secondary">No hay rutas interregionales que coincidan con los filtros.</td></tr>` :
               displayRows.map(({ ruta, ejes, toll }) => {
                 const grupo = (grupos.find(g => g.grupo === ruta.origen_grupo) || grupos.find(g => g.centroIds.includes(ruta.origenId)));
                 const origenNombre = grupo ? grupo.nombre : (getCentreName(db, ruta.origenId) || '');
@@ -1176,7 +1092,6 @@ function renderPeajesInterregionales(content, db, cfg) {
                 const isNotFound = toll && (toll.notFound || toll.not_found);
                 const trCls = isNotFound ? 'border-b border-outline-variant bg-amber-50' : toll && toll.needs_review ? 'border-b border-outline-variant bg-red-50' : 'border-b border-outline-variant';
                 return `<tr class="${trCls}">
-                  <td class="p-md"><input type="checkbox" class="pji-row-check" data-route-id="${escapeHtml(ruta.id)}"></td>
                   <td class="p-md font-bold">${escapeHtml(ruta.codigo || '')}</td>
                   <td class="p-md">${escapeHtml(origenNombre)}</td>
                   <td class="p-md">${escapeHtml(ruta.destino || '')}</td>
@@ -1185,11 +1100,6 @@ function renderPeajesInterregionales(content, db, cfg) {
                   <td class="p-md w-32">${tollNumInput(ruta.id, ejes, 'peaje_vuelta', toll ? toll.peaje_vuelta : 0)}</td>
                   <td class="p-md text-right font-data-mono text-data-mono">${kmTotal}</td>
                   <td class="p-md text-center">${estado}</td>
-                  <td class="p-md text-center">
-                    <button class="pji-calc-row text-secondary hover:text-primary" data-calc-route="${escapeHtml(ruta.id)}" title="Calcular peaje de esta ruta">
-                      <span class="material-symbols-outlined text-[18px]">calculate</span>
-                    </button>
-                  </td>
                 </tr>`;
               }).join('')}
           </tbody>
@@ -1229,50 +1139,6 @@ function renderPeajesInterregionales(content, db, cfg) {
   document.getElementById('pji-f-pend').addEventListener('change', (e) => { pjiFiltroPendientes = e.target.checked; renderPeajesInterregionales(content, db, cfg); });
   document.getElementById('pji-kpi-pendientes').addEventListener('click', () => { pjiFiltroPendientes = !pjiFiltroPendientes; if (pjiFiltroPendientes) pjiFiltroRevision = false; renderPeajesInterregionales(content, db, cfg); });
   document.getElementById('pji-kpi-revision').addEventListener('click', () => { pjiFiltroRevision = !pjiFiltroRevision; if (pjiFiltroRevision) pjiFiltroPendientes = false; renderPeajesInterregionales(content, db, cfg); });
-  document.getElementById('pji-export-cache').addEventListener('click', () => exportRouteTollsCSV(db));
-  document.getElementById('pji-import-cache').addEventListener('click', () => document.getElementById('pji-import-cache-input').click());
-  document.getElementById('pji-import-cache-input').addEventListener('change', (e) => {
-    if (e.target.files[0]) importRouteTollsCSV(e.target.files[0], db);
-    e.target.value = '';
-  });
-
-  document.getElementById('pji-check-all').addEventListener('change', (e) => {
-    content.querySelectorAll('.pji-row-check').forEach(cb => { cb.checked = e.target.checked; });
-  });
-
-  document.getElementById('pji-calcular').addEventListener('click', () => {
-    const checked = [...content.querySelectorAll('.pji-row-check:checked')].map(cb => cb.dataset.routeId);
-    let rutasTarget;
-    if (checked.length > 0) {
-      rutasTarget = [...new Set(checked)].map(id => routes.find(r => r.id === id)).filter(Boolean);
-    } else {
-      rutasTarget = [...new Set(rows.map(r => r.ruta))];
-    }
-    calcularPeajes(content, db, cfg, rutasTarget, { renderFn: renderPeajesInterregionales });
-  });
-
-  document.getElementById('pji-batch').addEventListener('click', () => {
-    const pendientes = routes.filter(r => {
-      const hasToll = [2, 3].every(ejes => {
-        const t = pjGetTollRow(db, r.id, ejes);
-        return t && t.calculado_en && !t.needs_review;
-      });
-      return !hasToll;
-    });
-    if (pendientes.length === 0) {
-      showAlert('Todas las rutas tienen peajes calculados. No hay pendientes.', 'info');
-      return;
-    }
-    if (!confirm(`Procesar ${pendientes.length} ruta(s) pendientes en lote?\n\nLas rutas se procesarán secuencialmente con un breve intervalo.`)) return;
-    calcularPeajes(content, db, cfg, pendientes, { renderFn: renderPeajesInterregionales });
-  });
-
-  content.querySelectorAll('.pji-calc-row').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const ruta = routes.find(r => r.id === btn.dataset.calcRoute);
-      if (ruta) calcularPeajes(content, db, cfg, [ruta], { renderFn: renderPeajesInterregionales });
-    });
-  });
 }
 
 // Mapeo ejes → tipos de camión individuales para el CSV de exportación.
@@ -1741,6 +1607,10 @@ function createProgressModal(total) {
 
 // Orquesta el cálculo de peajes con TollGuru como única fuente.
 async function calcularPeajes(content, db, cfg, rutas, { force = false, renderFn = null } = {}) {
+  if (PEAJES_API_DESACTIVADA) {
+    showAlert('La API de peajes está desactivada. Ingresa los valores de peaje manualmente en la tabla.', 'error');
+    return;
+  }
   if (!rutas || rutas.length === 0) {
     showAlert('No hay rutas para calcular con los filtros actuales', 'error');
     return;
@@ -2157,13 +2027,39 @@ function computeParticipacionFresh(db) {
       if (r.codigo) codigosValidos.add(String(r.codigo).toUpperCase());
     });
 
-    // Acumular toneladas por zona
+    // Mapa comuna (nombre) → key de zona de su ruta COMUNA, para poder prorratear
+    // hacia la comuna padre el tonelaje histórico registrado contra rutas Sector
+    // (mismo criterio de rollup que usa la vista Densidad Logística — antes este
+    // tonelaje se descartaba silenciosamente y el % de peso ponderado quedaba
+    // distinto al de Densidad Logística).
+    const zonesByIdT = new Map((db.transportZones || []).map(z => [z.zona, z]));
+    const comunaToZonaKey = new Map();
+    candidatas.forEach(r => {
+      const c = (r.comuna || r.destino || '').trim().toLowerCase();
+      if (c && !comunaToZonaKey.has(c)) {
+        comunaToZonaKey.set(c, r.id_zona_transporte || (r.destino || '').trim().toUpperCase());
+      }
+    });
+
+    // Acumular toneladas por zona (rutas Comuna directas + Sector prorrateado a su Comuna padre)
     const zonaTon = new Map(); // key → { ton, rutas: Set<ruta> }
     histData.forEach(h => {
-      if (!codigosValidos.has(String(h.idRuta).toUpperCase())) return;
-      const ruta = routeByIdP.get(String(h.idRuta).toUpperCase());
-      if (!ruta) return;
-      const key = ruta.id_zona_transporte || (ruta.destino || '').trim().toUpperCase() || h.idRuta;
+      const idUp = String(h.idRuta).toUpperCase();
+      let ruta = routeByIdP.get(idUp);
+      let key;
+      if (ruta && codigosValidos.has(idUp)) {
+        key = ruta.id_zona_transporte || (ruta.destino || '').trim().toUpperCase() || h.idRuta;
+      } else if (ruta && (ruta.tipo || '').toLowerCase() === 'sector') {
+        const zona = zonesByIdT.get(ruta.id_zona_transporte);
+        const comunaPadre = (zona?.comuna || '').trim().toLowerCase();
+        const zonaKey = comunaPadre ? comunaToZonaKey.get(comunaPadre) : null;
+        if (!zonaKey) return; // sin comuna padre resoluble en este grupo → se omite
+        key = zonaKey;
+        // usar la ruta Comuna representativa (no el Sector) para el pool NORMAL/ISLA/EXTREMA
+        ruta = candidatas.find(r => (r.id_zona_transporte || (r.destino || '').trim().toUpperCase()) === zonaKey) || ruta;
+      } else {
+        return;
+      }
       if (!zonaTon.has(key)) zonaTon.set(key, { ton: 0, rutas: new Map() });
       const e = zonaTon.get(key);
       e.ton += h.ton;
@@ -2339,13 +2235,19 @@ function renderTarifasCamion(content, db, cfg) {
 
   content.innerHTML = `
     <div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm">
-      <div class="flex items-center gap-sm mb-md border-b border-outline-variant pb-sm">
-        <span class="material-symbols-outlined text-primary">local_shipping</span>
-        <h2 class="font-headline-sm text-headline-sm font-bold text-on-surface">Tarifas de Transporte por Centro y Tipo de Camión</h2>
+      <div class="flex items-center justify-between mb-md border-b border-outline-variant pb-sm flex-wrap gap-sm">
+        <div class="flex items-center gap-sm">
+          <span class="material-symbols-outlined text-primary">local_shipping</span>
+          <h2 class="font-headline-sm text-headline-sm font-bold text-on-surface">Tarifas de Transporte por Centro y Tipo de Camión</h2>
+        </div>
+        <button id="tt-refresh" class="flex items-center gap-xs border border-secondary text-secondary hover:bg-surface-container-high font-bold px-md py-sm rounded text-[11px] uppercase tracking-wider" title="Recalcular ZCAP Ponderada/Promedio desde el Motor de Costo tras ajustar parámetros (combustible, peajes, variables, etc.)">
+          <span class="material-symbols-outlined text-[16px]">refresh</span> Refrescar Tarifas
+        </button>
       </div>
       <p class="text-[12px] text-secondary mb-md">
         KM Base, Costo Base y Tarifa Base KM son editables. Las columnas ZCAP (Ponderada, Promedio) se calculan
         automáticamente desde el Motor de Costo. Las Tarifas Ajustadas se inicializan con ZCAP y pueden editarse manualmente.
+        Use <b>Refrescar Tarifas</b> tras modificar combustible, peajes, variables u otros parámetros del Motor de Costo.
       </p>
 
       <div class="flex items-end gap-sm mb-md">
@@ -2460,6 +2362,13 @@ function renderTarifasCamion(content, db, cfg) {
   document.getElementById('tt-f-centro')?.addEventListener('change', (e) => {
     tarifaCentroFiltro = e.target.value;
     renderTarifasCamion(content, db, cfg);
+  });
+
+  document.getElementById('tt-refresh')?.addEventListener('click', () => {
+    // syncTarifasZcap se ejecuta al inicio de renderTarifasCamion: al re-renderizar
+    // se recalculan ZCAP Ponderada/Promedio con los parámetros actuales del Motor de Costo.
+    renderTarifasCamion(content, db, cfg);
+    showAlert('Tarifas recalculadas desde el Motor de Costo.');
   });
 
   content.querySelectorAll('.tt-add-types').forEach(btn => {
@@ -2919,13 +2828,36 @@ function renderParticipacion(content, db, cfg) {
       if (r.codigo) codigosValidos.add(String(r.codigo).toUpperCase());
     });
 
-    // 4. Acumular toneladas por zona desde histData
+    // 3b. Mapa comuna (nombre) → key de zona de su ruta COMUNA, para prorratear hacia
+    //     la comuna padre el tonelaje histórico registrado contra rutas Sector (mismo
+    //     criterio de rollup que Densidad Logística; antes se descartaba ese tonelaje).
+    const zonesByIdT2 = new Map((db.transportZones || []).map(z => [z.zona, z]));
+    const comunaToZonaKey2 = new Map();
+    rutasCandidatas.forEach(r => {
+      const c = (r.comuna || r.destino || '').trim().toLowerCase();
+      if (c && !comunaToZonaKey2.has(c)) {
+        comunaToZonaKey2.set(c, r.id_zona_transporte || (r.destino || '').trim().toUpperCase());
+      }
+    });
+
+    // 4. Acumular toneladas por zona desde histData (Comuna directa + Sector prorrateado)
     const zonaTon = new Map(); // id_zona_transporte → { ton, clientes, obras, rutasByGrupo }
     histDataLocal.forEach(h => {
-      if (!codigosValidos.has(String(h.idRuta).toUpperCase())) return;
-      const ruta = routeByIdP.get(String(h.idRuta).toUpperCase());
-      if (!ruta) return;
-      const key = ruta.id_zona_transporte || (ruta.destino || '').trim().toUpperCase() || h.idRuta;
+      const idUp = String(h.idRuta).toUpperCase();
+      let ruta = routeByIdP.get(idUp);
+      let key;
+      if (ruta && codigosValidos.has(idUp)) {
+        key = ruta.id_zona_transporte || (ruta.destino || '').trim().toUpperCase() || h.idRuta;
+      } else if (ruta && (ruta.tipo || '').toLowerCase() === 'sector') {
+        const zona = zonesByIdT2.get(ruta.id_zona_transporte);
+        const comunaPadre = (zona?.comuna || '').trim().toLowerCase();
+        const zonaKey = comunaPadre ? comunaToZonaKey2.get(comunaPadre) : null;
+        if (!zonaKey) return; // sin comuna padre resoluble en este grupo → se omite
+        key = zonaKey;
+        ruta = rutasCandidatas.find(r => (r.id_zona_transporte || (r.destino || '').trim().toUpperCase()) === zonaKey) || ruta;
+      } else {
+        return;
+      }
       if (!zonaTon.has(key)) zonaTon.set(key, { ton: 0, clientes: new Set(), obras: new Set(), rutasByGrupo: {} });
       const e = zonaTon.get(key);
       e.ton += h.ton;

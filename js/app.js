@@ -1,11 +1,11 @@
-import { getDatabase, saveDatabase, initDatabase } from './data.js?v=20260712k';
+import { getDatabase, saveDatabase, initDatabase } from './data.js?v=20260714a';
 import { supabase } from './supabase-client.js';
 import { renderTransportsView } from './transports.js';
 import { renderRoutesView, setRoutesSubTab } from './routes.js?v=20260708a';
 import { renderRatesView } from './rates.js';
 import { renderRolesView } from './roles.js';
-import { renderTariffTransportView, setActiveSub } from './tarifas-transporte.js?v=20260713a';
-import { renderClientTariffView, setActiveSubC } from './tarifas-clientes.js?v=20260713e';
+import { renderTariffTransportView, setActiveSub } from './tarifas-transporte.js?v=20260713c';
+import { renderClientTariffView, setActiveSubC } from './tarifas-clientes.js?v=20260714b';
 import { showAlert, formatRut, validateRut, formatPhone } from './utils.js';
 
 const SESSION_KEY = 'ebema_user_session';

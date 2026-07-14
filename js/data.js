@@ -287,8 +287,19 @@ export async function initDatabase() {
       }
     });
 
-    // Restaurar historico desde IndexedDB (no se guarda en Supabase por tamaño)
-    const _savedHist = await loadHistorico();
+    // Restaurar historico: PRIMERO desde Supabase (historico_global, comprimido y
+    // compartido entre cuentas); si no hay datos o falla (RLS, navegador viejo, etc.)
+    // se cae a IndexedDB local como respaldo (comportamiento previo).
+    const _histRemoto = await loadHistoricoGlobal();
+    let _savedHist = _histRemoto;
+    let _migrarAlNube = false;
+    if (!_savedHist || !_savedHist.length) {
+      _savedHist = await loadHistorico();
+      // Migración única: el navegador tiene historico local pero Supabase aún no
+      // (dato cargado antes de existir historico_global) → subirlo automáticamente
+      // para que quede visible para cualquier usuario desde ahora en adelante.
+      if (_savedHist?.length > 0) _migrarAlNube = true;
+    }
     if (_savedHist?.length > 0) {
       // Auto-crear clientTariffConfig si viene vacío de Supabase
       if (!memoryDb.clientTariffConfig || !memoryDb.clientTariffConfig.length) {
@@ -301,6 +312,11 @@ export async function initDatabase() {
     }
 
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...memoryDb, clientTariffConfig: stripHistorico(memoryDb.clientTariffConfig || []) }));
+
+    if (_migrarAlNube) {
+      saveHistoricoGlobal(_savedHist, { fileName: memoryDb.clientTariffConfig?.[0]?.data?.histMeta?.fileName || '' })
+        .then(ok => console.log(ok ? 'Historico migrado a historico_global.' : 'Migración de historico a Supabase falló (se reintentará en próxima carga).'));
+    }
 
     if (hayPendientes) {
       syncToSupabase(memoryDb).catch(err =>
@@ -432,6 +448,73 @@ export async function loadHistorico() {
   } catch (e) {
     console.warn('IDB loadHistorico falló:', e.message || e);
     return [];
+  }
+}
+// ──────────────────────────────────────────────────────────────────────────────
+
+// ─── Historico compartido en Supabase (comprimido gzip) ───────────────────────────
+// El array historico (6M) puede superar 15.000 filas; se comprime con CompressionStream
+// (gzip nativo del navegador) antes de subir a la tabla historico_global. Antes vivía
+// solo en IndexedDB/localStorage del navegador que hizo la carga (nunca llegaba a
+// Supabase por su tamaño) — por eso otros usuarios/cuentas nunca lo veían.
+async function gzipCompress(str) {
+  const stream = new Blob([str]).stream().pipeThrough(new CompressionStream('gzip'));
+  const buf   = await new Response(stream).arrayBuffer();
+  const bytes = new Uint8Array(buf);
+  let binary  = '';
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(binary);
+}
+
+async function gzipDecompress(b64) {
+  const binary = atob(b64);
+  const bytes  = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
+  const text   = await new Response(stream).text();
+  return JSON.parse(text);
+}
+
+// Sube el historico comprimido a la tabla historico_global (fila única id='global').
+// Cualquier usuario con acceso (OWNER/ADMINISTRADOR_DEPOSITO/AGENTE_COMERCIAL) lo verá
+// al iniciar sesión, sin depender del navegador que hizo la carga original.
+export async function saveHistoricoGlobal(rows, meta = {}) {
+  try {
+    const json    = JSON.stringify(rows || []);
+    const data_gz = await gzipCompress(json);
+    let email = null;
+    try { email = (await supabase.auth.getUser()).data?.user?.email || null; } catch (_e) { /* ignore */ }
+    const { error } = await supabase.from('historico_global').upsert({
+      id: 'global',
+      data_gz,
+      row_count: (rows || []).length,
+      file_name: meta.fileName || null,
+      uploaded_at: new Date().toISOString(),
+      uploaded_by: email
+    });
+    if (error) throw error;
+    return true;
+  } catch (e) {
+    console.error('No se pudo subir historico a Supabase (historico_global):', e.message || e);
+    return false;
+  }
+}
+
+// Descarga y descomprime el historico compartido desde Supabase. Devuelve null si no
+// hay datos o la lectura falla (p. ej. RLS o el navegador no soporta CompressionStream).
+export async function loadHistoricoGlobal() {
+  try {
+    const { data, error } = await supabase
+      .from('historico_global').select('data_gz').eq('id', 'global').maybeSingle();
+    if (error) throw error;
+    if (!data || !data.data_gz) return null;
+    return await gzipDecompress(data.data_gz);
+  } catch (e) {
+    console.warn('No se pudo leer historico_global desde Supabase:', e.message || e);
+    return null;
   }
 }
 // ──────────────────────────────────────────────────────────────────────────────
