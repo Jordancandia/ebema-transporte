@@ -1720,6 +1720,9 @@ function renderResultados(content, db, cfg, ccfg) {
           '<h2 class="font-headline-sm text-headline-sm font-bold text-on-surface">Tarifas $/Kg</h2>' +
         '</div>' +
         '<div class="flex items-center gap-sm">' +
+          '<button id="btn-zfmp-refresh" class="flex items-center gap-xs border border-secondary text-secondary hover:bg-surface-container-high font-bold px-md py-sm rounded text-[11px] uppercase tracking-wider" title="Recalcular ZCAP/ZFMP tras modificar Tarifa Rutas (ZCAP) u otros parámetros">' +
+            '<span class="material-symbols-outlined text-[16px]">refresh</span> Refrescar' +
+          '</button>' +
           '<button id="btn-zfmp-download" class="bg-primary hover:bg-[#930007] text-white font-bold px-md py-sm rounded flex items-center gap-xs text-[12px] uppercase">' +
             '<span class="material-symbols-outlined text-[18px]">download</span> Descargar CSV' +
           '</button>' +
@@ -1826,6 +1829,12 @@ function renderResultados(content, db, cfg, ccfg) {
   });
   document.getElementById('zfmp-pag-next')?.addEventListener('click', () => {
     zfmpPagina = Math.min(totalPags - 1, zfmpPagina + 1); renderResultados(content, db, cfg, ccfg);
+  });
+
+  // Refrescar (recalcula ZCAP/ZFMP/Tarifa Centro con el estado actual de Tarifa Rutas y Consolidado)
+  document.getElementById('btn-zfmp-refresh')?.addEventListener('click', () => {
+    renderResultados(content, db, cfg, ccfg);
+    showAlert('Tarifas $/Kg recalculadas desde Tarifa Rutas (ZCAP).');
   });
 
   // Descargar CSV
@@ -2041,6 +2050,9 @@ function renderZfmi(content, db, cfg, ccfg) {
           '<h2 class="font-headline-sm text-headline-sm font-bold text-on-surface">Tarifa Min / Max</h2>' +
         '</div>' +
         '<div class="flex items-center gap-sm">' +
+          '<button id="btn-zfmi-refresh" class="flex items-center gap-xs border border-secondary text-secondary hover:bg-surface-container-high font-bold px-md py-sm rounded text-[11px] uppercase tracking-wider" title="Recalcular ZCAP/ZFMI/ZFMX tras modificar Tarifa Rutas (ZCAP) u otros parámetros">' +
+            '<span class="material-symbols-outlined text-[16px]">refresh</span> Refrescar' +
+          '</button>' +
           '<button id="btn-zfmi-download" class="bg-primary hover:bg-[#930007] text-white font-bold px-md py-sm rounded flex items-center gap-xs text-[12px] uppercase">' +
             '<span class="material-symbols-outlined text-[18px]">download</span> Descargar CSV' +
           '</button>' +
@@ -2151,6 +2163,12 @@ function renderZfmi(content, db, cfg, ccfg) {
   });
   document.getElementById('zfmi-pag-next')?.addEventListener('click', () => {
     zfmiPagina = Math.min(totalPags - 1, zfmiPagina + 1); renderZfmi(content, db, cfg, ccfg);
+  });
+
+  // Refrescar (recalcula ZCAP/ZFMI/ZFMX con el estado actual de Tarifa Rutas y Consolidado)
+  document.getElementById('btn-zfmi-refresh')?.addEventListener('click', () => {
+    renderZfmi(content, db, cfg, ccfg);
+    showAlert('Tarifa Min/Max recalculada desde Tarifa Rutas (ZCAP).');
   });
 
   // Descargar CSV
