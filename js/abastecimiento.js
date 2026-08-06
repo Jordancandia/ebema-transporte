@@ -56,55 +56,197 @@ export function setAbastSubTab(sub) {
 }
 
 // ============================================================================
-// ENTRADA PRINCIPAL
+// VISTAS DE DATOS TRONCALES (leen las vistas v_trc_* de Supabase)
+// Cada una: [campo_en_vista, etiqueta_columna]. filtros: campos con selector.
+// ============================================================================
+const VISTAS_TRONCAL = {
+  quiebres: {
+    titulo: 'Quiebres Sucursal',
+    vista: 'v_trc_slim_stock',
+    filtros: [{ campo: 'centro', label: 'Centro' }],
+    columnas: [
+      ['centro', 'Centro'], ['codigo_articulo', 'Código'], ['descripcion', 'Descripción'],
+      ['stock_days', 'StockDays'], ['clase_abc', 'Clase ABC'],
+    ],
+  },
+  retiros: {
+    titulo: 'Retiros Fábrica',
+    vista: 'v_trc_sqvi_retiros_fabrica',
+    filtros: [{ campo: 'ce', label: 'Centro' }, { campo: 'alm', label: 'Almacén' }],
+    columnas: [
+      ['doc_compr', 'Doc.compr.'], ['proveedor', 'Proveedor'], ['nombre_1', 'Nombre'],
+      ['material', 'Material'], ['texto_breve', 'Texto breve'], ['ce', 'Centro'], ['alm', 'Almacén'],
+      ['fe_entrega', 'Fe.entrega'], ['ctd_pedido', 'Ctd.pedido'], ['ump', 'UMP'],
+      ['ctd_entregada', 'Ctd.entregada'], ['peso_bruto', 'Peso bruto'],
+    ],
+  },
+  pedidos_venta: {
+    titulo: 'Pedidos Ventas 1003',
+    vista: 'v_trc_sqvi_pedidos_venta_1003',
+    filtros: [{ campo: 'ofvta', label: 'OF Venta' }],
+    columnas: [
+      ['ofvta', 'OF Venta'], ['creado_el', 'Creado el'], ['deudor', 'Deudor'], ['ce', 'Centro'],
+      ['doc_ventas', 'Doc.ventas'], ['material', 'Material'], ['denominacion_de_posicion', 'Denominación'],
+      ['cantidad_de_pedido', 'Cantidad'], ['um', 'UM'], ['ruta', 'Ruta'],
+      ['fe_entrega', 'Fe.entrega'], ['ctd_confirmada', 'Ctd.confirmada'],
+    ],
+  },
+  stock_almacen: {
+    titulo: 'Stock Almacén 4000',
+    vista: 'v_trc_sqvi_stock_almacen_4000',
+    filtros: [{ campo: 'ce', label: 'Centro' }],
+    columnas: [
+      ['creado_el', 'Creado el'], ['ce', 'Centro'], ['alm', 'Almacén'], ['material', 'Material'],
+      ['denominacion_de_posicion', 'Denominación'], ['libre_utiliz', 'Libre utiliz.'], ['umb', 'UMB'],
+      ['ruta', 'Ruta'], ['deudor', 'Deudor'],
+    ],
+  },
+  pedidos_traslados: {
+    titulo: 'Pedidos Traslados',
+    vista: 'v_trc_sqvi_pedidos_traslados',
+    filtros: [{ campo: 'cesu', label: 'CeSu (Suministrador)' }, { campo: 'ce', label: 'Ce. (Destino)' }],
+    columnas: [
+      ['creado_el', 'Creado el'], ['cesu', 'CeSu'], ['cl', 'Cl.'], ['doc_compr', 'Doc.compr.'],
+      ['material', 'Material'], ['texto_breve', 'Texto breve'], ['ce', 'Ce.Destino'], ['alm', 'Almacén'],
+      ['ctd_pedido', 'Ctd.pedido'], ['ump', 'UMP'], ['fecha_confirmada', 'Fecha conf.'], ['ctd_confirmada', 'Ctd.confirmada'],
+    ],
+  },
+  pedidos_traslados_4000: {
+    titulo: 'Pedidos Traslados 4000',
+    vista: 'v_trc_sqvi_pedidos_traslados_4000',
+    filtros: [{ campo: 'cesu', label: 'CeSu (Suministrador)' }],
+    columnas: [
+      ['cl', 'Cl.'], ['creado_el', 'Creado el'], ['cesu', 'CeSu'], ['doc_compr', 'Doc.compr.'],
+      ['material', 'Material'], ['texto_breve', 'Texto breve'], ['ce', 'Centro'], ['fe_entrega', 'Fe.entrega'],
+      ['cantidad_salida', 'Cant.salida'], ['ump', 'UMP'], ['ctd_entregada', 'Ctd.entregada'], ['alm', 'Almacén'],
+    ],
+  },
+};
+
+// ============================================================================
+// ENTRADA PRINCIPAL — despacha segun el submenu activo del sidebar
 // ============================================================================
 export async function renderAbastecimientoView(container) {
   rootEl = container;
-  container.innerHTML = `
-    <div class="flex items-center gap-sm mb-md">
-      <button data-abtab="proveedores"
-        class="ab-tab px-md py-sm rounded-lg text-body-md font-bold transition-colors">
-        <span class="material-symbols-outlined text-[18px] align-middle mr-xs">groups</span>Proveedores
-      </button>
-      <button data-abtab="calendario"
-        class="ab-tab px-md py-sm rounded-lg text-body-md font-bold transition-colors">
-        <span class="material-symbols-outlined text-[18px] align-middle mr-xs">calendar_month</span>Calendario Sucursales
-      </button>
-    </div>
-    <div id="ab-stage"></div>
-  `;
-
-  container.querySelectorAll('.ab-tab').forEach(btn => {
-    btn.addEventListener('click', () => {
-      currentSub = btn.dataset.abtab;
-      paintSubTabs();
-      renderSub();
-    });
-  });
-
-  paintSubTabs();
-  await renderSub();
+  container.innerHTML = '<div id="ab-stage"></div>';
+  const stage = container.querySelector('#ab-stage');
+  if (currentSub === 'calendario')          await renderCalendario(stage);
+  else if (VISTAS_TRONCAL[currentSub])       await renderVistaTabla(stage, VISTAS_TRONCAL[currentSub]);
+  else                                       await renderProveedores(stage);
 }
 
-function paintSubTabs() {
-  if (!rootEl) return;
-  rootEl.querySelectorAll('.ab-tab').forEach(btn => {
-    const active = btn.dataset.abtab === currentSub;
-    btn.classList.toggle('bg-primary', active);
-    btn.classList.toggle('text-on-primary', active);
-    btn.classList.toggle('text-secondary', !active);
-    btn.classList.toggle('bg-surface-container-high', !active);
-  });
-}
-
-async function renderSub() {
-  const stage = rootEl.querySelector('#ab-stage');
-  if (!stage) return;
-  if (currentSub === 'calendario') {
-    await renderCalendario(stage);
-  } else {
-    await renderProveedores(stage);
+// Trae todas las filas de una vista (paginado, la API corta en 1000).
+async function fetchAllRows(vista) {
+  const pageSize = 1000;
+  let from = 0, all = [];
+  for (;;) {
+    const { data, error } = await supabase.from(vista).select('*').range(from, from + pageSize - 1);
+    if (error) { console.error(error); showAlert('Error al cargar datos: ' + error.message, 'error'); break; }
+    if (!data || !data.length) break;
+    all = all.concat(data);
+    if (data.length < pageSize || from > 60000) break;
+    from += pageSize;
   }
+  return all;
+}
+
+// Render generico de una vista con filtros (selector) + buscador + CSV.
+async function renderVistaTabla(stage, cfg) {
+  stage.innerHTML = `<div class="text-secondary text-body-md p-md">Cargando ${escapeHtml(cfg.titulo)}…</div>`;
+  const rows = await fetchAllRows(cfg.vista);
+
+  const opciones = {};
+  cfg.filtros.forEach(f => {
+    opciones[f.campo] = Array.from(new Set(rows.map(r => String(r[f.campo] ?? '')).filter(v => v !== ''))).sort();
+  });
+  const filtroSel = {}; cfg.filtros.forEach(f => { filtroSel[f.campo] = ''; });
+  let texto = '';
+
+  function aplica() {
+    const q = texto.trim().toLowerCase();
+    return rows.filter(r => {
+      for (const f of cfg.filtros) {
+        if (filtroSel[f.campo] && String(r[f.campo] ?? '') !== filtroSel[f.campo]) return false;
+      }
+      if (q && !cfg.columnas.some(c => String(r[c[0]] ?? '').toLowerCase().includes(q))) return false;
+      return true;
+    });
+  }
+
+  function draw() {
+    const filt = aplica();
+    const MAX = 1500;
+    const shown = filt.slice(0, MAX);
+    const act = rows.length ? String(rows[0].cargado_en || '').slice(0, 16).replace('T', ' ') : '';
+    stage.innerHTML = `
+      <div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm rounded-lg">
+        <div class="flex flex-wrap items-end justify-between gap-md mb-md border-b border-outline-variant pb-sm">
+          <div>
+            <h3 class="text-headline-sm font-bold text-on-surface">${escapeHtml(cfg.titulo)}</h3>
+            <p class="text-[13px] text-secondary">${filt.length} registro(s)${act ? ' · actualizado ' + escapeHtml(act) : ''}</p>
+          </div>
+          <div class="flex flex-wrap items-end gap-sm">
+            ${cfg.filtros.map(f => `
+              <label class="block">
+                <span class="text-[11px] uppercase tracking-wide text-secondary font-bold">${escapeHtml(f.label)}</span>
+                <select data-filtro="${f.campo}" class="mt-xs block border border-outline-variant rounded-lg px-sm py-sm text-body-md focus:border-primary outline-none bg-surface-container-lowest">
+                  <option value="">Todos</option>
+                  ${opciones[f.campo].map(v => `<option value="${escapeHtml(v)}" ${filtroSel[f.campo] === v ? 'selected' : ''}>${escapeHtml(v)}</option>`).join('')}
+                </select>
+              </label>`).join('')}
+            <label class="block">
+              <span class="text-[11px] uppercase tracking-wide text-secondary font-bold">Buscar</span>
+              <input data-buscar value="${escapeHtml(texto)}" placeholder="texto…"
+                class="mt-xs block border border-outline-variant rounded-lg px-md py-sm text-body-md focus:border-primary outline-none"/>
+            </label>
+            <button data-refrescar title="Refrescar" class="bg-surface-container-high text-on-surface px-md py-sm rounded-lg text-[13px] font-bold hover:bg-surface-container-highest">
+              <span class="material-symbols-outlined text-[16px] align-middle">refresh</span></button>
+            <button data-csv class="bg-surface-container-high text-on-surface px-md py-sm rounded-lg text-[13px] font-bold hover:bg-surface-container-highest">
+              <span class="material-symbols-outlined text-[16px] align-middle mr-xs">download</span>CSV</button>
+          </div>
+        </div>
+        <div class="overflow-x-auto max-h-[68vh] overflow-y-auto">
+          <table class="w-full text-[13px]">
+            <thead class="sticky top-0 bg-surface-container-lowest">
+              <tr class="text-left text-[11px] uppercase tracking-wide text-secondary border-b border-outline-variant">
+                ${cfg.columnas.map(c => `<th class="py-sm pr-md whitespace-nowrap">${escapeHtml(c[1])}</th>`).join('')}
+              </tr>
+            </thead>
+            <tbody>
+              ${shown.length === 0 ? `<tr><td colspan="${cfg.columnas.length}" class="py-lg text-center text-secondary">Sin datos.</td></tr>` :
+                shown.map(r => `<tr class="border-b border-outline-variant/50 hover:bg-surface-container-low">
+                  ${cfg.columnas.map(c => `<td class="py-xs pr-md whitespace-nowrap">${escapeHtml(String(r[c[0]] ?? ''))}</td>`).join('')}
+                </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>
+        ${filt.length > MAX ? `<p class="text-[12px] text-secondary mt-sm">Mostrando ${MAX} de ${filt.length}. Usa los filtros para acotar.</p>` : ''}
+      </div>`;
+
+    stage.querySelectorAll('[data-filtro]').forEach(sel =>
+      sel.addEventListener('change', () => { filtroSel[sel.dataset.filtro] = sel.value; draw(); }));
+    const inp = stage.querySelector('[data-buscar]');
+    inp.addEventListener('input', e => {
+      texto = e.target.value; draw();
+      const i = stage.querySelector('[data-buscar]');
+      if (i) { i.focus(); i.setSelectionRange(i.value.length, i.value.length); }
+    });
+    stage.querySelector('[data-refrescar]').addEventListener('click', () => renderVistaTabla(stage, cfg));
+    stage.querySelector('[data-csv]').addEventListener('click', () => exportarCSV(cfg, filt));
+  }
+
+  draw();
+}
+
+function exportarCSV(cfg, filas) {
+  const headers = cfg.columnas.map(c => c[1]);
+  const esc = v => { v = v == null ? '' : String(v); return /[;"\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
+  const lines = [headers.join(';')].concat(filas.map(r => cfg.columnas.map(c => esc(r[c[0]])).join(';')));
+  const blob = new Blob(['﻿' + lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = cfg.titulo.replace(/\s+/g, '_') + '.csv';
+  document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
 }
 
 // ============================================================================
