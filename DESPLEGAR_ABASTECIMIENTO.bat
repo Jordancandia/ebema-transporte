@@ -16,7 +16,7 @@ cd /d "%~dp0"
   echo ===== ADD =====
   git add -A
   echo ===== COMMIT =====
-  git commit -m "feat: 6 vistas de datos troncales v=20260806b"
+  git commit -m "feat: ajustes aplicativo - calendario rediseñado, vistas con campos calculados, alertas, REVEX v=20260808a"
   echo ===== PULL =====
   git pull --rebase origin main
   echo ===== PUSH =====

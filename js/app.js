@@ -6,7 +6,7 @@ import { renderRatesView } from './rates.js';
 import { renderRolesView } from './roles.js';
 import { renderTariffTransportView, setActiveSub } from './tarifas-transporte.js?v=20260713c';
 import { renderClientTariffView, setActiveSubC } from './tarifas-clientes.js?v=20260714c';
-import { renderAbastecimientoView, setAbastSubTab } from './abastecimiento.js?v=20260806b';
+import { renderAbastecimientoView, setAbastSubTab } from './abastecimiento.js?v=20260808a';
 import { showAlert, formatRut, validateRut, formatPhone } from './utils.js';
 
 const SESSION_KEY = 'ebema_user_session';
@@ -1212,7 +1212,7 @@ const SIDEBAR_MENU = [
     ]
   },
   {
-    group: 'abastecimiento', icon: 'inventory_2', label: 'Gestion Troncales / Abastecimiento', children: [
+    group: 'abastecimiento', icon: 'inventory_2', label: 'Gestión Troncales', children: [
       { tab: 'abastecimiento', sub: 'proveedores', icon: 'groups',         label: 'Proveedores' },
       { tab: 'abastecimiento', sub: 'calendario',  icon: 'calendar_month', label: 'Calendario Sucursales' },
       { tab: 'abastecimiento', sub: 'quiebres',               icon: 'production_quantity_limits', label: 'Quiebres Sucursal' },
@@ -1220,6 +1220,7 @@ const SIDEBAR_MENU = [
       { tab: 'abastecimiento', sub: 'pedidos_venta',          icon: 'sell',           label: 'Pedidos Ventas 1003' },
       { tab: 'abastecimiento', sub: 'stock_almacen',          icon: 'inventory',      label: 'Stock Almacen 4000' },
       { tab: 'abastecimiento', sub: 'pedidos_traslados',      icon: 'swap_horiz',     label: 'Pedidos Traslados' },
+      { tab: 'abastecimiento', sub: 'pedidos_traslados_revex', icon: 'recycling',    label: 'Pedidos Traslados REVEX' },
       { tab: 'abastecimiento', sub: 'pedidos_traslados_4000', icon: 'local_shipping', label: 'Pedidos Traslados 4000' },
     ]
   },
@@ -1428,7 +1429,7 @@ function switchTab(tabName, subName = null) {
       renderClientTariffView(stage);
       break;
     case 'abastecimiento':
-      pageTitle.textContent = 'Gestion Troncales / Abastecimiento' + subLabel;
+      pageTitle.textContent = 'Gestión Troncales' + subLabel;
       if (subName) setAbastSubTab(subName);
       renderAbastecimientoView(stage);
       break;

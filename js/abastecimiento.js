@@ -16,30 +16,41 @@ import { supabase } from './supabase-client.js';
 import { getDatabase } from './data.js?v=20260714a';
 import { showAlert, escapeHtml } from './utils.js';
 
-// ── Configuracion de bloques estandar del calendario ────────────────────────
-const BLOQUES = [
-  '08:00-10:00',
-  '10:00-12:00',
-  '12:00-14:00',
-  '14:00-16:00',
-  '16:00-18:00',
-];
-
-const DIAS = [
-  { n: 1, lbl: 'Lunes',    corto: 'LUN' },
-  { n: 2, lbl: 'Martes',   corto: 'MAR' },
-  { n: 3, lbl: 'Miercoles', corto: 'MIE' },
-  { n: 4, lbl: 'Jueves',   corto: 'JUE' },
-  { n: 5, lbl: 'Viernes',  corto: 'VIE' },
-  { n: 6, lbl: 'Sabado',   corto: 'SAB', sobreCupo: true }, // sobre cupos
-];
+// ── Configuracion de calendarios por centro origen ──────────────────────────
+const CALENDARIOS = {
+  '1003': {
+    nombre: 'CD Quilicura',
+    bloques: ['07:30-11:30', '11:00-15:00', '15:30-19:30'],
+    dias: [
+      { n: 1, lbl: 'Lunes',     corto: 'LUN' },
+      { n: 2, lbl: 'Martes',    corto: 'MAR' },
+      { n: 3, lbl: 'Miércoles', corto: 'MIE' },
+      { n: 4, lbl: 'Jueves',    corto: 'JUE' },
+      { n: 5, lbl: 'Viernes',   corto: 'VIE' },
+      { n: 6, lbl: 'Sábado',    corto: 'SAB', sobreCupo: true, bloques: ['07:30-11:30'] },
+    ],
+    destinos: ['1020','1040','1050','1060','1070','1080','1090','1100','1160','1005'],
+  },
+  '1081': {
+    nombre: 'CD Concepción',
+    bloques: ['08:00-11:00', '11:00-15:00'],
+    dias: [
+      { n: 1, lbl: 'Lunes',     corto: 'LUN' },
+      { n: 2, lbl: 'Martes',    corto: 'MAR' },
+      { n: 3, lbl: 'Miércoles', corto: 'MIE' },
+      { n: 4, lbl: 'Jueves',    corto: 'JUE' },
+      { n: 5, lbl: 'Viernes',   corto: 'VIE' },
+    ],
+    destinos: ['1100','1090','1160','1070','1060','1005','1003'],
+  },
+};
 
 // ── Estado del modulo ───────────────────────────────────────────────────────
-let currentSub = 'proveedores';     // 'proveedores' | 'calendario'
-let proveedores = [];               // cache local de proveedores + direcciones
-let selectedProveedorId = null;     // proveedor expandido (panel direcciones)
-let calCentro = null;               // centro seleccionado en calendario
-let calMatrix = {};                 // { 'dia-bloque': {habilitado, cupos, sobre_cupo} }
+let currentSub = 'proveedores';
+let proveedores = [];
+let selectedProveedorId = null;
+let calOrigen = '1003';            // centro origen seleccionado en calendario
+let calMatrix = {};                // { 'dia-bloque': {habilitado, cupos, sobre_cupo, centro_destino_1, centro_destino_2} }
 let rootEl = null;
 
 // ── Utilidades ──────────────────────────────────────────────────────────────
@@ -56,69 +67,361 @@ export function setAbastSubTab(sub) {
 }
 
 // ============================================================================
-// VISTAS DE DATOS TRONCALES (leen las vistas v_trc_* de Supabase)
-// Cada una: [campo_en_vista, etiqueta_columna]. filtros: campos con selector.
+// HELPERS PARA VISTAS DE DATOS
+// ============================================================================
+// Parsea fecha SAP DD.MM.YYYY → Date (o null)
+function parseDateSAP(s) {
+  if (!s) return null;
+  const m = String(s).match(/^(\d{2})\.(\d{2})\.(\d{4})$/);
+  if (!m) return null;
+  return new Date(+m[3], +m[2] - 1, +m[1]);
+}
+
+function hoy00() { const d = new Date(); d.setHours(0,0,0,0); return d; }
+
+// Alerta de fecha vs hoy. diasUmbral = cuántos días para "PRONTO A VENCER"
+function alertaFecha(fechaStr, diasUmbral = 5) {
+  const d = parseDateSAP(fechaStr);
+  if (!d) return { txt: '', cls: '' };
+  const hoy = hoy00();
+  const diff = Math.floor((d - hoy) / 86400000);
+  if (diff < 0) return { txt: 'PEDIDO ATRASADO', cls: 'text-error font-bold' };
+  if (diff <= diasUmbral) return { txt: 'PRONTO A VENCER', cls: 'text-[#e65100] font-bold' };
+  return { txt: '', cls: '' };
+}
+
+// MAX(peso_bruto, tamano_dimens) en número
+function maxPesoDim(peso, dim) {
+  const p = parseFloat(String(peso ?? '').replace(/\./g, '').replace(',', '.')) || 0;
+  const d = parseFloat(String(dim ?? '').replace(/\./g, '').replace(',', '.')) || 0;
+  return Math.max(p, d);
+}
+
+// Tonelaje = pesoMax * cantidad / 1000
+function calcTon(pesoMax, cantidad) {
+  const c = parseFloat(String(cantidad ?? '').replace(/\./g, '').replace(',', '.')) || 0;
+  return pesoMax * c / 1000;
+}
+
+function fmtNum(n, dec = 2) {
+  if (n == null || isNaN(n)) return '';
+  return n.toLocaleString('es-CL', { minimumFractionDigits: dec, maximumFractionDigits: dec });
+}
+
+// Lookup ruta → {comuna, region} desde db.routes
+function lookupRuta(rutaId) {
+  if (!rutaId) return { comuna: '', region: '' };
+  const db = getDatabase();
+  const r = (db.routes || []).find(x => x.codigo === String(rutaId).trim());
+  return r ? { comuna: r.comuna || '', region: r.region || '' } : { comuna: '', region: '' };
+}
+
+// Centros válidos para quiebres
+const CENTROS_QUIEBRES = ['1005','1020','1040','1050','1060','1070','1080','1090','1100','1160'];
+
+// ============================================================================
+// VISTAS DE DATOS TRONCALES
 // ============================================================================
 const VISTAS_TRONCAL = {
+  // ── QUIEBRES SUCURSAL (SLIM) ──────────────────────────────────────────────
   quiebres: {
     titulo: 'Quiebres Sucursal',
     vista: 'v_trc_slim_stock',
-    filtros: [{ campo: 'centro', label: 'Centro' }],
+    chipFilter: { campo: 'centro', label: 'Centro' },
+    filtros: [],
+    transform(rows) {
+      return rows
+        .filter(r => CENTROS_QUIEBRES.includes(String(r.centro ?? '').trim()))
+        .map(r => {
+          const sd = parseFloat(String(r.stock_days ?? '').replace(',', '.')) || 0;
+          const abc = String(r.clase_abc ?? '').trim().toUpperCase();
+          let alerta = '', alertaCls = '';
+          if (sd === 0) { alerta = 'PRODUCTO QUEBRADO'; alertaCls = 'text-error font-bold'; }
+          else if (sd < 7) {
+            if (['AA','AB','AC'].includes(abc)) { alerta = 'STOCK CRÍTICO'; alertaCls = 'text-error font-bold'; }
+            else if (['BA','BB','BC'].includes(abc)) { alerta = 'STOCK ALERTA'; alertaCls = 'text-[#e65100] font-bold'; }
+            else if (['CA','CB','CC'].includes(abc)) { alerta = 'STOCK REVISAR'; alertaCls = 'text-[#f9a825] font-bold'; }
+          }
+          return { ...r, _desc_centro: getNombreCentro(r.centro), _alerta: alerta, _alerta_cls: alertaCls, _sd_num: sd };
+        })
+        .sort((a, b) => a._sd_num - b._sd_num);
+    },
     columnas: [
-      ['centro', 'Centro'], ['codigo_articulo', 'Código'], ['descripcion', 'Descripción'],
-      ['stock_days', 'StockDays'], ['clase_abc', 'Clase ABC'],
+      { key: 'centro', label: 'Centro' },
+      { key: '_desc_centro', label: 'Descripción Centro' },
+      { key: 'codigo_articulo', label: 'Código Artículo' },
+      { key: 'descripcion', label: 'Descripción' },
+      { key: 'stock_days', label: 'StockDays', cls: 'text-right font-data-mono' },
+      { key: 'clase_abc', label: 'Clase ABC', cls: 'text-center' },
+      { key: '_alerta', label: 'Alerta', clsFn: r => r._alerta_cls },
     ],
   },
+
+  // ── RETIROS FÁBRICA (Step 1) ──────────────────────────────────────────────
   retiros: {
-    titulo: 'Retiros Fábrica',
+    titulo: 'Pedidos de Retiro',
     vista: 'v_trc_sqvi_retiros_fabrica',
-    filtros: [{ campo: 'ce', label: 'Centro' }, { campo: 'alm', label: 'Almacén' }],
+    chipFilter: { campo: 'ce', label: 'Centro' },
+    filtros: [{ campo: 'doc_compr', label: 'Orden de Compra', tipo: 'buscar' }],
+    transform(rows) {
+      return rows
+        .filter(r => !String(r.proveedor ?? '').startsWith('*'))
+        .map(r => {
+          const al = alertaFecha(r.fe_entrega, 5);
+          const ctdP = parseFloat(String(r.ctd_pedido ?? '').replace(/\./g, '').replace(',', '.')) || 0;
+          const ctdE = parseFloat(String(r.ctd_entregada ?? '').replace(/\./g, '').replace(',', '.')) || 0;
+          const pm = maxPesoDim(r.peso_bruto, r.tamano_dimens);
+          return {
+            ...r,
+            _desc_centro: getNombreCentro(r.ce),
+            _diferencia: fmtNum(ctdP - ctdE, 0),
+            _peso_mayor: fmtNum(pm, 2),
+            _ton_totales: fmtNum(calcTon(pm, ctdP - ctdE), 3),
+            _alerta: al.txt, _alerta_cls: al.cls,
+          };
+        })
+        .sort((a, b) => {
+          const da = parseDateSAP(a.fe_entrega), db2 = parseDateSAP(b.fe_entrega);
+          return (da || new Date(9999,0)) - (db2 || new Date(9999,0));
+        });
+    },
     columnas: [
-      ['doc_compr', 'Doc.compr.'], ['proveedor', 'Proveedor'], ['nombre_1', 'Nombre'],
-      ['material', 'Material'], ['texto_breve', 'Texto breve'], ['ce', 'Centro'], ['alm', 'Almacén'],
-      ['fe_entrega', 'Fe.entrega'], ['ctd_pedido', 'Ctd.pedido'], ['ump', 'UMP'],
-      ['ctd_entregada', 'Ctd.entregada'], ['peso_bruto', 'Peso bruto'],
+      { key: 'contr', label: 'Contrato Compra' },
+      { key: 'doc_compr', label: 'Orden de Compra' },
+      { key: 'proveedor', label: 'ID Proveedor' },
+      { key: 'nombre_1', label: 'Nombre Proveedor' },
+      { key: 'material', label: 'ID Material' },
+      { key: 'texto_breve', label: 'Nombre Material' },
+      { key: 'ce', label: 'Centro Destino' },
+      { key: '_desc_centro', label: 'Desc. Centro' },
+      { key: 'alm', label: 'Almacén Destino' },
+      { key: 'fe_entrega', label: 'Fecha de Retiro' },
+      { key: 'ctd_pedido', label: 'Ctd Pedido OC', cls: 'text-right font-data-mono' },
+      { key: 'ump', label: 'UM Compra' },
+      { key: 'ctd_entregada', label: 'Ctd Entregada', cls: 'text-right font-data-mono' },
+      { key: '_diferencia', label: 'Pendiente', cls: 'text-right font-data-mono font-bold' },
+      { key: 'e', label: 'Ind. Stock Esp.' },
+      { key: 'documento', label: 'Pedido de Ventas' },
+      { key: '_peso_mayor', label: 'Peso Mayor', cls: 'text-right font-data-mono' },
+      { key: '_ton_totales', label: 'Ton Totales', cls: 'text-right font-data-mono font-bold' },
+      { key: '_alerta', label: 'Alerta', clsFn: r => r._alerta_cls },
     ],
   },
+
+  // ── PEDIDOS VENTAS 1003 (Step 2) ──────────────────────────────────────────
   pedidos_venta: {
     titulo: 'Pedidos Ventas 1003',
     vista: 'v_trc_sqvi_pedidos_venta_1003',
-    filtros: [{ campo: 'ofvta', label: 'OF Venta' }],
+    chipFilter: { campo: 'ofvta', label: 'Oficina de Ventas' },
+    filtros: [{ campo: 'doc_ventas', label: 'Pedido de Venta', tipo: 'buscar' }],
+    transform(rows) {
+      // Dedup: mismo doc_ventas + material → quedarse con fecha más reciente
+      const map = new Map();
+      rows.forEach(r => {
+        const k = `${r.doc_ventas}|${r.material}`;
+        const existing = map.get(k);
+        if (!existing) { map.set(k, r); return; }
+        const dNew = parseDateSAP(r.fe_entrega), dOld = parseDateSAP(existing.fe_entrega);
+        if (dNew && (!dOld || dNew >= dOld)) map.set(k, r);
+      });
+      return Array.from(map.values())
+        .map(r => {
+          const al = alertaFecha(r.fe_entrega, 5);
+          const rl = lookupRuta(r.ruta);
+          const pm = maxPesoDim(r.peso_bruto, r.tamano_dimens);
+          const ctdP = parseFloat(String(r.cantidad_de_pedido ?? '').replace(/\./g, '').replace(',', '.')) || 0;
+          const ctdE = parseFloat(String(r.ctd_confirmada ?? '').replace(/\./g, '').replace(',', '.')) || 0;
+          return {
+            ...r,
+            _comuna: rl.comuna, _region: rl.region,
+            _peso_mayor: fmtNum(pm, 2),
+            _ton_totales: fmtNum(calcTon(pm, ctdP - ctdE), 3),
+            _alerta: al.txt, _alerta_cls: al.cls,
+          };
+        })
+        .sort((a, b) => {
+          const da = parseDateSAP(a.fe_entrega), db2 = parseDateSAP(b.fe_entrega);
+          return (da || new Date(9999,0)) - (db2 || new Date(9999,0));
+        });
+    },
     columnas: [
-      ['ofvta', 'OF Venta'], ['creado_el', 'Creado el'], ['deudor', 'Deudor'], ['ce', 'Centro'],
-      ['doc_ventas', 'Doc.ventas'], ['material', 'Material'], ['denominacion_de_posicion', 'Denominación'],
-      ['cantidad_de_pedido', 'Cantidad'], ['um', 'UM'], ['ruta', 'Ruta'],
-      ['fe_entrega', 'Fe.entrega'], ['ctd_confirmada', 'Ctd.confirmada'],
+      { key: 'ofvta', label: 'Oficina de Ventas' },
+      { key: 'creado_el', label: 'Fecha de Creación' },
+      { key: 'deudor', label: 'ID Vendedor' },
+      { key: 'ce', label: 'Centro Expedición' },
+      { key: 'doc_ventas', label: 'Pedido de Venta' },
+      { key: 'material', label: 'ID Material' },
+      { key: 'denominacion_de_posicion', label: 'Nombre de Material' },
+      { key: 'cantidad_de_pedido', label: 'Cantidad Pedido', cls: 'text-right font-data-mono' },
+      { key: 'um', label: 'Unidad de Venta' },
+      { key: 'ruta', label: 'ID Ruta' },
+      { key: '_comuna', label: 'Comuna Destino' },
+      { key: '_region', label: 'Región Destino' },
+      { key: 'fe_entrega', label: 'Fecha Entrega' },
+      { key: 'ctd_confirmada', label: 'Ctd Confirmada', cls: 'text-right font-data-mono' },
+      { key: '_peso_mayor', label: 'Peso Mayor', cls: 'text-right font-data-mono' },
+      { key: '_ton_totales', label: 'Ton Totales', cls: 'text-right font-data-mono font-bold' },
+      { key: '_alerta', label: 'Alerta', clsFn: r => r._alerta_cls },
     ],
   },
+
+  // ── STOCK ALMACEN 4000 (Step 3) ───────────────────────────────────────────
   stock_almacen: {
     titulo: 'Stock Almacén 4000',
     vista: 'v_trc_sqvi_stock_almacen_4000',
-    filtros: [{ campo: 'ce', label: 'Centro' }],
+    chipFilter: { campo: 'ce', label: 'Centro' },
+    filtros: [],
+    transform(rows) {
+      return rows.map(r => {
+        const rl = lookupRuta(r.ruta);
+        const pm = maxPesoDim(r.peso_bruto, r.tamano_dimens);
+        return {
+          ...r,
+          _comuna: rl.comuna, _region: rl.region,
+          _peso_mayor: fmtNum(pm, 2),
+          _ton_totales: fmtNum(calcTon(pm, r.libre_utiliz), 3),
+        };
+      });
+    },
     columnas: [
-      ['creado_el', 'Creado el'], ['ce', 'Centro'], ['alm', 'Almacén'], ['material', 'Material'],
-      ['denominacion_de_posicion', 'Denominación'], ['libre_utiliz', 'Libre utiliz.'], ['umb', 'UMB'],
-      ['ruta', 'Ruta'], ['deudor', 'Deudor'],
+      { key: 'ce', label: 'Centro Destino' },
+      { key: 'creado_el', label: 'Fecha de Creación' },
+      { key: 'alm', label: 'Almacén Destino' },
+      { key: 'material', label: 'ID Material' },
+      { key: 'denominacion_de_posicion', label: 'Nombre Material' },
+      { key: 'libre_utiliz', label: 'Cantidad Disponible', cls: 'text-right font-data-mono' },
+      { key: 'umb', label: 'UM Pedido' },
+      { key: 'ruta', label: 'ID Ruta' },
+      { key: '_comuna', label: 'Comuna Destino' },
+      { key: '_region', label: 'Región Destino' },
+      { key: 'deudor', label: 'ID Vendedor' },
+      { key: 'documento', label: 'Pedido de Venta' },
+      { key: 'creado', label: 'Fecha de Entrega' },
+      { key: '_peso_mayor', label: 'Peso Mayor', cls: 'text-right font-data-mono' },
+      { key: '_ton_totales', label: 'Ton Totales', cls: 'text-right font-data-mono font-bold' },
     ],
   },
+
+  // ── PEDIDOS TRASLADOS (Step 4) ────────────────────────────────────────────
   pedidos_traslados: {
     titulo: 'Pedidos Traslados',
     vista: 'v_trc_sqvi_pedidos_traslados',
-    filtros: [{ campo: 'cesu', label: 'CeSu (Suministrador)' }, { campo: 'ce', label: 'Ce. (Destino)' }],
+    chipFilter: { campo: 'ce', label: 'Centro Destino' },
+    filtros: [],
+    transform(rows) {
+      return rows
+        .filter(r => !String(r.cesu ?? '').startsWith('*') && String(r.material ?? '').trim() !== '')
+        .filter(r => !String(r.material ?? '').startsWith('900000'))
+        .map(r => {
+          const al = alertaFecha(r.fecha_confirmada, 7);
+          const pm = maxPesoDim(r.peso_neto, r.tamano_dimens);
+          return {
+            ...r,
+            _peso_mayor: fmtNum(pm, 2),
+            _ton_totales: fmtNum(calcTon(pm, r.ctd_confirmada), 3),
+            _alerta: al.txt, _alerta_cls: al.cls,
+          };
+        })
+        .sort((a, b) => {
+          const da = parseDateSAP(a.fecha_confirmada), db2 = parseDateSAP(b.fecha_confirmada);
+          return (da || new Date(9999,0)) - (db2 || new Date(9999,0));
+        });
+    },
     columnas: [
-      ['creado_el', 'Creado el'], ['cesu', 'CeSu'], ['cl', 'Cl.'], ['doc_compr', 'Doc.compr.'],
-      ['material', 'Material'], ['texto_breve', 'Texto breve'], ['ce', 'Ce.Destino'], ['alm', 'Almacén'],
-      ['ctd_pedido', 'Ctd.pedido'], ['ump', 'UMP'], ['fecha_confirmada', 'Fecha conf.'], ['ctd_confirmada', 'Ctd.confirmada'],
+      { key: 'cesu', label: 'Centro Expedición' },
+      { key: 'creado_el', label: 'Fecha de Creación' },
+      { key: 'cl', label: 'Tipo de Documento' },
+      { key: 'doc_compr', label: 'Pedido de Traslado' },
+      { key: 'material', label: 'ID Material' },
+      { key: 'texto_breve', label: 'Nombre Material' },
+      { key: 'ce', label: 'Centro Destino' },
+      { key: 'alm', label: 'Almacén Destino' },
+      { key: 'ctd_pedido', label: 'Ctd Pedido PT', cls: 'text-right font-data-mono' },
+      { key: 'ump', label: 'UM Pedido' },
+      { key: 'fecha_confirmada', label: 'Fecha Confirmada' },
+      { key: 'ctd_confirmada', label: 'Ctd Confirmada', cls: 'text-right font-data-mono' },
+      { key: 'documento', label: 'Pedido de Venta' },
+      { key: '_peso_mayor', label: 'Peso Mayor', cls: 'text-right font-data-mono' },
+      { key: '_ton_totales', label: 'Ton Totales', cls: 'text-right font-data-mono font-bold' },
+      { key: '_alerta', label: 'Alerta', clsFn: r => r._alerta_cls },
     ],
   },
+
+  // ── PEDIDOS TRASLADOS REVEX (Step 4, material 900000) ─────────────────────
+  pedidos_traslados_revex: {
+    titulo: 'Pedidos Traslados REVEX',
+    vista: 'v_trc_sqvi_pedidos_traslados',
+    chipFilter: { campo: 'ce', label: 'Centro Destino' },
+    filtros: [],
+    transform(rows) {
+      return rows
+        .filter(r => String(r.material ?? '').startsWith('900000'))
+        .map(r => {
+          const al = alertaFecha(r.fecha_confirmada, 7);
+          const pm = maxPesoDim(r.peso_neto, r.tamano_dimens);
+          return {
+            ...r,
+            _peso_mayor: fmtNum(pm, 2),
+            _ton_totales: fmtNum(calcTon(pm, r.ctd_confirmada), 3),
+            _alerta: al.txt, _alerta_cls: al.cls,
+          };
+        })
+        .sort((a, b) => {
+          const da = parseDateSAP(a.fecha_confirmada), db2 = parseDateSAP(b.fecha_confirmada);
+          return (da || new Date(9999,0)) - (db2 || new Date(9999,0));
+        });
+    },
+    columnas: [
+      { key: 'cesu', label: 'Centro Expedición' },
+      { key: 'creado_el', label: 'Fecha de Creación' },
+      { key: 'cl', label: 'Tipo de Documento' },
+      { key: 'doc_compr', label: 'Pedido de Traslado' },
+      { key: 'material', label: 'ID Material' },
+      { key: 'texto_breve', label: 'Nombre Material' },
+      { key: 'ce', label: 'Centro Destino' },
+      { key: 'alm', label: 'Almacén Destino' },
+      { key: 'ctd_pedido', label: 'Ctd Pedido PT', cls: 'text-right font-data-mono' },
+      { key: 'ump', label: 'UM Pedido' },
+      { key: 'fecha_confirmada', label: 'Fecha Confirmada' },
+      { key: 'ctd_confirmada', label: 'Ctd Confirmada', cls: 'text-right font-data-mono' },
+      { key: 'documento', label: 'Pedido de Venta' },
+      { key: '_peso_mayor', label: 'Peso Mayor', cls: 'text-right font-data-mono' },
+      { key: '_ton_totales', label: 'Ton Totales', cls: 'text-right font-data-mono font-bold' },
+      { key: '_alerta', label: 'Alerta', clsFn: r => r._alerta_cls },
+    ],
+  },
+
+  // ── PEDIDOS TRASLADOS 4000 (Step 5) ───────────────────────────────────────
   pedidos_traslados_4000: {
     titulo: 'Pedidos Traslados 4000',
     vista: 'v_trc_sqvi_pedidos_traslados_4000',
-    filtros: [{ campo: 'cesu', label: 'CeSu (Suministrador)' }],
+    chipFilter: { campo: 'ce', label: 'Centro Destino' },
+    filtros: [],
+    transform(rows) {
+      return rows.map(r => {
+        const pm = maxPesoDim(r.peso_neto, r.tamano_dimens);
+        return {
+          ...r,
+          _peso_mayor: fmtNum(pm, 2),
+          _ton_totales: fmtNum(calcTon(pm, r.cantidad_salida), 3),
+        };
+      });
+    },
     columnas: [
-      ['cl', 'Cl.'], ['creado_el', 'Creado el'], ['cesu', 'CeSu'], ['doc_compr', 'Doc.compr.'],
-      ['material', 'Material'], ['texto_breve', 'Texto breve'], ['ce', 'Centro'], ['fe_entrega', 'Fe.entrega'],
-      ['cantidad_salida', 'Cant.salida'], ['ump', 'UMP'], ['ctd_entregada', 'Ctd.entregada'], ['alm', 'Almacén'],
+      { key: 'cesu', label: 'Centro Expedición' },
+      { key: 'creado_el', label: 'Fecha de Creación' },
+      { key: 'cl', label: 'Tipo de Documento' },
+      { key: 'doc_compr', label: 'Pedido de Traslado' },
+      { key: 'material', label: 'ID Material' },
+      { key: 'texto_breve', label: 'Nombre Material' },
+      { key: 'ce', label: 'Centro Destino' },
+      { key: 'alm', label: 'Almacén Destino' },
+      { key: 'cantidad_salida', label: 'Ctd Pedido PT', cls: 'text-right font-data-mono' },
+      { key: 'ump', label: 'UM Pedido' },
+      { key: 'fe_entrega', label: 'Fecha Entrega' },
+      { key: 'documento', label: 'Pedido de Venta' },
+      { key: '_peso_mayor', label: 'Peso Mayor', cls: 'text-right font-data-mono' },
+      { key: '_ton_totales', label: 'Ton Totales', cls: 'text-right font-data-mono font-bold' },
     ],
   },
 };
@@ -150,34 +453,45 @@ async function fetchAllRows(vista) {
   return all;
 }
 
-// Render generico de una vista con filtros (selector) + buscador + CSV.
+// Render generico de una vista con chip filter + filtros + buscador + CSV.
 async function renderVistaTabla(stage, cfg) {
   stage.innerHTML = `<div class="text-secondary text-body-md p-md">Cargando ${escapeHtml(cfg.titulo)}…</div>`;
-  const rows = await fetchAllRows(cfg.vista);
+  const rawRows = await fetchAllRows(cfg.vista);
+  // Apply transform (computed fields, sort, dedup, filter subtotals)
+  const rows = cfg.transform ? cfg.transform(rawRows) : rawRows;
 
-  const opciones = {};
-  cfg.filtros.forEach(f => {
-    opciones[f.campo] = Array.from(new Set(rows.map(r => String(r[f.campo] ?? '')).filter(v => v !== ''))).sort();
-  });
-  const filtroSel = {}; cfg.filtros.forEach(f => { filtroSel[f.campo] = ''; });
+  // Chip filter values
+  const chip = cfg.chipFilter;
+  const chipValues = chip ? Array.from(new Set(rows.map(r => String(r[chip.campo] ?? '')).filter(v => v))).sort() : [];
+  let chipSel = 'all';
+
+  // Search filters (tipo: 'buscar')
+  const filtroTextos = {};
+  (cfg.filtros || []).forEach(f => { filtroTextos[f.campo] = ''; });
   let texto = '';
 
   function aplica() {
     const q = texto.trim().toLowerCase();
     return rows.filter(r => {
-      for (const f of cfg.filtros) {
-        if (filtroSel[f.campo] && String(r[f.campo] ?? '') !== filtroSel[f.campo]) return false;
+      if (chip && chipSel !== 'all' && String(r[chip.campo] ?? '') !== chipSel) return false;
+      for (const f of (cfg.filtros || [])) {
+        const fv = filtroTextos[f.campo]?.trim().toLowerCase();
+        if (fv && !String(r[f.campo] ?? '').toLowerCase().includes(fv)) return false;
       }
-      if (q && !cfg.columnas.some(c => String(r[c[0]] ?? '').toLowerCase().includes(q))) return false;
+      if (q && !cfg.columnas.some(c => String(r[c.key] ?? '').toLowerCase().includes(q))) return false;
       return true;
     });
   }
+
+  const chipCls = (v) => 'vt-chip px-sm py-xs border rounded text-[11px] font-bold uppercase transition-colors cursor-pointer ' +
+    (chipSel === v ? 'bg-primary text-white border-primary' : 'bg-white border-outline-variant text-on-surface hover:bg-surface-container-high');
 
   function draw() {
     const filt = aplica();
     const MAX = 1500;
     const shown = filt.slice(0, MAX);
-    const act = rows.length ? String(rows[0].cargado_en || '').slice(0, 16).replace('T', ' ') : '';
+    const act = rawRows.length ? String(rawRows[0].cargado_en || '').slice(0, 16).replace('T', ' ') : '';
+
     stage.innerHTML = `
       <div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm rounded-lg">
         <div class="flex flex-wrap items-end justify-between gap-md mb-md border-b border-outline-variant pb-sm">
@@ -185,37 +499,50 @@ async function renderVistaTabla(stage, cfg) {
             <h3 class="text-headline-sm font-bold text-on-surface">${escapeHtml(cfg.titulo)}</h3>
             <p class="text-[13px] text-secondary">${filt.length} registro(s)${act ? ' · actualizado ' + escapeHtml(act) : ''}</p>
           </div>
-          <div class="flex flex-wrap items-end gap-sm">
-            ${cfg.filtros.map(f => `
-              <label class="block">
-                <span class="text-[11px] uppercase tracking-wide text-secondary font-bold">${escapeHtml(f.label)}</span>
-                <select data-filtro="${f.campo}" class="mt-xs block border border-outline-variant rounded-lg px-sm py-sm text-body-md focus:border-primary outline-none bg-surface-container-lowest">
-                  <option value="">Todos</option>
-                  ${opciones[f.campo].map(v => `<option value="${escapeHtml(v)}" ${filtroSel[f.campo] === v ? 'selected' : ''}>${escapeHtml(v)}</option>`).join('')}
-                </select>
-              </label>`).join('')}
-            <label class="block">
-              <span class="text-[11px] uppercase tracking-wide text-secondary font-bold">Buscar</span>
-              <input data-buscar value="${escapeHtml(texto)}" placeholder="texto…"
-                class="mt-xs block border border-outline-variant rounded-lg px-md py-sm text-body-md focus:border-primary outline-none"/>
-            </label>
+          <div class="flex items-center gap-sm">
             <button data-refrescar title="Refrescar" class="bg-surface-container-high text-on-surface px-md py-sm rounded-lg text-[13px] font-bold hover:bg-surface-container-highest">
               <span class="material-symbols-outlined text-[16px] align-middle">refresh</span></button>
             <button data-csv class="bg-surface-container-high text-on-surface px-md py-sm rounded-lg text-[13px] font-bold hover:bg-surface-container-highest">
               <span class="material-symbols-outlined text-[16px] align-middle mr-xs">download</span>CSV</button>
           </div>
         </div>
+
+        ${chip ? `<div class="flex items-center gap-xs mb-sm flex-wrap">
+          <span class="text-[11px] text-secondary font-bold uppercase mr-xs">${escapeHtml(chip.label)}:</span>
+          <button class="${chipCls('all')}" data-chip="all">Todos</button>
+          ${chipValues.map(v => `<button class="${chipCls(v)}" data-chip="${escapeHtml(v)}">${escapeHtml(v)} ${escapeHtml(getNombreCentro(v))}</button>`).join('')}
+        </div>` : ''}
+
+        <div class="flex flex-wrap items-end gap-md mb-md">
+          ${(cfg.filtros || []).map(f => `
+            <label class="block">
+              <span class="text-[11px] uppercase tracking-wide text-secondary font-bold">${escapeHtml(f.label)}</span>
+              <input data-filtro="${f.campo}" value="${escapeHtml(filtroTextos[f.campo] || '')}" placeholder="Buscar…"
+                class="mt-xs block border border-outline-variant rounded-lg px-md py-sm text-body-md focus:border-primary outline-none w-48"/>
+            </label>`).join('')}
+          <label class="block">
+            <span class="text-[11px] uppercase tracking-wide text-secondary font-bold">Buscar general</span>
+            <input data-buscar value="${escapeHtml(texto)}" placeholder="texto…"
+              class="mt-xs block border border-outline-variant rounded-lg px-md py-sm text-body-md focus:border-primary outline-none"/>
+          </label>
+          <span class="text-[12px] text-secondary ml-auto">${filt.length} fila(s)</span>
+        </div>
+
         <div class="overflow-x-auto max-h-[68vh] overflow-y-auto">
           <table class="w-full text-[13px]">
-            <thead class="sticky top-0 bg-surface-container-lowest">
+            <thead class="sticky top-0 bg-surface-container-lowest z-10">
               <tr class="text-left text-[11px] uppercase tracking-wide text-secondary border-b border-outline-variant">
-                ${cfg.columnas.map(c => `<th class="py-sm pr-md whitespace-nowrap">${escapeHtml(c[1])}</th>`).join('')}
+                ${cfg.columnas.map(c => `<th class="py-sm pr-md whitespace-nowrap">${escapeHtml(c.label)}</th>`).join('')}
               </tr>
             </thead>
             <tbody>
               ${shown.length === 0 ? `<tr><td colspan="${cfg.columnas.length}" class="py-lg text-center text-secondary">Sin datos.</td></tr>` :
                 shown.map(r => `<tr class="border-b border-outline-variant/50 hover:bg-surface-container-low">
-                  ${cfg.columnas.map(c => `<td class="py-xs pr-md whitespace-nowrap">${escapeHtml(String(r[c[0]] ?? ''))}</td>`).join('')}
+                  ${cfg.columnas.map(c => {
+                    const val = String(r[c.key] ?? '');
+                    const cls = c.clsFn ? c.clsFn(r) : (c.cls || '');
+                    return `<td class="py-xs pr-md whitespace-nowrap ${cls}">${escapeHtml(val)}</td>`;
+                  }).join('')}
                 </tr>`).join('')}
             </tbody>
           </table>
@@ -223,25 +550,32 @@ async function renderVistaTabla(stage, cfg) {
         ${filt.length > MAX ? `<p class="text-[12px] text-secondary mt-sm">Mostrando ${MAX} de ${filt.length}. Usa los filtros para acotar.</p>` : ''}
       </div>`;
 
-    stage.querySelectorAll('[data-filtro]').forEach(sel =>
-      sel.addEventListener('change', () => { filtroSel[sel.dataset.filtro] = sel.value; draw(); }));
+    // Event listeners
+    stage.querySelectorAll('[data-chip]').forEach(btn => btn.addEventListener('click', () => {
+      chipSel = btn.dataset.chip; draw();
+    }));
+    stage.querySelectorAll('[data-filtro]').forEach(inp => inp.addEventListener('input', e => {
+      filtroTextos[inp.dataset.filtro] = e.target.value; draw();
+      const el = stage.querySelector(`[data-filtro="${inp.dataset.filtro}"]`);
+      if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
+    }));
     const inp = stage.querySelector('[data-buscar]');
-    inp.addEventListener('input', e => {
+    if (inp) inp.addEventListener('input', e => {
       texto = e.target.value; draw();
       const i = stage.querySelector('[data-buscar]');
       if (i) { i.focus(); i.setSelectionRange(i.value.length, i.value.length); }
     });
-    stage.querySelector('[data-refrescar]').addEventListener('click', () => renderVistaTabla(stage, cfg));
-    stage.querySelector('[data-csv]').addEventListener('click', () => exportarCSV(cfg, filt));
+    stage.querySelector('[data-refrescar]')?.addEventListener('click', () => renderVistaTabla(stage, cfg));
+    stage.querySelector('[data-csv]')?.addEventListener('click', () => exportarCSV(cfg, filt));
   }
 
   draw();
 }
 
 function exportarCSV(cfg, filas) {
-  const headers = cfg.columnas.map(c => c[1]);
+  const headers = cfg.columnas.map(c => c.label);
   const esc = v => { v = v == null ? '' : String(v); return /[;"\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
-  const lines = [headers.join(';')].concat(filas.map(r => cfg.columnas.map(c => esc(r[c[0]])).join(';')));
+  const lines = [headers.join(';')].concat(filas.map(r => cfg.columnas.map(c => esc(r[c.key])).join(';')));
   const blob = new Blob(['﻿' + lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -547,6 +881,12 @@ function getCentros() {
     String(a.nombre || a.id).localeCompare(String(b.nombre || b.id)));
 }
 
+function getNombreCentro(id) {
+  const db = getDatabase();
+  const c = (db.logisticsCentres || []).find(x => x.id === id);
+  return c ? (c.nombre || id) : id;
+}
+
 async function loadCalendario(centro) {
   const { data, error } = await supabase
     .from('abast_calendario').select('*').eq('centro', centro);
@@ -557,22 +897,23 @@ async function loadCalendario(centro) {
 }
 
 async function renderCalendario(stage) {
-  const centros = getCentros();
-  if (!calCentro && centros.length) calCentro = centros[0].id;
+  const cfg = CALENDARIOS[calOrigen];
+  if (!cfg) { calOrigen = '1003'; }
 
   stage.innerHTML = `
     <div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm rounded-lg">
       <div class="flex flex-wrap items-end justify-between gap-md mb-md border-b border-outline-variant pb-sm">
         <div>
-          <h3 class="text-headline-sm font-bold text-on-surface">Calendario de carga por sucursal</h3>
-          <p class="text-[13px] text-secondary">Agenda de transportes en CD. Lunes a viernes + sabado (sobre cupos), por bloques de horario.</p>
+          <h3 class="text-headline-sm font-bold text-on-surface">Calendario de Despachos</h3>
+          <p class="text-[13px] text-secondary">Programación de despachos por centro origen. Seleccione hasta 2 centros destino por bloque horario.</p>
         </div>
-        <label class="block">
-          <span class="text-[12px] uppercase tracking-wide text-secondary font-bold">Centro / Sucursal</span>
-          <select id="cal-centro" class="mt-xs w-full md:w-[320px] border border-outline-variant rounded-lg px-md py-sm text-body-md focus:border-primary outline-none bg-surface-container-lowest">
-            ${centros.map(c => `<option value="${escapeHtml(c.id)}" ${c.id === calCentro ? 'selected' : ''}>${escapeHtml(c.nombre || c.id)} (${escapeHtml(c.id)})</option>`).join('')}
-          </select>
-        </label>
+        <div class="flex gap-sm">
+          ${Object.entries(CALENDARIOS).map(([id, c]) => `
+            <button data-origen="${id}" class="px-md py-sm rounded-lg text-[13px] font-bold transition-colors
+              ${calOrigen === id ? 'bg-primary text-on-primary' : 'bg-surface-container-high text-on-surface hover:bg-surface-container-highest'}">
+              <span class="material-symbols-outlined text-[16px] align-middle mr-xs">warehouse</span>${escapeHtml(c.nombre)} (${id})
+            </button>`).join('')}
+        </div>
       </div>
       <div id="cal-grid"></div>
       <div class="flex justify-end mt-md">
@@ -583,19 +924,14 @@ async function renderCalendario(stage) {
     </div>
   `;
 
-  if (!centros.length) {
-    stage.querySelector('#cal-grid').innerHTML = `<p class="text-secondary py-md">No hay centros logisticos cargados. Registralos en Rutas de Transporte → Centros Logisticos.</p>`;
-    return;
-  }
+  stage.querySelectorAll('[data-origen]').forEach(btn => btn.addEventListener('click', async () => {
+    calOrigen = btn.dataset.origen;
+    calMatrix = await loadCalendario(calOrigen);
+    // Re-render everything to update active button
+    await renderCalendario(stage);
+  }));
 
-  const sel = stage.querySelector('#cal-centro');
-  sel.addEventListener('change', async () => {
-    calCentro = sel.value;
-    calMatrix = await loadCalendario(calCentro);
-    drawGrid(stage);
-  });
-
-  calMatrix = await loadCalendario(calCentro);
+  calMatrix = await loadCalendario(calOrigen);
   drawGrid(stage);
 
   stage.querySelector('#cal-save').addEventListener('click', () => saveCalendario(stage));
@@ -603,29 +939,48 @@ async function renderCalendario(stage) {
 
 function drawGrid(stage) {
   const grid = stage.querySelector('#cal-grid');
+  const cfg = CALENDARIOS[calOrigen];
+  const dias = cfg.dias;
+  const bloquesBase = cfg.bloques;
+  const destinos = cfg.destinos;
+
+  // Build options HTML for destination selectors
+  const optsHtml = `<option value="">— vacío —</option>` +
+    destinos.map(id => `<option value="${id}">${id} ${escapeHtml(getNombreCentro(id))}</option>`).join('');
+
   grid.innerHTML = `
     <div class="overflow-x-auto">
       <table class="w-full text-[13px] border-collapse">
         <thead>
           <tr class="text-left text-[11px] uppercase tracking-wide text-secondary">
-            <th class="py-sm pr-md border-b border-outline-variant">Bloque horario</th>
-            ${DIAS.map(d => `<th class="py-sm px-sm border-b border-outline-variant text-center">
-              ${d.lbl}${d.sobreCupo ? '<br><span class="text-[10px] text-primary font-bold normal-case">sobre cupos</span>' : ''}
+            <th class="py-sm pr-md border-b border-outline-variant w-[120px]">Bloque</th>
+            ${dias.map(d => `<th class="py-sm px-sm border-b border-outline-variant text-center min-w-[140px]">
+              ${escapeHtml(d.lbl)}${d.sobreCupo ? '<br><span class="text-[10px] text-primary font-bold normal-case">sobre cupo</span>' : ''}
             </th>`).join('')}
           </tr>
         </thead>
         <tbody>
-          ${BLOQUES.map(bloque => `
+          ${bloquesBase.map(bloque => `
             <tr class="border-b border-outline-variant/50">
               <td class="py-sm pr-md font-data-mono font-bold text-on-surface whitespace-nowrap">${bloque}</td>
-              ${DIAS.map(d => {
+              ${dias.map(d => {
+                // Check if this day supports this block (Sat may only have 1 block)
+                const dayBloques = d.bloques || bloquesBase;
+                if (!dayBloques.includes(bloque)) {
+                  return `<td class="py-sm px-sm text-center bg-surface-dim/30"><span class="text-[11px] text-secondary">—</span></td>`;
+                }
                 const key = `${d.n}-${bloque}`;
-                const cell = calMatrix[key] || { habilitado: false, cupos: 1 };
-                return `<td class="py-sm px-sm text-center ${d.sobreCupo ? 'bg-primary/5' : ''}">
-                  <div class="flex flex-col items-center gap-xs">
-                    <input type="checkbox" data-hab="${key}" ${cell.habilitado ? 'checked' : ''} class="w-4 h-4"/>
-                    <input type="number" min="0" step="1" data-cupos="${key}" value="${cell.cupos ?? 1}"
-                      class="w-14 border border-outline-variant rounded px-xs py-[2px] text-center text-[12px] focus:border-primary outline-none ${cell.habilitado ? '' : 'opacity-40'}"/>
+                const cell = calMatrix[key] || {};
+                const d1 = cell.centro_destino_1 || '';
+                const d2 = cell.centro_destino_2 || '';
+                return `<td class="py-sm px-xs text-center ${d.sobreCupo ? 'bg-primary/5' : ''}">
+                  <div class="flex flex-col gap-[3px]">
+                    <select data-dest="${key}-1" class="w-full border border-outline-variant rounded px-[4px] py-[3px] text-[11px] focus:border-primary outline-none bg-surface-container-lowest">
+                      ${optsHtml.replace(`value="${d1}"`, `value="${d1}" selected`)}
+                    </select>
+                    <select data-dest="${key}-2" class="w-full border border-outline-variant rounded px-[4px] py-[3px] text-[11px] focus:border-primary outline-none bg-surface-container-lowest">
+                      ${optsHtml.replace(`value="${d2}"`, `value="${d2}" selected`)}
+                    </select>
                   </div>
                 </td>`;
               }).join('')}
@@ -635,34 +990,35 @@ function drawGrid(stage) {
     </div>
     <p class="text-[12px] text-secondary mt-sm">
       <span class="material-symbols-outlined text-[14px] align-middle">info</span>
-      Marca el bloque para habilitarlo e indica los cupos (camiones agendables). El sabado se agenda como sobre cupos.
+      Seleccione hasta 2 centros destino por bloque horario. Los sábados se agendan como sobre cupo (previa confirmación).
     </p>
   `;
-
-  // Vincular estado visual del campo cupos al checkbox
-  grid.querySelectorAll('[data-hab]').forEach(chk => chk.addEventListener('change', () => {
-    const cuposInput = grid.querySelector(`[data-cupos="${chk.dataset.hab}"]`);
-    if (cuposInput) cuposInput.classList.toggle('opacity-40', !chk.checked);
-  }));
 }
 
 async function saveCalendario(stage) {
   const grid = stage.querySelector('#cal-grid');
   const email = await getUserEmail();
   const now = new Date().toISOString();
+  const cfg = CALENDARIOS[calOrigen];
   const rows = [];
-  DIAS.forEach(d => {
-    BLOQUES.forEach(bloque => {
+
+  cfg.dias.forEach(d => {
+    const dayBloques = d.bloques || cfg.bloques;
+    dayBloques.forEach(bloque => {
       const key = `${d.n}-${bloque}`;
-      const hab = grid.querySelector(`[data-hab="${key}"]`);
-      const cuposI = grid.querySelector(`[data-cupos="${key}"]`);
+      const sel1 = grid.querySelector(`[data-dest="${key}-1"]`);
+      const sel2 = grid.querySelector(`[data-dest="${key}-2"]`);
+      const cd1 = sel1?.value || null;
+      const cd2 = sel2?.value || null;
       rows.push({
-        centro: calCentro,
+        centro: calOrigen,
         dia: d.n,
         bloque,
-        habilitado: !!(hab && hab.checked),
-        cupos: Math.max(0, parseInt(cuposI?.value, 10) || 0),
+        habilitado: !!(cd1 || cd2),
+        cupos: (cd1 ? 1 : 0) + (cd2 ? 1 : 0),
         sobre_cupo: !!d.sobreCupo,
+        centro_destino_1: cd1 || null,
+        centro_destino_2: cd2 || null,
         updated_by: email,
         updated_at: now,
       });
@@ -674,5 +1030,5 @@ async function saveCalendario(stage) {
     .upsert(rows, { onConflict: 'centro,dia,bloque' });
   if (error) { showAlert('Error al guardar calendario: ' + error.message, 'error'); return; }
   showAlert('Calendario guardado', 'success');
-  calMatrix = await loadCalendario(calCentro);
+  calMatrix = await loadCalendario(calOrigen);
 }
