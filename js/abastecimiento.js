@@ -253,7 +253,7 @@ const VISTAS_TRONCAL = {
             ...r,
             _comuna: rl.comuna, _region: rl.region,
             _peso_mayor: fmtNum(pm, 2),
-            _ton_totales: fmtNum(calcTon(pm, ctdConf), 3),
+            _ton_totales: fmtNum(pm / 1000, 3),
             _alerta: al.txt, _alerta_cls: al.cls,
           };
         })
@@ -594,13 +594,9 @@ async function renderPlanCarga(stage) {
 
     // 5. Notas de Venta: ventas 1003 con destino vía ruta→centro, fecha -3/+5, mr vacío
     //    Condición expedición: clvt contiene '08' (ZV08)
+    // 5. Notas de Venta: match por oficina de ventas (ofvta) = centro
     const ventasCe = ventas
-      .filter(r => {
-        const rl = lookupRuta(r.ruta);
-        // Match by looking up the ruta's commune to the centro
-        // Simplified: use ce_2 (centro destino) or ce field
-        return String(r.ce_2 ?? r.ce ?? '').trim() === ce;
-      })
+      .filter(r => String(r.ofvta ?? '').trim() === ce)
       .filter(r => fechaEnRango(r.fe_entrega, 3, 5));
 
     // Split ventas: directa (>= 85% cap) vs traslado (< 85%)
@@ -613,15 +609,15 @@ async function renderPlanCarga(stage) {
     let tonVentaDirecta = 0;
     let tonVentaTraslado = 0;
     for (const [, items] of Object.entries(ventasPorDoc)) {
-      const tonDoc = items.reduce((s, r) => s + calcTon(maxPesoDim(r.peso_bruto, r.tamano_dimens),
-        parseNum(r.ctd_confirmada)), 0);
+      const tonDoc = items.reduce((s, r) => s + maxPesoDim(r.peso_bruto, r.tamano_dimens) / 1000, 0);
       if (tonDoc >= cap * 0.85) tonVentaDirecta += tonDoc;
       else tonVentaTraslado += tonDoc;
     }
 
-    // 6. Retiros proveedor: destino=ce, fecha -10/+5
+    // 6. Retiros proveedor: destino=ce, solo CONSOLIDAR CD (alm=4000), fecha -10/+5
     const retirosItems = retiros
       .filter(r => String(r.ce ?? '').trim() === ce)
+      .filter(r => String(r.alm ?? '').trim() === '4000')
       .filter(r => fechaEnRango(r.fe_entrega, 10, 5));
     const tonRetiro = retirosItems.reduce((sum, r) => {
       const ctdP = parseNum(r.ctd_pedido), ctdE = parseNum(r.ctd_entregada);
@@ -695,20 +691,20 @@ async function renderPlanCarga(stage) {
         <table class="w-full text-[13px]">
           <thead class="sticky top-0 bg-surface-container-lowest z-10">
             <tr class="text-left text-[11px] uppercase tracking-wide text-secondary border-b-2 border-primary/30">
-              <th class="py-sm pr-md">Sucursal</th>
-              <th class="py-sm pr-md text-right">REVEX</th>
-              <th class="py-sm pr-md text-right">Notas Venta Directa</th>
-              <th class="py-sm pr-md text-right">Ped. Traslados CrossDock</th>
-              <th class="py-sm pr-md text-right">Retiro Proveedor</th>
-              <th class="py-sm pr-md text-right">Ped. Traslados Quiebres</th>
-              <th class="py-sm pr-md text-right">Ped. Traslados Stock</th>
-              <th class="py-sm pr-md text-right font-bold">Total</th>
-              <th class="py-sm pr-md text-right">Faltan [Ton]</th>
-              <th class="py-sm pr-md text-right">% Compl.</th>
-              <th class="py-sm pr-md text-right">Ctd Transporte</th>
-              <th class="py-sm pr-md text-center">Camión</th>
-              <th class="py-sm pr-md text-center">Status</th>
-              <th class="py-sm pr-md">Observaciones</th>
+              <th class="py-sm pr-md font-bold whitespace-nowrap">Sucursal</th>
+              <th class="py-sm pr-md text-right font-bold whitespace-nowrap">REVEX</th>
+              <th class="py-sm pr-md text-right font-bold whitespace-nowrap">Notas Venta Directa</th>
+              <th class="py-sm pr-md text-right font-bold whitespace-nowrap">Ped. Traslados CrossDock</th>
+              <th class="py-sm pr-md text-right font-bold whitespace-nowrap">Retiro Proveedor</th>
+              <th class="py-sm pr-md text-right font-bold whitespace-nowrap">Ped. Traslados Quiebres</th>
+              <th class="py-sm pr-md text-right font-bold whitespace-nowrap">Ped. Traslados Stock</th>
+              <th class="py-sm pr-md text-right font-bold whitespace-nowrap">Total</th>
+              <th class="py-sm pr-md text-right font-bold whitespace-nowrap">Faltan [Ton]</th>
+              <th class="py-sm pr-md text-right font-bold whitespace-nowrap">% Compl.</th>
+              <th class="py-sm pr-md text-right font-bold whitespace-nowrap">Ctd Transporte</th>
+              <th class="py-sm pr-md text-center font-bold whitespace-nowrap">Camión</th>
+              <th class="py-sm pr-md text-center font-bold whitespace-nowrap">Status</th>
+              <th class="py-sm pr-md font-bold whitespace-nowrap">Observaciones</th>
             </tr>
           </thead>
           <tbody>
