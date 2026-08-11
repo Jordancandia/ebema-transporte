@@ -16,7 +16,7 @@ cd /d "%~dp0"
   echo ===== ADD =====
   git add -A
   echo ===== COMMIT =====
-  git commit -m "feat: Plan de Carga dashboard + ajustes retiro proveedor + fix pedidos venta v=20260811b"
+  git commit -m "feat: Plan de Carga ajustado (columnas, REVEX peso neto, quiebres -10/+5, ctd transporte) v=20260811c"
   echo ===== PULL =====
   git pull --rebase origin main
   echo ===== PUSH =====

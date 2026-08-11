@@ -564,28 +564,27 @@ async function renderPlanCarga(stage) {
     const cap = getCapacidadCamion(ce);
     const quiebresMat = quiebresByCentro[ce] || new Set();
 
-    // 1. Abastecimiento Quiebre: traslados destino=ce, material en quiebres, fecha -10/+7
+    // 1. Pedidos Traslados Quiebre: destino=ce, material en quiebres, fecha confirmada -10/+5
     const tonQuiebre = traslados
       .filter(r => String(r.ce ?? '').trim() === ce)
       .filter(r => quiebresMat.has(String(r.material ?? '').trim()))
-      .filter(r => fechaEnRango(r.fecha_confirmada, 10, 7))
+      .filter(r => fechaEnRango(r.fecha_confirmada, 10, 5))
       .reduce((sum, r) => sum + calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), r.ctd_confirmada), 0);
 
-    // 2. Abastecimiento Stock: traslados destino=ce, NO quiebre, fecha -10/+7
+    // 2. Pedidos Traslados Stock: destino=ce, NO quiebre, fecha confirmada -10/+5
     const tonStock = traslados
       .filter(r => String(r.ce ?? '').trim() === ce)
       .filter(r => !quiebresMat.has(String(r.material ?? '').trim()))
-      .filter(r => fechaEnRango(r.fecha_confirmada, 10, 7))
+      .filter(r => fechaEnRango(r.fecha_confirmada, 10, 5))
       .reduce((sum, r) => sum + calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), r.ctd_confirmada), 0);
 
-    // Abast total = quiebre + stock
-    const tonAbast = tonQuiebre + tonStock;
-
-    // 3. Material REVEX: destino=ce, fecha -10/+7
+    // 3. REVEX: destino=ce, SIN filtro de días, peso_neto como peso mayor * ctd_confirmada
     const tonRevex = revex
       .filter(r => String(r.ce ?? '').trim() === ce)
-      .filter(r => fechaEnRango(r.fecha_confirmada, 10, 7))
-      .reduce((sum, r) => sum + calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), r.ctd_confirmada), 0);
+      .reduce((sum, r) => {
+        const pesoNeto = parseNum(r.peso_neto);
+        return sum + calcTon(pesoNeto, r.ctd_confirmada);
+      }, 0);
 
     // 4. Crossdocking 4000: destino=ce, fecha -5/+5
     const tonCross = t4000
@@ -630,7 +629,7 @@ async function renderPlanCarga(stage) {
     }, 0);
 
     // Total y status
-    const total = tonAbast + tonRevex + tonCross + tonVentaDirecta + tonVentaTraslado + tonRetiro;
+    const total = tonQuiebre + tonStock + tonRevex + tonCross + tonVentaDirecta + tonVentaTraslado + tonRetiro;
     const pct = cap > 0 ? Math.round(total / cap * 100) : 0;
     const faltan = cap - total;
     const enCalendario = centrosProgramados.has(ce);
@@ -645,13 +644,15 @@ async function renderPlanCarga(stage) {
     if (!enCalendario && pct >= 70) obs = 'CUPO EXTRA';
     if (enCalendario && pct < 70) obs = 'EN CALENDARIO - CARGA BAJA';
 
+    // Cantidad de transporte: total / 28 redondeado al entero superior
+    const ctdTransporte = total > 0 ? Math.ceil(total / 28) : 0;
+
     return {
       ce, nombre: getNombreCentro(ce), cap,
-      tonAbast, tonRevex, tonCross,
+      tonQuiebre, tonStock, tonRevex, tonCross,
       tonVentaDirecta, tonVentaTraslado, tonRetiro,
       total, faltan, pct, status, statusCls, obs, enCalendario,
-      // Detail counts
-      lineasTraslados: traslados.filter(r => String(r.ce ?? '').trim() === ce).length,
+      ctdTransporte,
     };
   }).sort((a, b) => b.pct - a.pct); // Ordenar por % completitud desc
 
@@ -695,15 +696,16 @@ async function renderPlanCarga(stage) {
           <thead class="sticky top-0 bg-surface-container-lowest z-10">
             <tr class="text-left text-[11px] uppercase tracking-wide text-secondary border-b-2 border-primary/30">
               <th class="py-sm pr-md">Sucursal</th>
-              <th class="py-sm pr-md text-right">Total Líneas</th>
-              <th class="py-sm pr-md text-right">Abast.</th>
               <th class="py-sm pr-md text-right">REVEX</th>
-              <th class="py-sm pr-md text-right">CrossDock 4000</th>
-              <th class="py-sm pr-md text-right">Notas Venta</th>
-              <th class="py-sm pr-md text-right">Ret. Proveedor</th>
+              <th class="py-sm pr-md text-right">Notas Venta Directa</th>
+              <th class="py-sm pr-md text-right">Ped. Traslados CrossDock</th>
+              <th class="py-sm pr-md text-right">Retiro Proveedor</th>
+              <th class="py-sm pr-md text-right">Ped. Traslados Quiebres</th>
+              <th class="py-sm pr-md text-right">Ped. Traslados Stock</th>
               <th class="py-sm pr-md text-right font-bold">Total</th>
               <th class="py-sm pr-md text-right">Faltan [Ton]</th>
               <th class="py-sm pr-md text-right">% Compl.</th>
+              <th class="py-sm pr-md text-right">Ctd Transporte</th>
               <th class="py-sm pr-md text-center">Camión</th>
               <th class="py-sm pr-md text-center">Status</th>
               <th class="py-sm pr-md">Observaciones</th>
@@ -718,15 +720,16 @@ async function renderPlanCarga(stage) {
                   ${r.enCalendario ? '<span class="material-symbols-outlined text-[14px] text-primary align-middle mr-xs">calendar_today</span>' : ''}
                   ${escapeHtml(r.nombre)}
                 </td>
-                <td class="py-sm pr-md text-right font-data-mono">${r.lineasTraslados}</td>
-                <td class="py-sm pr-md text-right font-data-mono">${fmtNum(r.tonAbast, 1)}</td>
                 <td class="py-sm pr-md text-right font-data-mono">${fmtNum(r.tonRevex, 1)}</td>
+                <td class="py-sm pr-md text-right font-data-mono">${fmtNum(r.tonVentaDirecta, 1)}</td>
                 <td class="py-sm pr-md text-right font-data-mono">${fmtNum(r.tonCross, 1)}</td>
-                <td class="py-sm pr-md text-right font-data-mono">${fmtNum(r.tonVentaDirecta + r.tonVentaTraslado, 1)}</td>
                 <td class="py-sm pr-md text-right font-data-mono">${fmtNum(r.tonRetiro, 1)}</td>
+                <td class="py-sm pr-md text-right font-data-mono">${fmtNum(r.tonQuiebre, 1)}</td>
+                <td class="py-sm pr-md text-right font-data-mono">${fmtNum(r.tonStock, 1)}</td>
                 <td class="py-sm pr-md text-right font-data-mono font-bold ${totalCls}">${fmtNum(r.total, 1)}</td>
                 <td class="py-sm pr-md text-right font-data-mono ${r.faltan < 0 ? 'text-red-600' : ''}">${fmtNum(r.faltan, 1)}</td>
                 <td class="py-sm pr-md text-right font-data-mono font-bold">${r.pct}%</td>
+                <td class="py-sm pr-md text-right font-data-mono font-bold">${r.ctdTransporte}</td>
                 <td class="py-sm pr-md text-center">${truckSVG(r.pct)}</td>
                 <td class="py-sm pr-md text-center">
                   <span class="px-sm py-xs rounded text-[11px] font-bold ${r.statusCls}">${escapeHtml(r.status)}</span>
