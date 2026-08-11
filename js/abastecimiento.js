@@ -162,22 +162,37 @@ const VISTAS_TRONCAL = {
     titulo: 'Pedidos de Retiro',
     vista: 'v_trc_sqvi_retiros_fabrica',
     chipFilter: { campo: 'ce', label: 'Centro' },
-    filtros: [{ campo: 'doc_compr', label: 'Orden de Compra', tipo: 'buscar' }],
+    extraChips: [
+      { campo: '_tipo_retiro', label: 'Tipo Retiro' },
+      { campo: '_alerta', label: 'Alerta Pedido' },
+      { campo: '_vigencia', label: 'Vigencia OC' },
+    ],
+    noBuscar: true,
+    filtros: [],
+    rowClsFn(r) { return r._revision_saldo ? 'bg-red-100' : ''; },
     transform(rows) {
       return rows
+        // Ocultar subtotales y filas sin contrato de compra
         .filter(r => !String(r.proveedor ?? '').startsWith('*'))
+        .filter(r => String(r.contr ?? '').trim() !== '')
         .map(r => {
           const al = alertaFecha(r.fe_entrega, 5);
           const ctdP = parseFloat(String(r.ctd_pedido ?? '').replace(/\./g, '').replace(',', '.')) || 0;
           const ctdE = parseFloat(String(r.ctd_entregada ?? '').replace(/\./g, '').replace(',', '.')) || 0;
           const pm = maxPesoDim(r.peso_bruto, r.tamano_dimens);
+          const almVal = String(r.alm ?? '').trim();
+          const tipoRetiro = almVal === '4000' ? 'CONSOLIDAR CD' : 'FABRICA-SUCURSAL';
+          const revSaldo = (ctdE > 0 && ctdE < ctdP);
           return {
             ...r,
             _desc_centro: getNombreCentro(r.ce),
+            _tipo_retiro: tipoRetiro,
             _diferencia: fmtNum(ctdP - ctdE, 0),
             _peso_mayor: fmtNum(pm, 2),
             _ton_totales: fmtNum(calcTon(pm, ctdP - ctdE), 3),
             _alerta: al.txt, _alerta_cls: al.cls,
+            _revision_saldo: revSaldo,
+            _vigencia: revSaldo ? 'REVISIÓN SALDO PEDIDO' : '',
           };
         })
         .sort((a, b) => {
@@ -194,6 +209,7 @@ const VISTAS_TRONCAL = {
       { key: 'texto_breve', label: 'Nombre Material' },
       { key: 'ce', label: 'Centro Destino' },
       { key: '_desc_centro', label: 'Desc. Centro' },
+      { key: '_tipo_retiro', label: 'Tipo Retiro', clsFn: r => r._tipo_retiro === 'CONSOLIDAR CD' ? 'text-blue-700 font-bold' : 'text-green-700 font-bold' },
       { key: 'alm', label: 'Almacén Destino' },
       { key: 'fe_entrega', label: 'Fecha de Retiro' },
       { key: 'ctd_pedido', label: 'Ctd Pedido OC', cls: 'text-right font-data-mono' },
@@ -204,6 +220,7 @@ const VISTAS_TRONCAL = {
       { key: 'documento', label: 'Pedido de Ventas' },
       { key: '_peso_mayor', label: 'Peso Mayor', cls: 'text-right font-data-mono' },
       { key: '_ton_totales', label: 'Ton Totales', cls: 'text-right font-data-mono font-bold' },
+      { key: '_vigencia', label: 'Vigencia OC', clsFn: r => r._revision_saldo ? 'text-red-700 font-bold' : '' },
       { key: '_alerta', label: 'Alerta', clsFn: r => r._alerta_cls },
     ],
   },
@@ -215,9 +232,11 @@ const VISTAS_TRONCAL = {
     chipFilter: { campo: 'ofvta', label: 'Oficina de Ventas' },
     filtros: [{ campo: 'doc_ventas', label: 'Pedido de Venta', tipo: 'buscar' }],
     transform(rows) {
+      // Filtrar rechazos/bloqueos: solo filas con columna MR vacía
+      const filtered = rows.filter(r => !String(r.mr ?? '').trim());
       // Dedup: mismo doc_ventas + material → quedarse con fecha más reciente
       const map = new Map();
-      rows.forEach(r => {
+      filtered.forEach(r => {
         const k = `${r.doc_ventas}|${r.material}`;
         const existing = map.get(k);
         if (!existing) { map.set(k, r); return; }
@@ -229,13 +248,12 @@ const VISTAS_TRONCAL = {
           const al = alertaFecha(r.fe_entrega, 5);
           const rl = lookupRuta(r.ruta);
           const pm = maxPesoDim(r.peso_bruto, r.tamano_dimens);
-          const ctdP = parseFloat(String(r.cantidad_de_pedido ?? '').replace(/\./g, '').replace(',', '.')) || 0;
-          const ctdE = parseFloat(String(r.ctd_confirmada ?? '').replace(/\./g, '').replace(',', '.')) || 0;
+          const ctdConf = parseFloat(String(r.ctd_confirmada ?? '').replace(/\./g, '').replace(',', '.')) || 0;
           return {
             ...r,
             _comuna: rl.comuna, _region: rl.region,
             _peso_mayor: fmtNum(pm, 2),
-            _ton_totales: fmtNum(calcTon(pm, ctdP - ctdE), 3),
+            _ton_totales: fmtNum(calcTon(pm, ctdConf), 3),
             _alerta: al.txt, _alerta_cls: al.cls,
           };
         })
@@ -254,7 +272,6 @@ const VISTAS_TRONCAL = {
       { key: 'denominacion_de_posicion', label: 'Nombre de Material' },
       { key: 'cantidad_de_pedido', label: 'Cantidad Pedido', cls: 'text-right font-data-mono' },
       { key: 'um', label: 'Unidad de Venta' },
-      { key: 'ruta', label: 'ID Ruta' },
       { key: '_comuna', label: 'Comuna Destino' },
       { key: '_region', label: 'Región Destino' },
       { key: 'fe_entrega', label: 'Fecha Entrega' },
@@ -460,10 +477,16 @@ async function renderVistaTabla(stage, cfg) {
   // Apply transform (computed fields, sort, dedup, filter subtotals)
   const rows = cfg.transform ? cfg.transform(rawRows) : rawRows;
 
-  // Chip filter values
+  // Chip filter values (primary + extras)
   const chip = cfg.chipFilter;
   const chipValues = chip ? Array.from(new Set(rows.map(r => String(r[chip.campo] ?? '')).filter(v => v))).sort() : [];
   let chipSel = 'all';
+
+  const extraChips = (cfg.extraChips || []).map(ec => ({
+    ...ec,
+    values: Array.from(new Set(rows.map(r => String(r[ec.campo] ?? '')).filter(v => v))).sort(),
+    sel: 'all',
+  }));
 
   // Search filters (tipo: 'buscar')
   const filtroTextos = {};
@@ -474,6 +497,9 @@ async function renderVistaTabla(stage, cfg) {
     const q = texto.trim().toLowerCase();
     return rows.filter(r => {
       if (chip && chipSel !== 'all' && String(r[chip.campo] ?? '') !== chipSel) return false;
+      for (const ec of extraChips) {
+        if (ec.sel !== 'all' && String(r[ec.campo] ?? '') !== ec.sel) return false;
+      }
       for (const f of (cfg.filtros || [])) {
         const fv = filtroTextos[f.campo]?.trim().toLowerCase();
         if (fv && !String(r[f.campo] ?? '').toLowerCase().includes(fv)) return false;
@@ -485,6 +511,8 @@ async function renderVistaTabla(stage, cfg) {
 
   const chipCls = (v) => 'vt-chip px-sm py-xs border rounded text-[11px] font-bold uppercase transition-colors cursor-pointer ' +
     (chipSel === v ? 'bg-primary text-white border-primary' : 'bg-white border-outline-variant text-on-surface hover:bg-surface-container-high');
+  const chipCls2 = (ec, v) => 'vt-chip px-sm py-xs border rounded text-[11px] font-bold uppercase transition-colors cursor-pointer ' +
+    (ec.sel === v ? 'bg-primary text-white border-primary' : 'bg-white border-outline-variant text-on-surface hover:bg-surface-container-high');
 
   function draw() {
     const filt = aplica();
@@ -513,6 +541,12 @@ async function renderVistaTabla(stage, cfg) {
           ${chipValues.map(v => `<button class="${chipCls(v)}" data-chip="${escapeHtml(v)}">${escapeHtml(v)} ${escapeHtml(getNombreCentro(v))}</button>`).join('')}
         </div>` : ''}
 
+        ${extraChips.map((ec, idx) => ec.values.length ? `<div class="flex items-center gap-xs mb-sm flex-wrap">
+          <span class="text-[11px] text-secondary font-bold uppercase mr-xs">${escapeHtml(ec.label)}:</span>
+          <button class="${chipCls2(ec, 'all')}" data-echip="${idx}" data-eval="all">Todos</button>
+          ${ec.values.map(v => `<button class="${chipCls2(ec, v)}" data-echip="${idx}" data-eval="${escapeHtml(v)}">${escapeHtml(v)}</button>`).join('')}
+        </div>` : '').join('')}
+
         <div class="flex flex-wrap items-end gap-md mb-md">
           ${(cfg.filtros || []).map(f => `
             <label class="block">
@@ -520,11 +554,11 @@ async function renderVistaTabla(stage, cfg) {
               <input data-filtro="${f.campo}" value="${escapeHtml(filtroTextos[f.campo] || '')}" placeholder="Buscar…"
                 class="mt-xs block border border-outline-variant rounded-lg px-md py-sm text-body-md focus:border-primary outline-none w-48"/>
             </label>`).join('')}
-          <label class="block">
+          ${cfg.noBuscar ? '' : `<label class="block">
             <span class="text-[11px] uppercase tracking-wide text-secondary font-bold">Buscar general</span>
             <input data-buscar value="${escapeHtml(texto)}" placeholder="texto…"
               class="mt-xs block border border-outline-variant rounded-lg px-md py-sm text-body-md focus:border-primary outline-none"/>
-          </label>
+          </label>`}
           <span class="text-[12px] text-secondary ml-auto">${filt.length} fila(s)</span>
         </div>
 
@@ -537,13 +571,15 @@ async function renderVistaTabla(stage, cfg) {
             </thead>
             <tbody>
               ${shown.length === 0 ? `<tr><td colspan="${cfg.columnas.length}" class="py-lg text-center text-secondary">Sin datos.</td></tr>` :
-                shown.map(r => `<tr class="border-b border-outline-variant/50 hover:bg-surface-container-low">
+                shown.map(r => {
+                  const rowCls = cfg.rowClsFn ? cfg.rowClsFn(r) : '';
+                  return `<tr class="border-b border-outline-variant/50 hover:bg-surface-container-low ${rowCls}">
                   ${cfg.columnas.map(c => {
                     const val = String(r[c.key] ?? '');
                     const cls = c.clsFn ? c.clsFn(r) : (c.cls || '');
                     return `<td class="py-xs pr-md whitespace-nowrap ${cls}">${escapeHtml(val)}</td>`;
                   }).join('')}
-                </tr>`).join('')}
+                </tr>`; }).join('')}
             </tbody>
           </table>
         </div>
@@ -553,6 +589,9 @@ async function renderVistaTabla(stage, cfg) {
     // Event listeners
     stage.querySelectorAll('[data-chip]').forEach(btn => btn.addEventListener('click', () => {
       chipSel = btn.dataset.chip; draw();
+    }));
+    stage.querySelectorAll('[data-echip]').forEach(btn => btn.addEventListener('click', () => {
+      extraChips[parseInt(btn.dataset.echip)].sel = btn.dataset.eval; draw();
     }));
     stage.querySelectorAll('[data-filtro]').forEach(inp => inp.addEventListener('input', e => {
       filtroTextos[inp.dataset.filtro] = e.target.value; draw();
