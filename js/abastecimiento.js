@@ -451,6 +451,7 @@ export async function renderAbastecimientoView(container) {
   container.innerHTML = '<div id="ab-stage"></div>';
   const stage = container.querySelector('#ab-stage');
   if (currentSub === 'calendario')          await renderCalendario(stage);
+  else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (VISTAS_TRONCAL[currentSub])       await renderVistaTabla(stage, VISTAS_TRONCAL[currentSub]);
   else                                       await renderProveedores(stage);
 }
@@ -468,6 +469,284 @@ async function fetchAllRows(vista) {
     from += pageSize;
   }
   return all;
+}
+
+// ============================================================================
+// PLAN DE CARGA — Dashboard de consolidación por sucursal
+// ============================================================================
+// Capacidades de camión por centro (toneladas)
+const CAP_CAMION_DEFAULT = 28;
+const CAP_CAMION_REDUCIDO = 15;
+const CENTROS_CAMION_REDUCIDO = ['1050', '1005']; // La Calera, San Bernardo
+
+function getCapacidadCamion(centroId) {
+  return CENTROS_CAMION_REDUCIDO.includes(String(centroId)) ? CAP_CAMION_REDUCIDO : CAP_CAMION_DEFAULT;
+}
+
+// Obtener centros programados para mañana según calendario config
+function getCentrosManana() {
+  const manana = new Date();
+  manana.setDate(manana.getDate() + 1);
+  const diaManana = manana.getDay(); // 0=dom, 1=lun...6=sab
+  const programados = new Set();
+  for (const [, cal] of Object.entries(CALENDARIOS)) {
+    for (const dia of cal.dias) {
+      if (dia.n === diaManana) {
+        cal.destinos.forEach(d => programados.add(d));
+      }
+    }
+  }
+  return programados;
+}
+
+function parseNum(v) {
+  return parseFloat(String(v ?? '').replace(/\./g, '').replace(',', '.')) || 0;
+}
+
+function fechaEnRango(fechaStr, diasAntes, diasDespues) {
+  const d = parseDateSAP(fechaStr);
+  if (!d) return false;
+  const hoy = hoy00();
+  const diff = Math.floor((d - hoy) / 86400000);
+  return diff >= -diasAntes && diff <= diasDespues;
+}
+
+async function renderPlanCarga(stage) {
+  stage.innerHTML = '<div class="text-secondary text-body-md p-md">Cargando Plan de Carga…</div>';
+
+  // Cargar datos de TODAS las vistas en paralelo
+  const [quiebresRaw, trasladosRaw, revexRaw, retirosRaw, ventasRaw, traslados4000Raw] = await Promise.all([
+    fetchAllRows('v_trc_slim_stock'),
+    fetchAllRows('v_trc_sqvi_pedidos_traslados'),
+    fetchAllRows('v_trc_sqvi_pedidos_traslados'),       // same view, filter 900000
+    fetchAllRows('v_trc_sqvi_retiros_fabrica'),
+    fetchAllRows('v_trc_sqvi_pedidos_venta_1003'),
+    fetchAllRows('v_trc_sqvi_pedidos_traslados_4000'),
+  ]);
+
+  // ── Preparar set de materiales quebrados por centro ──────────────────────
+  const quiebresByCentro = {};
+  quiebresRaw
+    .filter(r => CENTROS_QUIEBRES.includes(String(r.centro ?? '').trim()))
+    .forEach(r => {
+      const ce = String(r.centro).trim();
+      const sd = parseNum(r.stock_days);
+      if (sd === 0 || (sd < 7 && /^[ABC]{2}$/.test(String(r.clase_abc ?? '').trim()))) {
+        if (!quiebresByCentro[ce]) quiebresByCentro[ce] = new Set();
+        quiebresByCentro[ce].add(String(r.codigo_articulo ?? '').trim());
+      }
+    });
+
+  // ── Pedidos Traslados (excluir 900000 y subtotales) ─────────────────────
+  const traslados = trasladosRaw
+    .filter(r => !String(r.cesu ?? '').startsWith('*') && String(r.material ?? '').trim() !== '')
+    .filter(r => !String(r.material ?? '').startsWith('900000'));
+
+  // ── REVEX (solo 900000) ─────────────────────────────────────────────────
+  const revex = revexRaw.filter(r => String(r.material ?? '').startsWith('900000'));
+
+  // ── Retiros (filtrar subtotales y sin contrato) ─────────────────────────
+  const retiros = retirosRaw
+    .filter(r => !String(r.proveedor ?? '').startsWith('*'))
+    .filter(r => String(r.contr ?? '').trim() !== '');
+
+  // ── Ventas 1003 (filtrar rechazos: mr vacío) ────────────────────────────
+  const ventas = ventasRaw.filter(r => !String(r.mr ?? '').trim());
+
+  // ── Traslados 4000 ─────────────────────────────────────────────────────
+  const t4000 = traslados4000Raw;
+
+  // ── Calcular toneladas por centro y categoría ───────────────────────────
+  const centrosSet = new Set(CENTROS_QUIEBRES);
+  const centrosProgramados = getCentrosManana();
+
+  const resultado = Array.from(centrosSet).map(ce => {
+    const cap = getCapacidadCamion(ce);
+    const quiebresMat = quiebresByCentro[ce] || new Set();
+
+    // 1. Abastecimiento Quiebre: traslados destino=ce, material en quiebres, fecha -10/+7
+    const tonQuiebre = traslados
+      .filter(r => String(r.ce ?? '').trim() === ce)
+      .filter(r => quiebresMat.has(String(r.material ?? '').trim()))
+      .filter(r => fechaEnRango(r.fecha_confirmada, 10, 7))
+      .reduce((sum, r) => sum + calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), r.ctd_confirmada), 0);
+
+    // 2. Abastecimiento Stock: traslados destino=ce, NO quiebre, fecha -10/+7
+    const tonStock = traslados
+      .filter(r => String(r.ce ?? '').trim() === ce)
+      .filter(r => !quiebresMat.has(String(r.material ?? '').trim()))
+      .filter(r => fechaEnRango(r.fecha_confirmada, 10, 7))
+      .reduce((sum, r) => sum + calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), r.ctd_confirmada), 0);
+
+    // Abast total = quiebre + stock
+    const tonAbast = tonQuiebre + tonStock;
+
+    // 3. Material REVEX: destino=ce, fecha -10/+7
+    const tonRevex = revex
+      .filter(r => String(r.ce ?? '').trim() === ce)
+      .filter(r => fechaEnRango(r.fecha_confirmada, 10, 7))
+      .reduce((sum, r) => sum + calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), r.ctd_confirmada), 0);
+
+    // 4. Crossdocking 4000: destino=ce, fecha -5/+5
+    const tonCross = t4000
+      .filter(r => String(r.ce ?? '').trim() === ce)
+      .filter(r => fechaEnRango(r.fe_entrega, 5, 5))
+      .reduce((sum, r) => sum + calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), r.cantidad_salida), 0);
+
+    // 5. Notas de Venta: ventas 1003 con destino vía ruta→centro, fecha -3/+5, mr vacío
+    //    Condición expedición: clvt contiene '08' (ZV08)
+    const ventasCe = ventas
+      .filter(r => {
+        const rl = lookupRuta(r.ruta);
+        // Match by looking up the ruta's commune to the centro
+        // Simplified: use ce_2 (centro destino) or ce field
+        return String(r.ce_2 ?? r.ce ?? '').trim() === ce;
+      })
+      .filter(r => fechaEnRango(r.fe_entrega, 3, 5));
+
+    // Split ventas: directa (>= 85% cap) vs traslado (< 85%)
+    const ventasPorDoc = {};
+    ventasCe.forEach(r => {
+      const doc = String(r.doc_ventas ?? '').trim();
+      if (!ventasPorDoc[doc]) ventasPorDoc[doc] = [];
+      ventasPorDoc[doc].push(r);
+    });
+    let tonVentaDirecta = 0;
+    let tonVentaTraslado = 0;
+    for (const [, items] of Object.entries(ventasPorDoc)) {
+      const tonDoc = items.reduce((s, r) => s + calcTon(maxPesoDim(r.peso_bruto, r.tamano_dimens),
+        parseNum(r.ctd_confirmada)), 0);
+      if (tonDoc >= cap * 0.85) tonVentaDirecta += tonDoc;
+      else tonVentaTraslado += tonDoc;
+    }
+
+    // 6. Retiros proveedor: destino=ce, fecha -10/+5
+    const retirosItems = retiros
+      .filter(r => String(r.ce ?? '').trim() === ce)
+      .filter(r => fechaEnRango(r.fe_entrega, 10, 5));
+    const tonRetiro = retirosItems.reduce((sum, r) => {
+      const ctdP = parseNum(r.ctd_pedido), ctdE = parseNum(r.ctd_entregada);
+      return sum + calcTon(maxPesoDim(r.peso_bruto, r.tamano_dimens), ctdP - ctdE);
+    }, 0);
+
+    // Total y status
+    const total = tonAbast + tonRevex + tonCross + tonVentaDirecta + tonVentaTraslado + tonRetiro;
+    const pct = cap > 0 ? Math.round(total / cap * 100) : 0;
+    const faltan = cap - total;
+    const enCalendario = centrosProgramados.has(ce);
+
+    let status, statusCls;
+    if (pct >= 80) { status = 'PROGRAMAR'; statusCls = 'bg-green-700 text-white'; }
+    else if (pct >= 70) { status = 'REVISAR'; statusCls = 'bg-yellow-600 text-white'; }
+    else { status = 'CARGA INSUFICIENTE'; statusCls = 'bg-gray-400 text-white'; }
+
+    // Cupo extra: centro NO en calendario pero con carga suficiente
+    let obs = '';
+    if (!enCalendario && pct >= 70) obs = 'CUPO EXTRA';
+    if (enCalendario && pct < 70) obs = 'EN CALENDARIO - CARGA BAJA';
+
+    return {
+      ce, nombre: getNombreCentro(ce), cap,
+      tonAbast, tonRevex, tonCross,
+      tonVentaDirecta, tonVentaTraslado, tonRetiro,
+      total, faltan, pct, status, statusCls, obs, enCalendario,
+      // Detail counts
+      lineasTraslados: traslados.filter(r => String(r.ce ?? '').trim() === ce).length,
+    };
+  }).sort((a, b) => b.pct - a.pct); // Ordenar por % completitud desc
+
+  // ── Fecha de planificación ──────────────────────────────────────────────
+  const manana = new Date();
+  manana.setDate(manana.getDate() + 1);
+  const diasSemana = ['Domingo','Lunes','Martes','Miércoles','Jueves','Viernes','Sábado'];
+  const fechaLabel = `${diasSemana[manana.getDay()]}, ${manana.toLocaleDateString('es-CL', { day: 'numeric', month: 'long', year: 'numeric' })}`;
+
+  // ── Render SVG camión ───────────────────────────────────────────────────
+  function truckSVG(pct) {
+    const p = Math.min(pct, 100);
+    const fill = pct >= 80 ? '#15803d' : pct >= 70 ? '#ca8a04' : '#9ca3af';
+    const bgFill = '#e5e7eb';
+    return `<svg viewBox="0 0 60 30" width="70" height="35" xmlns="http://www.w3.org/2000/svg">
+      <rect x="0" y="4" width="38" height="20" rx="2" fill="${bgFill}" stroke="#6b7280" stroke-width="1"/>
+      <rect x="0" y="${4 + 20 * (1 - p/100)}" width="38" height="${20 * p/100}" rx="0" fill="${fill}" opacity="0.85"/>
+      <path d="M38 10 h8 l8 8 v6 h-16 z" fill="${bgFill}" stroke="#6b7280" stroke-width="1"/>
+      <circle cx="10" cy="27" r="3" fill="#374151"/><circle cx="28" cy="27" r="3" fill="#374151"/><circle cx="50" cy="27" r="3" fill="#374151"/>
+    </svg>`;
+  }
+
+  // ── Render tabla ────────────────────────────────────────────────────────
+  const act = quiebresRaw.length ? String(quiebresRaw[0].cargado_en || '').slice(0, 16).replace('T', ' ') : '';
+
+  stage.innerHTML = `
+    <div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm rounded-lg">
+      <div class="flex flex-wrap items-end justify-between gap-md mb-md border-b border-outline-variant pb-sm">
+        <div>
+          <h3 class="text-headline-sm font-bold text-on-surface">Programa Carga Sucursales</h3>
+          <p class="text-[13px] text-secondary">Planificación: <strong>${escapeHtml(fechaLabel)}</strong>${act ? ' · datos actualizados ' + escapeHtml(act) : ''}</p>
+        </div>
+        <div class="flex items-center gap-sm">
+          <button data-refrescar title="Refrescar" class="bg-surface-container-high text-on-surface px-md py-sm rounded-lg text-[13px] font-bold hover:bg-surface-container-highest">
+            <span class="material-symbols-outlined text-[16px] align-middle">refresh</span></button>
+        </div>
+      </div>
+
+      <div class="overflow-x-auto">
+        <table class="w-full text-[13px]">
+          <thead class="sticky top-0 bg-surface-container-lowest z-10">
+            <tr class="text-left text-[11px] uppercase tracking-wide text-secondary border-b-2 border-primary/30">
+              <th class="py-sm pr-md">Sucursal</th>
+              <th class="py-sm pr-md text-right">Total Líneas</th>
+              <th class="py-sm pr-md text-right">Abast.</th>
+              <th class="py-sm pr-md text-right">REVEX</th>
+              <th class="py-sm pr-md text-right">CrossDock 4000</th>
+              <th class="py-sm pr-md text-right">Notas Venta</th>
+              <th class="py-sm pr-md text-right">Ret. Proveedor</th>
+              <th class="py-sm pr-md text-right font-bold">Total</th>
+              <th class="py-sm pr-md text-right">Faltan [Ton]</th>
+              <th class="py-sm pr-md text-right">% Compl.</th>
+              <th class="py-sm pr-md text-center">Camión</th>
+              <th class="py-sm pr-md text-center">Status</th>
+              <th class="py-sm pr-md">Observaciones</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${resultado.map(r => {
+              const rowBg = r.enCalendario ? '' : 'bg-surface-container-low/50';
+              const totalCls = r.pct >= 80 ? 'text-green-700' : r.pct >= 70 ? 'text-yellow-700' : 'text-red-600';
+              return `<tr class="border-b border-outline-variant/50 hover:bg-surface-container-low ${rowBg}">
+                <td class="py-sm pr-md font-bold whitespace-nowrap">
+                  ${r.enCalendario ? '<span class="material-symbols-outlined text-[14px] text-primary align-middle mr-xs">calendar_today</span>' : ''}
+                  ${escapeHtml(r.nombre)}
+                </td>
+                <td class="py-sm pr-md text-right font-data-mono">${r.lineasTraslados}</td>
+                <td class="py-sm pr-md text-right font-data-mono">${fmtNum(r.tonAbast, 1)}</td>
+                <td class="py-sm pr-md text-right font-data-mono">${fmtNum(r.tonRevex, 1)}</td>
+                <td class="py-sm pr-md text-right font-data-mono">${fmtNum(r.tonCross, 1)}</td>
+                <td class="py-sm pr-md text-right font-data-mono">${fmtNum(r.tonVentaDirecta + r.tonVentaTraslado, 1)}</td>
+                <td class="py-sm pr-md text-right font-data-mono">${fmtNum(r.tonRetiro, 1)}</td>
+                <td class="py-sm pr-md text-right font-data-mono font-bold ${totalCls}">${fmtNum(r.total, 1)}</td>
+                <td class="py-sm pr-md text-right font-data-mono ${r.faltan < 0 ? 'text-red-600' : ''}">${fmtNum(r.faltan, 1)}</td>
+                <td class="py-sm pr-md text-right font-data-mono font-bold">${r.pct}%</td>
+                <td class="py-sm pr-md text-center">${truckSVG(r.pct)}</td>
+                <td class="py-sm pr-md text-center">
+                  <span class="px-sm py-xs rounded text-[11px] font-bold ${r.statusCls}">${escapeHtml(r.status)}</span>
+                </td>
+                <td class="py-sm pr-md text-[12px] ${r.obs.includes('EXTRA') ? 'text-blue-700 font-bold' : r.obs.includes('BAJA') ? 'text-orange-600 font-bold' : 'text-secondary'}">${escapeHtml(r.obs)}</td>
+              </tr>`; }).join('')}
+          </tbody>
+        </table>
+      </div>
+
+      <div class="mt-md pt-sm border-t border-outline-variant flex flex-wrap gap-lg text-[12px] text-secondary">
+        <span><span class="material-symbols-outlined text-[14px] align-middle text-primary">calendar_today</span> = Centro en calendario de mañana</span>
+        <span class="px-sm py-xs rounded bg-green-700 text-white text-[11px] font-bold">PROGRAMAR</span> ≥80%
+        <span class="px-sm py-xs rounded bg-yellow-600 text-white text-[11px] font-bold">REVISAR</span> 70-80%
+        <span class="px-sm py-xs rounded bg-gray-400 text-white text-[11px] font-bold">CARGA INSUFICIENTE</span> &lt;70%
+        <span>Capacidad: 28 Ton (15 Ton para Calera/San Bernardo)</span>
+      </div>
+    </div>`;
+
+  stage.querySelector('[data-refrescar]')?.addEventListener('click', () => renderPlanCarga(stage));
 }
 
 // Render generico de una vista con chip filter + filtros + buscador + CSV.

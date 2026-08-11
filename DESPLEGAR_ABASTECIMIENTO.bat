@@ -16,7 +16,7 @@ cd /d "%~dp0"
   echo ===== ADD =====
   git add -A
   echo ===== COMMIT =====
-  git commit -m "feat: ajustes retiro proveedor (tipo retiro, vigencia OC, saldo) + fix ton totales pedidos venta + filtro rechazos v=20260811a"
+  git commit -m "feat: Plan de Carga dashboard + ajustes retiro proveedor + fix pedidos venta v=20260811b"
   echo ===== PULL =====
   git pull --rebase origin main
   echo ===== PUSH =====
