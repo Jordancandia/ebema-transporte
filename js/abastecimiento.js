@@ -754,11 +754,13 @@ async function renderPlanCarga(stage) {
           </thead>
           <tbody>
             ${resultado.map(r => {
-              const rowBg = r.enCalendario ? '' : 'bg-surface-container-low/50';
+              const rowBg = r.enCalendario ? 'bg-blue-50 border-l-4 border-l-primary' : 'bg-gray-50/60 opacity-75';
               const totalCls = r.pct >= 80 ? 'text-green-700' : r.pct >= 70 ? 'text-yellow-700' : 'text-red-600';
               return `<tr class="border-b border-outline-variant/50 hover:bg-surface-container-low ${rowBg}">
                 <td class="py-sm pr-md font-bold whitespace-nowrap">
-                  ${r.enCalendario ? '<span class="material-symbols-outlined text-[14px] text-primary align-middle mr-xs">calendar_today</span>' : ''}
+                  ${r.enCalendario
+                    ? '<span class="inline-flex items-center gap-xs"><span class="material-symbols-outlined text-[16px] text-primary">calendar_today</span><span class="text-[9px] font-bold text-primary bg-primary/10 px-xs rounded">PRIORITARIO</span></span> '
+                    : ''}
                   ${escapeHtml(r.nombre)}
                 </td>
                 <td class="py-sm pr-md text-right font-data-mono">${fmtNum(r.tonRevex, 1)}</td>
@@ -782,7 +784,7 @@ async function renderPlanCarga(stage) {
       </div>
 
       <div class="mt-md pt-sm border-t border-outline-variant flex flex-wrap gap-lg text-[12px] text-secondary">
-        <span><span class="material-symbols-outlined text-[14px] align-middle text-primary">calendar_today</span> = Centro en calendario de mañana</span>
+        <span class="inline-flex items-center gap-xs"><span class="w-3 h-3 bg-blue-50 border-l-2 border-l-primary inline-block"></span> <span class="material-symbols-outlined text-[14px] align-middle text-primary">calendar_today</span> PRIORITARIO = Centro en calendario de mañana</span>
         <span class="px-sm py-xs rounded bg-green-700 text-white text-[11px] font-bold">PROGRAMAR</span> ≥80%
         <span class="px-sm py-xs rounded bg-yellow-600 text-white text-[11px] font-bold">REVISAR</span> 70-80%
         <span class="px-sm py-xs rounded bg-gray-400 text-white text-[11px] font-bold">CARGA INSUFICIENTE</span> &lt;70%
