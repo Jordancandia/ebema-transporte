@@ -429,7 +429,7 @@ const VISTAS_TRONCAL = {
       headers: ['Pedido de Traslado','Tipo de Documento','Centro Origen','Centro Destino','Almacén Destino','ID Material','Nombre Material','Ctd Pedido PT','Ctd Confirmado','Pedido de Venta','Ton Total SKU'],
       build(row) {
         return (row._detalle || []).map(d => [
-          d.doc_compr, d.cl, d.cesu, d.ce, d.alm, d.material, d.texto_breve, d.ctd_pedido, d.ctd_confirmada, d.documento, fmtNum(d.ton, 2),
+          d.doc_compr, d.cl, d.cesu, d.ce, d.alm, d.material, d.texto_breve, d.ctd_pedido, d.ctd_confirmada, d.documento, fmtNum(d.ton, 4),
         ]);
       },
     },
@@ -460,7 +460,7 @@ const VISTAS_TRONCAL = {
         out.push({
           doc_compr: pt, cesu: f.cesu, ce: f.ce, alm: f.alm,
           fecha_confirmada: f.fecha_confirmada, documento: f.documento,
-          _ton_num: ton, _ton_totales: fmtNum(ton, 2),
+          _ton_num: ton, _ton_totales: fmtNum(ton, 4),
           _alerta: al.txt, _alerta_cls: al.cls, _detalle: detalle,
         });
       }
