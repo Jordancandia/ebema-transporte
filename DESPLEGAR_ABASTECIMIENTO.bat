@@ -16,7 +16,7 @@ cd /d "%~dp0"
   echo ===== ADD =====
   git add -A
   echo ===== COMMIT =====
-  git commit -m "feat: timezone Chile, vista Plan Troncales Step 6, fix ton totales y Plan de Carga v=20260813a"
+  git commit -m "feat: timezone Chile, Plan Troncales Step 6, calendario prioritario, fix ton totales v=20260813b"
   echo ===== PULL =====
   git pull --rebase origin main
   echo ===== PUSH =====
