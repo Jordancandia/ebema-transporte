@@ -420,38 +420,64 @@ const VISTAS_TRONCAL = {
     titulo: 'GESTIÓN TRONCALES – PEDIDOS TRASLADOS',
     vista: 'v_trc_sqvi_pedidos_traslados',
     chipFilter: { campo: 'ce', label: 'Centro Destino' },
+    extraChips: [{ campo: 'cesu', label: 'Centro Origen' }],
+    noBuscar: true,
     filtros: [{ campo: 'doc_compr', label: 'Buscar Pedido de Traslado', tipo: 'buscar' }],
+    dateRange: { campo: 'fecha_confirmada', label: 'Rango Fecha Confirmada' },
+    expand: {
+      key: 'doc_compr', idKey: 'doc_compr', numCols: 1,
+      headers: ['Pedido de Traslado','Tipo de Documento','Centro Origen','Centro Destino','Almacén Destino','ID Material','Nombre Material','Ctd Pedido PT','Ctd Confirmado','Pedido de Venta','Ton Total SKU'],
+      build(row) {
+        return (row._detalle || []).map(d => [
+          d.doc_compr, d.cl, d.cesu, d.ce, d.alm, d.material, d.texto_breve, d.ctd_pedido, d.ctd_confirmada, d.documento, fmtNum(d.ton, 2),
+        ]);
+      },
+    },
     transform(rows) {
-      return rows
+      const validas = rows
         .filter(r => !String(r.cesu ?? '').startsWith('*') && String(r.material ?? '').trim() !== '')
-        .filter(r => !String(r.material ?? '').startsWith('900000'))
-        .map(r => {
-          const al = alertaFecha(r.fecha_confirmada, 7);
-          const pm = maxPesoDim(r.peso_neto, r.tamano_dimens);
-          return { ...r, _peso_mayor: fmtNum(pm, 2), _ton_totales: fmtNum(calcTon(pm, r.ctd_confirmada), 3), _alerta: al.txt, _alerta_cls: al.cls };
-        })
-        .sort((a, b) => {
-          const da = parseDateSAP(a.fecha_confirmada), db2 = parseDateSAP(b.fecha_confirmada);
-          return (da || new Date(9999,0)) - (db2 || new Date(9999,0));
+        .filter(r => !String(r.material ?? '').startsWith('900000'));
+      // Agrupar por Pedido de Traslado (doc_compr)
+      const g = new Map();
+      validas.forEach(r => {
+        const pt = String(r.doc_compr ?? '').trim();
+        if (!pt) return;
+        (g.get(pt) || g.set(pt, []).get(pt)).push(r);
+      });
+      const out = [];
+      for (const [pt, items] of g.entries()) {
+        const f = items[0];
+        let ton = 0;
+        const detalle = items.map(r => {
+          const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), r.ctd_confirmada);
+          ton += t;
+          return { doc_compr: pt, cl: r.cl, cesu: r.cesu, ce: r.ce, alm: r.alm,
+                   material: r.material, texto_breve: r.texto_breve,
+                   ctd_pedido: r.ctd_pedido, ctd_confirmada: r.ctd_confirmada,
+                   documento: r.documento, ton: t };
         });
+        const al = alertaFecha(f.fecha_confirmada, 7);
+        out.push({
+          doc_compr: pt, cesu: f.cesu, ce: f.ce, alm: f.alm,
+          fecha_confirmada: f.fecha_confirmada, documento: f.documento,
+          _ton_num: ton, _ton_totales: fmtNum(ton, 2),
+          _alerta: al.txt, _alerta_cls: al.cls, _detalle: detalle,
+        });
+      }
+      return out.sort((a, b) => {
+        const da = parseDateSAP(a.fecha_confirmada), db2 = parseDateSAP(b.fecha_confirmada);
+        return (da || new Date(9999,0)) - (db2 || new Date(9999,0));
+      });
     },
     columnas: [
+      { key: '_alerta', label: 'Alerta', clsFn: r => r._alerta_cls },
       { key: 'cesu', label: 'Centro Expedición' },
-      { key: 'creado_el', label: 'Fecha de Creación' },
-      { key: 'cl', label: 'Tipo de Documento' },
-      { key: 'doc_compr', label: 'Pedido de Traslado' },
-      { key: 'material', label: 'ID Material' },
-      { key: 'texto_breve', label: 'Nombre Material' },
+      { key: 'doc_compr', label: 'Pedido de Traslado', expandable: true },
       { key: 'ce', label: 'Centro Destino' },
       { key: 'alm', label: 'Almacén Destino' },
-      { key: 'ctd_pedido', label: 'Ctd Pedido PT', cls: 'text-right font-data-mono' },
-      { key: 'ump', label: 'UM Pedido' },
-      { key: 'fecha_confirmada', label: 'Fecha Confirmada' },
-      { key: 'ctd_confirmada', label: 'Ctd Confirmada', cls: 'text-right font-data-mono' },
+      { key: 'fecha_confirmada', label: 'Fecha Confirmada', cls: 'num-clear' },
       { key: 'documento', label: 'Pedido de Venta' },
-      { key: '_peso_mayor', label: 'Peso Mayor', cls: 'text-right font-data-mono' },
-      { key: '_ton_totales', label: 'Ton Totales', cls: 'text-right font-data-mono font-bold' },
-      { key: '_alerta', label: 'Alerta', clsFn: r => r._alerta_cls },
+      { key: '_ton_totales', label: 'Ton Totales', cls: 'text-right num-clear font-bold' },
     ],
   },
 
