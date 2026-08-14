@@ -74,6 +74,15 @@ function procesar(esSnapshot) {
   catch (e) { logRun(corrida, 'sqvi_*', 0, esSnapshot, 'error', String(e)); }
 
   if (esSnapshot) {
+    // Guarda la foto del dia desde trc_live VIGENTE (no depende de que haya
+    // llegado un correo nuevo a esta hora). Asi el historico se guarda siempre
+    // en la corrida de las 13:35, aunque no haya correos no leidos.
+    try {
+      var nSnap = sbRpcSnapshotHoy();
+      logRun(corrida, 'snapshot_hoy', nSnap, true, 'ok', 'Snapshot desde trc_live');
+    } catch (e) {
+      logRun(corrida, 'snapshot_hoy', 0, true, 'error', String(e));
+    }
     try { sbRpcPrune(); } catch (e) { Logger.log('prune error: ' + e); }
   }
 }
@@ -93,7 +102,7 @@ function procesarSlim(corrida, esSnapshot) {
   var filas = leerExcelSlim(att, corrida);
 
   reemplazarLive('slim_stock', filas);
-  if (esSnapshot) guardarHist('slim_stock', filas);
+  // El snapshot del dia se toma al final desde trc_live (sbRpcSnapshotHoy).
 
   msg.markRead();
   logRun(corrida, 'slim_stock', filas.length, esSnapshot, 'ok', att.getName());
@@ -192,7 +201,7 @@ function procesarSqvi(corrida, esSnapshot) {
     try {
       var filas = parseSqviHtml(entry.att.getDataAsString('UTF-8'), fuente, corrida);
       reemplazarLive(fuente, filas);
-      if (esSnapshot) guardarHist(fuente, filas);
+      // El snapshot del dia se toma al final desde trc_live (sbRpcSnapshotHoy).
       logRun(corrida, fuente, filas.length, esSnapshot, 'ok', entry.att.getName());
     } catch (e) {
       logRun(corrida, fuente, 0, esSnapshot, 'error', String(e));
@@ -368,6 +377,19 @@ function sbDelete(tabla, filtro) {
   });
   var code = res.getResponseCode();
   if (code >= 300) throw new Error('DELETE ' + tabla + ' HTTP ' + code + ': ' + res.getContentText().slice(0, 300));
+}
+
+// Copia trc_live -> trc_hist (foto del dia, hora Chile). Reemplaza la de hoy.
+// Devuelve la cantidad de filas guardadas. No depende de correos nuevos.
+function sbRpcSnapshotHoy() {
+  var res = UrlFetchApp.fetch(SUPABASE_URL + '/rest/v1/rpc/fn_trc_snapshot_hoy', {
+    method: 'post', contentType: 'application/json',
+    headers: sbHeaders(), payload: '{}', muteHttpExceptions: true
+  });
+  var code = res.getResponseCode();
+  if (code >= 300) throw new Error('snapshot HTTP ' + code + ': ' + res.getContentText().slice(0, 300));
+  var n = parseInt(res.getContentText(), 10);
+  return isNaN(n) ? 0 : n;
 }
 
 function sbRpcPrune() {

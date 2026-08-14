@@ -1,0 +1,61 @@
+===== LIMPIAR LOCKS =====
+HEAD.lock_OK
+index.lock_OK
+===== IDENTITY =====
+===== ADD =====
+warning: in the working copy of 'DESPLEGAR_ABASTECIMIENTO.bat', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'Exportacion_BD_CSV/esquema_tablas.csv', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'Exportacion_BD_CSV/relaciones.csv', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'INFORME_SEGURIDAD_2026-06-13.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'RESUMEN_PROYECTO.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'RESUMEN_PROYECTO_SIT_EBEMA.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'analisis_cluster/HANDOFF_CLUSTER.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'analisis_cluster/cluster_rutas.sql', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'analisis_cluster/motor_cluster.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'automatizacion_troncales/Code.gs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'automatizacion_troncales/README_DESPLIEGUE.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'css/style.css', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'index.html', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'js/abastecimiento.js', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'js/app.js', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'js/chile-coords.js', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'js/chile-geo.js', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'js/cluster-rutas.js', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'js/data.js', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'js/ficha-transporte.js', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'js/logistics.js', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'js/provider-portal.js', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'js/rates.js', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'js/roles.js', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'js/routes.js', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'js/tarifas-clientes.js', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'js/tarifas-engine.js', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'js/tarifas-transporte.js', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'js/transports.js', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'js/troncales.js', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'js/utils.js', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'js/zcap.js', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'js/zonas-transporte.js', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'subir-cambios.bat', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'supabase/functions/invite-user/index.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'supabase/functions/send-mfa-code/index.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'supabase/functions/verify-mfa-code/index.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'tailwind.config.js', LF will be replaced by CRLF the next time Git touches it
+===== COMMIT =====
+[main 20bb008] fix: calendario prioritario lee abast_calendario por dia v=20260813c
+ 1 file changed, 31 deletions(-)
+===== PULL =====
+error: cannot pull with rebase: You have unstaged changes.
+error: Please commit or stash them.
+===== PUSH =====
+remote: This repository moved. Please use the new location:        
+remote:   https://github.com/Jordancandia/ebema-transporte.git        
+To https://github.com/jordancandia/ebema-transporte.git
+   50064d0..20bb008  main -> main
+===== LOG =====
+20bb008 fix: calendario prioritario lee abast_calendario por dia v=20260813c
+b3e2418 Retiros Fabrica: filtro rango fecha entrega, tipos FABRICA-CD/SUCURSAL/CLIENTE, plan de carga -3/+2, 1 decimal, font num-clear, detalle +cantidad pedido
+50064d0 fix: calendario prioritario lee abast_calendario por dia v=20260813c
+===== STATUS =====
+## main...origin/main
+ M deploy_log.txt
