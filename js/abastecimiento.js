@@ -319,6 +319,8 @@ const VISTAS_TRONCAL = {
     vista: 'v_trc_sqvi_pedidos_venta_1003',
     chipFilter: { campo: 'ofvta', label: 'Oficina de Ventas' },
     filtros: [{ campo: 'doc_ventas', label: 'Buscar Pedido de Venta', tipo: 'buscar' }],
+    dateRange: { campo: 'fe_entrega', label: 'Rango Fecha de Entrega' },
+    noBuscar: true,
     expand: {
       key: 'doc_ventas', idKey: 'doc_ventas',
       headers: ['Pedido de Venta','ID Vendedor','Ruta','Comuna Destino','Región Destino','ID Material','Nombre Material','Cantidad Pendiente','Ton SKU'],
@@ -350,7 +352,8 @@ const VISTAS_TRONCAL = {
         if (conf > 0 && entreg >= conf) continue;   // entregado completo → fuera
         if (pend <= 0) continue;
         const rl = lookupRuta(r.ruta);
-        const pesoPos = maxPesoDim(r.peso_bruto, r.tamano_dimens) * pend; // doc: (conf-entreg) * pesoMayor
+        // (AJUSTE) peso mayor entre PESO NETO y tamaño/dimensión × unidades pendientes
+        const pesoPos = maxPesoDim(r.peso_neto, r.tamano_dimens) * pend;
         lineas.push({ ...r, _pend: pend, _entreg: entreg, _conf: conf, _ton: pesoPos / 1000,
                       _comuna: rl.comuna, _region: rl.region,
                       _parcial: (entreg > 0 && entreg < conf) });
@@ -388,23 +391,25 @@ const VISTAS_TRONCAL = {
         return (da || new Date(9999,0)) - (db2 || new Date(9999,0));
       });
     },
-    // Marca despacho directo si el pedido alcanza ≥80% de la capacidad del camión
-    postFilter(filas, chipSel) {
+    // Tipo de entrega: ≥80% cap camión ⇒ CD-CLIENTE (camión directo al cliente);
+    // menos ⇒ CD-SUCURSAL (se consolida con carga).
+    postFilter(filas) {
       filas.forEach(r => {
         const cap = getCapacidadCamion(r.ofvta);
         r._directo = r._ton_num >= cap * 0.80;
+        r._tipo_entrega = r._directo ? 'CD-CLIENTE' : 'CD-SUCURSAL';
       });
       return filas;
     },
     rowClsFn(r) { return r._directo ? 'bg-green-50' : ''; },
     columnas: [
+      { key: '_tipo_entrega', label: 'Tipo de Entrega', clsFn: r => r._directo ? 'text-green-800 font-bold' : 'text-blue-700 font-bold' },
       { key: 'ofvta', label: 'Oficina de Ventas' },
       { key: 'creado_el', label: 'Fecha de Creación' },
       { key: 'deudor', label: 'ID Vendedor' },
       { key: 'doc_ventas', label: 'Pedido de Venta', expandable: true },
-      { key: 'fe_entrega', label: 'Fecha de Entrega' },
-      { key: '_ton_totales', label: 'Toneladas Totales', cls: 'text-right font-data-mono font-bold' },
-      { key: '_directo_lbl', label: 'Despacho', clsFn: () => 'text-green-800 font-bold', valueFn: r => r._directo ? 'DESPACHO DIRECTO' : '' },
+      { key: 'fe_entrega', label: 'Fecha de Entrega', cls: 'num-clear' },
+      { key: '_ton_totales', label: 'Toneladas Totales', cls: 'text-right num-clear font-bold' },
       { key: '_estado', label: 'Estado', clsFn: () => 'text-[#e65100] font-bold' },
       { key: '_alerta', label: 'Alerta', clsFn: r => r._alerta_cls },
     ],
@@ -725,7 +730,13 @@ async function renderPlanCarga(stage) {
     ventasCe.forEach(r => { const d = String(r.doc_ventas ?? '').trim(); (ventasPorDoc[d] = ventasPorDoc[d] || []).push(r); });
     let tonVentaDirecta = 0, tonVentaTraslado = 0;
     for (const [doc, items] of Object.entries(ventasPorDoc)) {
-      const tonDoc = items.reduce((s, r) => s + maxPesoDim(r.peso_bruto, r.tamano_dimens) / 1000, 0);
+      // Mismo criterio que la vista: peso mayor(peso_neto, tamaño) × unidades
+      // pendientes (ctd_confirmada − cantidad_entrg), excluyendo lo ya entregado.
+      const tonDoc = items.reduce((s, r) => {
+        const pend = parseNum(r.ctd_confirmada) - parseNum(r.cantidad_entrg);
+        if (pend <= 0) return s;
+        return s + calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), pend);
+      }, 0);
       if (tonDoc >= cap * 0.80) { tonVentaDirecta += tonDoc; det.ventaDirecta.push({ m: doc, d: 'Nota venta directa', t: tonDoc }); }
       else tonVentaTraslado += tonDoc;
     }
