@@ -16,7 +16,7 @@ cd /d "%~dp0"
   echo ===== ADD =====
   git add -A
   echo ===== COMMIT =====
-  git commit -m "feat: timezone Chile, Plan Troncales Step 6, calendario prioritario, fix ton totales v=20260813b"
+  git commit -m "fix: calendario prioritario lee abast_calendario por dia v=20260813c"
   echo ===== PULL =====
   git pull --rebase origin main
   echo ===== PUSH =====

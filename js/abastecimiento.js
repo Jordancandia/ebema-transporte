@@ -528,19 +528,16 @@ function getCapacidadCamion(centroId) {
   return CENTROS_CAMION_REDUCIDO.includes(String(centroId)) ? CAP_CAMION_REDUCIDO : CAP_CAMION_DEFAULT;
 }
 
-// Obtener centros programados para mañana según calendario config
-function getCentrosManana() {
-  const manana = new Date();
-  manana.setDate(manana.getDate() + 1);
-  const diaManana = manana.getDay(); // 0=dom, 1=lun...6=sab
+// Obtener centros programados para mañana según abast_calendario (Supabase)
+function getCentrosProgramados(calendarioRows, diaNum) {
+  // diaNum: JS getDay() → 0=dom,1=lun..6=sab — coincide con DB dia (1=lun..6=sab)
   const programados = new Set();
-  for (const [, cal] of Object.entries(CALENDARIOS)) {
-    for (const dia of cal.dias) {
-      if (dia.n === diaManana) {
-        cal.destinos.forEach(d => programados.add(d));
-      }
-    }
-  }
+  calendarioRows
+    .filter(r => Number(r.dia) === diaNum && (r.habilitado === true || r.habilitado === 'true'))
+    .forEach(r => {
+      if (r.centro_destino_1) programados.add(String(r.centro_destino_1).trim());
+      if (r.centro_destino_2) programados.add(String(r.centro_destino_2).trim());
+    });
   return programados;
 }
 
@@ -560,13 +557,14 @@ async function renderPlanCarga(stage) {
   stage.innerHTML = '<div class="text-secondary text-body-md p-md">Cargando Plan de Carga…</div>';
 
   // Cargar datos de TODAS las vistas en paralelo
-  const [quiebresRaw, trasladosRaw, revexRaw, retirosRaw, ventasRaw, traslados4000Raw] = await Promise.all([
+  const [quiebresRaw, trasladosRaw, revexRaw, retirosRaw, ventasRaw, traslados4000Raw, calendarioRows] = await Promise.all([
     fetchAllRows('v_trc_slim_stock'),
     fetchAllRows('v_trc_sqvi_pedidos_traslados'),
     fetchAllRows('v_trc_sqvi_pedidos_traslados'),       // same view, filter 900000
     fetchAllRows('v_trc_sqvi_retiros_fabrica'),
     fetchAllRows('v_trc_sqvi_pedidos_venta_1003'),
     fetchAllRows('v_trc_sqvi_pedidos_traslados_4000'),
+    fetchAllRows('abast_calendario'),
   ]);
 
   // ── Preparar set de materiales quebrados por centro ──────────────────────
@@ -603,7 +601,8 @@ async function renderPlanCarga(stage) {
 
   // ── Calcular toneladas por centro y categoría ───────────────────────────
   const centrosSet = new Set(CENTROS_QUIEBRES);
-  const centrosProgramados = getCentrosManana();
+  const mananaTemp = new Date(); mananaTemp.setDate(mananaTemp.getDate() + 1);
+  const centrosProgramados = getCentrosProgramados(calendarioRows, mananaTemp.getDay());
 
   const resultado = Array.from(centrosSet).map(ce => {
     const cap = getCapacidadCamion(ce);
