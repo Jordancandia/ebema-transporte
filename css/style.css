@@ -19,6 +19,14 @@ body {
   color: #191c1d;
 }
 
+/* Números legibles (0 claramente distinto de 8) para vistas de datos */
+.num-clear {
+  font-family: 'Trebuchet MS', 'Segoe UI', Verdana, Arial, sans-serif;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+  letter-spacing: 0.02em;
+}
+
 /* Tabla Zebra para historial de cotizaciones y listados */
 .zebra-table tr:nth-child(even) {
   background-color: #f1f3f5;

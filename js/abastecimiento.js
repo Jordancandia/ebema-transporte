@@ -214,6 +214,7 @@ const VISTAS_TRONCAL = {
     ],
     noBuscar: true,
     filtros: [{ campo: 'doc_compr', label: 'Buscar Orden de Compra', tipo: 'buscar' }],
+    dateRange: { campo: 'fe_entrega', label: 'Rango Fecha de Entrega' },
     async preload() { return { estados: await loadEstadosRetiro() }; },
     editable: {
       key: '_estado', options: ESTADO_OPTS,
@@ -224,11 +225,11 @@ const VISTAS_TRONCAL = {
       },
     },
     expand: {
-      key: 'doc_compr', idKey: 'doc_compr',
-      headers: ['Orden de Compra','Centro Destino','ID Material','Nombre Material','Cantidad Pendiente','Ton SKU'],
+      key: 'doc_compr', idKey: 'doc_compr', numCols: 3,
+      headers: ['Orden de Compra','Centro Destino','ID Material','Nombre Material','Cantidad Pedido','Cantidad Pendiente','Ton SKU'],
       build(row) {
         return (row._detalle || []).map(d => [
-          d.doc_compr, d.ce, d.material, d.texto_breve, fmtNum(d.pendiente, 0), fmtNum(d.ton, 3),
+          d.doc_compr, d.ce, d.material, d.texto_breve, fmtNum(d.pedido, 1), fmtNum(d.pendiente, 1), fmtNum(d.ton, 1),
         ]);
       },
     },
@@ -249,25 +250,35 @@ const VISTAS_TRONCAL = {
       for (const [oc, items] of g.entries()) {
         const f = items[0];
         const almVal = String(f.alm ?? '').trim();
-        const tipoRetiro = almVal === '4000' ? 'CONSOLIDAR CD' : 'FABRICA-SUCURSAL';
-        let ton = 0, pendienteTotal = 0, revSaldo = false;
+        let ton = 0, pendienteTotal = 0, pedidoTotal = 0, revSaldo = false;
         const detalle = items.map(r => {
           const ctdP = parseNum(r.ctd_pedido), ctdE = parseNum(r.ctd_entregada);
           const pend = ctdP - ctdE;
           const t = calcTon(maxPesoDim(r.peso_bruto, r.tamano_dimens), pend);
-          ton += t; pendienteTotal += pend;
+          ton += t; pendienteTotal += pend; pedidoTotal += ctdP;
           if (ctdE > 0 && ctdE < ctdP) revSaldo = true;
-          return { doc_compr: oc, ce: r.ce, material: r.material, texto_breve: r.texto_breve, pendiente: pend, ton: t };
+          return { doc_compr: oc, ce: r.ce, material: r.material, texto_breve: r.texto_breve, pedido: ctdP, pendiente: pend, ton: t };
         });
+        // Tipo de retiro (AJUSTE): 4000=FÁBRICA-CD (Consolidar CD), 2000=FÁBRICA-SUCURSAL
+        // (Fábrica Directo). Si OC >=80% cap camión y tiene pedido de venta ⇒ FÁBRICA-CLIENTE.
+        const tienePedidoVenta = String(f.documento ?? '').trim() !== '';
+        const cap = getCapacidadCamion(f.ce);
+        let tipoRetiro;
+        if (ton >= cap * 0.80 && tienePedidoVenta) tipoRetiro = 'FÁBRICA-CLIENTE';
+        else if (almVal === '4000') tipoRetiro = 'FÁBRICA-CD';
+        else if (almVal === '2000') tipoRetiro = 'FÁBRICA-SUCURSAL';
+        else tipoRetiro = 'FÁBRICA-SUCURSAL';
         const al = alertaFecha(f.fe_entrega, 5);
         const est = estados[oc] || 'no_coordinado';
         out.push({
           doc_compr: oc, contr: f.contr, proveedor: f.proveedor, nombre_1: f.nombre_1,
           ce: f.ce, _desc_centro: getNombreCentro(f.ce), alm: f.alm, documento: f.documento,
           fe_entrega: f.fe_entrega,
-          _tipo_retiro: tipoRetiro, _tipo_base: tipoRetiro,
-          _ton_num: ton, _ton_totales: fmtNum(ton, 3),
-          _pendiente_total: pendienteTotal,
+          _tipo_retiro: tipoRetiro,
+          _cliente: tipoRetiro === 'FÁBRICA-CLIENTE',
+          _consolidar: tipoRetiro === 'FÁBRICA-CD',
+          _ton_num: ton, _ton_totales: fmtNum(ton, 1),
+          _pendiente_total: pendienteTotal, _pedido_total: pedidoTotal,
           _vigencia: revSaldo ? 'REVISIÓN SALDO PEDIDO' : '',
           _revision_saldo: revSaldo,
           _alerta: al.txt, _alerta_cls: al.cls,
@@ -280,39 +291,20 @@ const VISTAS_TRONCAL = {
         return (da || new Date(9999,0)) - (db2 || new Date(9999,0));
       });
     },
-    // (AJUSTE 3.0) Regla ≥85% capacidad camión mismo proveedor dentro del filtro
-    // ⇒ marcar como TRANSPORTE DIRECTO: FABRICA-SUCURSAL
-    postFilter(filas) {
-      const porProv = {};
-      filas.forEach(r => {
-        const p = String(r.proveedor ?? '').trim();
-        (porProv[p] = porProv[p] || []).push(r);
-      });
-      Object.values(porProv).forEach(arr => {
-        const sum = arr.reduce((s, r) => s + (r._ton_num || 0), 0);
-        const cap = CAP_CAMION_DEFAULT; // 28 Ton
-        if (sum > cap * 0.85) {
-          arr.forEach(r => { r._tipo_retiro = 'TRANSPORTE DIRECTO: FABRICA-SUCURSAL'; r._directo = true; });
-        } else {
-          arr.forEach(r => { r._tipo_retiro = r._tipo_base; r._directo = false; });
-        }
-      });
-      return filas;
-    },
     badges(filas, chipSel) {
       const pend = filas.filter(r => (r._pendiente_total || 0) > 0).length;
       const scope = (chipSel && chipSel !== 'all') ? `Centro ${chipSel}` : 'Todos los centros';
       return badgePill(`OC pendientes por retirar · ${scope}`, pend, 'bg-primary text-white');
     },
-    rowClsFn(r) { return r._directo ? 'bg-green-50' : (r._revision_saldo ? 'bg-red-50' : ''); },
+    rowClsFn(r) { return r._cliente ? 'bg-green-50' : (r._revision_saldo ? 'bg-red-50' : ''); },
     columnas: [
-      { key: '_tipo_retiro', label: 'Tipo de Retiro', clsFn: r => r._directo ? 'text-green-800 font-bold' : (r._tipo_base === 'CONSOLIDAR CD' ? 'text-blue-700 font-bold' : 'text-green-700 font-bold') },
+      { key: '_tipo_retiro', label: 'Tipo de Retiro', clsFn: r => r._cliente ? 'text-green-800 font-bold' : (r._consolidar ? 'text-blue-700 font-bold' : 'text-[#e65100] font-bold') },
       { key: 'contr', label: 'Contrato de Compra' },
       { key: 'doc_compr', label: 'Orden de Compra', expandable: true },
       { key: 'nombre_1', label: 'Nombre de Proveedor' },
       { key: 'ce', label: 'Centro Destino' },
       { key: 'alm', label: 'Almacén Destino' },
-      { key: '_ton_totales', label: 'Ton Totales', cls: 'text-right font-data-mono font-bold' },
+      { key: '_ton_totales', label: 'Ton Totales', cls: 'text-right num-clear font-bold' },
       { key: 'documento', label: 'Pedido de Ventas' },
       { key: '_vigencia', label: 'Vigencia OC', clsFn: r => r._revision_saldo ? 'text-red-700 font-bold' : '' },
       { key: '_alerta', label: 'Alerta', clsFn: r => r._alerta_cls },
@@ -737,19 +729,20 @@ async function renderPlanCarga(stage) {
       else tonVentaTraslado += tonDoc;
     }
 
-    // 6. Retiros proveedor: CONSOLIDAR CD (alm=4000)
+    // 6. Retiros proveedor: CONSOLIDAR CD (alm=4000). (AJUSTE) fecha entrega -3/+2
     const retirosCons = retiros
       .filter(r => String(r.ce ?? '').trim() === ce)
       .filter(r => String(r.alm ?? '').trim() === '4000')
-      .filter(r => fechaEnRango(r.fe_entrega, 10, 5));
+      .filter(r => fechaEnRango(r.fe_entrega, 3, 2));
     const tonRetiro = retirosCons.reduce((sum, r) => {
       const t = calcTon(maxPesoDim(r.peso_bruto, r.tamano_dimens), parseNum(r.ctd_pedido) - parseNum(r.ctd_entregada));
       det.retiro.push({ m: r.doc_compr, d: r.nombre_1, t }); return sum + t;
     }, 0);
 
-    // Retiro fábrica-sucursal (alm ≠ 4000) ⇒ CAMIÓN FÁBRICA
+    // Retiro fábrica-sucursal (alm ≠ 4000) ⇒ CAMIÓN FÁBRICA. (AJUSTE) fecha entrega -3/+2
     const tieneRetiroFabrica = retiros
       .filter(r => String(r.ce ?? '').trim() === ce)
+      .filter(r => fechaEnRango(r.fe_entrega, 3, 2))
       .some(r => String(r.alm ?? '').trim() !== '4000' && (parseNum(r.ctd_pedido) - parseNum(r.ctd_entregada)) > 0);
 
     // Total del CAMIÓN CD (consolidado, excluye venta directa)
@@ -941,10 +934,21 @@ async function renderVistaTabla(stage, cfg, modeIdx = 0) {
   const filtroTextos = {};
   (active.filtros || []).forEach(f => { filtroTextos[f.campo] = ''; });
   let texto = '';
+  let rangoDesde = '', rangoHasta = '';   // filtro por rango de fecha (dateRange)
   const expanded = new Set();
+
+  // ISO (yyyy-mm-dd de <input type=date>) → Date 00:00
+  function isoToDate(s) {
+    if (!s) return null;
+    const m = String(s).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    return m ? new Date(+m[1], +m[2] - 1, +m[3]) : null;
+  }
 
   function aplica() {
     const q = texto.trim().toLowerCase();
+    const dr = active.dateRange;
+    const dDesde = dr ? isoToDate(rangoDesde) : null;
+    const dHasta = dr ? isoToDate(rangoHasta) : null;
     return rows.filter(r => {
       if (chip && chipSel !== 'all' && String(r[chip.campo] ?? '') !== chipSel) return false;
       for (const ec of extraChips) {
@@ -953,6 +957,12 @@ async function renderVistaTabla(stage, cfg, modeIdx = 0) {
       for (const f of (active.filtros || [])) {
         const fv = filtroTextos[f.campo]?.trim().toLowerCase();
         if (fv && !String(r[f.campo] ?? '').toLowerCase().includes(fv)) return false;
+      }
+      if (dr && (dDesde || dHasta)) {
+        const d = parseDateSAP(r[dr.campo]);
+        if (!d) return false;
+        if (dDesde && d < dDesde) return false;
+        if (dHasta && d > dHasta) return false;
       }
       if (q && !active.columnas.some(c => String(r[c.key] ?? '').toLowerCase().includes(q))) return false;
       return true;
@@ -1000,10 +1010,11 @@ async function renderVistaTabla(stage, cfg, modeIdx = 0) {
 
   function detailRow(r, ncols) {
     const ex = active.expand;
+    const nnum = ex.numCols || 2;
     const data = ex.build(r) || [];
     const head = ex.headers.map(h => `<th class="py-xs pr-md text-left text-[10px] uppercase text-secondary">${escapeHtml(h)}</th>`).join('');
     const body = data.length
-      ? data.map(fila => `<tr class="border-b border-outline-variant/40">${fila.map((v, i) => `<td class="py-[2px] pr-md text-[12px] ${i >= fila.length - 2 ? 'text-right font-data-mono' : ''}">${escapeHtml(String(v ?? ''))}</td>`).join('')}</tr>`).join('')
+      ? data.map(fila => `<tr class="border-b border-outline-variant/40">${fila.map((v, i) => `<td class="py-[2px] pr-md text-[12px] ${i >= fila.length - nnum ? 'text-right num-clear' : ''}">${escapeHtml(String(v ?? ''))}</td>`).join('')}</tr>`).join('')
       : `<tr><td colspan="${ex.headers.length}" class="text-secondary text-[12px] py-xs">Sin detalle.</td></tr>`;
     return `<tr class="bg-surface-container-low"><td colspan="${ncols}" class="p-md">
       <div class="border border-outline-variant rounded-lg p-md bg-surface-container-lowest">
@@ -1060,6 +1071,19 @@ async function renderVistaTabla(stage, cfg, modeIdx = 0) {
               <input data-filtro="${f.campo}" value="${escapeHtml(filtroTextos[f.campo] || '')}" placeholder="Buscar…"
                 class="mt-xs block border border-outline-variant rounded-lg px-md py-sm text-body-md focus:border-primary outline-none w-48"/>
             </label>`).join('')}
+          ${active.dateRange ? `<div class="flex items-end gap-sm">
+            <label class="block">
+              <span class="text-[11px] uppercase tracking-wide text-secondary font-bold inline-flex items-center gap-xs"><span class="material-symbols-outlined text-[15px]">calendar_month</span>${escapeHtml(active.dateRange.label)} — Desde</span>
+              <input type="date" data-rango="desde" value="${escapeHtml(rangoDesde)}"
+                class="mt-xs block border border-outline-variant rounded-lg px-md py-sm text-body-md focus:border-primary outline-none"/>
+            </label>
+            <label class="block">
+              <span class="text-[11px] uppercase tracking-wide text-secondary font-bold">Hasta</span>
+              <input type="date" data-rango="hasta" value="${escapeHtml(rangoHasta)}"
+                class="mt-xs block border border-outline-variant rounded-lg px-md py-sm text-body-md focus:border-primary outline-none"/>
+            </label>
+            ${(rangoDesde || rangoHasta) ? `<button data-rango-clear class="mb-[2px] px-sm py-sm text-secondary hover:text-error text-[12px] font-bold" title="Limpiar rango"><span class="material-symbols-outlined text-[18px] align-middle">close</span></button>` : ''}
+          </div>` : ''}
           ${active.noBuscar ? '' : `<label class="block">
             <span class="text-[11px] uppercase tracking-wide text-secondary font-bold">${escapeHtml(active.searchLabel || 'Buscar general')}</span>
             <input data-buscar value="${escapeHtml(texto)}" placeholder="texto…"
@@ -1106,6 +1130,11 @@ async function renderVistaTabla(stage, cfg, modeIdx = 0) {
       const i = stage.querySelector('[data-buscar]');
       if (i) { i.focus(); i.setSelectionRange(i.value.length, i.value.length); }
     });
+    stage.querySelectorAll('[data-rango]').forEach(el => el.addEventListener('change', e => {
+      if (el.dataset.rango === 'desde') rangoDesde = e.target.value; else rangoHasta = e.target.value;
+      draw();
+    }));
+    stage.querySelector('[data-rango-clear]')?.addEventListener('click', () => { rangoDesde = ''; rangoHasta = ''; draw(); });
     stage.querySelectorAll('[data-exp]').forEach(btn => btn.addEventListener('click', () => {
       const id = btn.dataset.exp;
       if (expanded.has(id)) expanded.delete(id); else expanded.add(id);
