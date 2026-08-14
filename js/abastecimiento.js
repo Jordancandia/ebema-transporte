@@ -304,6 +304,7 @@ const VISTAS_TRONCAL = {
       { key: 'nombre_1', label: 'Nombre de Proveedor' },
       { key: 'ce', label: 'Centro Destino' },
       { key: 'alm', label: 'Almacén Destino' },
+      { key: 'fe_entrega', label: 'Fecha de Retiro', cls: 'num-clear' },
       { key: '_ton_totales', label: 'Ton Totales', cls: 'text-right num-clear font-bold' },
       { key: 'documento', label: 'Pedido de Ventas' },
       { key: '_vigencia', label: 'Vigencia OC', clsFn: r => r._revision_saldo ? 'text-red-700 font-bold' : '' },

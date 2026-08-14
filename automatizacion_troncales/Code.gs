@@ -2,10 +2,12 @@
  * ============================================================================
  *  AUTOMATIZACION CORREOS TRONCALES  ->  SUPABASE (SIT EBEMA)
  * ----------------------------------------------------------------------------
- *  Lee Gmail 3 veces al dia (07:35 / 11:35 / 13:35, hora Chile), procesa SOLO
+ *  Lee Gmail 3 veces al dia (07:35 / 11:35 / ~13:46, hora Chile), procesa SOLO
  *  correos NO leidos de dos etiquetas, extrae y parsea los adjuntos, y carga
- *  los datos a Supabase (pisando la base vigente). La corrida de las 13:35
+ *  los datos a Supabase (pisando la base vigente). La corrida de la tarde
  *  ademas guarda la foto del dia (historico 7 dias). Marca los correos leidos.
+ *  La corrida de la tarde se centra en 13:46 (jitter +/-15) para alcanzar a
+ *  leer el correo de la tarde.
  *
  *  Fuentes:
  *   - "Plan Troncales (SLIM)"  -> adjunto Excel  -> fuente slim_stock
@@ -43,24 +45,38 @@ var SQVI_FUENTES = {
 var CHUNK = 1500; // filas por request de inserción
 
 // --------------------------- ENTRYPOINTS ------------------------------------
-// Estas 3 funciones son las que disparan los triggers horarios.
+// Funciones que disparan los triggers horarios.
 function ejecutar_0735() { procesar(false); }
 function ejecutar_1135() { procesar(false); }
-function ejecutar_1335() { procesar(true);  } // guarda snapshot del dia
+// Corrida de la tarde (guarda snapshot del dia). Nombre neutro para no tener
+// que renombrar al ajustar el minuto exacto del trigger.
+function ejecutar_tarde() { procesar(true); }
+// Compatibilidad con triggers antiguos (por si quedara alguno apuntando aca).
+function ejecutar_1350() { procesar(true); }
+function ejecutar_1340() { procesar(true); }
+function ejecutar_1335() { procesar(true); }
+
+// Minuto centro del trigger de la tarde. Apps Script dispara con +/-15 min de
+// jitter, por lo que la ventana real es CENTRO-15 .. CENTRO+15. Con 46 la
+// ventana es 13:31..14:01, dando mas margen para que llegue el correo de la
+// tarde (la corrida tarda 1-2 min).
+var MIN_TARDE = 46;
 
 // Utilidad: crea los 3 triggers de una sola vez (ejecutar manualmente 1 vez).
+// IMPORTANTE: reejecutar esta funcion tras cambiar el horario de la tarde.
 function crearTriggers() {
   // Elimina triggers previos de estas funciones para no duplicar
   ScriptApp.getProjectTriggers().forEach(function (t) {
     var f = t.getHandlerFunction();
-    if (f === 'ejecutar_0735' || f === 'ejecutar_1135' || f === 'ejecutar_1335') {
+    if (f === 'ejecutar_0735' || f === 'ejecutar_1135' || f === 'ejecutar_tarde' ||
+        f === 'ejecutar_1335' || f === 'ejecutar_1340' || f === 'ejecutar_1350') {
       ScriptApp.deleteTrigger(t);
     }
   });
   ScriptApp.newTrigger('ejecutar_0735').timeBased().atHour(7).nearMinute(35).everyDays(1).create();
   ScriptApp.newTrigger('ejecutar_1135').timeBased().atHour(11).nearMinute(35).everyDays(1).create();
-  ScriptApp.newTrigger('ejecutar_1335').timeBased().atHour(13).nearMinute(35).everyDays(1).create();
-  Logger.log('Triggers creados: 07:35, 11:35, 13:35 (America/Santiago).');
+  ScriptApp.newTrigger('ejecutar_tarde').timeBased().atHour(13).nearMinute(MIN_TARDE).everyDays(1).create();
+  Logger.log('Triggers creados: 07:35, 11:35, 13:' + MIN_TARDE + ' +/-15min (America/Santiago).');
 }
 
 // ----------------------------- CORE -----------------------------------------
@@ -287,8 +303,9 @@ function normalizarKeys(header) {
 
 function slug(h) {
   if (h == null) h = '';
-  // Quita acentos
-  h = h.normalize ? h.normalize('NFKD').replace(/[̀-ͯ]/g, '') : h;
+  // Quita acentos (rango de marcas diacriticas combinantes U+0300..U+036F).
+  // Se usan escapes Unicode para que sea seguro al copiar/pegar.
+  h = h.normalize ? h.normalize('NFKD').replace(/[\u0300-\u036f]/g, '') : h;
   h = h.replace(/[^a-zA-Z0-9]+/g, '_').replace(/^_+|_+$/g, '').toLowerCase();
   return h || 'col';
 }
