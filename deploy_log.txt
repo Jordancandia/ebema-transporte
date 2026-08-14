@@ -1,0 +1,27 @@
+===== LIMPIAR LOCKS =====
+HEAD.lock_OK
+index.lock_OK
+===== IDENTITY =====
+===== ADD =====
+warning: in the working copy of 'DESPLEGAR_ABASTECIMIENTO.bat', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'index.html', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'js/abastecimiento.js', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'js/app.js', LF will be replaced by CRLF the next time Git touches it
+===== COMMIT =====
+[main 25c7e1f] fix: calendario prioritario lee abast_calendario por dia v=20260813c
+ 4 files changed, 16 insertions(+), 17 deletions(-)
+===== PULL =====
+error: cannot pull with rebase: You have unstaged changes.
+error: Please commit or stash them.
+===== PUSH =====
+remote: This repository moved. Please use the new location:        
+remote:   https://github.com/Jordancandia/ebema-transporte.git        
+To https://github.com/jordancandia/ebema-transporte.git
+   17dd813..25c7e1f  main -> main
+===== LOG =====
+25c7e1f fix: calendario prioritario lee abast_calendario por dia v=20260813c
+17dd813 feat: timezone Chile, Plan Troncales Step 6, calendario prioritario, fix ton totales v=20260813b
+34d106e feat: timezone Chile, vista Plan Troncales Step 6, fix ton totales y Plan de Carga v=20260813a
+===== STATUS =====
+## main...origin/main
+ M deploy_log.txt

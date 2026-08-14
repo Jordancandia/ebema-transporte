@@ -6,7 +6,7 @@ import { renderRatesView } from './rates.js';
 import { renderRolesView } from './roles.js';
 import { renderTariffTransportView, setActiveSub } from './tarifas-transporte.js?v=20260713c';
 import { renderClientTariffView, setActiveSubC } from './tarifas-clientes.js?v=20260714c';
-import { renderAbastecimientoView, setAbastSubTab } from './abastecimiento.js?v=20260813c';
+import { renderAbastecimientoView, setAbastSubTab } from './abastecimiento.js?v=20260814a';
 import { showAlert, formatRut, validateRut, formatPhone } from './utils.js';
 
 const SESSION_KEY = 'ebema_user_session';
@@ -1215,15 +1215,14 @@ const SIDEBAR_MENU = [
     group: 'abastecimiento', icon: 'inventory_2', label: 'Gestión Troncales', children: [
       { tab: 'abastecimiento', sub: 'proveedores', icon: 'groups',         label: 'Proveedores' },
       { tab: 'abastecimiento', sub: 'calendario',  icon: 'calendar_month', label: 'Calendario Sucursales' },
-      { tab: 'abastecimiento', sub: 'quiebres',               icon: 'production_quantity_limits', label: 'Quiebres Sucursal' },
-      { tab: 'abastecimiento', sub: 'retiros',                icon: 'factory',        label: 'Retiros Fabrica' },
-      { tab: 'abastecimiento', sub: 'pedidos_venta',          icon: 'sell',           label: 'Pedidos Ventas 1003' },
-      { tab: 'abastecimiento', sub: 'stock_almacen',          icon: 'inventory',      label: 'Stock Almacen 4000' },
+      { tab: 'abastecimiento', sub: 'quiebres',               icon: 'production_quantity_limits', label: 'Quiebres Sucursales' },
+      { tab: 'abastecimiento', sub: 'retiros',                icon: 'factory',        label: 'Retiros de Fábrica' },
+      { tab: 'abastecimiento', sub: 'pedidos_venta',          icon: 'sell',           label: 'Pedidos de Venta CD (1003)' },
+      { tab: 'abastecimiento', sub: 'stock_almacen',          icon: 'inventory',      label: 'Stock Almacén 4000' },
       { tab: 'abastecimiento', sub: 'pedidos_traslados',      icon: 'swap_horiz',     label: 'Pedidos Traslados' },
-      { tab: 'abastecimiento', sub: 'pedidos_traslados_revex', icon: 'recycling',    label: 'Pedidos Traslados REVEX' },
-      { tab: 'abastecimiento', sub: 'pedidos_traslados_4000', icon: 'local_shipping', label: 'Pedidos Traslados 4000' },
+      { tab: 'abastecimiento', sub: 'pedidos_traslados_revex', icon: 'recycling',    label: 'Pedidos de Traslado REVEX' },
+      { tab: 'abastecimiento', sub: 'pedidos_traslados_4000', icon: 'local_shipping', label: 'Pedidos de Traslados 4000' },
       { tab: 'abastecimiento', sub: 'plan_carga',             icon: 'local_shipping', label: 'Plan de Carga' },
-      { tab: 'abastecimiento', sub: 'plan_troncales',          icon: 'inventory_2',    label: 'Plan Troncales' },
     ]
   },
   { tab: 'roles', icon: 'admin_panel_settings', label: 'Roles y Perfiles' },
