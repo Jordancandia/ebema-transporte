@@ -116,6 +116,15 @@ function lookupRuta(rutaId) {
   return r ? { comuna: r.comuna || '', region: r.region || '' } : { comuna: '', region: '' };
 }
 
+// Convierte timestamp UTC (ISO) a hora Chile legible
+function horaChile(ts) {
+  if (!ts) return '';
+  try {
+    const d = new Date(ts);
+    return d.toLocaleString('es-CL', { timeZone: 'America/Santiago', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+  } catch { return String(ts).slice(0, 16).replace('T', ' '); }
+}
+
 // Centros válidos para quiebres
 const CENTROS_QUIEBRES = ['1005','1020','1040','1050','1060','1070','1080','1090','1100','1160'];
 
@@ -441,6 +450,42 @@ const VISTAS_TRONCAL = {
       { key: '_ton_totales', label: 'Ton Totales', cls: 'text-right font-data-mono font-bold' },
     ],
   },
+
+  // ── STOCK ALMACEN 4000 - PLAN TRONCALES (Step 6) ─────────────────────────
+  plan_troncales: {
+    titulo: 'Stock Almacén 4000 – Plan Troncales',
+    vista: 'v_trc_sqvi_plan_troncales',
+    chipFilter: { campo: 'ce', label: 'Centro' },
+    filtros: [{ campo: 'material', label: 'Material', tipo: 'buscar' }],
+    transform(rows) {
+      return rows
+        .filter(r => String(r.material ?? '').trim() !== '')
+        .filter(r => !String(r.ce ?? '').startsWith('*'))
+        .map(r => {
+          const pm = maxPesoDim(r.peso_bruto, r.tamano_dimens);
+          return {
+            ...r,
+            _peso_mayor: fmtNum(pm, 2),
+            _ton_totales: fmtNum(calcTon(pm, r.libre_utiliz), 3),
+          };
+        });
+    },
+    columnas: [
+      { key: 'ce', label: 'Centro' },
+      { key: 'alm', label: 'Almacén' },
+      { key: 'material', label: 'Material' },
+      { key: 'texto_breve_de_material', label: 'Descripción Material' },
+      { key: 'libre_utiliz', label: 'Libre Utilización', cls: 'text-right font-data-mono' },
+      { key: 'umb', label: 'UM' },
+      { key: 'tamano_dimens', label: 'Tamaño/Dimens.', cls: 'text-right font-data-mono' },
+      { key: 'peso_bruto', label: 'Peso Bruto', cls: 'text-right font-data-mono' },
+      { key: 'peso_neto', label: 'Peso Neto', cls: 'text-right font-data-mono' },
+      { key: '_peso_mayor', label: 'Peso Mayor', cls: 'text-right font-data-mono' },
+      { key: '_ton_totales', label: 'Ton Totales', cls: 'text-right font-data-mono font-bold' },
+      { key: 'ej', label: 'Ejercicio' },
+      { key: 'pe', label: 'Periodo' },
+    ],
+  },
 };
 
 // ============================================================================
@@ -672,7 +717,7 @@ async function renderPlanCarga(stage) {
   }
 
   // ── Render tabla ────────────────────────────────────────────────────────
-  const act = quiebresRaw.length ? String(quiebresRaw[0].cargado_en || '').slice(0, 16).replace('T', ' ') : '';
+  const act = quiebresRaw.length ? horaChile(quiebresRaw[0].cargado_en) : '';
 
   stage.innerHTML = `
     <div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm rounded-lg">
@@ -796,7 +841,7 @@ async function renderVistaTabla(stage, cfg) {
     const filt = aplica();
     const MAX = 1500;
     const shown = filt.slice(0, MAX);
-    const act = rawRows.length ? String(rawRows[0].cargado_en || '').slice(0, 16).replace('T', ' ') : '';
+    const act = rawRows.length ? horaChile(rawRows[0].cargado_en) : '';
 
     stage.innerHTML = `
       <div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm rounded-lg">

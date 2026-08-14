@@ -36,7 +36,8 @@ var SQVI_FUENTES = {
   '2': 'sqvi_pedidos_venta_1003',
   '3': 'sqvi_stock_almacen_4000',
   '4': 'sqvi_pedidos_traslados',
-  '5': 'sqvi_pedidos_traslados_4000'
+  '5': 'sqvi_pedidos_traslados_4000',
+  '6': 'sqvi_plan_troncales'
 };
 
 var CHUNK = 1500; // filas por request de inserción

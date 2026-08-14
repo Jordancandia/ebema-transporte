@@ -16,7 +16,7 @@ cd /d "%~dp0"
   echo ===== ADD =====
   git add -A
   echo ===== COMMIT =====
-  git commit -m "fix: Plan de Carga headers bold, retiro solo CONSOLIDAR CD, ventas match ofvta, ton totales sin duplicar v=20260811d"
+  git commit -m "feat: timezone Chile, vista Plan Troncales Step 6, fix ton totales y Plan de Carga v=20260813a"
   echo ===== PULL =====
   git pull --rebase origin main
   echo ===== PUSH =====
