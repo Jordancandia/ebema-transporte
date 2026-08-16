@@ -66,17 +66,18 @@ async function loadGeneral(){
   try {
     if (!_cacheGen){
       const y='2026-01';
-      const [ns,tar,mar,ft,sc,con,tie] = await Promise.all([
+      const [ns,tar,mar,ft,sc,con,tie,scm] = await Promise.all([
         supabase.from('v_ind_ns_general_mes').select('*').gte('mes_label',y).order('mes_label'),
         supabase.from('v_ind_tarifa_general_mes').select('*').gte('mes_label',y).order('mes_label'),
         supabase.from('v_ind_margen_general_mes').select('*').gte('mes_label',y).order('mes_label'),
         supabase.from('v_ind_ftercero_mes').select('*').gte('mes_label',y).order('mes_label'),
         supabase.from('v_ind_sin_cobro_centro').select('*'),
         supabase.from('v_ind_consol_general_mes').select('*').gte('mes_label',y).order('mes_label'),
-        supabase.from('v_ind_tiempo_general_mes').select('*').gte('mes_label',y).order('mes_label')
+        supabase.from('v_ind_tiempo_general_mes').select('*').gte('mes_label',y).order('mes_label'),
+        supabase.from('v_ind_sin_cobro_mes').select('*').gte('mes_label',y).order('mes_label')
       ]);
-      const e = ns.error||tar.error||mar.error||ft.error||sc.error||con.error||tie.error; if(e) throw e;
-      _cacheGen = { ns:ns.data||[], tar:tar.data||[], mar:mar.data||[], ft:ft.data||[], sc:sc.data||[], con:con.data||[], tie:tie.data||[] };
+      const e = ns.error||tar.error||mar.error||ft.error||sc.error||con.error||tie.error||scm.error; if(e) throw e;
+      _cacheGen = { ns:ns.data||[], tar:tar.data||[], mar:mar.data||[], ft:ft.data||[], sc:sc.data||[], con:con.data||[], tie:tie.data||[], scm:scm.data||[] };
     }
     body().innerHTML = generalHTML(_cacheGen);
     ensureTip(); drawGeneral(_cacheGen);
@@ -87,7 +88,7 @@ async function loadCentro(){
   body().innerHTML = loadingHTML();
   try {
     if (!_cacheCen){
-      const [ns,tar,mar,spot,dest,tdest,vend,con,tie] = await Promise.all([
+      const [ns,tar,mar,spot,dest,tdest,vend,con,tie,scm] = await Promise.all([
         supabase.from('v_ind_ns_grupo_semana').select('*'),
         supabase.from('v_ind_tarifa_grupo_semana').select('*'),
         supabase.from('v_ind_margen_grupo_semana').select('*'),
@@ -96,12 +97,13 @@ async function loadCentro(){
         supabase.from('v_ind_tarifa_destino_grupo').select('*'),
         supabase.from('v_ind_cobro_vendedor_grupo').select('*'),
         supabase.from('v_ind_consol_grupo_semana').select('*'),
-        supabase.from('v_ind_tiempo_grupo_mes').select('*')
+        supabase.from('v_ind_tiempo_grupo_mes').select('*'),
+        supabase.from('v_ind_sin_cobro_grupo_mes').select('*')
       ]);
-      const e = ns.error||tar.error||mar.error||spot.error||dest.error||tdest.error||vend.error||con.error||tie.error; if(e) throw e;
+      const e = ns.error||tar.error||mar.error||spot.error||dest.error||tdest.error||vend.error||con.error||tie.error||scm.error; if(e) throw e;
       _cacheCen = { ns:ns.data||[], tar:tar.data||[], mar:mar.data||[],
         spot:spot.data||[], dest:dest.data||[], tdest:tdest.data||[], vend:vend.data||[],
-        con:con.data||[], tie:tie.data||[] };
+        con:con.data||[], tie:tie.data||[], scm:scm.data||[] };
     }
     const grupos = [...new Set(_cacheCen.ns.map(r=>r.grupo))].filter(g=>g&&g!=='OTROS').sort();
     if (!_grupo || grupos.indexOf(_grupo)<0){
@@ -155,6 +157,13 @@ function generalHTML(d){
       `<div class="grid grid-cols-1 md:grid-cols-2 gap-md">`+
       `<div>`+legend([{n:'Margen $MM',c:C.red}])+`<div id="g_mar"></div></div>`+
       `<div>`+legend([{n:'Cobertura %',c:C.navy}])+`<div id="g_cob"></div></div></div>`)}
+    ${card('3b · Entregas sin Cobro','Flete pagado no cobrado — evolución mensual',
+      tile('No cobrado acumulado',mm(sum(d.scm.map(r=>r.monto))/1e6),'2026','text-[#EE1B22]')+
+      tile('Entregas sin cobro',nf0.format(sum(d.scm.map(r=>r.entregas))),'acumulado')+
+      tile('Líneas',nf0.format(sum(d.scm.map(r=>r.lineas))),'acumulado')+
+      (function(){var w=d.scm.reduce((a,b)=>(b.monto>(a?a.monto:-1)?b:a),null)||{};return tile('Peor mes',mm((w.monto||0)/1e6),mesCorto(w.mes_label||''),'text-[#EE1B22]');})(),
+      legend([{n:'No cobrado $MM',c:C.red}])+`<div id="g_scm"></div>`)}
+
     ${card('4 · Flete Tercero (REVEX)','OTIF por modalidad — CD → sucursal → cliente',
       tile('OTIF Despacha',pct(ftLast.despO),(ftLast.despN||0)+' pedidos')+
       tile('OTIF Retira',pct(ftLast.retiO),(ftLast.retiN||0)+' pedidos')+
@@ -242,6 +251,16 @@ function centroHTML(d, grupos, grupo){
       `<div>`+legend([{n:'Consolidación %',c:C.green}])+`<div id="c_consol"></div></div>`+
       `<div>`+legend([{n:'Días entrega→transporte',c:C.blue}])+`<div id="c_tiempo"></div></div></div>`)}
 
+    ${card('7 · Entregas sin Cobro — '+nice(grupo),'Flete pagado no cobrado — evolución mensual',
+      (function(){ var g=(d.scm||[]).filter(r=>r.grupo===grupo).slice().sort((a,b)=>a.mes_label<b.mes_label?-1:1);
+        var acum=sum(g.map(r=>r.monto))/1e6, ent=sum(g.map(r=>r.entregas)), li=sum(g.map(r=>r.lineas));
+        var w=g.reduce((a,b)=>(b.monto>(a?a.monto:-1)?b:a),null)||{};
+        return tile('No cobrado acumulado',mm(acum),'2026','text-[#EE1B22]')+
+          tile('Entregas sin cobro',nf0.format(ent),'acumulado')+
+          tile('Líneas',nf0.format(li),'acumulado')+
+          tile('Peor mes',mm((w.monto||0)/1e6),mesCorto(w.mes_label||''),'text-[#EE1B22]'); })(),
+      legend([{n:'No cobrado $MM',c:C.red}])+`<div id="c_scm"></div>`)}
+
     <div class="text-[11px] text-secondary mt-lg leading-relaxed">Centro = grupo de origen (Centro Origen). OTIF por semana ISO llega al último mes cerrado; tarifa, margen y operación a la fecha más reciente. Comuna = 2º tramo de la ruta. Consolidación = Σpeso ÷ (capacidad×1000) por viaje. Planta C&D y Electrosoldado se agrupan en Santiago.</div>`;
 }
 
@@ -325,6 +344,8 @@ function drawGeneral(d){
   barChart('g_consol',d.con.map(r=>r.consol_pct),conL,0,100,C.green,'%',d.con.length-1,v=>Math.round(v));
   const tieL=d.tie.map(r=>mesCorto(r.mes_label));
   barChart('g_tiempo',d.tie.map(r=>r.dias_prom),tieL,0,niceMax(d.tie.map(r=>r.dias_prom)),C.blue,' d',d.tie.length-1,v=>Math.round(v));
+  const scmL=d.scm.map(r=>mesCorto(r.mes_label));
+  barChart('g_scm',d.scm.map(r=>r.monto/1e6),scmL,0,niceMax(d.scm.map(r=>r.monto/1e6)),C.red,' MM',d.scm.length-1,v=>'$'+Math.round(v));
 }
 
 function drawCentro(d, grupo){
@@ -354,6 +375,8 @@ function drawCentro(d, grupo){
   barChart('c_consol',cw.map(r=>r.consol_pct),cw.map(r=>r.semana.replace('2026-','')),0,100,C.green,'%',null,v=>Math.round(v));
   const tm=(d.tie||[]).filter(r=>r.grupo===grupo).slice().sort((a,b)=>a.mes_label<b.mes_label?-1:1);
   barChart('c_tiempo',tm.map(r=>r.dias_prom),tm.map(r=>mesCorto(r.mes_label)),0,niceMax(tm.map(r=>r.dias_prom)),C.blue,' d',null,v=>Math.round(v));
+  const sm=(d.scm||[]).filter(r=>r.grupo===grupo).slice().sort((a,b)=>a.mes_label<b.mes_label?-1:1);
+  barChart('c_scm',sm.map(r=>r.monto/1e6),sm.map(r=>mesCorto(r.mes_label)),0,niceMax(sm.map(r=>r.monto/1e6)),C.red,' MM',null,v=>'$'+Math.round(v));
 }
 
 // ============================================================================

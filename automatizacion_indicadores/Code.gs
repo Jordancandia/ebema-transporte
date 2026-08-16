@@ -161,6 +161,19 @@ function cargarTodo() {
   cargarUno(corrida, 'ind_flete_pagado',  function(){ return leerDriveXlsx(DRIVE.flete_pagado); },  SPEC_FLETE_PAGADO);
   cargarUno(corrida, 'ind_flete_cobrado', function(){ return leerDriveXlsx(DRIVE.flete_cobrado); }, SPEC_FLETE_COBRADO);
   cargarUno(corrida, 'ind_flete_tercero', function(){ return leerGmailXlsx(LABEL_FT); },            SPEC_FLETE_TERCERO);
+  // Refresca las vistas materializadas de KPI (lectura instantánea en la app)
+  try { sbRpcRefresh(); logRun(corrida, 'refresh_matviews', 0, 'ok', 'fn_ind_refresh_all'); }
+  catch (e) { logRun(corrida, 'refresh_matviews', 0, 'error', String(e)); }
+}
+
+// Refresca todas las vistas materializadas v_ind_* vía RPC.
+function sbRpcRefresh() {
+  var res = UrlFetchApp.fetch(SUPABASE_URL + '/rest/v1/rpc/fn_ind_refresh_all', {
+    method: 'post', contentType: 'application/json',
+    headers: sbHeaders(), payload: '{}', muteHttpExceptions: true
+  });
+  var code = res.getResponseCode();
+  if (code >= 300) throw new Error('refresh HTTP ' + code + ': ' + res.getContentText().slice(0, 200));
 }
 
 // Entrypoints individuales (para dividir en triggers escalonados si hay timeout)
