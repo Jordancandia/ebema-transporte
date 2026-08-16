@@ -66,7 +66,7 @@ async function loadGeneral(){
   try {
     if (!_cacheGen){
       const y='2026-01';
-      const [ns,tar,mar,ft,sc,con,tie,scm] = await Promise.all([
+      const [ns,tar,mar,ft,sc,con,tie,scm,nsm,tarm] = await Promise.all([
         supabase.from('v_ind_ns_general_mes').select('*').gte('mes_label',y).order('mes_label'),
         supabase.from('v_ind_tarifa_general_mes').select('*').gte('mes_label',y).order('mes_label'),
         supabase.from('v_ind_margen_general_mes').select('*').gte('mes_label',y).order('mes_label'),
@@ -74,10 +74,12 @@ async function loadGeneral(){
         supabase.from('v_ind_sin_cobro_centro').select('*'),
         supabase.from('v_ind_consol_general_mes').select('*').gte('mes_label',y).order('mes_label'),
         supabase.from('v_ind_tiempo_general_mes').select('*').gte('mes_label',y).order('mes_label'),
-        supabase.from('v_ind_sin_cobro_mes').select('*').gte('mes_label',y).order('mes_label')
+        supabase.from('v_ind_sin_cobro_mes').select('*').gte('mes_label',y).order('mes_label'),
+        supabase.from('v_ind_ns_grupo_mes').select('*').gte('mes_label',y),
+        supabase.from('v_ind_tarifa_grupo_mes').select('*').gte('mes_label',y)
       ]);
-      const e = ns.error||tar.error||mar.error||ft.error||sc.error||con.error||tie.error||scm.error; if(e) throw e;
-      _cacheGen = { ns:ns.data||[], tar:tar.data||[], mar:mar.data||[], ft:ft.data||[], sc:sc.data||[], con:con.data||[], tie:tie.data||[], scm:scm.data||[] };
+      const e = ns.error||tar.error||mar.error||ft.error||sc.error||con.error||tie.error||scm.error||nsm.error||tarm.error; if(e) throw e;
+      _cacheGen = { ns:ns.data||[], tar:tar.data||[], mar:mar.data||[], ft:ft.data||[], sc:sc.data||[], con:con.data||[], tie:tie.data||[], scm:scm.data||[], nsm:nsm.data||[], tarm:tarm.data||[] };
     }
     body().innerHTML = generalHTML(_cacheGen);
     ensureTip(); drawGeneral(_cacheGen);
@@ -163,6 +165,12 @@ function generalHTML(d){
       tile('Líneas',nf0.format(sum(d.scm.map(r=>r.lineas))),'acumulado')+
       (function(){var w=d.scm.reduce((a,b)=>(b.monto>(a?a.monto:-1)?b:a),null)||{};return tile('Peor mes',mm((w.monto||0)/1e6),mesCorto(w.mes_label||''),'text-[#EE1B22]');})(),
       legend([{n:'No cobrado $MM',c:C.red}])+`<div id="g_scm"></div>`)}
+
+    ${card('3c · Matriz mensual por Centro','OTIF % y Tarifa $/kg por sucursal (semáforo)','',
+      `<div class="text-[12px] text-secondary mb-1 font-medium">OTIF % — verde alto, rojo bajo</div>`+
+      heatmapHTML(d.nsm,'otif_pct',heatOtif,v=>nf1.format(v))+
+      `<div class="text-[12px] text-secondary mb-1 mt-md font-medium">Tarifa $/kg — verde barato, rojo caro</div>`+
+      heatmapHTML(d.tarm,'tarifa_kg',heatTarifa,v=>'$'+nf1.format(v)))}
 
     ${card('4 · Flete Tercero (REVEX)','OTIF por modalidad — CD → sucursal → cliente',
       tile('OTIF Despacha',pct(ftLast.despO),(ftLast.despN||0)+' pedidos')+
@@ -275,6 +283,25 @@ function vendTablaHTML(rows, grupo){
     `<table class="w-full text-[12px]"><thead><tr class="text-secondary text-left">
       <th class="font-medium pb-[4px]">Vendedor</th><th class="font-medium text-right pb-[4px]">Brecha</th><th class="font-medium text-right pb-[4px]">Cumpl.</th></tr></thead>
       <tbody>${filas}</tbody></table>`;
+}
+
+// ============================================================================
+//  HEATMAP (matriz centro × mes)
+// ============================================================================
+function heatOtif(v){ return v>=90?'#C6E0B4':v>=85?'#E2EFDA':v>=80?'#FFF2CC':v>=75?'#FCE4D6':v>=70?'#F8CBAD':'#F4B7B4'; }
+function heatTarifa(v){ return v<18?'#C6E0B4':v<24?'#E2EFDA':v<30?'#FFF2CC':v<40?'#FCE4D6':v<55?'#F8CBAD':'#F4B7B4'; }
+function heatmapHTML(rows, key, colorFn, fmt){
+  if(!rows||!rows.length) return `<div class="text-secondary text-[12px] py-sm">Sin datos.</div>`;
+  const months=[...new Set(rows.map(r=>r.mes_label))].sort();
+  const grupos=[...new Set(rows.map(r=>r.grupo))].filter(g=>g&&g!=='OTROS').sort();
+  const map={}; rows.forEach(r=>{ (map[r.grupo]=map[r.grupo]||{})[r.mes_label]=r[key]; });
+  const head=`<th class="text-left font-medium text-secondary pr-sm">Centro</th>`+months.map(m=>`<th class="font-medium text-secondary px-[6px] text-center">${mesCorto(m)}</th>`).join('');
+  const bodyr=grupos.map(g=>{
+    const cells=months.map(m=>{ const v=(map[g]||{})[m];
+      return `<td class="text-center px-[6px] py-[3px] tabular-nums" style="background:${v==null?'transparent':colorFn(v)};color:#333">${v==null?'':fmt(v)}</td>`; }).join('');
+    return `<tr><td class="pr-sm py-[3px] text-[12px] whitespace-nowrap">${nice(g)}</td>${cells}</tr>`;
+  }).join('');
+  return `<div class="overflow-x-auto"><table class="text-[11px] border-separate" style="border-spacing:2px"><thead><tr>${head}</tr></thead><tbody>${bodyr}</tbody></table></div>`;
 }
 
 // ============================================================================
