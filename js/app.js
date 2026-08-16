@@ -7,6 +7,7 @@ import { renderRolesView } from './roles.js';
 import { renderTariffTransportView, setActiveSub } from './tarifas-transporte.js?v=20260713c';
 import { renderClientTariffView, setActiveSubC } from './tarifas-clientes.js?v=20260714c';
 import { renderAbastecimientoView, setAbastSubTab } from './abastecimiento.js?v=20260814g';
+import { renderIndicadoresView, setIndicadoresSubTab } from './indicadores.js?v=20260816a';
 import { showAlert, formatRut, validateRut, formatPhone } from './utils.js';
 
 const SESSION_KEY = 'ebema_user_session';
@@ -1225,6 +1226,7 @@ const SIDEBAR_MENU = [
       { tab: 'abastecimiento', sub: 'plan_carga',             icon: 'local_shipping', label: 'Plan de Carga' },
     ]
   },
+  { tab: 'indicadores', icon: 'monitoring', label: 'Indicadores' },
   { tab: 'roles', icon: 'admin_panel_settings', label: 'Roles y Perfiles' },
 ];
 
@@ -1433,6 +1435,11 @@ function switchTab(tabName, subName = null) {
       pageTitle.textContent = 'Gestión Troncales' + subLabel;
       if (subName) setAbastSubTab(subName);
       renderAbastecimientoView(stage);
+      break;
+    case 'indicadores':
+      pageTitle.textContent = 'Indicadores';
+      if (subName) setIndicadoresSubTab(subName);
+      renderIndicadoresView(stage);
       break;
   }
 }
