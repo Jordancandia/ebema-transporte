@@ -66,15 +66,17 @@ async function loadGeneral(){
   try {
     if (!_cacheGen){
       const y='2026-01';
-      const [ns,tar,mar,ft,sc] = await Promise.all([
+      const [ns,tar,mar,ft,sc,con,tie] = await Promise.all([
         supabase.from('v_ind_ns_general_mes').select('*').gte('mes_label',y).order('mes_label'),
         supabase.from('v_ind_tarifa_general_mes').select('*').gte('mes_label',y).order('mes_label'),
         supabase.from('v_ind_margen_general_mes').select('*').gte('mes_label',y).order('mes_label'),
         supabase.from('v_ind_ftercero_mes').select('*').gte('mes_label',y).order('mes_label'),
-        supabase.from('v_ind_sin_cobro_centro').select('*')
+        supabase.from('v_ind_sin_cobro_centro').select('*'),
+        supabase.from('v_ind_consol_general_mes').select('*').gte('mes_label',y).order('mes_label'),
+        supabase.from('v_ind_tiempo_general_mes').select('*').gte('mes_label',y).order('mes_label')
       ]);
-      const e = ns.error||tar.error||mar.error||ft.error||sc.error; if(e) throw e;
-      _cacheGen = { ns:ns.data||[], tar:tar.data||[], mar:mar.data||[], ft:ft.data||[], sc:sc.data||[] };
+      const e = ns.error||tar.error||mar.error||ft.error||sc.error||con.error||tie.error; if(e) throw e;
+      _cacheGen = { ns:ns.data||[], tar:tar.data||[], mar:mar.data||[], ft:ft.data||[], sc:sc.data||[], con:con.data||[], tie:tie.data||[] };
     }
     body().innerHTML = generalHTML(_cacheGen);
     ensureTip(); drawGeneral(_cacheGen);
@@ -85,18 +87,21 @@ async function loadCentro(){
   body().innerHTML = loadingHTML();
   try {
     if (!_cacheCen){
-      const [ns,tar,mar,spot,dest,tdest,vend] = await Promise.all([
+      const [ns,tar,mar,spot,dest,tdest,vend,con,tie] = await Promise.all([
         supabase.from('v_ind_ns_grupo_semana').select('*'),
         supabase.from('v_ind_tarifa_grupo_semana').select('*'),
         supabase.from('v_ind_margen_grupo_semana').select('*'),
         supabase.from('v_ind_ns_spot_grupo').select('*'),
         supabase.from('v_ind_ns_destino_grupo').select('*'),
         supabase.from('v_ind_tarifa_destino_grupo').select('*'),
-        supabase.from('v_ind_cobro_vendedor_grupo').select('*')
+        supabase.from('v_ind_cobro_vendedor_grupo').select('*'),
+        supabase.from('v_ind_consol_grupo_semana').select('*'),
+        supabase.from('v_ind_tiempo_grupo_mes').select('*')
       ]);
-      const e = ns.error||tar.error||mar.error||spot.error||dest.error||tdest.error||vend.error; if(e) throw e;
+      const e = ns.error||tar.error||mar.error||spot.error||dest.error||tdest.error||vend.error||con.error||tie.error; if(e) throw e;
       _cacheCen = { ns:ns.data||[], tar:tar.data||[], mar:mar.data||[],
-        spot:spot.data||[], dest:dest.data||[], tdest:tdest.data||[], vend:vend.data||[] };
+        spot:spot.data||[], dest:dest.data||[], tdest:tdest.data||[], vend:vend.data||[],
+        con:con.data||[], tie:tie.data||[] };
     }
     const grupos = [...new Set(_cacheCen.ns.map(r=>r.grupo))].filter(g=>g&&g!=='OTROS').sort();
     if (!_grupo || grupos.indexOf(_grupo)<0){
@@ -156,7 +161,16 @@ function generalHTML(d){
       tile('Pedidos',nf0.format(sum(d.ft.map(r=>r.pedidos))),'período')+
       tile('Ciclo Despacha',(ftLast.despCiclo!=null?nf1.format(ftLast.despCiclo)+' d':'–'),'último mes'),
       legend([{n:'Despacha',c:C.navy},{n:'Retira',c:C.orange}])+`<div id="g_ft"></div>`)}
-    <div class="text-[11px] text-secondary mt-lg leading-relaxed">Datos en vivo de <code>v_ind_*</code> (Supabase, 08:00). OTIF/Fill hasta el último mes cerrado; tarifa y margen incluyen agosto parcial.</div>`;
+    ${card('5 · Operación','Consolidación de camión y tiempo de facturación — mensual',
+      tile('Consolidación — '+mesCorto((d.con[d.con.length-2]||d.con[d.con.length-1]||{}).mes_label||''),pct((d.con[d.con.length-2]||d.con[d.con.length-1]||{}).consol_pct),'% capacidad usada')+
+      tile('Consolidación promedio',pct(avg(d.con.map(r=>r.consol_pct))),'año')+
+      tile('Días entrega→transporte',(function(){var r=d.tie[d.tie.length-2]||d.tie[d.tie.length-1]||{};return r.dias_prom!=null?nf1.format(r.dias_prom)+' d':'–';})(),'último mes')+
+      tile('Días promedio',(function(){var v=avg(d.tie.map(r=>r.dias_prom));return v!=null?nf1.format(v)+' d':'–';})(),'año'),
+      `<div class="grid grid-cols-1 md:grid-cols-2 gap-md">`+
+      `<div>`+legend([{n:'Consolidación %',c:C.green}])+`<div id="g_consol"></div></div>`+
+      `<div>`+legend([{n:'Días entrega→transporte',c:C.blue}])+`<div id="g_tiempo"></div></div></div>`)}
+
+    <div class="text-[11px] text-secondary mt-lg leading-relaxed">Datos en vivo de <code>v_ind_*</code> (Supabase, 08:00). OTIF/Fill hasta el último mes cerrado; tarifa, margen y operación incluyen agosto parcial. Consolidación = Σpeso ÷ (capacidad×1000) por viaje. Días = fecha transporte − fecha entrega (0–120).</div>`;
 }
 
 // ============================================================================
@@ -217,7 +231,18 @@ function centroHTML(d, grupos, grupo){
         <div>`+vendTablaHTML(d.vend, grupo)+`</div>
       </div>`)}
 
-    <div class="text-[11px] text-secondary mt-lg leading-relaxed">Centro = grupo de origen (Centro Origen). OTIF por semana ISO llega al último mes cerrado; tarifa y margen a la semana más reciente. Comuna = 2º tramo de la ruta. Planta C&D y Electrosoldado se agrupan en Santiago.</div>`;
+    ${card('6 · Operación — '+nice(grupo),'Consolidación de camión (semanal) y tiempo de facturación (mensual)',
+      (function(){ var cw=weeks((d.con||[]).filter(r=>r.grupo===grupo)); var cl=cw[cw.length-1]||{};
+        var tm=(d.tie||[]).filter(r=>r.grupo===grupo).slice().sort((a,b)=>a.mes_label<b.mes_label?-1:1); var tl=tm[tm.length-1]||{};
+        return tile('Consolidación — '+(cl.semana||''),pct(cl.consol_pct),'% capacidad')+
+          tile('Consolidación promedio',pct(avg(cw.map(r=>r.consol_pct))),'ventana')+
+          tile('Días — '+(tl.mes_label?mesCorto(tl.mes_label):''),(tl.dias_prom!=null?nf1.format(tl.dias_prom)+' d':'–'),'entrega→transp.')+
+          tile('Días promedio',(function(){var v=avg(tm.map(r=>r.dias_prom));return v!=null?nf1.format(v)+' d':'–';})(),'año'); })(),
+      `<div class="grid grid-cols-1 md:grid-cols-2 gap-md">`+
+      `<div>`+legend([{n:'Consolidación %',c:C.green}])+`<div id="c_consol"></div></div>`+
+      `<div>`+legend([{n:'Días entrega→transporte',c:C.blue}])+`<div id="c_tiempo"></div></div></div>`)}
+
+    <div class="text-[11px] text-secondary mt-lg leading-relaxed">Centro = grupo de origen (Centro Origen). OTIF por semana ISO llega al último mes cerrado; tarifa, margen y operación a la fecha más reciente. Comuna = 2º tramo de la ruta. Consolidación = Σpeso ÷ (capacidad×1000) por viaje. Planta C&D y Electrosoldado se agrupan en Santiago.</div>`;
 }
 
 function vendTablaHTML(rows, grupo){
@@ -296,6 +321,10 @@ function drawGeneral(d){
   lineChart('g_cob',[{n:'Cobertura',v:d.mar.map(r=>r.cobertura_pct),c:C.navy}],marL,60,100,'%');
   const ftBy=groupFT(d.ft);
   lineChart('g_ft',[{n:'Despacha',v:ftBy.desp,c:C.navy},{n:'Retira',v:ftBy.reti,c:C.orange}],ftBy.labels,0,100,'%');
+  const conL=d.con.map(r=>mesCorto(r.mes_label));
+  barChart('g_consol',d.con.map(r=>r.consol_pct),conL,0,100,C.green,'%',d.con.length-1,v=>Math.round(v));
+  const tieL=d.tie.map(r=>mesCorto(r.mes_label));
+  barChart('g_tiempo',d.tie.map(r=>r.dias_prom),tieL,0,niceMax(d.tie.map(r=>r.dias_prom)),C.blue,' d',d.tie.length-1,v=>Math.round(v));
 }
 
 function drawCentro(d, grupo){
@@ -320,6 +349,11 @@ function drawCentro(d, grupo){
   hbarChart('c_peor',peor.map(r=>({label:r.destino,value:r.otif_pct})),C.red,'%','');
   const caro=(d.tdest||[]).filter(r=>r.grupo===grupo && (r.toneladas||0)>=10 && r.tarifa_kg!=null).sort((a,b)=>b.tarifa_kg-a.tarifa_kg).slice(0,8);
   hbarChart('c_caro',caro.map(r=>({label:r.destino,value:r.tarifa_kg})),C.orange,' $/kg','');
+  // Operación
+  const cw=weeks((d.con||[]).filter(r=>r.grupo===grupo));
+  barChart('c_consol',cw.map(r=>r.consol_pct),cw.map(r=>r.semana.replace('2026-','')),0,100,C.green,'%',null,v=>Math.round(v));
+  const tm=(d.tie||[]).filter(r=>r.grupo===grupo).slice().sort((a,b)=>a.mes_label<b.mes_label?-1:1);
+  barChart('c_tiempo',tm.map(r=>r.dias_prom),tm.map(r=>mesCorto(r.mes_label)),0,niceMax(tm.map(r=>r.dias_prom)),C.blue,' d',null,v=>Math.round(v));
 }
 
 // ============================================================================
