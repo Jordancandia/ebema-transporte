@@ -85,13 +85,18 @@ async function loadCentro(){
   body().innerHTML = loadingHTML();
   try {
     if (!_cacheCen){
-      const [ns,tar,mar] = await Promise.all([
+      const [ns,tar,mar,spot,dest,tdest,vend] = await Promise.all([
         supabase.from('v_ind_ns_grupo_semana').select('*'),
         supabase.from('v_ind_tarifa_grupo_semana').select('*'),
-        supabase.from('v_ind_margen_grupo_semana').select('*')
+        supabase.from('v_ind_margen_grupo_semana').select('*'),
+        supabase.from('v_ind_ns_spot_grupo').select('*'),
+        supabase.from('v_ind_ns_destino_grupo').select('*'),
+        supabase.from('v_ind_tarifa_destino_grupo').select('*'),
+        supabase.from('v_ind_cobro_vendedor_grupo').select('*')
       ]);
-      const e = ns.error||tar.error||mar.error; if(e) throw e;
-      _cacheCen = { ns:ns.data||[], tar:tar.data||[], mar:mar.data||[] };
+      const e = ns.error||tar.error||mar.error||spot.error||dest.error||tdest.error||vend.error; if(e) throw e;
+      _cacheCen = { ns:ns.data||[], tar:tar.data||[], mar:mar.data||[],
+        spot:spot.data||[], dest:dest.data||[], tdest:tdest.data||[], vend:vend.data||[] };
     }
     const grupos = [...new Set(_cacheCen.ns.map(r=>r.grupo))].filter(g=>g&&g!=='OTROS').sort();
     if (!_grupo || grupos.indexOf(_grupo)<0){
@@ -204,7 +209,28 @@ function centroHTML(d, grupos, grupo){
       `<div>`+legend([{n:'Tarifa $/kg ('+lastWeek(d.tar)+')',c:C.orange}])+`<div id="r_tar"></div></div>`+
       `<div>`+legend([{n:'Margen $MM ('+lastWeek(d.mar)+')',c:C.red}])+`<div id="r_mar"></div></div></div>`)}
 
-    <div class="text-[11px] text-secondary mt-lg leading-relaxed">Centro = grupo de origen (Centro Origen). OTIF por semana ISO llega al último mes cerrado; tarifa y margen a la semana más reciente. Planta C&D y Electrosoldado se agrupan en Santiago.</div>`;
+    ${card('5 · Detalle del Centro — '+nice(grupo),'Spot vs Planificado · comunas críticas · cumplimiento de cobro','',
+      `<div class="grid grid-cols-1 md:grid-cols-2 gap-md">
+        <div>`+legend([{n:'OTIF % por tipo de despacho',c:C.navy}])+`<div id="c_spot"></div></div>
+        <div>`+legend([{n:'OTIF % · peores comunas (ventana)',c:C.red}])+`<div id="c_peor"></div></div>
+        <div>`+legend([{n:'Tarifa $/kg · comunas más caras (≥10 t)',c:C.orange}])+`<div id="c_caro"></div></div>
+        <div>`+vendTablaHTML(d.vend, grupo)+`</div>
+      </div>`)}
+
+    <div class="text-[11px] text-secondary mt-lg leading-relaxed">Centro = grupo de origen (Centro Origen). OTIF por semana ISO llega al último mes cerrado; tarifa y margen a la semana más reciente. Comuna = 2º tramo de la ruta. Planta C&D y Electrosoldado se agrupan en Santiago.</div>`;
+}
+
+function vendTablaHTML(rows, grupo){
+  const v = (rows||[]).filter(r=>r.grupo===grupo).slice().sort((a,b)=> (a.brecha||0)-(b.brecha||0)).slice(0,6);
+  if (!v.length) return legend([{n:'Cumplimiento de cobro por vendedor',c:C.navy}])+`<div class="text-secondary text-[12px] py-md">Sin datos en la ventana.</div>`;
+  const filas = v.map(r=>`<tr class="border-t border-surface-variant">
+    <td class="py-[4px] pr-sm">${r.vendedor||'—'}</td>
+    <td class="py-[4px] pr-sm text-right tabular-nums ${(r.brecha||0)<0?'text-[#EE1B22]':''}">${mm((r.brecha||0)/1e6)}</td>
+    <td class="py-[4px] text-right tabular-nums">${pct(r.cumplimiento_pct)}</td></tr>`).join('');
+  return legend([{n:'Cumplimiento de cobro por vendedor (los que más subcobran)',c:C.navy}])+
+    `<table class="w-full text-[12px]"><thead><tr class="text-secondary text-left">
+      <th class="font-medium pb-[4px]">Vendedor</th><th class="font-medium text-right pb-[4px]">Brecha</th><th class="font-medium text-right pb-[4px]">Cumpl.</th></tr></thead>
+      <tbody>${filas}</tbody></table>`;
 }
 
 // ============================================================================
@@ -252,8 +278,8 @@ function hbarChart(elId,items,color,unit,hlLabel){
   for(var i=0;i<n;i++){var it=items[i],y=i*rowH+3,bxx=x0+(it.value-mn)/span*xw;
     var left=Math.min(zero,bxx),w=Math.max(Math.abs(bxx-zero),1);
     var hl=(it.label===hlLabel);
-    out.push('<text x="'+(lblW-6)+'" y="'+(y+rowH*0.62).toFixed(1)+'" text-anchor="end" fill="'+(hl?C.ink:C.muted)+'" font-size="10.5" font-weight="'+(hl?'700':'400')+'">'+nice(it.label)+'</text>');
-    out.push('<rect x="'+left.toFixed(1)+'" y="'+(y+2).toFixed(1)+'" width="'+w.toFixed(1)+'" height="'+(rowH-6).toFixed(1)+'" rx="2.5" fill="'+color+'" opacity="'+(hl?'1':'0.55')+'" data-t="'+nice(it.label)+': '+nf1.format(it.value)+unit+'"/>');
+    out.push('<text x="'+(lblW-6)+'" y="'+(y+rowH*0.62).toFixed(1)+'" text-anchor="end" fill="'+(hl?C.ink:C.muted)+'" font-size="10.5" font-weight="'+(hl?'700':'400')+'">'+it.label+'</text>');
+    out.push('<rect x="'+left.toFixed(1)+'" y="'+(y+2).toFixed(1)+'" width="'+w.toFixed(1)+'" height="'+(rowH-6).toFixed(1)+'" rx="2.5" fill="'+color+'" opacity="'+(hl?'1':'0.55')+'" data-t="'+it.label+': '+nf1.format(it.value)+unit+'"/>');
     out.push('<text x="'+(bxx+ (it.value>=0?4:-4)).toFixed(1)+'" y="'+(y+rowH*0.62).toFixed(1)+'" text-anchor="'+(it.value>=0?'start':'end')+'" fill="'+C.muted+'" font-size="9.5">'+nf1.format(it.value)+'</text>');
   }
   out.push('</svg>'); el.innerHTML=out.join(''); bind(el);
@@ -283,9 +309,17 @@ function drawCentro(d, grupo){
   barChart('c_mar',marV,mar.map(r=>r.semana.replace('2026-','')),Math.min(-0.5,niceMin(marV)),Math.max(0.5,niceMax(marV)),C.red,' MM',null,v=>nf1.format(v));
   lineChart('c_cob',[{n:'Cobertura',v:mar.map(r=>r.cobertura_pct),c:C.navy}],mar.map(r=>r.semana.replace('2026-','')),0,100,'%');
   // Rankings (última semana cerrada de cada familia)
-  hbarChart('r_otif',rankLast(d.ns,'otif_pct',true).map(r=>({label:r.grupo,value:r.otif_pct})),C.navy,'%',grupo);
-  hbarChart('r_tar',rankLast(d.tar,'tarifa_kg',false).map(r=>({label:r.grupo,value:r.tarifa_kg})),C.orange,' $/kg',grupo);
-  hbarChart('r_mar',rankLast(d.mar,'margen',true).map(r=>({label:r.grupo,value:r.margen/1e6})),C.red,' MM',grupo);
+  const hl=nice(grupo);
+  hbarChart('r_otif',rankLast(d.ns,'otif_pct',true).map(r=>({label:nice(r.grupo),value:r.otif_pct})),C.navy,'%',hl);
+  hbarChart('r_tar',rankLast(d.tar,'tarifa_kg',false).map(r=>({label:nice(r.grupo),value:r.tarifa_kg})),C.orange,' $/kg',hl);
+  hbarChart('r_mar',rankLast(d.mar,'margen',true).map(r=>({label:nice(r.grupo),value:r.margen/1e6})),C.red,' MM',hl);
+  // Detalle: spot vs planificado, peores comunas, comunas más caras
+  const sp=(d.spot||[]).filter(r=>r.grupo===grupo && r.tipo!=='(s/i)').sort((a,b)=> a.tipo<b.tipo?-1:1);
+  barChart('c_spot',sp.map(r=>r.otif_pct),sp.map(r=>r.tipo),0,100,C.navy,'%',null,v=>Math.round(v));
+  const peor=(d.dest||[]).filter(r=>r.grupo===grupo && (r.lineas||0)>=5 && r.otif_pct!=null).sort((a,b)=>a.otif_pct-b.otif_pct).slice(0,8);
+  hbarChart('c_peor',peor.map(r=>({label:r.destino,value:r.otif_pct})),C.red,'%','');
+  const caro=(d.tdest||[]).filter(r=>r.grupo===grupo && (r.toneladas||0)>=10 && r.tarifa_kg!=null).sort((a,b)=>b.tarifa_kg-a.tarifa_kg).slice(0,8);
+  hbarChart('c_caro',caro.map(r=>({label:r.destino,value:r.tarifa_kg})),C.orange,' $/kg','');
 }
 
 // ============================================================================
