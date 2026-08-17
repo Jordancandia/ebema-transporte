@@ -129,6 +129,34 @@ function abcRank(abc) {
   return ABC_ORDEN[k] != null ? ABC_ORDEN[k] : 99;
 }
 
+// Normaliza texto: quita acentos/ñ y pasa a MAYÚSCULAS.
+function normTxt(s) {
+  return String(s ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().trim();
+}
+
+// Comunas que están "en el camino" hacia cada centro destino: un pedido de venta
+// cuya comuna (según maestro de rutas) esté en la lista puede dejarse en ruta.
+// Claves normalizadas (sin acentos/ñ) para hacer match por nombre de centro.
+const COMUNAS_EN_CAMINO = {
+  'ANTOFAGASTA':  new Set(['CHANARAL','TALTAL','CALDERA','COPIAPO']),
+  'COQUIMBO':     new Set(['LOS VILOS','PICHIDANGUI','LA LIGUA']),
+  'RANCAGUA':     new Set(['BUIN','PAINE','MOSTAZAL','GRANEROS']),
+  'TALCA':        new Set(['CURICO','SAN RAFAEL']),
+  'CHILLAN':      new Set(['SAN CARLOS','SAN GREGORIO','LINARES','PARRAL']),
+  'TEMUCO':       new Set(['LAUTARO','VICTORIA','COLLIPULLI']),
+  'PUERTO MONTT': new Set(['RIO BUENO','PUERTO VARAS','FRUTILLAR','LLANQUIHUE','OSORNO','PURRANQUE','SAN PABLO']),
+  'CONCEPCION':   new Set(['PENCO','TALCAHUANO','HUALPEN']),
+};
+
+// Devuelve el Set de comunas "en el camino" para el centro dado (por nombre).
+function comunasEnCamino(centroId) {
+  const nombre = normTxt(getNombreCentro(centroId));
+  for (const key of Object.keys(COMUNAS_EN_CAMINO)) {
+    if (nombre.indexOf(key) !== -1) return COMUNAS_EN_CAMINO[key];
+  }
+  return new Set();
+}
+
 // Clasificación de quiebre por días de stock (AJUSTE 3.0)
 function tipoQuiebre(sd) {
   if (sd <= 3)  return { txt: 'MATERIAL QUEBRADO URGENTE', cls: 'text-white bg-red-600', dot: 'bg-red-600' };
@@ -379,11 +407,20 @@ const VISTAS_TRONCAL = {
         });
         const feLbl = fmax ? `${String(fmax.getDate()).padStart(2,'0')}.${String(fmax.getMonth()+1).padStart(2,'0')}.${fmax.getFullYear()}` : f.fe_entrega;
         const al = alertaFecha(feLbl, 5);
+        // Descarga en camino: si la comuna del pedido (según maestro de rutas)
+        // está en la lista de comunas "en el camino" del centro destino.
+        const comunasList = comunasEnCamino(f.ofvta);
+        let enCamino = false, comunaCamino = '';
+        for (const it of items) {
+          if (comunasList.has(normTxt(it._comuna))) { enCamino = true; comunaCamino = it._comuna; break; }
+        }
         out.push({
           doc_ventas: doc, ofvta: f.ofvta, creado_el: f.creado_el, deudor: f.deudor,
           fe_entrega: feLbl, _ton_num: ton, _ton_totales: fmtNum(ton, 3),
           _estado: parcial ? 'ENTREGA PARCIAL PENDIENTE' : '',
           _alerta: al.txt, _alerta_cls: al.cls, _detalle: detalle,
+          _en_camino: enCamino,
+          _camino_lbl: enCamino ? `DESCARGA EN CAMINO (${comunaCamino})` : '',
         });
       }
       return out.sort((a, b) => {
@@ -410,6 +447,7 @@ const VISTAS_TRONCAL = {
       { key: 'doc_ventas', label: 'Pedido de Venta', expandable: true },
       { key: 'fe_entrega', label: 'Fecha de Entrega', cls: 'num-clear' },
       { key: '_ton_totales', label: 'Toneladas Totales', cls: 'text-right num-clear font-bold' },
+      { key: '_camino_lbl', label: 'Descarga en Camino', clsFn: () => 'text-teal-700 font-bold' },
       { key: '_estado', label: 'Estado', clsFn: () => 'text-[#e65100] font-bold' },
       { key: '_alerta', label: 'Alerta', clsFn: r => r._alerta_cls },
     ],
