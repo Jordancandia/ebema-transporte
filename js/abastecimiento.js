@@ -758,8 +758,17 @@ async function renderPlanCarga(stage) {
   const mananaTemp = new Date(); mananaTemp.setDate(mananaTemp.getDate() + 1);
   const centrosProgramados = getCentrosProgramados(calendarioRows, mananaTemp.getDay());
 
+  // El CD 1003 despacha el sábado: si hoy es viernes, la planificación cubre el
+  // sábado (mañana) y también el lunes siguiente. Se amplían 2 días las ventanas
+  // hacia adelante para saltar el fin de semana e incluir el lunes.
+  const esViernes = new Date().getDay() === 5;
+  const diasExtraFinde = esViernes ? 2 : 0;
+
   const resultado = Array.from(centrosSet).map(ce => {
-    const cap = getCapacidadCamion(ce);
+    // Capacidad de referencia (camión lleno) para los umbrales de camión
+    // cliente (80%) y fábrica (85%). La capacidad efectiva del CD se calcula
+    // más abajo (La Calera/San Bernardo usan 15 T si no alcanzan a llenar 28 T).
+    const capRef = CAP_CAMION_DEFAULT;
     const quiebresMat = quiebresByCentro[ce] || new Set();
     const det = { quiebre: [], stock: [], revex: [], cross: [], ventaCons: [], retiro: [], cliente: [], fabSuc: [], fabCli: [] };
     const itemT = (r, t) => ({ pt: r.doc_compr, material: r.material, nombre: r.texto_breve, fecha: r.fecha_confirmada, ctd: r.ctd_confirmada, ton: t, pv: r.documento });
@@ -768,14 +777,14 @@ async function renderPlanCarga(stage) {
     const tonQuiebre = traslados
       .filter(r => String(r.ce ?? '').trim() === ce)
       .filter(r => quiebresMat.has(String(r.material ?? '').trim()))
-      .filter(r => fechaEnRango(r.fecha_confirmada, 10, 5))
+      .filter(r => fechaEnRango(r.fecha_confirmada, 10, 5 + diasExtraFinde))
       .reduce((sum, r) => { const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), r.ctd_confirmada); det.quiebre.push(itemT(r, t)); return sum + t; }, 0);
 
     // 2. Traslados Stock / Abastecimiento
     const tonStock = traslados
       .filter(r => String(r.ce ?? '').trim() === ce)
       .filter(r => !quiebresMat.has(String(r.material ?? '').trim()))
-      .filter(r => fechaEnRango(r.fecha_confirmada, 10, 5))
+      .filter(r => fechaEnRango(r.fecha_confirmada, 10, 5 + diasExtraFinde))
       .reduce((sum, r) => { const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), r.ctd_confirmada); det.stock.push(itemT(r, t)); return sum + t; }, 0);
 
     // 3. REVEX (peso_neto_2 × ctd_pedido)
@@ -787,7 +796,7 @@ async function renderPlanCarga(stage) {
     const tonCross = t4000
       .filter(r => String(r.ce ?? '').trim() === ce)
       .filter(r => parseNum(r.ctd_pedido) > parseNum(r.cantidad_salida))
-      .filter(r => fechaEnRango(r.fe_entrega, 5, 5))
+      .filter(r => fechaEnRango(r.fe_entrega, 5, 5 + diasExtraFinde))
       .reduce((sum, r) => { const pend = parseNum(r.ctd_pedido) - parseNum(r.cantidad_salida); const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), pend);
         det.cross.push({ pt: r.doc_compr, material: r.material, nombre: r.texto_breve, fecha: r.fe_entrega, ctd: r.ctd_pedido, ton: t, pv: r.documento }); return sum + t; }, 0);
 
@@ -798,7 +807,7 @@ async function renderPlanCarga(stage) {
       .filter(r => String(r.ofvta ?? '').trim() === ce)
       .filter(r => String(r.ruta ?? '').trim() !== '')
       .filter(r => normTxt(r.ruta).indexOf('RETIRA') === -1)
-      .filter(r => fechaEnRango(r.fe_entrega, 3, 5));
+      .filter(r => fechaEnRango(r.fe_entrega, 3, 5 + diasExtraFinde));
     const ventasPorDoc = {};
     ventasCe.forEach(r => { const d = String(r.doc_ventas ?? '').trim(); (ventasPorDoc[d] = ventasPorDoc[d] || []).push(r); });
     let tonVentaCliente = 0, tonVentaCons = 0;
@@ -813,7 +822,7 @@ async function renderPlanCarga(stage) {
         lineItems.push({ pv: doc, material: r.material, nombre: r.denominacion_de_posicion, cant: pend, ruta: r.ruta, comuna: rl.comuna, region: rl.region, fecha: r.fe_entrega, ton: t });
       });
       if (tonDoc <= 0) continue;
-      if (tonDoc >= cap * 0.80) { tonVentaCliente += tonDoc; det.cliente.push(...lineItems); }
+      if (tonDoc >= capRef * 0.80) { tonVentaCliente += tonDoc; det.cliente.push(...lineItems); }
       else { tonVentaCons += tonDoc; det.ventaCons.push(...lineItems); }
     }
 
@@ -821,7 +830,7 @@ async function renderPlanCarga(stage) {
     const retirosCons = retiros
       .filter(r => String(r.ce ?? '').trim() === ce)
       .filter(r => String(r.alm ?? '').trim() === '4000')
-      .filter(r => fechaEnRango(r.fe_entrega, 3, 2));
+      .filter(r => fechaEnRango(r.fe_entrega, 3, 2 + diasExtraFinde));
     const itemR = (r, cant, t) => ({ oc: r.doc_compr, idProv: r.proveedor, prov: r.nombre_1, material: r.material, nombre: r.texto_breve, fecha: r.fe_entrega, cant, ton: t, pv: r.documento });
     const tonRetiro = retirosCons.reduce((sum, r) => {
       const cant = parseNum(r.ctd_pedido) - parseNum(r.ctd_entregada);
@@ -835,7 +844,7 @@ async function renderPlanCarga(stage) {
     const retirosFab = retiros
       .filter(r => String(r.ce ?? '').trim() === ce)
       .filter(r => String(r.alm ?? '').trim() !== '4000')
-      .filter(r => fechaEnRango(r.fe_entrega, 3, 2))
+      .filter(r => fechaEnRango(r.fe_entrega, 3, 2 + diasExtraFinde))
       .filter(r => (parseNum(r.ctd_pedido) - parseNum(r.ctd_entregada)) > 0);
     const ocCli = {}, provSuc = {};   // oc/proveedor -> { ton, items:[] }
     retirosFab.forEach(r => {
@@ -851,14 +860,22 @@ async function renderPlanCarga(stage) {
       }
     });
     let tonFabCli = 0, tonFabSuc = 0;
-    Object.values(ocCli).forEach(b => { if (b.ton >= cap * 0.85) { tonFabCli += b.ton; det.fabCli.push(...b.items); } });
-    Object.values(provSuc).forEach(b => { if (b.ton >= cap * 0.85) { tonFabSuc += b.ton; det.fabSuc.push(...b.items); } });
+    Object.values(ocCli).forEach(b => { if (b.ton >= capRef * 0.85) { tonFabCli += b.ton; det.fabCli.push(...b.items); } });
+    Object.values(provSuc).forEach(b => { if (b.ton >= capRef * 0.85) { tonFabSuc += b.ton; det.fabSuc.push(...b.items); } });
 
-    // Total del CAMIÓN CD (consolidado): traslados + revex + cross + venta
-    // directa consolidada + retiro consolidar CD.
-    const total = tonQuiebre + tonStock + tonRevex + tonCross + tonVentaCons + tonRetiro;
+    // Total del CAMIÓN CD (consolidado). Orden de prioridad con que se llena el
+    // camión: REVEX → Venta 1003 consolidable → Retiro CD → Crossdocking →
+    // Traslados Quiebre → Traslados Abastecimiento.
+    const total = tonRevex + tonVentaCons + tonRetiro + tonCross + tonQuiebre + tonStock;
+
+    // Capacidad efectiva del CD. La Calera (1050) y San Bernardo (1005) usan un
+    // camión de 15 T si en el corte no alcanzan a llenar uno de 28 T.
+    let cap = CAP_CAMION_DEFAULT;
+    if (CENTROS_CAMION_REDUCIDO.includes(ce)) cap = total >= CAP_CAMION_DEFAULT ? CAP_CAMION_DEFAULT : CAP_CAMION_REDUCIDO;
+
     const pct = cap > 0 ? Math.round(total / cap * 100) : 0;
     const faltan = cap - total;
+    const sobrecarga = Math.max(0, total - cap);
     const enCalendario = centrosProgramados.has(ce);
 
     let status, statusCls;
@@ -869,6 +886,7 @@ async function renderPlanCarga(stage) {
     let obs = '';
     if (!enCalendario && pct >= 70) obs = 'CUPO EXTRA';
     if (enCalendario && pct < 70) obs = 'EN CALENDARIO - CARGA BAJA';
+    if (sobrecarga > 0) obs = (obs ? obs + ' · ' : '') + 'SOBRECARGA ' + fmtNum(sobrecarga, 1) + ' t';
 
     return {
       ce, nombre: getNombreCentro(ce), cap,
@@ -885,7 +903,8 @@ async function renderPlanCarga(stage) {
 
   const manana = new Date(); manana.setDate(manana.getDate() + 1);
   const diasSemana = ['Domingo','Lunes','Martes','Miércoles','Jueves','Viernes','Sábado'];
-  const fechaLabel = `${diasSemana[manana.getDay()]}, ${manana.toLocaleDateString('es-CL', { day: 'numeric', month: 'long', year: 'numeric' })}`;
+  const fechaLabel = `${diasSemana[manana.getDay()]}, ${manana.toLocaleDateString('es-CL', { day: 'numeric', month: 'long', year: 'numeric' })}`
+    + (esViernes ? ' (incluye lunes próximo — despacho CD 1003 del sábado)' : '');
 
   function truckSVG(pct) {
     const p = Math.min(pct, 100);
@@ -951,12 +970,12 @@ async function renderPlanCarga(stage) {
   function detalleRow(r, tipo) {
     let blocks = '';
     if (tipo === 'cd') blocks =
-      blkTraslado('Pedidos de Traslados Quiebre', r.det.quiebre) +
-      blkTraslado('Pedidos de Traslados Abastecimiento (Stock)', r.det.stock) +
-      blkTraslado('Pedidos de Traslados REVEX', r.det.revex) +
-      blkTraslado('Pedidos de Traslados Crossdocking', r.det.cross) +
-      blkVenta('Pedidos de Venta Directa Consolidados', r.det.ventaCons) +
-      blkRetiro('Retiros de Proveedor Consolidados (CD)', r.det.retiro);
+      blkTraslado('1º Pedidos de Traslados REVEX', r.det.revex) +
+      blkVenta('2º Pedidos de Venta Directa Consolidados', r.det.ventaCons) +
+      blkRetiro('3º Retiros de Proveedor Consolidados (CD)', r.det.retiro) +
+      blkTraslado('4º Pedidos de Traslados Crossdocking', r.det.cross) +
+      blkTraslado('5º Pedidos de Traslados Quiebre', r.det.quiebre) +
+      blkTraslado('6º Pedidos de Traslados Abastecimiento', r.det.stock);
     else if (tipo === 'cliente') blocks = blkVenta('Pedidos de Venta directos al cliente', r.det.cliente);
     else if (tipo === 'fabSuc') blocks = blkRetiro('Órdenes de Compra Fábrica-Sucursal', r.det.fabSuc);
     else if (tipo === 'fabCli') blocks = blkRetiro('Órdenes de Compra Fábrica-Cliente', r.det.fabCli);
@@ -997,12 +1016,12 @@ async function renderPlanCarga(stage) {
           <thead class="sticky top-0 bg-surface-container-lowest z-10">
             <tr class="text-left text-[11px] uppercase tracking-wide text-secondary border-b-2 border-primary/30">
               <th class="py-sm pr-md font-bold whitespace-nowrap">Sucursal</th>
-              <th class="py-sm pr-md text-right font-bold whitespace-nowrap">REVEX</th>
-              <th class="py-sm pr-md text-right font-bold whitespace-nowrap">Ped. Traslados CrossDock</th>
-              <th class="py-sm pr-md text-right font-bold whitespace-nowrap">Retiro Proveedor</th>
-              <th class="py-sm pr-md text-right font-bold whitespace-nowrap">Ped. Traslados Quiebres</th>
-              <th class="py-sm pr-md text-right font-bold whitespace-nowrap">Ped. Traslados Stock</th>
-              <th class="py-sm pr-md text-right font-bold whitespace-nowrap">Ped. Venta Directa</th>
+              <th class="py-sm pr-md text-right font-bold whitespace-nowrap">1º REVEX</th>
+              <th class="py-sm pr-md text-right font-bold whitespace-nowrap">2º Ped. Venta Directa</th>
+              <th class="py-sm pr-md text-right font-bold whitespace-nowrap">3º Retiro Proveedor</th>
+              <th class="py-sm pr-md text-right font-bold whitespace-nowrap">4º Ped. Traslados CrossDock</th>
+              <th class="py-sm pr-md text-right font-bold whitespace-nowrap">5º Ped. Traslados Quiebres</th>
+              <th class="py-sm pr-md text-right font-bold whitespace-nowrap">6º Ped. Traslados Abastecimiento</th>
               <th class="py-sm pr-md text-right font-bold whitespace-nowrap">Total CD</th>
               <th class="py-sm pr-md text-right font-bold whitespace-nowrap">Faltan [Ton]</th>
               <th class="py-sm pr-md text-right font-bold whitespace-nowrap">% Compl.</th>
@@ -1026,11 +1045,11 @@ async function renderPlanCarga(stage) {
                   ${escapeHtml(r.nombre)}
                 </td>
                 <td class="py-sm pr-md text-right num-clear">${fmtNum(r.tonRevex, 1)}</td>
-                <td class="py-sm pr-md text-right num-clear">${fmtNum(r.tonCross, 1)}</td>
+                <td class="py-sm pr-md text-right num-clear">${fmtNum(r.tonVentaCons, 1)}</td>
                 <td class="py-sm pr-md text-right num-clear">${fmtNum(r.tonRetiro, 1)}</td>
+                <td class="py-sm pr-md text-right num-clear">${fmtNum(r.tonCross, 1)}</td>
                 <td class="py-sm pr-md text-right num-clear">${fmtNum(r.tonQuiebre, 1)}</td>
                 <td class="py-sm pr-md text-right num-clear">${fmtNum(r.tonStock, 1)}</td>
-                <td class="py-sm pr-md text-right num-clear">${fmtNum(r.tonVentaCons, 1)}</td>
                 <td class="py-sm pr-md text-right num-clear font-bold ${totalCls}">${fmtNum(r.total, 1)}</td>
                 <td class="py-sm pr-md text-right num-clear ${r.faltan < 0 ? 'text-red-600' : ''}">${fmtNum(r.faltan, 1)}</td>
                 <td class="py-sm pr-md text-right num-clear font-bold">${r.pct}%</td>
