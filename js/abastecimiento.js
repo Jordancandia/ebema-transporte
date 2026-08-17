@@ -762,53 +762,59 @@ async function renderPlanCarga(stage) {
     const cap = getCapacidadCamion(ce);
     const quiebresMat = quiebresByCentro[ce] || new Set();
     const det = { quiebre: [], stock: [], revex: [], cross: [], ventaCons: [], retiro: [], cliente: [], fabSuc: [], fabCli: [] };
+    const itemT = (r, t) => ({ pt: r.doc_compr, material: r.material, nombre: r.texto_breve, fecha: r.fecha_confirmada, ctd: r.ctd_confirmada, ton: t, pv: r.documento });
 
     // 1. Traslados Quiebre
     const tonQuiebre = traslados
       .filter(r => String(r.ce ?? '').trim() === ce)
       .filter(r => quiebresMat.has(String(r.material ?? '').trim()))
       .filter(r => fechaEnRango(r.fecha_confirmada, 10, 5))
-      .reduce((sum, r) => { const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), r.ctd_confirmada); det.quiebre.push({ m: r.material, d: r.texto_breve, t }); return sum + t; }, 0);
+      .reduce((sum, r) => { const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), r.ctd_confirmada); det.quiebre.push(itemT(r, t)); return sum + t; }, 0);
 
-    // 2. Traslados Stock
+    // 2. Traslados Stock / Abastecimiento
     const tonStock = traslados
       .filter(r => String(r.ce ?? '').trim() === ce)
       .filter(r => !quiebresMat.has(String(r.material ?? '').trim()))
       .filter(r => fechaEnRango(r.fecha_confirmada, 10, 5))
-      .reduce((sum, r) => { const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), r.ctd_confirmada); det.stock.push({ m: r.material, d: r.texto_breve, t }); return sum + t; }, 0);
+      .reduce((sum, r) => { const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), r.ctd_confirmada); det.stock.push(itemT(r, t)); return sum + t; }, 0);
 
-    // 3. REVEX
+    // 3. REVEX (peso_neto_2 × ctd_pedido)
     const tonRevex = revex
       .filter(r => String(r.ce ?? '').trim() === ce)
-      .reduce((sum, r) => { const t = calcTon(parseNum(r.peso_neto_2), r.ctd_pedido); det.revex.push({ m: r.material, d: r.texto_breve, t }); return sum + t; }, 0);
+      .reduce((sum, r) => { const t = calcTon(parseNum(r.peso_neto_2), r.ctd_pedido); det.revex.push(itemT(r, t)); return sum + t; }, 0);
 
-    // 4. Crossdocking 4000 — SÓLO pendientes (ctd_pedido > cantidad_salida); ton
-    //    sobre lo que falta por salir. Corrige el fantasma de filas ya entregadas.
+    // 4. Crossdocking 4000 — SÓLO pendientes (ctd_pedido > cantidad_salida)
     const tonCross = t4000
       .filter(r => String(r.ce ?? '').trim() === ce)
       .filter(r => parseNum(r.ctd_pedido) > parseNum(r.cantidad_salida))
       .filter(r => fechaEnRango(r.fe_entrega, 5, 5))
-      .reduce((sum, r) => { const pend = parseNum(r.ctd_pedido) - parseNum(r.cantidad_salida); const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), pend); det.cross.push({ m: r.material, d: r.texto_breve, t }); return sum + t; }, 0);
+      .reduce((sum, r) => { const pend = parseNum(r.ctd_pedido) - parseNum(r.cantidad_salida); const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), pend);
+        det.cross.push({ pt: r.doc_compr, material: r.material, nombre: r.texto_breve, fecha: r.fe_entrega, ctd: r.ctd_pedido, ton: t, pv: r.documento }); return sum + t; }, 0);
 
-    // 5. Notas de Venta 1003 (ofvta = centro), excluyendo ruta RETIRA.
-    //    <80% cap ⇒ PEDIDO DE VENTA DIRECTA (se consolida con la carga del CD).
+    // 5. Notas de Venta 1003 (ofvta = centro): requiere ruta, excluye RETIRA.
+    //    <80% cap ⇒ PEDIDO DE VENTA DIRECTA (consolida con la carga del CD).
     //    ≥80% cap ⇒ CAMIÓN CLIENTE (directo al cliente, no se consolida).
     const ventasCe = ventas
       .filter(r => String(r.ofvta ?? '').trim() === ce)
-      .filter(r => String(r.ruta ?? '').trim().toUpperCase().indexOf('RETIRA') === -1)
+      .filter(r => String(r.ruta ?? '').trim() !== '')
+      .filter(r => normTxt(r.ruta).indexOf('RETIRA') === -1)
       .filter(r => fechaEnRango(r.fe_entrega, 3, 5));
     const ventasPorDoc = {};
     ventasCe.forEach(r => { const d = String(r.doc_ventas ?? '').trim(); (ventasPorDoc[d] = ventasPorDoc[d] || []).push(r); });
     let tonVentaCliente = 0, tonVentaCons = 0;
     for (const [doc, items] of Object.entries(ventasPorDoc)) {
-      const tonDoc = items.reduce((s, r) => {
+      const lineItems = []; let tonDoc = 0;
+      items.forEach(r => {
         const pend = parseNum(r.ctd_confirmada) - parseNum(r.cantidad_entrg);
-        if (pend <= 0) return s;
-        return s + calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), pend);
-      }, 0);
+        if (pend <= 0) return;
+        const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), pend);
+        tonDoc += t;
+        const rl = lookupRuta(r.ruta);
+        lineItems.push({ pv: doc, material: r.material, nombre: r.denominacion_de_posicion, cant: pend, ruta: r.ruta, comuna: rl.comuna, region: rl.region, fecha: r.fe_entrega, ton: t });
+      });
       if (tonDoc <= 0) continue;
-      if (tonDoc >= cap * 0.80) { tonVentaCliente += tonDoc; det.cliente.push({ m: doc, d: 'Pedido de venta ≥80% cap', t: tonDoc }); }
-      else { tonVentaCons += tonDoc; det.ventaCons.push({ m: doc, d: 'Pedido de venta consolidado', t: tonDoc }); }
+      if (tonDoc >= cap * 0.80) { tonVentaCliente += tonDoc; det.cliente.push(...lineItems); }
+      else { tonVentaCons += tonDoc; det.ventaCons.push(...lineItems); }
     }
 
     // 6. Retiros proveedor CONSOLIDAR CD (alm=4000) → parte del CD. fecha -3/+2
@@ -816,37 +822,37 @@ async function renderPlanCarga(stage) {
       .filter(r => String(r.ce ?? '').trim() === ce)
       .filter(r => String(r.alm ?? '').trim() === '4000')
       .filter(r => fechaEnRango(r.fe_entrega, 3, 2));
+    const itemR = (r, cant, t) => ({ oc: r.doc_compr, idProv: r.proveedor, prov: r.nombre_1, material: r.material, nombre: r.texto_breve, fecha: r.fe_entrega, cant, ton: t, pv: r.documento });
     const tonRetiro = retirosCons.reduce((sum, r) => {
-      const t = calcTon(maxPesoDim(r.peso_bruto, r.tamano_dimens), parseNum(r.ctd_pedido) - parseNum(r.ctd_entregada));
-      det.retiro.push({ m: r.doc_compr, d: r.nombre_1, t }); return sum + t;
+      const cant = parseNum(r.ctd_pedido) - parseNum(r.ctd_entregada);
+      const t = calcTon(maxPesoDim(r.peso_bruto, r.tamano_dimens), cant);
+      det.retiro.push(itemR(r, cant, t)); return sum + t;
     }, 0);
 
-    // 6b. Retiros FÁBRICA (alm ≠ 4000): agrupar por id proveedor, separando por
-    //     asociación a pedido de venta. Si el grupo supera 85% cap:
-    //       - sin pedido de venta ⇒ CAMIÓN FÁBRICA-SUCURSAL
-    //       - con pedido de venta ⇒ CAMIÓN FÁBRICA-CLIENTE
+    // 6b. Retiros FÁBRICA (alm ≠ 4000, pendientes):
+    //   - CAMIÓN FÁBRICA-CLIENTE: una OC asociada a pedido de venta cuyo total ≥85% cap.
+    //   - CAMIÓN FÁBRICA-SUCURSAL: OC(s) del mismo proveedor (sin PV) cuyo total ≥85% cap.
     const retirosFab = retiros
       .filter(r => String(r.ce ?? '').trim() === ce)
       .filter(r => String(r.alm ?? '').trim() !== '4000')
       .filter(r => fechaEnRango(r.fe_entrega, 3, 2))
       .filter(r => (parseNum(r.ctd_pedido) - parseNum(r.ctd_entregada)) > 0);
-    const provCli = {}, provSuc = {};   // proveedor -> { ton, ocs:{oc:ton} }
+    const ocCli = {}, provSuc = {};   // oc/proveedor -> { ton, items:[] }
     retirosFab.forEach(r => {
-      const prov = String(r.proveedor ?? '').trim();
-      const t = calcTon(maxPesoDim(r.peso_bruto, r.tamano_dimens), parseNum(r.ctd_pedido) - parseNum(r.ctd_entregada));
-      const bucket = String(r.documento ?? '').trim() !== '' ? provCli : provSuc;
-      if (!bucket[prov]) bucket[prov] = { ton: 0, ocs: {} };
-      bucket[prov].ton += t;
-      const oc = String(r.doc_compr ?? '').trim();
-      bucket[prov].ocs[oc] = (bucket[prov].ocs[oc] || 0) + t;
+      const cant = parseNum(r.ctd_pedido) - parseNum(r.ctd_entregada);
+      const t = calcTon(maxPesoDim(r.peso_bruto, r.tamano_dimens), cant);
+      const item = itemR(r, cant, t);
+      if (String(r.documento ?? '').trim() !== '') {
+        const oc = String(r.doc_compr ?? '').trim();
+        (ocCli[oc] = ocCli[oc] || { ton: 0, items: [] }); ocCli[oc].ton += t; ocCli[oc].items.push(item);
+      } else {
+        const p = String(r.proveedor ?? '').trim();
+        (provSuc[p] = provSuc[p] || { ton: 0, items: [] }); provSuc[p].ton += t; provSuc[p].items.push(item);
+      }
     });
-    let tonFabSuc = 0, tonFabCli = 0;
-    Object.entries(provSuc).forEach(([prov, b]) => {
-      if (b.ton >= cap * 0.85) { tonFabSuc += b.ton; Object.entries(b.ocs).forEach(([oc, t]) => det.fabSuc.push({ m: oc, d: 'Proveedor ' + prov, t })); }
-    });
-    Object.entries(provCli).forEach(([prov, b]) => {
-      if (b.ton >= cap * 0.85) { tonFabCli += b.ton; Object.entries(b.ocs).forEach(([oc, t]) => det.fabCli.push({ m: oc, d: 'Proveedor ' + prov, t })); }
-    });
+    let tonFabCli = 0, tonFabSuc = 0;
+    Object.values(ocCli).forEach(b => { if (b.ton >= cap * 0.85) { tonFabCli += b.ton; det.fabCli.push(...b.items); } });
+    Object.values(provSuc).forEach(b => { if (b.ton >= cap * 0.85) { tonFabSuc += b.ton; det.fabSuc.push(...b.items); } });
 
     // Total del CAMIÓN CD (consolidado): traslados + revex + cross + venta
     // directa consolidada + retiro consolidar CD.
@@ -896,20 +902,43 @@ async function renderPlanCarga(stage) {
 
   const NCOLS = 16; // columnas de la tabla (para el colspan del detalle)
 
-  function bloqueDetalle(cats) {
-    return cats.map(([lbl, items]) => {
-      if (!items || !items.length) return '';
-      const rowsH = items.map(it => `<tr class="border-b border-outline-variant/40">
-        <td class="py-[2px] pr-md num-clear">${escapeHtml(String(it.m ?? ''))}</td>
-        <td class="py-[2px] pr-md">${escapeHtml(String(it.d ?? ''))}</td>
-        <td class="py-[2px] pr-md text-right num-clear">${fmtNum(it.t, 4)}</td></tr>`).join('');
-      const subtot = items.reduce((s, it) => s + it.t, 0);
-      return `<div class="mb-sm">
-        <div class="text-[12px] font-bold text-primary mb-xs">${escapeHtml(lbl)} <span class="text-secondary font-normal">(${fmtNum(subtot,4)} Ton)</span></div>
-        <table class="w-full text-[12px]"><thead><tr class="text-left text-[10px] uppercase text-secondary">
-          <th class="pr-md">Ítem</th><th class="pr-md">Descripción</th><th class="pr-md text-right">Ton</th></tr></thead>
-          <tbody>${rowsH}</tbody></table></div>`;
-    }).join('');
+  // Tabla genérica de detalle. alignRight = Set de índices de columnas numéricas.
+  function tablaDet(headers, filas, alignRight) {
+    const head = headers.map((h, i) => `<th class="pr-md text-[10px] uppercase text-secondary ${alignRight.has(i) ? 'text-right' : 'text-left'}">${escapeHtml(h)}</th>`).join('');
+    const body = filas.length
+      ? filas.map(fila => `<tr class="border-b border-outline-variant/40">${fila.map((v, i) => `<td class="py-[2px] pr-md text-[12px] ${alignRight.has(i) ? 'text-right num-clear' : ''}">${escapeHtml(String(v ?? ''))}</td>`).join('')}</tr>`).join('')
+      : `<tr><td colspan="${headers.length}" class="text-secondary text-[12px] py-xs">Sin ítems.</td></tr>`;
+    return `<table class="w-full text-[12px] mb-xs"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+  }
+  function blkWrap(lbl, items, tableHtml) {
+    const sub = items.reduce((s, d) => s + (d.ton || 0), 0);
+    return `<div class="mb-md">
+      <div class="text-[12px] font-bold text-primary mb-xs">${escapeHtml(lbl)} <span class="text-secondary font-normal">(${fmtNum(sub, 4)} Ton)</span></div>
+      ${tableHtml}</div>`;
+  }
+  // Bloque Traslados (Quiebre / Abastecimiento / REVEX / Crossdocking)
+  function blkTraslado(lbl, items) {
+    if (!items.length) return '';
+    const filas = items.map(d => [d.pt, d.material, d.nombre, d.fecha, d.ctd, fmtNum(d.ton, 4), d.pv]);
+    return blkWrap(lbl, items, tablaDet(
+      ['Pedido de Traslado','ID Material','Nombre Material','Fecha de Entrega','Cantidad Confirmada','Ton SKU','Pedido de Venta'],
+      filas, new Set([4, 5])));
+  }
+  // Bloque Retiros de Fábrica
+  function blkRetiro(lbl, items) {
+    if (!items.length) return '';
+    const filas = items.map(d => [d.oc, d.idProv, d.prov, d.material, d.nombre, d.fecha, fmtNum(parseNum(d.cant), 1), fmtNum(d.ton, 4), d.pv]);
+    return blkWrap(lbl, items, tablaDet(
+      ['Orden de Compra','Id Proveedor','Proveedor','ID Material','Nombre Material','Fecha de Retiro','Cantidad','Ton SKU','Pedido de Venta'],
+      filas, new Set([6, 7])));
+  }
+  // Bloque Pedidos de Venta
+  function blkVenta(lbl, items) {
+    if (!items.length) return '';
+    const filas = items.map(d => [d.pv, d.material, d.nombre, fmtNum(parseNum(d.cant), 1), d.ruta, d.comuna, d.region, d.fecha, fmtNum(d.ton, 4)]);
+    return blkWrap(lbl, items, tablaDet(
+      ['Pedido de Venta','ID Material','Nombre Material','Cantidad','Id Ruta','Comuna','Región','Fecha de Entrega','Ton SKU'],
+      filas, new Set([3, 8])));
   }
 
   const TRUCK_TITULOS = {
@@ -920,19 +949,17 @@ async function renderPlanCarga(stage) {
   };
 
   function detalleRow(r, tipo) {
-    let cats = [];
-    if (tipo === 'cd') cats = [
-      ['Pedidos Traslados Quiebre', r.det.quiebre],
-      ['Pedidos Traslados Stock', r.det.stock],
-      ['Pedidos REVEX', r.det.revex],
-      ['Pedidos Traslados Crossdocking', r.det.cross],
-      ['Pedidos de Venta Directa Consolidados', r.det.ventaCons],
-      ['Retiros de Proveedor Consolidados (CD)', r.det.retiro],
-    ];
-    else if (tipo === 'cliente') cats = [['Pedidos de Venta directos al cliente', r.det.cliente]];
-    else if (tipo === 'fabSuc') cats = [['Órdenes de Compra (fábrica-sucursal)', r.det.fabSuc]];
-    else if (tipo === 'fabCli') cats = [['Órdenes de Compra asociadas a pedido de venta', r.det.fabCli]];
-    const blocks = bloqueDetalle(cats);
+    let blocks = '';
+    if (tipo === 'cd') blocks =
+      blkTraslado('Pedidos de Traslados Quiebre', r.det.quiebre) +
+      blkTraslado('Pedidos de Traslados Abastecimiento (Stock)', r.det.stock) +
+      blkTraslado('Pedidos de Traslados REVEX', r.det.revex) +
+      blkTraslado('Pedidos de Traslados Crossdocking', r.det.cross) +
+      blkVenta('Pedidos de Venta Directa Consolidados', r.det.ventaCons) +
+      blkRetiro('Retiros de Proveedor Consolidados (CD)', r.det.retiro);
+    else if (tipo === 'cliente') blocks = blkVenta('Pedidos de Venta directos al cliente', r.det.cliente);
+    else if (tipo === 'fabSuc') blocks = blkRetiro('Órdenes de Compra Fábrica-Sucursal', r.det.fabSuc);
+    else if (tipo === 'fabCli') blocks = blkRetiro('Órdenes de Compra Fábrica-Cliente', r.det.fabCli);
     return `<tr class="bg-surface-container-low"><td colspan="${NCOLS}" class="p-md">
       <div class="border border-outline-variant rounded-lg p-md bg-surface-container-lowest">
         <h4 class="font-bold text-on-surface mb-sm text-[13px]">${escapeHtml(TRUCK_TITULOS[tipo] || '')} — ${escapeHtml(r.nombre)} (${r.ce})</h4>
@@ -980,10 +1007,10 @@ async function renderPlanCarga(stage) {
               <th class="py-sm pr-md text-right font-bold whitespace-nowrap">Faltan [Ton]</th>
               <th class="py-sm pr-md text-right font-bold whitespace-nowrap">% Compl.</th>
               <th class="py-sm pr-md text-center font-bold whitespace-nowrap">Camión CD</th>
+              <th class="py-sm pr-md text-center font-bold whitespace-nowrap">Status</th>
               <th class="py-sm pr-md text-center font-bold whitespace-nowrap">Camión Cliente</th>
               <th class="py-sm pr-md text-center font-bold whitespace-nowrap">Camión Fáb-Sucursal</th>
               <th class="py-sm pr-md text-center font-bold whitespace-nowrap">Camión Fáb-Cliente</th>
-              <th class="py-sm pr-md text-center font-bold whitespace-nowrap">Status</th>
               <th class="py-sm pr-md font-bold whitespace-nowrap">Observaciones</th>
             </tr>
           </thead>
@@ -1008,10 +1035,10 @@ async function renderPlanCarga(stage) {
                 <td class="py-sm pr-md text-right num-clear ${r.faltan < 0 ? 'text-red-600' : ''}">${fmtNum(r.faltan, 1)}</td>
                 <td class="py-sm pr-md text-right num-clear font-bold">${r.pct}%</td>
                 ${truckCell(r, 'cd', r.total > 0, camCD)}
+                <td class="py-sm pr-md text-center"><span class="px-sm py-xs rounded text-[11px] font-bold ${r.statusCls}">${escapeHtml(r.status)}</span></td>
                 ${truckCell(r, 'cliente', r.camionCliente, iconCamion('text-green-700') + '<div class="text-[9px] font-bold text-green-700">' + fmtNum(r.tonVentaCliente,1) + ' t</div>')}
                 ${truckCell(r, 'fabSuc', r.camionFabSuc, iconCamion('text-blue-700') + '<div class="text-[9px] font-bold text-blue-700">' + fmtNum(r.tonFabSuc,1) + ' t</div>')}
                 ${truckCell(r, 'fabCli', r.camionFabCli, iconCamion('text-purple-700') + '<div class="text-[9px] font-bold text-purple-700">' + fmtNum(r.tonFabCli,1) + ' t</div>')}
-                <td class="py-sm pr-md text-center"><span class="px-sm py-xs rounded text-[11px] font-bold ${r.statusCls}">${escapeHtml(r.status)}</span></td>
                 <td class="py-sm pr-md text-[12px] ${r.obs.includes('EXTRA') ? 'text-blue-700 font-bold' : r.obs.includes('BAJA') ? 'text-orange-600 font-bold' : 'text-secondary'}">${escapeHtml(r.obs)}</td>
               </tr>
               ${abiertos.map(tp => detalleRow(r, tp)).join('')}`; }).join('')}
