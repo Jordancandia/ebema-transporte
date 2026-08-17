@@ -96,7 +96,7 @@ async function loadGeneral(){
       _cacheGen = { ns:ns.data||[], tar:tar.data||[], mar:mar.data||[], ft:ft.data||[], sc:sc.data||[], con:con.data||[], tie:tie.data||[], scm:scm.data||[], nsm:nsm.data||[], tarm:tarm.data||[] };
     }
     body().innerHTML = generalHTML(_cacheGen);
-    ensureTip(); drawGeneral(_cacheGen);
+    ensureTip(); drawGeneral(_cacheGen); sweepHeat();
   } catch(e){ body().innerHTML = errorHTML(e); }
 }
 
@@ -315,7 +315,7 @@ function heatmapHTML(rows, key, colorFn, fmt){
       return `<td class="text-center px-[6px] py-[3px] tabular-nums" style="background:${v==null?'transparent':colorFn(v)};color:#333">${v==null?'':fmt(v)}</td>`; }).join('');
     return `<tr><td class="pr-sm py-[3px] text-[12px] whitespace-nowrap">${nice(g)}</td>${cells}</tr>`;
   }).join('');
-  return `<div class="overflow-x-auto"><table class="text-[11px] border-separate" style="border-spacing:2px"><thead><tr>${head}</tr></thead><tbody>${bodyr}</tbody></table></div>`;
+  return `<div class="ind-heat overflow-x-auto"><table class="text-[11px] border-separate" style="border-spacing:2px"><thead><tr>${head}</tr></thead><tbody>${bodyr}</tbody></table></div>`;
 }
 
 // ============================================================================
@@ -465,6 +465,34 @@ function bind(el){
       _tip.style.left=x+'px'; _tip.style.top=y+'px'; });
     n.addEventListener('mouseleave',()=>{ _tip.style.opacity=0; });
   });
+  attachExpand(el);
+}
+
+// --- Expansor: botón para ampliar cada gráfico en un modal --------------------
+let _modal;
+function ensureModal(){
+  if(_modal && document.body.contains(_modal)) return;
+  _modal=document.createElement('div');
+  _modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;align-items:center;justify-content:center;z-index:10000;padding:24px';
+  _modal.innerHTML='<div style="background:#fff;border-radius:12px;padding:20px 22px;max-width:1200px;width:96%;max-height:92vh;overflow:auto;position:relative"><button id="ind_modal_close" title="Cerrar" style="position:absolute;top:8px;right:12px;border:none;background:transparent;font-size:24px;line-height:1;cursor:pointer;color:#333">×</button><div id="ind_modal_body" style="margin-top:14px"></div></div>';
+  document.body.appendChild(_modal);
+  _modal.addEventListener('click',e=>{ if(e.target===_modal) _modal.style.display='none'; });
+  _modal.querySelector('#ind_modal_close').addEventListener('click',()=>{ _modal.style.display='none'; });
+  document.addEventListener('keydown',e=>{ if(e.key==='Escape' && _modal) _modal.style.display='none'; });
+}
+function openModal(html){ ensureModal(); _modal.querySelector('#ind_modal_body').innerHTML=html; _modal.style.display='flex'; }
+function sweepHeat(){ document.querySelectorAll('.ind-heat').forEach(attachExpand); }
+function attachExpand(el){
+  if(!el || el.querySelector(':scope > button.ind-exp')) return;
+  el.style.position='relative';
+  var btn=document.createElement('button');
+  btn.className='ind-exp'; btn.textContent='⤢'; btn.title='Ampliar';
+  btn.style.cssText='position:absolute;top:0;right:0;border:1px solid rgba(11,11,11,.12);background:rgba(255,255,255,.9);border-radius:6px;width:24px;height:24px;font-size:14px;line-height:1;cursor:pointer;color:#333;z-index:3';
+  btn.addEventListener('click',function(ev){ ev.stopPropagation();
+    var tmp=el.cloneNode(true); var b=tmp.querySelector('button.ind-exp'); if(b) b.remove();
+    openModal(tmp.innerHTML);
+  });
+  el.appendChild(btn);
 }
 
 // ============================================================================
@@ -569,12 +597,12 @@ async function renderNivel(container){
     const grupos=[...new Set(_cacheNivel.co.map(r=>r.grupo))].filter(g=>g&&g!=='OTROS').sort();
     if(!_grupoN||grupos.indexOf(_grupoN)<0) _grupoN=(grupos.indexOf('CONCEPCION')>=0?'CONCEPCION':grupos[0]);
     container.innerHTML=nivelHTML(_cacheNivel,grupos,_grupoN);
-    ensureTip(); drawNivel(_cacheNivel,_grupoN); bindSelN(container,grupos);
+    ensureTip(); drawNivel(_cacheNivel,_grupoN); bindSelN(container,grupos); sweepHeat();
   } catch(e){ container.innerHTML=errorHTML(e); }
 }
 function bindSelN(container,grupos){
   const el=document.getElementById('ind_seln'); if(!el) return;
-  el.onchange=ev=>{ _grupoN=ev.target.value; container.innerHTML=nivelHTML(_cacheNivel,grupos,_grupoN); ensureTip(); drawNivel(_cacheNivel,_grupoN); bindSelN(container,grupos); };
+  el.onchange=ev=>{ _grupoN=ev.target.value; container.innerHTML=nivelHTML(_cacheNivel,grupos,_grupoN); ensureTip(); drawNivel(_cacheNivel,_grupoN); bindSelN(container,grupos); sweepHeat(); };
 }
 function nivelHTML(d,grupos,grupo){
   const tp=d.tp.filter(r=>r.grupo===grupo);
@@ -629,7 +657,7 @@ function heatComunaHTML(rows){
     const cells=months.map(m=>{const v=(map[c]||{})[m];return `<td class="text-center px-[6px] py-[3px] tabular-nums" style="background:${v==null?'transparent':heatOtif(v)};color:#333">${v==null?'':nf1.format(v)}</td>`;}).join('');
     return `<tr><td class="pr-sm py-[3px] text-[12px] whitespace-nowrap">${c}</td>${cells}</tr>`;
   }).join('');
-  return `<div class="overflow-x-auto"><table class="text-[11px] border-separate" style="border-spacing:2px"><thead><tr>${head}</tr></thead><tbody>${bodyr}</tbody></table></div>`;
+  return `<div class="ind-heat overflow-x-auto"><table class="text-[11px] border-separate" style="border-spacing:2px"><thead><tr>${head}</tr></thead><tbody>${bodyr}</tbody></table></div>`;
 }
 function drawNivel(d,grupo){
   const tp=d.tp.filter(r=>r.grupo===grupo), order=['STOCK','CALZADA'];
