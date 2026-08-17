@@ -229,7 +229,7 @@ const VISTAS_TRONCAL = {
       headers: ['Orden de Compra','Centro Destino','ID Material','Nombre Material','Cantidad Pedido','Cantidad Pendiente','Ton SKU'],
       build(row) {
         return (row._detalle || []).map(d => [
-          d.doc_compr, d.ce, d.material, d.texto_breve, fmtNum(d.pedido, 1), fmtNum(d.pendiente, 1), fmtNum(d.ton, 1),
+          d.doc_compr, d.ce, d.material, d.texto_breve, fmtNum(d.pedido, 1), fmtNum(d.pendiente, 1), fmtNum(d.ton, 4),
         ]);
       },
     },
@@ -277,7 +277,7 @@ const VISTAS_TRONCAL = {
           _tipo_retiro: tipoRetiro,
           _cliente: tipoRetiro === 'FÁBRICA-CLIENTE',
           _consolidar: tipoRetiro === 'FÁBRICA-CD',
-          _ton_num: ton, _ton_totales: fmtNum(ton, 1),
+          _ton_num: ton, _ton_totales: fmtNum(ton, 4),
           _pendiente_total: pendienteTotal, _pedido_total: pedidoTotal,
           _vigencia: revSaldo ? 'REVISIÓN SALDO PEDIDO' : '',
           _revision_saldo: revSaldo,
@@ -723,7 +723,7 @@ async function renderPlanCarga(stage) {
   const resultado = Array.from(centrosSet).map(ce => {
     const cap = getCapacidadCamion(ce);
     const quiebresMat = quiebresByCentro[ce] || new Set();
-    const det = { quiebre: [], stock: [], revex: [], cross: [], ventaDirecta: [], retiro: [] };
+    const det = { quiebre: [], stock: [], revex: [], cross: [], ventaCons: [], retiro: [], cliente: [], fabSuc: [], fabCli: [] };
 
     // 1. Traslados Quiebre
     const tonQuiebre = traslados
@@ -744,32 +744,36 @@ async function renderPlanCarga(stage) {
       .filter(r => String(r.ce ?? '').trim() === ce)
       .reduce((sum, r) => { const t = calcTon(parseNum(r.peso_neto_2), r.ctd_pedido); det.revex.push({ m: r.material, d: r.texto_breve, t }); return sum + t; }, 0);
 
-    // 4. Crossdocking 4000
+    // 4. Crossdocking 4000 — SÓLO pendientes (ctd_pedido > cantidad_salida); ton
+    //    sobre lo que falta por salir. Corrige el fantasma de filas ya entregadas.
     const tonCross = t4000
       .filter(r => String(r.ce ?? '').trim() === ce)
+      .filter(r => parseNum(r.ctd_pedido) > parseNum(r.cantidad_salida))
       .filter(r => fechaEnRango(r.fe_entrega, 5, 5))
-      .reduce((sum, r) => { const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), r.cantidad_salida); det.cross.push({ m: r.material, d: r.texto_breve, t }); return sum + t; }, 0);
+      .reduce((sum, r) => { const pend = parseNum(r.ctd_pedido) - parseNum(r.cantidad_salida); const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), pend); det.cross.push({ m: r.material, d: r.texto_breve, t }); return sum + t; }, 0);
 
-    // 5. Notas de Venta 1003 (ofvta = centro)
+    // 5. Notas de Venta 1003 (ofvta = centro), excluyendo ruta RETIRA.
+    //    <80% cap ⇒ PEDIDO DE VENTA DIRECTA (se consolida con la carga del CD).
+    //    ≥80% cap ⇒ CAMIÓN CLIENTE (directo al cliente, no se consolida).
     const ventasCe = ventas
       .filter(r => String(r.ofvta ?? '').trim() === ce)
+      .filter(r => String(r.ruta ?? '').trim().toUpperCase().indexOf('RETIRA') === -1)
       .filter(r => fechaEnRango(r.fe_entrega, 3, 5));
     const ventasPorDoc = {};
     ventasCe.forEach(r => { const d = String(r.doc_ventas ?? '').trim(); (ventasPorDoc[d] = ventasPorDoc[d] || []).push(r); });
-    let tonVentaDirecta = 0, tonVentaTraslado = 0;
+    let tonVentaCliente = 0, tonVentaCons = 0;
     for (const [doc, items] of Object.entries(ventasPorDoc)) {
-      // Mismo criterio que la vista: peso mayor(peso_neto, tamaño) × unidades
-      // pendientes (ctd_confirmada − cantidad_entrg), excluyendo lo ya entregado.
       const tonDoc = items.reduce((s, r) => {
         const pend = parseNum(r.ctd_confirmada) - parseNum(r.cantidad_entrg);
         if (pend <= 0) return s;
         return s + calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), pend);
       }, 0);
-      if (tonDoc >= cap * 0.80) { tonVentaDirecta += tonDoc; det.ventaDirecta.push({ m: doc, d: 'Nota venta directa', t: tonDoc }); }
-      else tonVentaTraslado += tonDoc;
+      if (tonDoc <= 0) continue;
+      if (tonDoc >= cap * 0.80) { tonVentaCliente += tonDoc; det.cliente.push({ m: doc, d: 'Pedido de venta ≥80% cap', t: tonDoc }); }
+      else { tonVentaCons += tonDoc; det.ventaCons.push({ m: doc, d: 'Pedido de venta consolidado', t: tonDoc }); }
     }
 
-    // 6. Retiros proveedor: CONSOLIDAR CD (alm=4000). (AJUSTE) fecha entrega -3/+2
+    // 6. Retiros proveedor CONSOLIDAR CD (alm=4000) → parte del CD. fecha -3/+2
     const retirosCons = retiros
       .filter(r => String(r.ce ?? '').trim() === ce)
       .filter(r => String(r.alm ?? '').trim() === '4000')
@@ -779,14 +783,36 @@ async function renderPlanCarga(stage) {
       det.retiro.push({ m: r.doc_compr, d: r.nombre_1, t }); return sum + t;
     }, 0);
 
-    // Retiro fábrica-sucursal (alm ≠ 4000) ⇒ CAMIÓN FÁBRICA. (AJUSTE) fecha entrega -3/+2
-    const tieneRetiroFabrica = retiros
+    // 6b. Retiros FÁBRICA (alm ≠ 4000): agrupar por id proveedor, separando por
+    //     asociación a pedido de venta. Si el grupo supera 85% cap:
+    //       - sin pedido de venta ⇒ CAMIÓN FÁBRICA-SUCURSAL
+    //       - con pedido de venta ⇒ CAMIÓN FÁBRICA-CLIENTE
+    const retirosFab = retiros
       .filter(r => String(r.ce ?? '').trim() === ce)
+      .filter(r => String(r.alm ?? '').trim() !== '4000')
       .filter(r => fechaEnRango(r.fe_entrega, 3, 2))
-      .some(r => String(r.alm ?? '').trim() !== '4000' && (parseNum(r.ctd_pedido) - parseNum(r.ctd_entregada)) > 0);
+      .filter(r => (parseNum(r.ctd_pedido) - parseNum(r.ctd_entregada)) > 0);
+    const provCli = {}, provSuc = {};   // proveedor -> { ton, ocs:{oc:ton} }
+    retirosFab.forEach(r => {
+      const prov = String(r.proveedor ?? '').trim();
+      const t = calcTon(maxPesoDim(r.peso_bruto, r.tamano_dimens), parseNum(r.ctd_pedido) - parseNum(r.ctd_entregada));
+      const bucket = String(r.documento ?? '').trim() !== '' ? provCli : provSuc;
+      if (!bucket[prov]) bucket[prov] = { ton: 0, ocs: {} };
+      bucket[prov].ton += t;
+      const oc = String(r.doc_compr ?? '').trim();
+      bucket[prov].ocs[oc] = (bucket[prov].ocs[oc] || 0) + t;
+    });
+    let tonFabSuc = 0, tonFabCli = 0;
+    Object.entries(provSuc).forEach(([prov, b]) => {
+      if (b.ton >= cap * 0.85) { tonFabSuc += b.ton; Object.entries(b.ocs).forEach(([oc, t]) => det.fabSuc.push({ m: oc, d: 'Proveedor ' + prov, t })); }
+    });
+    Object.entries(provCli).forEach(([prov, b]) => {
+      if (b.ton >= cap * 0.85) { tonFabCli += b.ton; Object.entries(b.ocs).forEach(([oc, t]) => det.fabCli.push({ m: oc, d: 'Proveedor ' + prov, t })); }
+    });
 
-    // Total del CAMIÓN CD (consolidado, excluye venta directa)
-    const total = tonQuiebre + tonStock + tonRevex + tonCross + tonVentaTraslado + tonRetiro;
+    // Total del CAMIÓN CD (consolidado): traslados + revex + cross + venta
+    // directa consolidada + retiro consolidar CD.
+    const total = tonQuiebre + tonStock + tonRevex + tonCross + tonVentaCons + tonRetiro;
     const pct = cap > 0 ? Math.round(total / cap * 100) : 0;
     const faltan = cap - total;
     const enCalendario = centrosProgramados.has(ce);
@@ -802,9 +828,9 @@ async function renderPlanCarga(stage) {
 
     return {
       ce, nombre: getNombreCentro(ce), cap,
-      tonQuiebre, tonStock, tonRevex, tonCross, tonVentaDirecta, tonVentaTraslado, tonRetiro,
+      tonQuiebre, tonStock, tonRevex, tonCross, tonVentaCons, tonVentaCliente, tonRetiro, tonFabSuc, tonFabCli,
       total, faltan, pct, status, statusCls, obs, enCalendario,
-      camionCliente: tonVentaDirecta > 0, camionFabrica: tieneRetiroFabrica,
+      camionCliente: tonVentaCliente > 0, camionFabSuc: tonFabSuc > 0, camionFabCli: tonFabCli > 0,
       det,
     };
   }).sort((a, b) => {
@@ -830,33 +856,61 @@ async function renderPlanCarga(stage) {
   }
   const iconCamion = (cls) => `<span class="material-symbols-outlined text-[22px] ${cls}">local_shipping</span>`;
 
-  function detalleRow(r) {
-    const cats = [
-      ['Pedidos Traslados Quiebre', r.det.quiebre],
-      ['Pedidos Traslados Stock', r.det.stock],
-      ['Pedidos REVEX', r.det.revex],
-      ['Pedidos Traslados Crossdocking', r.det.cross],
-      ['Notas de Venta Directas Consolidadas', r.det.ventaDirecta],
-      ['Retiros de Proveedor Consolidados', r.det.retiro],
-    ];
-    const blocks = cats.map(([lbl, items]) => {
-      if (!items.length) return '';
+  const NCOLS = 16; // columnas de la tabla (para el colspan del detalle)
+
+  function bloqueDetalle(cats) {
+    return cats.map(([lbl, items]) => {
+      if (!items || !items.length) return '';
       const rowsH = items.map(it => `<tr class="border-b border-outline-variant/40">
-        <td class="py-[2px] pr-md font-data-mono">${escapeHtml(String(it.m ?? ''))}</td>
+        <td class="py-[2px] pr-md num-clear">${escapeHtml(String(it.m ?? ''))}</td>
         <td class="py-[2px] pr-md">${escapeHtml(String(it.d ?? ''))}</td>
-        <td class="py-[2px] pr-md text-right font-data-mono">${fmtNum(it.t, 3)}</td></tr>`).join('');
+        <td class="py-[2px] pr-md text-right num-clear">${fmtNum(it.t, 4)}</td></tr>`).join('');
       const subtot = items.reduce((s, it) => s + it.t, 0);
       return `<div class="mb-sm">
-        <div class="text-[12px] font-bold text-primary mb-xs">${escapeHtml(lbl)} <span class="text-secondary font-normal">(${fmtNum(subtot,3)} Ton)</span></div>
+        <div class="text-[12px] font-bold text-primary mb-xs">${escapeHtml(lbl)} <span class="text-secondary font-normal">(${fmtNum(subtot,4)} Ton)</span></div>
         <table class="w-full text-[12px]"><thead><tr class="text-left text-[10px] uppercase text-secondary">
           <th class="pr-md">Ítem</th><th class="pr-md">Descripción</th><th class="pr-md text-right">Ton</th></tr></thead>
           <tbody>${rowsH}</tbody></table></div>`;
     }).join('');
-    return `<tr class="bg-surface-container-low"><td colspan="14" class="p-md">
+  }
+
+  const TRUCK_TITULOS = {
+    cd: 'Camión CD (consolidado)',
+    cliente: 'Camión Cliente (pedido de venta ≥80%)',
+    fabSuc: 'Camión Fábrica-Sucursal (OC ≥85% sin pedido de venta)',
+    fabCli: 'Camión Fábrica-Cliente (OC ≥85% con pedido de venta)',
+  };
+
+  function detalleRow(r, tipo) {
+    let cats = [];
+    if (tipo === 'cd') cats = [
+      ['Pedidos Traslados Quiebre', r.det.quiebre],
+      ['Pedidos Traslados Stock', r.det.stock],
+      ['Pedidos REVEX', r.det.revex],
+      ['Pedidos Traslados Crossdocking', r.det.cross],
+      ['Pedidos de Venta Directa Consolidados', r.det.ventaCons],
+      ['Retiros de Proveedor Consolidados (CD)', r.det.retiro],
+    ];
+    else if (tipo === 'cliente') cats = [['Pedidos de Venta directos al cliente', r.det.cliente]];
+    else if (tipo === 'fabSuc') cats = [['Órdenes de Compra (fábrica-sucursal)', r.det.fabSuc]];
+    else if (tipo === 'fabCli') cats = [['Órdenes de Compra asociadas a pedido de venta', r.det.fabCli]];
+    const blocks = bloqueDetalle(cats);
+    return `<tr class="bg-surface-container-low"><td colspan="${NCOLS}" class="p-md">
       <div class="border border-outline-variant rounded-lg p-md bg-surface-container-lowest">
-        <h4 class="font-bold text-on-surface mb-sm text-[13px]">Detalle de productos considerados — ${escapeHtml(r.nombre)} (${r.ce})</h4>
-        ${blocks || '<p class="text-secondary text-[12px]">Sin ítems en la planificación.</p>'}
+        <h4 class="font-bold text-on-surface mb-sm text-[13px]">${escapeHtml(TRUCK_TITULOS[tipo] || '')} — ${escapeHtml(r.nombre)} (${r.ce})</h4>
+        ${blocks || '<p class="text-secondary text-[12px]">Sin ítems.</p>'}
       </div></td></tr>`;
+  }
+
+  // Celda de camión clicable con drill-down.
+  function truckCell(r, tipo, activo, contenido) {
+    if (!activo) return '<td class="py-sm pr-md text-center"><span class="text-secondary">—</span></td>';
+    const abierto = planDetalleAbierto.has(r.ce + '|' + tipo);
+    return `<td class="py-sm pr-md text-center">
+      <button data-truck="${r.ce}|${tipo}" title="Ver contenido del camión" class="inline-flex flex-col items-center cursor-pointer hover:opacity-80">
+        ${contenido}
+        <span class="text-[9px] text-primary font-bold">${abierto ? 'ocultar' : 'ver'}</span>
+      </button></td>`;
   }
 
   const act = quiebresRaw.length ? horaChile(quiebresRaw[0].cargado_en) : '';
@@ -883,12 +937,14 @@ async function renderPlanCarga(stage) {
               <th class="py-sm pr-md text-right font-bold whitespace-nowrap">Retiro Proveedor</th>
               <th class="py-sm pr-md text-right font-bold whitespace-nowrap">Ped. Traslados Quiebres</th>
               <th class="py-sm pr-md text-right font-bold whitespace-nowrap">Ped. Traslados Stock</th>
+              <th class="py-sm pr-md text-right font-bold whitespace-nowrap">Ped. Venta Directa</th>
               <th class="py-sm pr-md text-right font-bold whitespace-nowrap">Total CD</th>
               <th class="py-sm pr-md text-right font-bold whitespace-nowrap">Faltan [Ton]</th>
               <th class="py-sm pr-md text-right font-bold whitespace-nowrap">% Compl.</th>
               <th class="py-sm pr-md text-center font-bold whitespace-nowrap">Camión CD</th>
               <th class="py-sm pr-md text-center font-bold whitespace-nowrap">Camión Cliente</th>
-              <th class="py-sm pr-md text-center font-bold whitespace-nowrap">Camión Fábrica</th>
+              <th class="py-sm pr-md text-center font-bold whitespace-nowrap">Camión Fáb-Sucursal</th>
+              <th class="py-sm pr-md text-center font-bold whitespace-nowrap">Camión Fáb-Cliente</th>
               <th class="py-sm pr-md text-center font-bold whitespace-nowrap">Status</th>
               <th class="py-sm pr-md font-bold whitespace-nowrap">Observaciones</th>
             </tr>
@@ -897,48 +953,47 @@ async function renderPlanCarga(stage) {
             ${resultado.map(r => {
               const rowBg = r.enCalendario ? 'bg-blue-50 border-l-4 border-l-primary' : 'bg-gray-50/60 opacity-90';
               const totalCls = r.pct >= 80 ? 'text-green-700' : r.pct >= 70 ? 'text-yellow-700' : 'text-red-600';
-              const abierto = planDetalleAbierto.has(r.ce);
+              const camCD = r.total > 0 ? truckSVG(r.pct) : '<span class="text-secondary text-[11px]">—</span>';
+              const abiertos = ['cd','cliente','fabSuc','fabCli'].filter(tp => planDetalleAbierto.has(r.ce + '|' + tp));
               return `<tr class="border-b border-outline-variant/50 hover:bg-surface-container-low ${rowBg}">
                 <td class="py-sm pr-md font-bold whitespace-nowrap">
                   ${r.enCalendario ? '<span class="inline-flex items-center gap-xs"><span class="material-symbols-outlined text-[16px] text-primary">calendar_today</span><span class="text-[9px] font-bold text-primary bg-primary/10 px-xs rounded">PRIORITARIO</span></span> ' : ''}
                   ${escapeHtml(r.nombre)}
                 </td>
-                <td class="py-sm pr-md text-right font-data-mono">${fmtNum(r.tonRevex, 1)}</td>
-                <td class="py-sm pr-md text-right font-data-mono">${fmtNum(r.tonCross, 1)}</td>
-                <td class="py-sm pr-md text-right font-data-mono">${fmtNum(r.tonRetiro, 1)}</td>
-                <td class="py-sm pr-md text-right font-data-mono">${fmtNum(r.tonQuiebre, 1)}</td>
-                <td class="py-sm pr-md text-right font-data-mono">${fmtNum(r.tonStock, 1)}</td>
-                <td class="py-sm pr-md text-right font-data-mono font-bold ${totalCls}">${fmtNum(r.total, 1)}</td>
-                <td class="py-sm pr-md text-right font-data-mono ${r.faltan < 0 ? 'text-red-600' : ''}">${fmtNum(r.faltan, 1)}</td>
-                <td class="py-sm pr-md text-right font-data-mono font-bold">${r.pct}%</td>
-                <td class="py-sm pr-md text-center">
-                  <button data-detalle="${r.ce}" title="Ver detalle de productos" class="inline-flex flex-col items-center cursor-pointer hover:opacity-80">
-                    ${r.total > 0 ? truckSVG(r.pct) : '<span class="text-secondary text-[11px]">—</span>'}
-                    ${r.total > 0 ? `<span class="text-[9px] text-primary font-bold">${abierto ? 'ocultar' : 'ver detalle'}</span>` : ''}
-                  </button>
-                </td>
-                <td class="py-sm pr-md text-center">${r.camionCliente ? iconCamion('text-green-700') + '<div class="text-[9px] font-bold text-green-700">DIRECTO</div>' : '<span class="text-secondary">—</span>'}</td>
-                <td class="py-sm pr-md text-center">${r.camionFabrica ? iconCamion('text-blue-700') + '<div class="text-[9px] font-bold text-blue-700">FÁBRICA</div>' : '<span class="text-secondary">—</span>'}</td>
+                <td class="py-sm pr-md text-right num-clear">${fmtNum(r.tonRevex, 1)}</td>
+                <td class="py-sm pr-md text-right num-clear">${fmtNum(r.tonCross, 1)}</td>
+                <td class="py-sm pr-md text-right num-clear">${fmtNum(r.tonRetiro, 1)}</td>
+                <td class="py-sm pr-md text-right num-clear">${fmtNum(r.tonQuiebre, 1)}</td>
+                <td class="py-sm pr-md text-right num-clear">${fmtNum(r.tonStock, 1)}</td>
+                <td class="py-sm pr-md text-right num-clear">${fmtNum(r.tonVentaCons, 1)}</td>
+                <td class="py-sm pr-md text-right num-clear font-bold ${totalCls}">${fmtNum(r.total, 1)}</td>
+                <td class="py-sm pr-md text-right num-clear ${r.faltan < 0 ? 'text-red-600' : ''}">${fmtNum(r.faltan, 1)}</td>
+                <td class="py-sm pr-md text-right num-clear font-bold">${r.pct}%</td>
+                ${truckCell(r, 'cd', r.total > 0, camCD)}
+                ${truckCell(r, 'cliente', r.camionCliente, iconCamion('text-green-700') + '<div class="text-[9px] font-bold text-green-700">' + fmtNum(r.tonVentaCliente,1) + ' t</div>')}
+                ${truckCell(r, 'fabSuc', r.camionFabSuc, iconCamion('text-blue-700') + '<div class="text-[9px] font-bold text-blue-700">' + fmtNum(r.tonFabSuc,1) + ' t</div>')}
+                ${truckCell(r, 'fabCli', r.camionFabCli, iconCamion('text-purple-700') + '<div class="text-[9px] font-bold text-purple-700">' + fmtNum(r.tonFabCli,1) + ' t</div>')}
                 <td class="py-sm pr-md text-center"><span class="px-sm py-xs rounded text-[11px] font-bold ${r.statusCls}">${escapeHtml(r.status)}</span></td>
                 <td class="py-sm pr-md text-[12px] ${r.obs.includes('EXTRA') ? 'text-blue-700 font-bold' : r.obs.includes('BAJA') ? 'text-orange-600 font-bold' : 'text-secondary'}">${escapeHtml(r.obs)}</td>
               </tr>
-              ${abierto ? detalleRow(r) : ''}`; }).join('')}
+              ${abiertos.map(tp => detalleRow(r, tp)).join('')}`; }).join('')}
           </tbody>
         </table>
       </div>
 
       <div class="mt-md pt-sm border-t border-outline-variant flex flex-wrap gap-lg text-[12px] text-secondary items-center">
         <span class="inline-flex items-center gap-xs"><span class="material-symbols-outlined text-[14px] align-middle text-primary">calendar_today</span> PRIORITARIO = Centro en calendario de mañana</span>
-        <span class="inline-flex items-center gap-xs">${iconCamion('text-green-700 text-[16px]')} Camión Cliente (venta directa ≥80%)</span>
-        <span class="inline-flex items-center gap-xs">${iconCamion('text-blue-700 text-[16px]')} Camión Fábrica (retiro fábrica-sucursal)</span>
-        <span>Camión CD: 1 camión consolidado por sucursal · Capacidad 28 Ton (15 Ton Calera/San Bernardo)</span>
+        <span class="inline-flex items-center gap-xs">${iconCamion('text-green-700 text-[16px]')} Camión Cliente (venta ≥80%)</span>
+        <span class="inline-flex items-center gap-xs">${iconCamion('text-blue-700 text-[16px]')} Camión Fábrica-Sucursal (OC ≥85% sin PV)</span>
+        <span class="inline-flex items-center gap-xs">${iconCamion('text-purple-700 text-[16px]')} Camión Fábrica-Cliente (OC ≥85% con PV)</span>
+        <span>Pincha cualquier camión para ver su contenido · Camión CD 1 por sucursal · Capacidad 28 Ton (15 Ton Calera/San Bernardo)</span>
       </div>
     </div>`;
 
     stage.querySelector('[data-refrescar]')?.addEventListener('click', () => renderPlanCarga(stage));
-    stage.querySelectorAll('[data-detalle]').forEach(btn => btn.addEventListener('click', () => {
-      const ce = btn.dataset.detalle;
-      if (planDetalleAbierto.has(ce)) planDetalleAbierto.delete(ce); else planDetalleAbierto.add(ce);
+    stage.querySelectorAll('[data-truck]').forEach(btn => btn.addEventListener('click', () => {
+      const k = btn.dataset.truck;
+      if (planDetalleAbierto.has(k)) planDetalleAbierto.delete(k); else planDetalleAbierto.add(k);
       draw();
     }));
   }
