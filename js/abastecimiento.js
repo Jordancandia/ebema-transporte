@@ -616,39 +616,71 @@ const VISTAS_TRONCAL = {
     ],
   },
 
-  // ── PEDIDOS DE TRASLADOS 4000 (Step 5) ────────────────────────────────────
+  // ── PEDIDOS DE TRASLADOS 4000 (Step 5) — agrupado por PT ──────────────────
   pedidos_traslados_4000: {
     titulo: 'GESTIÓN TRONCALES – PEDIDOS DE TRASLADOS 4000',
     vista: 'v_trc_sqvi_pedidos_traslados_4000',
     chipFilter: { campo: 'ce', label: 'Centro Destino' },
-    extraChips: [{ campo: '_origen', label: 'Origen' }],
+    extraChips: [{ campo: '_origen', label: 'Origen' }, { campo: 'cesu', label: 'Centro Origen' }],
+    noBuscar: true,
     filtros: [{ campo: 'doc_compr', label: 'Buscar Pedido de Traslado', tipo: 'buscar' }],
+    dateRange: { campo: 'fe_entrega', label: 'Rango Fecha de Entrega' },
+    expand: {
+      key: 'doc_compr', idKey: 'doc_compr', numCols: 1,
+      headers: ['Pedido de Traslado','Centro Origen','Centro Destino','Almacén Destino','Pedido de Ventas','ID Material','Nombre Material','Ton SKU'],
+      build(row) {
+        return (row._detalle || []).map(d => [
+          d.doc_compr, d.cesu, d.ce, d.alm, d.documento, d.material, d.texto_breve, fmtNum(d.ton, 4),
+        ]);
+      },
+    },
     transform(rows) {
-      return rows
-        // Sólo pedidos cuya cantidad confirmada (ctd_pedido) > cantidad de salida
-        .filter(r => parseNum(r.ctd_pedido) > parseNum(r.cantidad_salida))
-        .map(r => {
-          const pm = maxPesoDim(r.peso_neto, r.tamano_dimens);
-          const origen = String(r.documento ?? '').trim() ? 'PEDIDO DE VENTAS' : 'STOCK';
-          return { ...r, _origen: origen, _peso_mayor: fmtNum(pm, 2), _ton_totales: fmtNum(calcTon(pm, r.cantidad_salida), 3) };
+      const validas = rows
+        // Ocultar subtotales: cualquier línea sin centro de expedición (cesu)
+        .filter(r => String(r.cesu ?? '').trim() !== '' && !String(r.cesu ?? '').startsWith('*'))
+        .filter(r => String(r.material ?? '').trim() !== '')
+        // Sólo pendientes: ctd_pedido > cantidad_salida (si son iguales, ya salió)
+        .filter(r => parseNum(r.ctd_pedido) > parseNum(r.cantidad_salida));
+      // Agrupar por Pedido de Traslado (doc_compr)
+      const g = new Map();
+      validas.forEach(r => {
+        const pt = String(r.doc_compr ?? '').trim();
+        if (!pt) return;
+        (g.get(pt) || g.set(pt, []).get(pt)).push(r);
+      });
+      const out = [];
+      for (const [pt, items] of g.entries()) {
+        const f = items[0];
+        let ton = 0;
+        const detalle = items.map(r => {
+          const pend = parseNum(r.ctd_pedido) - parseNum(r.cantidad_salida);
+          const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), pend);
+          ton += t;
+          return { doc_compr: pt, cesu: r.cesu, ce: r.ce, alm: r.alm, documento: r.documento,
+                   material: r.material, texto_breve: r.texto_breve, ton: t };
         });
+        const origen = String(f.documento ?? '').trim() ? 'PEDIDO DE VENTAS' : 'STOCK';
+        out.push({
+          doc_compr: pt, cesu: f.cesu, ce: f.ce, alm: f.alm, documento: f.documento,
+          fe_entrega: f.fe_entrega, _origen: origen,
+          _ton_num: ton, _ton_totales: fmtNum(ton, 4), _detalle: detalle,
+        });
+      }
+      // Ordenado por fecha de entrega, de la más atrasada a la más futura
+      return out.sort((a, b) => {
+        const da = parseDateSAP(a.fe_entrega), db2 = parseDateSAP(b.fe_entrega);
+        return (da || new Date(9999,0)) - (db2 || new Date(9999,0));
+      });
     },
     columnas: [
-      { key: 'cesu', label: 'Centro Expedición' },
-      { key: 'creado_el', label: 'Fecha de Creación' },
-      { key: 'doc_compr', label: 'Pedido de Traslado' },
-      { key: 'material', label: 'ID Material' },
-      { key: 'texto_breve', label: 'Nombre Material' },
+      { key: '_origen', label: 'Origen', clsFn: r => r._origen === 'PEDIDO DE VENTAS' ? 'text-blue-700 font-bold' : 'text-green-700 font-bold' },
+      { key: 'doc_compr', label: 'Pedido de Traslado', expandable: true },
+      { key: 'cesu', label: 'Centro Origen' },
       { key: 'ce', label: 'Centro Destino' },
       { key: 'alm', label: 'Almacén Destino' },
-      { key: '_origen', label: 'Origen', clsFn: r => r._origen === 'PEDIDO DE VENTAS' ? 'text-blue-700 font-bold' : 'text-green-700 font-bold' },
-      { key: 'ctd_pedido', label: 'Ctd Confirmada', cls: 'text-right font-data-mono' },
-      { key: 'cantidad_salida', label: 'Ctd Salida', cls: 'text-right font-data-mono' },
-      { key: 'ump', label: 'UM Pedido' },
-      { key: 'fe_entrega', label: 'Fecha Entrega' },
-      { key: 'documento', label: 'Pedido de Venta' },
-      { key: '_peso_mayor', label: 'Peso Mayor', cls: 'text-right font-data-mono' },
-      { key: '_ton_totales', label: 'Ton Totales', cls: 'text-right font-data-mono font-bold' },
+      { key: 'fe_entrega', label: 'Fecha de Entrega', cls: 'num-clear' },
+      { key: 'documento', label: 'Pedido de Ventas' },
+      { key: '_ton_totales', label: 'Toneladas Totales', cls: 'text-right num-clear font-bold' },
     ],
   },
 };
@@ -717,6 +749,7 @@ function fechaEnRango(fechaStr, diasAntes, diasDespues) {
 }
 
 let planDetalleAbierto = new Set();
+let planOrigen = '1003';   // centro origen del plan de carga (1003 / 1081)
 
 async function renderPlanCarga(stage) {
   stage.innerHTML = '<div class="text-secondary text-body-md p-md">Cargando Plan de Carga…</div>';
@@ -744,19 +777,29 @@ async function renderPlanCarga(stage) {
       }
     });
 
+  // (AJUSTE) Plan de carga por CENTRO ORIGEN: sólo se consideran los pedidos de
+  // traslado cuyo centro de expedición (cesu) sea el origen seleccionado (1003 o
+  // 1081). Ventas 1003 y retiros sólo aplican al plan del CD 1003.
+  const esCD1003 = planOrigen === '1003';
   const traslados = trasladosRaw
     .filter(r => !String(r.cesu ?? '').startsWith('*') && String(r.material ?? '').trim() !== '')
-    .filter(r => !String(r.material ?? '').startsWith('900000'));
-  const revex = revexRaw.filter(r => String(r.material ?? '').startsWith('900000'));
-  const retiros = retirosRaw
+    .filter(r => !String(r.material ?? '').startsWith('900000'))
+    .filter(r => String(r.cesu ?? '').trim() === planOrigen);
+  const revex = revexRaw
+    .filter(r => String(r.material ?? '').startsWith('900000'))
+    .filter(r => String(r.cesu ?? '').trim() === planOrigen);
+  const retiros = esCD1003 ? retirosRaw
     .filter(r => !String(r.proveedor ?? '').startsWith('*'))
-    .filter(r => String(r.contr ?? '').trim() !== '');
-  const ventas = ventasRaw.filter(r => !String(r.mr ?? '').trim());
-  const t4000 = traslados4000Raw;
+    .filter(r => String(r.contr ?? '').trim() !== '') : [];
+  const ventas = esCD1003 ? ventasRaw.filter(r => !String(r.mr ?? '').trim()) : [];
+  const t4000 = traslados4000Raw.filter(r => String(r.cesu ?? '').trim() === planOrigen);
 
-  const centrosSet = new Set(CENTROS_QUIEBRES);
+  const destinosOrigen = (CALENDARIOS[planOrigen] && CALENDARIOS[planOrigen].destinos) || CENTROS_QUIEBRES;
+  const centrosSet = new Set(destinosOrigen);
   const mananaTemp = new Date(); mananaTemp.setDate(mananaTemp.getDate() + 1);
-  const centrosProgramados = getCentrosProgramados(calendarioRows, mananaTemp.getDay());
+  const centrosProgramados = getCentrosProgramados(
+    calendarioRows.filter(r => String(r.centro ?? '').trim() === planOrigen),
+    mananaTemp.getDay());
 
   // El CD 1003 despacha el sábado: si hoy es viernes, la planificación cubre el
   // sábado (mañana) y también el lunes siguiente. Se amplían 2 días las ventanas
@@ -981,9 +1024,37 @@ async function renderPlanCarga(stage) {
     else if (tipo === 'fabCli') blocks = blkRetiro('Órdenes de Compra Fábrica-Cliente', r.det.fabCli);
     return `<tr class="bg-surface-container-low"><td colspan="${NCOLS}" class="p-md">
       <div class="border border-outline-variant rounded-lg p-md bg-surface-container-lowest">
-        <h4 class="font-bold text-on-surface mb-sm text-[13px]">${escapeHtml(TRUCK_TITULOS[tipo] || '')} — ${escapeHtml(r.nombre)} (${r.ce})</h4>
+        <div class="flex items-center justify-between mb-sm">
+          <h4 class="font-bold text-on-surface text-[13px]">${escapeHtml(TRUCK_TITULOS[tipo] || '')} — ${escapeHtml(r.nombre)} (${r.ce})</h4>
+          <button data-descarga="${r.ce}|${tipo}" class="bg-surface-container-high text-on-surface px-sm py-xs rounded-lg text-[12px] font-bold hover:bg-surface-container-highest inline-flex items-center gap-xs">
+            <span class="material-symbols-outlined text-[15px]">download</span>Descargar detalle</button>
+        </div>
         ${blocks || '<p class="text-secondary text-[12px]">Sin ítems.</p>'}
       </div></td></tr>`;
+  }
+
+  // Genera el CSV del detalle de un camión (para el botón de descarga).
+  function csvDetalleCamion(r, tipo) {
+    const cats = tipo === 'cd'
+      ? [['REVEX', r.det.revex, 'T'], ['Venta Consolidada', r.det.ventaCons, 'V'], ['Retiro CD', r.det.retiro, 'R'],
+         ['Crossdocking', r.det.cross, 'T'], ['Quiebre', r.det.quiebre, 'T'], ['Abastecimiento', r.det.stock, 'T']]
+      : tipo === 'cliente' ? [['Venta Cliente', r.det.cliente, 'V']]
+      : tipo === 'fabSuc'  ? [['Fábrica-Sucursal', r.det.fabSuc, 'R']]
+      :                      [['Fábrica-Cliente', r.det.fabCli, 'R']];
+    const headers = ['Categoría','Documento','Id Proveedor','Proveedor','Id Material','Nombre Material','Ruta','Comuna','Región','Fecha','Cantidad','Ton SKU'];
+    const filas = [];
+    cats.forEach(([cat, items, t]) => (items || []).forEach(d => {
+      if (t === 'T') filas.push([cat, d.pt, '', '', d.material, d.nombre, '', '', '', d.fecha || '', d.ctd || '', fmtNum(d.ton, 4)]);
+      else if (t === 'R') filas.push([cat, d.oc, d.idProv, d.prov, d.material, d.nombre, '', '', '', d.fecha || '', fmtNum(parseNum(d.cant), 1), fmtNum(d.ton, 4)]);
+      else filas.push([cat, d.pv, '', '', d.material, d.nombre, d.ruta, d.comuna, d.region, d.fecha || '', fmtNum(parseNum(d.cant), 1), fmtNum(d.ton, 4)]);
+    }));
+    const esc = v => { v = v == null ? '' : String(v); return /[;"\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
+    const lines = [headers.join(';')].concat(filas.map(f => f.map(esc).join(';')));
+    const blob = new Blob(['﻿' + lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `PlanCarga_${r.ce}_${tipo}.csv`;
+    document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
   }
 
   // Celda de camión clicable con drill-down.
@@ -1007,8 +1078,16 @@ async function renderPlanCarga(stage) {
           <h3 class="text-headline-sm font-bold text-on-surface">GESTIÓN TRONCALES – PLAN DE CARGA</h3>
           <p class="text-[13px] text-secondary">Planificación: <strong>${escapeHtml(fechaLabel)}</strong>${act ? ' · datos actualizados ' + escapeHtml(act) : ''}</p>
         </div>
-        <button data-refrescar title="Refrescar" class="bg-surface-container-high text-on-surface px-md py-sm rounded-lg text-[13px] font-bold hover:bg-surface-container-highest">
-          <span class="material-symbols-outlined text-[16px] align-middle">refresh</span></button>
+        <div class="flex items-center gap-sm">
+          <span class="text-[11px] text-secondary font-bold uppercase">Centro Origen:</span>
+          ${Object.keys(CALENDARIOS).map(id => `
+            <button data-origen="${id}" class="px-md py-sm rounded-lg text-[13px] font-bold transition-colors
+              ${planOrigen === id ? 'bg-primary text-white' : 'bg-surface-container-high text-on-surface hover:bg-surface-container-highest'}">
+              <span class="material-symbols-outlined text-[16px] align-middle mr-xs">warehouse</span>${escapeHtml(CALENDARIOS[id].nombre)} (${id})
+            </button>`).join('')}
+          <button data-refrescar title="Refrescar" class="bg-surface-container-high text-on-surface px-md py-sm rounded-lg text-[13px] font-bold hover:bg-surface-container-highest">
+            <span class="material-symbols-outlined text-[16px] align-middle">refresh</span></button>
+        </div>
       </div>
 
       <div class="overflow-x-auto">
@@ -1075,10 +1154,19 @@ async function renderPlanCarga(stage) {
     </div>`;
 
     stage.querySelector('[data-refrescar]')?.addEventListener('click', () => renderPlanCarga(stage));
+    stage.querySelectorAll('[data-origen]').forEach(btn => btn.addEventListener('click', () => {
+      planOrigen = btn.dataset.origen; planDetalleAbierto.clear(); renderPlanCarga(stage);
+    }));
     stage.querySelectorAll('[data-truck]').forEach(btn => btn.addEventListener('click', () => {
       const k = btn.dataset.truck;
       if (planDetalleAbierto.has(k)) planDetalleAbierto.delete(k); else planDetalleAbierto.add(k);
       draw();
+    }));
+    stage.querySelectorAll('[data-descarga]').forEach(btn => btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const [ce, tipo] = btn.dataset.descarga.split('|');
+      const r = resultado.find(x => x.ce === ce);
+      if (r) csvDetalleCamion(r, tipo);
     }));
   }
 
