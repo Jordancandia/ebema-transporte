@@ -19,8 +19,10 @@ let _grupo = null;            // grupo seleccionado en modo centro
 let _cacheGen = null;         // datos generales
 let _cacheCen = null;         // datos por grupo
 
+let _view = 'consolidado';    // consolidado | nivel | tarifa | margen
 export function setIndicadoresSubTab(sub){
-  if (sub === 'centro' || sub === 'general') _mode = sub;
+  if (['consolidado','nivel','tarifa','margen'].indexOf(sub) >= 0) _view = sub;
+  else if (sub === 'centro' || sub === 'general') _mode = sub;
 }
 
 // --- Formato ----------------------------------------------------------------
@@ -37,8 +39,20 @@ const nice = s => s.charAt(0)+s.slice(1).toLowerCase();
 // ============================================================================
 export async function renderIndicadoresView(container){
   _container = container;
+  if (_view === 'nivel')  return renderNivel(container);
+  if (_view === 'tarifa') return renderStub(container, 'Tarifa $/Kg');
+  if (_view === 'margen') return renderStub(container, 'Margen de Flete');
   paintShell();
   if (_mode === 'general') await loadGeneral(); else await loadCentro();
+}
+
+function renderStub(container, titulo){
+  container.innerHTML = `<div class="max-w-[1120px] mx-auto">
+    <div class="bg-surface-container-lowest border border-surface-variant rounded-xl p-lg text-center text-secondary">
+      <div class="text-headline-sm font-bold text-on-surface mb-1">${titulo} — vista de detalle</div>
+      <div class="text-body-md">En desarrollo. El detalle de Nivel de Servicio ya está disponible; Tarifa y Margen se construyen en la próxima iteración.</div>
+      <div class="text-[12px] mt-sm">Mientras tanto, revisa el <b>Consolidado</b> y el <b>HOME</b>.</div>
+    </div></div>`;
 }
 
 function paintShell(){
@@ -314,6 +328,7 @@ function py(v,mn,mx){return PT+(H-PT-PB)*(1-(v-mn)/(mx-mn));}
 function gridY(out,mn,mx,fmt){for(var t=0;t<=4;t++){var val=mn+(mx-mn)*t/4,y=py(val,mn,mx);out.push('<line x1="'+PL+'" y1="'+y.toFixed(1)+'" x2="'+(W-PR)+'" y2="'+y.toFixed(1)+'" stroke="'+C.grid+'" stroke-width="1"/>');out.push('<text x="'+(PL-6)+'" y="'+(y+3).toFixed(1)+'" text-anchor="end" fill="'+C.muted+'" font-size="10">'+fmt(val)+'</text>');}}
 function xLabels(out,labels){for(var i=0;i<labels.length;i++)out.push('<text x="'+bx(i,labels.length).toFixed(1)+'" y="'+(H-8)+'" text-anchor="middle" fill="'+C.muted+'" font-size="9.5">'+labels[i]+'</text>');}
 function svgOpen(){return '<svg viewBox="0 0 '+W+' '+H+'" style="width:100%;height:auto;overflow:visible" role="img">';}
+function valLbl(v){ return Math.abs(v)>=1000? nf0.format(v) : nf1.format(v); }
 
 function lineChart(elId,series,labels,mn,mx,unit){
   var el=document.getElementById(elId); if(!el) return;
@@ -322,7 +337,11 @@ function lineChart(elId,series,labels,mn,mx,unit){
   for(var s=0;s<series.length;s++){var ser=series[s],d='';
     for(var i=0;i<ser.v.length;i++){var X=px(i,ser.v.length),Y=py(ser.v[i],mn,mx);d+=(i?'L':'M')+X.toFixed(1)+' '+Y.toFixed(1)+' ';}
     out.push('<path d="'+d+'" fill="none" stroke="'+ser.c+'" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>');
-    for(var j=0;j<ser.v.length;j++)out.push('<circle cx="'+px(j,ser.v.length).toFixed(1)+'" cy="'+py(ser.v[j],mn,mx).toFixed(1)+'" r="3.4" fill="'+ser.c+'" stroke="#fff" stroke-width="1.5" data-t="'+ser.n+' '+labels[j]+': '+nf1.format(ser.v[j])+unit+'"/>');
+    for(var j=0;j<ser.v.length;j++){var CX=px(j,ser.v.length),CY=py(ser.v[j],mn,mx);
+      out.push('<circle cx="'+CX.toFixed(1)+'" cy="'+CY.toFixed(1)+'" r="3.4" fill="'+ser.c+'" stroke="#fff" stroke-width="1.5" data-t="'+ser.n+' '+labels[j]+': '+nf1.format(ser.v[j])+unit+'"/>');
+      var lyy=(s===0? CY-7 : CY+13);
+      out.push('<text x="'+CX.toFixed(1)+'" y="'+lyy.toFixed(1)+'" text-anchor="middle" fill="'+ser.c+'" font-size="8.5" font-weight="600">'+nf1.format(ser.v[j])+'</text>');
+    }
   }
   xLabels(out,labels); out.push('</svg>'); el.innerHTML=out.join(''); bind(el);
 }
@@ -335,6 +354,8 @@ function barChart(elId,vals,labels,mn,mx,color,unit,part,tickFmt){
   for(var i=0;i<vals.length;i++){var v=vals[i],y=py(v,mn,mx),top=Math.min(y,zeroY),h=Math.max(Math.abs(y-zeroY),1);
     var op=(part!=null&&i>=part)?'0.5':'1',extra=(part!=null&&i>=part)?' (parcial)':'';
     out.push('<rect x="'+(bx(i,vals.length)-bw/2).toFixed(1)+'" y="'+top.toFixed(1)+'" width="'+bw.toFixed(1)+'" height="'+h.toFixed(1)+'" rx="3" fill="'+color+'" opacity="'+op+'" data-t="'+labels[i]+': '+nf1.format(v)+unit+extra+'"/>');
+    var lblY=(v>=0? top-3 : top+h+9);
+    out.push('<text x="'+bx(i,vals.length).toFixed(1)+'" y="'+lblY.toFixed(1)+'" text-anchor="middle" fill="'+C.ink+'" font-size="8.5" font-weight="600" opacity="'+op+'">'+valLbl(v)+'</text>');
   }
   xLabels(out,labels); out.push('</svg>'); el.innerHTML=out.join(''); bind(el);
 }
@@ -488,4 +509,147 @@ function errorHTML(e){
     <div class="font-bold mb-1">No se pudieron cargar los indicadores</div>
     <div class="text-body-md">${(e&&e.message)||e}</div>
     <div class="text-[12px] mt-sm">Verifica tu sesión (rol reconocido) o la carga 08:00 (tabla <code>ind_log</code>).</div></div>`;
+}
+
+// ============================================================================
+//  HOME (pantalla principal) — 3 tarjetas resumen
+// ============================================================================
+export async function renderIndicadoresHome(container){
+  container.innerHTML = loadingHTML();
+  try {
+    const y='2026-01';
+    const [ns,tar,mar] = await Promise.all([
+      supabase.from('v_ind_ns_general_mes').select('*').gte('mes_label',y).order('mes_label'),
+      supabase.from('v_ind_tarifa_general_mes').select('*').gte('mes_label',y).order('mes_label'),
+      supabase.from('v_ind_margen_general_mes').select('*').gte('mes_label',y).order('mes_label')
+    ]);
+    const e=ns.error||tar.error||mar.error; if(e) throw e;
+    const D={ns:ns.data||[],tar:tar.data||[],mar:mar.data||[]};
+    const nsLast=D.ns[D.ns.length-1]||{}, tarLast=D.tar.length>1?D.tar[D.tar.length-2]:(D.tar[D.tar.length-1]||{}), marAcc=sum(D.mar.map(r=>r.margen))/1e6;
+    container.innerHTML=`<div class="max-w-[1120px] mx-auto">
+      <div class="text-headline-sm font-bold mb-1">Indicadores de Transporte</div>
+      <div class="text-secondary text-body-md mb-md">Resumen mensual 2026 · el <b>mes en curso</b> se muestra en tono más suave. El detalle de cada indicador está en el menú <b>Indicadores</b>.</div>
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-md">
+        ${homeCard('Nivel de Servicio','OTIF '+pct(nsLast.otif_pct),'Fill Rate '+pct(nsLast.fillrate_pct)+' · '+mesCorto(nsLast.mes_label||''),'h_ns',false)}
+        ${homeCard('Tarifa $/Kg',money(tarLast.tarifa_kg)+'/kg',mesCorto(tarLast.mes_label||'')+' (último cerrado)','h_tar',false)}
+        ${homeCard('Margen de Flete',mm(marAcc),'acumulado 2026 · excl. EbemaClick','h_mar',marAcc<0)}
+      </div></div>`;
+    ensureTip();
+    lineChart('h_ns',[{n:'OTIF',v:D.ns.map(r=>r.otif_pct),c:C.navy},{n:'Fill',v:D.ns.map(r=>r.fillrate_pct),c:C.blue}],D.ns.map(r=>mesCorto(r.mes_label)),60,100,'%');
+    barChart('h_tar',D.tar.map(r=>r.tarifa_kg),D.tar.map(r=>mesCorto(r.mes_label)),0,niceMax(D.tar.map(r=>r.tarifa_kg)),C.orange,' $/kg',D.tar.length-1,v=>'$'+Math.round(v));
+    barChart('h_mar',D.mar.map(r=>r.margen/1e6),D.mar.map(r=>mesCorto(r.mes_label)),Math.min(-2,niceMin(D.mar.map(r=>r.margen/1e6))),2,C.red,' MM',D.mar.length-1,v=>'$'+Math.round(v));
+  } catch(e){ container.innerHTML=errorHTML(e); }
+}
+function homeCard(titulo,valor,sub,chartId,neg){
+  return `<section class="bg-surface-container-lowest border border-surface-variant rounded-xl p-md">
+    <div class="text-label-caps text-secondary uppercase mb-1">${titulo}</div>
+    <div class="text-2xl font-bold leading-tight ${neg?'text-[#EE1B22]':''}">${valor}</div>
+    <div class="text-[11px] text-secondary mb-sm">${sub}</div>
+    <div id="${chartId}"></div></section>`;
+}
+
+// ============================================================================
+//  NIVEL DE SERVICIO — detalle (6 análisis)
+// ============================================================================
+let _cacheNivel=null, _grupoN=null;
+async function renderNivel(container){
+  container.innerHTML = loadingHTML();
+  try {
+    if(!_cacheNivel){
+      const [tp,co,com,sp,ft] = await Promise.all([
+        supabase.from('v_ind_ns_tipo_grupo').select('*'),
+        supabase.from('v_ind_ns_comuna').select('*'),
+        supabase.from('v_ind_ns_comuna_mes').select('*'),
+        supabase.from('v_ind_ns_spot_grupo_mes').select('*'),
+        supabase.from('v_ind_ftercero_mes').select('*').gte('mes_label','2026-01').order('mes_label')
+      ]);
+      const e=tp.error||co.error||com.error||sp.error||ft.error; if(e) throw e;
+      _cacheNivel={tp:tp.data||[],co:co.data||[],com:com.data||[],sp:sp.data||[],ft:ft.data||[]};
+    }
+    const grupos=[...new Set(_cacheNivel.co.map(r=>r.grupo))].filter(g=>g&&g!=='OTROS').sort();
+    if(!_grupoN||grupos.indexOf(_grupoN)<0) _grupoN=(grupos.indexOf('CONCEPCION')>=0?'CONCEPCION':grupos[0]);
+    container.innerHTML=nivelHTML(_cacheNivel,grupos,_grupoN);
+    ensureTip(); drawNivel(_cacheNivel,_grupoN); bindSelN(container,grupos);
+  } catch(e){ container.innerHTML=errorHTML(e); }
+}
+function bindSelN(container,grupos){
+  const el=document.getElementById('ind_seln'); if(!el) return;
+  el.onchange=ev=>{ _grupoN=ev.target.value; container.innerHTML=nivelHTML(_cacheNivel,grupos,_grupoN); ensureTip(); drawNivel(_cacheNivel,_grupoN); bindSelN(container,grupos); };
+}
+function nivelHTML(d,grupos,grupo){
+  const tp=d.tp.filter(r=>r.grupo===grupo);
+  const stock=tp.find(r=>r.tipo==='STOCK')||{}, calz=tp.find(r=>r.tipo==='CALZADA')||{};
+  const hayClase=tp.some(r=>r.tipo==='STOCK'||r.tipo==='CALZADA');
+  const opciones=grupos.map(g=>`<option value="${g}" ${g===grupo?'selected':''}>${nice(g)}</option>`).join('');
+  return `<div class="max-w-[1120px] mx-auto">
+    <div class="flex items-center gap-md mb-md flex-wrap">
+      <div class="text-headline-sm font-bold">Nivel de Servicio — detalle</div>
+      <label class="text-secondary text-body-md ml-auto">Centro:</label>
+      <select id="ind_seln" class="border border-surface-variant rounded-lg px-md py-sm bg-surface-container-lowest text-on-surface">${opciones}</select>
+    </div>
+
+    ${card('1 · Tipo de venta — Stock vs Calzada','OTIF y días a entrega por tipo (acumulado)',
+      tile('OTIF Stock',pct(stock.otif_pct),(stock.lineas||0)+' líneas')+
+      tile('OTIF Calzada',pct(calz.otif_pct),(calz.lineas||0)+' líneas',(calz.otif_pct!=null&&calz.otif_pct<60)?'text-[#EE1B22]':'')+
+      tile('Días Stock',(stock.dias_prom!=null?nf1.format(stock.dias_prom)+' d':'–'),'venta→entrega')+
+      tile('Días Calzada',(calz.dias_prom!=null?nf1.format(calz.dias_prom)+' d':'–'),'venta→entrega'),
+      `<div class="grid grid-cols-1 md:grid-cols-2 gap-md">`+
+      `<div>`+legend([{n:'OTIF % por tipo',c:C.navy}])+`<div id="n_tipo_otif"></div></div>`+
+      `<div>`+legend([{n:'Días a entrega por tipo',c:C.blue}])+`<div id="n_tipo_dias"></div></div></div>`+
+      (hayClase?'':`<div class="text-[11px] text-secondary mt-sm">Stock=ZV01/03/04 · Calzada=ZV08/09. Vacío = falta correr la carga con el Code.gs actualizado (nueva columna Clase Documento).</div>`))}
+
+    ${card('2 · Comunas regionales — mejores y peores','OTIF por comuna en rutas regionales','',
+      `<div class="grid grid-cols-1 md:grid-cols-2 gap-md">`+
+      `<div>`+legend([{n:'10 peores OTIF %',c:C.red}])+`<div id="n_reg_peor"></div></div>`+
+      `<div>`+legend([{n:'10 mejores OTIF %',c:C.green}])+`<div id="n_reg_mejor"></div></div></div>`)}
+
+    ${card('3 · OTIF por comuna — evolutivo mensual','Top comunas por volumen (semáforo verde alto / rojo bajo)','',
+      `<div id="n_comuna_heat"></div>`)}
+
+    ${card('4 · Spot vs Planificado — evolutivo','OTIF mensual por tipo de servicio','',
+      legend([{n:'Planificado',c:C.navy},{n:'Spot',c:C.orange}])+`<div id="n_spot"></div>`)}
+
+    ${card('5 · Flete Tercero (REVEX)','OTIF, pedidos y días por modalidad — evolutivo mensual (red)','',
+      `<div class="grid grid-cols-1 md:grid-cols-3 gap-md">`+
+      `<div>`+legend([{n:'OTIF Despacha',c:C.navy},{n:'OTIF Retira',c:C.orange}])+`<div id="n_rev_otif"></div></div>`+
+      `<div>`+legend([{n:'Pedidos Despacha',c:C.navy},{n:'Pedidos Retira',c:C.orange}])+`<div id="n_rev_ped"></div></div>`+
+      `<div>`+legend([{n:'Días Despacha',c:C.navy},{n:'Días Retira',c:C.orange}])+`<div id="n_rev_dias"></div></div></div>`)}
+
+    <div class="text-[11px] text-secondary mt-lg leading-relaxed">Comuna vía cruce con la base de rutas (routes.codigo = id_ruta), clasificación Regional/Interregional. Días venta→entrega = fecha guía − fecha creación. REVEX es a nivel red (todos los centros).</div>
+  </div>`;
+}
+function heatComunaHTML(rows){
+  if(!rows.length) return `<div class="text-secondary text-[12px] py-sm">Sin datos.</div>`;
+  const months=[...new Set(rows.map(r=>r.mes_label))].sort();
+  const tot={}; rows.forEach(r=>{tot[r.comuna]=(tot[r.comuna]||0)+(r.lineas||0);});
+  const comunas=Object.keys(tot).sort((a,b)=>tot[b]-tot[a]).slice(0,12);
+  const map={}; rows.forEach(r=>{(map[r.comuna]=map[r.comuna]||{})[r.mes_label]=r.otif_pct;});
+  const head=`<th class="text-left font-medium text-secondary pr-sm">Comuna</th>`+months.map(m=>`<th class="font-medium text-secondary px-[6px] text-center">${mesCorto(m)}</th>`).join('');
+  const bodyr=comunas.map(c=>{
+    const cells=months.map(m=>{const v=(map[c]||{})[m];return `<td class="text-center px-[6px] py-[3px] tabular-nums" style="background:${v==null?'transparent':heatOtif(v)};color:#333">${v==null?'':nf1.format(v)}</td>`;}).join('');
+    return `<tr><td class="pr-sm py-[3px] text-[12px] whitespace-nowrap">${c}</td>${cells}</tr>`;
+  }).join('');
+  return `<div class="overflow-x-auto"><table class="text-[11px] border-separate" style="border-spacing:2px"><thead><tr>${head}</tr></thead><tbody>${bodyr}</tbody></table></div>`;
+}
+function drawNivel(d,grupo){
+  const tp=d.tp.filter(r=>r.grupo===grupo), order=['STOCK','CALZADA'];
+  barChart('n_tipo_otif',order.map(t=>{const r=tp.find(x=>x.tipo===t)||{};return r.otif_pct||0;}),order.map(nice),0,100,C.navy,'%',null,v=>Math.round(v));
+  const dv=order.map(t=>{const r=tp.find(x=>x.tipo===t)||{};return r.dias_prom||0;});
+  barChart('n_tipo_dias',dv,order.map(nice),0,niceMax(dv),C.blue,' d',null,v=>Math.round(v));
+  const reg=d.co.filter(r=>r.grupo===grupo && r.clasif_ruta==='Regional' && r.otif_pct!=null && (r.lineas||0)>=5);
+  hbarChart('n_reg_peor',reg.slice().sort((a,b)=>a.otif_pct-b.otif_pct).slice(0,10).map(r=>({label:r.comuna,value:r.otif_pct})),C.red,'%','');
+  hbarChart('n_reg_mejor',reg.slice().sort((a,b)=>b.otif_pct-a.otif_pct).slice(0,10).map(r=>({label:r.comuna,value:r.otif_pct})),C.green,'%','');
+  const heatEl=document.getElementById('n_comuna_heat'); if(heatEl) heatEl.innerHTML=heatComunaHTML(d.com.filter(r=>r.grupo===grupo));
+  const sp=d.sp.filter(r=>r.grupo===grupo), sm=[...new Set(sp.map(r=>r.mes_label))].sort();
+  lineChart('n_spot',[
+    {n:'Planificado',v:sm.map(m=>{const r=sp.find(x=>x.mes_label===m&&x.tipo==='Planificado');return r?r.otif_pct:0;}),c:C.navy},
+    {n:'Spot',v:sm.map(m=>{const r=sp.find(x=>x.mes_label===m&&x.tipo==='Spot');return r?r.otif_pct:0;}),c:C.orange}
+  ],sm.map(mesCorto),0,100,'%');
+  const fm=[...new Set(d.ft.map(r=>r.mes_label))].sort();
+  const ftv=(mod,f)=>fm.map(m=>{const r=d.ft.find(x=>x.mes_label===m&&x.modalidad===mod);return r?(r[f]||0):0;});
+  lineChart('n_rev_otif',[{n:'Despacha',v:ftv('Despacha','otif_pct'),c:C.navy},{n:'Retira',v:ftv('Retira','otif_pct'),c:C.orange}],fm.map(mesCorto),0,100,'%');
+  const ped=ftv('Despacha','pedidos').concat(ftv('Retira','pedidos'));
+  lineChart('n_rev_ped',[{n:'Despacha',v:ftv('Despacha','pedidos'),c:C.navy},{n:'Retira',v:ftv('Retira','pedidos'),c:C.orange}],fm.map(mesCorto),0,niceMax(ped),'');
+  const dias=ftv('Despacha','ciclo_prom_dias').concat(ftv('Retira','ciclo_prom_dias'));
+  lineChart('n_rev_dias',[{n:'Despacha',v:ftv('Despacha','ciclo_prom_dias'),c:C.navy},{n:'Retira',v:ftv('Retira','ciclo_prom_dias'),c:C.orange}],fm.map(mesCorto),0,niceMax(dias),' d');
 }

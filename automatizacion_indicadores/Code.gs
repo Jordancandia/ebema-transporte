@@ -40,7 +40,8 @@ var CHUNK = 2500; // filas por request de inserción
 // {col: nombre en Supabase, h: header en el archivo, t: tipo (text|num|date)}
 var SPEC_OTIF = [
   {col:'nota_venta',h:'Nota Venta',t:'text'},
-  {col:'clvt',h:'ClVt',t:'text'},
+  {col:'clase_doc',h:'Clase Documento',t:'text'},   // ZV01/03/04=Stock, ZV08/09=Calzada
+  {col:'id_centro',h:'ID Centro',t:'text'},
   {col:'centro_expedicion',h:'Centro Expedición',t:'text'},
   {col:'expedicion',h:'Expedición',t:'text'},
   {col:'fecha_creacion',h:'Fecha Creación',t:'date'},

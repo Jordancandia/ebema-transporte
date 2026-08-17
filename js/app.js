@@ -7,12 +7,12 @@ import { renderRolesView } from './roles.js';
 import { renderTariffTransportView, setActiveSub } from './tarifas-transporte.js?v=20260713c';
 import { renderClientTariffView, setActiveSubC } from './tarifas-clientes.js?v=20260714c';
 import { renderAbastecimientoView, setAbastSubTab } from './abastecimiento.js?v=20260814g';
-import { renderIndicadoresView, setIndicadoresSubTab } from './indicadores.js?v=20260816f';
+import { renderIndicadoresView, setIndicadoresSubTab, renderIndicadoresHome } from './indicadores.js?v=20260816g';
 import { showAlert, formatRut, validateRut, formatPhone } from './utils.js';
 
 const SESSION_KEY = 'ebema_user_session';
 let currentSession = null;
-let currentTab = 'rates'; // Cotizador activo por defecto
+let currentTab = 'home'; // HOME (indicadores) como pantalla principal
 let currentSub = null;    // Submenu activo del sidebar (null = item simple)
 
 // Estado de la pantalla de autenticación ('login', 'register', 'recover')
@@ -240,7 +240,7 @@ async function handleLogout() {
   await supabase.auth.signOut();
   localStorage.removeItem(SESSION_KEY);
   currentSession = null;
-  currentTab = 'rates';
+  currentTab = 'home';
   authState = 'login';
   showAlert('Sesión finalizada.');
   renderApp();
@@ -1174,6 +1174,7 @@ function renderRecoverView() {
 // MENU LATERAL - estructura declarativa con grupos desplegables
 // ==========================================================================
 const SIDEBAR_MENU = [
+  { tab: 'home', icon: 'home', label: 'HOME' },
   { tab: 'rates', icon: 'payments', label: 'Cotizador Despacho' },
   {
     group: 'proveedores', icon: 'groups', label: 'Proveedores', children: [
@@ -1226,7 +1227,14 @@ const SIDEBAR_MENU = [
       { tab: 'abastecimiento', sub: 'plan_carga',             icon: 'local_shipping', label: 'Plan de Carga' },
     ]
   },
-  { tab: 'indicadores', icon: 'monitoring', label: 'Indicadores' },
+  {
+    group: 'indicadores', icon: 'monitoring', label: 'Indicadores', children: [
+      { tab: 'indicadores', sub: 'consolidado', icon: 'dashboard',      label: 'Consolidado' },
+      { tab: 'indicadores', sub: 'nivel',       icon: 'local_shipping', label: 'Nivel de Servicio' },
+      { tab: 'indicadores', sub: 'tarifa',      icon: 'request_quote',  label: 'Tarifa $/Kg' },
+      { tab: 'indicadores', sub: 'margen',      icon: 'trending_down',  label: 'Margen de Flete' },
+    ]
+  },
   { tab: 'roles', icon: 'admin_panel_settings', label: 'Roles y Perfiles' },
 ];
 
@@ -1404,6 +1412,10 @@ function switchTab(tabName, subName = null) {
   const subLabel = activeNav && subName ? ` — ${activeNav.textContent.trim()}` : '';
 
   switch (tabName) {
+    case 'home':
+      pageTitle.textContent = 'Indicadores';
+      renderIndicadoresHome(stage);
+      break;
     case 'rates':
       pageTitle.textContent = 'Cotizador Despacho';
       renderRatesView(stage);
