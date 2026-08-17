@@ -486,14 +486,17 @@ const VISTAS_TRONCAL = {
     titulo: 'GESTIÓN TRONCALES – PEDIDOS DE TRASLADO REVEX',
     vista: 'v_trc_sqvi_pedidos_traslados',
     chipFilter: { campo: 'ce', label: 'Centro Destino' },
+    noBuscar: true,
     filtros: [{ campo: 'doc_compr', label: 'BUSCAR PEDIDO DE TRASLADO', tipo: 'buscar' }],
+    dateRange: { campo: 'fecha_confirmada', label: 'Rango Fecha Confirmada' },
     transform(rows) {
       return rows
         .filter(r => String(r.material ?? '').startsWith('900000'))
         .map(r => {
           const al = alertaFecha(r.fecha_confirmada, 7);
-          const pm = parseNum(r.peso_neto);                 // (AJUSTE 3.0) peso mayor = peso neto
-          return { ...r, _peso_mayor: fmtNum(pm, 2), _ton_totales: fmtNum(calcTon(pm, r.ctd_confirmada), 3), _alerta: al.txt, _alerta_cls: al.cls };
+          // (AJUSTE) Ton = segunda columna de peso neto (peso_neto_2) × cantidad pedida.
+          const pm = parseNum(r.peso_neto_2);
+          return { ...r, _ton_totales: fmtNum(calcTon(pm, r.ctd_pedido), 4), _alerta: al.txt, _alerta_cls: al.cls };
         })
         .sort((a, b) => {
           const da = parseDateSAP(a.fecha_confirmada), db2 = parseDateSAP(b.fecha_confirmada);
@@ -509,11 +512,10 @@ const VISTAS_TRONCAL = {
       { key: 'texto_breve', label: 'Nombre Material' },
       { key: 'ce', label: 'Centro Destino' },
       { key: 'alm', label: 'Almacén Destino' },
-      { key: 'ctd_confirmada', label: 'Ctd Confirmada', cls: 'text-right font-data-mono' },
+      { key: 'ctd_pedido', label: 'Ctd Pedido', cls: 'text-right num-clear' },
       { key: 'ump', label: 'UM Pedido' },
-      { key: 'fecha_confirmada', label: 'Fecha Confirmada' },
-      { key: '_peso_mayor', label: 'Peso Mayor (Neto)', cls: 'text-right font-data-mono' },
-      { key: '_ton_totales', label: 'Ton Totales', cls: 'text-right font-data-mono font-bold' },
+      { key: 'fecha_confirmada', label: 'Fecha Confirmada', cls: 'num-clear' },
+      { key: '_ton_totales', label: 'Ton Totales', cls: 'text-right num-clear font-bold' },
       { key: '_alerta', label: 'Alerta', clsFn: r => r._alerta_cls },
     ],
   },
@@ -740,7 +742,7 @@ async function renderPlanCarga(stage) {
     // 3. REVEX
     const tonRevex = revex
       .filter(r => String(r.ce ?? '').trim() === ce)
-      .reduce((sum, r) => { const t = calcTon(parseNum(r.peso_neto), r.ctd_confirmada); det.revex.push({ m: r.material, d: r.texto_breve, t }); return sum + t; }, 0);
+      .reduce((sum, r) => { const t = calcTon(parseNum(r.peso_neto_2), r.ctd_pedido); det.revex.push({ m: r.material, d: r.texto_breve, t }); return sum + t; }, 0);
 
     // 4. Crossdocking 4000
     const tonCross = t4000
