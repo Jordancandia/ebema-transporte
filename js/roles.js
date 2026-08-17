@@ -1,5 +1,6 @@
 import { getDatabase, saveDatabase, getCentreName } from './data.js?v=20260712a';
 import { showAlert, escapeHtml } from './utils.js';
+import { supabase } from './supabase-client.js';
 
 // --- Perfiles de Acceso (Roles y Perfiles + Row Level Security) ---
 // 5 perfiles canónicos. Cada uno determina qué puede ver/editar el usuario
@@ -399,7 +400,7 @@ function closeModal() {
   document.getElementById('modal-user').style.display = 'none';
 }
 
-function saveUser() {
+async function saveUser() {
   const db = getDatabase();
   const editIdx = document.getElementById('modal-edit-idx').value;
   const name = document.getElementById('modal-user-name').value.trim();
@@ -433,26 +434,50 @@ function saveUser() {
   const finalTransportistaId = TRANSPORTE_ROLES.includes(selectedRole) ? transportistaId : null;
 
   if (editIdx === '') {
-    // Crear usuario
+    // CREAR = INVITAR: no se define contraseña. La Edge Function 'invite-user'
+    // valida permisos, pre-asigna rol/centro en app_users y envía el correo de
+    // invitación (Supabase). El user_id se vincula por el trigger al aceptar.
     if (db.users.some(u => u.email === email)) return showErr('El correo ya se encuentra registrado.');
-    db.users.push({ email, name, role: selectedRole, centroId: finalCentroId, transportistaId: finalTransportistaId, activo: true, lastAccess: 'Nunca' });
-    showAlert(`Usuario ${name} registrado con éxito.`);
-  } else {
-    // Editar usuario
-    const idx = parseInt(editIdx);
-    if (db.users[idx]) {
-      db.users[idx].name = name;
-      db.users[idx].role = selectedRole;
-      db.users[idx].centroId = finalCentroId;
-      db.users[idx].transportistaId = finalTransportistaId;
-      showAlert(`Perfil de ${name} actualizado.`);
+    const submitBtn = document.getElementById('btn-modal-submit');
+    const original = submitBtn.innerHTML;
+    submitBtn.disabled = true;
+    submitBtn.innerHTML = '<span class="material-symbols-outlined" style="font-size:18px">outgoing_mail</span> Enviando invitación...';
+
+    const { data, error } = await supabase.functions.invoke('invite-user', {
+      body: {
+        email, name, role: selectedRole,
+        centroId: finalCentroId, transportistaId: finalTransportistaId,
+        redirectTo: window.location.origin + window.location.pathname
+      }
+    });
+
+    submitBtn.disabled = false;
+    submitBtn.innerHTML = original;
+
+    if (error || (data && data.error)) {
+      return showErr((data && data.error) || error?.message || 'No se pudo enviar la invitación.');
     }
+    // Reflejar en la tabla localmente (pendiente de activación)
+    db.users.push({ email, name, role: selectedRole, centroId: finalCentroId, transportistaId: finalTransportistaId, activo: true, lastAccess: 'Invitación enviada' });
+    showAlert((data && (data.message || data.warning)) || `Invitación enviada a ${email}.`);
+    closeModal();
+    const container = document.getElementById('stage-area');
+    if (container) renderRolesView(container);
+    return;
+  }
+
+  // Editar usuario (rol / centro / transportista)
+  const idx = parseInt(editIdx);
+  if (db.users[idx]) {
+    db.users[idx].name = name;
+    db.users[idx].role = selectedRole;
+    db.users[idx].centroId = finalCentroId;
+    db.users[idx].transportistaId = finalTransportistaId;
+    showAlert(`Perfil de ${name} actualizado.`);
   }
 
   saveDatabase(db);
   closeModal();
-
-  // Re-renderizar la vista completa
   const container = document.getElementById('stage-area');
   if (container) renderRolesView(container);
 }

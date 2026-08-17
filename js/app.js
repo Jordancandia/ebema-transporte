@@ -3,10 +3,10 @@ import { supabase } from './supabase-client.js';
 import { renderTransportsView } from './transports.js';
 import { renderRoutesView, setRoutesSubTab } from './routes.js?v=20260708a';
 import { renderRatesView } from './rates.js';
-import { renderRolesView } from './roles.js';
+import { renderRolesView } from './roles.js?v=20260817c';
 import { renderTariffTransportView, setActiveSub } from './tarifas-transporte.js?v=20260713c';
 import { renderClientTariffView, setActiveSubC } from './tarifas-clientes.js?v=20260714c';
-import { renderAbastecimientoView, setAbastSubTab } from './abastecimiento.js?v=20260817b';
+import { renderAbastecimientoView, setAbastSubTab } from './abastecimiento.js?v=20260817c';
 import { renderIndicadoresView, setIndicadoresSubTab, renderIndicadoresHome } from './indicadores.js?v=20260816i';
 import { showAlert, formatRut, validateRut, formatPhone } from './utils.js';
 
@@ -134,6 +134,16 @@ async function checkSession() {
     const email = session.user.email.toLowerCase();
     const meta = session.user.user_metadata || {};
 
+    // ===== GUARDIA: correo confirmado obligatorio =====
+    // Solo se permite consumir la app cuando email_confirmed_at IS NOT NULL.
+    if (!session.user.email_confirmed_at && !session.user.confirmed_at) {
+      await supabase.auth.signOut();
+      currentSession = null;
+      localStorage.removeItem(SESSION_KEY);
+      showAlert('Debes confirmar tu correo antes de ingresar. Revisa tu bandeja de entrada (y la carpeta de spam).', 'error');
+      return;
+    }
+
     // ===== RAMA PROVEEDOR DE SERVICIO (correo externo) =====
     if (!email.endsWith('@ebema.cl')) {
       await initDatabase(); // RLS solo le entrega SUS datos
@@ -180,26 +190,19 @@ async function checkSession() {
     const db = getDatabase();
     let u = (db.users || []).find(x => x.email === email);
 
-    // Primer ingreso (ej. vía Google): crear el perfil automáticamente
+    // El perfil lo crea automáticamente el trigger on_auth_user_created al
+    // registrarse/aceptar la invitación. Si aún no aparece (timing en el primer
+    // ingreso), lo consultamos directo por user_id (RLS permite la fila propia).
     if (!u) {
-      const googleName = meta.full_name || meta.name;
-      u = {
-        email,
-        name: googleName || email.split('@')[0].toUpperCase(),
-        role: 'AGENTE_COMERCIAL', // rol canónico inicial (no privilegiado); un OWNER puede cambiarlo después
-        activo: true,
-        lastAccess: new Date().toLocaleDateString('es-CL')
-      };
-      db.users.push(u);
-      // Upsert directo: no usar saveDatabase() aquí porque sincroniza TODOS los usuarios,
-      // lo que genera errores RLS al intentar modificar filas de otros usuarios.
-      // La policy app_users_insert permite auto-registro de la propia fila @ebema.cl.
-      const { error: regErr } = await supabase.from('app_users').upsert(u);
-      if (regErr) console.warn('No se pudo registrar perfil en Supabase:', regErr.message);
-    } else {
-      // Actualizar lastAccess en cada inicio de sesión
-      u.lastAccess = new Date().toLocaleDateString('es-CL');
-      await supabase.from('app_users').update({ lastAccess: u.lastAccess }).eq('email', email);
+      const { data: fila } = await supabase.from('app_users').select('*').eq('user_id', session.user.id).maybeSingle();
+      if (fila) { u = fila; db.users.push(u); }
+    }
+    if (!u) {
+      await supabase.auth.signOut();
+      currentSession = null;
+      localStorage.removeItem(SESSION_KEY);
+      showAlert('Tu cuenta aún no tiene un perfil asignado en la plataforma. Contacta al administrador.', 'error');
+      return;
     }
 
     // Cuenta inhabilitada por el administrador
@@ -210,6 +213,10 @@ async function checkSession() {
       showAlert('Su cuenta corporativa ha sido inhabilitada por el administrador.', 'error');
       return;
     }
+
+    // Actualizar último acceso (vinculando por user_id; RLS permite la fila propia)
+    u.lastAccess = new Date().toLocaleDateString('es-CL');
+    await supabase.from('app_users').update({ lastAccess: u.lastAccess }).eq('user_id', session.user.id);
 
     currentSession = { email, name: u.name, role: u.role, tipo: 'funcionario' };
     localStorage.setItem(SESSION_KEY, JSON.stringify(currentSession));
@@ -949,6 +956,25 @@ function renderRegisterView() {
     if (e.target.value.trim()) e.target.value = formatPhone(e.target.value);
   });
 
+  // Al escribir un correo @ebema.cl, ocultar los campos de proveedor: el
+  // registro pasa a ser de FUNCIONARIO (solo correo + contraseña + confirmación).
+  const provFieldIds = ['reg-razonsocial', 'reg-rut', 'reg-telefono', 'reg-representante'];
+  const toggleFuncionario = () => {
+    const esEbema = (document.getElementById('reg-email').value || '').trim().toLowerCase().endsWith('@ebema.cl');
+    provFieldIds.forEach(id => {
+      const inp = document.getElementById(id);
+      if (!inp) return;
+      inp.required = !esEbema;
+      const cont = inp.closest('div');
+      if (cont) cont.style.display = esEbema ? 'none' : '';
+    });
+    const btnReg = document.getElementById('btn-reg-submit');
+    if (btnReg) btnReg.innerHTML = esEbema
+      ? '<span class="material-symbols-outlined" style="font-size:18px">person_add</span> Crear Cuenta de Funcionario'
+      : '<span class="material-symbols-outlined" style="font-size:18px">person_add</span> Crear Cuenta de Proveedor';
+  };
+  document.getElementById('reg-email').addEventListener('input', toggleFuncionario);
+
   document.getElementById('register-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const razonSocial = document.getElementById('reg-razonsocial').value.trim();
@@ -967,7 +993,33 @@ function renderRegisterView() {
       btn.disabled = false;
     };
 
-    if (email.endsWith('@ebema.cl')) return showErr('Este registro es solo para proveedores externos. Los funcionarios EBEMA ingresan con Google.');
+    // ===== AUTO-REGISTRO FUNCIONARIO EBEMA (correo @ebema.cl + contraseña) =====
+    // El rol NO se asigna desde el cliente: el trigger on_auth_user_created crea
+    // la fila app_users con rol AGENTE_COMERCIAL. Requiere confirmar el correo.
+    if (email.endsWith('@ebema.cl')) {
+      if (pass.length < 6) return showErr('La contraseña debe tener mínimo 6 caracteres');
+      if (pass !== confirmPass) return showErr('Las contraseñas no coinciden');
+      btn.innerHTML = '<div style="width:18px;height:18px;border:2px solid rgba(255,255,255,0.3);border-top-color:white;border-radius:50%;animation:spin 0.7s linear infinite"></div> Creando cuenta...';
+      btn.disabled = true;
+      const { error } = await supabase.auth.signUp({
+        email, password: pass,
+        options: {
+          data: { full_name: (representante || razonSocial || email.split('@')[0]) },
+          emailRedirectTo: window.location.origin + window.location.pathname
+        }
+      });
+      if (error) {
+        const m = (error.message || '').toLowerCase();
+        if (m.includes('already registered')) return showErr('El correo ya se encuentra registrado');
+        return showErr('No se pudo crear la cuenta: ' + error.message);
+      }
+      showAlert('Cuenta creada. Revisa tu correo @ebema.cl para confirmar la cuenta antes de iniciar sesión.');
+      authState = 'login';
+      renderAuthView();
+      return;
+    }
+
+    // ===== REGISTRO PROVEEDOR EXTERNO =====
     if (!validateRut(rut)) return showErr('El RUT de la empresa no es válido');
     if (pass.length < 6) return showErr('La contraseña debe tener mínimo 6 caracteres');
     if (pass !== confirmPass) return showErr('Las contraseñas no coinciden');

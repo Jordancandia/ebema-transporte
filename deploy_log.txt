@@ -1,0 +1,26 @@
+===== LIMPIAR LOCKS =====
+HEAD.lock_OK
+index.lock_OK
+===== IDENTITY =====
+===== ADD =====
+warning: in the working copy of 'index.html', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'js/abastecimiento.js', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'js/app.js', LF will be replaced by CRLF the next time Git touches it
+===== COMMIT =====
+[main a107f50] fix: calendario prioritario lee abast_calendario por dia v=20260813c
+ 3 files changed, 49 insertions(+), 30 deletions(-)
+===== PULL =====
+error: cannot pull with rebase: You have unstaged changes.
+error: Please commit or stash them.
+===== PUSH =====
+remote: This repository moved. Please use the new location:        
+remote:   https://github.com/Jordancandia/ebema-transporte.git        
+To https://github.com/jordancandia/ebema-transporte.git
+   7b57ea9..a107f50  main -> main
+===== LOG =====
+a107f50 fix: calendario prioritario lee abast_calendario por dia v=20260813c
+7b57ea9 fix: calendario prioritario lee abast_calendario por dia v=20260813c
+4d9794b fix: calendario prioritario lee abast_calendario por dia v=20260813c
+===== STATUS =====
+## main...origin/main
+ M deploy_log.txt
