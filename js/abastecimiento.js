@@ -704,18 +704,44 @@ export async function renderAbastecimientoView(container) {
   else                                       await renderProveedores(stage);
 }
 
-async function fetchAllRows(vista) {
+// Caché en memoria de filas crudas por vista (evita recargar al cambiar de
+// pestaña o al reusar la misma vista en el Plan de Carga).
+const _rawCache = new Map();       // vista -> { rows, ts }
+const RAW_TTL = 120000;            // 2 minutos
+function clearRawCache() { _rawCache.clear(); }
+
+async function fetchAllRows(vista, force = false) {
+  const cached = _rawCache.get(vista);
+  if (!force && cached && (Date.now() - cached.ts) < RAW_TTL) return cached.rows;
+
   const pageSize = 1000;
-  let from = 0, all = [];
-  for (;;) {
-    const { data, error } = await supabase.from(vista).select('*').range(from, from + pageSize - 1);
-    if (error) { console.error(error); showAlert('Error al cargar datos: ' + error.message, 'error'); break; }
-    if (!data || !data.length) break;
-    all = all.concat(data);
-    if (data.length < pageSize || from > 60000) break;
-    from += pageSize;
+  // 1) Total de filas (HEAD, sin traer datos) para paginar en paralelo
+  let total = 0;
+  try {
+    const { count } = await supabase.from(vista).select('*', { count: 'exact', head: true });
+    total = count || 0;
+  } catch { total = 0; }
+
+  let rows = [];
+  if (total <= pageSize) {
+    const { data, error } = await supabase.from(vista).select('*').range(0, pageSize - 1);
+    if (error) { console.error(error); showAlert('Error al cargar datos: ' + error.message, 'error'); return cached ? cached.rows : []; }
+    rows = data || [];
+  } else {
+    // 2) Traer todas las páginas EN PARALELO (mucho más rápido que secuencial)
+    const pages = Math.min(Math.ceil(total / pageSize), 100);
+    const reqs = [];
+    for (let p = 0; p < pages; p++) {
+      reqs.push(supabase.from(vista).select('*').range(p * pageSize, p * pageSize + pageSize - 1));
+    }
+    const results = await Promise.all(reqs);
+    for (const { data, error } of results) {
+      if (error) { console.error(error); continue; }
+      if (data) rows = rows.concat(data);
+    }
   }
-  return all;
+  _rawCache.set(vista, { rows, ts: Date.now() });
+  return rows;
 }
 
 // ============================================================================
@@ -978,29 +1004,46 @@ async function renderPlanCarga(stage) {
       <div class="text-[12px] font-bold text-primary mb-xs">${escapeHtml(lbl)} <span class="text-secondary font-normal">(${fmtNum(sub, 4)} Ton)</span></div>
       ${tableHtml}</div>`;
   }
+  const camMark = d => d._enCamion === undefined ? '' : (d._enCamion ? '✓ SÍ' : '✗ EXCEDE');
+  const shiftSet = (s) => new Set([...s].map(i => i + 1));
   // Bloque Traslados (Quiebre / Abastecimiento / REVEX / Crossdocking)
-  function blkTraslado(lbl, items) {
+  function blkTraslado(lbl, items, marcar) {
     if (!items.length) return '';
-    const filas = items.map(d => [d.pt, d.material, d.nombre, d.fecha, d.ctd, fmtNum(d.ton, 4), d.pv]);
-    return blkWrap(lbl, items, tablaDet(
-      ['Pedido de Traslado','ID Material','Nombre Material','Fecha de Entrega','Cantidad Confirmada','Ton SKU','Pedido de Venta'],
-      filas, new Set([4, 5])));
+    let heads = ['Pedido de Traslado','ID Material','Nombre Material','Fecha de Entrega','Cantidad Confirmada','Ton SKU','Pedido de Venta'];
+    let align = new Set([4, 5]);
+    let filas = items.map(d => [d.pt, d.material, d.nombre, d.fecha, d.ctd, fmtNum(d.ton, 4), d.pv]);
+    if (marcar) { heads = ['En Camión', ...heads]; align = shiftSet(align); filas = items.map((d, i) => [camMark(d), ...filas[i]]); }
+    return blkWrap(lbl, items, tablaDet(heads, filas, align));
   }
   // Bloque Retiros de Fábrica
-  function blkRetiro(lbl, items) {
+  function blkRetiro(lbl, items, marcar) {
     if (!items.length) return '';
-    const filas = items.map(d => [d.oc, d.idProv, d.prov, d.material, d.nombre, d.fecha, fmtNum(parseNum(d.cant), 1), fmtNum(d.ton, 4), d.pv]);
-    return blkWrap(lbl, items, tablaDet(
-      ['Orden de Compra','Id Proveedor','Proveedor','ID Material','Nombre Material','Fecha de Retiro','Cantidad','Ton SKU','Pedido de Venta'],
-      filas, new Set([6, 7])));
+    let heads = ['Orden de Compra','Id Proveedor','Proveedor','ID Material','Nombre Material','Fecha de Retiro','Cantidad','Ton SKU','Pedido de Venta'];
+    let align = new Set([6, 7]);
+    let filas = items.map(d => [d.oc, d.idProv, d.prov, d.material, d.nombre, d.fecha, fmtNum(parseNum(d.cant), 1), fmtNum(d.ton, 4), d.pv]);
+    if (marcar) { heads = ['En Camión', ...heads]; align = shiftSet(align); filas = items.map((d, i) => [camMark(d), ...filas[i]]); }
+    return blkWrap(lbl, items, tablaDet(heads, filas, align));
   }
   // Bloque Pedidos de Venta
-  function blkVenta(lbl, items) {
+  function blkVenta(lbl, items, marcar) {
     if (!items.length) return '';
-    const filas = items.map(d => [d.pv, d.material, d.nombre, fmtNum(parseNum(d.cant), 1), d.ruta, d.comuna, d.region, d.fecha, fmtNum(d.ton, 4)]);
-    return blkWrap(lbl, items, tablaDet(
-      ['Pedido de Venta','ID Material','Nombre Material','Cantidad','Id Ruta','Comuna','Región','Fecha de Entrega','Ton SKU'],
-      filas, new Set([3, 8])));
+    let heads = ['Pedido de Venta','ID Material','Nombre Material','Cantidad','Id Ruta','Comuna','Región','Fecha de Entrega','Ton SKU'];
+    let align = new Set([3, 8]);
+    let filas = items.map(d => [d.pv, d.material, d.nombre, fmtNum(parseNum(d.cant), 1), d.ruta, d.comuna, d.region, d.fecha, fmtNum(d.ton, 4)]);
+    if (marcar) { heads = ['En Camión', ...heads]; align = shiftSet(align); filas = items.map((d, i) => [camMark(d), ...filas[i]]); }
+    return blkWrap(lbl, items, tablaDet(heads, filas, align));
+  }
+
+  // Marca, en orden de prioridad, qué ítems entran en el camión CD según su
+  // capacidad efectiva (r.cap). Devuelve totales cargado/excede.
+  function marcarCapacidadCD(r) {
+    const orden = [r.det.revex, r.det.ventaCons, r.det.retiro, r.det.cross, r.det.quiebre, r.det.stock];
+    let acc = 0;
+    orden.forEach(arr => (arr || []).forEach(d => {
+      if (acc + d.ton <= r.cap + 1e-9) { d._enCamion = true; acc += d.ton; }
+      else { d._enCamion = false; }
+    }));
+    return { cargado: acc, excede: Math.max(0, (r.total || 0) - acc) };
   }
 
   const TRUCK_TITULOS = {
@@ -1011,14 +1054,23 @@ async function renderPlanCarga(stage) {
   };
 
   function detalleRow(r, tipo) {
-    let blocks = '';
-    if (tipo === 'cd') blocks =
-      blkTraslado('1º Pedidos de Traslados REVEX', r.det.revex) +
-      blkVenta('2º Pedidos de Venta Directa Consolidados', r.det.ventaCons) +
-      blkRetiro('3º Retiros de Proveedor Consolidados (CD)', r.det.retiro) +
-      blkTraslado('4º Pedidos de Traslados Crossdocking', r.det.cross) +
-      blkTraslado('5º Pedidos de Traslados Quiebre', r.det.quiebre) +
-      blkTraslado('6º Pedidos de Traslados Abastecimiento', r.det.stock);
+    let blocks = '', banner = '';
+    if (tipo === 'cd') {
+      const fill = marcarCapacidadCD(r);
+      banner = `<div class="mb-sm px-md py-sm rounded-lg bg-blue-50 border border-blue-200 text-[12px] text-blue-900 inline-flex flex-wrap items-center gap-md">
+        <span><strong>Capacidad camión:</strong> ${fmtNum(r.cap, 0)} t</span>
+        <span><strong>Cargado:</strong> ${fmtNum(fill.cargado, 1)} t</span>
+        <span class="${fill.excede > 0 ? 'text-orange-700 font-bold' : ''}"><strong>Excede:</strong> ${fmtNum(fill.excede, 1)} t</span>
+        <span class="text-secondary">✓ SÍ = va en el camión (por prioridad) · ✗ EXCEDE = queda para el próximo</span>
+      </div>`;
+      blocks =
+        blkTraslado('1º Pedidos de Traslados REVEX', r.det.revex, true) +
+        blkVenta('2º Pedidos de Venta Directa Consolidados', r.det.ventaCons, true) +
+        blkRetiro('3º Retiros de Proveedor Consolidados (CD)', r.det.retiro, true) +
+        blkTraslado('4º Pedidos de Traslados Crossdocking', r.det.cross, true) +
+        blkTraslado('5º Pedidos de Traslados Quiebre', r.det.quiebre, true) +
+        blkTraslado('6º Pedidos de Traslados Abastecimiento', r.det.stock, true);
+    }
     else if (tipo === 'cliente') blocks = blkVenta('Pedidos de Venta directos al cliente', r.det.cliente);
     else if (tipo === 'fabSuc') blocks = blkRetiro('Órdenes de Compra Fábrica-Sucursal', r.det.fabSuc);
     else if (tipo === 'fabCli') blocks = blkRetiro('Órdenes de Compra Fábrica-Cliente', r.det.fabCli);
@@ -1029,6 +1081,7 @@ async function renderPlanCarga(stage) {
           <button data-descarga="${r.ce}|${tipo}" class="bg-surface-container-high text-on-surface px-sm py-xs rounded-lg text-[12px] font-bold hover:bg-surface-container-highest inline-flex items-center gap-xs">
             <span class="material-symbols-outlined text-[15px]">download</span>Descargar detalle</button>
         </div>
+        ${banner}
         ${blocks || '<p class="text-secondary text-[12px]">Sin ítems.</p>'}
       </div></td></tr>`;
   }
@@ -1153,7 +1206,7 @@ async function renderPlanCarga(stage) {
       </div>
     </div>`;
 
-    stage.querySelector('[data-refrescar]')?.addEventListener('click', () => renderPlanCarga(stage));
+    stage.querySelector('[data-refrescar]')?.addEventListener('click', () => { clearRawCache(); renderPlanCarga(stage); });
     stage.querySelectorAll('[data-origen]').forEach(btn => btn.addEventListener('click', () => {
       planOrigen = btn.dataset.origen; planDetalleAbierto.clear(); renderPlanCarga(stage);
     }));
@@ -1412,7 +1465,7 @@ async function renderVistaTabla(stage, cfg, modeIdx = 0) {
       const row = rows.find(r => String(r[active.expand?.idKey] ?? '') === String(id));
       if (row && active.editable) { row[active.editable.key] = sel.value; await active.editable.onChange(row, sel.value, ctx); draw(); }
     }));
-    stage.querySelector('[data-refrescar]')?.addEventListener('click', () => renderVistaTabla(stage, cfg, modeIdx));
+    stage.querySelector('[data-refrescar]')?.addEventListener('click', () => { clearRawCache(); renderVistaTabla(stage, cfg, modeIdx); });
     stage.querySelector('[data-csv]')?.addEventListener('click', () => exportarCSV(active, filt));
   }
 
