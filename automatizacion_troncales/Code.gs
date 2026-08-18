@@ -2,11 +2,11 @@
  * ============================================================================
  *  AUTOMATIZACION CORREOS TRONCALES  ->  SUPABASE (SIT EBEMA)
  * ----------------------------------------------------------------------------
- *  Lee Gmail 3 veces al dia (07:35 / 11:35 / ~13:46, hora Chile), procesa SOLO
+ *  Lee Gmail 3 veces al dia (07:35 / 11:35 / ~13:50, hora Chile), procesa SOLO
  *  correos NO leidos de dos etiquetas, extrae y parsea los adjuntos, y carga
  *  los datos a Supabase (pisando la base vigente). La corrida de la tarde
  *  ademas guarda la foto del dia (historico 7 dias). Marca los correos leidos.
- *  La corrida de la tarde se centra en 13:46 (jitter +/-15) para alcanzar a
+ *  La corrida de la tarde se centra en 13:50 (jitter +/-15) para alcanzar a
  *  leer el correo de la tarde.
  *
  *  Fuentes:
@@ -57,10 +57,11 @@ function ejecutar_1340() { procesar(true); }
 function ejecutar_1335() { procesar(true); }
 
 // Minuto centro del trigger de la tarde. Apps Script dispara con +/-15 min de
-// jitter, por lo que la ventana real es CENTRO-15 .. CENTRO+15. Con 46 la
-// ventana es 13:31..14:01, dando mas margen para que llegue el correo de la
-// tarde (la corrida tarda 1-2 min).
-var MIN_TARDE = 46;
+// jitter (ventana CENTRO-15 .. CENTRO+15). SAP envia el lote de la tarde a las
+// 13:31 exactas, por lo que la corrida DEBE dispararse despues. Con 50 la
+// ventana es 13:35..14:05: siempre despues del correo (13:31) y casi siempre
+// cerrando antes de las 14:00.
+var MIN_TARDE = 50;
 
 // Utilidad: crea los 3 triggers de una sola vez (ejecutar manualmente 1 vez).
 // IMPORTANTE: reejecutar esta funcion tras cambiar el horario de la tarde.
