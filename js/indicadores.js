@@ -43,7 +43,7 @@ export async function renderIndicadoresView(container){
   if (_view === 'tarifa') return renderTarifa(container);
   if (_view === 'margen') return renderMargen(container);
   paintShell();
-  if (_mode === 'general') await loadGeneral(); else await loadCentro();
+  await loadGeneral();
 }
 
 function renderStub(container, titulo){
@@ -59,16 +59,11 @@ function paintShell(){
   _container.innerHTML = `
   <div class="max-w-[1120px] mx-auto">
     <div class="flex items-center justify-between gap-md flex-wrap mb-md">
-      <div class="inline-flex rounded-lg border border-surface-variant overflow-hidden">
-        <button id="ind_tab_gen" class="px-md py-sm text-body-md ${_mode==='general'?'bg-primary text-on-primary':'text-secondary'}">Consolidado General</button>
-        <button id="ind_tab_cen" class="px-md py-sm text-body-md ${_mode==='centro'?'bg-primary text-on-primary':'text-secondary'}">Por Centro</button>
-      </div>
+      <div class="text-headline-sm font-bold">Consolidado General</div>
       <span class="text-[11px] text-secondary border border-surface-variant rounded-full px-md py-[3px]">Actualización diaria 08:00 · Supabase</span>
     </div>
     <div id="ind_body"></div>
   </div>`;
-  document.getElementById('ind_tab_gen').addEventListener('click', ()=>{ if(_mode!=='general'){_mode='general'; renderIndicadoresView(_container);} });
-  document.getElementById('ind_tab_cen').addEventListener('click', ()=>{ if(_mode!=='centro'){_mode='centro'; renderIndicadoresView(_container);} });
 }
 function body(){ return document.getElementById('ind_body'); }
 
@@ -144,6 +139,7 @@ function bindSelect(grupos){
 // ============================================================================
 function generalHTML(d){
   const nsLast=d.ns[d.ns.length-1]||{}, nsAvgO=avg(d.ns.map(r=>r.otif_pct)), nsAvgF=avg(d.ns.map(r=>r.fillrate_pct)), nsLines=sum(d.ns.map(r=>r.lineas_evaluadas));
+  const nsCur=d.ns.find(r=>r.mes_label===mesEnCurso())||{};
   const tarLastClosed=d.tar.length>1?d.tar[d.tar.length-2]:(d.tar[d.tar.length-1]||{});
   const tarAvg=wavg(d.tar.map(r=>[r.tarifa_kg,r.toneladas])), tonAcc=sum(d.tar.map(r=>r.toneladas));
   const marAcc=sum(d.mar.map(r=>r.margen))/1e6, cobAvg=avg(d.mar.map(r=>r.cobertura_pct));
@@ -152,11 +148,11 @@ function generalHTML(d){
   const ftLast=lastFT(d.ft);
   return `
     ${card('1 · Nivel de Servicio','OTIF y Fill Rate — evolución mensual',
-      tile('OTIF — '+mesCorto(nsLast.mes_label||'')+' (último)',pct(nsLast.otif_pct),'Fill Rate '+pct(nsLast.fillrate_pct))+
+      tile('OTIF — '+mesCorto(nsLast.mes_label||'')+' (último cerrado)',pct(nsLast.otif_pct),'Fill Rate '+pct(nsLast.fillrate_pct))+
+      tile('OTIF — '+mesCorto(mesEnCurso())+' (en curso)',pct(nsCur.otif_pct),(nsCur.otif_pct==null?'sin datos aún':'parcial'),'opacity-60')+
       tile('OTIF promedio',pct(nsAvgO),'año cerrado')+
-      tile('Fill Rate promedio',pct(nsAvgF),'año cerrado')+
       tile('Líneas evaluadas',nf0.format(nsLines),'acumulado'),
-      legend([{n:'OTIF %',c:C.navy},{n:'Fill Rate %',c:C.blue}])+`<div id="g_ns"></div>`)}
+      legend([{n:'OTIF %',c:C.navy},{n:'Fill Rate %',c:C.blue},{n:'Mes en curso',c:C.muted}])+`<div id="g_ns"></div>`)}
     ${card('2 · Pesos por Kilo','Tarifa $/kg y toneladas — evolución mensual',
       tile('Tarifa — '+mesCorto(tarLastClosed.mes_label||'')+' (último)',money(tarLastClosed.tarifa_kg),'$/kg')+
       tile('Tarifa promedio',money(tarAvg),'$/kg · ponderado')+
@@ -181,17 +177,21 @@ function generalHTML(d){
       legend([{n:'No cobrado $MM',c:C.red}])+`<div id="g_scm"></div>`)}
 
     ${card('3c · Matriz mensual por Centro','OTIF % y Tarifa $/kg por sucursal (semáforo)','',
-      `<div class="text-[12px] text-secondary mb-1 font-medium">OTIF % — verde alto, rojo bajo</div>`+
-      heatmapHTML(d.nsm,'otif_pct',heatOtif,v=>nf1.format(v))+
-      `<div class="text-[12px] text-secondary mb-1 mt-md font-medium">Tarifa $/kg — verde barato, rojo caro</div>`+
-      heatmapHTML(d.tarm,'tarifa_kg',heatTarifa,v=>'$'+nf1.format(v)))}
+      `<div class="grid grid-cols-1 md:grid-cols-2 gap-md">`+
+      `<div><div class="text-[12px] text-secondary mb-1 font-medium">OTIF % — verde alto, rojo bajo</div>`+
+      heatmapHTML(d.nsm,'otif_pct',heatOtif,v=>nf1.format(v))+`</div>`+
+      `<div><div class="text-[12px] text-secondary mb-1 font-medium">Tarifa $/kg — verde barato, rojo caro</div>`+
+      heatmapHTML(d.tarm,'tarifa_kg',heatTarifa,v=>'$'+nf1.format(v))+`</div></div>`)}
 
-    ${card('4 · Flete Tercero (REVEX)','OTIF por modalidad — CD → sucursal → cliente',
+    ${card('4 · Flete Tercero (REVEX)','OTIF, pedidos y días por modalidad — evolutivo mensual (red)',
       tile('OTIF Despacha',pct(ftLast.despO),(ftLast.despN||0)+' pedidos')+
       tile('OTIF Retira',pct(ftLast.retiO),(ftLast.retiN||0)+' pedidos')+
       tile('Pedidos',nf0.format(sum(d.ft.map(r=>r.pedidos))),'período')+
       tile('Ciclo Despacha',(ftLast.despCiclo!=null?nf1.format(ftLast.despCiclo)+' d':'–'),'último mes'),
-      legend([{n:'Despacha',c:C.navy},{n:'Retira',c:C.orange}])+`<div id="g_ft"></div>`)}
+      `<div class="grid grid-cols-1 md:grid-cols-3 gap-md">`+
+      `<div>`+legend([{n:'OTIF Despacha',c:C.navy},{n:'OTIF Retira',c:C.orange}])+`<div id="g_rev_otif"></div></div>`+
+      `<div>`+legend([{n:'Pedidos Despacha',c:C.navy},{n:'Pedidos Retira',c:C.orange}])+`<div id="g_rev_ped"></div></div>`+
+      `<div>`+legend([{n:'Días Despacha',c:C.navy},{n:'Días Retira',c:C.orange}])+`<div id="g_rev_dias"></div></div></div>`)}
     ${card('5 · Operación','Consolidación de camión y tiempo de facturación — mensual',
       tile('Consolidación — '+mesCorto((d.con[d.con.length-2]||d.con[d.con.length-1]||{}).mes_label||''),pct((d.con[d.con.length-2]||d.con[d.con.length-1]||{}).consol_pct),'% capacidad usada')+
       tile('Consolidación promedio',pct(avg(d.con.map(r=>r.consol_pct))),'año')+
@@ -330,20 +330,38 @@ function xLabels(out,labels){for(var i=0;i<labels.length;i++)out.push('<text x="
 function svgOpen(){return '<svg viewBox="0 0 '+W+' '+H+'" style="width:100%;height:auto;overflow:visible" role="img">';}
 function valLbl(v){ return Math.abs(v)>=1000? nf0.format(v) : nf1.format(v); }
 
-function lineChart(elId,series,labels,mn,mx,unit){
+function lineChart(elId,series,labels,mn,mx,unit,softFrom){
   var el=document.getElementById(elId); if(!el) return;
+  if(softFrom==null) softFrom=labels.length;
   var out=[svgOpen()]; gridY(out,mn,mx,function(v){return Math.round(v);});
   out.push('<line x1="'+PL+'" y1="'+(H-PB)+'" x2="'+(W-PR)+'" y2="'+(H-PB)+'" stroke="'+C.grid+'" stroke-width="1"/>');
-  for(var s=0;s<series.length;s++){var ser=series[s],d='';
-    for(var i=0;i<ser.v.length;i++){var X=px(i,ser.v.length),Y=py(ser.v[i],mn,mx);d+=(i?'L':'M')+X.toFixed(1)+' '+Y.toFixed(1)+' ';}
-    out.push('<path d="'+d+'" fill="none" stroke="'+ser.c+'" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>');
-    for(var j=0;j<ser.v.length;j++){var CX=px(j,ser.v.length),CY=py(ser.v[j],mn,mx);
-      out.push('<circle cx="'+CX.toFixed(1)+'" cy="'+CY.toFixed(1)+'" r="3.4" fill="'+ser.c+'" stroke="#fff" stroke-width="1.5" data-t="'+ser.n+' '+labels[j]+': '+nf1.format(ser.v[j])+unit+'"/>');
+  for(var s=0;s<series.length;s++){var ser=series[s];
+    // trazo por segmentos (rompe en nulos; tramo "en curso" punteado y translúcido)
+    for(var i=1;i<ser.v.length;i++){
+      if(ser.v[i]==null||ser.v[i-1]==null) continue;
+      var X0=px(i-1,ser.v.length),Y0=py(ser.v[i-1],mn,mx),X1=px(i,ser.v.length),Y1=py(ser.v[i],mn,mx);
+      var soft=(i>=softFrom);
+      out.push('<path d="M'+X0.toFixed(1)+' '+Y0.toFixed(1)+' L'+X1.toFixed(1)+' '+Y1.toFixed(1)+'" fill="none" stroke="'+ser.c+'" stroke-width="2" stroke-linecap="round"'+(soft?' stroke-dasharray="4 3" opacity="0.5"':'')+'/>');
+    }
+    for(var j=0;j<ser.v.length;j++){ if(ser.v[j]==null) continue;
+      var CX=px(j,ser.v.length),CY=py(ser.v[j],mn,mx),op=(j>=softFrom?'0.5':'1');
+      out.push('<circle cx="'+CX.toFixed(1)+'" cy="'+CY.toFixed(1)+'" r="3.4" fill="'+ser.c+'" stroke="#fff" stroke-width="1.5" opacity="'+op+'" data-t="'+ser.n+' '+labels[j]+': '+nf1.format(ser.v[j])+unit+(j>=softFrom?' (en curso)':'')+'"/>');
       var lyy=(s===0? CY-7 : CY+13);
-      out.push('<text x="'+CX.toFixed(1)+'" y="'+lyy.toFixed(1)+'" text-anchor="middle" fill="'+ser.c+'" font-size="8.5" font-weight="600">'+nf1.format(ser.v[j])+'</text>');
+      out.push('<text x="'+CX.toFixed(1)+'" y="'+lyy.toFixed(1)+'" text-anchor="middle" fill="'+ser.c+'" font-size="8.5" font-weight="600" opacity="'+op+'">'+nf1.format(ser.v[j])+'</text>');
     }
   }
   xLabels(out,labels); out.push('</svg>'); el.innerHTML=out.join(''); bind(el);
+}
+// Devuelve etiqueta 'YYYY-MM' del mes en curso
+function mesEnCurso(){ var d=new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'); }
+// Agrega el mes en curso (si falta) a las filas ns; marca _curso=true en el slot añadido
+function nsConCurso(ns){
+  var rows=ns.slice(); var cur=mesEnCurso();
+  var have=rows.some(r=>r.mes_label===cur);
+  if(!have && rows.length && rows[rows.length-1].mes_label < cur){
+    rows.push({mes_label:cur, otif_pct:null, fillrate_pct:null, lineas_evaluadas:null, _curso:true});
+  } else if(have){ rows[rows.length-1]._curso=true; }
+  return rows;
 }
 function barChart(elId,vals,labels,mn,mx,color,unit,part,tickFmt){
   var el=document.getElementById(elId); if(!el) return;
@@ -378,16 +396,21 @@ function hbarChart(elId,items,color,unit,hlLabel){
 }
 
 function drawGeneral(d){
-  const nsL=d.ns.map(r=>mesCorto(r.mes_label));
-  lineChart('g_ns',[{n:'OTIF',v:d.ns.map(r=>r.otif_pct),c:C.navy},{n:'Fill',v:d.ns.map(r=>r.fillrate_pct),c:C.blue}],nsL,60,100,'%');
+  const nsC=nsConCurso(d.ns), nsL=nsC.map(r=>mesCorto(r.mes_label)), softNs=nsC.findIndex(r=>r._curso);
+  lineChart('g_ns',[{n:'OTIF',v:nsC.map(r=>r.otif_pct),c:C.navy},{n:'Fill',v:nsC.map(r=>r.fillrate_pct),c:C.blue}],nsL,60,100,'%',softNs<0?undefined:softNs);
   const tarL=d.tar.map(r=>mesCorto(r.mes_label)), pIdx=d.tar.length-1;
   barChart('g_tar',d.tar.map(r=>r.tarifa_kg),tarL,0,niceMax(d.tar.map(r=>r.tarifa_kg)),C.orange,' $/kg',pIdx,v=>'$'+Math.round(v));
   barChart('g_ton',d.tar.map(r=>r.toneladas),tarL,0,niceMax(d.tar.map(r=>r.toneladas)),C.blue,' t',pIdx,v=>Math.round(v/1000)+'k');
   const marL=d.mar.map(r=>mesCorto(r.mes_label)), marV=d.mar.map(r=>r.margen/1e6);
   barChart('g_mar',marV,marL,Math.min(-2,niceMin(marV)),2,C.red,' MM',d.mar.length-1,v=>'$'+Math.round(v));
   lineChart('g_cob',[{n:'Cobertura',v:d.mar.map(r=>r.cobertura_pct),c:C.navy}],marL,60,100,'%');
-  const ftBy=groupFT(d.ft);
-  lineChart('g_ft',[{n:'Despacha',v:ftBy.desp,c:C.navy},{n:'Retira',v:ftBy.reti,c:C.orange}],ftBy.labels,0,100,'%');
+  const fm=[...new Set(d.ft.map(r=>r.mes_label))].sort();
+  const ftv=(mod,f)=>fm.map(m=>{const r=d.ft.find(x=>x.mes_label===m&&x.modalidad===mod);return r?(r[f]||0):0;});
+  lineChart('g_rev_otif',[{n:'Despacha',v:ftv('Despacha','otif_pct'),c:C.navy},{n:'Retira',v:ftv('Retira','otif_pct'),c:C.orange}],fm.map(mesCorto),0,100,'%');
+  const _ped=ftv('Despacha','pedidos').concat(ftv('Retira','pedidos'));
+  lineChart('g_rev_ped',[{n:'Despacha',v:ftv('Despacha','pedidos'),c:C.navy},{n:'Retira',v:ftv('Retira','pedidos'),c:C.orange}],fm.map(mesCorto),0,niceMax(_ped),'');
+  const _dias=ftv('Despacha','ciclo_prom_dias').concat(ftv('Retira','ciclo_prom_dias'));
+  lineChart('g_rev_dias',[{n:'Despacha',v:ftv('Despacha','ciclo_prom_dias'),c:C.navy},{n:'Retira',v:ftv('Retira','ciclo_prom_dias'),c:C.orange}],fm.map(mesCorto),0,niceMax(_dias),' d');
   const conL=d.con.map(r=>mesCorto(r.mes_label));
   barChart('g_consol',d.con.map(r=>r.consol_pct),conL,0,100,C.green,'%',d.con.length-1,v=>Math.round(v));
   const tieL=d.tie.map(r=>mesCorto(r.mes_label));
@@ -431,7 +454,7 @@ function drawCentro(d, grupo){
 //  UI helpers
 // ============================================================================
 function card(title,lead,tiles,chartsHTML){
-  return `<section class="bg-surface-container-lowest border border-surface-variant rounded-xl p-md md:p-lg mb-lg">
+  return `<section data-card class="bg-surface-container-lowest border border-surface-variant rounded-xl p-md md:p-lg mb-lg">
     <div class="text-label-caps text-secondary uppercase mb-1">${title}</div>
     <div class="text-headline-sm font-bold mb-md">${lead}</div>
     ${tiles?`<div class="grid grid-cols-2 md:grid-cols-4 gap-sm mb-md">${tiles}</div>`:''}
@@ -481,7 +504,24 @@ function ensureModal(){
   document.addEventListener('keydown',e=>{ if(e.key==='Escape' && _modal) _modal.style.display='none'; });
 }
 function openModal(html){ ensureModal(); _modal.querySelector('#ind_modal_body').innerHTML=html; _modal.style.display='flex'; }
-function sweepHeat(){ document.querySelectorAll('.ind-heat').forEach(attachExpand); }
+function sweepHeat(){ document.querySelectorAll('.ind-heat').forEach(attachExpand); sweepCards(); }
+// Expansor a nivel de CUADRO completo (tiles + gráficos), no solo el gráfico
+function sweepCards(){ document.querySelectorAll('section[data-card]').forEach(attachCardExpand); }
+function attachCardExpand(sec){
+  if(!sec || sec.querySelector(':scope > button.ind-cardexp')) return;
+  sec.style.position='relative';
+  var btn=document.createElement('button');
+  btn.className='ind-cardexp'; btn.textContent='⤢'; btn.title='Ampliar cuadro completo';
+  btn.style.cssText='position:absolute;top:8px;right:8px;border:1px solid rgba(11,11,11,.14);background:rgba(255,255,255,.92);border-radius:6px;height:26px;padding:0 8px;font-size:13px;line-height:1;cursor:pointer;color:#333;z-index:4;display:inline-flex;align-items:center;gap:5px';
+  btn.innerHTML='⤢ <span style="font-size:11px">Ampliar</span>';
+  btn.addEventListener('click',function(ev){ ev.stopPropagation();
+    var tmp=sec.cloneNode(true);
+    tmp.querySelectorAll('button.ind-exp,button.ind-cardexp').forEach(function(b){b.remove();});
+    tmp.style.margin='0'; tmp.style.border='none';
+    openModal(tmp.outerHTML);
+  });
+  sec.appendChild(btn);
+}
 function attachExpand(el){
   if(!el || el.querySelector(':scope > button.ind-exp')) return;
   el.style.position='relative';
