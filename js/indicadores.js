@@ -735,7 +735,8 @@ function paintTarifa(container,grupos){
 }
 function tarifaHTML(d,grupos,grupo){
   const opciones=grupos.map(g=>`<option value="${g}" ${g===grupo?'selected':''}>${nice(g)}</option>`).join('');
-  const ebcTot={docs:sum(d.ebc.map(r=>r.docs)),ton:sum(d.ebc.map(r=>r.toneladas)),pag:sum(d.ebc.map(r=>r.pagado))/1e6,cob:sum(d.ebc.map(r=>r.cobrado))/1e6};
+  const ebcG=d.ebc.filter(r=>r.grupo===grupo), showEbc=ebcG.length>0;
+  const ebcTot={docs:sum(ebcG.map(r=>r.docs)),ton:sum(ebcG.map(r=>r.toneladas)),pag:sum(ebcG.map(r=>r.pagado))/1e6,cob:sum(ebcG.map(r=>r.cobrado))/1e6};
   return `<div class="max-w-[1120px] mx-auto">
     <div class="flex items-center gap-md mb-md flex-wrap">
       <div class="text-headline-sm font-bold">Pesos por Kilo — detalle</div>
@@ -746,25 +747,27 @@ function tarifaHTML(d,grupos,grupo){
       `<div class="grid grid-cols-1 md:grid-cols-2 gap-md">`+
       `<div>`+legend([{n:'Tarifa $/kg',c:C.orange}])+`<div id="t_tar"></div></div>`+
       `<div>`+legend([{n:'Toneladas',c:C.blue}])+`<div id="t_ton"></div></div></div>`)}
-    ${card('2 · Consolidación por tipo de camión','Evolutivo mensual · 5 / 10 / 15 / 28 ton','',
+    ${card('2 · Consolidación promedio por tipo de camión','Promedio del período · 5 / 10 / 15 / 28 ton','',
+      legend([{n:'Consolidación % promedio',c:C.green}])+`<div id="t_cap_avg"></div>`)}
+    ${card('3 · Consolidación por mes','Evolutivo mensual por tipo de camión','',
       legend([{n:'5 t',c:C.navy},{n:'10 t',c:C.blue},{n:'15 t',c:C.orange},{n:'28 t',c:C.red}])+`<div id="t_cap"></div>`)}
-    ${card('3 · Comunas más caras y más baratas','Tarifa $/kg por comuna (≥10 t)','',
+    ${card('4 · Comunas más caras y más baratas','Tarifa $/kg por comuna destino (≥10 t · rutas de una misma comuna se suman)','',
       `<div class="grid grid-cols-1 md:grid-cols-2 gap-md">`+
       `<div>`+legend([{n:'10 más caras',c:C.red}])+`<div id="t_caro"></div></div>`+
       `<div>`+legend([{n:'10 más baratas',c:C.green}])+`<div id="t_barato"></div></div></div>`)}
-    ${card('4 · Consolidación troncal — evolutivo','Traslados de reposición entre centros','',
+    ${card('5 · Consolidación troncal — evolutivo','Traslados de reposición entre centros','',
       `<div class="grid grid-cols-1 md:grid-cols-2 gap-md">`+
       `<div>`+legend([{n:'Consolidación %',c:C.green}])+`<div id="t_tron_cons"></div></div>`+
       `<div>`+legend([{n:'Toneladas troncal',c:C.blue}])+`<div id="t_tron_ton"></div></div></div>`)}
-    ${card('5 · Tarifa troncal $/kg — matriz por centro','Mensual · semáforo verde barato / rojo caro','',
-      `<div id="t_tron_heat"></div>`)}
-    ${card('6 · Impacto EbemaClick','¿Cuánto financia la operación EbemaClick? (docs con V Garrido + material 400141)',
+    ${showEbc?card('6 · Impacto EbemaClick — mensual','Financiamiento de la operación EbemaClick por mes (docs con V Garrido + material 400141)',
       tile('Documentos',nf0.format(ebcTot.docs),'período')+
       tile('Toneladas',nf1.format(ebcTot.ton)+' t','movidas')+
       tile('Flete pagado',mm(ebcTot.pag),'costo operación','text-[#EE1B22]')+
       tile('Financiamiento neto',mm(ebcTot.pag-ebcTot.cob),'pagado − cobrado','text-[#EE1B22]'),
-      legend([{n:'Flete pagado EbemaClick $MM',c:C.red}])+`<div id="t_ebc"></div>`)}
-    <div class="text-[11px] text-secondary mt-lg leading-relaxed">Comuna vía routes.codigo=id_ruta. Troncal = documentos con línea 'Entrega reposición'. EbemaClick = documentos con línea de V Garrido T y material 400141 (definición estricta → pocos documentos).</div>
+      `<div class="grid grid-cols-1 md:grid-cols-2 gap-md">`+
+      `<div>`+legend([{n:'Flete pagado $MM',c:C.red},{n:'Cobrado $MM',c:C.navy}])+`<div id="t_ebc"></div></div>`+
+      `<div>`+legend([{n:'Financiamiento neto $MM',c:C.orange}])+`<div id="t_ebc_neto"></div></div></div>`):''}
+    <div class="text-[11px] text-secondary mt-lg leading-relaxed">Comuna = comuna destino (routes.comuna); rutas de una misma comuna se agrupan. Troncal = documentos con línea 'Entrega reposición'. EbemaClick = documentos con línea de V Garrido T y material 400141 (definición estricta); el cuadro solo aparece en centros con operación EbemaClick.</div>
   </div>`;
 }
 function drawTarifa(d,grupo){
@@ -774,6 +777,7 @@ function drawTarifa(d,grupo){
   barChart('t_ton',tm.map(r=>r.toneladas),tmL,0,niceMax(tm.map(r=>r.toneladas)),C.blue,' t',pIdx,v=>Math.round(v));
   const cap=d.cap.filter(r=>r.grupo===grupo), cm=[...new Set(cap.map(r=>r.mes_label))].sort();
   const caps=[['5',C.navy],['10',C.blue],['15',C.orange],['28',C.red]];
+  barChart('t_cap_avg',caps.map(x=>avg(cap.filter(y=>y.cap===x[0]&&y.consol_pct!=null).map(y=>y.consol_pct))||0),caps.map(x=>x[0]+'t'),0,100,C.green,'%',null,v=>Math.round(v));
   lineChart('t_cap',caps.map(x=>({n:x[0]+'t',v:cm.map(m=>{const r=cap.find(y=>y.mes_label===m&&y.cap===x[0]);return r?r.consol_pct:0;}),c:x[1]})),cm.map(mesCorto),0,100,'%');
   const cc=d.com.filter(r=>r.grupo===grupo && (r.toneladas||0)>=10 && r.tarifa_kg!=null);
   hbarChart('t_caro',cc.slice().sort((a,b)=>b.tarifa_kg-a.tarifa_kg).slice(0,10).map(r=>({label:r.comuna,value:r.tarifa_kg})),C.red,' $/kg','');
@@ -781,9 +785,13 @@ function drawTarifa(d,grupo){
   const tro=d.tro.filter(r=>r.grupo===grupo).slice().sort((a,b)=>a.mes_label<b.mes_label?-1:1), trL=tro.map(r=>mesCorto(r.mes_label));
   barChart('t_tron_cons',tro.map(r=>r.consol_pct),trL,0,100,C.green,'%',tro.length-1,v=>Math.round(v));
   barChart('t_tron_ton',tro.map(r=>r.toneladas),trL,0,niceMax(tro.map(r=>r.toneladas)),C.blue,' t',tro.length-1,v=>Math.round(v));
-  const heat=document.getElementById('t_tron_heat'); if(heat) heat.innerHTML=heatmapHTML(d.tro,'tarifa_kg',heatTarifa,v=>'$'+nf1.format(v));
-  const ebcM=[...new Set(d.ebc.map(r=>r.mes_label))].sort();
-  barChart('t_ebc',ebcM.map(m=>sum(d.ebc.filter(x=>x.mes_label===m).map(r=>r.pagado))/1e6),ebcM.map(mesCorto),0,niceMax(d.ebc.map(r=>r.pagado/1e6)),C.red,' MM',null,v=>'$'+nf1.format(v));
+  const ebcG=d.ebc.filter(r=>r.grupo===grupo);
+  if(ebcG.length){
+    const ebcM=[...new Set(ebcG.map(r=>r.mes_label))].sort();
+    const sumM=(m,f)=>sum(ebcG.filter(x=>x.mes_label===m).map(r=>r[f]||0));
+    lineChart('t_ebc',[{n:'Pagado',v:ebcM.map(m=>sumM(m,'pagado')/1e6),c:C.red},{n:'Cobrado',v:ebcM.map(m=>sumM(m,'cobrado')/1e6),c:C.navy}],ebcM.map(mesCorto),0,niceMax(ebcG.map(r=>r.pagado/1e6)),' MM');
+    barChart('t_ebc_neto',ebcM.map(m=>(sumM(m,'pagado')-sumM(m,'cobrado'))/1e6),ebcM.map(mesCorto),0,niceMax(ebcG.map(r=>(r.pagado-r.cobrado)/1e6)),C.orange,' MM',null,v=>'$'+nf1.format(v));
+  }
 }
 
 // ============================================================================
