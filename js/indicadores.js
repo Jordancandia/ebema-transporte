@@ -739,7 +739,6 @@ function paintTarifa(container,grupos){
   container.innerHTML=tarifaHTML(_cacheTar,grupos,_grupoT);
   ensureTip(); drawTarifa(_cacheTar,_grupoT); sweepHeat();
   const sel=document.getElementById('ind_selt'); if(sel) sel.onchange=ev=>{_grupoT=ev.target.value; paintTarifa(container,grupos);};
-  const seg=document.getElementById('ind_segt'); if(seg) seg.onchange=ev=>{_segT=ev.target.value; paintTarifa(container,grupos);};
 }
 function tarifaHTML(d,grupos,grupo){
   const opciones=grupos.map(g=>`<option value="${g}" ${g===grupo?'selected':''}>${nice(g)}</option>`).join('');
@@ -748,12 +747,10 @@ function tarifaHTML(d,grupos,grupo){
   return `<div class="max-w-[1120px] mx-auto">
     <div class="flex items-center gap-md mb-md flex-wrap">
       <div class="text-headline-sm font-bold">Pesos por Kilo — detalle</div>
-      <span class="ml-auto"></span>
-      ${segSelectHTML('ind_segt',_segT)}
-      <label class="text-secondary text-body-md">Centro:</label>
+      <label class="text-secondary text-body-md ml-auto">Centro:</label>
       <select id="ind_selt" class="border border-surface-variant rounded-lg px-md py-sm bg-surface-container-lowest text-on-surface">${opciones}</select>
     </div>
-    <div class="text-[11px] text-secondary -mt-sm mb-md">Cuadros 1–3 filtrados por segmento (<b>${segLabel(_segT)}</b>). Troncal y EbemaClick se muestran completos.</div>
+    <div class="text-[11px] text-secondary -mt-sm mb-md">Solo <b>última milla</b> (entregas a cliente). Excluye traslados troncales de reposición.</div>
     ${card('1 · Tarifa $/kg y toneladas — evolutivo','Mensual por centro (mes en curso en tono suave)','',
       `<div class="grid grid-cols-1 md:grid-cols-2 gap-md">`+
       `<div>`+legend([{n:'Tarifa $/kg',c:C.orange}])+`<div id="t_tar"></div></div>`+
@@ -764,11 +761,7 @@ function tarifaHTML(d,grupos,grupo){
       `<div class="grid grid-cols-1 md:grid-cols-2 gap-md">`+
       `<div>`+legend([{n:'10 más caras',c:C.red}])+`<div id="t_caro"></div></div>`+
       `<div>`+legend([{n:'10 más baratas',c:C.green}])+`<div id="t_barato"></div></div></div>`)}
-    ${card('4 · Consolidación troncal — evolutivo','Traslados de reposición entre centros','',
-      `<div class="grid grid-cols-1 md:grid-cols-2 gap-md">`+
-      `<div>`+legend([{n:'Consolidación %',c:C.green}])+`<div id="t_tron_cons"></div></div>`+
-      `<div>`+legend([{n:'Toneladas troncal',c:C.blue}])+`<div id="t_tron_ton"></div></div></div>`)}
-    ${showEbc?card('5 · Impacto EbemaClick — período (ene → a la fecha)','Financiamiento de la operación EbemaClick en todo el período (docs con V Garrido + material 400141)',
+    ${showEbc?card('4 · Impacto EbemaClick — período (ene → a la fecha)','Financiamiento de la operación EbemaClick en todo el período (docs con V Garrido + material 400141)',
       tile('Documentos',nf0.format(ebcTot.docs),'ene → hoy')+
       tile('Toneladas',nf1.format(ebcTot.ton)+' t','movidas')+
       tile('Flete pagado',mm(ebcTot.pag),'costo operación','text-[#EE1B22]')+
@@ -776,7 +769,7 @@ function tarifaHTML(d,grupos,grupo){
       `<div class="grid grid-cols-1 md:grid-cols-2 gap-md">`+
       `<div>`+legend([{n:'Flete pagado $MM',c:C.red},{n:'Cobrado $MM',c:C.navy}])+`<div id="t_ebc"></div></div>`+
       `<div>`+legend([{n:'Financiamiento neto $MM',c:C.orange}])+`<div id="t_ebc_neto"></div></div></div>`):''}
-    <div class="text-[11px] text-secondary mt-lg leading-relaxed">Comuna = comuna destino (routes.comuna); rutas de una misma comuna se agrupan. Troncal = documentos con línea 'Entrega reposición'. EbemaClick = documentos con línea de V Garrido T y material 400141 (definición estricta); el cuadro solo aparece en centros con operación EbemaClick.</div>
+    <div class="text-[11px] text-secondary mt-lg leading-relaxed">Solo última milla (entregas a cliente ZE01/ZE06/ZE20/ZE05/ZE04); se excluyen los traslados troncales de reposición (NL/EL). Comuna = comuna destino (routes.comuna); rutas de una misma comuna se agrupan. EbemaClick = documentos con V Garrido T y material 400141; el cuadro solo aparece en centros con operación EbemaClick.</div>
   </div>`;
 }
 function drawTarifa(d,grupo){
@@ -790,9 +783,6 @@ function drawTarifa(d,grupo){
   const cc=d.com.filter(r=>r.grupo===grupo && r.segmento===_segT && (r.toneladas||0)>=10 && r.tarifa_kg!=null && r.comuna!=='(s/comuna)');
   hbarChart('t_caro',cc.slice().sort((a,b)=>b.tarifa_kg-a.tarifa_kg).slice(0,10).map(r=>({label:r.comuna,value:r.tarifa_kg})),C.red,' $/kg','');
   hbarChart('t_barato',cc.slice().sort((a,b)=>a.tarifa_kg-b.tarifa_kg).slice(0,10).map(r=>({label:r.comuna,value:r.tarifa_kg})),C.green,' $/kg','');
-  const tro=d.tro.filter(r=>r.grupo===grupo).slice().sort((a,b)=>a.mes_label<b.mes_label?-1:1), trL=tro.map(r=>mesCorto(r.mes_label));
-  barChart('t_tron_cons',tro.map(r=>r.consol_pct),trL,0,100,C.green,'%',tro.length-1,v=>Math.round(v));
-  barChart('t_tron_ton',tro.map(r=>r.toneladas),trL,0,niceMax(tro.map(r=>r.toneladas)),C.blue,' t',tro.length-1,v=>Math.round(v));
   const ebcG=d.ebc.filter(r=>r.grupo===grupo);
   if(ebcG.length){
     const ebcM=mesesPeriodo();   // ene → mes en curso (todo el período)
@@ -827,7 +817,6 @@ function paintMargen(container,grupos){
   container.innerHTML=margenHTML(_cacheMar2,grupos,_grupoM);
   ensureTip(); drawMargen(_cacheMar2,_grupoM); sweepHeat();
   const sel=document.getElementById('ind_selm'); if(sel) sel.onchange=ev=>{_grupoM=ev.target.value; paintMargen(container,grupos);};
-  const seg=document.getElementById('ind_segm'); if(seg) seg.onchange=ev=>{_segM=ev.target.value; paintMargen(container,grupos);};
 }
 function margenHTML(d,grupos,grupo){
   const opciones=grupos.map(g=>`<option value="${g}" ${g===grupo?'selected':''}>${nice(g)}</option>`).join('');
@@ -836,12 +825,10 @@ function margenHTML(d,grupos,grupo){
   return `<div class="max-w-[1120px] mx-auto">
     <div class="flex items-center gap-md mb-md flex-wrap">
       <div class="text-headline-sm font-bold">Margen de Flete — detalle</div>
-      <span class="ml-auto"></span>
-      ${segSelectHTML('ind_segm',_segM)}
-      <label class="text-secondary text-body-md">Centro:</label>
+      <label class="text-secondary text-body-md ml-auto">Centro:</label>
       <select id="ind_selm" class="border border-surface-variant rounded-lg px-md py-sm bg-surface-container-lowest text-on-surface">${opciones}</select>
     </div>
-    <div class="text-[11px] text-secondary -mt-sm mb-md">Filtrado por segmento (<b>${segLabel(_segM)}</b>). El troncal (reposición) no se cobra a cliente, por eso no aparece en margen.</div>
+    <div class="text-[11px] text-secondary -mt-sm mb-md">Solo <b>última milla</b> (entregas a cliente). Excluye traslados troncales de reposición.</div>
     ${card('1 · Pagado vs Cobrado — evolutivo','Mensual por centro ($MM)','',
       legend([{n:'Cobrado',c:C.navy},{n:'Pagado',c:C.orange}])+`<div id="m_pc"></div>`)}
     ${card('2 · Margen y cobertura — evolutivo','Margen $MM y cobertura % mensual (mes en curso suave)','',
