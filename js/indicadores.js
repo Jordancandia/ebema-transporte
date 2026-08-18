@@ -666,24 +666,15 @@ function nivelHTML(d,grupos,grupo){
       `<div>`+legend([{n:'Días a entrega por tipo',c:C.blue}])+`<div id="n_tipo_dias"></div></div></div>`+
       (hayClase?'':`<div class="text-[11px] text-secondary mt-sm">Stock=ZV01/03/04 · Calzada=ZV08/09. Vacío = falta correr la carga con el Code.gs actualizado (nueva columna Clase Documento).</div>`))}
 
-    ${card('2 · Comunas regionales — mejores y peores','OTIF por comuna en rutas regionales','',
+    ${card('2 · Top comunas por centro — peores y mejores','OTIF por comuna destino en rutas regionales (rutas de una misma comuna se suman)','',
       `<div class="grid grid-cols-1 md:grid-cols-2 gap-md">`+
-      `<div>`+legend([{n:'10 peores OTIF %',c:C.red}])+`<div id="n_reg_peor"></div></div>`+
-      `<div>`+legend([{n:'10 mejores OTIF %',c:C.green}])+`<div id="n_reg_mejor"></div></div></div>`)}
+      `<div>`+legend([{n:'5 peores OTIF %',c:C.red}])+`<div id="n_reg_peor"></div></div>`+
+      `<div>`+legend([{n:'5 mejores OTIF %',c:C.green}])+`<div id="n_reg_mejor"></div></div></div>`)}
 
-    ${card('3 · OTIF por comuna — evolutivo mensual','Top comunas por volumen (semáforo verde alto / rojo bajo)','',
-      `<div id="n_comuna_heat"></div>`)}
-
-    ${card('4 · Spot vs Planificado — evolutivo','OTIF mensual por tipo de servicio','',
+    ${card('3 · Spot vs Planificado — evolutivo','OTIF mensual por tipo de servicio','',
       legend([{n:'Planificado',c:C.navy},{n:'Spot',c:C.orange}])+`<div id="n_spot"></div>`)}
 
-    ${card('5 · Flete Tercero (REVEX)','OTIF, pedidos y días por modalidad — evolutivo mensual (red)','',
-      `<div class="grid grid-cols-1 md:grid-cols-3 gap-md">`+
-      `<div>`+legend([{n:'OTIF Despacha',c:C.navy},{n:'OTIF Retira',c:C.orange}])+`<div id="n_rev_otif"></div></div>`+
-      `<div>`+legend([{n:'Pedidos Despacha',c:C.navy},{n:'Pedidos Retira',c:C.orange}])+`<div id="n_rev_ped"></div></div>`+
-      `<div>`+legend([{n:'Días Despacha',c:C.navy},{n:'Días Retira',c:C.orange}])+`<div id="n_rev_dias"></div></div></div>`)}
-
-    <div class="text-[11px] text-secondary mt-lg leading-relaxed">Comuna vía cruce con la base de rutas (routes.codigo = id_ruta), clasificación Regional/Interregional. Días venta→entrega = fecha guía − fecha creación. REVEX es a nivel red (todos los centros).</div>
+    <div class="text-[11px] text-secondary mt-lg leading-relaxed">Comuna = comuna destino (routes.comuna); todas las rutas que llegan a una misma comuna se agrupan juntas. Solo rutas de clasificación Regional. Días venta→entrega = fecha guía − fecha creación.</div>
   </div>`;
 }
 function heatComunaHTML(rows){
@@ -705,21 +696,13 @@ function drawNivel(d,grupo){
   const dv=order.map(t=>{const r=tp.find(x=>x.tipo===t)||{};return r.dias_prom||0;});
   barChart('n_tipo_dias',dv,order.map(nice),0,niceMax(dv),C.blue,' d',null,v=>Math.round(v));
   const reg=d.co.filter(r=>r.grupo===grupo && r.clasif_ruta==='Regional' && r.otif_pct!=null && (r.lineas||0)>=5);
-  hbarChart('n_reg_peor',reg.slice().sort((a,b)=>a.otif_pct-b.otif_pct).slice(0,10).map(r=>({label:r.comuna,value:r.otif_pct})),C.red,'%','');
-  hbarChart('n_reg_mejor',reg.slice().sort((a,b)=>b.otif_pct-a.otif_pct).slice(0,10).map(r=>({label:r.comuna,value:r.otif_pct})),C.green,'%','');
-  const heatEl=document.getElementById('n_comuna_heat'); if(heatEl) heatEl.innerHTML=heatComunaHTML(d.com.filter(r=>r.grupo===grupo));
+  hbarChart('n_reg_peor',reg.slice().sort((a,b)=>a.otif_pct-b.otif_pct).slice(0,5).map(r=>({label:r.comuna,value:r.otif_pct})),C.red,'%','');
+  hbarChart('n_reg_mejor',reg.slice().sort((a,b)=>b.otif_pct-a.otif_pct).slice(0,5).map(r=>({label:r.comuna,value:r.otif_pct})),C.green,'%','');
   const sp=d.sp.filter(r=>r.grupo===grupo), sm=[...new Set(sp.map(r=>r.mes_label))].sort();
   lineChart('n_spot',[
     {n:'Planificado',v:sm.map(m=>{const r=sp.find(x=>x.mes_label===m&&x.tipo==='Planificado');return r?r.otif_pct:0;}),c:C.navy},
     {n:'Spot',v:sm.map(m=>{const r=sp.find(x=>x.mes_label===m&&x.tipo==='Spot');return r?r.otif_pct:0;}),c:C.orange}
   ],sm.map(mesCorto),0,100,'%');
-  const fm=[...new Set(d.ft.map(r=>r.mes_label))].sort();
-  const ftv=(mod,f)=>fm.map(m=>{const r=d.ft.find(x=>x.mes_label===m&&x.modalidad===mod);return r?(r[f]||0):0;});
-  lineChart('n_rev_otif',[{n:'Despacha',v:ftv('Despacha','otif_pct'),c:C.navy},{n:'Retira',v:ftv('Retira','otif_pct'),c:C.orange}],fm.map(mesCorto),0,100,'%');
-  const ped=ftv('Despacha','pedidos').concat(ftv('Retira','pedidos'));
-  lineChart('n_rev_ped',[{n:'Despacha',v:ftv('Despacha','pedidos'),c:C.navy},{n:'Retira',v:ftv('Retira','pedidos'),c:C.orange}],fm.map(mesCorto),0,niceMax(ped),'');
-  const dias=ftv('Despacha','ciclo_prom_dias').concat(ftv('Retira','ciclo_prom_dias'));
-  lineChart('n_rev_dias',[{n:'Despacha',v:ftv('Despacha','ciclo_prom_dias'),c:C.navy},{n:'Retira',v:ftv('Retira','ciclo_prom_dias'),c:C.orange}],fm.map(mesCorto),0,niceMax(dias),' d');
 }
 
 // ============================================================================
