@@ -181,7 +181,7 @@ function generalHTML(d){
       `<div><div class="text-[12px] text-secondary mb-1 font-medium">OTIF % — verde alto, rojo bajo</div>`+
       heatmapHTML(d.nsm,'otif_pct',heatOtif,v=>nf1.format(v))+`</div>`+
       `<div><div class="text-[12px] text-secondary mb-1 font-medium">Tarifa $/kg — verde barato, rojo caro</div>`+
-      heatmapHTML(d.tarm,'tarifa_kg',heatTarifa,v=>'$'+nf1.format(v))+`</div></div>`)}
+      heatmapHTML(d.tarm.filter(r=>!r.segmento||r.segmento==='TODOS'),'tarifa_kg',heatTarifa,v=>'$'+nf1.format(v))+`</div></div>`)}
 
     ${card('4 · Flete Tercero (REVEX)','OTIF, pedidos y días por modalidad — evolutivo mensual (red)',
       tile('OTIF Despacha',pct(ftLast.despO),(ftLast.despN||0)+' pedidos')+
@@ -710,7 +710,12 @@ function drawNivel(d,grupo){
 // ============================================================================
 //  TARIFA (Pesos por Kilo) — detalle
 // ============================================================================
-let _cacheTar=null, _grupoT=null;
+let _cacheTar=null, _grupoT=null, _segT='ULTIMA_MILLA';
+const SEG_OPTS=[['ULTIMA_MILLA','Última milla'],['TRONCAL','Troncal'],['MIXTO','Mixto'],['TODOS','Todos']];
+const segLabel=s=>((SEG_OPTS.find(x=>x[0]===s)||[])[1]||s);
+function segSelectHTML(id,val){ return `<label class="text-secondary text-body-md">Segmento:</label>
+  <select id="${id}" class="border border-surface-variant rounded-lg px-md py-sm bg-surface-container-lowest text-on-surface">`+
+  SEG_OPTS.map(o=>`<option value="${o[0]}" ${o[0]===val?'selected':''}>${o[1]}</option>`).join('')+`</select>`; }
 async function renderTarifa(container){
   container.innerHTML=loadingHTML();
   try{
@@ -734,6 +739,7 @@ function paintTarifa(container,grupos){
   container.innerHTML=tarifaHTML(_cacheTar,grupos,_grupoT);
   ensureTip(); drawTarifa(_cacheTar,_grupoT); sweepHeat();
   const sel=document.getElementById('ind_selt'); if(sel) sel.onchange=ev=>{_grupoT=ev.target.value; paintTarifa(container,grupos);};
+  const seg=document.getElementById('ind_segt'); if(seg) seg.onchange=ev=>{_segT=ev.target.value; paintTarifa(container,grupos);};
 }
 function tarifaHTML(d,grupos,grupo){
   const opciones=grupos.map(g=>`<option value="${g}" ${g===grupo?'selected':''}>${nice(g)}</option>`).join('');
@@ -742,9 +748,12 @@ function tarifaHTML(d,grupos,grupo){
   return `<div class="max-w-[1120px] mx-auto">
     <div class="flex items-center gap-md mb-md flex-wrap">
       <div class="text-headline-sm font-bold">Pesos por Kilo — detalle</div>
-      <label class="text-secondary text-body-md ml-auto">Centro:</label>
+      <span class="ml-auto"></span>
+      ${segSelectHTML('ind_segt',_segT)}
+      <label class="text-secondary text-body-md">Centro:</label>
       <select id="ind_selt" class="border border-surface-variant rounded-lg px-md py-sm bg-surface-container-lowest text-on-surface">${opciones}</select>
     </div>
+    <div class="text-[11px] text-secondary -mt-sm mb-md">Cuadros 1–3 filtrados por segmento (<b>${segLabel(_segT)}</b>). Troncal y EbemaClick se muestran completos.</div>
     ${card('1 · Tarifa $/kg y toneladas — evolutivo','Mensual por centro (mes en curso en tono suave)','',
       `<div class="grid grid-cols-1 md:grid-cols-2 gap-md">`+
       `<div>`+legend([{n:'Tarifa $/kg',c:C.orange}])+`<div id="t_tar"></div></div>`+
@@ -771,14 +780,14 @@ function tarifaHTML(d,grupos,grupo){
   </div>`;
 }
 function drawTarifa(d,grupo){
-  const tm=d.tm.filter(r=>r.grupo===grupo).slice().sort((a,b)=>a.mes_label<b.mes_label?-1:1);
+  const tm=d.tm.filter(r=>r.grupo===grupo && r.segmento===_segT).slice().sort((a,b)=>a.mes_label<b.mes_label?-1:1);
   const tmL=tm.map(r=>mesCorto(r.mes_label)), pIdx=tm.length-1;
   barChart('t_tar',tm.map(r=>r.tarifa_kg),tmL,0,niceMax(tm.map(r=>r.tarifa_kg)),C.orange,' $/kg',pIdx,v=>'$'+Math.round(v));
   barChart('t_ton',tm.map(r=>r.toneladas),tmL,0,niceMax(tm.map(r=>r.toneladas)),C.blue,' t',pIdx,v=>Math.round(v));
-  const cap=d.cap.filter(r=>r.grupo===grupo), cm=[...new Set(cap.map(r=>r.mes_label))].sort();
+  const cap=d.cap.filter(r=>r.grupo===grupo && r.segmento===_segT), cm=[...new Set(cap.map(r=>r.mes_label))].sort();
   const caps=[['5',C.navy],['10',C.blue],['15',C.orange],['28',C.red]];
   barChart('t_cap_avg',caps.map(x=>avg(cap.filter(y=>y.cap===x[0]&&y.consol_pct!=null).map(y=>y.consol_pct))||0),caps.map(x=>x[0]+'t'),0,100,C.green,'%',null,v=>Math.round(v));
-  const cc=d.com.filter(r=>r.grupo===grupo && (r.toneladas||0)>=10 && r.tarifa_kg!=null && r.comuna!=='(s/comuna)');
+  const cc=d.com.filter(r=>r.grupo===grupo && r.segmento===_segT && (r.toneladas||0)>=10 && r.tarifa_kg!=null && r.comuna!=='(s/comuna)');
   hbarChart('t_caro',cc.slice().sort((a,b)=>b.tarifa_kg-a.tarifa_kg).slice(0,10).map(r=>({label:r.comuna,value:r.tarifa_kg})),C.red,' $/kg','');
   hbarChart('t_barato',cc.slice().sort((a,b)=>a.tarifa_kg-b.tarifa_kg).slice(0,10).map(r=>({label:r.comuna,value:r.tarifa_kg})),C.green,' $/kg','');
   const tro=d.tro.filter(r=>r.grupo===grupo).slice().sort((a,b)=>a.mes_label<b.mes_label?-1:1), trL=tro.map(r=>mesCorto(r.mes_label));
@@ -796,7 +805,7 @@ function drawTarifa(d,grupo){
 // ============================================================================
 //  MARGEN — detalle
 // ============================================================================
-let _cacheMar2=null, _grupoM=null;
+let _cacheMar2=null, _grupoM=null, _segM='ULTIMA_MILLA';
 async function renderMargen(container){
   container.innerHTML=loadingHTML();
   try{
@@ -818,17 +827,21 @@ function paintMargen(container,grupos){
   container.innerHTML=margenHTML(_cacheMar2,grupos,_grupoM);
   ensureTip(); drawMargen(_cacheMar2,_grupoM); sweepHeat();
   const sel=document.getElementById('ind_selm'); if(sel) sel.onchange=ev=>{_grupoM=ev.target.value; paintMargen(container,grupos);};
+  const seg=document.getElementById('ind_segm'); if(seg) seg.onchange=ev=>{_segM=ev.target.value; paintMargen(container,grupos);};
 }
 function margenHTML(d,grupos,grupo){
   const opciones=grupos.map(g=>`<option value="${g}" ${g===grupo?'selected':''}>${nice(g)}</option>`).join('');
-  const sc=d.sc.filter(r=>r.grupo===grupo);
+  const sc=d.sc.filter(r=>r.grupo===grupo && r.segmento===_segM);
   const scMonto=sum(sc.map(r=>r.monto_sugerido))/1e6, scEnt=sum(sc.map(r=>r.entregas));
   return `<div class="max-w-[1120px] mx-auto">
     <div class="flex items-center gap-md mb-md flex-wrap">
       <div class="text-headline-sm font-bold">Margen de Flete — detalle</div>
-      <label class="text-secondary text-body-md ml-auto">Centro:</label>
+      <span class="ml-auto"></span>
+      ${segSelectHTML('ind_segm',_segM)}
+      <label class="text-secondary text-body-md">Centro:</label>
       <select id="ind_selm" class="border border-surface-variant rounded-lg px-md py-sm bg-surface-container-lowest text-on-surface">${opciones}</select>
     </div>
+    <div class="text-[11px] text-secondary -mt-sm mb-md">Filtrado por segmento (<b>${segLabel(_segM)}</b>). El troncal (reposición) no se cobra a cliente, por eso no aparece en margen.</div>
     ${card('1 · Pagado vs Cobrado — evolutivo','Mensual por centro ($MM)','',
       legend([{n:'Cobrado',c:C.navy},{n:'Pagado',c:C.orange}])+`<div id="m_pc"></div>`)}
     ${card('2 · Margen y cobertura — evolutivo','Margen $MM y cobertura % mensual (mes en curso suave)','',
@@ -847,7 +860,7 @@ function margenHTML(d,grupos,grupo){
   </div>`;
 }
 function vendMargenTablaHTML(rows,grupo){
-  const v=(rows||[]).filter(r=>r.grupo===grupo).slice().sort((a,b)=>(a.brecha||0)-(b.brecha||0)).slice(0,10);
+  const v=(rows||[]).filter(r=>r.grupo===grupo && r.segmento===_segM).slice().sort((a,b)=>(a.brecha||0)-(b.brecha||0)).slice(0,10);
   if(!v.length) return `<div class="text-secondary text-[12px] py-md">Sin datos.</div>`;
   const filas=v.map(r=>`<tr class="border-t border-surface-variant">
     <td class="py-[4px] pr-sm">${r.vendedor||'—'}</td>
@@ -860,11 +873,11 @@ function vendMargenTablaHTML(rows,grupo){
     <th class="font-medium pb-[4px]">Vendedor</th><th class="font-medium text-right pb-[4px]">Sugerido</th><th class="font-medium text-right pb-[4px]">Cobrado</th><th class="font-medium text-right pb-[4px]">Pagado</th><th class="font-medium text-right pb-[4px]">Brecha</th><th class="font-medium text-right pb-[4px]">Cumpl.</th></tr></thead><tbody>${filas}</tbody></table>`;
 }
 function drawMargen(d,grupo){
-  const mg=d.mg.filter(r=>r.grupo===grupo).slice().sort((a,b)=>a.mes_label<b.mes_label?-1:1);
+  const mg=d.mg.filter(r=>r.grupo===grupo && r.segmento===_segM).slice().sort((a,b)=>a.mes_label<b.mes_label?-1:1);
   const L=mg.map(r=>mesCorto(r.mes_label)), pIdx=mg.length-1;
   lineChart('m_pc',[{n:'Cobrado',v:mg.map(r=>r.cobrado/1e6),c:C.navy},{n:'Pagado',v:mg.map(r=>r.pagado/1e6),c:C.orange}],L,0,niceMax(mg.map(r=>Math.max(r.cobrado,r.pagado)/1e6)),' MM');
   barChart('m_margen',mg.map(r=>r.margen/1e6),L,Math.min(-1,niceMin(mg.map(r=>r.margen/1e6))),Math.max(1,niceMax(mg.map(r=>r.margen/1e6))),C.red,' MM',pIdx,v=>'$'+nf1.format(v));
   lineChart('m_cob',[{n:'Cobertura',v:mg.map(r=>r.cobertura_pct),c:C.navy}],L,0,120,'%');
-  const sc=d.sc.filter(r=>r.grupo===grupo).slice().sort((a,b)=>a.mes_label<b.mes_label?-1:1);
+  const sc=d.sc.filter(r=>r.grupo===grupo && r.segmento===_segM).slice().sort((a,b)=>a.mes_label<b.mes_label?-1:1);
   barChart('m_scm',sc.map(r=>(r.monto_sugerido||0)/1e6),sc.map(r=>mesCorto(r.mes_label)),0,niceMax(sc.map(r=>(r.monto_sugerido||0)/1e6)),C.red,' MM',sc.length-1,v=>'$'+nf1.format(v));
 }
