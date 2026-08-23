@@ -85,10 +85,10 @@ async function loadGeneral(){
         supabase.from('v_ind_tiempo_general_mes').select('*').gte('mes_label',y).order('mes_label'),
         supabase.from('v_ind_sin_cobro_mes').select('*').gte('mes_label',y).order('mes_label'),
         supabase.from('v_ind_ns_grupo_mes').select('*').gte('mes_label',y),
-        supabase.from('v_ind_tarifa_grupo_mes').select('*').gte('mes_label',y)
+        supabase.from('v_ind_troncal_quilicura_mes').select('*').gte('mes_label',y)
       ]);
       const e = ns.error||tar.error||mar.error||ft.error||sc.error||con.error||tie.error||scm.error||nsm.error||tarm.error; if(e) throw e;
-      _cacheGen = { ns:ns.data||[], tar:tar.data||[], mar:mar.data||[], ft:ft.data||[], sc:sc.data||[], con:con.data||[], tie:tie.data||[], scm:scm.data||[], nsm:nsm.data||[], tarm:tarm.data||[] };
+      _cacheGen = { ns:ns.data||[], tar:tar.data||[], mar:mar.data||[], ft:ft.data||[], sc:sc.data||[], con:con.data||[], tie:tie.data||[], scm:scm.data||[], nsm:nsm.data||[], tq:tarm.data||[] };
     }
     body().innerHTML = generalHTML(_cacheGen);
     ensureTip(); drawGeneral(_cacheGen); sweepHeat();
@@ -176,12 +176,12 @@ function generalHTML(d){
       (function(){var w=d.scm.reduce((a,b)=>(b.monto>(a?a.monto:-1)?b:a),null)||{};return tile('Peor mes',mm((w.monto||0)/1e6),mesCorto(w.mes_label||''),'text-[#EE1B22]');})(),
       legend([{n:'No cobrado $MM',c:C.red}])+`<div id="g_scm"></div>`)}
 
-    ${card('3c · Matriz mensual por Centro','OTIF % y Tarifa $/kg por sucursal (semáforo)','',
+    ${card('3c · Troncal Quilicura (CD 1003 → CD destino)','Nivel de consolidación y pesos por kilo por centro destino (reposición NL)','',
       `<div class="grid grid-cols-1 md:grid-cols-2 gap-md">`+
-      `<div><div class="text-[12px] text-secondary mb-1 font-medium">OTIF % — verde alto, rojo bajo</div>`+
-      heatmapHTML(d.nsm,'otif_pct',heatOtif,v=>nf1.format(v))+`</div>`+
-      `<div><div class="text-[12px] text-secondary mb-1 font-medium">Tarifa $/kg — verde barato, rojo caro</div>`+
-      heatmapHTML(d.tarm.filter(r=>!r.segmento||r.segmento==='TODOS'),'tarifa_kg',heatTarifa,v=>'$'+nf1.format(v))+`</div></div>`)}
+      `<div><div class="text-[12px] text-secondary mb-1 font-medium">Nivel de consolidación % — verde alto, rojo bajo</div>`+
+      heatmapHTML(d.tq,'consol_pct',heatOtif,v=>nf1.format(v))+`</div>`+
+      `<div><div class="text-[12px] text-secondary mb-1 font-medium">Pesos por kilo $/kg — verde barato, rojo caro</div>`+
+      heatmapHTML(d.tq,'tarifa_kg',heatTarifa,v=>'$'+nf1.format(v))+`</div></div>`)}
 
     ${card('4 · Flete Tercero (REVEX)','OTIF, pedidos y días por modalidad — evolutivo mensual (red)',
       tile('OTIF Despacha',pct(ftLast.despO),(ftLast.despN||0)+' pedidos')+
