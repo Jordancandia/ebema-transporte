@@ -388,6 +388,7 @@ function mesesPeriodo(){ var d=new Date(), y=d.getFullYear(), n=d.getMonth()+1, 
 function semKey(s){ var m=/(\d{4})-S(\d{1,2})/.exec(s||''); return m?(+m[1])*100+(+m[2]):0; }
 function isoWeekKey(dt){ var d=new Date(Date.UTC(dt.getFullYear(),dt.getMonth(),dt.getDate())); var day=(d.getUTCDay()+6)%7; d.setUTCDate(d.getUTCDate()-day+3); var f=new Date(Date.UTC(d.getUTCFullYear(),0,4)); var w=1+Math.round(((d-f)/864e5-3+((f.getUTCDay()+6)%7))/7); return d.getUTCFullYear()*100+w; }
 function last4(rows,grupo){ var cur=isoWeekKey(new Date()); return (rows||[]).filter(function(r){return r.grupo===grupo && semKey(r.semana)<cur;}).sort(function(a,b){return semKey(a.semana)-semKey(b.semana);}).slice(-4); }
+function last4Sem(rows){ var cur=isoWeekKey(new Date()); var s=[...new Set((rows||[]).filter(function(r){return semKey(r.semana)<cur;}).map(function(r){return r.semana;}))].sort(function(a,b){return semKey(a)-semKey(b);}); return s.slice(-4); }
 function semLbl(s){ return (s||'').replace(/^\d{4}-/,''); }
 function semTable(rows,cols){
   if(!rows.length) return `<div class="text-secondary text-[12px] py-md">Sin semanas cerradas.</div>`;
@@ -676,16 +677,18 @@ async function renderNivel(container){
   container.innerHTML = loadingHTML();
   try {
     if(!_cacheNivel){
-      const [tp,co,com,sp,ft,sem] = await Promise.all([
+      const [tp,co,com,sp,ft,sem,co4,spw] = await Promise.all([
         supabase.from('v_ind_ns_tipo_grupo_4sem').select('*'),
         supabase.from('v_ind_ns_comuna').select('*'),
         supabase.from('v_ind_ns_comuna_mes').select('*'),
         supabase.from('v_ind_ns_spot_grupo_mes').select('*'),
         supabase.from('v_ind_ftercero_mes').select('*').gte('mes_label','2026-01').order('mes_label'),
-        supabase.from('v_ind_ns_grupo_semana').select('*')
+        supabase.from('v_ind_ns_grupo_semana').select('*'),
+        supabase.from('v_ind_ns_comuna_4sem').select('*'),
+        supabase.from('v_ind_ns_spot_grupo_sem').select('*')
       ]);
-      const e=tp.error||co.error||com.error||sp.error||ft.error||sem.error; if(e) throw e;
-      _cacheNivel={tp:tp.data||[],co:co.data||[],com:com.data||[],sp:sp.data||[],ft:ft.data||[],sem:sem.data||[]};
+      const e=tp.error||co.error||com.error||sp.error||ft.error||sem.error||co4.error||spw.error; if(e) throw e;
+      _cacheNivel={tp:tp.data||[],co:co.data||[],com:com.data||[],sp:sp.data||[],ft:ft.data||[],sem:sem.data||[],co4:co4.data||[],spw:spw.data||[]};
     }
     const grupos=[...new Set(_cacheNivel.co.map(r=>r.grupo))].filter(g=>g&&g!=='OTROS').sort();
     if(!_grupoN||grupos.indexOf(_grupoN)<0) _grupoN=(grupos.indexOf('CONCEPCION')>=0?'CONCEPCION':grupos[0]);
@@ -725,13 +728,15 @@ function nivelHTML(d,grupos,grupo){
       `<div>`+legend([{n:'Días a entrega por tipo',c:R.grey}])+`<div id="n_tipo_dias"></div></div></div>`+
       (hayClase?'':`<div class="text-[11px] text-secondary mt-sm">Stock=ZV01/03/04 · Calzada=ZV08/09. Vacío = falta correr la carga con el Code.gs actualizado (nueva columna Clase Documento).</div>`))}
 
-    ${card('2 · Top comunas por centro — peores y mejores','OTIF por comuna destino en rutas regionales (rutas de una misma comuna se suman)','',
+    ${card('Nivel de Servicio por Comuna','Mejores y Peores Comunas','',
       `<div class="grid grid-cols-1 md:grid-cols-2 gap-md">`+
       `<div>`+legend([{n:'5 peores OTIF %',c:R.red2}])+`<div id="n_reg_peor"></div></div>`+
       `<div>`+legend([{n:'5 mejores OTIF %',c:R.grey}])+`<div id="n_reg_mejor"></div></div></div>`)}
 
-    ${card('3 · Spot vs Planificado — evolutivo','OTIF mensual por tipo de servicio','',
-      legend([{n:'Planificado',c:R.red},{n:'Spot',c:R.grey}])+`<div id="n_spot"></div>`)}
+    ${card('Nivel de Servicio Spot y Planificado','Evolutivo Spot vs Planificado','',
+      `<div class="grid grid-cols-1 md:grid-cols-2 gap-md">`+
+      `<div>`+legend([{n:'OTIF % Planificado',c:R.red},{n:'OTIF % Spot',c:R.grey}])+`<div id="n_spot"></div></div>`+
+      `<div>`+legend([{n:'Entregas Planificado',c:R.red},{n:'Entregas Spot',c:R.grey}])+`<div id="n_spot_ent"></div></div></div>`)}
 
     <div class="text-[11px] text-secondary mt-lg leading-relaxed">Comuna = comuna destino (routes.comuna); todas las rutas que llegan a una misma comuna se agrupan juntas. Solo rutas de clasificación Regional. Días venta→entrega = fecha guía − fecha creación.</div>
   </div>`;
@@ -759,14 +764,20 @@ function drawNivel(d,grupo){
   barChart('n_tipo_otif',order.map(t=>{const r=tp.find(x=>x.tipo===t)||{};return r.otif_pct||0;}),order.map(nice),0,100,R.red,'%',null,v=>Math.round(v));
   const dv=order.map(t=>{const r=tp.find(x=>x.tipo===t)||{};return r.dias_prom||0;});
   barChart('n_tipo_dias',dv,order.map(nice),0,niceMax(dv),R.grey,' d',null,v=>Math.round(v));
-  const reg=d.co.filter(r=>r.grupo===grupo && r.clasif_ruta==='Regional' && r.otif_pct!=null && (r.lineas||0)>=5);
+  const reg=(d.co4||d.co).filter(r=>r.grupo===grupo && r.clasif_ruta==='Regional' && r.otif_pct!=null && (r.lineas||0)>=3);
   hbarChart('n_reg_peor',reg.slice().sort((a,b)=>a.otif_pct-b.otif_pct).slice(0,5).map(r=>({label:r.comuna,value:r.otif_pct})),R.red2,'%','');
   hbarChart('n_reg_mejor',reg.slice().sort((a,b)=>b.otif_pct-a.otif_pct).slice(0,5).map(r=>({label:r.comuna,value:r.otif_pct})),R.grey,'%','');
-  const sp=d.sp.filter(r=>r.grupo===grupo), sm=[...new Set(sp.map(r=>r.mes_label))].sort();
+  const spg=(d.spw||[]).filter(r=>r.grupo===grupo), sems=last4Sem(spg);
+  const spv=(sem,tipo,f)=>{var r=spg.find(x=>x.semana===sem&&x.tipo===tipo);return r?(r[f]||0):0;};
   lineChart('n_spot',[
-    {n:'Planificado',v:sm.map(m=>{const r=sp.find(x=>x.mes_label===m&&x.tipo==='Planificado');return r?r.otif_pct:0;}),c:R.red},
-    {n:'Spot',v:sm.map(m=>{const r=sp.find(x=>x.mes_label===m&&x.tipo==='Spot');return r?r.otif_pct:0;}),c:R.grey}
-  ],sm.map(mesCorto),0,100,'%');
+    {n:'Planificado',v:sems.map(s=>spv(s,'Planificado','otif_pct')),c:R.red},
+    {n:'Spot',v:sems.map(s=>spv(s,'Spot','otif_pct')),c:R.grey}
+  ],sems.map(semLbl),0,100,'%');
+  const _ent=sems.map(s=>spv(s,'Planificado','lineas')).concat(sems.map(s=>spv(s,'Spot','lineas')));
+  lineChart('n_spot_ent',[
+    {n:'Planificado',v:sems.map(s=>spv(s,'Planificado','lineas')),c:R.red},
+    {n:'Spot',v:sems.map(s=>spv(s,'Spot','lineas')),c:R.grey}
+  ],sems.map(semLbl),0,niceMax(_ent),'');
 }
 
 // ============================================================================
