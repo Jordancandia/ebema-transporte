@@ -204,11 +204,11 @@ function generalHTML(d){
       `<div><div class="text-[12px] text-secondary mb-1 font-medium">Pesos por kilo $/kg — intensidad = más caro</div>`+
       heatmapHTML(d.tq,'tarifa_kg',heatTarRG,v=>'$'+nf1.format(v))+`</div></div>`)}
 
-    ${card('3.3 · Impacto EbemaClick','Costo mensual EbemaClick (docs con V Garrido + material 400141)',
+    ${card('3.3 · Impacto EbemaClick','Costo, despachos y toneladas',
       tile('Despachos',nf0.format(sum(d.ebm.map(r=>r.entregas))),'entregas · período')+
       tile('Toneladas despachadas',(function(){var t=sum(d.ebm.map(r=>r.toneladas));return t?nf1.format(t)+' t':'–';})(),'período')+
-      tile('Costo pagado',mm(sum(d.ebm.map(r=>r.pagado))/1e6),'flete pagado','text-[#C0000C]')+
-      tile('Financiamiento neto',mm(sum(d.ebm.map(r=>r.pagado-r.cobrado))/1e6),'pagado − cobrado','text-[#C0000C]'),
+      tile('Documentos',nf0.format(sum(d.ebm.map(r=>r.docs))),'transporte · período')+
+      tile('Costo pagado',mm(sum(d.ebm.map(r=>r.pagado))/1e6),'flete pagado','text-[#C0000C]'),
       legend([{n:'Costo EbemaClick $MM',c:R.red2}])+`<div id="g_ebc_mes"></div>`)}
 
     ${card('4 · Flete Tercero (REVEX)','Servicio Revex',
