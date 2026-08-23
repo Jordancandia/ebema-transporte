@@ -764,7 +764,7 @@ function drawNivel(d,grupo){
   barChart('n_tipo_otif',order.map(t=>{const r=tp.find(x=>x.tipo===t)||{};return r.otif_pct||0;}),order.map(nice),0,100,R.red,'%',null,v=>Math.round(v));
   const dv=order.map(t=>{const r=tp.find(x=>x.tipo===t)||{};return r.dias_prom||0;});
   barChart('n_tipo_dias',dv,order.map(nice),0,niceMax(dv),R.grey,' d',null,v=>Math.round(v));
-  const reg=(d.co4||d.co).filter(r=>r.grupo===grupo && r.clasif_ruta==='Regional' && r.otif_pct!=null && (r.lineas||0)>=3);
+  const reg=d.co.filter(r=>r.grupo===grupo && r.clasif_ruta==='Regional' && r.otif_pct!=null && (r.lineas||0)>=5);
   hbarChart('n_reg_peor',reg.slice().sort((a,b)=>a.otif_pct-b.otif_pct).slice(0,5).map(r=>({label:r.comuna,value:r.otif_pct})),R.red2,'%','');
   hbarChart('n_reg_mejor',reg.slice().sort((a,b)=>b.otif_pct-a.otif_pct).slice(0,5).map(r=>({label:r.comuna,value:r.otif_pct})),R.grey,'%','');
   const spg=(d.spw||[]).filter(r=>r.grupo===grupo), sems=last4Sem(spg);
@@ -793,16 +793,16 @@ async function renderTarifa(container){
   container.innerHTML=loadingHTML();
   try{
     if(!_cacheTar){
-      const [tm,cap,com,tro,ebc,sem]=await Promise.all([
+      const [tm,consm,com,capw,ebc,sem]=await Promise.all([
         supabase.from('v_ind_tarifa_grupo_mes').select('*'),
-        supabase.from('v_ind_consol_cap_grupo_mes').select('*'),
+        supabase.from('v_ind_consol_grupo_mes').select('*'),
         supabase.from('v_ind_tarifa_comuna_grupo').select('*'),
-        supabase.from('v_ind_troncal_grupo_mes').select('*'),
+        supabase.from('v_ind_consol_cap_grupo_sem').select('*'),
         supabase.from('v_ind_ebemaclick_grupo_mes').select('*'),
         supabase.from('v_ind_tarifa_grupo_semana').select('*')
       ]);
-      const e=tm.error||cap.error||com.error||tro.error||ebc.error||sem.error; if(e) throw e;
-      _cacheTar={tm:tm.data||[],cap:cap.data||[],com:com.data||[],tro:tro.data||[],ebc:ebc.data||[],sem:sem.data||[]};
+      const e=tm.error||consm.error||com.error||capw.error||ebc.error||sem.error; if(e) throw e;
+      _cacheTar={tm:tm.data||[],consm:consm.data||[],com:com.data||[],capw:capw.data||[],ebc:ebc.data||[],sem:sem.data||[]};
     }
     const grupos=[...new Set(_cacheTar.tm.map(r=>r.grupo))].filter(g=>g&&g!=='OTROS').sort();
     if(!_grupoT||grupos.indexOf(_grupoT)<0) _grupoT=(grupos.indexOf('CONCEPCION')>=0?'CONCEPCION':grupos[0]);
@@ -830,12 +830,14 @@ function tarifaHTML(d,grupos,grupo){
       `<div>`+legend([{n:'Tarifa $/kg',c:R.red2}])+`<div id="t_sem"></div></div>`+
       `<div id="t_semtab"></div></div>`)}
     <div class="text-[11px] text-secondary -mt-sm mb-md">Solo <b>última milla</b> (entregas a cliente). Excluye traslados troncales de reposición.</div>
-    ${card('1 · Tarifa $/kg y toneladas — semanal','Últimas 4 semanas cerradas por centro','',
+    ${card('Evolutivo Mensual Tarifa $/kg y Toneladas','Mensual por centro (mes en curso en tono suave)','',
       `<div class="grid grid-cols-1 md:grid-cols-2 gap-md">`+
       `<div>`+legend([{n:'Tarifa $/kg',c:R.red2}])+`<div id="t_tar"></div></div>`+
       `<div>`+legend([{n:'Toneladas',c:R.grey}])+`<div id="t_ton"></div></div></div>`)}
-    ${card('2 · Consolidación promedio por tipo de camión','Promedio del período · 5 / 10 / 15 / 28 ton','',
-      legend([{n:'Consolidación % promedio',c:R.grey}])+`<div id="t_cap_avg"></div>`)}
+    ${card('Consolidación por Camión','Evolutivo mensual de % y últimas 4 semanas por tipo de camión','',
+      `<div class="grid grid-cols-1 md:grid-cols-2 gap-md">`+
+      `<div>`+legend([{n:'% Consolidación mensual',c:R.red2}])+`<div id="t_consol_mes"></div></div>`+
+      `<div>`+legend([{n:'5t',c:R.red},{n:'10t',c:R.red2},{n:'15t',c:R.grey},{n:'28t',c:R.greyL}])+`<div id="t_cap_sem"></div></div></div>`)}
     ${card('3 · Comunas más caras y más baratas','Tarifa $/kg por comuna destino (≥10 t · rutas de una misma comuna se suman)','',
       `<div class="grid grid-cols-1 md:grid-cols-2 gap-md">`+
       `<div>`+legend([{n:'10 más caras',c:R.red2}])+`<div id="t_caro"></div></div>`+
@@ -857,12 +859,15 @@ function drawTarifa(d,grupo){
   const tt=document.getElementById('t_semtab'); if(tt) tt.innerHTML=semTable(s4,[
     {label:'$/kg',get:r=>r.tarifa_kg,fmt:money,dfmt:v=>'$'+nf1.format(v)},
     {label:'Ton',get:r=>r.toneladas,fmt:v=>nf0.format(v),dfmt:v=>nf0.format(v)}]);
-  const wL=s4.map(r=>semLbl(r.semana));
-  barChart('t_tar',s4.map(r=>r.tarifa_kg),wL,0,niceMax(s4.map(r=>r.tarifa_kg)),R.red2,' $/kg',null,v=>'$'+Math.round(v));
-  barChart('t_ton',s4.map(r=>r.toneladas),wL,0,niceMax(s4.map(r=>r.toneladas)),R.grey,' t',null,v=>Math.round(v));
-  const cap=d.cap.filter(r=>r.grupo===grupo && r.segmento===_segT), cm=[...new Set(cap.map(r=>r.mes_label))].sort();
-  const caps=[['5',R.red],['10',R.grey],['15',R.grey],['28',R.red2]];
-  barChart('t_cap_avg',caps.map(x=>avg(cap.filter(y=>y.cap===x[0]&&y.consol_pct!=null).map(y=>y.consol_pct))||0),caps.map(x=>x[0]+'t'),0,100,R.grey,'%',null,v=>Math.round(v));
+  const tm=d.tm.filter(r=>r.grupo===grupo && r.segmento===_segT).slice().sort((a,b)=>a.mes_label<b.mes_label?-1:1);
+  const tmL=tm.map(r=>mesCorto(r.mes_label)), pIdx=tm.length-1;
+  barChart('t_tar',tm.map(r=>r.tarifa_kg),tmL,0,niceMax(tm.map(r=>r.tarifa_kg)),R.red2,' $/kg',pIdx,v=>'$'+Math.round(v));
+  barChart('t_ton',tm.map(r=>r.toneladas),tmL,0,niceMax(tm.map(r=>r.toneladas)),R.grey,' t',pIdx,v=>Math.round(v));
+  const cm4=(d.consm||[]).filter(r=>r.grupo===grupo).slice().sort((a,b)=>a.mes_label<b.mes_label?-1:1);
+  barChart('t_consol_mes',cm4.map(r=>r.consol_pct),cm4.map(r=>mesCorto(r.mes_label)),0,100,R.red2,'%',null,v=>Math.round(v));
+  const cw=(d.capw||[]).filter(r=>r.grupo===grupo), csems=last4Sem(cw);
+  const caps2=[['5',R.red],['10',R.red2],['15',R.grey],['28',R.greyL]];
+  lineChart('t_cap_sem',caps2.map(x=>({n:x[0]+'t',v:csems.map(s=>{var r=cw.find(y=>y.semana===s&&y.cap===x[0]);return r?r.consol_pct:0;}),c:x[1]})),csems.map(semLbl),0,100,'%');
   const cc=d.com.filter(r=>r.grupo===grupo && r.segmento===_segT && (r.toneladas||0)>=10 && r.tarifa_kg!=null && r.comuna!=='(s/comuna)');
   hbarChart('t_caro',cc.slice().sort((a,b)=>b.tarifa_kg-a.tarifa_kg).slice(0,10).map(r=>({label:r.comuna,value:r.tarifa_kg})),R.red2,' $/kg','');
   hbarChart('t_barato',cc.slice().sort((a,b)=>a.tarifa_kg-b.tarifa_kg).slice(0,10).map(r=>({label:r.comuna,value:r.tarifa_kg})),R.grey,' $/kg','');
