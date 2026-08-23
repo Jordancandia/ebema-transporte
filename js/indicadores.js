@@ -84,7 +84,7 @@ async function loadGeneral(){
   try {
     if (!_cacheGen){
       const y='2026-01';
-      const [ns,tar,mar,ft,sc,con,tie,scm,nsm,tarm,shes] = await Promise.all([
+      const [ns,tar,mar,ft,sc,con,tie,scm,nsm,tarm,shes,ebm] = await Promise.all([
         supabase.from('v_ind_ns_general_mes').select('*').gte('mes_label',y).order('mes_label'),
         supabase.from('v_ind_tarifa_general_mes').select('*').gte('mes_label',y).order('mes_label'),
         supabase.from('v_ind_margen_general_mes').select('*').gte('mes_label',y).order('mes_label'),
@@ -95,10 +95,11 @@ async function loadGeneral(){
         supabase.from('v_ind_sin_cobro_mes').select('*').gte('mes_label',y).order('mes_label'),
         supabase.from('v_ind_ns_grupo_mes').select('*').gte('mes_label',y),
         supabase.from('v_ind_troncal_quilicura_mes').select('*').gte('mes_label',y),
-        supabase.from('v_ind_troncal_quilicura_sinhes').select('*')
+        supabase.from('v_ind_troncal_quilicura_sinhes').select('*'),
+        supabase.from('v_ind_ebemaclick_mes').select('*').gte('mes_label',y).order('mes_label')
       ]);
-      const e = ns.error||tar.error||mar.error||ft.error||sc.error||con.error||tie.error||scm.error||nsm.error||tarm.error||shes.error; if(e) throw e;
-      _cacheGen = { ns:ns.data||[], tar:tar.data||[], mar:mar.data||[], ft:ft.data||[], sc:sc.data||[], con:con.data||[], tie:tie.data||[], scm:scm.data||[], nsm:nsm.data||[], tq:tarm.data||[], shes:(shes.data&&shes.data[0])||{} };
+      const e = ns.error||tar.error||mar.error||ft.error||sc.error||con.error||tie.error||scm.error||nsm.error||tarm.error||shes.error||ebm.error; if(e) throw e;
+      _cacheGen = { ns:ns.data||[], tar:tar.data||[], mar:mar.data||[], ft:ft.data||[], sc:sc.data||[], con:con.data||[], tie:tie.data||[], scm:scm.data||[], nsm:nsm.data||[], tq:tarm.data||[], shes:(shes.data&&shes.data[0])||{}, ebm:ebm.data||[] };
     }
     body().innerHTML = generalHTML(_cacheGen);
     ensureTip(); drawGeneral(_cacheGen); sweepHeat();
@@ -203,7 +204,14 @@ function generalHTML(d){
       `<div><div class="text-[12px] text-secondary mb-1 font-medium">Pesos por kilo $/kg — intensidad = más caro</div>`+
       heatmapHTML(d.tq,'tarifa_kg',heatTarRG,v=>'$'+nf1.format(v))+`</div></div>`)}
 
-    ${card('4 · Flete Tercero (REVEX)','OTIF, pedidos y días por modalidad — evolutivo mensual (red)',
+    ${card('3.3 · Impacto EbemaClick','Costo mensual EbemaClick (docs con V Garrido + material 400141)',
+      tile('Despachos',nf0.format(sum(d.ebm.map(r=>r.entregas))),'entregas · período')+
+      tile('Toneladas despachadas',(function(){var t=sum(d.ebm.map(r=>r.toneladas));return t?nf1.format(t)+' t':'–';})(),'período')+
+      tile('Costo pagado',mm(sum(d.ebm.map(r=>r.pagado))/1e6),'flete pagado','text-[#C0000C]')+
+      tile('Financiamiento neto',mm(sum(d.ebm.map(r=>r.pagado-r.cobrado))/1e6),'pagado − cobrado','text-[#C0000C]'),
+      legend([{n:'Costo EbemaClick $MM',c:R.red2}])+`<div id="g_ebc_mes"></div>`)}
+
+    ${card('4 · Flete Tercero (REVEX)','Servicio Revex',
       tile('OTIF Despacha',pct(ftLast.despO),(ftLast.despN||0)+' pedidos')+
       tile('OTIF Retira',pct(ftLast.retiO),(ftLast.retiN||0)+' pedidos')+
       tile('Pedidos',nf0.format(sum(d.ft.map(r=>r.pedidos))),'período')+
@@ -212,7 +220,7 @@ function generalHTML(d){
       `<div>`+legend([{n:'OTIF Despacha',c:R.red},{n:'OTIF Retira',c:R.grey}])+`<div id="g_rev_otif"></div></div>`+
       `<div>`+legend([{n:'Pedidos Despacha',c:R.red},{n:'Pedidos Retira',c:R.grey}])+`<div id="g_rev_ped"></div></div>`+
       `<div>`+legend([{n:'Días Despacha',c:R.red},{n:'Días Retira',c:R.grey}])+`<div id="g_rev_dias"></div></div></div>`)}
-    ${card('5 · Operación — última milla','Consolidación de camión y tiempo de facturación — mensual',
+    ${card('5 · Operación — última milla','Consolidación y Tiempo de Facturación',
       tile('Consolidación — '+mesCorto((d.con[d.con.length-2]||d.con[d.con.length-1]||{}).mes_label||''),pct((d.con[d.con.length-2]||d.con[d.con.length-1]||{}).consol_pct),'% capacidad usada')+
       tile('Consolidación promedio',pct(avg(d.con.map(r=>r.consol_pct))),'año')+
       tile('Días entrega→transporte',(function(){var r=d.tie[d.tie.length-2]||d.tie[d.tie.length-1]||{};return r.dias_prom!=null?nf1.format(r.dias_prom)+' d':'–';})(),'último mes')+
@@ -439,6 +447,9 @@ function drawGeneral(d){
   barChart('g_tiempo',d.tie.map(r=>r.dias_prom),tieL,0,niceMax(d.tie.map(r=>r.dias_prom)),R.grey,' d',d.tie.length-1,v=>Math.round(v));
   const scmL=d.scm.map(r=>mesCorto(r.mes_label));
   barChart('g_scm',d.scm.map(r=>r.monto/1e6),scmL,0,niceMax(d.scm.map(r=>r.monto/1e6)),R.red2,' MM',d.scm.length-1,v=>'$'+Math.round(v));
+  var ebmMap={}; (d.ebm||[]).forEach(function(r){ebmMap[r.mes_label]=r;});
+  var ebmL=mesesPeriodo();
+  barChart('g_ebc_mes',ebmL.map(function(m){return ((ebmMap[m]&&ebmMap[m].pagado)||0)/1e6;}),ebmL.map(mesCorto),0,niceMax((d.ebm||[]).map(function(r){return r.pagado/1e6;})),R.red2,' MM',null,function(v){return '$'+nf1.format(v);});
 }
 
 function drawCentro(d, grupo){
