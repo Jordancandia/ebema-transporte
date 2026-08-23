@@ -384,6 +384,25 @@ function lineChart(elId,series,labels,mn,mx,unit,softFrom){
 function mesEnCurso(){ var d=new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'); }
 // Lista de meses 'YYYY-MM' desde enero del año en curso hasta el mes actual
 function mesesPeriodo(){ var d=new Date(), y=d.getFullYear(), n=d.getMonth()+1, a=[]; for(var m=1;m<=n;m++) a.push(y+'-'+String(m).padStart(2,'0')); return a; }
+// --- Evolutivo semanal (últimas 4 semanas cerradas) -------------------------
+function semKey(s){ var m=/(\d{4})-S(\d{1,2})/.exec(s||''); return m?(+m[1])*100+(+m[2]):0; }
+function isoWeekKey(dt){ var d=new Date(Date.UTC(dt.getFullYear(),dt.getMonth(),dt.getDate())); var day=(d.getUTCDay()+6)%7; d.setUTCDate(d.getUTCDate()-day+3); var f=new Date(Date.UTC(d.getUTCFullYear(),0,4)); var w=1+Math.round(((d-f)/864e5-3+((f.getUTCDay()+6)%7))/7); return d.getUTCFullYear()*100+w; }
+function last4(rows,grupo){ var cur=isoWeekKey(new Date()); return (rows||[]).filter(function(r){return r.grupo===grupo && semKey(r.semana)<cur;}).sort(function(a,b){return semKey(a.semana)-semKey(b.semana);}).slice(-4); }
+function semLbl(s){ return (s||'').replace(/^\d{4}-/,''); }
+function semTable(rows,cols){
+  if(!rows.length) return `<div class="text-secondary text-[12px] py-md">Sin semanas cerradas.</div>`;
+  var head='<tr class="text-secondary text-left"><th class="font-medium pb-[4px] pr-sm">Semana</th>'+cols.map(function(c){return `<th class="font-medium text-right pb-[4px] pr-sm">${c.label}</th><th class="font-medium text-right pb-[4px] pr-sm">Δ</th>`;}).join('')+'</tr>';
+  var body=rows.map(function(r,i){
+    var tds=cols.map(function(c){
+      var v=c.get(r), prev=i>0?c.get(rows[i-1]):null, d=(v!=null&&prev!=null)?(v-prev):null;
+      var dtxt=(d==null)?'–':((d>0?'+':'')+c.dfmt(d));
+      var dcls=(d==null)?'text-secondary':(d<0?'text-[#C0000C]':'text-[#333]');
+      return `<td class="text-right pr-sm tabular-nums">${v==null?'–':c.fmt(v)}</td><td class="text-right pr-sm tabular-nums ${dcls}">${dtxt}</td>`;
+    }).join('');
+    return `<tr class="border-t border-surface-variant"><td class="py-[3px] pr-sm whitespace-nowrap">${semLbl(r.semana)}</td>${tds}</tr>`;
+  }).join('');
+  return `<table class="w-full text-[12px]"><thead>${head}</thead><tbody>${body}</tbody></table>`;
+}
 // Agrega el mes en curso (si falta) a las filas ns; marca _curso=true en el slot añadido
 function nsConCurso(ns){
   var rows=ns.slice(); var cur=mesEnCurso();
@@ -657,15 +676,16 @@ async function renderNivel(container){
   container.innerHTML = loadingHTML();
   try {
     if(!_cacheNivel){
-      const [tp,co,com,sp,ft] = await Promise.all([
+      const [tp,co,com,sp,ft,sem] = await Promise.all([
         supabase.from('v_ind_ns_tipo_grupo').select('*'),
         supabase.from('v_ind_ns_comuna').select('*'),
         supabase.from('v_ind_ns_comuna_mes').select('*'),
         supabase.from('v_ind_ns_spot_grupo_mes').select('*'),
-        supabase.from('v_ind_ftercero_mes').select('*').gte('mes_label','2026-01').order('mes_label')
+        supabase.from('v_ind_ftercero_mes').select('*').gte('mes_label','2026-01').order('mes_label'),
+        supabase.from('v_ind_ns_grupo_semana').select('*')
       ]);
-      const e=tp.error||co.error||com.error||sp.error||ft.error; if(e) throw e;
-      _cacheNivel={tp:tp.data||[],co:co.data||[],com:com.data||[],sp:sp.data||[],ft:ft.data||[]};
+      const e=tp.error||co.error||com.error||sp.error||ft.error||sem.error; if(e) throw e;
+      _cacheNivel={tp:tp.data||[],co:co.data||[],com:com.data||[],sp:sp.data||[],ft:ft.data||[],sem:sem.data||[]};
     }
     const grupos=[...new Set(_cacheNivel.co.map(r=>r.grupo))].filter(g=>g&&g!=='OTROS').sort();
     if(!_grupoN||grupos.indexOf(_grupoN)<0) _grupoN=(grupos.indexOf('CONCEPCION')>=0?'CONCEPCION':grupos[0]);
@@ -689,23 +709,29 @@ function nivelHTML(d,grupos,grupo){
       <select id="ind_seln" class="border border-surface-variant rounded-lg px-md py-sm bg-surface-container-lowest text-on-surface">${opciones}</select>
     </div>
 
+    ${card('0 · Últimas 4 semanas cerradas — '+nice(grupo),'OTIF y Fill Rate semanal',
+      '',
+      `<div class="grid grid-cols-1 md:grid-cols-2 gap-md items-center">`+
+      `<div>`+legend([{n:'OTIF %',c:R.red},{n:'Fill Rate %',c:R.grey}])+`<div id="n_sem"></div></div>`+
+      `<div id="n_semtab"></div></div>`)}
+
     ${card('1 · Tipo de venta — Stock vs Calzada','OTIF y días a entrega por tipo (acumulado)',
       tile('OTIF Stock',pct(stock.otif_pct),(stock.lineas||0)+' líneas')+
       tile('OTIF Calzada',pct(calz.otif_pct),(calz.lineas||0)+' líneas',(calz.otif_pct!=null&&calz.otif_pct<60)?'text-[#EE1B22]':'')+
       tile('Días Stock',(stock.dias_prom!=null?nf1.format(stock.dias_prom)+' d':'–'),'venta→entrega')+
       tile('Días Calzada',(calz.dias_prom!=null?nf1.format(calz.dias_prom)+' d':'–'),'venta→entrega'),
       `<div class="grid grid-cols-1 md:grid-cols-2 gap-md">`+
-      `<div>`+legend([{n:'OTIF % por tipo',c:C.navy}])+`<div id="n_tipo_otif"></div></div>`+
-      `<div>`+legend([{n:'Días a entrega por tipo',c:C.blue}])+`<div id="n_tipo_dias"></div></div></div>`+
+      `<div>`+legend([{n:'OTIF % por tipo',c:R.red}])+`<div id="n_tipo_otif"></div></div>`+
+      `<div>`+legend([{n:'Días a entrega por tipo',c:R.grey}])+`<div id="n_tipo_dias"></div></div></div>`+
       (hayClase?'':`<div class="text-[11px] text-secondary mt-sm">Stock=ZV01/03/04 · Calzada=ZV08/09. Vacío = falta correr la carga con el Code.gs actualizado (nueva columna Clase Documento).</div>`))}
 
     ${card('2 · Top comunas por centro — peores y mejores','OTIF por comuna destino en rutas regionales (rutas de una misma comuna se suman)','',
       `<div class="grid grid-cols-1 md:grid-cols-2 gap-md">`+
-      `<div>`+legend([{n:'5 peores OTIF %',c:C.red}])+`<div id="n_reg_peor"></div></div>`+
-      `<div>`+legend([{n:'5 mejores OTIF %',c:C.green}])+`<div id="n_reg_mejor"></div></div></div>`)}
+      `<div>`+legend([{n:'5 peores OTIF %',c:R.red2}])+`<div id="n_reg_peor"></div></div>`+
+      `<div>`+legend([{n:'5 mejores OTIF %',c:R.grey}])+`<div id="n_reg_mejor"></div></div></div>`)}
 
     ${card('3 · Spot vs Planificado — evolutivo','OTIF mensual por tipo de servicio','',
-      legend([{n:'Planificado',c:C.navy},{n:'Spot',c:C.orange}])+`<div id="n_spot"></div>`)}
+      legend([{n:'Planificado',c:R.red},{n:'Spot',c:R.grey}])+`<div id="n_spot"></div>`)}
 
     <div class="text-[11px] text-secondary mt-lg leading-relaxed">Comuna = comuna destino (routes.comuna); todas las rutas que llegan a una misma comuna se agrupan juntas. Solo rutas de clasificación Regional. Días venta→entrega = fecha guía − fecha creación.</div>
   </div>`;
@@ -724,17 +750,22 @@ function heatComunaHTML(rows){
   return `<div class="ind-heat overflow-x-auto"><table class="text-[11px] border-separate" style="border-spacing:2px"><thead><tr>${head}</tr></thead><tbody>${bodyr}</tbody></table></div>`;
 }
 function drawNivel(d,grupo){
+  const s4=last4(d.sem,grupo);
+  lineChart('n_sem',[{n:'OTIF',v:s4.map(r=>r.otif_pct),c:R.red},{n:'Fill',v:s4.map(r=>r.fillrate_pct),c:R.grey}],s4.map(r=>semLbl(r.semana)),0,100,'%');
+  const nt=document.getElementById('n_semtab'); if(nt) nt.innerHTML=semTable(s4,[
+    {label:'OTIF',get:r=>r.otif_pct,fmt:pct,dfmt:v=>nf1.format(v)+' pp'},
+    {label:'Fill',get:r=>r.fillrate_pct,fmt:pct,dfmt:v=>nf1.format(v)+' pp'}]);
   const tp=d.tp.filter(r=>r.grupo===grupo), order=['STOCK','CALZADA'];
-  barChart('n_tipo_otif',order.map(t=>{const r=tp.find(x=>x.tipo===t)||{};return r.otif_pct||0;}),order.map(nice),0,100,C.navy,'%',null,v=>Math.round(v));
+  barChart('n_tipo_otif',order.map(t=>{const r=tp.find(x=>x.tipo===t)||{};return r.otif_pct||0;}),order.map(nice),0,100,R.red,'%',null,v=>Math.round(v));
   const dv=order.map(t=>{const r=tp.find(x=>x.tipo===t)||{};return r.dias_prom||0;});
-  barChart('n_tipo_dias',dv,order.map(nice),0,niceMax(dv),C.blue,' d',null,v=>Math.round(v));
+  barChart('n_tipo_dias',dv,order.map(nice),0,niceMax(dv),R.grey,' d',null,v=>Math.round(v));
   const reg=d.co.filter(r=>r.grupo===grupo && r.clasif_ruta==='Regional' && r.otif_pct!=null && (r.lineas||0)>=5);
-  hbarChart('n_reg_peor',reg.slice().sort((a,b)=>a.otif_pct-b.otif_pct).slice(0,5).map(r=>({label:r.comuna,value:r.otif_pct})),C.red,'%','');
-  hbarChart('n_reg_mejor',reg.slice().sort((a,b)=>b.otif_pct-a.otif_pct).slice(0,5).map(r=>({label:r.comuna,value:r.otif_pct})),C.green,'%','');
+  hbarChart('n_reg_peor',reg.slice().sort((a,b)=>a.otif_pct-b.otif_pct).slice(0,5).map(r=>({label:r.comuna,value:r.otif_pct})),R.red2,'%','');
+  hbarChart('n_reg_mejor',reg.slice().sort((a,b)=>b.otif_pct-a.otif_pct).slice(0,5).map(r=>({label:r.comuna,value:r.otif_pct})),R.grey,'%','');
   const sp=d.sp.filter(r=>r.grupo===grupo), sm=[...new Set(sp.map(r=>r.mes_label))].sort();
   lineChart('n_spot',[
-    {n:'Planificado',v:sm.map(m=>{const r=sp.find(x=>x.mes_label===m&&x.tipo==='Planificado');return r?r.otif_pct:0;}),c:C.navy},
-    {n:'Spot',v:sm.map(m=>{const r=sp.find(x=>x.mes_label===m&&x.tipo==='Spot');return r?r.otif_pct:0;}),c:C.orange}
+    {n:'Planificado',v:sm.map(m=>{const r=sp.find(x=>x.mes_label===m&&x.tipo==='Planificado');return r?r.otif_pct:0;}),c:R.red},
+    {n:'Spot',v:sm.map(m=>{const r=sp.find(x=>x.mes_label===m&&x.tipo==='Spot');return r?r.otif_pct:0;}),c:R.grey}
   ],sm.map(mesCorto),0,100,'%');
 }
 
@@ -751,15 +782,16 @@ async function renderTarifa(container){
   container.innerHTML=loadingHTML();
   try{
     if(!_cacheTar){
-      const [tm,cap,com,tro,ebc]=await Promise.all([
+      const [tm,cap,com,tro,ebc,sem]=await Promise.all([
         supabase.from('v_ind_tarifa_grupo_mes').select('*'),
         supabase.from('v_ind_consol_cap_grupo_mes').select('*'),
         supabase.from('v_ind_tarifa_comuna_grupo').select('*'),
         supabase.from('v_ind_troncal_grupo_mes').select('*'),
-        supabase.from('v_ind_ebemaclick_grupo_mes').select('*')
+        supabase.from('v_ind_ebemaclick_grupo_mes').select('*'),
+        supabase.from('v_ind_tarifa_grupo_semana').select('*')
       ]);
-      const e=tm.error||cap.error||com.error||tro.error||ebc.error; if(e) throw e;
-      _cacheTar={tm:tm.data||[],cap:cap.data||[],com:com.data||[],tro:tro.data||[],ebc:ebc.data||[]};
+      const e=tm.error||cap.error||com.error||tro.error||ebc.error||sem.error; if(e) throw e;
+      _cacheTar={tm:tm.data||[],cap:cap.data||[],com:com.data||[],tro:tro.data||[],ebc:ebc.data||[],sem:sem.data||[]};
     }
     const grupos=[...new Set(_cacheTar.tm.map(r=>r.grupo))].filter(g=>g&&g!=='OTROS').sort();
     if(!_grupoT||grupos.indexOf(_grupoT)<0) _grupoT=(grupos.indexOf('CONCEPCION')>=0?'CONCEPCION':grupos[0]);
@@ -781,45 +813,55 @@ function tarifaHTML(d,grupos,grupo){
       <label class="text-secondary text-body-md ml-auto">Centro:</label>
       <select id="ind_selt" class="border border-surface-variant rounded-lg px-md py-sm bg-surface-container-lowest text-on-surface">${opciones}</select>
     </div>
+    ${card('0 · Últimas 4 semanas cerradas — '+nice(grupo),'Tarifa $/kg y toneladas semanal',
+      '',
+      `<div class="grid grid-cols-1 md:grid-cols-2 gap-md items-center">`+
+      `<div>`+legend([{n:'Tarifa $/kg',c:R.red2}])+`<div id="t_sem"></div></div>`+
+      `<div id="t_semtab"></div></div>`)}
     <div class="text-[11px] text-secondary -mt-sm mb-md">Solo <b>última milla</b> (entregas a cliente). Excluye traslados troncales de reposición.</div>
     ${card('1 · Tarifa $/kg y toneladas — evolutivo','Mensual por centro (mes en curso en tono suave)','',
       `<div class="grid grid-cols-1 md:grid-cols-2 gap-md">`+
-      `<div>`+legend([{n:'Tarifa $/kg',c:C.orange}])+`<div id="t_tar"></div></div>`+
-      `<div>`+legend([{n:'Toneladas',c:C.blue}])+`<div id="t_ton"></div></div></div>`)}
+      `<div>`+legend([{n:'Tarifa $/kg',c:R.grey}])+`<div id="t_tar"></div></div>`+
+      `<div>`+legend([{n:'Toneladas',c:R.grey}])+`<div id="t_ton"></div></div></div>`)}
     ${card('2 · Consolidación promedio por tipo de camión','Promedio del período · 5 / 10 / 15 / 28 ton','',
-      legend([{n:'Consolidación % promedio',c:C.green}])+`<div id="t_cap_avg"></div>`)}
+      legend([{n:'Consolidación % promedio',c:R.grey}])+`<div id="t_cap_avg"></div>`)}
     ${card('3 · Comunas más caras y más baratas','Tarifa $/kg por comuna destino (≥10 t · rutas de una misma comuna se suman)','',
       `<div class="grid grid-cols-1 md:grid-cols-2 gap-md">`+
-      `<div>`+legend([{n:'10 más caras',c:C.red}])+`<div id="t_caro"></div></div>`+
-      `<div>`+legend([{n:'10 más baratas',c:C.green}])+`<div id="t_barato"></div></div></div>`)}
+      `<div>`+legend([{n:'10 más caras',c:R.red2}])+`<div id="t_caro"></div></div>`+
+      `<div>`+legend([{n:'10 más baratas',c:R.grey}])+`<div id="t_barato"></div></div></div>`)}
     ${showEbc?card('4 · Impacto EbemaClick — período (ene → a la fecha)','Financiamiento de la operación EbemaClick en todo el período (docs con V Garrido + material 400141)',
       tile('Documentos',nf0.format(ebcTot.docs),'ene → hoy')+
       tile('Toneladas',nf1.format(ebcTot.ton)+' t','movidas')+
       tile('Flete pagado',mm(ebcTot.pag),'costo operación','text-[#EE1B22]')+
       tile('Financiamiento neto',mm(ebcTot.pag-ebcTot.cob),'pagado − cobrado','text-[#EE1B22]'),
       `<div class="grid grid-cols-1 md:grid-cols-2 gap-md">`+
-      `<div>`+legend([{n:'Flete pagado $MM',c:C.red},{n:'Cobrado $MM',c:C.navy}])+`<div id="t_ebc"></div></div>`+
-      `<div>`+legend([{n:'Financiamiento neto $MM',c:C.orange}])+`<div id="t_ebc_neto"></div></div></div>`):''}
+      `<div>`+legend([{n:'Flete pagado $MM',c:R.red2},{n:'Cobrado $MM',c:R.red}])+`<div id="t_ebc"></div></div>`+
+      `<div>`+legend([{n:'Financiamiento neto $MM',c:R.grey}])+`<div id="t_ebc_neto"></div></div></div>`):''}
     <div class="text-[11px] text-secondary mt-lg leading-relaxed">Solo última milla (entregas a cliente ZE01/ZE06/ZE20/ZE05/ZE04); se excluyen los traslados troncales de reposición (NL/EL). Comuna = comuna destino (routes.comuna); rutas de una misma comuna se agrupan. EbemaClick = documentos con V Garrido T y material 400141; el cuadro solo aparece en centros con operación EbemaClick.</div>
   </div>`;
 }
 function drawTarifa(d,grupo){
+  const s4=last4(d.sem,grupo);
+  barChart('t_sem',s4.map(r=>r.tarifa_kg),s4.map(r=>semLbl(r.semana)),0,niceMax(s4.map(r=>r.tarifa_kg)),R.red2,' $/kg',null,v=>'$'+Math.round(v));
+  const tt=document.getElementById('t_semtab'); if(tt) tt.innerHTML=semTable(s4,[
+    {label:'$/kg',get:r=>r.tarifa_kg,fmt:money,dfmt:v=>'$'+nf1.format(v)},
+    {label:'Ton',get:r=>r.toneladas,fmt:v=>nf0.format(v),dfmt:v=>nf0.format(v)}]);
   const tm=d.tm.filter(r=>r.grupo===grupo && r.segmento===_segT).slice().sort((a,b)=>a.mes_label<b.mes_label?-1:1);
   const tmL=tm.map(r=>mesCorto(r.mes_label)), pIdx=tm.length-1;
-  barChart('t_tar',tm.map(r=>r.tarifa_kg),tmL,0,niceMax(tm.map(r=>r.tarifa_kg)),C.orange,' $/kg',pIdx,v=>'$'+Math.round(v));
-  barChart('t_ton',tm.map(r=>r.toneladas),tmL,0,niceMax(tm.map(r=>r.toneladas)),C.blue,' t',pIdx,v=>Math.round(v));
+  barChart('t_tar',tm.map(r=>r.tarifa_kg),tmL,0,niceMax(tm.map(r=>r.tarifa_kg)),R.grey,' $/kg',pIdx,v=>'$'+Math.round(v));
+  barChart('t_ton',tm.map(r=>r.toneladas),tmL,0,niceMax(tm.map(r=>r.toneladas)),R.grey,' t',pIdx,v=>Math.round(v));
   const cap=d.cap.filter(r=>r.grupo===grupo && r.segmento===_segT), cm=[...new Set(cap.map(r=>r.mes_label))].sort();
-  const caps=[['5',C.navy],['10',C.blue],['15',C.orange],['28',C.red]];
-  barChart('t_cap_avg',caps.map(x=>avg(cap.filter(y=>y.cap===x[0]&&y.consol_pct!=null).map(y=>y.consol_pct))||0),caps.map(x=>x[0]+'t'),0,100,C.green,'%',null,v=>Math.round(v));
+  const caps=[['5',R.red],['10',R.grey],['15',R.grey],['28',R.red2]];
+  barChart('t_cap_avg',caps.map(x=>avg(cap.filter(y=>y.cap===x[0]&&y.consol_pct!=null).map(y=>y.consol_pct))||0),caps.map(x=>x[0]+'t'),0,100,R.grey,'%',null,v=>Math.round(v));
   const cc=d.com.filter(r=>r.grupo===grupo && r.segmento===_segT && (r.toneladas||0)>=10 && r.tarifa_kg!=null && r.comuna!=='(s/comuna)');
-  hbarChart('t_caro',cc.slice().sort((a,b)=>b.tarifa_kg-a.tarifa_kg).slice(0,10).map(r=>({label:r.comuna,value:r.tarifa_kg})),C.red,' $/kg','');
-  hbarChart('t_barato',cc.slice().sort((a,b)=>a.tarifa_kg-b.tarifa_kg).slice(0,10).map(r=>({label:r.comuna,value:r.tarifa_kg})),C.green,' $/kg','');
+  hbarChart('t_caro',cc.slice().sort((a,b)=>b.tarifa_kg-a.tarifa_kg).slice(0,10).map(r=>({label:r.comuna,value:r.tarifa_kg})),R.red2,' $/kg','');
+  hbarChart('t_barato',cc.slice().sort((a,b)=>a.tarifa_kg-b.tarifa_kg).slice(0,10).map(r=>({label:r.comuna,value:r.tarifa_kg})),R.grey,' $/kg','');
   const ebcG=d.ebc.filter(r=>r.grupo===grupo);
   if(ebcG.length){
     const ebcM=mesesPeriodo();   // ene → mes en curso (todo el período)
     const sumM=(m,f)=>sum(ebcG.filter(x=>x.mes_label===m).map(r=>r[f]||0));
-    lineChart('t_ebc',[{n:'Pagado',v:ebcM.map(m=>sumM(m,'pagado')/1e6),c:C.red},{n:'Cobrado',v:ebcM.map(m=>sumM(m,'cobrado')/1e6),c:C.navy}],ebcM.map(mesCorto),0,niceMax(ebcG.map(r=>r.pagado/1e6)),' MM');
-    barChart('t_ebc_neto',ebcM.map(m=>(sumM(m,'pagado')-sumM(m,'cobrado'))/1e6),ebcM.map(mesCorto),0,niceMax(ebcG.map(r=>(r.pagado-r.cobrado)/1e6)),C.orange,' MM',null,v=>'$'+nf1.format(v));
+    lineChart('t_ebc',[{n:'Pagado',v:ebcM.map(m=>sumM(m,'pagado')/1e6),c:R.red2},{n:'Cobrado',v:ebcM.map(m=>sumM(m,'cobrado')/1e6),c:R.red}],ebcM.map(mesCorto),0,niceMax(ebcG.map(r=>r.pagado/1e6)),' MM');
+    barChart('t_ebc_neto',ebcM.map(m=>(sumM(m,'pagado')-sumM(m,'cobrado'))/1e6),ebcM.map(mesCorto),0,niceMax(ebcG.map(r=>(r.pagado-r.cobrado)/1e6)),R.grey,' MM',null,v=>'$'+nf1.format(v));
   }
 }
 
@@ -831,13 +873,14 @@ async function renderMargen(container){
   container.innerHTML=loadingHTML();
   try{
     if(!_cacheMar2){
-      const [mg,sc,vn]=await Promise.all([
+      const [mg,sc,vn,sem]=await Promise.all([
         supabase.from('v_ind_margen_grupo_mes').select('*'),
         supabase.from('v_ind_sin_cobro_grupo_mes').select('*'),
-        supabase.from('v_ind_vendedor_grupo').select('*')
+        supabase.from('v_ind_vendedor_grupo').select('*'),
+        supabase.from('v_ind_margen_grupo_semana').select('*')
       ]);
-      const e=mg.error||sc.error||vn.error; if(e) throw e;
-      _cacheMar2={mg:mg.data||[],sc:sc.data||[],vn:vn.data||[]};
+      const e=mg.error||sc.error||vn.error||sem.error; if(e) throw e;
+      _cacheMar2={mg:mg.data||[],sc:sc.data||[],vn:vn.data||[],sem:sem.data||[]};
     }
     const grupos=[...new Set(_cacheMar2.mg.map(r=>r.grupo))].filter(g=>g&&g!=='OTROS').sort();
     if(!_grupoM||grupos.indexOf(_grupoM)<0) _grupoM=(grupos.indexOf('CONCEPCION')>=0?'CONCEPCION':grupos[0]);
@@ -860,18 +903,23 @@ function margenHTML(d,grupos,grupo){
       <select id="ind_selm" class="border border-surface-variant rounded-lg px-md py-sm bg-surface-container-lowest text-on-surface">${opciones}</select>
     </div>
     <div class="text-[11px] text-secondary -mt-sm mb-md">Solo <b>última milla</b> (entregas a cliente). Excluye traslados troncales de reposición.</div>
+    ${card('0 · Últimas 4 semanas cerradas — '+nice(grupo),'Margen $MM y cobertura semanal',
+      '',
+      `<div class="grid grid-cols-1 md:grid-cols-2 gap-md items-center">`+
+      `<div>`+legend([{n:'Margen $MM',c:R.red2}])+`<div id="m_sem"></div></div>`+
+      `<div id="m_semtab"></div></div>`)}
     ${card('1 · Pagado vs Cobrado — evolutivo','Mensual por centro ($MM)','',
-      legend([{n:'Cobrado',c:C.navy},{n:'Pagado',c:C.orange}])+`<div id="m_pc"></div>`)}
+      legend([{n:'Cobrado',c:R.red},{n:'Pagado',c:R.grey}])+`<div id="m_pc"></div>`)}
     ${card('2 · Margen y cobertura — evolutivo','Margen $MM y cobertura % mensual (mes en curso suave)','',
       `<div class="grid grid-cols-1 md:grid-cols-2 gap-md">`+
-      `<div>`+legend([{n:'Margen $MM',c:C.red}])+`<div id="m_margen"></div></div>`+
-      `<div>`+legend([{n:'Cobertura %',c:C.navy}])+`<div id="m_cob"></div></div></div>`)}
+      `<div>`+legend([{n:'Margen $MM',c:R.red2}])+`<div id="m_margen"></div></div>`+
+      `<div>`+legend([{n:'Cobertura %',c:R.red}])+`<div id="m_cob"></div></div></div>`)}
     ${card('3 · Flete no cobrado — mensual','Entregas con flete cobrado en 0 (monto sugerido no cobrado)',
       tile('No cobrado (sugerido)',mm(scMonto),'acumulado','text-[#EE1B22]')+
       tile('Entregas sin cobro',nf0.format(scEnt),'acumulado')+
       tile('Líneas',nf0.format(sum(sc.map(r=>r.lineas))),'acumulado')+
       tile('Costo asumido',mm(sum(sc.map(r=>r.monto))/1e6),'flete pagado','text-[#EE1B22]'),
-      legend([{n:'No cobrado $MM (sugerido)',c:C.red}])+`<div id="m_scm"></div>`)}
+      legend([{n:'No cobrado $MM (sugerido)',c:R.red2}])+`<div id="m_scm"></div>`)}
     ${card('4 · Vendedores que cobran menos','Ranking por brecha (cobrado vs sugerido) · costo pagado asociado','',
       vendMargenTablaHTML(d.vn,grupo))}
     <div class="text-[11px] text-secondary mt-lg leading-relaxed">Flete no cobrado = entregas con flete cobrado = 0; monto = flete sugerido (lo que no se cobró). Ranking excluye EbemaClick.</div>
@@ -891,11 +939,16 @@ function vendMargenTablaHTML(rows,grupo){
     <th class="font-medium pb-[4px]">Vendedor</th><th class="font-medium text-right pb-[4px]">Sugerido</th><th class="font-medium text-right pb-[4px]">Cobrado</th><th class="font-medium text-right pb-[4px]">Pagado</th><th class="font-medium text-right pb-[4px]">Brecha</th><th class="font-medium text-right pb-[4px]">Cumpl.</th></tr></thead><tbody>${filas}</tbody></table>`;
 }
 function drawMargen(d,grupo){
+  const s4=last4(d.sem,grupo);
+  barChart('m_sem',s4.map(r=>r.margen/1e6),s4.map(r=>semLbl(r.semana)),Math.min(-0.5,niceMin(s4.map(r=>r.margen/1e6))),Math.max(0.5,niceMax(s4.map(r=>r.margen/1e6))),R.red2,' MM',null,v=>'$'+nf1.format(v));
+  const mt=document.getElementById('m_semtab'); if(mt) mt.innerHTML=semTable(s4,[
+    {label:'Margen',get:r=>r.margen/1e6,fmt:v=>mm(v),dfmt:v=>'$'+nf1.format(v)},
+    {label:'Cobertura',get:r=>r.cobertura_pct,fmt:pct,dfmt:v=>nf1.format(v)+' pp'}]);
   const mg=d.mg.filter(r=>r.grupo===grupo && r.segmento===_segM).slice().sort((a,b)=>a.mes_label<b.mes_label?-1:1);
   const L=mg.map(r=>mesCorto(r.mes_label)), pIdx=mg.length-1;
-  lineChart('m_pc',[{n:'Cobrado',v:mg.map(r=>r.cobrado/1e6),c:C.navy},{n:'Pagado',v:mg.map(r=>r.pagado/1e6),c:C.orange}],L,0,niceMax(mg.map(r=>Math.max(r.cobrado,r.pagado)/1e6)),' MM');
-  barChart('m_margen',mg.map(r=>r.margen/1e6),L,Math.min(-1,niceMin(mg.map(r=>r.margen/1e6))),Math.max(1,niceMax(mg.map(r=>r.margen/1e6))),C.red,' MM',pIdx,v=>'$'+nf1.format(v));
-  lineChart('m_cob',[{n:'Cobertura',v:mg.map(r=>r.cobertura_pct),c:C.navy}],L,0,120,'%');
+  lineChart('m_pc',[{n:'Cobrado',v:mg.map(r=>r.cobrado/1e6),c:R.red},{n:'Pagado',v:mg.map(r=>r.pagado/1e6),c:R.grey}],L,0,niceMax(mg.map(r=>Math.max(r.cobrado,r.pagado)/1e6)),' MM');
+  barChart('m_margen',mg.map(r=>r.margen/1e6),L,Math.min(-1,niceMin(mg.map(r=>r.margen/1e6))),Math.max(1,niceMax(mg.map(r=>r.margen/1e6))),R.red2,' MM',pIdx,v=>'$'+nf1.format(v));
+  lineChart('m_cob',[{n:'Cobertura',v:mg.map(r=>r.cobertura_pct),c:R.red}],L,0,120,'%');
   const sc=d.sc.filter(r=>r.grupo===grupo && r.segmento===_segM).slice().sort((a,b)=>a.mes_label<b.mes_label?-1:1);
-  barChart('m_scm',sc.map(r=>(r.monto_sugerido||0)/1e6),sc.map(r=>mesCorto(r.mes_label)),0,niceMax(sc.map(r=>(r.monto_sugerido||0)/1e6)),C.red,' MM',sc.length-1,v=>'$'+nf1.format(v));
+  barChart('m_scm',sc.map(r=>(r.monto_sugerido||0)/1e6),sc.map(r=>mesCorto(r.mes_label)),0,niceMax(sc.map(r=>(r.monto_sugerido||0)/1e6)),R.red2,' MM',sc.length-1,v=>'$'+nf1.format(v));
 }
