@@ -11,6 +11,15 @@ const C = {
   navy:'#0B2B4A', blue:'#2E75B6', orange:'#E97132', red:'#EE1B22',
   green:'#1E8449', ink:'#333333', muted:'#808285', grid:'#D9D5CF'
 };
+// Paleta Consolidado: solo tonos rojos y grises
+const R = {
+  red:'#C0000C', red2:'#EE1B22', redL:'#E88A8F',
+  grey:'#6B6E70', greyL:'#A9ACAE', ink:'#333333', grid:'#D9D5CF'
+};
+// Semáforo rojo→gris para heatmaps del Consolidado
+function tintRG(t){ const s=['#F2EFEC','#F7D6D8','#EFAEB2','#E58990','#D9636B']; t=Math.min(1,Math.max(0,t)); return s[Math.min(s.length-1,Math.floor(t*s.length))]; }
+function heatConsolRG(v){ return tintRG((v||0)/100); }
+function heatTarRG(v){ return tintRG(Math.min(1,(v||0)/60)); }
 
 // --- Estado -----------------------------------------------------------------
 let _container = null;
@@ -147,41 +156,41 @@ function generalHTML(d){
   const worst=d.mar.reduce((a,b)=>(b.margen<(a?a.margen:1e15)?b:a),null)||{};
   const ftLast=lastFT(d.ft);
   return `
-    ${card('1 · Nivel de Servicio','OTIF y Fill Rate — evolución mensual',
-      tile('OTIF — '+mesCorto(nsLast.mes_label||'')+' (último cerrado)',pct(nsLast.otif_pct),'Fill Rate '+pct(nsLast.fillrate_pct))+
-      tile('OTIF — '+mesCorto(mesEnCurso())+' (en curso)',pct(nsCur.otif_pct),(nsCur.otif_pct==null?'sin datos aún':'parcial'),'opacity-60')+
-      tile('OTIF promedio',pct(nsAvgO),'año cerrado')+
-      tile('Líneas evaluadas',nf0.format(nsLines),'acumulado'),
-      legend([{n:'OTIF %',c:C.navy},{n:'Fill Rate %',c:C.blue},{n:'Mes en curso',c:C.muted}])+`<div id="g_ns"></div>`)}
-    ${card('2 · Pesos por Kilo','Tarifa $/kg y toneladas — evolución mensual',
+    ${card('1 · Nivel de Servicio — última milla','OTIF y Fill Rate (incluye mes en curso)',
+      tile('OTIF — '+mesCorto(nsLast.mes_label||'')+' (cerrado)',pct(nsLast.otif_pct),'Fill Rate '+pct(nsLast.fillrate_pct))+
+      tile('OTIF — '+mesCorto(mesEnCurso())+' (en curso)',pct(nsCur.otif_pct),(nsCur.otif_pct==null?'s/ dato en fuente':'parcial'),'opacity-60')+
+      tile('Fill — '+mesCorto(nsLast.mes_label||'')+' (cerrado)',pct(nsLast.fillrate_pct),'')+
+      tile('Fill — '+mesCorto(mesEnCurso())+' (en curso)',pct(nsCur.fillrate_pct),(nsCur.fillrate_pct==null?'s/ dato en fuente':'parcial'),'opacity-60'),
+      legend([{n:'OTIF %',c:R.red},{n:'Fill Rate %',c:R.grey},{n:'Mes en curso',c:R.greyL}])+`<div id="g_ns"></div>`)}
+    ${card('2 · Pesos por Kilo — última milla','Tarifa $/kg y toneladas — evolución mensual (mes en curso suave)',
       tile('Tarifa — '+mesCorto(tarLastClosed.mes_label||'')+' (último)',money(tarLastClosed.tarifa_kg),'$/kg')+
       tile('Tarifa promedio',money(tarAvg),'$/kg · ponderado')+
       tile('Toneladas',nf0.format(tonAcc)+' t','acumulado')+
       tile('Peor mes margen',mm(worst.margen/1e6),mesCorto(worst.mes_label||'')),
       `<div class="grid grid-cols-1 md:grid-cols-2 gap-md">`+
-      `<div>`+legend([{n:'Tarifa $/kg',c:C.orange}])+`<div id="g_tar"></div></div>`+
-      `<div>`+legend([{n:'Toneladas (t)',c:C.blue}])+`<div id="g_ton"></div></div></div>`)}
-    ${card('3 · Margen Cobrado vs Pagado','Margen de flete ($MM) y cobertura — evolución mensual',
-      tile('Margen acumulado',mm(marAcc),'excl. EbemaClick',marAcc<0?'text-[#EE1B22]':'')+
+      `<div>`+legend([{n:'Tarifa $/kg',c:R.red2}])+`<div id="g_tar"></div></div>`+
+      `<div>`+legend([{n:'Toneladas (t)',c:R.grey}])+`<div id="g_ton"></div></div></div>`)}
+    ${card('3 · Margen de Flete — última milla','Margen ($MM) y cobertura — evolución mensual',
+      tile('Margen acumulado',mm(marAcc),'excl. EbemaClick',marAcc<0?'text-[#C0000C]':'')+
       tile('Cobertura promedio',pct(cobAvg),'cobrado / pagado')+
-      tile('Sin cobrar (red)',mm(scMonto),nf0.format(scEnt)+' entregas','text-[#EE1B22]')+
-      tile('Peor mes',mm(worst.margen/1e6),mesCorto(worst.mes_label||''),'text-[#EE1B22]'),
+      tile('Sin cobrar',mm(scMonto),nf0.format(scEnt)+' entregas','text-[#C0000C]')+
+      tile('Peor mes',mm(worst.margen/1e6),mesCorto(worst.mes_label||''),'text-[#C0000C]'),
       `<div class="grid grid-cols-1 md:grid-cols-2 gap-md">`+
-      `<div>`+legend([{n:'Margen $MM',c:C.red}])+`<div id="g_mar"></div></div>`+
-      `<div>`+legend([{n:'Cobertura %',c:C.navy}])+`<div id="g_cob"></div></div></div>`)}
-    ${card('3b · Entregas sin Cobro','Flete pagado no cobrado — evolución mensual',
-      tile('No cobrado acumulado',mm(sum(d.scm.map(r=>r.monto))/1e6),'2026','text-[#EE1B22]')+
+      `<div>`+legend([{n:'Margen $MM',c:R.red}])+`<div id="g_mar"></div></div>`+
+      `<div>`+legend([{n:'Cobertura %',c:R.grey}])+`<div id="g_cob"></div></div></div>`)}
+    ${card('3.1 · Flete no cobrado — última milla','Flete pagado no cobrado — evolución mensual',
+      tile('No cobrado acumulado',mm(sum(d.scm.map(r=>r.monto))/1e6),'2026','text-[#C0000C]')+
       tile('Entregas sin cobro',nf0.format(sum(d.scm.map(r=>r.entregas))),'acumulado')+
       tile('Líneas',nf0.format(sum(d.scm.map(r=>r.lineas))),'acumulado')+
-      (function(){var w=d.scm.reduce((a,b)=>(b.monto>(a?a.monto:-1)?b:a),null)||{};return tile('Peor mes',mm((w.monto||0)/1e6),mesCorto(w.mes_label||''),'text-[#EE1B22]');})(),
-      legend([{n:'No cobrado $MM',c:C.red}])+`<div id="g_scm"></div>`)}
+      (function(){var w=d.scm.reduce((a,b)=>(b.monto>(a?a.monto:-1)?b:a),null)||{};return tile('Peor mes',mm((w.monto||0)/1e6),mesCorto(w.mes_label||''),'text-[#C0000C]');})(),
+      legend([{n:'No cobrado $MM',c:R.red2}])+`<div id="g_scm"></div>`)}
 
     ${card('3c · Troncal Quilicura (CD 1003 → CD destino)','Nivel de consolidación y pesos por kilo por centro destino (reposición NL)','',
       `<div class="grid grid-cols-1 md:grid-cols-2 gap-md">`+
-      `<div><div class="text-[12px] text-secondary mb-1 font-medium">Nivel de consolidación % — verde alto, rojo bajo</div>`+
-      heatmapHTML(d.tq,'consol_pct',heatOtif,v=>nf1.format(v))+`</div>`+
-      `<div><div class="text-[12px] text-secondary mb-1 font-medium">Pesos por kilo $/kg — verde barato, rojo caro</div>`+
-      heatmapHTML(d.tq,'tarifa_kg',heatTarifa,v=>'$'+nf1.format(v))+`</div></div>`)}
+      `<div><div class="text-[12px] text-secondary mb-1 font-medium">Nivel de consolidación % — intensidad = mayor</div>`+
+      heatmapHTML(d.tq,'consol_pct',heatConsolRG,v=>nf1.format(v))+`</div>`+
+      `<div><div class="text-[12px] text-secondary mb-1 font-medium">Pesos por kilo $/kg — intensidad = más caro</div>`+
+      heatmapHTML(d.tq,'tarifa_kg',heatTarRG,v=>'$'+nf1.format(v))+`</div></div>`)}
 
     ${card('4 · Flete Tercero (REVEX)','OTIF, pedidos y días por modalidad — evolutivo mensual (red)',
       tile('OTIF Despacha',pct(ftLast.despO),(ftLast.despN||0)+' pedidos')+
@@ -189,19 +198,19 @@ function generalHTML(d){
       tile('Pedidos',nf0.format(sum(d.ft.map(r=>r.pedidos))),'período')+
       tile('Ciclo Despacha',(ftLast.despCiclo!=null?nf1.format(ftLast.despCiclo)+' d':'–'),'último mes'),
       `<div class="grid grid-cols-1 md:grid-cols-3 gap-md">`+
-      `<div>`+legend([{n:'OTIF Despacha',c:C.navy},{n:'OTIF Retira',c:C.orange}])+`<div id="g_rev_otif"></div></div>`+
-      `<div>`+legend([{n:'Pedidos Despacha',c:C.navy},{n:'Pedidos Retira',c:C.orange}])+`<div id="g_rev_ped"></div></div>`+
-      `<div>`+legend([{n:'Días Despacha',c:C.navy},{n:'Días Retira',c:C.orange}])+`<div id="g_rev_dias"></div></div></div>`)}
-    ${card('5 · Operación','Consolidación de camión y tiempo de facturación — mensual',
+      `<div>`+legend([{n:'OTIF Despacha',c:R.red},{n:'OTIF Retira',c:R.grey}])+`<div id="g_rev_otif"></div></div>`+
+      `<div>`+legend([{n:'Pedidos Despacha',c:R.red},{n:'Pedidos Retira',c:R.grey}])+`<div id="g_rev_ped"></div></div>`+
+      `<div>`+legend([{n:'Días Despacha',c:R.red},{n:'Días Retira',c:R.grey}])+`<div id="g_rev_dias"></div></div></div>`)}
+    ${card('5 · Operación — última milla','Consolidación de camión y tiempo de facturación — mensual',
       tile('Consolidación — '+mesCorto((d.con[d.con.length-2]||d.con[d.con.length-1]||{}).mes_label||''),pct((d.con[d.con.length-2]||d.con[d.con.length-1]||{}).consol_pct),'% capacidad usada')+
       tile('Consolidación promedio',pct(avg(d.con.map(r=>r.consol_pct))),'año')+
       tile('Días entrega→transporte',(function(){var r=d.tie[d.tie.length-2]||d.tie[d.tie.length-1]||{};return r.dias_prom!=null?nf1.format(r.dias_prom)+' d':'–';})(),'último mes')+
       tile('Días promedio',(function(){var v=avg(d.tie.map(r=>r.dias_prom));return v!=null?nf1.format(v)+' d':'–';})(),'año'),
       `<div class="grid grid-cols-1 md:grid-cols-2 gap-md">`+
-      `<div>`+legend([{n:'Consolidación %',c:C.green}])+`<div id="g_consol"></div></div>`+
-      `<div>`+legend([{n:'Días entrega→transporte',c:C.blue}])+`<div id="g_tiempo"></div></div></div>`)}
+      `<div>`+legend([{n:'Consolidación %',c:R.red2}])+`<div id="g_consol"></div></div>`+
+      `<div>`+legend([{n:'Días entrega→transporte',c:R.grey}])+`<div id="g_tiempo"></div></div></div>`)}
 
-    <div class="text-[11px] text-secondary mt-lg leading-relaxed">Datos en vivo de <code>v_ind_*</code> (Supabase, 08:00). OTIF/Fill hasta el último mes cerrado; tarifa, margen y operación incluyen agosto parcial. Consolidación = Σpeso ÷ (capacidad×1000) por viaje. Días = fecha transporte − fecha entrega (0–120).</div>`;
+    <div class="text-[11px] text-secondary mt-lg leading-relaxed">Todos los indicadores son de <b>última milla</b> (entregas a cliente); se excluye reposición troncal. El <b>3c</b> es específicamente troncal Quilicura. OTIF/Fill incluyen el mes en curso cuando el archivo de notas de venta lo trae (hoy la fuente llega a julio). Tarifa, margen y operación incluyen el mes en curso parcial.</div>`;
 }
 
 // ============================================================================
@@ -399,26 +408,26 @@ function hbarChart(elId,items,color,unit,hlLabel){
 
 function drawGeneral(d){
   const nsC=nsConCurso(d.ns), nsL=nsC.map(r=>mesCorto(r.mes_label)), softNs=nsC.findIndex(r=>r._curso);
-  lineChart('g_ns',[{n:'OTIF',v:nsC.map(r=>r.otif_pct),c:C.navy},{n:'Fill',v:nsC.map(r=>r.fillrate_pct),c:C.blue}],nsL,60,100,'%',softNs<0?undefined:softNs);
+  lineChart('g_ns',[{n:'OTIF',v:nsC.map(r=>r.otif_pct),c:R.red},{n:'Fill',v:nsC.map(r=>r.fillrate_pct),c:R.grey}],nsL,60,100,'%',softNs<0?undefined:softNs);
   const tarL=d.tar.map(r=>mesCorto(r.mes_label)), pIdx=d.tar.length-1;
-  barChart('g_tar',d.tar.map(r=>r.tarifa_kg),tarL,0,niceMax(d.tar.map(r=>r.tarifa_kg)),C.orange,' $/kg',pIdx,v=>'$'+Math.round(v));
-  barChart('g_ton',d.tar.map(r=>r.toneladas),tarL,0,niceMax(d.tar.map(r=>r.toneladas)),C.blue,' t',pIdx,v=>Math.round(v/1000)+'k');
+  barChart('g_tar',d.tar.map(r=>r.tarifa_kg),tarL,0,niceMax(d.tar.map(r=>r.tarifa_kg)),R.red2,' $/kg',pIdx,v=>'$'+Math.round(v));
+  barChart('g_ton',d.tar.map(r=>r.toneladas),tarL,0,niceMax(d.tar.map(r=>r.toneladas)),R.grey,' t',pIdx,v=>Math.round(v/1000)+'k');
   const marL=d.mar.map(r=>mesCorto(r.mes_label)), marV=d.mar.map(r=>r.margen/1e6);
-  barChart('g_mar',marV,marL,Math.min(-2,niceMin(marV)),2,C.red,' MM',d.mar.length-1,v=>'$'+Math.round(v));
-  lineChart('g_cob',[{n:'Cobertura',v:d.mar.map(r=>r.cobertura_pct),c:C.navy}],marL,60,100,'%');
+  barChart('g_mar',marV,marL,Math.min(-2,niceMin(marV)),2,R.red,' MM',d.mar.length-1,v=>'$'+Math.round(v));
+  lineChart('g_cob',[{n:'Cobertura',v:d.mar.map(r=>r.cobertura_pct),c:R.grey}],marL,60,100,'%');
   const fm=[...new Set(d.ft.map(r=>r.mes_label))].sort();
   const ftv=(mod,f)=>fm.map(m=>{const r=d.ft.find(x=>x.mes_label===m&&x.modalidad===mod);return r?(r[f]||0):0;});
-  lineChart('g_rev_otif',[{n:'Despacha',v:ftv('Despacha','otif_pct'),c:C.navy},{n:'Retira',v:ftv('Retira','otif_pct'),c:C.orange}],fm.map(mesCorto),0,100,'%');
+  lineChart('g_rev_otif',[{n:'Despacha',v:ftv('Despacha','otif_pct'),c:R.red},{n:'Retira',v:ftv('Retira','otif_pct'),c:R.grey}],fm.map(mesCorto),0,100,'%');
   const _ped=ftv('Despacha','pedidos').concat(ftv('Retira','pedidos'));
-  lineChart('g_rev_ped',[{n:'Despacha',v:ftv('Despacha','pedidos'),c:C.navy},{n:'Retira',v:ftv('Retira','pedidos'),c:C.orange}],fm.map(mesCorto),0,niceMax(_ped),'');
+  lineChart('g_rev_ped',[{n:'Despacha',v:ftv('Despacha','pedidos'),c:R.red},{n:'Retira',v:ftv('Retira','pedidos'),c:R.grey}],fm.map(mesCorto),0,niceMax(_ped),'');
   const _dias=ftv('Despacha','ciclo_prom_dias').concat(ftv('Retira','ciclo_prom_dias'));
-  lineChart('g_rev_dias',[{n:'Despacha',v:ftv('Despacha','ciclo_prom_dias'),c:C.navy},{n:'Retira',v:ftv('Retira','ciclo_prom_dias'),c:C.orange}],fm.map(mesCorto),0,niceMax(_dias),' d');
+  lineChart('g_rev_dias',[{n:'Despacha',v:ftv('Despacha','ciclo_prom_dias'),c:R.red},{n:'Retira',v:ftv('Retira','ciclo_prom_dias'),c:R.grey}],fm.map(mesCorto),0,niceMax(_dias),' d');
   const conL=d.con.map(r=>mesCorto(r.mes_label));
-  barChart('g_consol',d.con.map(r=>r.consol_pct),conL,0,100,C.green,'%',d.con.length-1,v=>Math.round(v));
+  barChart('g_consol',d.con.map(r=>r.consol_pct),conL,0,100,R.red2,'%',d.con.length-1,v=>Math.round(v));
   const tieL=d.tie.map(r=>mesCorto(r.mes_label));
-  barChart('g_tiempo',d.tie.map(r=>r.dias_prom),tieL,0,niceMax(d.tie.map(r=>r.dias_prom)),C.blue,' d',d.tie.length-1,v=>Math.round(v));
+  barChart('g_tiempo',d.tie.map(r=>r.dias_prom),tieL,0,niceMax(d.tie.map(r=>r.dias_prom)),R.grey,' d',d.tie.length-1,v=>Math.round(v));
   const scmL=d.scm.map(r=>mesCorto(r.mes_label));
-  barChart('g_scm',d.scm.map(r=>r.monto/1e6),scmL,0,niceMax(d.scm.map(r=>r.monto/1e6)),C.red,' MM',d.scm.length-1,v=>'$'+Math.round(v));
+  barChart('g_scm',d.scm.map(r=>r.monto/1e6),scmL,0,niceMax(d.scm.map(r=>r.monto/1e6)),R.red2,' MM',d.scm.length-1,v=>'$'+Math.round(v));
 }
 
 function drawCentro(d, grupo){
