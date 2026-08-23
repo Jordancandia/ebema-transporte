@@ -84,7 +84,7 @@ async function loadGeneral(){
   try {
     if (!_cacheGen){
       const y='2026-01';
-      const [ns,tar,mar,ft,sc,con,tie,scm,nsm,tarm] = await Promise.all([
+      const [ns,tar,mar,ft,sc,con,tie,scm,nsm,tarm,shes] = await Promise.all([
         supabase.from('v_ind_ns_general_mes').select('*').gte('mes_label',y).order('mes_label'),
         supabase.from('v_ind_tarifa_general_mes').select('*').gte('mes_label',y).order('mes_label'),
         supabase.from('v_ind_margen_general_mes').select('*').gte('mes_label',y).order('mes_label'),
@@ -94,10 +94,11 @@ async function loadGeneral(){
         supabase.from('v_ind_tiempo_general_mes').select('*').gte('mes_label',y).order('mes_label'),
         supabase.from('v_ind_sin_cobro_mes').select('*').gte('mes_label',y).order('mes_label'),
         supabase.from('v_ind_ns_grupo_mes').select('*').gte('mes_label',y),
-        supabase.from('v_ind_troncal_quilicura_mes').select('*').gte('mes_label',y)
+        supabase.from('v_ind_troncal_quilicura_mes').select('*').gte('mes_label',y),
+        supabase.from('v_ind_troncal_quilicura_sinhes').select('*')
       ]);
-      const e = ns.error||tar.error||mar.error||ft.error||sc.error||con.error||tie.error||scm.error||nsm.error||tarm.error; if(e) throw e;
-      _cacheGen = { ns:ns.data||[], tar:tar.data||[], mar:mar.data||[], ft:ft.data||[], sc:sc.data||[], con:con.data||[], tie:tie.data||[], scm:scm.data||[], nsm:nsm.data||[], tq:tarm.data||[] };
+      const e = ns.error||tar.error||mar.error||ft.error||sc.error||con.error||tie.error||scm.error||nsm.error||tarm.error||shes.error; if(e) throw e;
+      _cacheGen = { ns:ns.data||[], tar:tar.data||[], mar:mar.data||[], ft:ft.data||[], sc:sc.data||[], con:con.data||[], tie:tie.data||[], scm:scm.data||[], nsm:nsm.data||[], tq:tarm.data||[], shes:(shes.data&&shes.data[0])||{} };
     }
     body().innerHTML = generalHTML(_cacheGen);
     ensureTip(); drawGeneral(_cacheGen); sweepHeat();
@@ -178,7 +179,7 @@ function generalHTML(d){
       `<div class="grid grid-cols-1 md:grid-cols-2 gap-md">`+
       `<div>`+legend([{n:'Tarifa $/kg',c:R.red2}])+`<div id="g_tar"></div></div>`+
       `<div>`+legend([{n:'Toneladas (t)',c:R.grey}])+`<div id="g_ton"></div></div></div>`)}
-    ${card('3 · Margen de Flete — última milla','Margen ($MM) y cobertura — evolución mensual',
+    ${card('3 · Margen de Flete — última milla','Margen ($MM) y Cobertura',
       tile('Margen acumulado',mm(marAcc),'excl. EbemaClick',marAcc<0?'text-[#C0000C]':'')+
       tile('Cobertura promedio',pct(cobAvg),'cobrado / pagado')+
       tile('Sin cobrar',mm(scMonto),nf0.format(scEnt)+' entregas','text-[#C0000C]')+
@@ -186,14 +187,16 @@ function generalHTML(d){
       `<div class="grid grid-cols-1 md:grid-cols-2 gap-md">`+
       `<div>`+legend([{n:'Margen $MM',c:R.red}])+`<div id="g_mar"></div></div>`+
       `<div>`+legend([{n:'Cobertura %',c:R.grey}])+`<div id="g_cob"></div></div></div>`)}
-    ${card('3.1 · Flete no cobrado — última milla','Flete pagado no cobrado — evolución mensual',
+    ${card('3.1 · Flete no cobrado — última milla','Flete pagado - No cobrado',
       tile('No cobrado acumulado',mm(sum(d.scm.map(r=>r.monto))/1e6),'2026','text-[#C0000C]')+
       tile('Entregas sin cobro',nf0.format(sum(d.scm.map(r=>r.entregas))),'acumulado')+
       tile('Líneas',nf0.format(sum(d.scm.map(r=>r.lineas))),'acumulado')+
       (function(){var w=d.scm.reduce((a,b)=>(b.monto>(a?a.monto:-1)?b:a),null)||{};return tile('Peor mes',mm((w.monto||0)/1e6),mesCorto(w.mes_label||''),'text-[#C0000C]');})(),
       legend([{n:'No cobrado $MM',c:R.red2}])+`<div id="g_scm"></div>`)}
 
-    ${card('3c · Troncal Quilicura (CD 1003 → CD destino)','Nivel de consolidación y pesos por kilo por centro destino (reposición NL)','',
+    ${card('3.2 · Troncal Quilicura','Consolidación y Tarifa $/kg Troncal',
+      tile('Documentos sin HES',nf0.format(d.shes.docs_sin_hes||0),'sin costo final')+
+      tile('Toneladas sin reconocer costo',(d.shes.ton_sin_hes!=null?nf1.format(d.shes.ton_sin_hes)+' t':'–'),'sin HES'),
       `<div class="grid grid-cols-1 md:grid-cols-2 gap-md">`+
       `<div><div class="text-[12px] text-secondary mb-1 font-medium">Nivel de consolidación % — intensidad = mayor</div>`+
       heatmapHTML(d.tq,'consol_pct',heatConsolRG,v=>nf1.format(v))+`</div>`+
@@ -218,7 +221,7 @@ function generalHTML(d){
       `<div>`+legend([{n:'Consolidación %',c:R.red2}])+`<div id="g_consol"></div></div>`+
       `<div>`+legend([{n:'Días entrega→transporte',c:R.grey}])+`<div id="g_tiempo"></div></div></div>`)}
 
-    <div class="text-[11px] text-secondary mt-lg leading-relaxed">Todos los indicadores son de <b>última milla</b> (entregas a cliente); se excluye reposición troncal. El <b>3c</b> es específicamente troncal Quilicura. OTIF/Fill incluyen el mes en curso cuando el archivo de notas de venta lo trae (hoy la fuente llega a julio). Tarifa, margen y operación incluyen el mes en curso parcial.</div>`;
+    <div class="text-[11px] text-secondary mt-lg leading-relaxed">Todos los indicadores son de <b>última milla</b> (entregas a cliente); se excluye reposición troncal. El <b>3.2</b> es específicamente troncal Quilicura (solo documentos con HES). OTIF/Fill incluyen el mes en curso cuando el archivo de notas de venta lo trae (hoy la fuente llega a julio). Tarifa, margen y operación incluyen el mes en curso parcial.</div>`;
 }
 
 // ============================================================================
