@@ -709,7 +709,7 @@ function nivelHTML(d,grupos,grupo){
       <select id="ind_seln" class="border border-surface-variant rounded-lg px-md py-sm bg-surface-container-lowest text-on-surface">${opciones}</select>
     </div>
 
-    ${card('0 · Últimas 4 semanas cerradas — '+nice(grupo),'OTIF y Fill Rate semanal',
+    ${card('Semana Móvil Nivel de Servicio — '+nice(grupo),'OTIF y Fill Rate Semanal',
       '',
       `<div class="grid grid-cols-1 md:grid-cols-2 gap-md items-center">`+
       `<div>`+legend([{n:'OTIF %',c:R.red},{n:'Fill Rate %',c:R.grey}])+`<div id="n_sem"></div></div>`+
@@ -813,7 +813,7 @@ function tarifaHTML(d,grupos,grupo){
       <label class="text-secondary text-body-md ml-auto">Centro:</label>
       <select id="ind_selt" class="border border-surface-variant rounded-lg px-md py-sm bg-surface-container-lowest text-on-surface">${opciones}</select>
     </div>
-    ${card('0 · Últimas 4 semanas cerradas — '+nice(grupo),'Tarifa $/kg y toneladas semanal',
+    ${card('Semana Móvil Pesos por Kilo — '+nice(grupo),'Tarifa $/kg y Toneladas Semanal',
       '',
       `<div class="grid grid-cols-1 md:grid-cols-2 gap-md items-center">`+
       `<div>`+legend([{n:'Tarifa $/kg',c:R.red2}])+`<div id="t_sem"></div></div>`+
@@ -903,7 +903,7 @@ function margenHTML(d,grupos,grupo){
       <select id="ind_selm" class="border border-surface-variant rounded-lg px-md py-sm bg-surface-container-lowest text-on-surface">${opciones}</select>
     </div>
     <div class="text-[11px] text-secondary -mt-sm mb-md">Solo <b>última milla</b> (entregas a cliente). Excluye traslados troncales de reposición.</div>
-    ${card('0 · Últimas 4 semanas cerradas — '+nice(grupo),'Margen $MM y cobertura semanal',
+    ${card('Semana Móvil Margen de Flete — '+nice(grupo),'Margen $MM y Cobertura Semanal',
       '',
       `<div class="grid grid-cols-1 md:grid-cols-2 gap-md items-center">`+
       `<div>`+legend([{n:'Margen $MM',c:R.red2}])+`<div id="m_sem"></div></div>`+
