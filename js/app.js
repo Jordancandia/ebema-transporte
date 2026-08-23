@@ -7,7 +7,7 @@ import { renderRolesView } from './roles.js';
 import { renderTariffTransportView, setActiveSub } from './tarifas-transporte.js?v=20260713c';
 import { renderClientTariffView, setActiveSubC } from './tarifas-clientes.js?v=20260714c';
 import { renderAbastecimientoView, setAbastSubTab } from './abastecimiento.js?v=20260814g';
-import { renderIndicadoresView, setIndicadoresSubTab, renderIndicadoresHome } from './indicadores.js?v=20260818q';
+import { renderIndicadoresView, setIndicadoresSubTab, renderIndicadoresHome } from './indicadores.js?v=20260818r';
 import { showAlert, formatRut, validateRut, formatPhone } from './utils.js';
 
 const SESSION_KEY = 'ebema_user_session';

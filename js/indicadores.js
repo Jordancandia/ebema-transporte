@@ -677,7 +677,7 @@ async function renderNivel(container){
   try {
     if(!_cacheNivel){
       const [tp,co,com,sp,ft,sem] = await Promise.all([
-        supabase.from('v_ind_ns_tipo_grupo').select('*'),
+        supabase.from('v_ind_ns_tipo_grupo_4sem').select('*'),
         supabase.from('v_ind_ns_comuna').select('*'),
         supabase.from('v_ind_ns_comuna_mes').select('*'),
         supabase.from('v_ind_ns_spot_grupo_mes').select('*'),
@@ -715,9 +715,9 @@ function nivelHTML(d,grupos,grupo){
       `<div>`+legend([{n:'OTIF %',c:R.red},{n:'Fill Rate %',c:R.grey}])+`<div id="n_sem"></div></div>`+
       `<div id="n_semtab"></div></div>`)}
 
-    ${card('1 · Tipo de venta — Stock vs Calzada','OTIF y días a entrega por tipo (acumulado)',
-      tile('OTIF Stock',pct(stock.otif_pct),(stock.lineas||0)+' líneas')+
-      tile('OTIF Calzada',pct(calz.otif_pct),(calz.lineas||0)+' líneas',(calz.otif_pct!=null&&calz.otif_pct<60)?'text-[#EE1B22]':'')+
+    ${card('Nivel de Servicio por Tipo de Venta Stock y Calzada','OTIF y Tiempo de Entrega',
+      tile('OTIF Stock',pct(stock.otif_pct),(stock.lineas||0)+' líneas · 4 sem')+
+      tile('OTIF Calzada',pct(calz.otif_pct),(calz.lineas||0)+' líneas · 4 sem',(calz.otif_pct!=null&&calz.otif_pct<60)?'text-[#C0000C]':'')+
       tile('Días Stock',(stock.dias_prom!=null?nf1.format(stock.dias_prom)+' d':'–'),'venta→entrega')+
       tile('Días Calzada',(calz.dias_prom!=null?nf1.format(calz.dias_prom)+' d':'–'),'venta→entrega'),
       `<div class="grid grid-cols-1 md:grid-cols-2 gap-md">`+
