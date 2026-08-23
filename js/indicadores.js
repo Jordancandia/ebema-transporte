@@ -830,9 +830,9 @@ function tarifaHTML(d,grupos,grupo){
       `<div>`+legend([{n:'Tarifa $/kg',c:R.red2}])+`<div id="t_sem"></div></div>`+
       `<div id="t_semtab"></div></div>`)}
     <div class="text-[11px] text-secondary -mt-sm mb-md">Solo <b>última milla</b> (entregas a cliente). Excluye traslados troncales de reposición.</div>
-    ${card('1 · Tarifa $/kg y toneladas — evolutivo','Mensual por centro (mes en curso en tono suave)','',
+    ${card('1 · Tarifa $/kg y toneladas — semanal','Últimas 4 semanas cerradas por centro','',
       `<div class="grid grid-cols-1 md:grid-cols-2 gap-md">`+
-      `<div>`+legend([{n:'Tarifa $/kg',c:R.grey}])+`<div id="t_tar"></div></div>`+
+      `<div>`+legend([{n:'Tarifa $/kg',c:R.red2}])+`<div id="t_tar"></div></div>`+
       `<div>`+legend([{n:'Toneladas',c:R.grey}])+`<div id="t_ton"></div></div></div>`)}
     ${card('2 · Consolidación promedio por tipo de camión','Promedio del período · 5 / 10 / 15 / 28 ton','',
       legend([{n:'Consolidación % promedio',c:R.grey}])+`<div id="t_cap_avg"></div>`)}
@@ -857,10 +857,9 @@ function drawTarifa(d,grupo){
   const tt=document.getElementById('t_semtab'); if(tt) tt.innerHTML=semTable(s4,[
     {label:'$/kg',get:r=>r.tarifa_kg,fmt:money,dfmt:v=>'$'+nf1.format(v)},
     {label:'Ton',get:r=>r.toneladas,fmt:v=>nf0.format(v),dfmt:v=>nf0.format(v)}]);
-  const tm=d.tm.filter(r=>r.grupo===grupo && r.segmento===_segT).slice().sort((a,b)=>a.mes_label<b.mes_label?-1:1);
-  const tmL=tm.map(r=>mesCorto(r.mes_label)), pIdx=tm.length-1;
-  barChart('t_tar',tm.map(r=>r.tarifa_kg),tmL,0,niceMax(tm.map(r=>r.tarifa_kg)),R.grey,' $/kg',pIdx,v=>'$'+Math.round(v));
-  barChart('t_ton',tm.map(r=>r.toneladas),tmL,0,niceMax(tm.map(r=>r.toneladas)),R.grey,' t',pIdx,v=>Math.round(v));
+  const wL=s4.map(r=>semLbl(r.semana));
+  barChart('t_tar',s4.map(r=>r.tarifa_kg),wL,0,niceMax(s4.map(r=>r.tarifa_kg)),R.red2,' $/kg',null,v=>'$'+Math.round(v));
+  barChart('t_ton',s4.map(r=>r.toneladas),wL,0,niceMax(s4.map(r=>r.toneladas)),R.grey,' t',null,v=>Math.round(v));
   const cap=d.cap.filter(r=>r.grupo===grupo && r.segmento===_segT), cm=[...new Set(cap.map(r=>r.mes_label))].sort();
   const caps=[['5',R.red],['10',R.grey],['15',R.grey],['28',R.red2]];
   barChart('t_cap_avg',caps.map(x=>avg(cap.filter(y=>y.cap===x[0]&&y.consol_pct!=null).map(y=>y.consol_pct))||0),caps.map(x=>x[0]+'t'),0,100,R.grey,'%',null,v=>Math.round(v));
@@ -919,9 +918,9 @@ function margenHTML(d,grupos,grupo){
       `<div class="grid grid-cols-1 md:grid-cols-2 gap-md items-center">`+
       `<div>`+legend([{n:'Margen $MM',c:R.red2}])+`<div id="m_sem"></div></div>`+
       `<div id="m_semtab"></div></div>`)}
-    ${card('1 · Pagado vs Cobrado — evolutivo','Mensual por centro ($MM)','',
+    ${card('1 · Pagado vs Cobrado — semanal','Últimas 4 semanas cerradas por centro ($MM)','',
       legend([{n:'Cobrado',c:R.red},{n:'Pagado',c:R.grey}])+`<div id="m_pc"></div>`)}
-    ${card('2 · Margen y cobertura — evolutivo','Margen $MM y cobertura % mensual (mes en curso suave)','',
+    ${card('2 · Margen y cobertura — semanal','Últimas 4 semanas cerradas ($MM y %)','',
       `<div class="grid grid-cols-1 md:grid-cols-2 gap-md">`+
       `<div>`+legend([{n:'Margen $MM',c:R.red2}])+`<div id="m_margen"></div></div>`+
       `<div>`+legend([{n:'Cobertura %',c:R.red}])+`<div id="m_cob"></div></div></div>`)}
@@ -955,11 +954,10 @@ function drawMargen(d,grupo){
   const mt=document.getElementById('m_semtab'); if(mt) mt.innerHTML=semTable(s4,[
     {label:'Margen',get:r=>r.margen/1e6,fmt:v=>mm(v),dfmt:v=>'$'+nf1.format(v)},
     {label:'Cobertura',get:r=>r.cobertura_pct,fmt:pct,dfmt:v=>nf1.format(v)+' pp'}]);
-  const mg=d.mg.filter(r=>r.grupo===grupo && r.segmento===_segM).slice().sort((a,b)=>a.mes_label<b.mes_label?-1:1);
-  const L=mg.map(r=>mesCorto(r.mes_label)), pIdx=mg.length-1;
-  lineChart('m_pc',[{n:'Cobrado',v:mg.map(r=>r.cobrado/1e6),c:R.red},{n:'Pagado',v:mg.map(r=>r.pagado/1e6),c:R.grey}],L,0,niceMax(mg.map(r=>Math.max(r.cobrado,r.pagado)/1e6)),' MM');
-  barChart('m_margen',mg.map(r=>r.margen/1e6),L,Math.min(-1,niceMin(mg.map(r=>r.margen/1e6))),Math.max(1,niceMax(mg.map(r=>r.margen/1e6))),R.red2,' MM',pIdx,v=>'$'+nf1.format(v));
-  lineChart('m_cob',[{n:'Cobertura',v:mg.map(r=>r.cobertura_pct),c:R.red}],L,0,120,'%');
+  const wL=s4.map(r=>semLbl(r.semana));
+  lineChart('m_pc',[{n:'Cobrado',v:s4.map(r=>r.cobrado/1e6),c:R.red},{n:'Pagado',v:s4.map(r=>r.pagado/1e6),c:R.grey}],wL,0,niceMax(s4.map(r=>Math.max(r.cobrado,r.pagado)/1e6)),' MM');
+  barChart('m_margen',s4.map(r=>r.margen/1e6),wL,Math.min(-1,niceMin(s4.map(r=>r.margen/1e6))),Math.max(1,niceMax(s4.map(r=>r.margen/1e6))),R.red2,' MM',null,v=>'$'+nf1.format(v));
+  lineChart('m_cob',[{n:'Cobertura',v:s4.map(r=>r.cobertura_pct),c:R.red}],wL,0,120,'%');
   const sc=d.sc.filter(r=>r.grupo===grupo && r.segmento===_segM).slice().sort((a,b)=>a.mes_label<b.mes_label?-1:1);
   barChart('m_scm',sc.map(r=>(r.monto_sugerido||0)/1e6),sc.map(r=>mesCorto(r.mes_label)),0,niceMax(sc.map(r=>(r.monto_sugerido||0)/1e6)),R.red2,' MM',sc.length-1,v=>'$'+nf1.format(v));
 }
