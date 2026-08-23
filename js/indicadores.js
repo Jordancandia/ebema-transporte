@@ -155,6 +155,10 @@ function generalHTML(d){
   const closedRange=nsClosed.length?(mesCorto(nsClosed[0].mes_label)+'–'+mesCorto(nsClosed[nsClosed.length-1].mes_label)):'';
   const tarLastClosed=d.tar.length>1?d.tar[d.tar.length-2]:(d.tar[d.tar.length-1]||{});
   const tarAvg=wavg(d.tar.map(r=>[r.tarifa_kg,r.toneladas])), tonAcc=sum(d.tar.map(r=>r.toneladas));
+  const tarCur=d.tar.find(r=>r.mes_label===_curM)||{};
+  const tarClosed=d.tar.filter(r=>r.mes_label<_curM);
+  const tarWavgC=wavg(tarClosed.map(r=>[r.tarifa_kg,r.toneladas])), tonAvgC=avg(tarClosed.map(r=>r.toneladas));
+  const tarClosedRange=tarClosed.length?(mesCorto(tarClosed[0].mes_label)+'–'+mesCorto(tarClosed[tarClosed.length-1].mes_label)):'';
   const marAcc=sum(d.mar.map(r=>r.margen))/1e6, cobAvg=avg(d.mar.map(r=>r.cobertura_pct));
   const scMonto=sum(d.sc.map(r=>r.monto_no_cobrado))/1e6, scEnt=sum(d.sc.map(r=>r.entregas_sin_cobro));
   const worst=d.mar.reduce((a,b)=>(b.margen<(a?a.margen:1e15)?b:a),null)||{};
@@ -166,11 +170,11 @@ function generalHTML(d){
       tile('Fill — promedio cerrado',pct(avgFc),(closedRange||'meses cerrados'))+
       tile('Fill — '+mesCorto(_curM)+' (en curso)',pct(nsCur.fillrate_pct),(nsCur.fillrate_pct==null?'s/ dato en fuente':'parcial'),'opacity-60'),
       legend([{n:'OTIF %',c:R.red},{n:'Fill Rate %',c:R.grey},{n:'Mes en curso',c:R.greyL}])+`<div id="g_ns"></div>`)}
-    ${card('2 · Pesos por Kilo — última milla','Tarifa $/kg y toneladas — evolución mensual (mes en curso suave)',
-      tile('Tarifa — '+mesCorto(tarLastClosed.mes_label||'')+' (último)',money(tarLastClosed.tarifa_kg),'$/kg')+
-      tile('Tarifa promedio',money(tarAvg),'$/kg · ponderado')+
-      tile('Toneladas',nf0.format(tonAcc)+' t','acumulado')+
-      tile('Peor mes margen',mm(worst.margen/1e6),mesCorto(worst.mes_label||'')),
+    ${card('2 · Pesos por Kilo — última milla','Tarifas $/kg y Toneladas Despachadas',
+      tile('Tarifa $/kg — '+mesCorto(_curM)+' (en curso)',money(tarCur.tarifa_kg),'parcial','opacity-60')+
+      tile('Tarifa $/kg ponderada — cerrados',money(tarWavgC),(tarClosedRange||'meses cerrados'))+
+      tile('Toneladas — '+mesCorto(_curM)+' (en curso)',(tarCur.toneladas!=null?nf0.format(tarCur.toneladas)+' t':'–'),'parcial','opacity-60')+
+      tile('Toneladas promedio — cerrados',(tonAvgC!=null?nf0.format(tonAvgC)+' t':'–'),(tarClosedRange||'meses cerrados')),
       `<div class="grid grid-cols-1 md:grid-cols-2 gap-md">`+
       `<div>`+legend([{n:'Tarifa $/kg',c:R.red2}])+`<div id="g_tar"></div></div>`+
       `<div>`+legend([{n:'Toneladas (t)',c:R.grey}])+`<div id="g_ton"></div></div></div>`)}
