@@ -148,7 +148,11 @@ function bindSelect(grupos){
 // ============================================================================
 function generalHTML(d){
   const nsLast=d.ns[d.ns.length-1]||{}, nsAvgO=avg(d.ns.map(r=>r.otif_pct)), nsAvgF=avg(d.ns.map(r=>r.fillrate_pct)), nsLines=sum(d.ns.map(r=>r.lineas_evaluadas));
-  const nsCur=d.ns.find(r=>r.mes_label===mesEnCurso())||{};
+  const _curM=mesEnCurso();
+  const nsCur=d.ns.find(r=>r.mes_label===_curM)||{};
+  const nsClosed=d.ns.filter(r=>r.mes_label<_curM);
+  const avgOc=avg(nsClosed.map(r=>r.otif_pct)), avgFc=avg(nsClosed.map(r=>r.fillrate_pct));
+  const closedRange=nsClosed.length?(mesCorto(nsClosed[0].mes_label)+'–'+mesCorto(nsClosed[nsClosed.length-1].mes_label)):'';
   const tarLastClosed=d.tar.length>1?d.tar[d.tar.length-2]:(d.tar[d.tar.length-1]||{});
   const tarAvg=wavg(d.tar.map(r=>[r.tarifa_kg,r.toneladas])), tonAcc=sum(d.tar.map(r=>r.toneladas));
   const marAcc=sum(d.mar.map(r=>r.margen))/1e6, cobAvg=avg(d.mar.map(r=>r.cobertura_pct));
@@ -156,11 +160,11 @@ function generalHTML(d){
   const worst=d.mar.reduce((a,b)=>(b.margen<(a?a.margen:1e15)?b:a),null)||{};
   const ftLast=lastFT(d.ft);
   return `
-    ${card('1 · Nivel de Servicio — última milla','OTIF y Fill Rate (incluye mes en curso)',
-      tile('OTIF — '+mesCorto(nsLast.mes_label||'')+' (cerrado)',pct(nsLast.otif_pct),'Fill Rate '+pct(nsLast.fillrate_pct))+
-      tile('OTIF — '+mesCorto(mesEnCurso())+' (en curso)',pct(nsCur.otif_pct),(nsCur.otif_pct==null?'s/ dato en fuente':'parcial'),'opacity-60')+
-      tile('Fill — '+mesCorto(nsLast.mes_label||'')+' (cerrado)',pct(nsLast.fillrate_pct),'')+
-      tile('Fill — '+mesCorto(mesEnCurso())+' (en curso)',pct(nsCur.fillrate_pct),(nsCur.fillrate_pct==null?'s/ dato en fuente':'parcial'),'opacity-60'),
+    ${card('1 · Nivel de Servicio — última milla','OTIF y Fill Rate',
+      tile('OTIF — promedio cerrado',pct(avgOc),(closedRange||'meses cerrados'))+
+      tile('OTIF — '+mesCorto(_curM)+' (en curso)',pct(nsCur.otif_pct),(nsCur.otif_pct==null?'s/ dato en fuente':'parcial'),'opacity-60')+
+      tile('Fill — promedio cerrado',pct(avgFc),(closedRange||'meses cerrados'))+
+      tile('Fill — '+mesCorto(_curM)+' (en curso)',pct(nsCur.fillrate_pct),(nsCur.fillrate_pct==null?'s/ dato en fuente':'parcial'),'opacity-60'),
       legend([{n:'OTIF %',c:R.red},{n:'Fill Rate %',c:R.grey},{n:'Mes en curso',c:R.greyL}])+`<div id="g_ns"></div>`)}
     ${card('2 · Pesos por Kilo — última milla','Tarifa $/kg y toneladas — evolución mensual (mes en curso suave)',
       tile('Tarifa — '+mesCorto(tarLastClosed.mes_label||'')+' (último)',money(tarLastClosed.tarifa_kg),'$/kg')+

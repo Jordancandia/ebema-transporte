@@ -24,11 +24,14 @@
 // ------------------------------ CONFIG --------------------------------------
 var SUPABASE_URL = 'https://humhokvdowfqicjopbhf.supabase.co';
 
-// IDs de los archivos en Drive (se sobrescriben a diario manteniendo el id)
-var DRIVE = {
-  otif:          '1BVc5cdBi-kHw2wkyHxYasjcFFYaCsMAf',
-  flete_pagado:  '1O_BTtVN8Ee9EiW5-mTjoRBo9b_SZP83L',   // FLETE 360
-  flete_cobrado: '1qAZ7cZHq0TbfdB7-j-xW5jffNO9QkiBB'
+// Carpeta de Drive donde el usuario reemplaza manualmente los archivos.
+// Se resuelven POR NOMBRE (no por id), así no importa que el id cambie
+// cuando se borra/sube un archivo nuevo. Se toma el más reciente que coincida.
+var FOLDER_ID = '13vcSCCUEHyAKExDheni6fzOBM5JTgO8L';
+var DRIVE_NOMBRE = {
+  otif:          'OTIF',           // OTIF.xlsx
+  flete_pagado:  'FLETE 360',      // FLETE 360.xlsx  (flete pagado)
+  flete_cobrado: 'FLETE COBRADO'   // FLETE COBRADO.xlsx
 };
 
 // Gmail: label y filtro del correo de Flete Tercero
@@ -158,9 +161,9 @@ function ejecutar_0800() { cargarTodo(); }
 function cargarTodo() {
   var corrida = etiquetaCorrida();
   Logger.log('== Corrida INDICADORES %s ==', corrida);
-  cargarUno(corrida, 'ind_otif',          function(){ return leerDriveXlsx(DRIVE.otif); },          SPEC_OTIF);
-  cargarUno(corrida, 'ind_flete_pagado',  function(){ return leerDriveXlsx(DRIVE.flete_pagado); },  SPEC_FLETE_PAGADO);
-  cargarUno(corrida, 'ind_flete_cobrado', function(){ return leerDriveXlsx(DRIVE.flete_cobrado); }, SPEC_FLETE_COBRADO);
+  cargarUno(corrida, 'ind_otif',          function(){ return leerDriveXlsxPorNombre(DRIVE_NOMBRE.otif); },          SPEC_OTIF);
+  cargarUno(corrida, 'ind_flete_pagado',  function(){ return leerDriveXlsxPorNombre(DRIVE_NOMBRE.flete_pagado); },  SPEC_FLETE_PAGADO);
+  cargarUno(corrida, 'ind_flete_cobrado', function(){ return leerDriveXlsxPorNombre(DRIVE_NOMBRE.flete_cobrado); }, SPEC_FLETE_COBRADO);
   cargarUno(corrida, 'ind_flete_tercero', function(){ return leerGmailXlsx(LABEL_FT); },            SPEC_FLETE_TERCERO);
   // Refresca las vistas materializadas de KPI (lectura instantánea en la app)
   try { sbRpcRefresh(); logRun(corrida, 'refresh_matviews', 0, 'ok', 'fn_ind_refresh_all'); }
@@ -178,9 +181,9 @@ function sbRpcRefresh() {
 }
 
 // Entrypoints individuales (para dividir en triggers escalonados si hay timeout)
-function cargar_otif()          { cargarUno(etiquetaCorrida(),'ind_otif',          function(){return leerDriveXlsx(DRIVE.otif);},          SPEC_OTIF); }
-function cargar_flete_pagado()  { cargarUno(etiquetaCorrida(),'ind_flete_pagado',  function(){return leerDriveXlsx(DRIVE.flete_pagado);},  SPEC_FLETE_PAGADO); }
-function cargar_flete_cobrado() { cargarUno(etiquetaCorrida(),'ind_flete_cobrado', function(){return leerDriveXlsx(DRIVE.flete_cobrado);}, SPEC_FLETE_COBRADO); }
+function cargar_otif()          { cargarUno(etiquetaCorrida(),'ind_otif',          function(){return leerDriveXlsxPorNombre(DRIVE_NOMBRE.otif);},          SPEC_OTIF); }
+function cargar_flete_pagado()  { cargarUno(etiquetaCorrida(),'ind_flete_pagado',  function(){return leerDriveXlsxPorNombre(DRIVE_NOMBRE.flete_pagado);},  SPEC_FLETE_PAGADO); }
+function cargar_flete_cobrado() { cargarUno(etiquetaCorrida(),'ind_flete_cobrado', function(){return leerDriveXlsxPorNombre(DRIVE_NOMBRE.flete_cobrado);}, SPEC_FLETE_COBRADO); }
 function cargar_flete_tercero() { cargarUno(etiquetaCorrida(),'ind_flete_tercero', function(){return leerGmailXlsx(LABEL_FT);},            SPEC_FLETE_TERCERO); }
 
 // Crea el trigger diario 08:00 (ejecutar manualmente 1 vez).
@@ -246,6 +249,28 @@ function leerDriveXlsx(fileId) {
   var file = DriveApp.getFileById(fileId);
   var blob = file.getBlob().setContentType('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   return convertirYLeer(blob, file.getName());
+}
+
+// Busca en FOLDER_ID el xlsx más reciente cuyo nombre (sin extensión, normalizado)
+// EMPIEZA con nombreBase. Devuelve su matriz de valores. Resuelve por nombre para
+// que no importe el id (el usuario borra/sube archivos nuevos manualmente).
+function leerDriveXlsxPorNombre(nombreBase) {
+  var folder = DriveApp.getFolderById(FOLDER_ID);
+  var it = folder.getFiles();
+  var objetivo = slug(nombreBase);
+  var mejor = null, mejorT = -1;
+  while (it.hasNext()) {
+    var f = it.next();
+    var nombre = f.getName();
+    if (!/\.xlsx$/i.test(nombre)) continue;
+    var base = slug(nombre.replace(/\.xlsx$/i, ''));
+    if (base.indexOf(objetivo) !== 0) continue;       // debe empezar con el nombre base
+    var t = f.getLastUpdated().getTime();
+    if (t > mejorT) { mejorT = t; mejor = f; }
+  }
+  if (!mejor) throw new Error('No se encontró xlsx que empiece con "' + nombreBase + '" en la carpeta');
+  var blob = mejor.getBlob().setContentType('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  return convertirYLeer(blob, mejor.getName());
 }
 
 // Lee el adjunto xlsx del correo mas reciente de la etiqueta indicada.
