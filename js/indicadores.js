@@ -838,10 +838,10 @@ function tarifaHTML(d,grupos,grupo){
       `<div class="grid grid-cols-1 md:grid-cols-2 gap-md">`+
       `<div>`+legend([{n:'% Consolidación mensual',c:R.red2}])+`<div id="t_consol_mes"></div></div>`+
       `<div>`+legend([{n:'% Consolidación · promedio 4 sem',c:R.grey}])+`<div id="t_cap_sem"></div></div></div>`)}
-    ${card('3 · Comunas más caras y más baratas','Tarifa $/kg por comuna destino (≥10 t · rutas de una misma comuna se suman)','',
+    ${card('Tarifas por Comunas','Más Caras y Baratas de Atender','',
       `<div class="grid grid-cols-1 md:grid-cols-2 gap-md">`+
-      `<div>`+legend([{n:'10 más caras',c:R.red2}])+`<div id="t_caro"></div></div>`+
-      `<div>`+legend([{n:'10 más baratas',c:R.grey}])+`<div id="t_barato"></div></div></div>`)}
+      `<div>`+legend([{n:'5 más caras',c:R.red2}])+`<div id="t_caro"></div></div>`+
+      `<div>`+legend([{n:'5 más baratas',c:R.grey}])+`<div id="t_barato"></div></div></div>`)}
     ${showEbc?card('4 · Impacto EbemaClick — período (ene → a la fecha)','Financiamiento de la operación EbemaClick en todo el período (docs con V Garrido + material 400141)',
       tile('Documentos',nf0.format(ebcTot.docs),'ene → hoy')+
       tile('Toneladas',nf1.format(ebcTot.ton)+' t','movidas')+
@@ -869,8 +869,8 @@ function drawTarifa(d,grupo){
   const caps2=['5','10','15','28'];
   barChart('t_cap_sem',caps2.map(cap=>{var vs=cw.filter(r=>r.cap===cap && csems.indexOf(r.semana)>=0 && r.consol_pct!=null).map(r=>r.consol_pct);return avg(vs)||0;}),caps2.map(c=>c+'t'),0,100,R.grey,'%',null,v=>Math.round(v));
   const cc=d.com.filter(r=>r.grupo===grupo && r.segmento===_segT && (r.toneladas||0)>=10 && r.tarifa_kg!=null && r.comuna!=='(s/comuna)');
-  hbarChart('t_caro',cc.slice().sort((a,b)=>b.tarifa_kg-a.tarifa_kg).slice(0,10).map(r=>({label:r.comuna,value:r.tarifa_kg})),R.red2,' $/kg','');
-  hbarChart('t_barato',cc.slice().sort((a,b)=>a.tarifa_kg-b.tarifa_kg).slice(0,10).map(r=>({label:r.comuna,value:r.tarifa_kg})),R.grey,' $/kg','');
+  hbarChart('t_caro',cc.slice().sort((a,b)=>b.tarifa_kg-a.tarifa_kg).slice(0,5).map(r=>({label:r.comuna,value:r.tarifa_kg})),R.red2,' $/kg','');
+  hbarChart('t_barato',cc.slice().sort((a,b)=>a.tarifa_kg-b.tarifa_kg).slice(0,5).map(r=>({label:r.comuna,value:r.tarifa_kg})),R.grey,' $/kg','');
   const ebcG=d.ebc.filter(r=>r.grupo===grupo);
   if(ebcG.length){
     const ebcM=mesesPeriodo();   // ene → mes en curso (todo el período)
