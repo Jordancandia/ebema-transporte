@@ -834,10 +834,10 @@ function tarifaHTML(d,grupos,grupo){
       `<div class="grid grid-cols-1 md:grid-cols-2 gap-md">`+
       `<div>`+legend([{n:'Tarifa $/kg',c:R.red2}])+`<div id="t_tar"></div></div>`+
       `<div>`+legend([{n:'Toneladas',c:R.grey}])+`<div id="t_ton"></div></div></div>`)}
-    ${card('Consolidación por Camión','Evolutivo mensual de % y últimas 4 semanas por tipo de camión','',
+    ${card('Consolidación por Camión','Evolutivo Consolidación','',
       `<div class="grid grid-cols-1 md:grid-cols-2 gap-md">`+
       `<div>`+legend([{n:'% Consolidación mensual',c:R.red2}])+`<div id="t_consol_mes"></div></div>`+
-      `<div>`+legend([{n:'5t',c:R.red},{n:'10t',c:R.red2},{n:'15t',c:R.grey},{n:'28t',c:R.greyL}])+`<div id="t_cap_sem"></div></div></div>`)}
+      `<div>`+legend([{n:'% Consolidación · promedio 4 sem',c:R.grey}])+`<div id="t_cap_sem"></div></div></div>`)}
     ${card('3 · Comunas más caras y más baratas','Tarifa $/kg por comuna destino (≥10 t · rutas de una misma comuna se suman)','',
       `<div class="grid grid-cols-1 md:grid-cols-2 gap-md">`+
       `<div>`+legend([{n:'10 más caras',c:R.red2}])+`<div id="t_caro"></div></div>`+
@@ -866,8 +866,8 @@ function drawTarifa(d,grupo){
   const cm4=(d.consm||[]).filter(r=>r.grupo===grupo).slice().sort((a,b)=>a.mes_label<b.mes_label?-1:1);
   barChart('t_consol_mes',cm4.map(r=>r.consol_pct),cm4.map(r=>mesCorto(r.mes_label)),0,100,R.red2,'%',null,v=>Math.round(v));
   const cw=(d.capw||[]).filter(r=>r.grupo===grupo), csems=last4Sem(cw);
-  const caps2=[['5',R.red],['10',R.red2],['15',R.grey],['28',R.greyL]];
-  lineChart('t_cap_sem',caps2.map(x=>({n:x[0]+'t',v:csems.map(s=>{var r=cw.find(y=>y.semana===s&&y.cap===x[0]);return r?r.consol_pct:0;}),c:x[1]})),csems.map(semLbl),0,100,'%');
+  const caps2=['5','10','15','28'];
+  barChart('t_cap_sem',caps2.map(cap=>{var vs=cw.filter(r=>r.cap===cap && csems.indexOf(r.semana)>=0 && r.consol_pct!=null).map(r=>r.consol_pct);return avg(vs)||0;}),caps2.map(c=>c+'t'),0,100,R.grey,'%',null,v=>Math.round(v));
   const cc=d.com.filter(r=>r.grupo===grupo && r.segmento===_segT && (r.toneladas||0)>=10 && r.tarifa_kg!=null && r.comuna!=='(s/comuna)');
   hbarChart('t_caro',cc.slice().sort((a,b)=>b.tarifa_kg-a.tarifa_kg).slice(0,10).map(r=>({label:r.comuna,value:r.tarifa_kg})),R.red2,' $/kg','');
   hbarChart('t_barato',cc.slice().sort((a,b)=>a.tarifa_kg-b.tarifa_kg).slice(0,10).map(r=>({label:r.comuna,value:r.tarifa_kg})),R.grey,' $/kg','');
