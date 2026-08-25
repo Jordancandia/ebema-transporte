@@ -157,11 +157,12 @@ function comunasEnCamino(centroId) {
   return new Set();
 }
 
-// Clasificación de quiebre por días de stock (AJUSTE 3.0)
-function tipoQuiebre(sd) {
-  if (sd <= 3)  return { txt: 'MATERIAL QUEBRADO URGENTE', cls: 'text-white bg-red-600', dot: 'bg-red-600' };
-  if (sd <= 5)  return { txt: 'STOCK CRÍTICO URGENTE',     cls: 'text-white bg-[#e65100]', dot: 'bg-[#e65100]' };
-  return          { txt: 'STOCK EN REVISIÓN',              cls: 'text-black bg-[#f9a825]', dot: 'bg-[#f9a825]' };
+// Clasificación de quiebre por stock disponible + días de stock
+function tipoQuiebre(sd, stockDisp) {
+  if (stockDisp === 0 && sd < 3)  return { txt: 'MATERIAL QUEBRADO URGENTE', cls: 'text-white bg-red-600', dot: 'bg-red-600' };
+  if (stockDisp > 0  && sd < 5)   return { txt: 'STOCK CRÍTICO',             cls: 'text-white bg-[#e65100]', dot: 'bg-[#e65100]' };
+  if (stockDisp > 0  && sd < 7)   return { txt: 'EN REVISIÓN',               cls: 'text-black bg-[#f9a825]', dot: 'bg-[#f9a825]' };
+  return null; // no califica como quiebre
 }
 
 // ── Estado de coordinación de retiros (persistente) ─────────────────────────
@@ -192,21 +193,23 @@ const VISTAS_TRONCAL = {
     vista: 'v_trc_slim_stock',
     chipFilter: { campo: 'centro', label: 'Centro' },
     extraChips: [{ campo: '_tipo_quiebre', label: 'Tipo de Quiebre' }],
-    searchLabel: 'Buscar Orden de Compra',
+    searchLabel: 'BUSCADOR GENERAL',
     filtros: [],
     transform(rows) {
       return rows
         .filter(r => CENTROS_QUIEBRES.includes(String(r.centro ?? '').trim()))
         .map(r => {
           const sd = parseNum(r.stock_days);       // vacío → 0
-          const tq = tipoQuiebre(sd);
+          const stockDisp = parseNum(r.articulo_stock); // stock disponible
+          const tq = tipoQuiebre(sd, stockDisp);
+          if (!tq) return null; // no califica como quiebre → excluir
           return { ...r, _desc_centro: getNombreCentro(r.centro), _sd_num: sd,
-                   _tipo_quiebre: tq.txt, _tq_cls: tq.cls, _stock_days_disp: (String(r.stock_days ?? '').trim() === '' ? '0' : r.stock_days) };
+                   _stock_disp: stockDisp, _stock_disp_fmt: fmtNum(stockDisp, 0),
+                   _tipo_quiebre: tq.txt, _tq_cls: tq.cls,
+                   _stock_days_disp: (String(r.stock_days ?? '').trim() === '' ? '0' : r.stock_days) };
         })
-        .filter(r => r._sd_num <= 7)               // sólo SKU con ≤ 7 días
+        .filter(r => r !== null)
         .sort((a, b) => {
-          const c = String(a.centro).localeCompare(String(b.centro));
-          if (c !== 0) return c;
           const ab = abcRank(a.clase_abc) - abcRank(b.clase_abc);
           if (ab !== 0) return ab;
           return a._sd_num - b._sd_num;
@@ -214,16 +217,21 @@ const VISTAS_TRONCAL = {
     },
     badges(rows) {
       let q = 0, c = 0, rev = 0;
-      rows.forEach(r => { if (r._sd_num <= 3) q++; else if (r._sd_num <= 5) c++; else rev++; });
-      return badgePill('SKU Quebrados (0-3)', q, 'bg-red-600 text-white') +
-             badgePill('Stock Crítico (3-5)', c, 'bg-[#e65100] text-white') +
-             badgePill('En Revisión (6-7)', rev, 'bg-[#f9a825] text-black');
+      rows.forEach(r => {
+        if (r._tipo_quiebre === 'MATERIAL QUEBRADO URGENTE') q++;
+        else if (r._tipo_quiebre === 'STOCK CRÍTICO') c++;
+        else if (r._tipo_quiebre === 'EN REVISIÓN') rev++;
+      });
+      return badgePill('Quebrado Urgente', q, 'bg-red-600 text-white') +
+             badgePill('Stock Crítico', c, 'bg-[#e65100] text-white') +
+             badgePill('En Revisión', rev, 'bg-[#f9a825] text-black');
     },
     columnas: [
       { key: 'centro', label: 'Centro' },
       { key: '_desc_centro', label: 'Descripción Centro' },
       { key: 'codigo_articulo', label: 'Código Artículo' },
       { key: 'descripcion', label: 'Descripción' },
+      { key: '_stock_disp_fmt', label: 'Stock Disponible', cls: 'text-right font-data-mono' },
       { key: '_stock_days_disp', label: 'StockDays', cls: 'text-right font-data-mono' },
       { key: 'clase_abc', label: 'Clase ABC', cls: 'text-center' },
       { key: '_tipo_quiebre', label: 'Tipo de Quiebre', badge: r => r._tq_cls },

@@ -935,20 +935,22 @@ function margenHTML(d,grupos,grupo){
       tile('Líneas',nf0.format(sum(sc.map(r=>r.lineas))),'acumulado')+
       tile('Costo asumido',mm(sum(sc.map(r=>r.monto))/1e6),'flete pagado','text-[#EE1B22]'),
       legend([{n:'No cobrado $MM (sugerido)',c:R.red2}])+`<div id="m_scm"></div>`)}
-    ${card('4 · Vendedores que cobran menos','Ranking por brecha (cobrado vs sugerido) · costo pagado asociado','',
+    ${card('Ranking Vendedor - Flete Cobrado','Brecha = pagado − cobrado (mayor brecha = más subcobra)','',
       vendMargenTablaHTML(d.vn,grupo))}
     <div class="text-[11px] text-secondary mt-lg leading-relaxed">Flete no cobrado = entregas con flete cobrado = 0; monto = flete sugerido (lo que no se cobró). Ranking excluye EbemaClick.</div>
   </div>`;
 }
 function vendMargenTablaHTML(rows,grupo){
-  const v=(rows||[]).filter(r=>r.grupo===grupo && r.segmento===_segM).slice().sort((a,b)=>(a.brecha||0)-(b.brecha||0)).slice(0,10);
+  const v=(rows||[]).filter(r=>r.grupo===grupo && r.segmento===_segM)
+    .map(r=>({...r,brechaPC:(r.pagado||0)-(r.cobrado||0)}))
+    .sort((a,b)=>b.brechaPC-a.brechaPC).slice(0,10);
   if(!v.length) return `<div class="text-secondary text-[12px] py-md">Sin datos.</div>`;
   const filas=v.map(r=>`<tr class="border-t border-surface-variant">
     <td class="py-[4px] pr-sm">${r.vendedor||'—'}</td>
     <td class="py-[4px] pr-sm text-right tabular-nums">${mm((r.sugerido||0)/1e6)}</td>
     <td class="py-[4px] pr-sm text-right tabular-nums">${mm((r.cobrado||0)/1e6)}</td>
     <td class="py-[4px] pr-sm text-right tabular-nums">${mm((r.pagado||0)/1e6)}</td>
-    <td class="py-[4px] pr-sm text-right tabular-nums ${(r.brecha||0)<0?'text-[#EE1B22]':''}">${mm((r.brecha||0)/1e6)}</td>
+    <td class="py-[4px] pr-sm text-right tabular-nums ${r.brechaPC>0?'text-[#C0000C]':''}">${mm(r.brechaPC/1e6)}</td>
     <td class="py-[4px] text-right tabular-nums">${pct(r.cumplimiento_pct)}</td></tr>`).join('');
   return `<table class="w-full text-[12px]"><thead><tr class="text-secondary text-left">
     <th class="font-medium pb-[4px]">Vendedor</th><th class="font-medium text-right pb-[4px]">Sugerido</th><th class="font-medium text-right pb-[4px]">Cobrado</th><th class="font-medium text-right pb-[4px]">Pagado</th><th class="font-medium text-right pb-[4px]">Brecha</th><th class="font-medium text-right pb-[4px]">Cumpl.</th></tr></thead><tbody>${filas}</tbody></table>`;
