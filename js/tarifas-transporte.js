@@ -2142,8 +2142,13 @@ function syncTarifasZcap(db, cfg, grupoFiltro = '') {
   const allGroups  = getOrigenGroups(db);
   const grupos_filt = grupoFiltro ? allGroups.filter(g => g.grupo === grupoFiltro) : allGroups;
   const matriz     = calcularMatrizCostos(db, cfg);
-  // Participación siempre fresca desde histórico; 0% si no hay datos
-  const participacion = computeParticipacionFresh(db) || {};
+  // Participación: usar datos guardados (cfg.participacionRutas) como fuente
+  // primaria — es la misma que usa el Motor de Costos — y solo recurrir al
+  // cálculo fresco desde histórico si no hay participación guardada.
+  const _savedPart = cfg.participacionRutas || {};
+  const participacion = Object.keys(_savedPart).length > 0
+    ? _savedPart
+    : (computeParticipacionFresh(db) || {});
   const conZcap    = new Set();
   let cambios      = false;
 
