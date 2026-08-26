@@ -1,0 +1,24 @@
+===== LIMPIAR LOCKS =====
+HEAD.lock_OK
+index.lock_OK
+===== IDENTITY =====
+===== ADD =====
+warning: in the working copy of 'js/tarifas-transporte.js', LF will be replaced by CRLF the next time Git touches it
+===== COMMIT =====
+[main 023abe9] fix: calendario prioritario lee abast_calendario por dia v=20260813c
+ 1 file changed, 44 insertions(+), 28 deletions(-)
+===== PULL =====
+error: cannot pull with rebase: You have unstaged changes.
+error: Please commit or stash them.
+===== PUSH =====
+remote: This repository moved. Please use the new location:        
+remote:   https://github.com/Jordancandia/ebema-transporte.git        
+To https://github.com/jordancandia/ebema-transporte.git
+   2813542..023abe9  main -> main
+===== LOG =====
+023abe9 fix: calendario prioritario lee abast_calendario por dia v=20260813c
+2813542 fix: calendario prioritario lee abast_calendario por dia v=20260813c
+82d5c5f Actualizacion 23-08-2026 20:28:09,87
+===== STATUS =====
+## main...origin/main
+ M deploy_log.txt
