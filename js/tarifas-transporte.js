@@ -2205,6 +2205,26 @@ function syncTarifasZcap(db, cfg, grupoFiltro = '') {
 
       const mx = metricas(items);
 
+      // DEBUG TEMPORAL — ver qué calcula syncTarifasZcap para cada centro/camión
+      if (truckCapKg(t.type) === 5000) {
+        const _normItems = items.filter(m => (m.ruta.caracteristica || 'NORMAL').toUpperCase() === 'NORMAL');
+        console.group(`[ZCAP DEBUG] ${g.nombre} — ${t.type} (${truckCapKg(t.type)} kg)`);
+        console.log('Centro repId:', g.repId, '| grupo:', g.grupo);
+        console.log('Items totales:', items.length, '| NORMAL:', _normItems.length);
+        console.log('Participación source:', Object.keys(_savedPart).length > 0 ? 'cfg.participacionRutas' : 'computeParticipacionFresh');
+        console.log('Participación keys (PMO*):', Object.keys(participacion).filter(k => String(k).startsWith('PMO')).length);
+        console.log('pondNorm:', mx.pondNorm, '| promNorm:', mx.promNorm);
+        _normItems.slice(0, 5).forEach(m => {
+          const p = participacion[m.ruta.id] || participacion[m.ruta.codigo]
+            || (m.ruta._allCodigos||[]).reduce((f,c) => f || participacion[c], null)
+            || (m.ruta._allIds||[]).reduce((f,id) => f || participacion[id], null);
+          console.log(`  ${m.ruta.codigo} km=${m.km} origenId=${m.ruta.origenId} cfgId=${m.centroId} costoKm=${m.item11_costoKmFinal?.toFixed(1)} peajes=${m.item1_peajes} comb=${m.item2_combustible?.toFixed(0)} pct=${p?.pct||0}%`);
+        });
+        if (_normItems.length > 5) console.log(`  ... y ${_normItems.length - 5} rutas más`);
+        console.log('Resultado: ratePerKmPond =', mx.pondNorm, '(antes:', t.ratePerKmPond, ')');
+        console.groupEnd();
+      }
+
       if (t.ratePerKmPond !== mx.pondNorm) { t.ratePerKmPond = mx.pondNorm; cambios = true; }
       if (t.ratePerKmProm !== mx.promNorm) { t.ratePerKmProm = mx.promNorm; cambios = true; }
       if (t.ratePerKm     !== mx.pondNorm) { t.ratePerKm     = mx.pondNorm; cambios = true; } // compat
