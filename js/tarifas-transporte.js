@@ -8,6 +8,15 @@ import { supabase } from './supabase-client.js';
 import { getField } from './zonas-transporte.js';
 import { renderZcapView } from './zcap.js?v=20260712d';
 
+// FIX: Escuchar errores de sincronización con Supabase y notificar al usuario
+window.addEventListener('db_sync_error', (e) => {
+  const msg = e.detail || 'Error desconocido';
+  // Mostrar alerta solo si showAlert está disponible (módulo cargado)
+  if (typeof showAlert === 'function') {
+    showAlert('Error al guardar en servidor: ' + msg + '. Los cambios están guardados localmente pero podrían perderse al recargar.', 'error');
+  }
+});
+
 let activeSub = 'peajes';
 
 // Permite fijar el subtab activo desde el menu lateral (app.js) antes de renderizar
@@ -207,20 +216,29 @@ export function renderTariffTransportView(container) {
     }
 
     // Listener delegado para todas las celdas editables con data-path
-    content.addEventListener('change', (e) => {
-      const path = e.target.dataset.path;
-      if (!path) return;
-      let val = e.target.value;
-      if (e.target.type === 'number') {
-        val = val === '' ? 0 : Number(val);
-      } else if (e.target.dataset.numeric) {
-        // Parsear número con formato es-CL (punto=miles, coma=decimal)
-        val = val === '' ? 0 : Number(String(val).replace(/\./g, '').replace(',', '.'));
-        if (isNaN(val)) val = 0;
-      }
-      setPath(cfg, path, val);
-      saveDatabase(db);
-    });
+    // FIX: evitar duplicar listeners y evitar re-procesar inputs ya manejados
+    if (!content._hasChangeListener) {
+      content._hasChangeListener = true;
+      content.addEventListener('change', (e) => {
+        const path = e.target.dataset.path;
+        if (!path) return;
+        // Si un listener específico ya procesó este input, no duplicar
+        if (e.target.dataset.handled === '1') {
+          delete e.target.dataset.handled;
+          return;
+        }
+        let val = e.target.value;
+        if (e.target.type === 'number') {
+          val = val === '' ? 0 : Number(val);
+        } else if (e.target.dataset.numeric) {
+          // Parsear número con formato es-CL (punto=miles, coma=decimal)
+          val = val === '' ? 0 : Number(String(val).replace(/\./g, '').replace(',', '.'));
+          if (isNaN(val)) val = 0;
+        }
+        setPath(cfg, path, val);
+        saveDatabase(db);
+      });
+    }
   }
 }
 
@@ -2277,7 +2295,7 @@ function renderTarifasCamion(content, db, cfg) {
           subtituloGrupo = `(${[...g.centroIds, ...sbIds].join(', ')})`;
         }
 
-        const colCount = tieneEsp ? 11 : 9;
+        const colCount = tieneEsp ? 9 : 7;
         return `
         <div class="mb-xl">
           <div class="flex items-center justify-between mb-xs">
@@ -2297,12 +2315,10 @@ function renderTarifasCamion(content, db, cfg) {
                   <th class="p-md font-label-caps text-label-caps text-secondary uppercase whitespace-nowrap text-right">b. Costo Base</th>
                   <th class="p-md font-label-caps text-label-caps text-secondary uppercase whitespace-nowrap text-right">c. T. Base KM</th>
                   <th class="p-md font-label-caps text-label-caps text-secondary uppercase whitespace-nowrap text-right bg-blue-50">d. Normal Pond.</th>
-                  <th class="p-md font-label-caps text-label-caps text-secondary uppercase whitespace-nowrap text-right bg-blue-50">e. Normal Prom.</th>
                   ${tieneEsp ? `
-                  <th class="p-md font-label-caps text-label-caps text-secondary uppercase whitespace-nowrap text-right bg-amber-50">f. Esp. Pond.</th>
-                  <th class="p-md font-label-caps text-label-caps text-secondary uppercase whitespace-nowrap text-right bg-amber-50">g. Esp. Prom.</th>` : ''}
-                  <th class="p-md font-label-caps text-label-caps text-secondary uppercase whitespace-nowrap text-right bg-green-50">h. Ajust. Normal</th>
-                  ${tieneEsp ? `<th class="p-md font-label-caps text-label-caps text-secondary uppercase whitespace-nowrap text-right bg-green-50">i. Ajust. Especial</th>` : ''}
+                  <th class="p-md font-label-caps text-label-caps text-secondary uppercase whitespace-nowrap text-right bg-amber-50">e. Esp. Pond.</th>` : ''}
+                  <th class="p-md font-label-caps text-label-caps text-secondary uppercase whitespace-nowrap text-right bg-green-50">${tieneEsp ? 'f' : 'e'}. Ajust. Normal</th>
+                  ${tieneEsp ? `<th class="p-md font-label-caps text-label-caps text-secondary uppercase whitespace-nowrap text-right bg-green-50">g. Ajust. Especial</th>` : ''}
                 </tr>
               </thead>
               <tbody class="font-body-md text-body-md">
@@ -2311,9 +2327,7 @@ function renderTarifasCamion(content, db, cfg) {
                   : rows.map(t => {
                     const hasZcap = conZcap.has(t.id);
                     const pondN   = t.ratePerKmPond    || 0;
-                    const promN   = t.ratePerKmProm    || 0;
                     const pondE   = t.ratePerKmExtrPond || 0;
-                    const promE   = t.ratePerKmExtrProm || 0;
                     const ajN     = t.rateAjustNorm    ?? pondN;
                     const ajE     = t.rateAjustEsp     ?? pondE;
                     const noData  = !hasZcap ? '<div class="text-[10px] text-secondary">Sin rutas</div>' : '';
@@ -2325,10 +2339,8 @@ function renderTarifasCamion(content, db, cfg) {
                       <td class="p-md w-28">${truckNumInput(t.id, 'baseKM',   t.baseKM)}</td>
                       <td class="p-md w-28">${truckNumInput(t.id, 'baseRate', t.baseRate)}</td>
                       <td class="p-md text-right font-data-mono bg-blue-50">${hasZcap ? formatCLP(pondN) : '—'}${noData}</td>
-                      <td class="p-md text-right font-data-mono bg-blue-50">${hasZcap ? formatCLP(promN) : '—'}</td>
                       ${tieneEsp ? `
-                      <td class="p-md text-right font-data-mono bg-amber-50">${pondE > 0 ? formatCLP(pondE) : '—'}</td>
-                      <td class="p-md text-right font-data-mono bg-amber-50">${promE > 0 ? formatCLP(promE) : '—'}</td>` : ''}
+                      <td class="p-md text-right font-data-mono bg-amber-50">${pondE > 0 ? formatCLP(pondE) : '—'}</td>` : ''}
                       <td class="p-md w-28 bg-green-50">${truckNumInput(t.id, 'rateAjustNorm', ajN)}</td>
                       ${tieneEsp ? `<td class="p-md w-28 bg-green-50">${truckNumInput(t.id, 'rateAjustEsp', ajE)}</td>` : ''}
                     </tr>`;
@@ -2522,11 +2534,13 @@ function renderCombustibles(content, db, cfg) {
       if (!repId) return;
       if (!cfg.combustibles[repId]) cfg.combustibles[repId] = {};
       if (field === 'precio') {
+        // FIX: parsear y asignar el valor numérico ANTES de re-renderizar
+        const rawVal = String(input.value).replace(/\./g, '').replace(',', '.');
+        const numVal = rawVal === '' ? 0 : Number(rawVal);
+        cfg.combustibles[repId].precioLitro = isNaN(numVal) ? 0 : numVal;
         cfg.combustibles[repId].fuente = 'manual';
         const hoyStr = todayISO();
         cfg.combustibles[repId].fecha = hoyStr;
-        const fechaInput = content.querySelector(`[data-path="combustibles.${repId}.fecha"]`);
-        if (fechaInput) fechaInput.value = hoyStr;
         delete cfg.combustibles[repId].cneRegion;
         delete cfg.combustibles[repId].cneMes;
         delete cfg.combustibles[repId].cneAnio;
@@ -2534,10 +2548,12 @@ function renderCombustibles(content, db, cfg) {
         // IVA no puede ser 0; si se borra o pone 0, restaurar 19%
         const val = Number(input.value);
         cfg.combustibles[repId].ivaPct = (!val || isNaN(val) || val <= 0) ? 19 : val;
-        input.value = cfg.combustibles[repId].ivaPct; // reflejar corrección en campo
       } else if (field === 'fecha') {
+        cfg.combustibles[repId].fecha = input.value;
         cfg.combustibles[repId].fuente = 'manual';
       }
+      // Marcar para que el listener delegado no re-procese
+      input.dataset.handled = '1';
       saveDatabase(db);
       // Re-render para actualizar precio sin IVA y badges
       renderCombustibles(content, db, cfg);
