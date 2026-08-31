@@ -6,7 +6,7 @@ import { renderRatesView } from './rates.js';
 import { renderRolesView } from './roles.js';
 import { renderTariffTransportView, setActiveSub } from './tarifas-transporte.js?v=20260713c';
 import { renderClientTariffView, setActiveSubC } from './tarifas-clientes.js?v=20260714c';
-import { renderAbastecimientoView, setAbastSubTab } from './abastecimiento.js?v=20260814g';
+import { renderAbastecimientoView, setAbastSubTab } from './abastecimiento.js?v=20260831a';
 import { renderIndicadoresView, setIndicadoresSubTab, renderIndicadoresHome } from './indicadores.js?v=20260818x';
 import { showAlert, formatRut, validateRut, formatPhone } from './utils.js';
 
@@ -1224,6 +1224,9 @@ const SIDEBAR_MENU = [
       { tab: 'abastecimiento', sub: 'pedidos_traslados',      icon: 'swap_horiz',     label: 'Pedidos Traslados' },
       { tab: 'abastecimiento', sub: 'pedidos_traslados_revex', icon: 'recycling',    label: 'Pedidos de Traslado REVEX' },
       { tab: 'abastecimiento', sub: 'pedidos_traslados_4000', icon: 'local_shipping', label: 'Pedidos de Traslados 4000' },
+      { tab: 'abastecimiento', sub: 'documentos_transporte',  icon: 'description',    label: 'Documentos de Transporte' },
+      { tab: 'abastecimiento', sub: 'entregas_creadas',        icon: 'assignment_turned_in', label: 'Entregas Creadas' },
+      { tab: 'abastecimiento', sub: 'pedidos_ventas',          icon: 'receipt_long',   label: 'Pedidos de Ventas' },
       { tab: 'abastecimiento', sub: 'plan_carga',             icon: 'local_shipping', label: 'Plan de Carga' },
     ]
   },

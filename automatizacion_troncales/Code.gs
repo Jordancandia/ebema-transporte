@@ -2,18 +2,20 @@
  * ============================================================================
  *  AUTOMATIZACION CORREOS TRONCALES  ->  SUPABASE (SIT EBEMA)
  * ----------------------------------------------------------------------------
- *  Lee Gmail 3 veces al dia (07:35 / 11:35 / ~13:50, hora Chile), procesa SOLO
- *  correos NO leidos de dos etiquetas, extrae y parsea los adjuntos, y carga
- *  los datos a Supabase (pisando la base vigente). La corrida de la tarde
- *  ademas guarda la foto del dia (historico 7 dias). Marca los correos leidos.
- *  La corrida de la tarde se centra en 13:50 (jitter +/-15) para alcanzar a
- *  leer el correo de la tarde.
+ *  Lee Gmail 4 veces al dia (07:30 / 11:30 / 13:30 / 14:30, hora Chile),
+ *  procesa SOLO correos NO leidos de dos etiquetas, extrae y parsea los
+ *  adjuntos, y carga los datos a Supabase (pisando la base vigente).
+ *  La corrida de la tarde (13:30) ademas guarda la foto del dia (historico
+ *  7 dias). Marca los correos leidos.
  *
  *  Fuentes:
  *   - "Plan Troncales (SLIM)"  -> adjunto Excel  -> fuente slim_stock
  *       Filtros: columna B (Articulo Stock) == 0  y  columna F (Almacen) en
  *       la lista de centros. Columnas usadas: B, F, G, H, K, U.
- *   - "SQVI Troncales"         -> adjuntos .htm  -> 5 fuentes (Step 1..5)
+ *   - "SQVI Troncales"         -> adjuntos .htm  -> multiples fuentes:
+ *       * Job ZJC PLAN TRONCALES  Steps 1..6 (retiros, pedidos, stock, etc.)
+ *       * Job ZJC PLAN DT         Step 1 (documentos de transporte)
+ *       * Job ZJC PLAN ENTREGAS   Steps 1..2 (entregas creadas, pedidos venta)
  *
  *  Requisitos (ver README_DESPLIEGUE.md):
  *   1) Zona horaria del proyecto = America/Santiago
@@ -32,7 +34,25 @@ var LABEL_SQVI = 'SQVI Troncales';
 var CENTROS_SLIM = ['1020','1040','1050','1060','1070','1080','1090','1100',
                     '1160','1005','1000','1003','1002','1001','1081'];
 
-// Mapa Step N -> nombre de fuente (debe coincidir con las vistas en Supabase)
+// ─── Mapa de fuentes por Job + Step ────────────────────────────────────────
+// Cada clave es "JOB_NAME|STEP" -> nombre de fuente en Supabase.
+// El Job se extrae del asunto del correo; el Step es el numero tras "Step N".
+var FUENTES_MAP = {
+  // Job ZJC PLAN TRONCALES (existentes)
+  'ZJC PLAN TRONCALES|1': 'sqvi_retiros_fabrica',
+  'ZJC PLAN TRONCALES|2': 'sqvi_pedidos_venta_1003',
+  'ZJC PLAN TRONCALES|3': 'sqvi_stock_almacen_4000',
+  'ZJC PLAN TRONCALES|4': 'sqvi_pedidos_traslados',
+  'ZJC PLAN TRONCALES|5': 'sqvi_pedidos_traslados_4000',
+  'ZJC PLAN TRONCALES|6': 'sqvi_plan_troncales',
+  // Job ZJC PLAN DT (nuevo)
+  'ZJC PLAN DT|1':        'dt_transportes',
+  // Job ZJC PLAN ENTREGAS (nuevo)
+  'ZJC PLAN ENTREGAS|1':  'entregas_creadas',
+  'ZJC PLAN ENTREGAS|2':  'pedidos_ventas_dt'
+};
+
+// Compatibilidad: mapa antiguo Step -> fuente (solo para TRONCALES)
 var SQVI_FUENTES = {
   '1': 'sqvi_retiros_fabrica',
   '2': 'sqvi_pedidos_venta_1003',
@@ -42,42 +62,42 @@ var SQVI_FUENTES = {
   '6': 'sqvi_plan_troncales'
 };
 
-var CHUNK = 1500; // filas por request de inserción
+var CHUNK = 1500; // filas por request de insercion
 
 // --------------------------- ENTRYPOINTS ------------------------------------
 // Funciones que disparan los triggers horarios.
+function ejecutar_0730() { procesar(false); }
+function ejecutar_1130() { procesar(false); }
+// Corrida de la tarde (guarda snapshot del dia).
+function ejecutar_tarde() { procesar(true); }
+function ejecutar_1430() { procesar(false); }
+// Compatibilidad con triggers antiguos (por si quedara alguno apuntando aca).
 function ejecutar_0735() { procesar(false); }
 function ejecutar_1135() { procesar(false); }
-// Corrida de la tarde (guarda snapshot del dia). Nombre neutro para no tener
-// que renombrar al ajustar el minuto exacto del trigger.
-function ejecutar_tarde() { procesar(true); }
-// Compatibilidad con triggers antiguos (por si quedara alguno apuntando aca).
 function ejecutar_1350() { procesar(true); }
 function ejecutar_1340() { procesar(true); }
 function ejecutar_1335() { procesar(true); }
 
 // Minuto centro del trigger de la tarde. Apps Script dispara con +/-15 min de
 // jitter (ventana CENTRO-15 .. CENTRO+15). SAP envia el lote de la tarde a las
-// 13:31 exactas, por lo que la corrida DEBE dispararse despues. Con 50 la
-// ventana es 13:35..14:05: siempre despues del correo (13:31) y casi siempre
-// cerrando antes de las 14:00.
-var MIN_TARDE = 50;
+// 13:31 exactas, por lo que la corrida DEBE dispararse despues. Con 30 la
+// ventana es 13:15..13:45.
+var MIN_TARDE = 30;
 
-// Utilidad: crea los 3 triggers de una sola vez (ejecutar manualmente 1 vez).
-// IMPORTANTE: reejecutar esta funcion tras cambiar el horario de la tarde.
+// Utilidad: crea los 4 triggers de una sola vez (ejecutar manualmente 1 vez).
+// IMPORTANTE: reejecutar esta funcion tras cambiar horarios.
 function crearTriggers() {
   // Elimina triggers previos de estas funciones para no duplicar
+  var borrar = ['ejecutar_0730','ejecutar_1130','ejecutar_tarde','ejecutar_1430',
+                'ejecutar_0735','ejecutar_1135','ejecutar_1335','ejecutar_1340','ejecutar_1350'];
   ScriptApp.getProjectTriggers().forEach(function (t) {
-    var f = t.getHandlerFunction();
-    if (f === 'ejecutar_0735' || f === 'ejecutar_1135' || f === 'ejecutar_tarde' ||
-        f === 'ejecutar_1335' || f === 'ejecutar_1340' || f === 'ejecutar_1350') {
-      ScriptApp.deleteTrigger(t);
-    }
+    if (borrar.indexOf(t.getHandlerFunction()) !== -1) ScriptApp.deleteTrigger(t);
   });
-  ScriptApp.newTrigger('ejecutar_0735').timeBased().atHour(7).nearMinute(35).everyDays(1).create();
-  ScriptApp.newTrigger('ejecutar_1135').timeBased().atHour(11).nearMinute(35).everyDays(1).create();
+  ScriptApp.newTrigger('ejecutar_0730').timeBased().atHour(7).nearMinute(30).everyDays(1).create();
+  ScriptApp.newTrigger('ejecutar_1130').timeBased().atHour(11).nearMinute(30).everyDays(1).create();
   ScriptApp.newTrigger('ejecutar_tarde').timeBased().atHour(13).nearMinute(MIN_TARDE).everyDays(1).create();
-  Logger.log('Triggers creados: 07:35, 11:35, 13:' + MIN_TARDE + ' +/-15min (America/Santiago).');
+  ScriptApp.newTrigger('ejecutar_1430').timeBased().atHour(14).nearMinute(30).everyDays(1).create();
+  Logger.log('Triggers creados: 07:30, 11:30, 13:' + MIN_TARDE + ', 14:30 (America/Santiago).');
 }
 
 // ----------------------------- CORE -----------------------------------------
@@ -93,7 +113,7 @@ function procesar(esSnapshot) {
   if (esSnapshot) {
     // Guarda la foto del dia desde trc_live VIGENTE (no depende de que haya
     // llegado un correo nuevo a esta hora). Asi el historico se guarda siempre
-    // en la corrida de las 13:35, aunque no haya correos no leidos.
+    // en la corrida de las 13:30, aunque no haya correos no leidos.
     try {
       var nSnap = sbRpcSnapshotHoy();
       logRun(corrida, 'snapshot_hoy', nSnap, true, 'ok', 'Snapshot desde trc_live');
@@ -119,7 +139,6 @@ function procesarSlim(corrida, esSnapshot) {
   var filas = leerExcelSlim(att, corrida);
 
   reemplazarLive('slim_stock', filas);
-  // El snapshot del dia se toma al final desde trc_live (sbRpcSnapshotHoy).
 
   msg.markRead();
   logRun(corrida, 'slim_stock', filas.length, esSnapshot, 'ok', att.getName());
@@ -130,15 +149,12 @@ function leerExcelSlim(attachment, corrida) {
   var centros = {};
   CENTROS_SLIM.forEach(function (c) { centros[c] = true; });
 
-  // Convierte el xlsx a Google Sheet: tipo destino en el recurso + tipo de
-  // origen en el blob. (El parametro 'convert' quedo obsoleto en Drive.)
   var tmp = Drive.Files.insert(
     { title: 'tmp_slim_' + Date.now(), mimeType: 'application/vnd.google-apps.spreadsheet' },
     attachment.copyBlob().setContentType('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
   );
   var filas = [];
   try {
-    // Espera a que la conversion termine (archivo pasa a ser Google Sheet).
     var msW = 0; var sh = null;
     while (msW < 120000) {
       try {
@@ -152,7 +168,6 @@ function leerExcelSlim(attachment, corrida) {
     var last = sh.getLastRow();
     if (last < 2) return filas;
     var n = last - 1;
-    // Columnas: B=2, F=6, G=7, H=8, K=11, U=21
     var B = sh.getRange(2, 2,  n, 1).getValues();
     var F = sh.getRange(2, 6,  n, 1).getValues();
     var G = sh.getRange(2, 7,  n, 1).getValues();
@@ -163,10 +178,10 @@ function leerExcelSlim(attachment, corrida) {
     var idx = 0;
     for (var i = 0; i < n; i++) {
       var b = B[i][0];
-      if (Number(b) !== 0) continue;                    // solo Articulo Stock == 0
+      if (Number(b) !== 0) continue;
       var centroRaw = F[i][0] == null ? '' : String(F[i][0]);
       var centro = centroRaw.replace(/_/g, '').trim();
-      if (!centros[centro]) continue;                    // solo centros de la lista
+      if (!centros[centro]) continue;
       idx++;
       filas.push({
         fuente: 'slim_stock', fila: idx, corrida: corrida,
@@ -181,19 +196,20 @@ function leerExcelSlim(attachment, corrida) {
       });
     }
   } finally {
-    // Elimina la copia temporal
     try { DriveApp.getFileById(tmp.id).setTrashed(true); } catch (e) {}
   }
   return filas;
 }
 
 // ----------------------------- SQVI -----------------------------------------
+// Procesa TODOS los correos SQVI (Troncales, DT y Entregas) de la etiqueta.
+// Detecta el Job y Step del asunto para mapear a la fuente correcta.
 function procesarSqvi(corrida, esSnapshot) {
   var label = GmailApp.getUserLabelByName(LABEL_SQVI);
   if (!label) { logRun(corrida, 'sqvi_*', 0, esSnapshot, 'error', 'No existe etiqueta ' + LABEL_SQVI); return; }
 
-  // Recolecta, por cada Step, el mensaje NO leido mas reciente con adjunto .htm
-  var porStep = {};   // step -> {msg, att, date}
+  // Recolecta, por cada fuente (Job|Step), el mensaje NO leido mas reciente
+  var porFuente = {};   // fuente -> {msg, att, date}
   var aMarcar = [];
   var threads = label.getThreads(0, 100);
   for (var t = 0; t < threads.length; t++) {
@@ -201,24 +217,28 @@ function procesarSqvi(corrida, esSnapshot) {
     for (var m = 0; m < msgs.length; m++) {
       var msg = msgs[m];
       if (!msg.isUnread()) continue;
-      var step = stepDeAsunto(msg.getSubject());
-      if (!step || !SQVI_FUENTES[step]) continue;
+      var parsed = parseAsunto(msg.getSubject());
+      if (!parsed) continue;
+      var fuente = parsed.fuente;
+      if (!fuente) continue;
       var att = adjunto(msg, /\.htm(l)?$/i);
       if (!att) continue;
       aMarcar.push(msg);
       var d = msg.getDate().getTime();
-      if (!porStep[step] || d > porStep[step].date) porStep[step] = { msg: msg, att: att, date: d };
+      if (!porFuente[fuente] || d > porFuente[fuente].date) {
+        porFuente[fuente] = { msg: msg, att: att, date: d };
+      }
     }
   }
 
-  Object.keys(SQVI_FUENTES).forEach(function (step) {
-    var fuente = SQVI_FUENTES[step];
-    var entry = porStep[step];
-    if (!entry) { logRun(corrida, fuente, 0, esSnapshot, 'sin_correo', 'Sin correo Step ' + step); return; }
+  // Procesa cada fuente encontrada
+  var todasFuentes = obtenerTodasFuentes();
+  todasFuentes.forEach(function (fuente) {
+    var entry = porFuente[fuente];
+    if (!entry) { logRun(corrida, fuente, 0, esSnapshot, 'sin_correo', 'Sin correo para ' + fuente); return; }
     try {
       var filas = parseSqviHtml(entry.att.getDataAsString('UTF-8'), fuente, corrida);
       reemplazarLive(fuente, filas);
-      // El snapshot del dia se toma al final desde trc_live (sbRpcSnapshotHoy).
       logRun(corrida, fuente, filas.length, esSnapshot, 'ok', entry.att.getName());
     } catch (e) {
       logRun(corrida, fuente, 0, esSnapshot, 'error', String(e));
@@ -227,6 +247,34 @@ function procesarSqvi(corrida, esSnapshot) {
 
   // Marca leidos todos los correos SQVI procesados
   aMarcar.forEach(function (msg) { try { msg.markRead(); } catch (e) {} });
+}
+
+// Extrae Job y Step del asunto del correo.
+// Soporta formatos:
+//   "Job ZJC PLAN TRONCALES, Step 3"
+//   "Job ZJC PLAN DT, Step 1"
+//   "Job ZJC PLAN ENTREGAS, Step 2"
+// Retorna { job, step, fuente } o null si no coincide.
+function parseAsunto(asunto) {
+  if (!asunto) return null;
+  var m = /Job\s+(ZJC\s+PLAN\s+\S+(?:\s+\S+)?),\s*Step\s+(\d+)/i.exec(asunto);
+  if (!m) return null;
+  var job = m[1].toUpperCase().replace(/\s+/g, ' ').trim();
+  var step = m[2];
+  var key = job + '|' + step;
+  var fuente = FUENTES_MAP[key] || null;
+  return { job: job, step: step, fuente: fuente };
+}
+
+// Devuelve array con todas las fuentes unicas del mapa.
+function obtenerTodasFuentes() {
+  var seen = {};
+  var out = [];
+  Object.keys(FUENTES_MAP).forEach(function (k) {
+    var f = FUENTES_MAP[k];
+    if (!seen[f]) { seen[f] = true; out.push(f); }
+  });
+  return out;
 }
 
 // Parser de los HTML export de SAP (tablas repetidas, headers y totales).
@@ -304,14 +352,13 @@ function normalizarKeys(header) {
 
 function slug(h) {
   if (h == null) h = '';
-  // Quita acentos (rango de marcas diacriticas combinantes U+0300..U+036F).
-  // Se usan escapes Unicode para que sea seguro al copiar/pegar.
-  h = h.normalize ? h.normalize('NFKD').replace(/[\u0300-\u036f]/g, '') : h;
+  h = h.normalize ? h.normalize('NFKD').replace(/[̀-ͯ]/g, '') : h;
   h = h.replace(/[^a-zA-Z0-9]+/g, '_').replace(/^_+|_+$/g, '').toLowerCase();
   return h || 'col';
 }
 
 // ---------------------- HELPERS GMAIL ---------------------------------------
+// Compatibilidad: stepDeAsunto sigue existiendo para uso externo/legacy.
 function stepDeAsunto(asunto) {
   var m = /Step\s+(\d+)/i.exec(asunto || '');
   return m ? m[1] : null;
@@ -398,7 +445,6 @@ function sbDelete(tabla, filtro) {
 }
 
 // Copia trc_live -> trc_hist (foto del dia, hora Chile). Reemplaza la de hoy.
-// Devuelve la cantidad de filas guardadas. No depende de correos nuevos.
 function sbRpcSnapshotHoy() {
   var res = UrlFetchApp.fetch(SUPABASE_URL + '/rest/v1/rpc/fn_trc_snapshot_hoy', {
     method: 'post', contentType: 'application/json',
@@ -444,5 +490,5 @@ function txt(v) {
 // ---------------------- PRUEBAS MANUALES ------------------------------------
 // Ejecuta una corrida normal (sin snapshot) para probar.
 function probar_ahora()          { procesar(false); }
-// Ejecuta una corrida con snapshot (como la de las 13:35).
+// Ejecuta una corrida con snapshot (como la de las 13:30).
 function probar_ahora_snapshot() { procesar(true); }

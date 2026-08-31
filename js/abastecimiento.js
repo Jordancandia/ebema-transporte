@@ -157,80 +157,30 @@ function comunasEnCamino(centroId) {
   return new Set();
 }
 
-// Clasificación de quiebre por stock disponible + días de stock
-function tipoQuiebre(sd, stockDisp) {
-  if (stockDisp === 0 && sd < 3)  return { txt: 'MATERIAL QUEBRADO URGENTE', cls: 'text-white bg-red-600', dot: 'bg-red-600' };
-  if (stockDisp > 0  && sd < 5)   return { txt: 'STOCK CRÍTICO',             cls: 'text-white bg-[#e65100]', dot: 'bg-[#e65100]' };
-  if (stockDisp > 0  && sd < 7)   return { txt: 'EN REVISIÓN',               cls: 'text-black bg-[#f9a825]', dot: 'bg-[#f9a825]' };
-  return null; // no califica como quiebre
+// Clasificación de quiebre por días de stock (AJUSTE 3.0)
+function tipoQuiebre(sd) {
+  if (sd <= 3)  return { txt: 'MATERIAL QUEBRADO URGENTE', cls: 'text-white bg-red-600', dot: 'bg-red-600' };
+  if (sd <= 5)  return { txt: 'STOCK CRÍTICO URGENTE',     cls: 'text-white bg-[#e65100]', dot: 'bg-[#e65100]' };
+  return          { txt: 'STOCK EN REVISIÓN',              cls: 'text-black bg-[#f9a825]', dot: 'bg-[#f9a825]' };
 }
 
 // ── Estado de coordinación de retiros (persistente) ─────────────────────────
 async function loadEstadosRetiro() {
-  const { data, error } = await supabase.from('abast_retiro_estado').select('*');
+  const { data, error } = await supabase.from('abast_retiro_estado').select('doc_compr, estado');
   const m = {};
-  if (!error) (data || []).forEach(r => { m[String(r.doc_compr)] = r; });
+  if (!error) (data || []).forEach(r => { m[String(r.doc_compr)] = r.estado; });
   return m;
 }
-async function saveEstadoRetiro(docCompr, estado, coordData) {
-  const payload = {
-    doc_compr: String(docCompr), estado,
-    updated_by: await getUserEmail(), updated_at: new Date().toISOString(),
-    nombre_fabrica: null, direccion_fabrica: null, comuna_fabrica: null,
-    ruta_fabrica: null, nombre_contacto: null, correo_contacto: null, telefono_contacto: null,
-    ...(coordData || {}),
-  };
+async function saveEstadoRetiro(docCompr, estado) {
+  const payload = { doc_compr: String(docCompr), estado, updated_by: await getUserEmail(), updated_at: new Date().toISOString() };
   const { error } = await supabase.from('abast_retiro_estado').upsert(payload, { onConflict: 'doc_compr' });
   if (error) { showAlert('Error al guardar estado: ' + error.message, 'error'); return false; }
   return true;
 }
 const ESTADO_OPTS = [
-  { v: 'no_coordinado',       l: 'No Coordinado' },
-  { v: 'coordinado_santiago', l: 'Coordinado Santiago' },
-  { v: 'coordinado_local',    l: 'Coordinado Local' },
+  { v: 'no_coordinado', l: 'No coordinado' },
+  { v: 'coordinado',    l: 'Coordinado con proveedor' },
 ];
-const ESTADOS_CON_FORM = ['coordinado_santiago', 'coordinado_local'];
-
-// Modal de coordinación: solicita datos de fábrica/contacto
-function showCoordForm(existing) {
-  return new Promise(resolve => {
-    const ex = existing || {};
-    const overlay = document.createElement('div');
-    overlay.className = 'fixed inset-0 bg-black/50 flex items-center justify-center z-[9999]';
-    overlay.innerHTML = `
-      <div class="bg-white rounded-xl shadow-2xl p-lg w-full max-w-md mx-md animate-in fade-in">
-        <h3 class="text-headline-sm font-bold mb-md text-on-surface">Datos de Coordinación</h3>
-        <div class="space-y-sm">
-          <label class="block"><span class="text-[11px] uppercase text-secondary font-bold">Nombre Fábrica</span>
-            <input data-f="nombre_fabrica" value="${escapeHtml(ex.nombre_fabrica || '')}" class="mt-xs block w-full border border-outline-variant rounded-lg px-md py-sm text-body-md focus:border-primary outline-none"/></label>
-          <label class="block"><span class="text-[11px] uppercase text-secondary font-bold">Dirección Fábrica</span>
-            <input data-f="direccion_fabrica" value="${escapeHtml(ex.direccion_fabrica || '')}" class="mt-xs block w-full border border-outline-variant rounded-lg px-md py-sm text-body-md focus:border-primary outline-none"/></label>
-          <label class="block"><span class="text-[11px] uppercase text-secondary font-bold">Comuna Fábrica</span>
-            <input data-f="comuna_fabrica" value="${escapeHtml(ex.comuna_fabrica || '')}" placeholder="ej. LAS CONDES" class="mt-xs block w-full border border-outline-variant rounded-lg px-md py-sm text-body-md focus:border-primary outline-none"/></label>
-          <label class="block"><span class="text-[11px] uppercase text-secondary font-bold">Ruta Asociada</span>
-            <input data-f="ruta_fabrica" value="${escapeHtml(ex.ruta_fabrica || '')}" placeholder="ej. SFO146" class="mt-xs block w-full border border-outline-variant rounded-lg px-md py-sm text-body-md focus:border-primary outline-none"/></label>
-          <label class="block"><span class="text-[11px] uppercase text-secondary font-bold">Nombre Contacto</span>
-            <input data-f="nombre_contacto" value="${escapeHtml(ex.nombre_contacto || '')}" class="mt-xs block w-full border border-outline-variant rounded-lg px-md py-sm text-body-md focus:border-primary outline-none"/></label>
-          <label class="block"><span class="text-[11px] uppercase text-secondary font-bold">Correo Contacto</span>
-            <input data-f="correo_contacto" type="email" value="${escapeHtml(ex.correo_contacto || '')}" class="mt-xs block w-full border border-outline-variant rounded-lg px-md py-sm text-body-md focus:border-primary outline-none"/></label>
-          <label class="block"><span class="text-[11px] uppercase text-secondary font-bold">Teléfono Contacto</span>
-            <input data-f="telefono_contacto" type="tel" value="${escapeHtml(ex.telefono_contacto || '')}" class="mt-xs block w-full border border-outline-variant rounded-lg px-md py-sm text-body-md focus:border-primary outline-none"/></label>
-        </div>
-        <div class="flex justify-end gap-sm mt-lg">
-          <button data-cancel class="px-lg py-sm rounded-lg border border-outline-variant text-on-surface hover:bg-surface-container-high font-bold text-[13px]">Cancelar</button>
-          <button data-save class="px-lg py-sm rounded-lg bg-primary text-white font-bold text-[13px] hover:opacity-90">Guardar</button>
-        </div>
-      </div>`;
-    document.body.appendChild(overlay);
-    overlay.querySelector('[data-cancel]').addEventListener('click', () => { overlay.remove(); resolve(null); });
-    overlay.querySelector('[data-save]').addEventListener('click', () => {
-      const d = {};
-      overlay.querySelectorAll('[data-f]').forEach(inp => { d[inp.dataset.f] = inp.value.trim(); });
-      overlay.remove();
-      resolve(d);
-    });
-  });
-}
 
 // ============================================================================
 // VISTAS DE DATOS TRONCALES
@@ -242,23 +192,21 @@ const VISTAS_TRONCAL = {
     vista: 'v_trc_slim_stock',
     chipFilter: { campo: 'centro', label: 'Centro' },
     extraChips: [{ campo: '_tipo_quiebre', label: 'Tipo de Quiebre' }],
-    searchLabel: 'BUSCADOR GENERAL',
+    searchLabel: 'Buscar Orden de Compra',
     filtros: [],
     transform(rows) {
       return rows
         .filter(r => CENTROS_QUIEBRES.includes(String(r.centro ?? '').trim()))
         .map(r => {
           const sd = parseNum(r.stock_days);       // vacío → 0
-          const stockDisp = parseNum(r.articulo_stock); // stock disponible
-          const tq = tipoQuiebre(sd, stockDisp);
-          if (!tq) return null; // no califica como quiebre → excluir
+          const tq = tipoQuiebre(sd);
           return { ...r, _desc_centro: getNombreCentro(r.centro), _sd_num: sd,
-                   _stock_disp: stockDisp, _stock_disp_fmt: fmtNum(stockDisp, 0),
-                   _tipo_quiebre: tq.txt, _tq_cls: tq.cls,
-                   _stock_days_disp: (String(r.stock_days ?? '').trim() === '' ? '0' : r.stock_days) };
+                   _tipo_quiebre: tq.txt, _tq_cls: tq.cls, _stock_days_disp: (String(r.stock_days ?? '').trim() === '' ? '0' : r.stock_days) };
         })
-        .filter(r => r !== null)
+        .filter(r => r._sd_num <= 7)               // sólo SKU con ≤ 7 días
         .sort((a, b) => {
+          const c = String(a.centro).localeCompare(String(b.centro));
+          if (c !== 0) return c;
           const ab = abcRank(a.clase_abc) - abcRank(b.clase_abc);
           if (ab !== 0) return ab;
           return a._sd_num - b._sd_num;
@@ -266,21 +214,16 @@ const VISTAS_TRONCAL = {
     },
     badges(rows) {
       let q = 0, c = 0, rev = 0;
-      rows.forEach(r => {
-        if (r._tipo_quiebre === 'MATERIAL QUEBRADO URGENTE') q++;
-        else if (r._tipo_quiebre === 'STOCK CRÍTICO') c++;
-        else if (r._tipo_quiebre === 'EN REVISIÓN') rev++;
-      });
-      return badgePill('Quebrado Urgente', q, 'bg-red-600 text-white') +
-             badgePill('Stock Crítico', c, 'bg-[#e65100] text-white') +
-             badgePill('En Revisión', rev, 'bg-[#f9a825] text-black');
+      rows.forEach(r => { if (r._sd_num <= 3) q++; else if (r._sd_num <= 5) c++; else rev++; });
+      return badgePill('SKU Quebrados (0-3)', q, 'bg-red-600 text-white') +
+             badgePill('Stock Crítico (3-5)', c, 'bg-[#e65100] text-white') +
+             badgePill('En Revisión (6-7)', rev, 'bg-[#f9a825] text-black');
     },
     columnas: [
       { key: 'centro', label: 'Centro' },
       { key: '_desc_centro', label: 'Descripción Centro' },
       { key: 'codigo_articulo', label: 'Código Artículo' },
       { key: 'descripcion', label: 'Descripción' },
-      { key: '_stock_disp_fmt', label: 'Stock Disponible', cls: 'text-right font-data-mono' },
       { key: '_stock_days_disp', label: 'StockDays', cls: 'text-right font-data-mono' },
       { key: 'clase_abc', label: 'Clase ABC', cls: 'text-center' },
       { key: '_tipo_quiebre', label: 'Tipo de Quiebre', badge: r => r._tq_cls },
@@ -295,29 +238,17 @@ const VISTAS_TRONCAL = {
     extraChips: [
       { campo: '_tipo_retiro', label: 'Tipo Retiro' },
       { campo: '_estado_lbl', label: 'Coordinación' },
-      { campo: '_alerta_txt', label: 'Alerta' },
+      { campo: '_alerta', label: 'Alerta' },
     ],
-    searchLabel: 'BUSCADOR GENERAL',
+    noBuscar: true,
     filtros: [{ campo: 'doc_compr', label: 'Buscar Orden de Compra', tipo: 'buscar' }],
     dateRange: { campo: 'fe_entrega', label: 'Rango Fecha de Entrega' },
     async preload() { return { estados: await loadEstadosRetiro() }; },
     editable: {
       key: '_estado', options: ESTADO_OPTS,
       async onChange(row, val, ctx) {
-        let coordData = null;
-        if (ESTADOS_CON_FORM.includes(val)) {
-          const existing = ctx.estados[String(row.doc_compr)] || {};
-          coordData = await showCoordForm(existing);
-          if (!coordData) return false; // cancelado
-        }
-        const ok = await saveEstadoRetiro(row.doc_compr, val, coordData);
-        if (ok) {
-          ctx.estados[String(row.doc_compr)] = {
-            ...(ctx.estados[String(row.doc_compr)] || {}),
-            doc_compr: String(row.doc_compr), estado: val, ...(coordData || {}),
-          };
-          showAlert('Estado actualizado', 'success');
-        }
+        const ok = await saveEstadoRetiro(row.doc_compr, val);
+        if (ok) { ctx.estados[String(row.doc_compr)] = val; showAlert('Estado actualizado', 'success'); }
         return ok;
       },
     },
@@ -335,8 +266,7 @@ const VISTAS_TRONCAL = {
       const validas = rows
         .filter(r => !String(r.proveedor ?? '').startsWith('*'))
         .filter(r => String(r.contr ?? '').trim() !== '');
-
-      // Paso 1: Agrupar por OC y calcular tonelaje individual
+      // Agrupar por Orden de Compra (doc_compr)
       const g = new Map();
       validas.forEach(r => {
         const oc = String(r.doc_compr ?? '').trim();
@@ -344,7 +274,7 @@ const VISTAS_TRONCAL = {
         if (!g.has(oc)) g.set(oc, []);
         g.get(oc).push(r);
       });
-      const ocData = [];
+      const out = [];
       for (const [oc, items] of g.entries()) {
         const f = items[0];
         const almVal = String(f.alm ?? '').trim();
@@ -357,75 +287,31 @@ const VISTAS_TRONCAL = {
           if (ctdE > 0 && ctdE < ctdP) revSaldo = true;
           return { doc_compr: oc, ce: r.ce, material: r.material, texto_breve: r.texto_breve, pedido: ctdP, pendiente: pend, ton: t };
         });
-        ocData.push({ oc, f, almVal, ton, pendienteTotal, pedidoTotal, revSaldo, detalle });
-      }
-
-      // Paso 2: Agregar por (centro, proveedor) y (centro, PV) para tipo de retiro
-      const UMBRAL_CAMION = 23.8;
-      // Grupo por (ce, proveedor) → suma ton de OCs sin PV
-      const groupProv = {};
-      ocData.forEach(d => {
-        const pv = String(d.f.documento ?? '').trim();
-        if (pv) return; // tiene PV, se agrupa por cliente
-        const key = `${String(d.f.ce ?? '').trim()}|${String(d.f.proveedor ?? '').trim()}`;
-        (groupProv[key] = groupProv[key] || { ton: 0, ocs: [] });
-        groupProv[key].ton += d.ton; groupProv[key].ocs.push(d.oc);
-      });
-      // Grupo por (ce, PV) → suma ton de OCs con PV (mismo cliente)
-      const groupPV = {};
-      ocData.forEach(d => {
-        const pv = String(d.f.documento ?? '').trim();
-        if (!pv) return;
-        const key = `${String(d.f.ce ?? '').trim()}|${pv}`;
-        (groupPV[key] = groupPV[key] || { ton: 0, ocs: [] });
-        groupPV[key].ton += d.ton; groupPV[key].ocs.push(d.oc);
-      });
-      // Sets de OCs por tipo
-      const ocsFabSuc = new Set();
-      Object.values(groupProv).forEach(g => { if (g.ton >= UMBRAL_CAMION) g.ocs.forEach(o => ocsFabSuc.add(o)); });
-      const ocsFabCli = new Set();
-      Object.values(groupPV).forEach(g => { if (g.ton >= UMBRAL_CAMION) g.ocs.forEach(o => ocsFabCli.add(o)); });
-
-      // Paso 3: Construir filas con tipo de retiro y alertas
-      const out = [];
-      for (const d of ocData) {
+        // Tipo de retiro (AJUSTE): 4000=FÁBRICA-CD (Consolidar CD), 2000=FÁBRICA-SUCURSAL
+        // (Fábrica Directo). Si OC >=80% cap camión y tiene pedido de venta ⇒ FÁBRICA-CLIENTE.
+        const tienePedidoVenta = String(f.documento ?? '').trim() !== '';
+        const cap = getCapacidadCamion(f.ce);
         let tipoRetiro;
-        if (ocsFabCli.has(d.oc))       tipoRetiro = 'FÁBRICA-CLIENTE';
-        else if (ocsFabSuc.has(d.oc))  tipoRetiro = 'FÁBRICA-SUCURSAL';
-        else if (d.almVal === '4000' && d.ton < UMBRAL_CAMION) tipoRetiro = 'FÁBRICA-CD';
-        else                           tipoRetiro = 'FÁBRICA-CD';
-
-        // Alerta con iconos de círculo de color
-        const fechaD = parseDateSAP(d.f.fe_entrega);
-        let alertaTxt = '', alertaIcon = '';
-        if (fechaD) {
-          const hoyD = hoy00();
-          const diff = Math.floor((fechaD - hoyD) / 86400000);
-          if (diff < 0)       { alertaTxt = 'PEDIDO ATRASADO';    alertaIcon = '<span class="inline-block w-3 h-3 rounded-full bg-red-600 mr-1 align-middle"></span>'; }
-          else if (diff <= 5) { alertaTxt = 'PEDIDO POR VENCER';  alertaIcon = '<span class="inline-block w-3 h-3 rounded-full bg-[#e65100] mr-1 align-middle"></span>'; }
-          else                { alertaTxt = 'PEDIDO VIGENTE';     alertaIcon = '<span class="inline-block w-3 h-3 rounded-full bg-green-600 mr-1 align-middle"></span>'; }
-        }
-
-        // Vigencia OC: icono de alerta si hay saldos pendientes
-        const vigenciaHtml = d.revSaldo ? '<span class="material-symbols-outlined text-[16px] text-red-600 align-middle mr-1">warning</span>Saldo Pendiente' : '';
-
-        const estRow = estados[d.oc] || {};
-        const est = estRow.estado || 'no_coordinado';
+        if (ton >= cap * 0.80 && tienePedidoVenta) tipoRetiro = 'FÁBRICA-CLIENTE';
+        else if (almVal === '4000') tipoRetiro = 'FÁBRICA-CD';
+        else if (almVal === '2000') tipoRetiro = 'FÁBRICA-SUCURSAL';
+        else tipoRetiro = 'FÁBRICA-SUCURSAL';
+        const al = alertaFecha(f.fe_entrega, 5);
+        const est = estados[oc] || 'no_coordinado';
         out.push({
-          doc_compr: d.oc, contr: d.f.contr, proveedor: d.f.proveedor, nombre_1: d.f.nombre_1,
-          ce: d.f.ce, _desc_centro: getNombreCentro(d.f.ce), alm: d.f.alm, documento: d.f.documento,
-          fe_entrega: d.f.fe_entrega,
+          doc_compr: oc, contr: f.contr, proveedor: f.proveedor, nombre_1: f.nombre_1,
+          ce: f.ce, _desc_centro: getNombreCentro(f.ce), alm: f.alm, documento: f.documento,
+          fe_entrega: f.fe_entrega,
           _tipo_retiro: tipoRetiro,
           _cliente: tipoRetiro === 'FÁBRICA-CLIENTE',
           _consolidar: tipoRetiro === 'FÁBRICA-CD',
-          _ton_num: d.ton, _ton_totales: fmtNum(d.ton, 4),
-          _pendiente_total: d.pendienteTotal, _pedido_total: d.pedidoTotal,
-          _vigencia_html: vigenciaHtml,
-          _revision_saldo: d.revSaldo,
-          _alerta_html: alertaIcon + alertaTxt,
-          _alerta_txt: alertaTxt,
-          _estado: est, _estado_lbl: (ESTADO_OPTS.find(o => o.v === est) || {}).l || 'No Coordinado',
-          _detalle: d.detalle,
+          _ton_num: ton, _ton_totales: fmtNum(ton, 4),
+          _pendiente_total: pendienteTotal, _pedido_total: pedidoTotal,
+          _vigencia: revSaldo ? 'REVISIÓN SALDO PEDIDO' : '',
+          _revision_saldo: revSaldo,
+          _alerta: al.txt, _alerta_cls: al.cls,
+          _estado: est, _estado_lbl: (ESTADO_OPTS.find(o => o.v === est) || {}).l || 'No coordinado',
+          _detalle: detalle,
         });
       }
       return out.sort((a, b) => {
@@ -449,8 +335,8 @@ const VISTAS_TRONCAL = {
       { key: 'fe_entrega', label: 'Fecha de Retiro', cls: 'num-clear' },
       { key: '_ton_totales', label: 'Ton Totales', cls: 'text-right num-clear font-bold' },
       { key: 'documento', label: 'Pedido de Ventas' },
-      { key: '_vigencia_html', label: 'Vigencia OC', rawHtml: true },
-      { key: '_alerta_html', label: 'Alerta', rawHtml: true },
+      { key: '_vigencia', label: 'Vigencia OC', clsFn: r => r._revision_saldo ? 'text-red-700 font-bold' : '' },
+      { key: '_alerta', label: 'Alerta', clsFn: r => r._alerta_cls },
       { key: '_estado', label: 'Coordinación', editable: true },
     ],
   },
@@ -797,6 +683,205 @@ const VISTAS_TRONCAL = {
       { key: '_ton_totales', label: 'Toneladas Totales', cls: 'text-right num-clear font-bold' },
     ],
   },
+
+  // ── DOCUMENTOS DE TRANSPORTE (Job ZJC PLAN DT, Step 1) ─────────────────────
+  // Agrupado por Transporte (nro transporte). Drill-down muestra entregas/materiales.
+  documentos_transporte: {
+    titulo: 'GESTIÓN TRONCALES – DOCUMENTOS DE TRANSPORTE',
+    vista: 'v_trc_dt_transportes',
+    chipFilter: { campo: '_centro_destino', label: 'Centro' },
+    extraChips: [{ campo: 'ruta', label: 'Ruta' }],
+    searchLabel: 'BUSCADOR GENERAL',
+    filtros: [],
+    dateRange: { campo: 'fe_entrega', label: 'Rango Fecha de Entrega' },
+    expand: {
+      key: 'transporte', idKey: 'transporte', numCols: 2,
+      headers: ['Entrega','Material','Descripción','Cantidad','UM','Doc. Compra','Hoja Entrega'],
+      build(row) {
+        return (row._detalle || []).map(d => [
+          d.entrega, d.material, d.denominacion_de_posicion,
+          d.cantidad_entrega, d.um, d.doc_compr, d.hoja_entr,
+        ]);
+      },
+    },
+    transform(rows) {
+      // Filtrar filas vacías
+      const validas = rows.filter(r => String(r.transporte ?? '').trim() !== '');
+      // Agrupar por Transporte
+      const g = new Map();
+      validas.forEach(r => {
+        const t = String(r.transporte ?? '').trim();
+        if (!t) return;
+        (g.get(t) || g.set(t, []).get(t)).push(r);
+      });
+      const out = [];
+      for (const [trp, items] of g.entries()) {
+        const f = items[0];
+        const entregas = [...new Set(items.map(i => String(i.entrega ?? '').trim()).filter(Boolean))];
+        // Calcular toneladas si hay peso
+        let tonTotal = 0;
+        const detalle = items.map(r => {
+          const qty = parseNum(r.cantidad_entrega);
+          return {
+            entrega: r.entrega, material: r.material,
+            denominacion_de_posicion: r.denominacion_de_posicion,
+            cantidad_entrega: r.cantidad_entrega, um: r.um,
+            doc_compr: r.doc_compr, hoja_entr: r.hoja_entr,
+          };
+        });
+        // Extraer centro destino del destinatario o del primer dígito de ruta
+        const centroDestino = String(f.destinat ?? '').trim();
+        out.push({
+          transporte: trp,
+          cltr: f.cltr,
+          denominacion: f.denominacion,
+          denom_transporte: f.denom_transporte,
+          agservtran: f.agservtran,
+          nombre_1: f.nombre_1,
+          creado_el: f.creado_el,
+          ruta: f.ruta,
+          fe_entrega: f.fe_entrega,
+          _centro_destino: centroDestino,
+          _num_entregas: entregas.length,
+          _num_materiales: items.length,
+          _entregas_list: entregas.join(', '),
+          _detalle: detalle,
+        });
+      }
+      // Ordenar por fecha entrega (más próxima primero)
+      return out.sort((a, b) => {
+        const da = parseDateSAP(a.fe_entrega), db2 = parseDateSAP(b.fe_entrega);
+        return (da || new Date(9999,0)) - (db2 || new Date(9999,0));
+      });
+    },
+    columnas: [
+      { key: 'transporte', label: 'N° Transporte', expandable: true },
+      { key: 'denominacion', label: 'Tipo Transporte' },
+      { key: 'nombre_1', label: 'Transportista' },
+      { key: 'ruta', label: 'Ruta' },
+      { key: '_centro_destino', label: 'Destinatario' },
+      { key: 'fe_entrega', label: 'Fecha Entrega', cls: 'num-clear' },
+      { key: '_num_entregas', label: 'Entregas', cls: 'text-center font-bold' },
+      { key: '_num_materiales', label: 'Materiales', cls: 'text-center' },
+    ],
+  },
+
+  // ── ENTREGAS CREADAS (Job ZJC PLAN ENTREGAS, Step 1) ───────────────────────
+  // Agrupado por Entrega. Drill-down muestra materiales de cada entrega.
+  entregas_creadas: {
+    titulo: 'GESTIÓN TRONCALES – ENTREGAS CREADAS',
+    vista: 'v_trc_entregas_creadas',
+    chipFilter: { campo: 'ce', label: 'Centro' },
+    extraChips: [{ campo: 'ruta', label: 'Ruta' }, { campo: 'clent', label: 'Clase Entrega' }],
+    searchLabel: 'BUSCADOR GENERAL',
+    filtros: [],
+    dateRange: { campo: 'creado_el', label: 'Rango Fecha Creación' },
+    expand: {
+      key: 'entrega', idKey: 'entrega', numCols: 2,
+      headers: ['Material','Descripción','Cantidad Entrega','UM','Doc. Modelo','Pos. Modelo'],
+      build(row) {
+        return (row._detalle || []).map(d => [
+          d.material, d.denominacion_de_posicion,
+          d.cantidad_entrega, d.um, d.doc_modelo, d.posmod,
+        ]);
+      },
+    },
+    transform(rows) {
+      const validas = rows.filter(r => String(r.entrega ?? '').trim() !== '');
+      // Agrupar por Entrega
+      const g = new Map();
+      validas.forEach(r => {
+        const e = String(r.entrega ?? '').trim();
+        if (!e) return;
+        (g.get(e) || g.set(e, []).get(e)).push(r);
+      });
+      const out = [];
+      for (const [ent, items] of g.entries()) {
+        const f = items[0];
+        const rl = lookupRuta(f.ruta);
+        const detalle = items.map(r => ({
+          material: r.material,
+          denominacion_de_posicion: r.denominacion_de_posicion,
+          cantidad_entrega: r.cantidad_entrega,
+          um: r.um, doc_modelo: r.doc_modelo, posmod: r.posmod,
+        }));
+        out.push({
+          entrega: ent,
+          creado_por: f.creado_por,
+          creado_el: f.creado_el,
+          clent: f.clent,
+          tpdoc: f.tpdoc,
+          ce: f.ce,
+          psex: f.psex,
+          ruta: f.ruta,
+          _comuna: rl.comuna,
+          _region: rl.region,
+          clvt: f.clvt,
+          doc_modelo: f.doc_modelo,
+          _num_materiales: items.length,
+          _detalle: detalle,
+        });
+      }
+      // Ordenar por fecha creación descendente (más reciente primero)
+      return out.sort((a, b) => {
+        const da = parseDateSAP(a.creado_el), db2 = parseDateSAP(b.creado_el);
+        return (db2 || new Date(0)) - (da || new Date(0));
+      });
+    },
+    columnas: [
+      { key: 'entrega', label: 'N° Entrega', expandable: true },
+      { key: 'creado_por', label: 'Creado Por' },
+      { key: 'creado_el', label: 'Fecha Creación', cls: 'num-clear' },
+      { key: 'clent', label: 'Clase Entrega' },
+      { key: 'ce', label: 'Centro' },
+      { key: 'ruta', label: 'Ruta' },
+      { key: '_comuna', label: 'Comuna' },
+      { key: '_region', label: 'Región' },
+      { key: 'clvt', label: 'Clase Venta' },
+      { key: 'doc_modelo', label: 'Doc. Modelo' },
+      { key: '_num_materiales', label: 'Materiales', cls: 'text-center font-bold' },
+    ],
+  },
+
+  // ── PEDIDOS DE VENTAS DT (Job ZJC PLAN ENTREGAS, Step 2) ───────────────────
+  // Datos de referencia: cliente, vendedor, ruta por pedido de venta.
+  pedidos_ventas: {
+    titulo: 'GESTIÓN TRONCALES – PEDIDOS DE VENTAS',
+    vista: 'v_trc_pedidos_ventas_dt',
+    chipFilter: { campo: 'ce', label: 'Centro' },
+    extraChips: [{ campo: 'ruta', label: 'Ruta' }, { campo: 'denominacion', label: 'Tipo' }],
+    searchLabel: 'BUSCADOR GENERAL',
+    filtros: [],
+    dateRange: { campo: 'creado_el', label: 'Rango Fecha Creación' },
+    transform(rows) {
+      return rows
+        .filter(r => String(r.doc_ventas ?? '').trim() !== '')
+        .map(r => {
+          const rl = lookupRuta(r.ruta);
+          return { ...r, _comuna: rl.comuna, _region: rl.region };
+        })
+        .sort((a, b) => {
+          const da = parseDateSAP(a.creado_el), db2 = parseDateSAP(b.creado_el);
+          return (db2 || new Date(0)) - (da || new Date(0));
+        });
+    },
+    columnas: [
+      { key: 'doc_ventas', label: 'Pedido de Venta' },
+      { key: 'creado_el', label: 'Fecha Creación', cls: 'num-clear' },
+      { key: 'clvt', label: 'Clase Venta' },
+      { key: 'ofvta', label: 'Oficina Venta' },
+      { key: 'ce', label: 'Centro' },
+      { key: 'denominacion', label: 'Tipo' },
+      { key: 'ruta', label: 'Ruta' },
+      { key: '_comuna', label: 'Comuna' },
+      { key: '_region', label: 'Región' },
+      { key: 'solic', label: 'Solicitante' },
+      { key: 'nombre_1', label: 'Nombre Cliente' },
+      { key: 'deudor', label: 'Vendedor' },
+      { key: 'nombre', label: 'Nombre Vendedor' },
+      { key: 'creado_por', label: 'Creado Por' },
+    ],
+  },
 };
 
 // Etiqueta contadora (badge)
@@ -894,7 +979,7 @@ let planOrigen = '1003';   // centro origen del plan de carga (1003 / 1081)
 async function renderPlanCarga(stage) {
   stage.innerHTML = '<div class="text-secondary text-body-md p-md">Cargando Plan de Carga…</div>';
 
-  const [quiebresRaw, trasladosRaw, revexRaw, retirosRaw, ventasRaw, traslados4000Raw, calendarioRows, estadosRetiro] = await Promise.all([
+  const [quiebresRaw, trasladosRaw, revexRaw, retirosRaw, ventasRaw, traslados4000Raw, calendarioRows] = await Promise.all([
     fetchAllRows('v_trc_slim_stock'),
     fetchAllRows('v_trc_sqvi_pedidos_traslados'),
     fetchAllRows('v_trc_sqvi_pedidos_traslados'),
@@ -902,7 +987,6 @@ async function renderPlanCarga(stage) {
     fetchAllRows('v_trc_sqvi_pedidos_venta_1003'),
     fetchAllRows('v_trc_sqvi_pedidos_traslados_4000'),
     fetchAllRows('abast_calendario'),
-    loadEstadosRetiro(),
   ]);
 
   // Materiales quebrados por centro (≤7 días)
@@ -921,7 +1005,6 @@ async function renderPlanCarga(stage) {
   // (AJUSTE) Plan de carga por CENTRO ORIGEN: sólo se consideran los pedidos de
   // traslado cuyo centro de expedición (cesu) sea el origen seleccionado (1003 o
   // 1081). Ventas 1003 y retiros sólo aplican al plan del CD 1003.
-  // RETIROS: sólo ingresan al plan los que tengan estado COORDINADO SANTIAGO.
   const esCD1003 = planOrigen === '1003';
   const traslados = trasladosRaw
     .filter(r => !String(r.cesu ?? '').startsWith('*') && String(r.material ?? '').trim() !== '')
@@ -932,12 +1015,7 @@ async function renderPlanCarga(stage) {
     .filter(r => String(r.cesu ?? '').trim() === planOrigen);
   const retiros = esCD1003 ? retirosRaw
     .filter(r => !String(r.proveedor ?? '').startsWith('*'))
-    .filter(r => String(r.contr ?? '').trim() !== '')
-    .filter(r => {
-      const oc = String(r.doc_compr ?? '').trim();
-      const estRow = estadosRetiro[oc];
-      return estRow && estRow.estado === 'coordinado_santiago';
-    }) : [];
+    .filter(r => String(r.contr ?? '').trim() !== '') : [];
   const ventas = esCD1003 ? ventasRaw.filter(r => !String(r.mr ?? '').trim()) : [];
   const t4000 = traslados4000Raw.filter(r => String(r.cesu ?? '').trim() === planOrigen);
 
@@ -1405,7 +1483,7 @@ async function renderVistaTabla(stage, cfg, modeIdx = 0) {
         if (dDesde && d < dDesde) return false;
         if (dHasta && d > dHasta) return false;
       }
-      if (q && !active.columnas.some(c => { let v = String(r[c.key] ?? ''); if (c.rawHtml) v = v.replace(/<[^>]*>/g, ''); return v.toLowerCase().includes(q); })) return false;
+      if (q && !active.columnas.some(c => String(r[c.key] ?? '').toLowerCase().includes(q))) return false;
       return true;
     });
   }
@@ -1426,7 +1504,7 @@ async function renderVistaTabla(stage, cfg, modeIdx = 0) {
     if (c.editable && active.editable && active.editable.key === c.key) {
       const cur = r[c.key];
       const opts = active.editable.options.map(o => `<option value="${escapeHtml(o.v)}" ${o.v === cur ? 'selected' : ''}>${escapeHtml(o.l)}</option>`).join('');
-      const estilo = (cur === 'coordinado_santiago' || cur === 'coordinado_local') ? 'text-green-700 font-bold border-green-400' : 'text-secondary border-outline-variant';
+      const estilo = cur === 'coordinado' ? 'text-green-700 font-bold border-green-400' : 'text-secondary border-outline-variant';
       return `<td class="py-xs pr-md whitespace-nowrap">
         <select data-edit="${escapeHtml(String(r[active.expand?.idKey] ?? r[c.key]))}" data-editgid="${escapeHtml(String(r[active.expand?.idKey] ?? ''))}"
           class="border rounded px-[6px] py-[3px] text-[12px] bg-surface-container-lowest outline-none ${estilo}">${opts}</select></td>`;
@@ -1436,11 +1514,6 @@ async function renderVistaTabla(stage, cfg, modeIdx = 0) {
       const bcls = c.badge(r);
       const v = cellValue(r, c);
       return `<td class="py-xs pr-md whitespace-nowrap">${v ? `<span class="px-sm py-[2px] rounded-full text-[11px] font-bold ${bcls}">${escapeHtml(v)}</span>` : ''}</td>`;
-    }
-    // Raw HTML (para iconos inline)
-    if (c.rawHtml) {
-      const v = String(r[c.key] ?? '');
-      return `<td class="py-xs pr-md whitespace-nowrap ${cls}">${v}</td>`;
     }
     // Expandable (clickeable → drill-down)
     if (c.expandable && active.expand) {
@@ -1601,8 +1674,7 @@ async function renderVistaTabla(stage, cfg, modeIdx = 0) {
 function exportarCSV(cfg, filas) {
   const headers = cfg.columnas.map(c => c.label);
   const esc = v => { v = v == null ? '' : String(v); return /[;"\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
-  const stripHtml = s => String(s ?? '').replace(/<[^>]*>/g, '').trim();
-  const val = (r, c) => { const v = c.valueFn ? c.valueFn(r) : r[c.key]; return c.rawHtml ? stripHtml(v) : v; };
+  const val = (r, c) => c.valueFn ? c.valueFn(r) : r[c.key];
   const lines = [headers.join(';')].concat(filas.map(r => cfg.columnas.map(c => esc(val(r, c))).join(';')));
   const blob = new Blob(['﻿' + lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
   const url = URL.createObjectURL(blob);
