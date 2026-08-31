@@ -243,7 +243,15 @@ const VISTAS_TRONCAL = {
     noBuscar: true,
     filtros: [{ campo: 'doc_compr', label: 'Buscar Orden de Compra', tipo: 'buscar' }],
     dateRange: { campo: 'fe_entrega', label: 'Rango Fecha de Entrega' },
-    async preload() { return { estados: await loadEstadosRetiro() }; },
+    async preload() {
+      const [estados, pvRes] = await Promise.all([
+        loadEstadosRetiro(),
+        supabase.from('v_trc_pedidos_ventas_dt').select('doc_ventas,denominacion,nombre_1,nombre,psex'),
+      ]);
+      const pvMap = {};
+      if (pvRes.data) pvRes.data.forEach(r => { pvMap[String(r.doc_ventas).trim()] = r; });
+      return { estados, pvMap };
+    },
     editable: {
       key: '_estado', options: ESTADO_OPTS,
       async onChange(row, val, ctx) {
@@ -254,15 +262,16 @@ const VISTAS_TRONCAL = {
     },
     expand: {
       key: 'doc_compr', idKey: 'doc_compr', numCols: 3,
-      headers: ['Orden de Compra','Centro Destino','ID Material','Nombre Material','Cantidad Pedido','Cantidad Pendiente','Ton SKU'],
+      headers: ['Orden de Compra','Contrato de Compra','Centro Destino','ID Material','Nombre Material','Cantidad Pedido','Cantidad Pendiente','Ton SKU'],
       build(row) {
         return (row._detalle || []).map(d => [
-          d.doc_compr, d.ce, d.material, d.texto_breve, fmtNum(d.pedido, 1), fmtNum(d.pendiente, 1), fmtNum(d.ton, 4),
+          d.doc_compr, row.contr, d.ce, d.material, d.texto_breve, fmtNum(d.pedido, 1), fmtNum(d.pendiente, 1), fmtNum(d.ton, 4),
         ]);
       },
     },
     transform(rows, ctx) {
       const estados = (ctx && ctx.estados) || {};
+      const pvMap = (ctx && ctx.pvMap) || {};
       const validas = rows
         .filter(r => !String(r.proveedor ?? '').startsWith('*'))
         .filter(r => String(r.contr ?? '').trim() !== '');
@@ -298,6 +307,9 @@ const VISTAS_TRONCAL = {
         else tipoRetiro = 'FÁBRICA-SUCURSAL';
         const al = alertaFecha(f.fe_entrega, 5);
         const est = estados[oc] || 'no_coordinado';
+        // Cross-reference con pedidos_ventas_dt
+        const docPV = String(f.documento ?? '').trim();
+        const pv = pvMap[docPV] || {};
         out.push({
           doc_compr: oc, contr: f.contr, proveedor: f.proveedor, nombre_1: f.nombre_1,
           ce: f.ce, _desc_centro: getNombreCentro(f.ce), alm: f.alm, documento: f.documento,
@@ -312,6 +324,11 @@ const VISTAS_TRONCAL = {
           _alerta: al.txt, _alerta_cls: al.cls,
           _estado: est, _estado_lbl: (ESTADO_OPTS.find(o => o.v === est) || {}).l || 'No coordinado',
           _detalle: detalle,
+          // Datos cruzados de Pedidos de Ventas
+          _pv_denominacion: pv.denominacion || '',
+          _pv_nombre_cliente: pv.nombre_1 || '',
+          _pv_nombre_vendedor: pv.nombre || '',
+          _pv_ce_expedicion: pv.psex || '',
         });
       }
       return out.sort((a, b) => {
@@ -327,7 +344,6 @@ const VISTAS_TRONCAL = {
     rowClsFn(r) { return r._cliente ? 'bg-green-50' : (r._revision_saldo ? 'bg-red-50' : ''); },
     columnas: [
       { key: '_tipo_retiro', label: 'Tipo de Retiro', clsFn: r => r._cliente ? 'text-green-800 font-bold' : (r._consolidar ? 'text-blue-700 font-bold' : 'text-[#e65100] font-bold') },
-      { key: 'contr', label: 'Contrato de Compra' },
       { key: 'doc_compr', label: 'Orden de Compra', expandable: true },
       { key: 'nombre_1', label: 'Nombre de Proveedor' },
       { key: 'ce', label: 'Centro Destino' },
@@ -335,8 +351,21 @@ const VISTAS_TRONCAL = {
       { key: 'fe_entrega', label: 'Fecha de Retiro', cls: 'num-clear' },
       { key: '_ton_totales', label: 'Ton Totales', cls: 'text-right num-clear font-bold' },
       { key: 'documento', label: 'Pedido de Ventas' },
-      { key: '_vigencia', label: 'Vigencia OC', clsFn: r => r._revision_saldo ? 'text-red-700 font-bold' : '' },
-      { key: '_alerta', label: 'Alerta', clsFn: r => r._alerta_cls },
+      { key: '_pv_denominacion', label: 'Denom. Expedición' },
+      { key: '_pv_nombre_cliente', label: 'Nombre Cliente' },
+      { key: '_pv_nombre_vendedor', label: 'Nombre Vendedor' },
+      { key: '_pv_ce_expedicion', label: 'Centro Expedición' },
+      { key: '_vigencia', label: 'Vigencia OC', rawHtml: true,
+        valueFn: r => r._revision_saldo ? '<span class="material-symbols-outlined text-[16px] text-red-700" title="Revisión Saldo Pedido">warning</span>' : '',
+        clsFn: () => 'text-center' },
+      { key: '_alerta', label: 'Alerta', rawHtml: true,
+        valueFn: r => {
+          if (r._alerta === 'PEDIDO ATRASADO') return '<span class="inline-block w-3 h-3 rounded-full bg-red-600" title="Pedido Atrasado"></span>';
+          if (r._alerta === 'PRONTO A VENCER') return '<span class="inline-block w-3 h-3 rounded-full bg-[#e65100]" title="Pronto a Vencer"></span>';
+          if (r.fe_entrega) return '<span class="inline-block w-3 h-3 rounded-full bg-green-500" title="Vigente"></span>';
+          return '';
+        },
+        clsFn: () => 'text-center' },
       { key: '_estado', label: 'Coordinación', editable: true },
     ],
   },
@@ -1523,6 +1552,9 @@ async function renderVistaTabla(stage, cfg, modeIdx = 0) {
       return `<td class="py-xs pr-md whitespace-nowrap ${cls}">
         <button data-exp="${escapeHtml(id)}" class="inline-flex items-center gap-xs text-primary font-bold hover:underline cursor-pointer">
           <span class="material-symbols-outlined text-[15px]">${abierto ? 'expand_less' : 'expand_more'}</span>${v}</button></td>`;
+    }
+    if (c.rawHtml) {
+      return `<td class="py-xs pr-md whitespace-nowrap ${cls}">${cellValue(r, c)}</td>`;
     }
     return `<td class="py-xs pr-md whitespace-nowrap ${cls}">${escapeHtml(cellValue(r, c))}</td>`;
   }
