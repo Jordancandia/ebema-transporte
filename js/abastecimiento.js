@@ -244,12 +244,16 @@ const VISTAS_TRONCAL = {
     filtros: [{ campo: 'doc_compr', label: 'Buscar Orden de Compra', tipo: 'buscar' }],
     dateRange: { campo: 'fe_entrega', label: 'Rango Fecha de Entrega' },
     async preload() {
-      const [estados, pvRes] = await Promise.all([
-        loadEstadosRetiro(),
-        supabase.from('v_trc_pedidos_ventas_dt').select('doc_ventas,denominacion,nombre_1,nombre,psex'),
-      ]);
+      const estados = await loadEstadosRetiro();
+      const { data: pvData } = await supabase
+        .from('v_trc_pedidos_ventas_dt')
+        .select('doc_ventas,denominacion,nombre_1,nombre,psex')
+        .limit(5000);
       const pvMap = {};
-      if (pvRes.data) pvRes.data.forEach(r => { pvMap[String(r.doc_ventas).trim()] = r; });
+      if (pvData) pvData.forEach(r => {
+        const k = String(r.doc_ventas ?? '').trim();
+        if (k && !pvMap[k]) pvMap[k] = r;
+      });
       return { estados, pvMap };
     },
     editable: {
