@@ -247,7 +247,7 @@ const VISTAS_TRONCAL = {
       const estados = await loadEstadosRetiro();
       const { data: pvData } = await supabase
         .from('v_trc_pedidos_ventas_dt')
-        .select('doc_ventas,denominacion,nombre_1,nombre,psex')
+        .select('doc_ventas,denominacion,nombre_1,nombre,psex,ruta')
         .limit(5000);
       const pvMap = {};
       if (pvData) pvData.forEach(r => {
@@ -266,10 +266,10 @@ const VISTAS_TRONCAL = {
     },
     expand: {
       key: 'doc_compr', idKey: 'doc_compr', numCols: 3,
-      headers: ['Orden de Compra','Contrato de Compra','Centro Destino','Nombre Cliente','Nombre Vendedor','Centro Expedición','ID Material','Nombre Material','Cantidad Pedido','Cantidad Pendiente','Ton SKU'],
+      headers: ['Orden de Compra','Contrato de Compra','Centro Destino','Nombre Cliente','Nombre Vendedor','Centro Expedición','Ruta','ID Material','Nombre Material','Cantidad Pedido','Cantidad Pendiente','Ton SKU'],
       build(row) {
         return (row._detalle || []).map(d => [
-          d.doc_compr, row.contr, d.ce, row._pv_nombre_cliente, row._pv_nombre_vendedor, row._pv_ce_expedicion, d.material, d.texto_breve, fmtNum(d.pedido, 1), fmtNum(d.pendiente, 1), fmtNum(d.ton, 4),
+          d.doc_compr, row.contr, d.ce, row._pv_nombre_cliente, row._pv_nombre_vendedor, row._pv_ce_expedicion, row._pv_ruta, d.material, d.texto_breve, fmtNum(d.pedido, 1), fmtNum(d.pendiente, 1), fmtNum(d.ton, 4),
         ]);
       },
     },
@@ -333,6 +333,7 @@ const VISTAS_TRONCAL = {
           _pv_nombre_cliente: pv.nombre_1 || '',
           _pv_nombre_vendedor: pv.nombre || '',
           _pv_ce_expedicion: pv.psex || '',
+          _pv_ruta: pv.ruta || '',
         });
       }
       return out.sort((a, b) => {
@@ -872,45 +873,6 @@ const VISTAS_TRONCAL = {
     ],
   },
 
-  // ── PEDIDOS DE VENTAS DT (Job ZJC PLAN ENTREGAS, Step 2) ───────────────────
-  // Datos de referencia: cliente, vendedor, ruta por pedido de venta.
-  pedidos_ventas: {
-    titulo: 'GESTIÓN TRONCALES – PEDIDOS DE VENTAS',
-    vista: 'v_trc_pedidos_ventas_dt',
-    chipFilter: { campo: 'ce', label: 'Centro' },
-    extraChips: [{ campo: 'ruta', label: 'Ruta' }, { campo: 'denominacion', label: 'Tipo' }],
-    searchLabel: 'BUSCADOR GENERAL',
-    filtros: [],
-    dateRange: { campo: 'creado_el', label: 'Rango Fecha Creación' },
-    transform(rows) {
-      return rows
-        .filter(r => String(r.doc_ventas ?? '').trim() !== '')
-        .map(r => {
-          const rl = lookupRuta(r.ruta);
-          return { ...r, _comuna: rl.comuna, _region: rl.region };
-        })
-        .sort((a, b) => {
-          const da = parseDateSAP(a.creado_el), db2 = parseDateSAP(b.creado_el);
-          return (db2 || new Date(0)) - (da || new Date(0));
-        });
-    },
-    columnas: [
-      { key: 'doc_ventas', label: 'Pedido de Venta' },
-      { key: 'creado_el', label: 'Fecha Creación', cls: 'num-clear' },
-      { key: 'clvt', label: 'Clase Venta' },
-      { key: 'ofvta', label: 'Oficina Venta' },
-      { key: 'ce', label: 'Centro' },
-      { key: 'denominacion', label: 'Tipo' },
-      { key: 'ruta', label: 'Ruta' },
-      { key: '_comuna', label: 'Comuna' },
-      { key: '_region', label: 'Región' },
-      { key: 'solic', label: 'Solicitante' },
-      { key: 'nombre_1', label: 'Nombre Cliente' },
-      { key: 'deudor', label: 'Vendedor' },
-      { key: 'nombre', label: 'Nombre Vendedor' },
-      { key: 'creado_por', label: 'Creado Por' },
-    ],
-  },
 };
 
 // Etiqueta contadora (badge)
