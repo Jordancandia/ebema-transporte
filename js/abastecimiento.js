@@ -245,11 +245,12 @@ const VISTAS_TRONCAL = {
     dateRange: { campo: 'fe_entrega', label: 'Rango Fecha de Entrega' },
     async preload() {
       const estados = await loadEstadosRetiro();
-      const { data: pvData } = await supabase
+      const { data: pvData, error: pvErr } = await supabase
         .from('v_trc_pedidos_ventas_ref')
         .select('doc_ventas,denominacion,nombre_1,nombre,psex,ruta')
         .limit(5000);
       const pvMap = {};
+      console.log('[RETIROS] pvData filas:', pvData?.length, 'error:', pvErr?.message);
       if (pvData) pvData.forEach(r => {
         const k = String(r.doc_ventas ?? '').trim();
         if (k && !pvMap[k]) pvMap[k] = r;
