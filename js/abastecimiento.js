@@ -246,9 +246,9 @@ const VISTAS_TRONCAL = {
     async preload() {
       const estados = await loadEstadosRetiro();
       const { data: pvData } = await supabase
-        .from('v_trc_pedidos_ventas_dt')
+        .from('v_trc_pedidos_ventas_ref')
         .select('doc_ventas,denominacion,nombre_1,nombre,psex,ruta')
-        .limit(20000);
+        .limit(5000);
       const pvMap = {};
       if (pvData) pvData.forEach(r => {
         const k = String(r.doc_ventas ?? '').trim();
