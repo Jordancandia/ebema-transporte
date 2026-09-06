@@ -248,7 +248,7 @@ const VISTAS_TRONCAL = {
       const { data: pvData } = await supabase
         .from('v_trc_pedidos_ventas_dt')
         .select('doc_ventas,denominacion,nombre_1,nombre,psex,ruta')
-        .limit(5000);
+        .limit(20000);
       const pvMap = {};
       if (pvData) pvData.forEach(r => {
         const k = String(r.doc_ventas ?? '').trim();
