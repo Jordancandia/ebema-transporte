@@ -241,7 +241,7 @@ const VISTAS_TRONCAL = {
       { campo: '_alerta', label: 'Alerta' },
     ],
     noBuscar: true,
-    filtros: [{ campo: 'doc_compr', label: 'Buscar Orden de Compra', tipo: 'buscar' }],
+    filtros: [{ campo: 'doc_compr', label: 'Buscar Orden de Compra', tipo: 'buscar' }, { campo: 'nombre_1', label: 'Buscar por Nombre de Proveedor', tipo: 'buscar' }],
     dateRange: { campo: 'fe_entrega', label: 'Rango Fecha de Entrega' },
     async preload() {
       const estados = await loadEstadosRetiro();
@@ -266,10 +266,10 @@ const VISTAS_TRONCAL = {
     },
     expand: {
       key: 'doc_compr', idKey: 'doc_compr', numCols: 3,
-      headers: ['Orden de Compra','Contrato de Compra','Centro Destino','ID Material','Nombre Material','Cantidad Pedido','Cantidad Pendiente','Ton SKU'],
+      headers: ['Orden de Compra','Contrato de Compra','Centro Destino','Nombre Cliente','Nombre Vendedor','Centro Expedición','ID Material','Nombre Material','Cantidad Pedido','Cantidad Pendiente','Ton SKU'],
       build(row) {
         return (row._detalle || []).map(d => [
-          d.doc_compr, row.contr, d.ce, d.material, d.texto_breve, fmtNum(d.pedido, 1), fmtNum(d.pendiente, 1), fmtNum(d.ton, 4),
+          d.doc_compr, row.contr, d.ce, row._pv_nombre_cliente, row._pv_nombre_vendedor, row._pv_ce_expedicion, d.material, d.texto_breve, fmtNum(d.pedido, 1), fmtNum(d.pendiente, 1), fmtNum(d.ton, 4),
         ]);
       },
     },
