@@ -970,7 +970,7 @@ let planOrigen = '1003';   // centro origen del plan de carga (1003 / 1081)
 async function renderPlanCarga(stage) {
   stage.innerHTML = '<div class="text-secondary text-body-md p-md">Cargando Plan de Carga…</div>';
 
-  const [quiebresRaw, trasladosRaw, revexRaw, retirosRaw, ventasRaw, traslados4000Raw, calendarioRows] = await Promise.all([
+  const [quiebresRaw, trasladosRaw, revexRaw, retirosRaw, ventasRaw, traslados4000Raw, calendarioRows, estadosRetiro] = await Promise.all([
     fetchAllRows('v_trc_slim_stock'),
     fetchAllRows('v_trc_sqvi_pedidos_traslados'),
     fetchAllRows('v_trc_sqvi_pedidos_traslados'),
@@ -978,6 +978,7 @@ async function renderPlanCarga(stage) {
     fetchAllRows('v_trc_sqvi_pedidos_venta_1003'),
     fetchAllRows('v_trc_sqvi_pedidos_traslados_4000'),
     fetchAllRows('abast_calendario'),
+    loadEstadosRetiro(),
   ]);
 
   // Materiales quebrados por centro (≤7 días)
@@ -1006,7 +1007,8 @@ async function renderPlanCarga(stage) {
     .filter(r => String(r.cesu ?? '').trim() === planOrigen);
   const retiros = esCD1003 ? retirosRaw
     .filter(r => !String(r.proveedor ?? '').startsWith('*'))
-    .filter(r => String(r.contr ?? '').trim() !== '') : [];
+    .filter(r => String(r.contr ?? '').trim() !== '')
+    .filter(r => estadosRetiro[String(r.doc_compr ?? '').trim()] === 'coordinado') : [];
   const ventas = esCD1003 ? ventasRaw.filter(r => !String(r.mr ?? '').trim()) : [];
   const t4000 = traslados4000Raw.filter(r => String(r.cesu ?? '').trim() === planOrigen);
 
