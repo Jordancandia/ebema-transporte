@@ -15,7 +15,7 @@
  *   - "SQVI Troncales"         -> adjuntos .htm  -> multiples fuentes:
  *       * Job ZJC PLAN TRONCALES  Steps 1..6 (retiros, pedidos, stock, etc.)
  *       * Job ZJC PLAN DT         Step 1 (documentos de transporte)
- *       * Job ZJC PLAN ENTREGAS   Steps 1..2 (entregas creadas, pedidos venta)
+ *       * Job ZJC PLAN ENTREGAS   Steps 1..11 (entregas creadas, pedidos venta Steps 2-11)
  *
  *  Requisitos (ver README_DESPLIEGUE.md):
  *   1) Zona horaria del proyecto = America/Santiago
@@ -49,7 +49,16 @@ var FUENTES_MAP = {
   'ZJC PLAN DT|1':        'dt_transportes',
   // Job ZJC PLAN ENTREGAS (nuevo)
   'ZJC PLAN ENTREGAS|1':  'entregas_creadas',
-  'ZJC PLAN ENTREGAS|2':  'pedidos_ventas_dt'
+  'ZJC PLAN ENTREGAS|2':  'pedidos_ventas_dt_s02',
+  'ZJC PLAN ENTREGAS|3':  'pedidos_ventas_dt_s03',
+  'ZJC PLAN ENTREGAS|4':  'pedidos_ventas_dt_s04',
+  'ZJC PLAN ENTREGAS|5':  'pedidos_ventas_dt_s05',
+  'ZJC PLAN ENTREGAS|6':  'pedidos_ventas_dt_s06',
+  'ZJC PLAN ENTREGAS|7':  'pedidos_ventas_dt_s07',
+  'ZJC PLAN ENTREGAS|8':  'pedidos_ventas_dt_s08',
+  'ZJC PLAN ENTREGAS|9':  'pedidos_ventas_dt_s09',
+  'ZJC PLAN ENTREGAS|10':  'pedidos_ventas_dt_s10',
+  'ZJC PLAN ENTREGAS|11':  'pedidos_ventas_dt_s11',
 };
 
 // Compatibilidad: mapa antiguo Step -> fuente (solo para TRONCALES)
