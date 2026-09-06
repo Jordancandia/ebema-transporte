@@ -305,10 +305,10 @@ const VISTAS_TRONCAL = {
         const tienePedidoVenta = String(f.documento ?? '').trim() !== '';
         const cap = getCapacidadCamion(f.ce);
         let tipoRetiro;
-        if (ton >= cap * 0.80 && tienePedidoVenta) tipoRetiro = 'FÁBRICA-CLIENTE';
-        else if (almVal === '4000') tipoRetiro = 'FÁBRICA-CD';
-        else if (almVal === '2000') tipoRetiro = 'FÁBRICA-SUCURSAL';
-        else tipoRetiro = 'FÁBRICA-SUCURSAL';
+        if (ton >= cap * 0.80 && tienePedidoVenta) tipoRetiro = 'FAB-CLTE';
+        else if (almVal === '4000') tipoRetiro = 'FAB-CD';
+        else if (almVal === '2000') tipoRetiro = 'FAB-SUC';
+        else tipoRetiro = 'FAB-SUC';
         const al = alertaFecha(f.fe_entrega, 5);
         const est = estados[oc] || 'no_coordinado';
         // Cross-reference con pedidos_ventas_dt
@@ -319,8 +319,8 @@ const VISTAS_TRONCAL = {
           ce: f.ce, _desc_centro: getNombreCentro(f.ce), alm: f.alm, documento: f.documento,
           fe_entrega: f.fe_entrega,
           _tipo_retiro: tipoRetiro,
-          _cliente: tipoRetiro === 'FÁBRICA-CLIENTE',
-          _consolidar: tipoRetiro === 'FÁBRICA-CD',
+          _cliente: tipoRetiro === 'FAB-CLTE',
+          _consolidar: tipoRetiro === 'FAB-CD',
           _ton_num: ton, _ton_totales: fmtNum(ton, 4),
           _pendiente_total: pendienteTotal, _pedido_total: pedidoTotal,
           _vigencia: revSaldo ? 'REVISIÓN SALDO PEDIDO' : '',
