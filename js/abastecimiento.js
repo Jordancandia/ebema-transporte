@@ -245,13 +245,11 @@ const VISTAS_TRONCAL = {
     dateRange: { campo: 'fe_entrega', label: 'Rango Fecha de Entrega' },
     async preload() {
       const estados = await loadEstadosRetiro();
-      const { data: pvData, error: pvErr } = await supabase
-        .from('v_trc_pedidos_ventas_ref')
-        .select('doc_ventas,denominacion,nombre_1,nombre,psex,ruta')
-        .limit(5000);
+      // fetchAllRows pagina en paralelo (PostgREST capea a 1000 por defecto,
+      // .limit(5000) no basta para una vista de 2853+ filas)
+      const pvRows = await fetchAllRows('v_trc_pedidos_ventas_ref');
       const pvMap = {};
-      console.log('[RETIROS] pvData filas:', pvData?.length, 'error:', pvErr?.message);
-      if (pvData) pvData.forEach(r => {
+      pvRows.forEach(r => {
         const k = String(r.doc_ventas ?? '').trim();
         if (k && !pvMap[k]) pvMap[k] = r;
       });
