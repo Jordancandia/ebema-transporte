@@ -1,4 +1,0 @@
-===== LIMPIAR LOCKS =====
-HEAD.lock_OK
-index.lock_OK
-===== IDENTITY =====
