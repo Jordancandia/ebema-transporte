@@ -356,6 +356,7 @@ const VISTAS_TRONCAL = {
       { key: 'fe_entrega', label: 'Fecha de Retiro', cls: 'num-clear' },
       { key: '_ton_totales', label: 'Ton Totales', cls: 'text-right num-clear font-bold' },
       { key: 'documento', label: 'Pedido de Ventas' },
+      { key: '_pv_denominacion', label: 'Tipo Expedición' },
       { key: '_vigencia', label: 'Vigencia OC', rawHtml: true,
         valueFn: r => r._revision_saldo ? '<span class="material-symbols-outlined text-[16px] text-red-700" title="Revisión Saldo Pedido">warning</span>' : '',
         clsFn: () => 'text-center' },
