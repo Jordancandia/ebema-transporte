@@ -166,16 +166,58 @@ function tipoQuiebre(sd) {
 
 // ── Estado de coordinación de retiros (persistente) ─────────────────────────
 async function loadEstadosRetiro() {
-  const { data, error } = await supabase.from('abast_retiro_estado').select('doc_compr, estado');
+  const { data, error } = await supabase.from('abast_retiro_estado').select('doc_compr, estado, tipo_retiro, entrega_entrante');
   const m = {};
-  if (!error) (data || []).forEach(r => { m[String(r.doc_compr)] = r.estado; });
+  if (!error) (data || []).forEach(r => { m[String(r.doc_compr)] = { estado: r.estado, tipo_retiro: r.tipo_retiro, entrega_entrante: r.entrega_entrante }; });
   return m;
 }
-async function saveEstadoRetiro(docCompr, estado) {
+async function saveEstadoRetiro(docCompr, estado, tipoRetiro = null, entregaEntrante = null) {
   const payload = { doc_compr: String(docCompr), estado, updated_by: await getUserEmail(), updated_at: new Date().toISOString() };
+  if (tipoRetiro !== null) payload.tipo_retiro = tipoRetiro;
+  if (entregaEntrante !== null) payload.entrega_entrante = entregaEntrante;
   const { error } = await supabase.from('abast_retiro_estado').upsert(payload, { onConflict: 'doc_compr' });
   if (error) { showAlert('Error al guardar estado: ' + error.message, 'error'); return false; }
   return true;
+}
+function showCoordModal(row) {
+  return new Promise(resolve => {
+    const preselect = row._tipo_retiro || 'FAB-CD';
+    const opts = ['FAB-CD', 'FAB-SUC', 'FAB-CLTE'];
+    const radios = opts.map(o =>
+      `<label class="flex items-center gap-2 cursor-pointer">
+        <input type="radio" name="coord-tipo" value="${o}" ${o === preselect ? 'checked' : ''} class="accent-primary">
+        <span class="font-semibold">${o}</span>
+      </label>`
+    ).join('');
+    const html = `
+      <div id="coord-modal-bg" class="fixed inset-0 bg-black/40 flex items-center justify-center z-[9999]">
+        <div class="bg-white rounded-xl shadow-2xl p-6 w-[360px] flex flex-col gap-4">
+          <h3 class="text-base font-bold text-gray-800">Confirmar Coordinación</h3>
+          <div class="flex flex-col gap-1">
+            <span class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Tipo de Retiro</span>
+            <div class="flex gap-4 mt-1">${radios}</div>
+          </div>
+          <div class="flex flex-col gap-1">
+            <label for="coord-entrega" class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Entrega Entrante</label>
+            <input id="coord-entrega" type="text" placeholder="Número SAP de entrega" class="border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary">
+          </div>
+          <div class="flex gap-2 justify-end">
+            <button id="coord-cancel" class="px-4 py-2 rounded-lg border text-sm hover:bg-gray-50">Cancelar</button>
+            <button id="coord-confirm" class="px-4 py-2 rounded-lg bg-primary text-white text-sm font-semibold hover:opacity-90">Confirmar</button>
+          </div>
+        </div>
+      </div>`;
+    document.body.insertAdjacentHTML('beforeend', html);
+    const bg = document.getElementById('coord-modal-bg');
+    const cleanup = () => bg.remove();
+    document.getElementById('coord-cancel').addEventListener('click', () => { cleanup(); resolve(null); });
+    document.getElementById('coord-confirm').addEventListener('click', () => {
+      const tipoRetiro = bg.querySelector('input[name="coord-tipo"]:checked')?.value || preselect;
+      const entregaEntrante = document.getElementById('coord-entrega').value.trim();
+      cleanup();
+      resolve({ tipoRetiro, entregaEntrante });
+    });
+  });
 }
 const ESTADO_OPTS = [
   { v: 'no_coordinado', l: 'No coordinado' },
@@ -258,17 +300,30 @@ const VISTAS_TRONCAL = {
     editable: {
       key: '_estado', options: ESTADO_OPTS,
       async onChange(row, val, ctx) {
-        const ok = await saveEstadoRetiro(row.doc_compr, val);
-        if (ok) { ctx.estados[String(row.doc_compr)] = val; showAlert('Estado actualizado', 'success'); }
+        let tipoRetiro = null, entregaEntrante = null;
+        if (val === 'coordinado') {
+          const result = await showCoordModal(row);
+          if (!result) return false;
+          tipoRetiro = result.tipoRetiro;
+          entregaEntrante = result.entregaEntrante;
+        }
+        const ok = await saveEstadoRetiro(row.doc_compr, val, tipoRetiro, entregaEntrante);
+        if (ok) {
+          const oc = String(row.doc_compr);
+          ctx.estados[oc] = { ...(ctx.estados[oc] || {}), estado: val };
+          if (tipoRetiro !== null) { ctx.estados[oc].tipo_retiro = tipoRetiro; row._tipo_retiro = tipoRetiro; }
+          if (entregaEntrante !== null) { ctx.estados[oc].entrega_entrante = entregaEntrante; row._entrega_entrante = entregaEntrante; }
+          showAlert('Estado actualizado', 'success');
+        }
         return ok;
       },
     },
     expand: {
       key: 'doc_compr', idKey: 'doc_compr', numCols: 3,
-      headers: ['Orden de Compra','Contrato de Compra','Centro Destino','Nombre Cliente','Nombre Vendedor','Centro Expedición','Ruta','ID Material','Nombre Material','Cantidad Pedido','Cantidad Pendiente','Ton SKU'],
+      headers: ['Orden de Compra','Contrato de Compra','Centro Destino','Nombre Cliente','Nombre Vendedor','Centro Expedición','Ruta','Tipo Retiro','Entrega Entrante','ID Material','Nombre Material','Cantidad Pedido','Cantidad Pendiente','Ton SKU'],
       build(row) {
         return (row._detalle || []).map(d => [
-          d.doc_compr, row.contr, d.ce, row._pv_nombre_cliente, row._pv_nombre_vendedor, row._pv_ce_expedicion, row._pv_ruta, d.material, d.texto_breve, fmtNum(d.pedido, 1), fmtNum(d.pendiente, 1), fmtNum(d.ton, 4),
+          d.doc_compr, row.contr, d.ce, row._pv_nombre_cliente, row._pv_nombre_vendedor, row._pv_ce_expedicion, row._pv_ruta, row._tipo_retiro, row._entrega_entrante, d.material, d.texto_breve, fmtNum(d.pedido, 1), fmtNum(d.pendiente, 1), fmtNum(d.ton, 4),
         ]);
       },
     },
@@ -309,7 +364,8 @@ const VISTAS_TRONCAL = {
         else if (almVal === '2000') tipoRetiro = 'FAB-SUC';
         else tipoRetiro = 'FAB-SUC';
         const al = alertaFecha(f.fe_entrega, 5);
-        const est = estados[oc] || 'no_coordinado';
+        const estObj = estados[oc] || {};
+        const est = estObj.estado || 'no_coordinado';
         // Cross-reference con pedidos_ventas_dt
         const docPV = String(f.documento ?? '').trim();
         const pv = pvMap[docPV] || {};
@@ -326,6 +382,7 @@ const VISTAS_TRONCAL = {
           _revision_saldo: revSaldo,
           _alerta: al.txt, _alerta_cls: al.cls,
           _estado: est, _estado_lbl: (ESTADO_OPTS.find(o => o.v === est) || {}).l || 'No coordinado',
+          _entrega_entrante: estObj.entrega_entrante || '',
           _detalle: detalle,
           // Datos cruzados de Pedidos de Ventas
           _pv_denominacion: pv.denominacion || '',
@@ -347,7 +404,6 @@ const VISTAS_TRONCAL = {
     },
     rowClsFn(r) { return r._cliente ? 'bg-green-50' : (r._revision_saldo ? 'bg-red-50' : ''); },
     columnas: [
-      { key: '_tipo_retiro', label: 'Tipo de Retiro', clsFn: r => r._cliente ? 'text-green-800 font-bold' : (r._consolidar ? 'text-blue-700 font-bold' : 'text-[#e65100] font-bold') },
       { key: 'doc_compr', label: 'Orden de Compra', expandable: true },
       { key: 'nombre_1', label: 'Nombre de Proveedor' },
       { key: 'ce', label: 'Centro Destino' },
@@ -1008,7 +1064,7 @@ async function renderPlanCarga(stage) {
   const retiros = esCD1003 ? retirosRaw
     .filter(r => !String(r.proveedor ?? '').startsWith('*'))
     .filter(r => String(r.contr ?? '').trim() !== '')
-    .filter(r => estadosRetiro[String(r.doc_compr ?? '').trim()] === 'coordinado') : [];
+    .filter(r => (estadosRetiro[String(r.doc_compr ?? '').trim()] || {}).estado === 'coordinado') : [];
   const ventas = esCD1003 ? ventasRaw.filter(r => !String(r.mr ?? '').trim()) : [];
   const t4000 = traslados4000Raw.filter(r => String(r.cesu ?? '').trim() === planOrigen);
 
@@ -1658,7 +1714,13 @@ async function renderVistaTabla(stage, cfg, modeIdx = 0) {
     stage.querySelectorAll('[data-edit]').forEach(sel => sel.addEventListener('change', async () => {
       const id = sel.dataset.editgid || sel.dataset.edit;
       const row = rows.find(r => String(r[active.expand?.idKey] ?? '') === String(id));
-      if (row && active.editable) { row[active.editable.key] = sel.value; await active.editable.onChange(row, sel.value, ctx); draw(); }
+      if (row && active.editable) {
+        const prevVal = row[active.editable.key];
+        row[active.editable.key] = sel.value;
+        const ok = await active.editable.onChange(row, sel.value, ctx);
+        if (ok === false) { row[active.editable.key] = prevVal; }
+        draw();
+      }
     }));
     stage.querySelector('[data-refrescar]')?.addEventListener('click', () => { clearRawCache(); renderVistaTabla(stage, cfg, modeIdx); });
     stage.querySelector('[data-csv]')?.addEventListener('click', () => exportarCSV(active, filt));
