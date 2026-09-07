@@ -1146,7 +1146,7 @@ async function renderPlanCarga(stage) {
     // 6. Retiros proveedor CONSOLIDAR CD (alm=4000) → parte del CD. fecha -3/+2
     const retirosCons = retiros
       .filter(r => String(r.ce ?? '').trim() === ce)
-      .filter(r => String(r.alm ?? '').trim() === '4000');
+      .filter(r => (estadosRetiro[String(r.doc_compr ?? '').trim()] || {}).tipo_retiro === 'FAB-CD');
     const itemR = (r, cant, t) => ({ oc: r.doc_compr, idProv: r.proveedor, prov: r.nombre_1, material: r.material, nombre: r.texto_breve, fecha: r.fe_entrega, cant, ton: t, pv: r.documento });
     const tonRetiro = retirosCons.reduce((sum, r) => {
       const cant = parseNum(r.ctd_pedido) - parseNum(r.ctd_entregada);
@@ -1159,7 +1159,7 @@ async function renderPlanCarga(stage) {
     //   - CAMIÓN FÁBRICA-SUCURSAL: OC(s) del mismo proveedor (sin PV) cuyo total ≥85% cap.
     const retirosFab = retiros
       .filter(r => String(r.ce ?? '').trim() === ce)
-      .filter(r => String(r.alm ?? '').trim() !== '4000')
+      .filter(r => (estadosRetiro[String(r.doc_compr ?? '').trim()] || {}).tipo_retiro !== 'FAB-CD')
       .filter(r => (parseNum(r.ctd_pedido) - parseNum(r.ctd_entregada)) > 0);
     const ocCli = {}, provSuc = {};   // oc/proveedor -> { ton, items:[] }
     retirosFab.forEach(r => {
