@@ -1175,8 +1175,8 @@ async function renderPlanCarga(stage) {
       }
     });
     let tonFabCli = 0, tonFabSuc = 0;
-    Object.values(ocCli).forEach(b => { if (b.ton >= capRef * 0.85) { tonFabCli += b.ton; det.fabCli.push(...b.items); } });
-    Object.values(provSuc).forEach(b => { if (b.ton >= capRef * 0.85) { tonFabSuc += b.ton; det.fabSuc.push(...b.items); } });
+    Object.values(ocCli).forEach(b => { tonFabCli += b.ton; det.fabCli.push(...b.items); });
+    Object.values(provSuc).forEach(b => { tonFabSuc += b.ton; det.fabSuc.push(...b.items); });
 
     // Total del CAMIÓN CD (consolidado). Orden de prioridad con que se llena el
     // camión: REVEX → Venta 1003 consolidable → Retiro CD → Crossdocking →
