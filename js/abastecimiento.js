@@ -1147,7 +1147,7 @@ async function renderPlanCarga(stage) {
     const retirosCons = retiros
       .filter(r => String(r.ce ?? '').trim() === ce)
       .filter(r => (estadosRetiro[String(r.doc_compr ?? '').trim()] || {}).tipo_retiro === 'FAB-CD');
-    const itemR = (r, cant, t) => ({ oc: r.doc_compr, idProv: r.proveedor, prov: r.nombre_1, material: r.material, nombre: r.texto_breve, fecha: r.fe_entrega, cant, ton: t, pv: r.documento });
+    const itemR = (r, cant, t) => { const _oc = String(r.doc_compr ?? '').trim(); const ee = (estadosRetiro[_oc] || {}).entrega_entrante || ''; return { oc: r.doc_compr, idProv: r.proveedor, prov: r.nombre_1, material: r.material, nombre: r.texto_breve, fecha: r.fe_entrega, cant, ton: t, pv: r.documento, entrega_entrante: ee }; };
     const tonRetiro = retirosCons.reduce((sum, r) => {
       const cant = parseNum(r.ctd_pedido) - parseNum(r.ctd_entregada);
       const t = calcTon(maxPesoDim(r.peso_bruto, r.tamano_dimens), cant);
@@ -1264,9 +1264,9 @@ async function renderPlanCarga(stage) {
   // Bloque Retiros de Fábrica
   function blkRetiro(lbl, items, marcar) {
     if (!items.length) return '';
-    let heads = ['Orden de Compra','Id Proveedor','Proveedor','ID Material','Nombre Material','Fecha de Retiro','Cantidad','Ton SKU','Pedido de Venta'];
-    let align = new Set([6, 7]);
-    let filas = items.map(d => [d.oc, d.idProv, d.prov, d.material, d.nombre, d.fecha, fmtNum(parseNum(d.cant), 1), fmtNum(d.ton, 4), d.pv]);
+    let heads = ['Orden de Compra','Entrega Entrante','Id Proveedor','Proveedor','ID Material','Nombre Material','Fecha de Retiro','Cantidad','Ton SKU','Pedido de Venta'];
+    let align = new Set([7, 8]);
+    let filas = items.map(d => [d.oc, d.entrega_entrante || '', d.idProv, d.prov, d.material, d.nombre, d.fecha, fmtNum(parseNum(d.cant), 1), fmtNum(d.ton, 4), d.pv]);
     if (marcar) { heads = ['En Camión', ...heads]; align = shiftSet(align); filas = items.map((d, i) => [camMark(d), ...filas[i]]); }
     return blkWrap(lbl, items, tablaDet(heads, filas, align));
   }
@@ -1300,22 +1300,38 @@ async function renderPlanCarga(stage) {
   };
 
   function detalleRow(r, tipo) {
-    let blocks = '', banner = '';
+    let blocks = '', banner = '', excedeBlocks = '';
     if (tipo === 'cd') {
       const fill = marcarCapacidadCD(r);
+      const cats = ['revex','ventaCons','retiro','cross','quiebre','stock'];
+      const inC = {}, outC = {};
+      cats.forEach(k => { inC[k] = (r.det[k]||[]).filter(d => d._enCamion); outC[k] = (r.det[k]||[]).filter(d => !d._enCamion); });
       banner = `<div class="mb-sm px-md py-sm rounded-lg bg-blue-50 border border-blue-200 text-[12px] text-blue-900 inline-flex flex-wrap items-center gap-md">
         <span><strong>Capacidad camión:</strong> ${fmtNum(r.cap, 0)} t</span>
         <span><strong>Cargado:</strong> ${fmtNum(fill.cargado, 1)} t</span>
-        <span class="${fill.excede > 0 ? 'text-orange-700 font-bold' : ''}"><strong>Excede:</strong> ${fmtNum(fill.excede, 1)} t</span>
-        <span class="text-secondary">✓ SÍ = va en el camión (por prioridad) · ✗ EXCEDE = queda para el próximo</span>
+        ${fill.excede > 0 ? `<span class="text-orange-700 font-bold"><strong>Excede:</strong> ${fmtNum(fill.excede, 1)} t → ver sección inferior</span>` : '<span class="text-green-700 font-bold">✓ Todo cabe en el camión</span>'}
       </div>`;
       blocks =
-        blkTraslado('1º Pedidos de Traslados REVEX', r.det.revex, true) +
-        blkVenta('2º Pedidos de Venta Directa Consolidados', r.det.ventaCons, true) +
-        blkRetiro('3º Retiros de Proveedor Consolidados (CD)', r.det.retiro, true) +
-        blkTraslado('4º Pedidos de Traslados Crossdocking', r.det.cross, true) +
-        blkTraslado('5º Pedidos de Traslados Quiebre', r.det.quiebre, true) +
-        blkTraslado('6º Pedidos de Traslados Abastecimiento', r.det.stock, true);
+        blkTraslado('1º Pedidos de Traslados REVEX', inC.revex) +
+        blkVenta('2º Pedidos de Venta Directa Consolidados', inC.ventaCons) +
+        blkRetiro('3º Retiros de Proveedor Consolidados (CD)', inC.retiro) +
+        blkTraslado('4º Pedidos de Traslados Crossdocking', inC.cross) +
+        blkTraslado('5º Pedidos de Traslados Quiebre', inC.quiebre) +
+        blkTraslado('6º Pedidos de Traslados Abastecimiento', inC.stock);
+      const anyOut = cats.some(k => outC[k].length > 0);
+      if (anyOut) {
+        const outBlocks =
+          blkTraslado('REVEX', outC.revex) +
+          blkVenta('Venta Directa', outC.ventaCons) +
+          blkRetiro('Retiros CD', outC.retiro) +
+          blkTraslado('Crossdocking', outC.cross) +
+          blkTraslado('Traslados Quiebre', outC.quiebre) +
+          blkTraslado('Traslados Abastecimiento', outC.stock);
+        excedeBlocks = `<div class="mt-md border-t-2 border-orange-300 pt-md">
+          <div class="text-[12px] font-bold text-orange-700 mb-sm">✗ Quedan para el próximo camión — ${fmtNum(fill.excede, 1)} t</div>
+          ${outBlocks}
+        </div>`;
+      }
     }
     else if (tipo === 'cliente') blocks = blkVenta('Pedidos de Venta directos al cliente', r.det.cliente);
     else if (tipo === 'fabSuc') blocks = blkRetiro('Órdenes de Compra Fábrica-Sucursal', r.det.fabSuc);
@@ -1329,6 +1345,7 @@ async function renderPlanCarga(stage) {
         </div>
         ${banner}
         ${blocks || '<p class="text-secondary text-[12px]">Sin ítems.</p>'}
+        ${excedeBlocks}
       </div></td></tr>`;
   }
 
@@ -1342,7 +1359,7 @@ async function renderPlanCarga(stage) {
       :                      [['Fábrica-Cliente', r.det.fabCli, 'R']];
     const headers = ['Categoría','Documento','Id Proveedor','Proveedor','Id Material','Nombre Material','Ruta','Comuna','Región','Fecha','Cantidad','Ton SKU'];
     const filas = [];
-    cats.forEach(([cat, items, t]) => (items || []).forEach(d => {
+    cats.forEach(([cat, items, t]) => (items || []).filter(d => tipo !== 'cd' || d._enCamion).forEach(d => {
       if (t === 'T') filas.push([cat, d.pt, '', '', d.material, d.nombre, '', '', '', d.fecha || '', d.ctd || '', fmtNum(d.ton, 4)]);
       else if (t === 'R') filas.push([cat, d.oc, d.idProv, d.prov, d.material, d.nombre, '', '', '', d.fecha || '', fmtNum(parseNum(d.cant), 1), fmtNum(d.ton, 4)]);
       else filas.push([cat, d.pv, '', '', d.material, d.nombre, d.ruta, d.comuna, d.region, d.fecha || '', fmtNum(parseNum(d.cant), 1), fmtNum(d.ton, 4)]);
