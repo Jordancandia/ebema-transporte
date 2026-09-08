@@ -711,48 +711,28 @@ const VISTAS_TRONCAL = {
     noBuscar: true,
     filtros: [{ campo: 'doc_compr', label: 'Buscar Pedido de Traslado', tipo: 'buscar' }],
     dateRange: { campo: 'fe_entrega', label: 'Rango Fecha de Entrega' },
-    expand: {
-      key: 'doc_compr', idKey: 'doc_compr', numCols: 1,
-      headers: ['Pedido de Traslado','Centro Origen','Centro Destino','Almacén Destino','Pedido de Ventas','ID Material','Nombre Material','Ton SKU'],
-      build(row) {
-        return (row._detalle || []).map(d => [
-          d.doc_compr, d.cesu, d.ce, d.alm, d.documento, d.material, d.texto_breve, fmtNum(d.ton, 4),
-        ]);
-      },
-    },
     transform(rows) {
       const validas = rows
-        // Ocultar subtotales: cualquier línea sin centro de expedición (cesu)
         .filter(r => String(r.cesu ?? '').trim() !== '' && !String(r.cesu ?? '').startsWith('*'))
         .filter(r => String(r.material ?? '').trim() !== '')
-        // Sólo pendientes: ctd_pedido > cantidad_salida (si son iguales, ya salió)
         .filter(r => parseNum(r.ctd_pedido) > parseNum(r.cantidad_salida));
-      // Agrupar por Pedido de Traslado (doc_compr)
-      const g = new Map();
-      validas.forEach(r => {
-        const pt = String(r.doc_compr ?? '').trim();
-        if (!pt) return;
-        (g.get(pt) || g.set(pt, []).get(pt)).push(r);
+      const out = validas.map(r => {
+        const pend = parseNum(r.ctd_pedido) - parseNum(r.cantidad_salida);
+        const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), pend);
+        const origen = String(r.documento ?? '').trim() ? 'PEDIDO DE VENTAS' : 'STOCK';
+        return {
+          doc_compr: String(r.doc_compr ?? '').trim(),
+          cesu: r.cesu, ce: r.ce, alm: r.alm,
+          fe_entrega: r.fe_entrega,
+          material: r.material,
+          texto_breve: r.texto_breve,
+          _ctd_pend: fmtNum(pend, 1),
+          _ton_sku: fmtNum(t, 4),
+          documento: r.documento,
+          _origen: origen,
+          _ton_num: t,
+        };
       });
-      const out = [];
-      for (const [pt, items] of g.entries()) {
-        const f = items[0];
-        let ton = 0;
-        const detalle = items.map(r => {
-          const pend = parseNum(r.ctd_pedido) - parseNum(r.cantidad_salida);
-          const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), pend);
-          ton += t;
-          return { doc_compr: pt, cesu: r.cesu, ce: r.ce, alm: r.alm, documento: r.documento,
-                   material: r.material, texto_breve: r.texto_breve, ton: t };
-        });
-        const origen = String(f.documento ?? '').trim() ? 'PEDIDO DE VENTAS' : 'STOCK';
-        out.push({
-          doc_compr: pt, cesu: f.cesu, ce: f.ce, alm: f.alm, documento: f.documento,
-          fe_entrega: f.fe_entrega, _origen: origen,
-          _ton_num: ton, _ton_totales: fmtNum(ton, 4), _detalle: detalle,
-        });
-      }
-      // Ordenado por fecha de entrega, de la más atrasada a la más futura
       return out.sort((a, b) => {
         const da = parseDateSAP(a.fe_entrega), db2 = parseDateSAP(b.fe_entrega);
         return (da || new Date(9999,0)) - (db2 || new Date(9999,0));
@@ -760,13 +740,15 @@ const VISTAS_TRONCAL = {
     },
     columnas: [
       { key: '_origen', label: 'Origen', clsFn: r => r._origen === 'PEDIDO DE VENTAS' ? 'text-blue-700 font-bold' : 'text-green-700 font-bold' },
-      { key: 'doc_compr', label: 'Pedido de Traslado', expandable: true },
-      { key: 'cesu', label: 'Centro Origen' },
+      { key: 'doc_compr', label: 'Pedido de Traslado' },
       { key: 'ce', label: 'Centro Destino' },
       { key: 'alm', label: 'Almacén Destino' },
       { key: 'fe_entrega', label: 'Fecha de Entrega', cls: 'num-clear' },
+      { key: 'material', label: 'ID Material' },
+      { key: 'texto_breve', label: 'Nombre Material' },
+      { key: '_ctd_pend', label: 'Cant. Pendiente', cls: 'text-right num-clear' },
+      { key: '_ton_sku', label: 'Ton SKU', cls: 'text-right num-clear' },
       { key: 'documento', label: 'Pedido de Ventas' },
-      { key: '_ton_totales', label: 'Toneladas Totales', cls: 'text-right num-clear font-bold' },
     ],
   },
 
