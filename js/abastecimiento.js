@@ -1115,7 +1115,7 @@ async function renderPlanCarga(stage) {
       .filter(r => parseNum(r.ctd_pedido) > parseNum(r.cantidad_salida))
       .filter(r => fechaEnRango(r.fe_entrega, 5, 5 + diasExtraFinde))
       .reduce((sum, r) => { const pend = parseNum(r.ctd_pedido) - parseNum(r.cantidad_salida); const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), pend);
-        det.cross.push({ pt: r.doc_compr, material: r.material, nombre: r.texto_breve, fecha: r.fe_entrega, ctd: r.ctd_pedido, ton: t, pv: r.documento }); return sum + t; }, 0);
+        det.cross.push({ pt: r.doc_compr, origen: String(r.cesu ?? '').trim(), ceDestino: String(r.ce ?? '').trim(), almDestino: String(r.alm ?? '').trim(), material: r.material, nombre: r.texto_breve, fecha: r.fe_entrega, ctdPend: pend, ton: t, pv: r.documento }); return sum + t; }, 0);
 
     // 5. Notas de Venta 1003 (ofvta = centro): requiere ruta, excluye RETIRA.
     //    <80% cap ⇒ PEDIDO DE VENTA DIRECTA (consolida con la carga del CD).
@@ -1261,6 +1261,16 @@ async function renderPlanCarga(stage) {
     if (marcar) { heads = ['En Camión', ...heads]; align = shiftSet(align); filas = items.map((d, i) => [camMark(d), ...filas[i]]); }
     return blkWrap(lbl, items, tablaDet(heads, filas, align));
   }
+  // Bloque Crossdocking (columnas completas, sin ocultar)
+  function blkCrossdocking(lbl, items, marcar) {
+    if (!items.length) return '';
+    let heads = ['Origen','Pedido de Traslado','Centro Destino','Almacén Destino','Fecha de Entrega','ID Material','Nombre Material','Cant. Pendiente','Ton SKU','Pedido de Venta'];
+    let align = new Set([7, 8]);
+    let filas = items.map(d => [d.origen, d.pt, d.ceDestino, d.almDestino, d.fecha, d.material, d.nombre, fmtNum(d.ctdPend, 1), fmtNum(d.ton, 4), d.pv]);
+    if (marcar) { heads = ['En Camión', ...heads]; align = shiftSet(align); filas = items.map((d, i) => [camMark(d), ...filas[i]]); }
+    return blkWrap(lbl, items, tablaDet(heads, filas, align));
+  }
+ 
   // Bloque Retiros de Fábrica
   function blkRetiro(lbl, items, marcar) {
     if (!items.length) return '';
@@ -1315,7 +1325,7 @@ async function renderPlanCarga(stage) {
         blkTraslado('1º Pedidos de Traslados REVEX', inC.revex) +
         blkVenta('2º Pedidos de Venta Directa Consolidados', inC.ventaCons) +
         blkRetiro('3º Retiros de Proveedor Consolidados (CD)', inC.retiro) +
-        blkTraslado('4º Pedidos de Traslados Crossdocking', inC.cross) +
+        blkCrossdocking('4º Pedidos de Traslados Crossdocking', inC.cross) +
         blkTraslado('5º Pedidos de Traslados Quiebre', inC.quiebre) +
         blkTraslado('6º Pedidos de Traslados Abastecimiento', inC.stock);
       const anyOut = cats.some(k => outC[k].length > 0);
@@ -1324,7 +1334,7 @@ async function renderPlanCarga(stage) {
           blkTraslado('REVEX', outC.revex) +
           blkVenta('Venta Directa', outC.ventaCons) +
           blkRetiro('Retiros CD', outC.retiro) +
-          blkTraslado('Crossdocking', outC.cross) +
+          blkCrossdocking('Crossdocking', outC.cross) +
           blkTraslado('Traslados Quiebre', outC.quiebre) +
           blkTraslado('Traslados Abastecimiento', outC.stock);
         excedeBlocks = `<div class="mt-md border-t-2 border-orange-300 pt-md">
