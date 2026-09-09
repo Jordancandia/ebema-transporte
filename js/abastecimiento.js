@@ -707,11 +707,21 @@ const VISTAS_TRONCAL = {
     titulo: 'GESTIÓN TRONCALES – PEDIDOS DE TRASLADOS 4000',
     vista: 'v_trc_sqvi_pedidos_traslados_4000',
     chipFilter: { campo: 'ce', label: 'Centro Destino' },
-    extraChips: [{ campo: '_origen', label: 'Origen' }, { campo: 'cesu', label: 'Centro Origen' }],
+    extraChips: [{ campo: '_origen', label: 'Origen' }],
     noBuscar: true,
     filtros: [{ campo: 'doc_compr', label: 'Buscar Pedido de Traslado', tipo: 'buscar' }],
     dateRange: { campo: 'fe_entrega', label: 'Rango Fecha de Entrega' },
-    transform(rows) {
+    async preload() {
+      const pvRows = await fetchAllRows('v_trc_pedidos_ventas_ref');
+      const pvMap = {};
+      pvRows.forEach(r => {
+        const k = String(r.doc_ventas ?? '').trim();
+        if (k && !pvMap[k]) pvMap[k] = r;
+      });
+      return { pvMap };
+    },
+    transform(rows, ctx) {
+      const pvMap = (ctx && ctx.pvMap) || {};
       const validas = rows
         .filter(r => String(r.cesu ?? '').trim() !== '' && !String(r.cesu ?? '').startsWith('*'))
         .filter(r => String(r.material ?? '').trim() !== '')
@@ -720,6 +730,8 @@ const VISTAS_TRONCAL = {
         const pend = parseNum(r.ctd_pedido) - parseNum(r.cantidad_salida);
         const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), pend);
         const origen = String(r.documento ?? '').trim() ? 'PEDIDO DE VENTAS' : 'STOCK';
+        const docPV = String(r.documento ?? '').trim();
+        const pv = pvMap[docPV] || {};
         return {
           doc_compr: String(r.doc_compr ?? '').trim(),
           cesu: r.cesu, ce: r.ce, alm: r.alm,
@@ -731,6 +743,9 @@ const VISTAS_TRONCAL = {
           documento: r.documento,
           _origen: origen,
           _ton_num: t,
+          _tipo_exp: pv.psex || '',
+          _ruta: pv.ruta || '',
+          _vendedor: pv.nombre || '',
         };
       });
       return out.sort((a, b) => {
@@ -749,6 +764,9 @@ const VISTAS_TRONCAL = {
       { key: '_ctd_pend', label: 'Cant. Pendiente', cls: 'text-right num-clear' },
       { key: '_ton_sku', label: 'Ton SKU', cls: 'text-right num-clear' },
       { key: 'documento', label: 'Pedido de Ventas' },
+      { key: '_tipo_exp', label: 'Tipo de Expedición' },
+      { key: '_ruta', label: 'ID Ruta' },
+      { key: '_vendedor', label: 'Nombre de Vendedor' },
     ],
   },
 
