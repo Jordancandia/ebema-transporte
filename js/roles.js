@@ -608,7 +608,7 @@ function renderUsersTable(usersList, viewContainer, isFiltered = false) {
         return;
       }
 
-      const ok = confirm(\`¿Eliminar permanentemente a "\${name}" (\${email})?\n\nEsta acción no se puede deshacer.\`);
+      const ok = confirm(`¿Eliminar permanentemente a "${name}" (${email})?\n\nEsta acción no se puede deshacer.`);
       if (!ok) return;
 
       btn.disabled = true;
@@ -628,7 +628,7 @@ function renderUsersTable(usersList, viewContainer, isFiltered = false) {
       if (pos !== -1) db2.users.splice(pos, 1);
       saveDatabase(db2);
 
-      showAlert(\`\${name} eliminado correctamente.\`);
+      showAlert(`${name} eliminado correctamente.`);
       const stageContainer = document.getElementById('stage-area');
       if (stageContainer) renderRolesView(stageContainer);
     });
