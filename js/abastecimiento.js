@@ -1081,7 +1081,7 @@ async function renderPlanCarga(stage) {
   const retiros = esCD1003 ? retirosRaw
     .filter(r => !String(r.proveedor ?? '').startsWith('*'))
     .filter(r => String(r.contr ?? '').trim() !== '')
-    .filter(r => (estadosRetiro[String(r.doc_compr ?? '').trim()] || {}).estado === 'coordinado') : [];
+    .filter(r => { const _e = estadosRetiro[String(r.doc_compr ?? '').trim()] || {}; return _e.estado === 'coordinado' && String(_e.entrega_entrante ?? '').trim() !== ''; }) : [];
   const ventas = esCD1003 ? ventasRaw.filter(r => !String(r.mr ?? '').trim()) : [];
   const t4000 = traslados4000Raw.filter(r => String(r.cesu ?? '').trim() === planOrigen);
 
@@ -1111,26 +1111,25 @@ async function renderPlanCarga(stage) {
     const tonQuiebre = traslados
       .filter(r => String(r.ce ?? '').trim() === ce)
       .filter(r => quiebresMat.has(String(r.material ?? '').trim()))
-      .filter(r => fechaEnRango(r.fecha_confirmada, 10, 5 + diasExtraFinde))
+      .filter(r => fechaEnRango(r.fecha_confirmada, 10, 7))
       .reduce((sum, r) => { const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), r.ctd_confirmada); det.quiebre.push(itemT(r, t)); return sum + t; }, 0);
 
     // 2. Traslados Stock / Abastecimiento
     const tonStock = traslados
       .filter(r => String(r.ce ?? '').trim() === ce)
       .filter(r => !quiebresMat.has(String(r.material ?? '').trim()))
-      .filter(r => fechaEnRango(r.fecha_confirmada, 10, 5 + diasExtraFinde))
+      .filter(r => fechaEnRango(r.fecha_confirmada, 10, 7))
       .reduce((sum, r) => { const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), r.ctd_confirmada); det.stock.push(itemT(r, t)); return sum + t; }, 0);
 
-    // 3. REVEX (peso_neto_2 × ctd_pedido)
+    // 3. REVEX (peso_neto × ctd_confirmada)
     const tonRevex = revex
       .filter(r => String(r.ce ?? '').trim() === ce)
-      .reduce((sum, r) => { const t = calcTon(parseNum(r.peso_neto_2), r.ctd_pedido); det.revex.push(itemT(r, t)); return sum + t; }, 0);
+      .reduce((sum, r) => { const t = calcTon(parseNum(r.peso_neto), r.ctd_confirmada); det.revex.push(itemT(r, t)); return sum + t; }, 0);
 
     // 4. Crossdocking 4000 — SÓLO pendientes (ctd_pedido > cantidad_salida)
     const tonCross = t4000
       .filter(r => String(r.ce ?? '').trim() === ce)
       .filter(r => parseNum(r.ctd_pedido) > parseNum(r.cantidad_salida))
-      .filter(r => fechaEnRango(r.fe_entrega, 5, 5 + diasExtraFinde))
       .reduce((sum, r) => { const pend = parseNum(r.ctd_pedido) - parseNum(r.cantidad_salida); const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), pend);
         det.cross.push({ pt: r.doc_compr, origen: String(r.cesu ?? '').trim(), ceDestino: String(r.ce ?? '').trim(), almDestino: String(r.alm ?? '').trim(), material: r.material, nombre: r.texto_breve, fecha: r.fe_entrega, ctdPend: pend, ton: t, pv: r.documento }); return sum + t; }, 0);
 
@@ -1141,7 +1140,7 @@ async function renderPlanCarga(stage) {
       .filter(r => String(r.ofvta ?? '').trim() === ce)
       .filter(r => String(r.ruta ?? '').trim() !== '')
       .filter(r => normTxt(r.ruta).indexOf('RETIRA') === -1)
-      .filter(r => fechaEnRango(r.fe_entrega, 3, 5 + diasExtraFinde));
+      .filter(r => fechaEnRango(r.fe_entrega, 0, 5));
     const ventasPorDoc = {};
     ventasCe.forEach(r => { const d = String(r.doc_ventas ?? '').trim(); (ventasPorDoc[d] = ventasPorDoc[d] || []).push(r); });
     let tonVentaCliente = 0, tonVentaCons = 0;
