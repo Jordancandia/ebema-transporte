@@ -1078,6 +1078,7 @@ async function renderPlanCarga(stage) {
   const revex = revexRaw
     .filter(r => String(r.material ?? '').startsWith('900000'))
     .filter(r => String(r.cesu ?? '').trim() === planOrigen);
+  // REVEX: cesu = centro origen (1003 o 1081), ce = centro destino donde se contabiliza
   const retiros = esCD1003 ? retirosRaw
     .filter(r => !String(r.proveedor ?? '').startsWith('*'))
     .filter(r => String(r.contr ?? '').trim() !== '')
