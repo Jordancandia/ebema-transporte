@@ -1171,6 +1171,38 @@ function renderRecoverView() {
 }
 
 // ==========================================================================
+// PERMISOS POR ROL
+// null = acceso total; array = grupos/tabs permitidos (por tab o group key)
+// ==========================================================================
+const READ_ONLY_ROLES = ['AGENTE_COMERCIAL', 'ADMINISTRADOR_DEPOSITO'];
+
+const ROLE_ALLOWED_GROUPS = {
+  'OWNER':                  null,
+  'ADMINISTRADOR_DEPOSITO': ['home', 'rates', 'proveedores', 'rutas', 'abastecimiento', 'indicadores'],
+  'AGENTE_COMERCIAL':       ['rates', 'proveedores', 'rutas', 'abastecimiento'],
+  'TRANSPORTISTA':          null,
+  'CHOFER':                 null,
+};
+
+// Devuelve true si el rol tiene acceso al item del menú
+function roleCanSeeEntry(entry) {
+  const role = currentSession?.role || 'AGENTE_COMERCIAL';
+  const allowed = ROLE_ALLOWED_GROUPS[role];
+  if (!allowed) return true; // OWNER / TRANSPORTISTA / CHOFER ven todo
+  const key = entry.group || entry.tab;
+  return allowed.includes(key);
+}
+
+// Display name para el topbar (sin guiones bajos ni mayúsculas crudas)
+const ROLE_DISPLAY = {
+  'OWNER': 'Owner',
+  'ADMINISTRADOR_DEPOSITO': 'Admin. Depósito',
+  'AGENTE_COMERCIAL': 'Agente',
+  'TRANSPORTISTA': 'Transportista',
+  'CHOFER': 'Chofer',
+};
+
+// ==========================================================================
 // MENU LATERAL - estructura declarativa con grupos desplegables
 // ==========================================================================
 const SIDEBAR_MENU = [
@@ -1252,7 +1284,7 @@ const NAV_BASE_ITEM  = 'sidebar-item flex items-center gap-md px-md py-sm text-s
 const NAV_BASE_CHILD = 'sidebar-item flex items-center gap-sm pl-xl pr-md py-xs text-secondary hover:text-primary hover:bg-surface-container-high transition-colors rounded-lg cursor-pointer text-[13px]';
 
 function sidebarNavHTML() {
-  return SIDEBAR_MENU.map(entry => {
+  return SIDEBAR_MENU.filter(roleCanSeeEntry).map(entry => {
     if (entry.group) {
       return `
         <div class="sidebar-group" data-group="${entry.group}">
@@ -1276,6 +1308,65 @@ function sidebarNavHTML() {
         <span class="font-body-md text-body-md font-bold">${entry.label}</span>
       </a>`;
   }).join('');
+}
+
+
+// ==========================================================================
+// MODO SOLO LECTURA – bloquea escritura para AGENTE y ADMIN_DEPOSITO
+// ==========================================================================
+const WRITE_ICONS = new Set([
+  'save','add','delete','edit','upload','add_circle','person_add','person_off',
+  'how_to_reg','remove','cloud_upload','create','mode_edit','delete_forever',
+  'send','publish','check_circle','done_all','download','import_export',
+]);
+const WRITE_WORDS = ['guardar','agregar','crear','eliminar','actualizar','nuevo',
+  'nueva','cargar','importar','subir','enviar','calcular','aplicar','confirmar',
+  'descargar','exportar','publicar','guardar cambios'];
+
+function applyReadOnlyMode(stage) {
+  const role = currentSession?.role;
+  if (!READ_ONLY_ROLES.includes(role)) return;
+
+  // Banner
+  const banner = document.createElement('div');
+  banner.style.cssText = 'display:flex;align-items:center;gap:8px;padding:10px 16px;background:#fff8e1;border:1px solid #ffe082;border-radius:8px;margin-bottom:16px;font-size:13px;color:#5c3a00;font-weight:600';
+  banner.innerHTML = '<span class="material-symbols-outlined" style="font-size:18px;color:#f59e0b">visibility</span> Modo solo lectura — su perfil no tiene permisos de modificación.';
+  if (stage.firstChild) stage.insertBefore(banner, stage.firstChild);
+
+  // Deshabilitar inputs y selects (excepto de búsqueda)
+  stage.querySelectorAll('input:not([type=radio]):not([type=checkbox]), select, textarea').forEach(el => {
+    const isSearch = el.id?.includes('search') || el.placeholder?.toLowerCase().includes('buscar');
+    if (!isSearch) {
+      el.disabled = true;
+      el.style.opacity = '0.55';
+      el.style.cursor = 'not-allowed';
+    }
+  });
+
+  // Ocultar botones de escritura
+  stage.querySelectorAll('button').forEach(btn => {
+    // Excluir botones de búsqueda/navegación/logout/cerrar
+    const iconEl = btn.querySelector('.material-symbols-outlined');
+    const iconTxt = iconEl?.textContent?.trim() ?? '';
+    const btnTxt = btn.textContent?.trim().toLowerCase() ?? '';
+
+    const isWriteIcon = WRITE_ICONS.has(iconTxt);
+    const isWriteText = WRITE_WORDS.some(w => btnTxt.includes(w));
+    const isSearch    = btnTxt.includes('buscar') || btn.id?.includes('search');
+    const isClose     = iconTxt === 'close' || iconTxt === 'search';
+
+    if ((isWriteIcon || isWriteText) && !isSearch && !isClose) {
+      btn.style.display = 'none';
+    }
+  });
+
+  // Interceptar envíos de formulario
+  stage.querySelectorAll('form').forEach(form => {
+    form.addEventListener('submit', e => {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+    }, true);
+  });
 }
 
 // ==========================================================================
@@ -1329,7 +1420,7 @@ function renderDashboardShell() {
             <img alt="Administrator Profile" class="w-8 h-8 rounded-full border border-surface-variant object-cover" src="https://lh3.googleusercontent.com/aida-public/AB6AXuAAiTCyOhKKpto4TzfW6NIN1sv2OnD_9ISi9_9_tuiAbSovN5cnzTELz4Nql3oFKqQtKhma605ToY_Wn_NCRFbTTLlPwqO5mUsoaSuanYh8zDr7tuqBfaVDdqELWJ7hsYGQl0_xbHsbnSyfAJtiMUt8QMjibQpBCKP4HVz8EUYAGiIrmOly9grHxAaCVCvEcLusH9iewFzjlCHudJnFoLRiF6UTfElTfE36J3YYH5nQBtZlQWKZWewp0HE3B2ymMPHWw9X9ic394nY"/>
             <div class="hidden sm:block text-left">
               <p class="text-label-caps font-label-caps leading-none font-bold" id="topbar-user-name">${currentSession.name}</p>
-              <p class="text-[10px] text-secondary">${currentSession.role}</p>
+              <p class="text-[10px] text-secondary">${ROLE_DISPLAY[currentSession.role] || currentSession.role}</p>
             </div>
           </div>
         </div>
@@ -1377,6 +1468,19 @@ const NAV_ACTIVE_ADD    = ['bg-primary-container', 'text-on-primary-container', 
 const NAV_ACTIVE_REMOVE = ['text-secondary', 'hover:text-primary', 'hover:bg-surface-container-high'];
 
 function switchTab(tabName, subName = null) {
+  // Verificar acceso al tab según rol
+  const _allowed = ROLE_ALLOWED_GROUPS[currentSession?.role];
+  if (_allowed) {
+    const _key = SIDEBAR_MENU.find(e => e.tab === tabName)?.tab
+              || SIDEBAR_MENU.find(e => e.group && e.children?.some(c => c.tab === tabName))?.group;
+    if (_key && !_allowed.includes(_key)) {
+      // Redirigir al primer tab permitido
+      const firstEntry = SIDEBAR_MENU.find(e => roleCanSeeEntry(e));
+      const fallbackTab = firstEntry?.tab || (firstEntry?.children?.[0]?.tab);
+      const fallbackSub = firstEntry?.children?.[0]?.sub || null;
+      if (fallbackTab && fallbackTab !== tabName) { switchTab(fallbackTab, fallbackSub); return; }
+    }
+  }
   currentTab = tabName;
   currentSub = subName;
 
@@ -1456,6 +1560,8 @@ function switchTab(tabName, subName = null) {
       renderIndicadoresView(stage);
       break;
   }
+  // Aplicar modo solo lectura si corresponde
+  applyReadOnlyMode(stage);
 }
 
 // Exponer utilidad de limpieza en consola

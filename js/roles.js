@@ -9,7 +9,7 @@ import { supabase } from './supabase-client.js';
 const ROLE_CONFIG = {
   'OWNER':                  { bg: '#ffdad5', text: '#93000a', border: '#ffb4aa', icon: 'workspace_premium', label: 'Owner' },
   'ADMINISTRADOR_DEPOSITO': { bg: '#e3f2fd', text: '#0d47a1', border: '#90caf9', icon: 'warehouse',          label: 'Admin. Depósito' },
-  'AGENTE_COMERCIAL':       { bg: '#e8f5e9', text: '#1b5e20', border: '#a5d6a7', icon: 'request_quote',      label: 'Agente Comercial' },
+  'AGENTE_COMERCIAL':       { bg: '#e8f5e9', text: '#1b5e20', border: '#a5d6a7', icon: 'request_quote',      label: 'Agente' },
   'TRANSPORTISTA':          { bg: '#fff3e0', text: '#e65100', border: '#ffcc80', icon: 'local_shipping',    label: 'Transportista' },
   'CHOFER':                 { bg: '#f3e5f5', text: '#6a1b9a', border: '#ce93d8', icon: 'badge',              label: 'Chofer' }
 };
@@ -17,8 +17,8 @@ const ROLE_CONFIG = {
 // Descripciones de cada perfil (se muestran al seleccionar el rol en el modal)
 const ROLE_DESCRIPTIONS = {
   'OWNER': 'Ve y edita cualquier campo de la plataforma: todos los centros, planes, rutas, tarifas de transporte y clientes.',
-  'ADMINISTRADOR_DEPOSITO': 'Igual que Owner, pero limitado a su centro asociado (centros, rutas, tarifas y clientes de ese centro).',
-  'AGENTE_COMERCIAL': 'Puede cotizar y ver la información asociada a su centro.',
+  'ADMINISTRADOR_DEPOSITO': 'Solo visualización: Home, Cotizador, Proveedores, Rutas de Transporte, Gestión Troncales e Indicadores. Sin permisos de modificación.',
+  'AGENTE_COMERCIAL': 'Solo visualización: Cotizador, Rutas de Transporte, Gestión Troncales y Proveedores. Sin permisos de modificación.',
   'TRANSPORTISTA': 'Ve el estado de sus camiones, cuenta bancaria asociada, transportes y choferes. Edita solo lo que está en su perfil.',
   'CHOFER': 'Ve el estado de su camión asignado, datos del transporte y sus datos personales (nombre, RUT, correo, teléfono, licencia y carnet).'
 };
@@ -573,6 +573,12 @@ function renderUsersTable(usersList, viewContainer, isFiltered = false) {
             onmouseover="this.style.opacity='0.75'" onmouseout="this.style.opacity='1'">
             <span class="material-symbols-outlined" style="font-size:16px;color:${isActive ? '#b5000b' : '#2e7d32'}">${isActive ? 'person_off' : 'how_to_reg'}</span>
           </button>
+          <button class="btn-delete-user" data-idx="${realIdx}" data-email="${user.email}" data-name="${escapeHtml(user.name || user.email)}"
+            title="Eliminar usuario permanentemente"
+            style="padding:6px;background:#fff8f7;border:1px solid #ffb4aa;border-radius:6px;cursor:pointer;display:flex;align-items:center;transition:all 0.15s"
+            onmouseover="this.style.background='#ffdad6';this.style.borderColor='#b5000b'" onmouseout="this.style.background='#fff8f7';this.style.borderColor='#ffb4aa'">
+            <span class="material-symbols-outlined" style="font-size:16px;color:#b5000b">delete_forever</span>
+          </button>
         </div>
       </td>
     `;
@@ -586,6 +592,45 @@ function renderUsersTable(usersList, viewContainer, isFiltered = false) {
       const idx = parseInt(e.currentTarget.getAttribute('data-idx'));
       openModal(idx);
       setupRoleSelector();
+    });
+  });
+
+  // Eventos: Eliminar usuario permanentemente
+  tbody.querySelectorAll('.btn-delete-user').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      const idx   = parseInt(e.currentTarget.getAttribute('data-idx'));
+      const email = e.currentTarget.getAttribute('data-email');
+      const name  = e.currentTarget.getAttribute('data-name');
+
+      const session = JSON.parse(localStorage.getItem('ebema_user_session') || '{}');
+      if (session.email === email) {
+        showAlert('No puede eliminar su propio usuario.', 'error');
+        return;
+      }
+
+      const ok = confirm(\`¿Eliminar permanentemente a "\${name}" (\${email})?\n\nEsta acción no se puede deshacer.\`);
+      if (!ok) return;
+
+      btn.disabled = true;
+      btn.style.opacity = '0.5';
+
+      const { data, error } = await supabase.functions.invoke('delete-user', { body: { email } });
+
+      if (error || (data && data.error)) {
+        showAlert((data && data.error) || error?.message || 'No se pudo eliminar el usuario.', 'error');
+        btn.disabled = false;
+        btn.style.opacity = '1';
+        return;
+      }
+
+      const db2 = getDatabase();
+      const pos = db2.users.findIndex(u => u.email === email);
+      if (pos !== -1) db2.users.splice(pos, 1);
+      saveDatabase(db2);
+
+      showAlert(\`\${name} eliminado correctamente.\`);
+      const stageContainer = document.getElementById('stage-area');
+      if (stageContainer) renderRolesView(stageContainer);
     });
   });
 
