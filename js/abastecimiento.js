@@ -1121,10 +1121,10 @@ async function renderPlanCarga(stage) {
       .filter(r => fechaEnRango(r.fecha_confirmada, 10, 7))
       .reduce((sum, r) => { const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), r.ctd_confirmada); det.stock.push(itemT(r, t)); return sum + t; }, 0);
 
-    // 3. REVEX (peso_neto × ctd_confirmada)
+    // 3. REVEX (peso_neto_2 × ctd_pedido — igual que la vista REVEX)
     const tonRevex = revex
       .filter(r => String(r.ce ?? '').trim() === ce)
-      .reduce((sum, r) => { const t = calcTon(parseNum(r.peso_neto), r.ctd_confirmada); det.revex.push(itemT(r, t)); return sum + t; }, 0);
+      .reduce((sum, r) => { const t = calcTon(parseNum(r.peso_neto_2), r.ctd_pedido); det.revex.push(itemT(r, t)); return sum + t; }, 0);
 
     // 4. Crossdocking 4000 — SÓLO pendientes (ctd_pedido > cantidad_salida)
     const tonCross = t4000
