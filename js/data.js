@@ -8,8 +8,6 @@ const STORAGE_KEY = 'ebema_transporte_db';
 // Mapeo colección local ↔ tabla Supabase (con su clave primaria)
 const TABLE_MAP = [
   { local: 'logisticsCentres',  table: 'logistics_centres',  pk: 'id' },
-  { local: 'transportZones',     table: 'transport_zones',      pk: 'zona' },
-  { local: 'routes',            table: 'routes',             pk: 'id' },
   { local: 'truckTypes',        table: 'truck_types',        pk: 'id' },
   { local: 'transports',        table: 'transports',         pk: 'id' },
   { local: 'transportsCamiones',  table: 'transports_camiones',  pk: 'id_camion' },
@@ -19,9 +17,41 @@ const TABLE_MAP = [
   { local: 'providers',         table: 'providers',          pk: 'email' },
   { local: 'tariffConfig',       table: 'tariff_config',        pk: 'id' },
   { local: 'clientTariffConfig', table: 'client_tariff_config', pk: 'id' },
-  { local: 'routeTolls',         table: 'route_tolls',          pk: 'id' },
   { local: 'extraCosts',         table: 'extra_costs',          pk: 'id' }
 ];
+
+// Tablas pesadas — carga diferida: solo cuando el usuario abre la pestaña que las necesita.
+// routes (3.411 filas, ~18 MB) + route_tolls (7.062 filas, ~16 MB) + transport_zones (878 filas, ~4 MB).
+const LAZY_TABLE_MAP = [
+  { local: 'transportZones', table: 'transport_zones', pk: 'zona' },
+  { local: 'routes',         table: 'routes',          pk: 'id'   },
+  { local: 'routeTolls',     table: 'route_tolls',     pk: 'id'   }
+];
+let _routesLoaded  = false;
+let _routesLoading = null;
+
+/**
+ * Carga bajo demanda las 3 tablas pesadas y las fusiona en memoryDb.
+ * Seguro para llamar múltiples veces: reutiliza la promesa en curso si ya está
+ * cargando, y retorna inmediatamente si ya terminó.
+ */
+export async function loadRoutesData() {
+  if (_routesLoaded) return;
+  if (_routesLoading) return _routesLoading;
+  _routesLoading = (async () => {
+    try {
+      const results = await Promise.all(LAZY_TABLE_MAP.map(t => fetchAllRows(t.table)));
+      if (!memoryDb) return; // sesión no iniciada aún
+      LAZY_TABLE_MAP.forEach((t, i) => { memoryDb[t.local] = results[i] || []; });
+      _routesLoaded = true;
+    } catch (err) {
+      _routesLoading = null; // permitir reintento
+      console.error('Error cargando tablas de rutas (lazy):', err.message || err);
+      throw err;
+    }
+  })();
+  return _routesLoading;
+}
 
 // Capacidad nominal en KG a partir del nombre del tipo de camión (ej: "Camión 28 Ton" -> 28000)
 export function truckCapKg(type) {
@@ -256,6 +286,9 @@ async function fetchAllRows(table) {
 
 // Cargar TODO desde Supabase a memoria (llamar tras iniciar sesión)
 export async function initDatabase() {
+  // Resetear estado diferido en cada login (permite recarga tras cerrar sesión)
+  _routesLoaded  = false;
+  _routesLoading = null;
   try {
     const results = await Promise.all(
       TABLE_MAP.map(t => fetchAllRows(t.table))
@@ -310,6 +343,9 @@ export async function initDatabase() {
         historico: _savedHist
       };
     }
+
+    // Tablas diferidas — inicializar como vacías hasta carga bajo demanda
+    LAZY_TABLE_MAP.forEach(t => { if (!memoryDb[t.local]) memoryDb[t.local] = []; });
 
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...memoryDb, clientTariffConfig: stripHistorico(memoryDb.clientTariffConfig || []) }));
 
@@ -529,9 +565,11 @@ function stripHistorico(rows) {
 
 async function syncToSupabase(db, syncOnly = null) {
   const fallidas = [];
+  // Incluir tablas diferidas en la sincronización (rutas, peajes, zonas son editables)
+  const ALL_TABLES = [...TABLE_MAP, ...LAZY_TABLE_MAP];
   const tablas = syncOnly
-    ? TABLE_MAP.filter(t => syncOnly.includes(t.local))
-    : TABLE_MAP;
+    ? ALL_TABLES.filter(t => syncOnly.includes(t.local))
+    : ALL_TABLES;
   for (const t of tablas) {
     try {
       const rows = (t.local === 'clientTariffConfig')

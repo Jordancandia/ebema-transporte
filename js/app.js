@@ -1,4 +1,4 @@
-import { getDatabase, saveDatabase, initDatabase } from './data.js?v=20260714a';
+import { getDatabase, saveDatabase, initDatabase, loadRoutesData } from './data.js?v=20260909c';
 import { supabase } from './supabase-client.js';
 // ── Módulos cargados bajo demanda (lazy) — se cachean tras la primera carga ──
 const _mod = {};
@@ -9,6 +9,7 @@ async function loadMod(key, modPath) {
 // Pre-warm: carga indicadores y abastecimiento en background tras login
 function prewarmMods() {
   setTimeout(() => loadMod('ind',   './indicadores.js?v=20260818x'), 600);
+  setTimeout(() => loadRoutesData(), 800);  // pre-fetch tablas pesadas en background
   setTimeout(() => loadMod('abast', './abastecimiento.js?v=20260907e'), 2000);
 }
 import { showAlert, formatRut, validateRut, formatPhone } from './utils.js';
@@ -1538,6 +1539,7 @@ async function switchTab(tabName, subName = null) {
       break;
     }
     case 'rates': {
+      await loadRoutesData();
       pageTitle.textContent = 'Cotizador Despacho';
       const m = await loadMod('rates', './rates.js');
       m.renderRatesView(stage);
@@ -1550,6 +1552,7 @@ async function switchTab(tabName, subName = null) {
       break;
     }
     case 'routes': {
+      await loadRoutesData();
       pageTitle.textContent = 'Rutas de Transporte' + subLabel;
       const m = await loadMod('routes', './routes.js?v=20260708a');
       if (alias) m.setRoutesSubTab(alias);
@@ -1563,6 +1566,7 @@ async function switchTab(tabName, subName = null) {
       break;
     }
     case 'tarifas-transporte': {
+      await loadRoutesData();
       pageTitle.textContent = 'Tarifas Transporte' + subLabel;
       const m = await loadMod('tt', './tarifas-transporte.js?v=20260713c');
       if (alias) m.setActiveSub(alias);
@@ -1570,6 +1574,7 @@ async function switchTab(tabName, subName = null) {
       break;
     }
     case 'tarifas-clientes': {
+      await loadRoutesData();
       pageTitle.textContent = 'Tarifas Clientes' + subLabel;
       const m = await loadMod('tc', './tarifas-clientes.js?v=20260714c');
       if (alias) m.setActiveSubC(alias);
