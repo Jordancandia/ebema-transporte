@@ -548,7 +548,20 @@ const VISTAS_TRONCAL = {
     noBuscar: true,
     filtros: [{ campo: 'doc_compr', label: 'Buscar Pedido de Traslado', tipo: 'buscar' }],
     dateRange: { campo: 'fecha_confirmada', label: 'Rango Fecha Confirmada' },
-    transform(rows) {
+    async preload() {
+      const stockRows = await fetchAllRows('v_trc_slim_stock');
+      // Mapa quiebres: "centro|codigo_articulo" → { sd, tq } para SKU con stock_days ≤ 7
+      const quiebresMap = {};
+      stockRows.forEach(r => {
+        const sd = parseNum(r.stock_days);
+        if (sd > 7) return;
+        const k = `${String(r.centro ?? '').trim()}|${String(r.codigo_articulo ?? '').trim()}`;
+        if (!quiebresMap[k]) quiebresMap[k] = { sd, tq: tipoQuiebre(sd) };
+      });
+      return { quiebresMap };
+    },
+    transform(rows, ctx) {
+      const quiebresMap = (ctx && ctx.quiebresMap) || {};
       const validas = rows
         .filter(r => !String(r.cesu ?? '').startsWith('*') && String(r.material ?? '').trim() !== '')
         .filter(r => !String(r.material ?? '').startsWith('900000'));
@@ -558,9 +571,19 @@ const VISTAS_TRONCAL = {
           return '<span class="material-symbols-outlined text-error text-[16px] align-middle">cancel</span> <span class="text-error font-bold text-[11px]">ATRASADO</span>';
         return '<span class="material-symbols-outlined text-[#e65100] text-[16px] align-middle">warning</span> <span class="text-[#e65100] font-bold text-[11px]">PRONTO A VENCER</span>';
       }
+      function quiebreBadgeHtml(q) {
+        if (!q) return '';
+        const short = q.tq.txt === 'MATERIAL QUEBRADO URGENTE' ? 'QUIEBRE'
+                    : q.tq.txt === 'STOCK CRÍTICO URGENTE'     ? 'CRÍTICO'
+                    : 'EN REVISIÓN';
+        return `<span class="inline-flex items-center gap-[3px] px-[6px] py-[2px] rounded-full text-[11px] font-bold ${q.tq.cls}">` +
+               `<span class="material-symbols-outlined text-[13px]">inventory_2</span>${short} (${q.sd}d)</span>`;
+      }
       const out = validas.map(r => {
         const al = alertaFecha(r.fecha_confirmada, 7);
         const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), r.ctd_confirmada);
+        const kq = `${String(r.ce ?? '').trim()}|${String(r.material ?? '').trim()}`;
+        const q = quiebresMap[kq] || null;
         return {
           doc_compr: String(r.doc_compr ?? '').trim(),
           cesu: r.cesu, ce: r.ce, alm: r.alm,
@@ -571,15 +594,21 @@ const VISTAS_TRONCAL = {
           documento: r.documento,
           _alerta: al.txt, _alerta_cls: al.cls,
           _alerta_icon: alertaIconHtml(al),
+          _quiebre_badge: quiebreBadgeHtml(q),
+          _en_quiebre: !!q,
         };
       });
+      // Ordenar: primero los que tienen quiebre, luego por fecha
       return out.sort((a, b) => {
+        if (a._en_quiebre !== b._en_quiebre) return a._en_quiebre ? -1 : 1;
         const da = parseDateSAP(a.fecha_confirmada), db2 = parseDateSAP(b.fecha_confirmada);
         return (da || new Date(9999,0)) - (db2 || new Date(9999,0));
       });
     },
+    rowClsFn(r) { return r._en_quiebre ? 'bg-red-50' : ''; },
     columnas: [
       { key: '_alerta_icon', label: 'Alerta', rawHtml: true },
+      { key: '_quiebre_badge', label: 'Estado Quiebre', rawHtml: true },
       { key: 'doc_compr', label: 'Pedido de Traslado' },
       { key: 'cesu', label: 'Centro Origen' },
       { key: 'ce', label: 'Centro Destino' },
