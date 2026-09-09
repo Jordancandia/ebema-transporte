@@ -274,3 +274,25 @@ export async function geocodeAddress(address, comunaHint = null) {
     found: false
   };
 }
+
+// ── Carga dinámica de Leaflet (mapas) — se llama solo cuando el módulo lo necesita ──
+const LEAFLET_VERSION = '1.9.4';
+let _leafletLoading = null;
+export function loadLeaflet() {
+  if (window.L) return Promise.resolve(window.L);
+  if (_leafletLoading) return _leafletLoading;
+  _leafletLoading = new Promise((resolve, reject) => {
+    // CSS
+    const link = document.createElement('link');
+    link.rel = 'stylesheet';
+    link.href = `https://unpkg.com/leaflet@${LEAFLET_VERSION}/dist/leaflet.css`;
+    document.head.appendChild(link);
+    // JS
+    const script = document.createElement('script');
+    script.src = `https://unpkg.com/leaflet@${LEAFLET_VERSION}/dist/leaflet.js`;
+    script.onload  = () => resolve(window.L);
+    script.onerror = () => reject(new Error('No se pudo cargar Leaflet'));
+    document.head.appendChild(script);
+  });
+  return _leafletLoading;
+}

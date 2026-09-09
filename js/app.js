@@ -1,13 +1,16 @@
 import { getDatabase, saveDatabase, initDatabase } from './data.js?v=20260714a';
 import { supabase } from './supabase-client.js';
-import { renderTransportsView } from './transports.js';
-import { renderRoutesView, setRoutesSubTab } from './routes.js?v=20260708a';
-import { renderRatesView } from './rates.js';
-import { renderRolesView } from './roles.js?v=20260909a';
-import { renderTariffTransportView, setActiveSub } from './tarifas-transporte.js?v=20260713c';
-import { renderClientTariffView, setActiveSubC } from './tarifas-clientes.js?v=20260714c';
-import { renderAbastecimientoView, setAbastSubTab } from './abastecimiento.js?v=20260907e';
-import { renderIndicadoresView, setIndicadoresSubTab, renderIndicadoresHome } from './indicadores.js?v=20260818x';
+// ── Módulos cargados bajo demanda (lazy) — se cachean tras la primera carga ──
+const _mod = {};
+async function loadMod(key, modPath) {
+  if (!_mod[key]) _mod[key] = await import(modPath);
+  return _mod[key];
+}
+// Pre-warm: carga indicadores y abastecimiento en background tras login
+function prewarmMods() {
+  setTimeout(() => loadMod('ind',   './indicadores.js?v=20260818x'), 600);
+  setTimeout(() => loadMod('abast', './abastecimiento.js?v=20260907e'), 2000);
+}
 import { showAlert, formatRut, validateRut, formatPhone } from './utils.js';
 
 const SESSION_KEY = 'ebema_user_session';
@@ -560,6 +563,7 @@ function renderLoginView() {
     }
     showAlert(`Bienvenido, ${currentSession.name}`);
     renderApp();
+    prewarmMods();
   });
 }
 
@@ -688,6 +692,7 @@ function renderMfaView(session) {
       }
       showAlert(`Bienvenido, ${currentSession.name}`);
       renderApp();
+      prewarmMods();
 
     } catch (err) {
       errDiv.textContent = 'Error de conexión. Intente nuevamente.';
@@ -1467,7 +1472,14 @@ function renderDashboardShell() {
 const NAV_ACTIVE_ADD    = ['bg-primary-container', 'text-on-primary-container', 'font-semibold'];
 const NAV_ACTIVE_REMOVE = ['text-secondary', 'hover:text-primary', 'hover:bg-surface-container-high'];
 
-function switchTab(tabName, subName = null) {
+function _stageSpinner(stage) {
+  stage.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;height:200px;gap:12px;color:#b5000b">
+    <div style="width:22px;height:22px;border:3px solid #ffdad5;border-top-color:#b5000b;border-radius:50%;animation:spin 0.6s linear infinite"></div>
+    <span style="font-size:13px;font-weight:600;letter-spacing:0.04em">Cargando...</span>
+  </div>`;
+}
+
+async function switchTab(tabName, subName = null) {
   // Verificar acceso al tab según rol
   const _allowed = ROLE_ALLOWED_GROUPS[currentSession?.role];
   if (_allowed) {
@@ -1517,48 +1529,67 @@ function switchTab(tabName, subName = null) {
   const stage = document.getElementById('stage-area');
   const subLabel = activeNav && subName ? ` — ${activeNav.textContent.trim()}` : '';
 
+  _stageSpinner(stage);
   switch (tabName) {
-    case 'home':
+    case 'home': {
       pageTitle.textContent = 'Indicadores';
-      renderIndicadoresHome(stage);
+      const m = await loadMod('ind', './indicadores.js?v=20260818x');
+      m.renderIndicadoresHome(stage);
       break;
-    case 'rates':
+    }
+    case 'rates': {
       pageTitle.textContent = 'Cotizador Despacho';
-      renderRatesView(stage);
+      const m = await loadMod('rates', './rates.js');
+      m.renderRatesView(stage);
       break;
-    case 'transports':
+    }
+    case 'transports': {
       pageTitle.textContent = 'Proveedores' + subLabel;
-      renderTransportsView(stage);
+      const m = await loadMod('trans', './transports.js');
+      m.renderTransportsView(stage);
       break;
-    case 'routes':
+    }
+    case 'routes': {
       pageTitle.textContent = 'Rutas de Transporte' + subLabel;
-      if (alias) setRoutesSubTab(alias);
-      renderRoutesView(stage);
+      const m = await loadMod('routes', './routes.js?v=20260708a');
+      if (alias) m.setRoutesSubTab(alias);
+      m.renderRoutesView(stage);
       break;
-    case 'roles':
+    }
+    case 'roles': {
       pageTitle.textContent = 'Roles y Perfiles';
-      renderRolesView(stage);
+      const m = await loadMod('roles', './roles.js?v=20260909a');
+      m.renderRolesView(stage);
       break;
-    case 'tarifas-transporte':
+    }
+    case 'tarifas-transporte': {
       pageTitle.textContent = 'Tarifas Transporte' + subLabel;
-      if (alias) setActiveSub(alias);
-      renderTariffTransportView(stage);
+      const m = await loadMod('tt', './tarifas-transporte.js?v=20260713c');
+      if (alias) m.setActiveSub(alias);
+      m.renderTariffTransportView(stage);
       break;
-    case 'tarifas-clientes':
+    }
+    case 'tarifas-clientes': {
       pageTitle.textContent = 'Tarifas Clientes' + subLabel;
-      if (alias) setActiveSubC(alias);
-      renderClientTariffView(stage);
+      const m = await loadMod('tc', './tarifas-clientes.js?v=20260714c');
+      if (alias) m.setActiveSubC(alias);
+      m.renderClientTariffView(stage);
       break;
-    case 'abastecimiento':
+    }
+    case 'abastecimiento': {
       pageTitle.textContent = 'Gestión Troncales' + subLabel;
-      if (subName) setAbastSubTab(subName);
-      renderAbastecimientoView(stage);
+      const m = await loadMod('abast', './abastecimiento.js?v=20260907e');
+      if (subName) m.setAbastSubTab(subName);
+      m.renderAbastecimientoView(stage);
       break;
-    case 'indicadores':
+    }
+    case 'indicadores': {
       pageTitle.textContent = 'Indicadores';
-      if (subName) setIndicadoresSubTab(subName);
-      renderIndicadoresView(stage);
+      const m = await loadMod('ind', './indicadores.js?v=20260818x');
+      if (subName) m.setIndicadoresSubTab(subName);
+      m.renderIndicadoresView(stage);
       break;
+    }
   }
   // Aplicar modo solo lectura si corresponde
   applyReadOnlyMode(stage);
