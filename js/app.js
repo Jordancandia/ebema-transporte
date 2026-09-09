@@ -1254,7 +1254,7 @@ const SIDEBAR_MENU = [
   {
     group: 'abastecimiento', icon: 'inventory_2', label: 'Gestión Troncales', children: [
       { tab: 'abastecimiento', sub: 'calendario',              icon: 'calendar_month',            label: 'Calendario Sucursales' },
-      { tab: 'abastecimiento', sub: 'quiebres',               icon: 'production_quantity_limits', label: 'Quiebres Sucursales' },
+      // { tab: 'abastecimiento', sub: 'quiebres', icon: 'production_quantity_limits', label: 'Quiebres Sucursales' }, // OCULTO: integrado en Pedidos Traslados
       { tab: 'abastecimiento', sub: 'stock_almacen',          icon: 'inventory',                  label: 'Stock Almacén 4000' },
       { tab: 'abastecimiento', sub: 'pedidos_traslados_revex', icon: 'recycling',                 label: 'Pedidos de Traslado REVEX' },
       { tab: 'abastecimiento', sub: 'pedidos_venta',          icon: 'sell',                       label: 'Pedidos de Ventas CD (1003)' },
