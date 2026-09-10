@@ -166,42 +166,114 @@ function tipoQuiebre(sd) {
 
 // ── Estado de coordinación de retiros (persistente) ─────────────────────────
 async function loadEstadosRetiro() {
-  const { data, error } = await supabase.from('abast_retiro_estado').select('doc_compr, estado, tipo_retiro, entrega_entrante');
+  const { data, error } = await supabase.from('abast_retiro_estado').select('doc_compr, estado, tipo_retiro, entrega_entrante, tipo_local_rm, fab_direccion, fab_comuna, fab_contacto, fab_telefono');
   const m = {};
-  if (!error) (data || []).forEach(r => { m[String(r.doc_compr)] = { estado: r.estado, tipo_retiro: r.tipo_retiro, entrega_entrante: r.entrega_entrante }; });
+  if (!error) (data || []).forEach(r => { m[String(r.doc_compr)] = { estado: r.estado, tipo_retiro: r.tipo_retiro, entrega_entrante: r.entrega_entrante, tipo_local_rm: r.tipo_local_rm, fab_direccion: r.fab_direccion, fab_comuna: r.fab_comuna, fab_contacto: r.fab_contacto, fab_telefono: r.fab_telefono }; });
   return m;
 }
-async function saveEstadoRetiro(docCompr, estado, tipoRetiro = null, entregaEntrante = null) {
+async function saveEstadoRetiro(docCompr, estado, tipoRetiro = null, entregaEntrante = null, extraFab = null) {
   const payload = { doc_compr: String(docCompr), estado, updated_by: await getUserEmail(), updated_at: new Date().toISOString() };
   if (tipoRetiro !== null) payload.tipo_retiro = tipoRetiro;
   if (entregaEntrante !== null) payload.entrega_entrante = entregaEntrante;
+  if (extraFab) {
+    if (extraFab.tipo_local_rm  !== undefined) payload.tipo_local_rm  = extraFab.tipo_local_rm;
+    if (extraFab.fab_direccion  !== undefined) payload.fab_direccion  = extraFab.fab_direccion;
+    if (extraFab.fab_comuna     !== undefined) payload.fab_comuna     = extraFab.fab_comuna;
+    if (extraFab.fab_contacto   !== undefined) payload.fab_contacto   = extraFab.fab_contacto;
+    if (extraFab.fab_telefono   !== undefined) payload.fab_telefono   = extraFab.fab_telefono;
+  }
   const { error } = await supabase.from('abast_retiro_estado').upsert(payload, { onConflict: 'doc_compr' });
   if (error) { showAlert('Error al guardar estado: ' + error.message, 'error'); return false; }
   return true;
 }
 function showCoordModal(row) {
-  return new Promise(resolve => {
+  return new Promise(async resolve => {
     const preselect = row._tipo_retiro || 'FAB-CD';
+    const preselectLR = row._tipo_local_rm || 'RM';
     const opts = ['FAB-CD', 'FAB-SUC', 'FAB-CLTE'];
+    // Pre-cargar direcciones del proveedor
+    let dirs = [];
+    try {
+      const { data } = await supabase
+        .from('abast_proveedor_direcciones')
+        .select('id, nombre_fabrica, direccion, comuna')
+        .eq('proveedor_id', row.proveedor ?? '')
+        .eq('activo', true);
+      dirs = data || [];
+    } catch(_) {}
+
+    const dirOpts = dirs.map(d =>
+      `<option value="${d.id}" data-dir="${d.direccion || ''}" data-com="${d.comuna || ''}">${d.nombre_fabrica || d.direccion}</option>`
+    ).join('');
+
     const radios = opts.map(o =>
       `<label class="flex items-center gap-2 cursor-pointer">
         <input type="radio" name="coord-tipo" value="${o}" ${o === preselect ? 'checked' : ''} class="accent-primary">
-        <span class="font-semibold">${o}</span>
+        <span class="font-semibold text-xs">${o}</span>
       </label>`
     ).join('');
+
     const html = `
       <div id="coord-modal-bg" class="fixed inset-0 bg-black/40 flex items-center justify-center z-[9999]">
-        <div class="bg-white rounded-xl shadow-2xl p-6 w-[360px] flex flex-col gap-4">
+        <div class="bg-white rounded-xl shadow-2xl p-6 w-[440px] flex flex-col gap-4 max-h-[90vh] overflow-y-auto">
           <h3 class="text-base font-bold text-gray-800">Confirmar Coordinación</h3>
+
           <div class="flex flex-col gap-1">
             <span class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Tipo de Retiro</span>
-            <div class="flex gap-4 mt-1">${radios}</div>
+            <div class="flex gap-3 mt-1">
+              <button id="btn-local" class="flex-1 py-2 rounded-lg border-2 text-sm font-bold transition-all ${preselectLR === 'LOCAL' ? 'border-primary bg-primary/10 text-primary' : 'border-outline-variant text-secondary'}">RETIRO LOCAL</button>
+              <button id="btn-rm"    class="flex-1 py-2 rounded-lg border-2 text-sm font-bold transition-all ${preselectLR === 'RM'    ? 'border-primary bg-primary/10 text-primary' : 'border-outline-variant text-secondary'}">RETIRO RM</button>
+            </div>
+            <input type="hidden" id="coord-local-rm" value="${preselectLR}">
           </div>
-          <div class="flex flex-col gap-1">
-            <label for="coord-entrega" class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Entrega Entrante</label>
-            <input id="coord-entrega" type="text" placeholder="Número SAP de entrega" class="border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary">
+
+          <div id="fab-form" class="flex flex-col gap-3">
+            <div class="flex flex-col gap-1">
+              <label class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Dirección de Fábrica</label>
+              ${dirs.length > 0 ? `<select id="coord-dir-sel" class="border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary">
+                <option value="">— Seleccionar dirección guardada —</option>
+                ${dirOpts}
+                <option value="__manual__">+ Ingresar nueva dirección</option>
+              </select>` : ''}
+              <input id="coord-direccion" type="text" placeholder="Dirección" value="${row._fab_direccion || ''}"
+                class="border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary ${dirs.length > 0 ? 'hidden' : ''}">
+            </div>
+            <div class="flex gap-2">
+              <div class="flex flex-col gap-1 flex-1">
+                <label class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Comuna</label>
+                <input id="coord-comuna" type="text" placeholder="Comuna" value="${row._fab_comuna || ''}"
+                  class="border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary">
+              </div>
+            </div>
+            <div class="flex gap-2">
+              <div class="flex flex-col gap-1 flex-1">
+                <label class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Persona de Contacto</label>
+                <input id="coord-contacto" type="text" placeholder="Nombre contacto" value="${row._fab_contacto || ''}"
+                  class="border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary">
+              </div>
+              <div class="flex flex-col gap-1 flex-1">
+                <label class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Teléfono</label>
+                <input id="coord-telefono" type="text" placeholder="+56 9..." value="${row._fab_telefono || ''}"
+                  class="border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary">
+              </div>
+            </div>
+            <label id="coord-guardar-prov-wrap" class="flex items-center gap-2 text-xs text-secondary cursor-pointer ${dirs.length > 0 ? 'hidden' : ''}">
+              <input type="checkbox" id="coord-guardar-prov" checked class="accent-primary"> Guardar esta dirección en el proveedor
+            </label>
           </div>
-          <div class="flex gap-2 justify-end">
+
+          <div id="entrega-wrap" class="flex flex-col gap-1 ${preselectLR !== 'RM' ? 'hidden' : ''}">
+            <label for="coord-entrega" class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Entrega Entrante SAP</label>
+            <input id="coord-entrega" type="text" placeholder="Número SAP de entrega" value="${row._entrega_entrante || ''}"
+              class="border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary">
+          </div>
+
+          <div id="tipo-fab-wrap" class="flex flex-col gap-1 ${preselectLR !== 'RM' ? 'hidden' : ''}">
+            <span class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Clasificación Fábrica</span>
+            <div class="flex gap-3 mt-1">${radios}</div>
+          </div>
+
+          <div class="flex gap-2 justify-end pt-1">
             <button id="coord-cancel" class="px-4 py-2 rounded-lg border text-sm hover:bg-gray-50">Cancelar</button>
             <button id="coord-confirm" class="px-4 py-2 rounded-lg bg-primary text-white text-sm font-semibold hover:opacity-90">Confirmar</button>
           </div>
@@ -210,12 +282,78 @@ function showCoordModal(row) {
     document.body.insertAdjacentHTML('beforeend', html);
     const bg = document.getElementById('coord-modal-bg');
     const cleanup = () => bg.remove();
+
+    // Toggle LOCAL / RM
+    const btnLocal = document.getElementById('btn-local');
+    const btnRm    = document.getElementById('btn-rm');
+    const inputLR  = document.getElementById('coord-local-rm');
+    const entregaWrap = document.getElementById('entrega-wrap');
+    const tipoFabWrap = document.getElementById('tipo-fab-wrap');
+    function setLR(v) {
+      inputLR.value = v;
+      [btnLocal, btnRm].forEach(b => b.classList.remove('border-primary','bg-primary/10','text-primary'));
+      [btnLocal, btnRm].forEach(b => b.classList.add('border-outline-variant','text-secondary'));
+      const active = v === 'LOCAL' ? btnLocal : btnRm;
+      active.classList.add('border-primary','bg-primary/10','text-primary');
+      active.classList.remove('border-outline-variant','text-secondary');
+      if (v === 'RM') { entregaWrap.classList.remove('hidden'); tipoFabWrap.classList.remove('hidden'); }
+      else            { entregaWrap.classList.add('hidden');    tipoFabWrap.classList.add('hidden'); }
+    }
+    btnLocal.addEventListener('click', () => setLR('LOCAL'));
+    btnRm.addEventListener('click',    () => setLR('RM'));
+
+    // Selector de direcciones guardadas
+    const dirSel = document.getElementById('coord-dir-sel');
+    const inputDir = document.getElementById('coord-direccion');
+    const inputCom = document.getElementById('coord-comuna');
+    const inputCont = document.getElementById('coord-contacto');
+    const inputTel  = document.getElementById('coord-telefono');
+    const guardarWrap = document.getElementById('coord-guardar-prov-wrap');
+    if (dirSel) {
+      dirSel.addEventListener('change', () => {
+        if (dirSel.value === '__manual__') {
+          inputDir.classList.remove('hidden'); guardarWrap.classList.remove('hidden');
+          inputDir.value = ''; inputCom.value = '';
+        } else if (dirSel.value) {
+          const opt = dirSel.options[dirSel.selectedIndex];
+          inputDir.value = opt.dataset.dir || ''; inputCom.value = opt.dataset.com || '';
+          inputDir.classList.add('hidden'); guardarWrap.classList.add('hidden');
+        } else {
+          inputDir.classList.add('hidden'); guardarWrap.classList.add('hidden');
+        }
+      });
+      // Pre-seleccionar si ya había dirección guardada
+      if (row._fab_direccion) {
+        const match = dirs.find(d => d.direccion === row._fab_direccion);
+        if (match) { dirSel.value = match.id; }
+        else { dirSel.value = '__manual__'; inputDir.classList.remove('hidden'); guardarWrap.classList.remove('hidden'); }
+      }
+    }
+
     document.getElementById('coord-cancel').addEventListener('click', () => { cleanup(); resolve(null); });
-    document.getElementById('coord-confirm').addEventListener('click', () => {
-      const tipoRetiro = bg.querySelector('input[name="coord-tipo"]:checked')?.value || preselect;
-      const entregaEntrante = document.getElementById('coord-entrega').value.trim();
+    document.getElementById('coord-confirm').addEventListener('click', async () => {
+      const tipoLocalRM    = inputLR.value;
+      const tipoRetiro     = tipoLocalRM === 'RM' ? (bg.querySelector('input[name="coord-tipo"]:checked')?.value || preselect) : null;
+      const entregaEntrante = tipoLocalRM === 'RM' ? (document.getElementById('coord-entrega')?.value || '').trim() : '';
+      const fabDir  = inputDir  ? inputDir.value.trim()  : '';
+      const fabCom  = inputCom  ? inputCom.value.trim()  : '';
+      const fabCont = inputCont ? inputCont.value.trim() : '';
+      const fabTel  = inputTel  ? inputTel.value.trim()  : '';
+
+      // Guardar nueva dirección en proveedor si corresponde
+      const guardarProv = document.getElementById('coord-guardar-prov');
+      if (guardarProv && guardarProv.checked && fabDir && row.proveedor) {
+        await supabase.from('abast_proveedor_direcciones').insert({
+          proveedor_id: row.proveedor,
+          nombre_fabrica: fabDir,
+          direccion: fabDir,
+          comuna: fabCom,
+          activo: true,
+        });
+      }
+
       cleanup();
-      resolve({ tipoRetiro, entregaEntrante });
+      resolve({ tipoRetiro, entregaEntrante, tipoLocalRM, fabDir, fabCom, fabCont, fabTel });
     });
   });
 }
@@ -305,14 +443,30 @@ const VISTAS_TRONCAL = {
           const result = await showCoordModal(row);
           if (!result) return false;
           tipoRetiro = result.tipoRetiro;
-          entregaEntrante = result.entregaEntrante;
+          entregaEntrante = result.entregaEntrante || '';
         }
-        const ok = await saveEstadoRetiro(row.doc_compr, val, tipoRetiro, entregaEntrante);
+        const extraFab = val === 'coordinado' ? {
+          tipo_local_rm: result.tipoLocalRM, fab_direccion: result.fabDir,
+          fab_comuna: result.fabCom, fab_contacto: result.fabCont, fab_telefono: result.fabTel,
+        } : null;
+        const ok = await saveEstadoRetiro(row.doc_compr, val, tipoRetiro, entregaEntrante, extraFab);
         if (ok) {
           const oc = String(row.doc_compr);
           ctx.estados[oc] = { ...(ctx.estados[oc] || {}), estado: val };
           if (tipoRetiro !== null) { ctx.estados[oc].tipo_retiro = tipoRetiro; row._tipo_retiro = tipoRetiro; }
           if (entregaEntrante !== null) { ctx.estados[oc].entrega_entrante = entregaEntrante; row._entrega_entrante = entregaEntrante; }
+          if (extraFab) {
+            ctx.estados[oc].tipo_local_rm  = extraFab.tipo_local_rm;
+            ctx.estados[oc].fab_direccion  = extraFab.fab_direccion;
+            ctx.estados[oc].fab_comuna     = extraFab.fab_comuna;
+            ctx.estados[oc].fab_contacto   = extraFab.fab_contacto;
+            ctx.estados[oc].fab_telefono   = extraFab.fab_telefono;
+            row._tipo_local_rm  = extraFab.tipo_local_rm;
+            row._fab_direccion  = extraFab.fab_direccion;
+            row._fab_comuna     = extraFab.fab_comuna;
+            row._fab_contacto   = extraFab.fab_contacto;
+            row._fab_telefono   = extraFab.fab_telefono;
+          }
           showAlert('Estado actualizado', 'success');
         }
         return ok;
@@ -366,6 +520,8 @@ const VISTAS_TRONCAL = {
         const al = alertaFecha(f.fe_entrega, 5);
         const estObj = estados[oc] || {};
         const est = estObj.estado || 'no_coordinado';
+        // Usar tipo_retiro guardado si existe (persistencia entre recargas)
+        if (estObj.tipo_retiro) tipoRetiro = estObj.tipo_retiro;
         // Cross-reference con pedidos_ventas_dt
         const docPV = String(f.documento ?? '').trim();
         const pv = pvMap[docPV] || {};
@@ -383,6 +539,11 @@ const VISTAS_TRONCAL = {
           _alerta: al.txt, _alerta_cls: al.cls,
           _estado: est, _estado_lbl: (ESTADO_OPTS.find(o => o.v === est) || {}).l || 'No coordinado',
           _entrega_entrante: estObj.entrega_entrante || '',
+          _tipo_local_rm: estObj.tipo_local_rm || '',
+          _fab_direccion:  estObj.fab_direccion  || '',
+          _fab_comuna:     estObj.fab_comuna     || '',
+          _fab_contacto:   estObj.fab_contacto   || '',
+          _fab_telefono:   estObj.fab_telefono   || '',
           _detalle: detalle,
           // Datos cruzados de Pedidos de Ventas
           _pv_denominacion: pv.denominacion || '',
@@ -423,6 +584,12 @@ const VISTAS_TRONCAL = {
           return '';
         },
         clsFn: () => 'text-center' },
+      { key: '_tipo_local_rm', label: 'Tipo Retiro', rawHtml: true,
+        valueFn: r => r._tipo_local_rm === 'RM'
+          ? '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold bg-blue-100 text-blue-700">RM</span>'
+          : r._tipo_local_rm === 'LOCAL'
+            ? '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold bg-green-100 text-green-700">LOCAL</span>'
+            : '', clsFn: () => 'text-center' },
       { key: '_estado', label: 'Coordinación', editable: true },
     ],
   },
@@ -1082,7 +1249,7 @@ async function renderPlanCarga(stage) {
   const retiros = esCD1003 ? retirosRaw
     .filter(r => !String(r.proveedor ?? '').startsWith('*'))
     .filter(r => String(r.contr ?? '').trim() !== '')
-    .filter(r => { const _e = estadosRetiro[String(r.doc_compr ?? '').trim()] || {}; return _e.estado === 'coordinado' && String(_e.entrega_entrante ?? '').trim() !== ''; }) : [];
+    .filter(r => { const _e = estadosRetiro[String(r.doc_compr ?? '').trim()] || {}; return _e.estado === 'coordinado' && (_e.tipo_local_rm === 'RM' || String(_e.entrega_entrante ?? '').trim() !== ''); }) : [];
   const ventas = esCD1003 ? ventasRaw.filter(r => !String(r.mr ?? '').trim()) : [];
   const t4000 = traslados4000Raw.filter(r => String(r.cesu ?? '').trim() === planOrigen);
 
