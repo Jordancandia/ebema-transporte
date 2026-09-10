@@ -597,9 +597,9 @@ const VISTAS_TRONCAL = {
         },
         clsFn: () => 'text-center' },
       { key: '_tipo_local_rm', label: 'Tipo Retiro', rawHtml: true,
-        valueFn: r => r._tipo_local_rm === 'RM'
+        valueFn: r => (r._estado === 'coordinado' && r._tipo_local_rm === 'RM')
           ? '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold bg-blue-100 text-blue-700">RM</span>'
-          : r._tipo_local_rm === 'LOCAL'
+          : (r._estado === 'coordinado' && r._tipo_local_rm === 'LOCAL')
             ? '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold bg-green-100 text-green-700">LOCAL</span>'
             : '', clsFn: () => 'text-center' },
       { key: '_estado', label: 'Coordinación', editable: true },
@@ -1263,7 +1263,7 @@ async function renderPlanCarga(stage) {
     .filter(r => String(r.contr ?? '').trim() !== '')
     .filter(r => { const _e = estadosRetiro[String(r.doc_compr ?? '').trim()] || {}; return _e.estado === 'coordinado' && (_e.tipo_local_rm === 'RM' || String(_e.entrega_entrante ?? '').trim() !== ''); }) : [];
   const ventas = esCD1003 ? ventasRaw.filter(r => !String(r.mr ?? '').trim()) : [];
-  const t4000 = traslados4000Raw.filter(r => String(r.cesu ?? '').trim() === planOrigen);
+  const t4000 = esCD1003 ? traslados4000Raw : []; // sqvi_pedidos_traslados_4000: cesu==ce (destino), origen siempre es CD 1003
 
   const destinosOrigen = (CALENDARIOS[planOrigen] && CALENDARIOS[planOrigen].destinos) || CENTROS_QUIEBRES;
   const centrosSet = new Set(destinosOrigen);
