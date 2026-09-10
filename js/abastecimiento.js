@@ -1306,9 +1306,10 @@ async function renderPlanCarga(stage) {
       .filter(r => String(r.ce ?? '').trim() === ce)
       .reduce((sum, r) => { const t = calcTon(parseNum(r.peso_neto_2), r.ctd_pedido); det.revex.push(itemT(r, t)); return sum + t; }, 0);
 
-    // 4. Crossdocking 4000 — SÓLO pendientes (ctd_pedido > cantidad_salida)
+    // 4. Crossdocking 4000 — SÓLO pendientes (ctd_pedido > cantidad_salida), fecha -10/+5
     const tonCross = t4000
       .filter(r => String(r.ce ?? '').trim() === ce)
+      .filter(r => fechaEnRango(r.fe_entrega, 10, 5))
       .filter(r => parseNum(r.ctd_pedido) > parseNum(r.cantidad_salida))
       .reduce((sum, r) => { const pend = parseNum(r.ctd_pedido) - parseNum(r.cantidad_salida); const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), pend);
         det.cross.push({ pt: r.doc_compr, origen: String(r.cesu ?? '').trim(), ceDestino: String(r.ce ?? '').trim(), almDestino: String(r.alm ?? '').trim(), material: r.material, nombre: r.texto_breve, fecha: r.fe_entrega, ctdPend: pend, ton: t, pv: r.documento }); return sum + t; }, 0);
