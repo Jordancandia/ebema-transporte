@@ -1345,8 +1345,9 @@ async function renderPlanCarga(stage) {
     // 5. Notas de Venta 1003 (ofvta = centro): requiere ruta, excluye RETIRA.
     //    >26T  ⇒ CAMIÓN CLIENTE (directo al cliente, no se consolida). Fecha -3/+3.
     //    ≤26T  ⇒ PEDIDO DE VENTA DIRECTA (consolida con la carga del CD).   Fecha -3/+3.
-    //    Dedup doc_ventas|material (igual que la vista): SQVI puede tener filas duplicadas.
-    //    Se conserva la fila con la fecha más reciente (misma lógica que la vista tabla).
+    //    Dedup doc_ventas|material: el SQVI puede tener varias líneas para el mismo
+    //    PV+material (distintas fechas). Se conserva la fila con fecha más reciente,
+    //    igual que la lógica usada en la vista tabla de pedidos de ventas.
     const _ventasDedupMap = new Map();
     ventas
       .filter(r => String(r.ofvta ?? '').trim() === ce)
