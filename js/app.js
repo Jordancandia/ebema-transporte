@@ -10,7 +10,7 @@ async function loadMod(key, modPath) {
 function prewarmMods() {
   setTimeout(() => loadMod('ind',   './indicadores.js?v=20260818x'), 600);
   setTimeout(() => loadRoutesData(), 800);  // pre-fetch tablas pesadas en background
-  setTimeout(() => loadMod('abast', './abastecimiento.js?v=20260910j'), 2000);
+  setTimeout(() => loadMod('abast', './abastecimiento.js?v=20260910l'), 2000);
 }
 import { showAlert, formatRut, validateRut, formatPhone } from './utils.js';
 
@@ -1583,7 +1583,7 @@ async function switchTab(tabName, subName = null) {
     }
     case 'abastecimiento': {
       pageTitle.textContent = 'Gestión Troncales' + subLabel;
-      const m = await loadMod('abast', './abastecimiento.js?v=20260910j');
+      const m = await loadMod('abast', './abastecimiento.js?v=20260910l');
       if (subName) m.setAbastSubTab(subName);
       m.renderAbastecimientoView(stage);
       break;

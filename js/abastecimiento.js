@@ -1315,18 +1315,20 @@ async function renderPlanCarga(stage) {
     const det = { quiebre: [], stock: [], revex: [], cross: [], ventaCons: [], retiro: [], cliente: [], fabSuc: [], fabCli: [] };
     const itemT = (r, t) => ({ pt: r.doc_compr, material: r.material, nombre: r.texto_breve, fecha: r.fecha_confirmada, ctd: r.ctd_confirmada, ton: t, pv: r.documento });
 
-    // 1. Traslados Quiebre
+    // 1. Traslados Quiebre  (excluye líneas con ctd_confirmada = 0 → ya entregadas)
     const tonQuiebre = traslados
       .filter(r => String(r.ce ?? '').trim() === ce)
       .filter(r => quiebresMat.has(String(r.material ?? '').trim()))
       .filter(r => fechaEnRango(r.fecha_confirmada, 10, 7))
+      .filter(r => parseNum(r.ctd_confirmada) > 0)
       .reduce((sum, r) => { const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), r.ctd_confirmada); det.quiebre.push(itemT(r, t)); return sum + t; }, 0);
 
-    // 2. Traslados Stock / Abastecimiento
+    // 2. Traslados Stock / Abastecimiento  (ídem)
     const tonStock = traslados
       .filter(r => String(r.ce ?? '').trim() === ce)
       .filter(r => !quiebresMat.has(String(r.material ?? '').trim()))
       .filter(r => fechaEnRango(r.fecha_confirmada, 10, 7))
+      .filter(r => parseNum(r.ctd_confirmada) > 0)
       .reduce((sum, r) => { const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), r.ctd_confirmada); det.stock.push(itemT(r, t)); return sum + t; }, 0);
 
     // 3. REVEX (peso_neto_2 × ctd_pedido — igual que la vista REVEX)
@@ -1334,12 +1336,17 @@ async function renderPlanCarga(stage) {
       .filter(r => String(r.ce ?? '').trim() === ce)
       .reduce((sum, r) => { const t = calcTon(parseNum(r.peso_neto_2), r.ctd_pedido); det.revex.push(itemT(r, t)); return sum + t; }, 0);
 
-    // 4. Crossdocking 4000 — SÓLO pendientes (ctd_pedido > cantidad_salida), fecha -10/+5
+    // 4. Crossdocking 4000 — SÓLO pendientes (ctd_pedido > procesado). Fecha -10/+5.
+    //    "Procesado" = MAX(ctd_entregada, cantidad_salida) para cubrir los tres casos:
+    //      · ctd_entregada == cantidad_salida > 0  → entregado, excluir
+    //      · cantidad_salida > ctd_entregada        → en tránsito; pend = ctd_pedido - cantidad_salida
+    //      · cantidad_salida == 0                   → no ha salido; pend = ctd_pedido - ctd_entregada
+    //    Anomalía SAP (ctd_entregada > cantidad_salida con salida=0): MAX deja pend=0 → excluido.
     const tonCross = t4000
       .filter(r => String(r.ce ?? '').trim() === ce)
       .filter(r => fechaEnRango(r.fe_entrega, 10, 5))
-      .filter(r => parseNum(r.ctd_pedido) > parseNum(r.cantidad_salida))
-      .reduce((sum, r) => { const pend = parseNum(r.ctd_pedido) - parseNum(r.cantidad_salida); const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), pend);
+      .filter(r => parseNum(r.ctd_pedido) > Math.max(parseNum(r.ctd_entregada), parseNum(r.cantidad_salida)))
+      .reduce((sum, r) => { const pend = parseNum(r.ctd_pedido) - Math.max(parseNum(r.ctd_entregada), parseNum(r.cantidad_salida)); const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), pend);
         det.cross.push({ pt: r.doc_compr, origen: String(r.cesu ?? '').trim(), ceDestino: String(r.ce ?? '').trim(), almDestino: String(r.alm ?? '').trim(), material: r.material, nombre: r.texto_breve, fecha: r.fe_entrega, ctdPend: pend, ton: t, pv: r.documento }); return sum + t; }, 0);
 
     // 5. Notas de Venta 1003 (ofvta = centro): requiere ruta, excluye RETIRA.
@@ -1426,8 +1433,10 @@ async function renderPlanCarga(stage) {
     if (CENTROS_CAMION_REDUCIDO.includes(ce)) cap = total >= CAP_CAMION_DEFAULT ? CAP_CAMION_DEFAULT : CAP_CAMION_REDUCIDO;
 
     const pct = cap > 0 ? Math.round(total / cap * 100) : 0;
-    const faltan = cap - total;
     const sobrecarga = Math.max(0, total - cap);
+    // FALTA nunca es negativo: cuando hay sobrecarga la celda muestra 0
+    // y el excedente pasa a la columna de observaciones como "2º CAMIÓN".
+    const faltan = Math.max(0, cap - total);
     const enCalendario = centrosProgramados.has(ce);
 
     let status, statusCls;
@@ -1438,12 +1447,12 @@ async function renderPlanCarga(stage) {
     let obs = '';
     if (!enCalendario && pct >= 70) obs = 'CUPO EXTRA';
     if (enCalendario && pct < 70) obs = 'EN CALENDARIO - CARGA BAJA';
-    if (sobrecarga > 0) obs = (obs ? obs + ' · ' : '') + 'SOBRECARGA ' + fmtNum(sobrecarga, 1) + ' t';
+    if (sobrecarga > 0) obs = (obs ? obs + ' · ' : '') + '2º CAMIÓN (~' + fmtNum(sobrecarga, 1) + ' T)';
 
     return {
       ce, nombre: getNombreCentro(ce), cap,
       tonQuiebre, tonStock, tonRevex, tonCross, tonVentaCons, tonVentaCliente, tonRetiro, tonFabSuc, tonFabCli,
-      total, faltan, pct, status, statusCls, obs, enCalendario,
+      total, faltan, sobrecarga, pct, status, statusCls, obs, enCalendario,
       camionCliente: tonVentaCliente > 0, camionFabSuc: tonFabSuc > 0, camionFabCli: tonFabCli > 0,
       det,
     };
@@ -1693,7 +1702,7 @@ async function renderPlanCarga(stage) {
                 <td class="py-sm pr-md text-right num-clear">${fmtNum(r.tonQuiebre, 1)}</td>
                 <td class="py-sm pr-md text-right num-clear">${fmtNum(r.tonStock, 1)}</td>
                 <td class="py-sm pr-md text-right num-clear font-bold ${totalCls}">${fmtNum(r.total, 1)}</td>
-                <td class="py-sm pr-md text-right num-clear ${r.faltan < 0 ? 'text-red-600' : ''}">${fmtNum(r.faltan, 1)}</td>
+                <td class="py-sm pr-md text-right num-clear ${r.sobrecarga > 0 ? 'text-orange-600 font-bold' : ''}">${fmtNum(r.faltan, 1)}</td>
                 <td class="py-sm pr-md text-right num-clear font-bold">${r.pct}%</td>
                 ${truckCell(r, 'cd', r.total > 0, camCD)}
                 <td class="py-sm pr-md text-center"><span class="px-sm py-xs rounded text-[11px] font-bold ${r.statusCls}">${escapeHtml(r.status)}</span></td>
