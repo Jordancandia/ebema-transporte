@@ -1345,11 +1345,22 @@ async function renderPlanCarga(stage) {
     // 5. Notas de Venta 1003 (ofvta = centro): requiere ruta, excluye RETIRA.
     //    >26T  ⇒ CAMIÓN CLIENTE (directo al cliente, no se consolida). Fecha -3/+3.
     //    ≤26T  ⇒ PEDIDO DE VENTA DIRECTA (consolida con la carga del CD).   Fecha -3/+3.
-    const ventasCe = ventas
+    //    Dedup doc_ventas|material (igual que la vista): SQVI puede tener filas duplicadas.
+    //    Se conserva la fila con la fecha más reciente (misma lógica que la vista tabla).
+    const _ventasDedupMap = new Map();
+    ventas
       .filter(r => String(r.ofvta ?? '').trim() === ce)
       .filter(r => String(r.ruta ?? '').trim() !== '')
       .filter(r => normTxt(r.ruta).indexOf('RETIRA') === -1)
-      .filter(r => fechaEnRango(r.fe_entrega, 3, 3));
+      .filter(r => fechaEnRango(r.fe_entrega, 3, 3))
+      .forEach(r => {
+        const k = `${String(r.doc_ventas ?? '').trim()}|${String(r.material ?? '').trim()}`;
+        const ex = _ventasDedupMap.get(k);
+        if (!ex) { _ventasDedupMap.set(k, r); return; }
+        const dNew = parseDateSAP(r.fe_entrega), dOld = parseDateSAP(ex.fe_entrega);
+        if (dNew && (!dOld || dNew >= dOld)) _ventasDedupMap.set(k, r);
+      });
+    const ventasCe = Array.from(_ventasDedupMap.values());
     const ventasPorDoc = {};
     ventasCe.forEach(r => { const d = String(r.doc_ventas ?? '').trim(); (ventasPorDoc[d] = ventasPorDoc[d] || []).push(r); });
     let tonVentaCliente = 0, tonVentaCons = 0;
