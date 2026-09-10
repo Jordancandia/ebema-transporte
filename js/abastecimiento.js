@@ -1264,12 +1264,21 @@ async function renderPlanCarga(stage) {
     .filter(r => { const _e = estadosRetiro[String(r.doc_compr ?? '').trim()] || {}; return _e.estado === 'coordinado' && (_e.tipo_local_rm === 'RM' || String(_e.entrega_entrante ?? '').trim() !== ''); }) : [];
   const ventas = esCD1003 ? ventasRaw.filter(r => !String(r.mr ?? '').trim()) : [];
   // sqvi_pedidos_traslados_4000: cesu==ce (destino), origen siempre es CD 1003.
-  // Deduplicar por doc_compr|pos|fe_entrega|ce y excluir subtotales del SQVI (doc_compr vacío).
+  // Deduplicar por doc_compr|pos — clave sin fecha para fusionar la fila '00.00.0000'
+  // (cabecera SAP) con la fila de fecha real (línea de planificación), conservando
+  // siempre la fecha válida. Excluir subtotales del SQVI (doc_compr o material vacíos).
   const _t4000Map = new Map();
   if (esCD1003) traslados4000Raw.forEach(r => {
-    if (!String(r.doc_compr ?? '').trim() || !String(r.material ?? '').trim()) return;
-    const k = `${r.doc_compr}|${r.pos}|${r.fe_entrega}|${r.ce}`;
-    if (!_t4000Map.has(k)) _t4000Map.set(k, r);
+    const dc = String(r.doc_compr ?? '').trim();
+    const pos = String(r.pos ?? '').trim();
+    if (!dc || !String(r.material ?? '').trim()) return; // excluir subtotales
+    const k = `${dc}|${pos}`;
+    const existing = _t4000Map.get(k);
+    // Preferir la fila con fecha válida (no 00.00.0000 ni vacía)
+    const esValida = fe => fe && String(fe).trim() !== '' && String(fe).trim() !== '00.00.0000';
+    if (!existing || (!esValida(existing.fe_entrega) && esValida(r.fe_entrega))) {
+      _t4000Map.set(k, r);
+    }
   });
   const t4000 = Array.from(_t4000Map.values());
 
