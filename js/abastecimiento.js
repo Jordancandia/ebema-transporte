@@ -445,10 +445,11 @@ const VISTAS_TRONCAL = {
           tipoRetiro = result.tipoRetiro;
           entregaEntrante = result.entregaEntrante || '';
         }
+        // Si no se coordinó (o se revierte), limpiar campos de fábrica en DB
         const extraFab = result ? {
           tipo_local_rm: result.tipoLocalRM, fab_direccion: result.fabDir,
           fab_comuna: result.fabCom, fab_contacto: result.fabCont, fab_telefono: result.fabTel,
-        } : null;
+        } : { tipo_local_rm: null, fab_direccion: null, fab_comuna: null, fab_contacto: null, fab_telefono: null };
         const ok = await saveEstadoRetiro(row.doc_compr, val, tipoRetiro, entregaEntrante, extraFab);
         if (ok) {
           const oc = String(row.doc_compr);
