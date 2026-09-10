@@ -176,11 +176,13 @@ async function saveEstadoRetiro(docCompr, estado, tipoRetiro = null, entregaEntr
   if (tipoRetiro !== null) payload.tipo_retiro = tipoRetiro;
   if (entregaEntrante !== null) payload.entrega_entrante = entregaEntrante;
   if (extraFab) {
-    if (extraFab.tipo_local_rm  !== undefined) payload.tipo_local_rm  = extraFab.tipo_local_rm;
-    if (extraFab.fab_direccion  !== undefined) payload.fab_direccion  = extraFab.fab_direccion;
-    if (extraFab.fab_comuna     !== undefined) payload.fab_comuna     = extraFab.fab_comuna;
-    if (extraFab.fab_contacto   !== undefined) payload.fab_contacto   = extraFab.fab_contacto;
-    if (extraFab.fab_telefono   !== undefined) payload.fab_telefono   = extraFab.fab_telefono;
+    if (extraFab.tipo_local_rm   !== undefined) payload.tipo_local_rm   = extraFab.tipo_local_rm;
+    if (extraFab.fab_direccion   !== undefined) payload.fab_direccion   = extraFab.fab_direccion;
+    if (extraFab.fab_comuna      !== undefined) payload.fab_comuna      = extraFab.fab_comuna;
+    if (extraFab.fab_contacto    !== undefined) payload.fab_contacto    = extraFab.fab_contacto;
+    if (extraFab.fab_telefono    !== undefined) payload.fab_telefono    = extraFab.fab_telefono;
+    // Al revertir (no_coordinado), limpiar también tipo_retiro y entrega_entrante
+    if (extraFab._clear_retiro) { payload.tipo_retiro = null; payload.entrega_entrante = null; }
   }
   const { error } = await supabase.from('abast_retiro_estado').upsert(payload, { onConflict: 'doc_compr' });
   if (error) { showAlert('Error al guardar estado: ' + error.message, 'error'); return false; }
@@ -449,7 +451,7 @@ const VISTAS_TRONCAL = {
         const extraFab = result ? {
           tipo_local_rm: result.tipoLocalRM, fab_direccion: result.fabDir,
           fab_comuna: result.fabCom, fab_contacto: result.fabCont, fab_telefono: result.fabTel,
-        } : { tipo_local_rm: null, fab_direccion: null, fab_comuna: null, fab_contacto: null, fab_telefono: null };
+        } : { tipo_local_rm: null, fab_direccion: null, fab_comuna: null, fab_contacto: null, fab_telefono: null, _clear_retiro: true };
         const ok = await saveEstadoRetiro(row.doc_compr, val, tipoRetiro, entregaEntrante, extraFab);
         if (ok) {
           const oc = String(row.doc_compr);
@@ -462,11 +464,20 @@ const VISTAS_TRONCAL = {
             ctx.estados[oc].fab_comuna     = extraFab.fab_comuna;
             ctx.estados[oc].fab_contacto   = extraFab.fab_contacto;
             ctx.estados[oc].fab_telefono   = extraFab.fab_telefono;
-            row._tipo_local_rm  = extraFab.tipo_local_rm;
-            row._fab_direccion  = extraFab.fab_direccion;
-            row._fab_comuna     = extraFab.fab_comuna;
-            row._fab_contacto   = extraFab.fab_contacto;
-            row._fab_telefono   = extraFab.fab_telefono;
+            row._tipo_local_rm  = extraFab.tipo_local_rm || '';
+            row._fab_direccion  = extraFab.fab_direccion || '';
+            row._fab_comuna     = extraFab.fab_comuna    || '';
+            row._fab_contacto   = extraFab.fab_contacto  || '';
+            row._fab_telefono   = extraFab.fab_telefono  || '';
+            // Al revertir: limpiar también tipo_retiro y entrega_entrante en memoria
+            if (extraFab._clear_retiro) {
+              ctx.estados[oc].tipo_retiro      = null;
+              ctx.estados[oc].entrega_entrante = '';
+              row._entrega_entrante = '';
+              // Recalcular _tipo_retiro desde alm (revertir override de coordinación)
+              const almV = String(row.alm ?? '').trim();
+              row._tipo_retiro = almV === '4000' ? 'FAB-CD' : 'FAB-SUC';
+            }
           }
           showAlert('Estado actualizado', 'success');
         }
