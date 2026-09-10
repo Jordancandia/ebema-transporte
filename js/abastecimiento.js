@@ -932,7 +932,8 @@ const VISTAS_TRONCAL = {
       const validas = Array.from(_dedupMap.values())
         .filter(r => String(r.cesu ?? '').trim() !== '' && !String(r.cesu ?? '').startsWith('*'))
         .filter(r => String(r.material ?? '').trim() !== '')
-        .filter(r => parseNum(r.ctd_pedido) > parseNum(r.cantidad_salida));
+        .filter(r => parseNum(r.ctd_pedido) > parseNum(r.cantidad_salida))
+        .filter(r => fechaEnRango(r.fe_entrega, 10, 5));
       const out = validas.map(r => {
         const pend = parseNum(r.ctd_pedido) - parseNum(r.cantidad_salida);
         const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), pend);
