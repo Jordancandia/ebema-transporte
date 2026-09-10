@@ -438,14 +438,14 @@ const VISTAS_TRONCAL = {
     editable: {
       key: '_estado', options: ESTADO_OPTS,
       async onChange(row, val, ctx) {
-        let tipoRetiro = null, entregaEntrante = null;
+        let tipoRetiro = null, entregaEntrante = null, result = null;
         if (val === 'coordinado') {
-          const result = await showCoordModal(row);
+          result = await showCoordModal(row);
           if (!result) return false;
           tipoRetiro = result.tipoRetiro;
           entregaEntrante = result.entregaEntrante || '';
         }
-        const extraFab = val === 'coordinado' ? {
+        const extraFab = result ? {
           tipo_local_rm: result.tipoLocalRM, fab_direccion: result.fabDir,
           fab_comuna: result.fabCom, fab_contacto: result.fabCont, fab_telefono: result.fabTel,
         } : null;
