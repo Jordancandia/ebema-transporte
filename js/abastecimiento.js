@@ -918,7 +918,18 @@ const VISTAS_TRONCAL = {
     },
     transform(rows, ctx) {
       const pvMap = (ctx && ctx.pvMap) || {};
-      const validas = rows
+      // Deduplicar por doc_compr|pos, preferir fecha válida sobre '00.00.0000'
+      const esValida = fe => fe && String(fe).trim() !== '' && String(fe).trim() !== '00.00.0000';
+      const _dedupMap = new Map();
+      rows.forEach(r => {
+        const dc = String(r.doc_compr ?? '').trim();
+        const pos = String(r.pos ?? '').trim();
+        if (!dc || !String(r.material ?? '').trim()) return;
+        const k = `${dc}|${pos}`;
+        const ex = _dedupMap.get(k);
+        if (!ex || (!esValida(ex.fe_entrega) && esValida(r.fe_entrega))) _dedupMap.set(k, r);
+      });
+      const validas = Array.from(_dedupMap.values())
         .filter(r => String(r.cesu ?? '').trim() !== '' && !String(r.cesu ?? '').startsWith('*'))
         .filter(r => String(r.material ?? '').trim() !== '')
         .filter(r => parseNum(r.ctd_pedido) > parseNum(r.cantidad_salida));
