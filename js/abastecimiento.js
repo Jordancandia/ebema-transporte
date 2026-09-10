@@ -1263,7 +1263,15 @@ async function renderPlanCarga(stage) {
     .filter(r => String(r.contr ?? '').trim() !== '')
     .filter(r => { const _e = estadosRetiro[String(r.doc_compr ?? '').trim()] || {}; return _e.estado === 'coordinado' && (_e.tipo_local_rm === 'RM' || String(_e.entrega_entrante ?? '').trim() !== ''); }) : [];
   const ventas = esCD1003 ? ventasRaw.filter(r => !String(r.mr ?? '').trim()) : [];
-  const t4000 = esCD1003 ? traslados4000Raw : []; // sqvi_pedidos_traslados_4000: cesu==ce (destino), origen siempre es CD 1003
+  // sqvi_pedidos_traslados_4000: cesu==ce (destino), origen siempre es CD 1003.
+  // Deduplicar por doc_compr|pos|fe_entrega|ce y excluir subtotales del SQVI (doc_compr vacío).
+  const _t4000Map = new Map();
+  if (esCD1003) traslados4000Raw.forEach(r => {
+    if (!String(r.doc_compr ?? '').trim() || !String(r.material ?? '').trim()) return;
+    const k = `${r.doc_compr}|${r.pos}|${r.fe_entrega}|${r.ce}`;
+    if (!_t4000Map.has(k)) _t4000Map.set(k, r);
+  });
+  const t4000 = Array.from(_t4000Map.values());
 
   const destinosOrigen = (CALENDARIOS[planOrigen] && CALENDARIOS[planOrigen].destinos) || CENTROS_QUIEBRES;
   const centrosSet = new Set(destinosOrigen);
