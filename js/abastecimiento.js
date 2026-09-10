@@ -932,8 +932,7 @@ const VISTAS_TRONCAL = {
       const validas = Array.from(_dedupMap.values())
         .filter(r => String(r.cesu ?? '').trim() !== '' && !String(r.cesu ?? '').startsWith('*'))
         .filter(r => String(r.material ?? '').trim() !== '')
-        .filter(r => parseNum(r.ctd_pedido) > parseNum(r.cantidad_salida))
-        .filter(r => fechaEnRango(r.fe_entrega, 10, 5));
+        .filter(r => parseNum(r.ctd_pedido) > parseNum(r.cantidad_salida));
       const out = validas.map(r => {
         const pend = parseNum(r.ctd_pedido) - parseNum(r.cantidad_salida);
         const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), pend);
@@ -1344,13 +1343,13 @@ async function renderPlanCarga(stage) {
         det.cross.push({ pt: r.doc_compr, origen: String(r.cesu ?? '').trim(), ceDestino: String(r.ce ?? '').trim(), almDestino: String(r.alm ?? '').trim(), material: r.material, nombre: r.texto_breve, fecha: r.fe_entrega, ctdPend: pend, ton: t, pv: r.documento }); return sum + t; }, 0);
 
     // 5. Notas de Venta 1003 (ofvta = centro): requiere ruta, excluye RETIRA.
-    //    <80% cap ⇒ PEDIDO DE VENTA DIRECTA (consolida con la carga del CD).
-    //    ≥80% cap ⇒ CAMIÓN CLIENTE (directo al cliente, no se consolida).
+    //    >26T  ⇒ CAMIÓN CLIENTE (directo al cliente, no se consolida). Fecha -3/+3.
+    //    ≤26T  ⇒ PEDIDO DE VENTA DIRECTA (consolida con la carga del CD).   Fecha -3/+3.
     const ventasCe = ventas
       .filter(r => String(r.ofvta ?? '').trim() === ce)
       .filter(r => String(r.ruta ?? '').trim() !== '')
       .filter(r => normTxt(r.ruta).indexOf('RETIRA') === -1)
-      .filter(r => fechaEnRango(r.fe_entrega, 0, 5));
+      .filter(r => fechaEnRango(r.fe_entrega, 3, 3));
     const ventasPorDoc = {};
     ventasCe.forEach(r => { const d = String(r.doc_ventas ?? '').trim(); (ventasPorDoc[d] = ventasPorDoc[d] || []).push(r); });
     let tonVentaCliente = 0, tonVentaCons = 0;
@@ -1365,7 +1364,7 @@ async function renderPlanCarga(stage) {
         lineItems.push({ pv: doc, material: r.material, nombre: r.denominacion_de_posicion, cant: pend, ruta: r.ruta, comuna: rl.comuna, region: rl.region, fecha: r.fe_entrega, ton: t });
       });
       if (tonDoc <= 0) continue;
-      if (tonDoc >= capRef * 0.80) { tonVentaCliente += tonDoc; det.cliente.push(...lineItems); }
+      if (tonDoc > 26) { tonVentaCliente += tonDoc; det.cliente.push(...lineItems); }
       else { tonVentaCons += tonDoc; det.ventaCons.push(...lineItems); }
     }
 
