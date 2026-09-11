@@ -1184,7 +1184,7 @@ const READ_ONLY_ROLES = ['AGENTE_COMERCIAL', 'ADMINISTRADOR_DEPOSITO'];
 
 const ROLE_ALLOWED_GROUPS = {
   'OWNER':                  null,
-  'ADMINISTRADOR_DEPOSITO': ['home', 'rates', 'proveedores', 'rutas', 'abastecimiento', 'indicadores', 'flete-tercero'],
+  'ADMINISTRADOR_DEPOSITO': ['home', 'rates', 'proveedores', 'rutas', 'abastecimiento', 'indicadores'],
   'AGENTE_COMERCIAL':       ['rates', 'proveedores', 'rutas', 'abastecimiento'],
   'TRANSPORTISTA':          null,
   'CHOFER':                 null,
@@ -1273,12 +1273,6 @@ const SIDEBAR_MENU = [
       { tab: 'indicadores', sub: 'nivel',       icon: 'local_shipping', label: 'Nivel de Servicio' },
       { tab: 'indicadores', sub: 'tarifa',      icon: 'request_quote',  label: 'Tarifa $/Kg' },
       { tab: 'indicadores', sub: 'margen',      icon: 'trending_down',  label: 'Margen de Flete' },
-    ]
-  },
-  {
-    group: 'flete-tercero', icon: 'local_shipping', label: 'Flete Tercero', children: [
-      { tab: 'flete-tercero', sub: 'dashboard',    icon: 'monitoring', label: 'Nivel de Servicio' },
-      { tab: 'flete-tercero', sub: 'seguimiento',  icon: 'search',     label: 'Seguimiento por Pedido' },
     ]
   },
   { tab: 'roles', icon: 'admin_panel_settings', label: 'Roles y Perfiles' },
@@ -1574,7 +1568,7 @@ async function switchTab(tabName, subName = null) {
     case 'tarifas-transporte': {
       await loadRoutesData();
       pageTitle.textContent = 'Tarifas Transporte' + subLabel;
-      const m = await loadMod('tt', './tarifas-transporte.js?v=20260911a');
+      const m = await loadMod('tt', './tarifas-transporte.js?v=20260911b');
       if (alias) m.setActiveSub(alias);
       m.renderTariffTransportView(stage);
       break;
@@ -1582,7 +1576,7 @@ async function switchTab(tabName, subName = null) {
     case 'tarifas-clientes': {
       await loadRoutesData();
       pageTitle.textContent = 'Tarifas Clientes' + subLabel;
-      const m = await loadMod('tc', './tarifas-clientes.js?v=20260911a');
+      const m = await loadMod('tc', './tarifas-clientes.js?v=20260911b');
       if (alias) m.setActiveSubC(alias);
       m.renderClientTariffView(stage);
       break;
@@ -1599,14 +1593,6 @@ async function switchTab(tabName, subName = null) {
       const m = await loadMod('ind', './indicadores.js?v=20260818x');
       if (subName) m.setIndicadoresSubTab(subName);
       m.renderIndicadoresView(stage);
-      break;
-    }
-    case 'flete-tercero': {
-      await loadRoutesData();
-      pageTitle.textContent = 'Flete Tercero' + subLabel;
-      const m = await loadMod('fter', './flete-tercero.js?v=20260911a');
-      if (subName) m.setFleteTerceroSubTab(subName);
-      m.renderFleteTerceroView(stage);
       break;
     }
   }
