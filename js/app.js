@@ -1604,7 +1604,7 @@ async function switchTab(tabName, subName = null) {
     case 'flete-tercero': {
       await loadRoutesData();
       pageTitle.textContent = 'Flete Tercero' + subLabel;
-      const m = await loadMod('fter', './flete-tercero.js?v=20260911a');
+      const m = await loadMod('fter', './flete-tercero.js?v=20260911c');
       if (subName) m.setFleteTerceroSubTab(subName);
       m.renderFleteTerceroView(stage);
       break;

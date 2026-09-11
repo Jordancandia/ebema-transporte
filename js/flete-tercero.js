@@ -69,6 +69,28 @@ function bdays(d1, d2) {
 // ============================================================================
 const ESTADOS_BASE = ['Creación del Pedido', 'Recepción en CD', 'En Tránsito', 'En Bodega Destino', 'Entregado a Cliente'];
 
+// Definición de etapas del ciclo para el análisis de Cuello de Botella
+const ETAPA_DEFS = [
+  { label: '1. Creación → Recepción CD', get: r => r.dCreaRecep },
+  { label: '2. Recepción CD → Traslado', get: r => r.dRecepTras },
+  { label: '3. Traslado → Recepción Sucursal', get: r => r.dTrasRecSuc },
+  { label: '4. Recepción Sucursal → Entrega Cliente', get: r => r.dRecSucEnt },
+];
+// Calcula el cuello de botella (días hábiles promedio por etapa + SLA vs lead time) sobre un set de filas
+function cuelloBotellaCalc(baseRows) {
+  const etapas = ETAPA_DEFS.map(e => {
+    const vals = baseRows.map(e.get).filter(v => v != null);
+    return { ...e, prom: vals.length ? avg(vals) : null };
+  });
+  const leadVals = baseRows.map(r => r.dTotal).filter(v => v != null);
+  const leadTotal = leadVals.length ? avg(leadVals) : null;
+  const slaVals = baseRows.map(r => r.slaOfrecido).filter(v => v != null);
+  const slaProm = slaVals.length ? avg(slaVals) : null;
+  const sumaEtapas = etapas.reduce((s, e) => s + (e.prom || 0), 0) || 1;
+  const maxEtapa = etapas.reduce((m, e) => (e.prom != null && (m == null || e.prom > m.prom) ? e : m), null);
+  return { etapas, leadTotal, slaProm, sumaEtapas, maxEtapa, n: baseRows.length };
+}
+
 function computeRow(r) {
   const hoy = new Date(); hoy.setHours(0, 0, 0, 0);
   const fCreacion = toDate(r.fecha_creacion);
@@ -233,23 +255,6 @@ function renderDashboard() {
     return { mes: m, total: base.length, porT, pct: Object.fromEntries(tipos.map(t => [t, (porT[t] / total) * 100])) };
   });
 
-  // Cuello de botella
-  const etapas = [
-    { label: '1. Creación → Recepción CD', get: r => r.dCreaRecep },
-    { label: '2. Recepción CD → Traslado', get: r => r.dRecepTras },
-    { label: '3. Traslado → Recepción Sucursal', get: r => r.dTrasRecSuc },
-    { label: '4. Recepción Sucursal → Entrega Cliente', get: r => r.dRecSucEnt },
-  ].map(e => {
-    const vals = rows.map(e.get).filter(v => v != null);
-    return { ...e, prom: vals.length ? avg(vals) : null };
-  });
-  const leadVals = rows.map(r => r.dTotal).filter(v => v != null);
-  const leadTotal = leadVals.length ? avg(leadVals) : null;
-  const slaVals = rows.map(r => r.slaOfrecido).filter(v => v != null);
-  const slaProm = slaVals.length ? avg(slaVals) : null;
-  const sumaEtapas = etapas.reduce((s, e) => s + (e.prom || 0), 0) || 1;
-  const maxEtapa = etapas.reduce((m, e) => (e.prom != null && (m == null || e.prom > m.prom) ? e : m), null);
-
   body().innerHTML = `
     <div class="text-[11px] text-secondary mb-md">${lastLoad ? `Última carga de datos: ${new Date(lastLoad).toLocaleString('es-CL')}` : ''} · ${rows.length} pedidos en total</div>
 
@@ -291,14 +296,16 @@ function renderDashboard() {
     </div>
 
     <!-- 6. Cuello de botella -->
-    ${sectionTitle('Cuello de Botella — Días Promedio por Etapa (hábiles)')}
-    ${simpleTable(['Etapa', 'Días Promedio', '% del Lead Time', '¿Cuello de botella?'],
-      etapas.map(e => [e.label, diasFmt(e.prom), e.prom != null ? pct((e.prom / sumaEtapas) * 100) : '–', (maxEtapa && e === maxEtapa) ? '◀ MÁXIMO' : '']))}
-    <div class="grid grid-cols-1 md:grid-cols-3 gap-md mt-md mb-xl">
-      ${tile('Lead Time Total', diasFmt(leadTotal), 'Creación → Entrega, real')}
-      ${tile('SLA Ofrecido', diasFmt(slaProm), 'Creación +1 hábil → Promesa')}
-      ${tile('Diferencia', diasFmt(leadTotal != null && slaProm != null ? leadTotal - slaProm : null), 'Real − SLA ofrecido', (leadTotal != null && slaProm != null && leadTotal - slaProm > 0) ? 'text-[#C0000C]' : 'text-[#1E8449]')}
+    <div class="flex items-center justify-between flex-wrap gap-sm mt-lg mb-sm">
+      <div class="text-body-lg font-bold text-on-surface">Cuello de Botella — Días Promedio por Etapa (hábiles)</div>
+      <label class="flex items-center gap-2 text-[12px] text-secondary">Centro Destino:
+        <select id="fter_centro_cuello" class="border border-surface-variant rounded-lg px-2 py-1 text-[12px]">
+          <option value="Todos">Todos</option>
+          ${centros.map(c => `<option value="${c}">${escAttr(centroLabel(c))}</option>`).join('')}
+        </select>
+      </label>
     </div>
+    <div id="fter_cuello"></div>
   `;
 
   const sel = document.getElementById('fter_centro_filtro');
@@ -315,6 +322,25 @@ function renderDashboard() {
   sel.value = _centroFiltro;
   sel.addEventListener('change', () => { _centroFiltro = sel.value; drawEvol(); });
   drawEvol();
+
+  const selCB = document.getElementById('fter_centro_cuello');
+  const drawCB = () => {
+    const centroSel = selCB.value;
+    const baseRows = centroSel === 'Todos' ? rows : rows.filter(r => r.punto_expedicion === centroSel);
+    const cb = cuelloBotellaCalc(baseRows);
+    document.getElementById('fter_cuello').innerHTML = `
+      <div class="text-[11px] text-secondary mb-sm">${numFmt(cb.n)} pedidos considerados${centroSel !== 'Todos' ? ' en ' + escAttr(centroLabel(centroSel)) : ''}</div>
+      ${hbarChart(cb.etapas.map(e => ({ label: e.label, value: e.prom, isMax: cb.maxEtapa === e })))}
+      ${simpleTable(['Etapa', 'Días Promedio', '% del Lead Time', '¿Cuello de botella?'],
+        cb.etapas.map(e => [e.label, diasFmt(e.prom), e.prom != null ? pct((e.prom / cb.sumaEtapas) * 100) : '–', (cb.maxEtapa && e === cb.maxEtapa) ? '◀ MÁXIMO' : '']))}
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-md mt-md mb-xl">
+        ${tile('Lead Time Total', diasFmt(cb.leadTotal), 'Creación → Entrega, real')}
+        ${tile('SLA Ofrecido', diasFmt(cb.slaProm), 'Creación +1 hábil → Promesa')}
+        ${tile('Diferencia', diasFmt(cb.leadTotal != null && cb.slaProm != null ? cb.leadTotal - cb.slaProm : null), 'Real − SLA ofrecido', (cb.leadTotal != null && cb.slaProm != null && cb.leadTotal - cb.slaProm > 0) ? 'text-[#C0000C]' : 'text-[#1E8449]')}
+      </div>`;
+  };
+  selCB.addEventListener('change', drawCB);
+  drawCB();
 }
 
 // ============================================================================
@@ -499,22 +525,44 @@ function mixColor(i) { return MIX_COLORS[i % MIX_COLORS.length]; }
 function stackedBars(labels, mixRows, tipos) {
   if (!labels.length) return `<div class="text-secondary text-[13px]">Sin datos.</div>`;
   const w = Math.max(100 / labels.length, 4);
-  return `<div class="flex items-end gap-1" style="height:120px">
+  return `<div class="flex items-end gap-1" style="height:140px">
     ${mixRows.map((m, idx) => {
       if (!m) return `<div style="width:${w}%"></div>`;
-      let acc = 0;
       const segs = tipos.map((t, i) => {
-        const v = m.pct[t] || 0; const seg = `<div style="height:${v}%;background:${mixColor(i)}" title="${t}: ${nf1.format(v)}%"></div>`; acc += v; return seg;
+        const v = m.pct[t] || 0;
+        // Etiqueta de dato dentro del segmento: solo si hay espacio suficiente (>= 10%)
+        const label = v >= 10 ? `<span style="font-size:8px;font-weight:700;color:#fff;line-height:1">${Math.round(v)}%</span>` : '';
+        return `<div style="height:${v}%;background:${mixColor(i)};display:flex;align-items:center;justify-content:center" title="${t}: ${nf1.format(v)}% (${m.porT[t] || 0} pedidos)">${label}</div>`;
       }).join('');
       return `<div class="flex flex-col items-center gap-1" style="width:${w}%">
+        <div class="text-[9px] font-semibold text-secondary">${m.total}</div>
         <div class="w-full flex flex-col-reverse rounded overflow-hidden bg-surface-container-high" style="height:90px">${segs}</div>
         <div class="text-[9px] text-secondary">${labels[idx]}</div>
       </div>`;
     }).join('')}
   </div>`;
 }
+// Barras horizontales con etiqueta de dato (días) al costado — usado en Cuello de Botella
+function hbarChart(items) {
+  const maxV = Math.max(...items.map(i => i.value || 0), 0.001);
+  return `<div class="flex flex-col gap-2 mb-md">
+    ${items.map(i => {
+      const wpct = i.value != null ? Math.max((i.value / maxV) * 100, 3) : 0;
+      const color = i.isMax ? R.red : R.grey;
+      return `<div>
+        <div class="flex justify-between items-baseline text-[11px] text-secondary mb-[2px]">
+          <span>${i.label}${i.isMax ? ' <span style="color:' + R.red + ';font-weight:700">◀ MÁXIMO</span>' : ''}</span>
+          <span class="font-semibold" style="color:${color}">${diasFmt(i.value)}</span>
+        </div>
+        <div class="w-full h-4 bg-surface-container-high rounded overflow-hidden">
+          <div style="width:${wpct}%;background:${color};height:100%"></div>
+        </div>
+      </div>`;
+    }).join('')}
+  </div>`;
+}
 function lineChartSVG(seriesArr, labels) {
-  const W = 900, H = 180, padL = 30, padR = 8, padT = 10, padB = 22;
+  const W = 900, H = 190, padL = 30, padR = 8, padT = 18, padB = 22;
   const w = W - padL - padR, h = H - padT - padB;
   const max = 100, min0 = 0;
   const n = labels.length;
@@ -525,10 +573,16 @@ function lineChartSVG(seriesArr, labels) {
     const yy = y(g);
     svg += `<line x1="${padL}" y1="${yy}" x2="${W - padR}" y2="${yy}" stroke="${R.grid}" stroke-width="1"/><text x="2" y="${yy + 3}" font-size="9" fill="${R.grey}">${g}</text>`;
   });
-  seriesArr.forEach(s => {
+  seriesArr.forEach((s, si) => {
     const pts = s.values.map((v, i) => (v == null ? null : `${x(i)},${y(v)}`)).filter(Boolean).join(' ');
     svg += `<polyline points="${pts}" fill="none" stroke="${s.color}" stroke-width="2"/>`;
-    s.values.forEach((v, i) => { if (v != null) svg += `<circle cx="${x(i)}" cy="${y(v)}" r="2.6" fill="${s.color}"/>`; });
+    // Etiqueta de dato por punto: primera serie arriba del punto, segunda serie abajo (evita superposición)
+    const dy = si % 2 === 0 ? -8 : 14;
+    s.values.forEach((v, i) => {
+      if (v == null) return;
+      svg += `<circle cx="${x(i)}" cy="${y(v)}" r="2.6" fill="${s.color}"/>`;
+      svg += `<text x="${x(i)}" y="${y(v) + dy}" font-size="8.5" font-weight="700" fill="${s.color}" text-anchor="middle">${nf1.format(v)}%</text>`;
+    });
   });
   labels.forEach((l, i) => { svg += `<text x="${x(i)}" y="${H - 4}" font-size="9" fill="${R.grey}" text-anchor="middle">${l}</text>`; });
   svg += '</svg>' + legend(seriesArr.map(s => ({ n: s.n, c: s.color }))) + '</div>';
