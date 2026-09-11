@@ -11,7 +11,7 @@
 // ============================================================================
 
 import { supabase } from './supabase-client.js';
-import { getDatabase } from './data.js?v=20260909c';
+import { getDatabase } from './data.js?v=20260714a';
 import { showAlert, escapeHtml } from './utils.js';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
@@ -1336,15 +1336,16 @@ async function renderPlanCarga(stage) {
       .filter(r => String(r.ce ?? '').trim() === ce)
       .reduce((sum, r) => { const t = calcTon(parseNum(r.peso_neto_2), r.ctd_pedido); det.revex.push(itemT(r, t)); return sum + t; }, 0);
 
-    // 4. Crossdocking 4000 — SÓLO pendientes (ctd_pedido > procesado). Fecha -10/+5.
+    // 4. Crossdocking 4000 — SÓLO pendientes (ctd_pedido > procesado). Fecha -3/+3.
     //    "Procesado" = MAX(ctd_entregada, cantidad_salida) para cubrir los tres casos:
     //      · ctd_entregada == cantidad_salida > 0  → entregado, excluir
     //      · cantidad_salida > ctd_entregada        → en tránsito; pend = ctd_pedido - cantidad_salida
     //      · cantidad_salida == 0                   → no ha salido; pend = ctd_pedido - ctd_entregada
     //    Anomalía SAP (ctd_entregada > cantidad_salida con salida=0): MAX deja pend=0 → excluido.
+    //    La vista muestra todos los pendientes; el plan aplica ventana -3/+3 días.
     const tonCross = t4000
       .filter(r => String(r.ce ?? '').trim() === ce)
-      .filter(r => fechaEnRango(r.fe_entrega, 10, 5))
+      .filter(r => fechaEnRango(r.fe_entrega, 3, 3))
       .filter(r => parseNum(r.ctd_pedido) > Math.max(parseNum(r.ctd_entregada), parseNum(r.cantidad_salida)))
       .reduce((sum, r) => { const pend = parseNum(r.ctd_pedido) - Math.max(parseNum(r.ctd_entregada), parseNum(r.cantidad_salida)); const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), pend);
         det.cross.push({ pt: r.doc_compr, origen: String(r.cesu ?? '').trim(), ceDestino: String(r.ce ?? '').trim(), almDestino: String(r.alm ?? '').trim(), material: r.material, nombre: r.texto_breve, fecha: r.fe_entrega, ctdPend: pend, ton: t, pv: r.documento }); return sum + t; }, 0);
@@ -1387,7 +1388,7 @@ async function renderPlanCarga(stage) {
       else { tonVentaCons += tonDoc; det.ventaCons.push(...lineItems); }
     }
 
-    // 6. Retiros proveedor CONSOLIDAR CD (alm=4000) → parte del CD. fecha -3/+2
+    // 6. Retiros proveedor CONSOLIDAR CD (tipo_retiro=FAB-CD) → parte del CD.
     const retirosCons = retiros
       .filter(r => String(r.ce ?? '').trim() === ce)
       .filter(r => (estadosRetiro[String(r.doc_compr ?? '').trim()] || {}).tipo_retiro === 'FAB-CD');
@@ -1434,8 +1435,7 @@ async function renderPlanCarga(stage) {
 
     const pct = cap > 0 ? Math.round(total / cap * 100) : 0;
     const sobrecarga = Math.max(0, total - cap);
-    // FALTA nunca es negativo: cuando hay sobrecarga la celda muestra 0
-    // y el excedente pasa a la columna de observaciones como "2º CAMIÓN".
+    // FALTA/SOBRA: positivo (rojo) = falta carga, negativo mostrado en verde = sobra.
     const faltan = Math.max(0, cap - total);
     const enCalendario = centrosProgramados.has(ce);
 
@@ -1565,7 +1565,7 @@ async function renderPlanCarga(stage) {
       banner = `<div class="mb-sm px-md py-sm rounded-lg bg-blue-50 border border-blue-200 text-[12px] text-blue-900 inline-flex flex-wrap items-center gap-md">
         <span><strong>Capacidad camión:</strong> ${fmtNum(r.cap, 0)} t</span>
         <span><strong>Cargado:</strong> ${fmtNum(fill.cargado, 1)} t</span>
-        ${fill.excede > 0 ? `<span class="text-orange-700 font-bold"><strong>Excede:</strong> ${fmtNum(fill.excede, 1)} t → ver sección inferior</span>` : '<span class="text-green-700 font-bold">✓ Todo cabe en el camión</span>'}
+        ${fill.excede > 0 ? `<span class="text-green-700 font-bold"><strong>Sobra:</strong> +${fmtNum(fill.excede, 1)} t (requiere 2º camión)</span>` : '<span class="text-green-700 font-bold">✓ Todo cabe en el camión</span>'}
       </div>`;
       blocks =
         blkTraslado('1º Pedidos de Traslados REVEX', inC.revex) +
@@ -1574,20 +1574,7 @@ async function renderPlanCarga(stage) {
         blkCrossdocking('4º Pedidos de Traslados Crossdocking', inC.cross) +
         blkTraslado('5º Pedidos de Traslados Quiebre', inC.quiebre) +
         blkTraslado('6º Pedidos de Traslados Abastecimiento', inC.stock);
-      const anyOut = cats.some(k => outC[k].length > 0);
-      if (anyOut) {
-        const outBlocks =
-          blkTraslado('REVEX', outC.revex) +
-          blkVenta('Venta Directa', outC.ventaCons) +
-          blkRetiro('Retiros CD', outC.retiro) +
-          blkCrossdocking('Crossdocking', outC.cross) +
-          blkTraslado('Traslados Quiebre', outC.quiebre) +
-          blkTraslado('Traslados Abastecimiento', outC.stock);
-        excedeBlocks = `<div class="mt-md border-t-2 border-orange-300 pt-md">
-          <div class="text-[12px] font-bold text-orange-700 mb-sm">✗ Quedan para el próximo camión — ${fmtNum(fill.excede, 1)} t</div>
-          ${outBlocks}
-        </div>`;
-      }
+      // No se muestra sección de excedentes: el detalle incluye solo lo que entra en el camión.
     }
     else if (tipo === 'cliente') blocks = blkVenta('Pedidos de Venta directos al cliente', r.det.cliente);
     else if (tipo === 'fabSuc') blocks = blkRetiro('Órdenes de Compra Fábrica-Sucursal', r.det.fabSuc);
@@ -1674,7 +1661,7 @@ async function renderPlanCarga(stage) {
               <th class="py-sm pr-md text-right font-bold whitespace-nowrap">5º Ped. Traslados Quiebres</th>
               <th class="py-sm pr-md text-right font-bold whitespace-nowrap">6º Ped. Traslados Abastecimiento</th>
               <th class="py-sm pr-md text-right font-bold whitespace-nowrap">Total CD</th>
-              <th class="py-sm pr-md text-right font-bold whitespace-nowrap">Faltan [Ton]</th>
+              <th class="py-sm pr-md text-right font-bold whitespace-nowrap">FALTA / SOBRA</th>
               <th class="py-sm pr-md text-right font-bold whitespace-nowrap">% Compl.</th>
               <th class="py-sm pr-md text-center font-bold whitespace-nowrap">Camión CD</th>
               <th class="py-sm pr-md text-center font-bold whitespace-nowrap">Status</th>
@@ -1702,7 +1689,7 @@ async function renderPlanCarga(stage) {
                 <td class="py-sm pr-md text-right num-clear">${fmtNum(r.tonQuiebre, 1)}</td>
                 <td class="py-sm pr-md text-right num-clear">${fmtNum(r.tonStock, 1)}</td>
                 <td class="py-sm pr-md text-right num-clear font-bold ${totalCls}">${fmtNum(r.total, 1)}</td>
-                <td class="py-sm pr-md text-right num-clear ${r.sobrecarga > 0 ? 'text-orange-600 font-bold' : ''}">${fmtNum(r.faltan, 1)}</td>
+                <td class="py-sm pr-md text-right num-clear ${r.sobrecarga > 0 ? 'text-green-700 font-bold' : r.faltan > 0 ? 'text-red-600 font-bold' : ''}">${r.sobrecarga > 0 ? '+' + fmtNum(r.sobrecarga, 1) : fmtNum(r.faltan, 1)}</td>
                 <td class="py-sm pr-md text-right num-clear font-bold">${r.pct}%</td>
                 ${truckCell(r, 'cd', r.total > 0, camCD)}
                 <td class="py-sm pr-md text-center"><span class="px-sm py-xs rounded text-[11px] font-bold ${r.statusCls}">${escapeHtml(r.status)}</span></td>
@@ -1721,7 +1708,7 @@ async function renderPlanCarga(stage) {
         <span class="inline-flex items-center gap-xs">${iconCamion('text-green-700 text-[16px]')} Camión Cliente (venta ≥80%)</span>
         <span class="inline-flex items-center gap-xs">${iconCamion('text-blue-700 text-[16px]')} Camión Fábrica-Sucursal (OC ≥85% sin PV)</span>
         <span class="inline-flex items-center gap-xs">${iconCamion('text-purple-700 text-[16px]')} Camión Fábrica-Cliente (OC ≥85% con PV)</span>
-        <span>Pincha cualquier camión para ver su contenido · Camión CD 1 por sucursal · Capacidad 28 Ton (15 Ton Calera/San Bernardo)</span>
+        <span>Pincha cualquier camión para ver su contenido · Camión CD 1 por sucursal · Capacidad 28 T (15 T Calera/San Bernardo) · FALTA en rojo, SOBRA en verde</span>
       </div>
     </div>`;
 

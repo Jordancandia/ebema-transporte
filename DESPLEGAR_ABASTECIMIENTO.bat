@@ -16,7 +16,7 @@ cd /d "%~dp0"
   echo ===== ADD =====
   git add -A
   echo ===== COMMIT =====
-  git commit -m "fix: calendario prioritario lee abast_calendario por dia v=20260813c"
+  git commit -m "fix: plan carga crossdock -3/+3, FALTA/SOBRA color, excedentes ocultados v=20260911a"
   echo ===== PULL =====
   git pull --rebase origin main
   echo ===== PUSH =====
