@@ -1554,7 +1554,7 @@ async function switchTab(tabName, subName = null) {
     case 'routes': {
       await loadRoutesData();
       pageTitle.textContent = 'Rutas de Transporte' + subLabel;
-      const m = await loadMod('routes', './routes.js?v=20260708a');
+      const m = await loadMod('routes', './routes.js?v=20260911a');
       if (alias) m.setRoutesSubTab(alias);
       m.renderRoutesView(stage);
       break;
@@ -1568,7 +1568,7 @@ async function switchTab(tabName, subName = null) {
     case 'tarifas-transporte': {
       await loadRoutesData();
       pageTitle.textContent = 'Tarifas Transporte' + subLabel;
-      const m = await loadMod('tt', './tarifas-transporte.js?v=20260713c');
+      const m = await loadMod('tt', './tarifas-transporte.js?v=20260911a');
       if (alias) m.setActiveSub(alias);
       m.renderTariffTransportView(stage);
       break;
@@ -1576,7 +1576,7 @@ async function switchTab(tabName, subName = null) {
     case 'tarifas-clientes': {
       await loadRoutesData();
       pageTitle.textContent = 'Tarifas Clientes' + subLabel;
-      const m = await loadMod('tc', './tarifas-clientes.js?v=20260714c');
+      const m = await loadMod('tc', './tarifas-clientes.js?v=20260911a');
       if (alias) m.setActiveSubC(alias);
       m.renderClientTariffView(stage);
       break;
