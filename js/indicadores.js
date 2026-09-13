@@ -88,7 +88,7 @@ async function loadGeneral(){
         supabase.from('v_ind_ns_general_mes').select('*').gte('mes_label',y).order('mes_label'),
         supabase.from('v_ind_tarifa_general_mes').select('*').gte('mes_label',y).order('mes_label'),
         supabase.from('v_ind_margen_general_mes').select('*').gte('mes_label',y).order('mes_label'),
-        supabase.from('v_ind_ftercero_mes').select('*').gte('mes_label',y).order('mes_label'),
+        supabase.from('v_ind_ftercero_mes').select('*').order('mes_label'),
         supabase.from('v_ind_sin_cobro_centro').select('*'),
         supabase.from('v_ind_consol_general_mes').select('*').gte('mes_label',y).order('mes_label'),
         supabase.from('v_ind_tiempo_general_mes').select('*').gte('mes_label',y).order('mes_label'),
@@ -164,7 +164,7 @@ function generalHTML(d){
   const marAcc=sum(d.mar.map(r=>r.margen))/1e6, cobAvg=avg(d.mar.map(r=>r.cobertura_pct));
   const scMonto=sum(d.sc.map(r=>r.monto_no_cobrado))/1e6, scEnt=sum(d.sc.map(r=>r.entregas_sin_cobro));
   const worst=d.mar.reduce((a,b)=>(b.margen<(a?a.margen:1e15)?b:a),null)||{};
-  const ftLast=lastFT(d.ft);
+  const ftDesp=overallFT(d.ft,'Despacha'), ftRet=overallFT(d.ft,'Retira');
   return `
     ${card('1 · Nivel de Servicio — última milla','OTIF y Fill Rate',
       tile('OTIF — promedio cerrado',pct(avgOc),(closedRange||'meses cerrados'))+
@@ -211,11 +211,11 @@ function generalHTML(d){
       tile('Costo pagado',mm(sum(d.ebm.map(r=>r.pagado))/1e6),'flete pagado','text-[#C0000C]'),
       legend([{n:'Costo EbemaClick $MM',c:R.red2}])+`<div id="g_ebc_mes"></div>`)}
 
-    ${card('4 · Flete Tercero (REVEX)','Servicio Revex',
-      tile('OTIF Despacha',pct(ftLast.despO),(ftLast.despN||0)+' pedidos')+
-      tile('OTIF Retira',pct(ftLast.retiO),(ftLast.retiN||0)+' pedidos')+
-      tile('Pedidos',nf0.format(sum(d.ft.map(r=>r.pedidos))),'período')+
-      tile('Ciclo Despacha',(ftLast.despCiclo!=null?nf1.format(ftLast.despCiclo)+' d':'–'),'último mes'),
+    ${card('4 · Flete Tercero (REVEX)','Servicio Revex — acumulado histórico (mismo criterio que menú Flete Tercero)',
+      tile('OTIF Despacha',pct(ftDesp.otif),(ftDesp.pedidos||0)+' pedidos · acumulado')+
+      tile('OTIF Retira',pct(ftRet.otif),(ftRet.pedidos||0)+' pedidos · acumulado')+
+      tile('Fill Rate Desp. / Ret.',pct(ftDesp.fill)+' / '+pct(ftRet.fill),'acumulado')+
+      tile('Pedidos',nf0.format(ftDesp.pedidos+ftRet.pedidos),'total histórico'),
       `<div class="grid grid-cols-1 md:grid-cols-3 gap-md">`+
       `<div>`+legend([{n:'OTIF Despacha',c:R.red},{n:'OTIF Retira',c:R.grey}])+`<div id="g_rev_otif"></div></div>`+
       `<div>`+legend([{n:'Pedidos Despacha',c:R.red},{n:'Pedidos Retira',c:R.grey}])+`<div id="g_rev_ped"></div></div>`+
@@ -609,6 +609,21 @@ function lastFT(ft){
   const last=ft[ft.length-1].mes_label, rows=ft.filter(r=>r.mes_label===last);
   const dsp=rows.find(r=>r.modalidad==='Despacha')||{}, ret=rows.find(r=>r.modalidad==='Retira')||{};
   return { despO:dsp.otif_pct, despN:dsp.pedidos, despCiclo:dsp.ciclo_prom_dias, retiO:ret.otif_pct, retiN:ret.pedidos };
+}
+// Acumulado histórico por modalidad (mismo criterio evaluable/OTIF/Fill que el menú Flete Tercero) —
+// se reconstruye desde los conteos crudos (evaluables/otif_n/fill_sum) para que el % calce exacto,
+// en vez de promediar porcentajes ya redondeados mes a mes.
+function overallFT(ft, modalidad){
+  const rows = ft.filter(r=>r.modalidad===modalidad);
+  const evaluables = sum(rows.map(r=>r.evaluables||0));
+  const otifN = sum(rows.map(r=>r.otif_n||0));
+  const fillSum = sum(rows.map(r=>r.fill_sum||0));
+  const pedidos = sum(rows.map(r=>r.pedidos||0));
+  return {
+    otif: evaluables ? Math.round((100*otifN/evaluables)*10)/10 : null,
+    fill: evaluables ? Math.round((100*fillSum/evaluables)*10)/10 : null,
+    pedidos, evaluables
+  };
 }
 function groupFT(ft){
   const labels=[...new Set(ft.map(r=>r.mes_label))].sort();

@@ -8,9 +8,9 @@ async function loadMod(key, modPath) {
 }
 // Pre-warm: carga indicadores y abastecimiento en background tras login
 function prewarmMods() {
-  setTimeout(() => loadMod('ind',   './indicadores.js?v=20260818x'), 600);
+  setTimeout(() => loadMod('ind',   './indicadores.js?v=20260913a'), 600);
   setTimeout(() => loadRoutesData(), 800);  // pre-fetch tablas pesadas en background
-  setTimeout(() => loadMod('abast', './abastecimiento.js?v=20260911a'), 2000);
+  setTimeout(() => loadMod('abast', './abastecimiento.js?v=20260910l'), 2000);
 }
 import { showAlert, formatRut, validateRut, formatPhone } from './utils.js';
 
@@ -1540,7 +1540,7 @@ async function switchTab(tabName, subName = null) {
   switch (tabName) {
     case 'home': {
       pageTitle.textContent = 'Indicadores';
-      const m = await loadMod('ind', './indicadores.js?v=20260818x');
+      const m = await loadMod('ind', './indicadores.js?v=20260913a');
       m.renderIndicadoresHome(stage);
       break;
     }
@@ -1589,14 +1589,14 @@ async function switchTab(tabName, subName = null) {
     }
     case 'abastecimiento': {
       pageTitle.textContent = 'Gestión Troncales' + subLabel;
-      const m = await loadMod('abast', './abastecimiento.js?v=20260911a');
+      const m = await loadMod('abast', './abastecimiento.js?v=20260910l');
       if (subName) m.setAbastSubTab(subName);
       m.renderAbastecimientoView(stage);
       break;
     }
     case 'indicadores': {
       pageTitle.textContent = 'Indicadores';
-      const m = await loadMod('ind', './indicadores.js?v=20260818x');
+      const m = await loadMod('ind', './indicadores.js?v=20260913a');
       if (subName) m.setIndicadoresSubTab(subName);
       m.renderIndicadoresView(stage);
       break;
