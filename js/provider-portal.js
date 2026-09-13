@@ -1,6 +1,6 @@
 // Portal de Proveedores de Servicio — SIT EBEMA
 // El proveedor solo ve su perfil y las fichas de SUS camiones (RLS lo garantiza en el servidor).
-import { supabase } from './supabase-client.js';
+import { supabase } from './supabase-client.js?v=20260913d';
 import { getDatabase } from './data.js?v=20260913c';
 import { showAlert, formatRut, formatPhone, escapeHtml } from './utils.js';
 import { renderFichaTransporte } from './ficha-transporte.js?v=20260913a';

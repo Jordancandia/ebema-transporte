@@ -1,5 +1,5 @@
 import { getDatabase, saveDatabase, initDatabase, loadRoutesData } from './data.js?v=20260913c';
-import { supabase } from './supabase-client.js';
+import { supabase } from './supabase-client.js?v=20260913d';
 // ── Módulos cargados bajo demanda (lazy) — se cachean tras la primera carga ──
 const _mod = {};
 async function loadMod(key, modPath) {

@@ -10,7 +10,7 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js';
+import { supabase } from './supabase-client.js?v=20260913d';
 import { getDatabase } from './data.js?v=20260913c';
 import { showAlert, escapeHtml } from './utils.js';
 

@@ -4,7 +4,7 @@ import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig, save
 import { CAP_LIST, truckTypesWithCap, calcularCostoRuta } from './tarifas-engine.js?v=20260913a';
 import { buildZcapMap } from './zcap.js?v=20260913a';
 import { formatCLP, showAlert, toCSV, downloadFile, formatDateDDMMYYYY, escapeHtml } from './utils.js';
-import { supabase } from './supabase-client.js';
+import { supabase } from './supabase-client.js?v=20260913d';
 
 // ─────────────────────────────────────────────────────────────
 // ESTADO DE MÓDULO

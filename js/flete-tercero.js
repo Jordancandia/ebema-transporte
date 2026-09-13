@@ -16,7 +16,7 @@
 //     Destino → Entregado a Cliente. Si condición=CLI-RET (EBE) y el pedido
 //     está en Bodega Destino, se muestra como "Listo para Entrega Cliente".
 // ============================================================================
-import { supabase } from './supabase-client.js';
+import { supabase } from './supabase-client.js?v=20260913d';
 import { getDatabase, loadRoutesData } from './data.js?v=20260913c';
 
 // --- Paleta (alineada a Indicadores) ----------------------------------------
