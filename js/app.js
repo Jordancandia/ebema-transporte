@@ -1588,6 +1588,7 @@ async function switchTab(tabName, subName = null) {
       break;
     }
     case 'abastecimiento': {
+      await loadRoutesData();
       pageTitle.textContent = 'Gestión Troncales' + subLabel;
       const m = await loadMod('abast', './abastecimiento.js?v=20260910l');
       if (subName) m.setAbastSubTab(subName);
