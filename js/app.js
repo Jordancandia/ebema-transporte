@@ -1,4 +1,4 @@
-import { getDatabase, saveDatabase, initDatabase, loadRoutesData } from './data.js?v=20260909c';
+import { getDatabase, saveDatabase, initDatabase, loadRoutesData } from './data.js?v=20260913c';
 import { supabase } from './supabase-client.js';
 // ── Módulos cargados bajo demanda (lazy) — se cachean tras la primera carga ──
 const _mod = {};
@@ -10,7 +10,7 @@ async function loadMod(key, modPath) {
 function prewarmMods() {
   setTimeout(() => loadMod('ind',   './indicadores.js?v=20260913a'), 600);
   setTimeout(() => loadRoutesData(), 800);  // pre-fetch tablas pesadas en background
-  setTimeout(() => loadMod('abast', './abastecimiento.js?v=20260910l'), 2000);
+  setTimeout(() => loadMod('abast', './abastecimiento.js?v=20260913a'), 2000);
 }
 import { showAlert, formatRut, validateRut, formatPhone } from './utils.js';
 
@@ -233,7 +233,7 @@ function renderApp() {
   if (!currentSession) {
     renderAuthView();
   } else if (currentSession.tipo === 'proveedor') {
-    import('./provider-portal.js').then(m => m.renderProviderShell(currentSession, handleLogout));
+    import('./provider-portal.js?v=20260913a').then(m => m.renderProviderShell(currentSession, handleLogout));
   } else {
     renderDashboardShell();
   }
@@ -1553,28 +1553,28 @@ async function switchTab(tabName, subName = null) {
     }
     case 'transports': {
       pageTitle.textContent = 'Proveedores' + subLabel;
-      const m = await loadMod('trans', './transports.js');
+      const m = await loadMod('trans', './transports.js?v=20260913a');
       m.renderTransportsView(stage);
       break;
     }
     case 'routes': {
       await loadRoutesData();
       pageTitle.textContent = 'Rutas de Transporte' + subLabel;
-      const m = await loadMod('routes', './routes.js?v=20260911a');
+      const m = await loadMod('routes', './routes.js?v=20260913a');
       if (alias) m.setRoutesSubTab(alias);
       m.renderRoutesView(stage);
       break;
     }
     case 'roles': {
       pageTitle.textContent = 'Roles y Perfiles';
-      const m = await loadMod('roles', './roles.js?v=20260909a');
+      const m = await loadMod('roles', './roles.js?v=20260913a');
       m.renderRolesView(stage);
       break;
     }
     case 'tarifas-transporte': {
       await loadRoutesData();
       pageTitle.textContent = 'Tarifas Transporte' + subLabel;
-      const m = await loadMod('tt', './tarifas-transporte.js?v=20260911b');
+      const m = await loadMod('tt', './tarifas-transporte.js?v=20260913a');
       if (alias) m.setActiveSub(alias);
       m.renderTariffTransportView(stage);
       break;
@@ -1582,7 +1582,7 @@ async function switchTab(tabName, subName = null) {
     case 'tarifas-clientes': {
       await loadRoutesData();
       pageTitle.textContent = 'Tarifas Clientes' + subLabel;
-      const m = await loadMod('tc', './tarifas-clientes.js?v=20260911b');
+      const m = await loadMod('tc', './tarifas-clientes.js?v=20260913a');
       if (alias) m.setActiveSubC(alias);
       m.renderClientTariffView(stage);
       break;
@@ -1590,7 +1590,7 @@ async function switchTab(tabName, subName = null) {
     case 'abastecimiento': {
       await loadRoutesData();
       pageTitle.textContent = 'Gestión Troncales' + subLabel;
-      const m = await loadMod('abast', './abastecimiento.js?v=20260910l');
+      const m = await loadMod('abast', './abastecimiento.js?v=20260913a');
       if (subName) m.setAbastSubTab(subName);
       m.renderAbastecimientoView(stage);
       break;
@@ -1605,7 +1605,7 @@ async function switchTab(tabName, subName = null) {
     case 'flete-tercero': {
       await loadRoutesData();
       pageTitle.textContent = 'Flete Tercero' + subLabel;
-      const m = await loadMod('fter', './flete-tercero.js?v=20260911c');
+      const m = await loadMod('fter', './flete-tercero.js?v=20260913a');
       if (subName) m.setFleteTerceroSubTab(subName);
       m.renderFleteTerceroView(stage);
       break;

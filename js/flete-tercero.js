@@ -17,7 +17,7 @@
 //     está en Bodega Destino, se muestra como "Listo para Entrega Cliente".
 // ============================================================================
 import { supabase } from './supabase-client.js';
-import { getDatabase, loadRoutesData } from './data.js?v=20260909c';
+import { getDatabase, loadRoutesData } from './data.js?v=20260913c';
 
 // --- Paleta (alineada a Indicadores) ----------------------------------------
 const R = { red:'#C0000C', red2:'#EE1B22', redL:'#E88A8F', grey:'#6B6E70', greyL:'#A9ACAE', ink:'#333333', grid:'#D9D5CF', amber:'#B5730B' };

@@ -1,8 +1,9 @@
 # Guía paso a paso — Configuración de Auth en Supabase (SIT EBEMA)
 
 Proyecto Supabase: **humhokvdowfqicjopbhf**
-Objetivo: activar confirmación de correo, SMTP de envío y las URLs de retorno para que
-funcionen el **auto-registro**, la **confirmación de correo** y las **invitaciones**.
+Objetivo: activar confirmación de correo, SMTP de envío, la plantilla de invitación y las
+URLs de retorno para que funcionen el **auto-registro**, la **confirmación de correo** y
+las **invitaciones**.
 
 > Toda esta configuración es del **panel web de Supabase**. No requiere código.
 > Ábrelo en: https://supabase.com/dashboard  → inicia sesión → selecciona el proyecto
@@ -65,7 +66,35 @@ Ubicación:
 
 ---
 
-## PASO 3 — Configurar las URLs de retorno
+## PASO 3 — Instalar la plantilla de correo de invitación
+
+Por defecto, el correo de invitación de Supabase es texto plano sin marca. Ya hay una
+plantilla HTML profesional con la marca EBEMA lista en el repo:
+
+```
+supabase/email-templates/invite-user.html
+```
+
+Incluye: header con marca EBEMA (rojo `#b5000b`), saludo personalizado, tarjeta con
+correo y rol asignado (traducido a español), botón CTA "Activar mi cuenta", link de
+respaldo en texto plano y aviso de seguridad.
+
+1. Abre `supabase/email-templates/invite-user.html` y copia todo su contenido.
+2. En el Dashboard: **Authentication** → **Emails** → **Templates** → **Invite user**.
+3. Pega el HTML completo en el editor del template (reemplaza el contenido por defecto).
+4. (Opcional) Ajusta el **Subject** a algo como:
+   `Bienvenido a SIT EBEMA – Activa tu cuenta`
+5. Haz clic en **Save**.
+
+> La plantilla usa variables que Supabase reemplaza automáticamente:
+> `{{ .ConfirmationURL }}`, `{{ .Email }}`, `{{ .Data.name }}`, `{{ .Data.role }}`
+> (estas últimas dos vienen de los datos que manda la Edge Function `invite-user`).
+> Si en el futuro cambias los campos que manda la función, revisa que la plantilla
+> siga usando los nombres correctos.
+
+---
+
+## PASO 4 — Configurar las URLs de retorno
 
 Esto hace que el enlace de confirmación/invitación **vuelva a la aplicación** y funcione
 la pantalla de "definir contraseña".
@@ -96,7 +125,7 @@ la pantalla de "definir contraseña".
 
 ---
 
-## PASO 4 (opcional recomendado) — Protección de contraseñas filtradas
+## PASO 5 (opcional recomendado) — Protección de contraseñas filtradas
 
 1. En **Authentication** → **Sign In / Providers** → sección **Password / Security**
    (o **Policies**).
@@ -105,7 +134,7 @@ la pantalla de "definir contraseña".
 
 ---
 
-## PASO 5 — Ajustar la cuenta logistica@ebema.cl (si debe seguir entrando)
+## PASO 6 — Ajustar la cuenta logistica@ebema.cl (si debe seguir entrando)
 
 Esa cuenta tiene un rol antiguo ("operador") que el sistema nuevo no reconoce y la
 dejaría **sin permisos**.
@@ -116,7 +145,7 @@ dejaría **sin permisos**.
 
 ---
 
-## PASO 6 — Probar que todo funciona
+## PASO 7 — Probar que todo funciona
 
 **Prueba de auto-registro (funcionario):**
 1. Abre la app publicada → "Regístrate como Proveedor de Servicio" (el formulario de
@@ -130,8 +159,9 @@ dejaría **sin permisos**.
 1. Entra como **OWNER** → **Roles y Perfiles** → **Agregar Usuario**.
 2. Escribe nombre, un correo **@ebema.cl**, elige rol (y centro si aplica) → Guardar.
 3. Debe decir "Invitación enviada".
-4. En el correo del invitado llega un enlace → al abrirlo, la app muestra
-   **"Define tu contraseña"** → la define → entra directo con el rol asignado.
+4. En el correo del invitado llega un enlace **con el diseño nuevo** (marca EBEMA, botón
+   "Activar mi cuenta") → al abrirlo, la app muestra **"Define tu contraseña"** → la
+   define → entra directo con el rol asignado.
 
 ---
 
@@ -139,8 +169,11 @@ dejaría **sin permisos**.
 
 - **No llega el correo:** casi siempre es el SMTP (Paso 2). Revisa spam y que la
   contraseña de aplicación sea correcta. Prueba el "Send test email".
+- **El correo llega pero sin el diseño nuevo:** revisa que el HTML se haya pegado y
+  guardado en el template correcto (**Invite user**, no "Confirm signup" — son templates
+  distintos) (Paso 3).
 - **El enlace da error "redirect not allowed":** falta agregar la URL exacta en
-  **Redirect URLs** (Paso 3).
+  **Redirect URLs** (Paso 4).
 - **"Debes confirmar tu correo antes de ingresar":** es correcto; el usuario aún no hizo
   clic en el enlace de confirmación.
 - **Un usuario entra pero no ve datos:** su rol en `app_users` no es válido o está

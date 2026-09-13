@@ -566,7 +566,15 @@ function stripHistorico(rows) {
 async function syncToSupabase(db, syncOnly = null) {
   const fallidas = [];
   // Incluir tablas diferidas en la sincronización (rutas, peajes, zonas son editables)
-  const ALL_TABLES = [...TABLE_MAP, ...LAZY_TABLE_MAP];
+  // SOLO si ya se cargaron en esta sesión (_routesLoaded). Si no se cargaron, db.routes/
+  // db.routeTolls/db.transportZones vienen vacíos o undefined — y syncTable() interpreta
+  // "lista local vacía" como "hay que borrar todo lo remoto que no esté en la lista local",
+  // lo que BORRA la tabla completa en Supabase. Esto causó que se vaciaran routes/
+  // route_tolls/transport_zones en producción (incidente recurrente, visto también el
+  // viernes con rutas+peajes+tarifas). Cualquier saveDatabase(db) sin syncOnly, llamado
+  // desde una vista que no invocó loadRoutesData() primero, disparaba el borrado.
+  const lazyTables = _routesLoaded ? LAZY_TABLE_MAP : [];
+  const ALL_TABLES = [...TABLE_MAP, ...lazyTables];
   const tablas = syncOnly
     ? ALL_TABLES.filter(t => syncOnly.includes(t.local))
     : ALL_TABLES;
