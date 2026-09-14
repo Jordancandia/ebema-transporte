@@ -1,0 +1,40 @@
+name: Verificar version de cache-busting (A-07)
+
+# Red de seguridad para el bug de version-mismatch (11-sep-2026 y 14-sep-2026):
+# si algún commit deja dos o más versiones "?v=..." distintas conviviendo en el
+# repo (por ejemplo, alguien bumpea data.js a mano en un solo archivo y olvida
+# los demás importadores), esta Action falla en rojo en vez de descubrirse en
+# producción como "Rutas/Tarifas vacías". No reemplaza el despliegue (que sigue
+# siendo GitHub Pages sirviendo la rama main) — solo lo audita después del push.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verificar que todas las referencias ?v=... sean la misma version
+        run: |
+          set -e
+          versions=$(grep -rhoE '\.js\?v=([0-9]{12}|[0-9]{8}[a-z]?)' --include='*.js' --include='*.html' . \
+            | sed -E 's/.*\?v=//' | sort -u)
+          count=$(printf '%s\n' "$versions" | grep -c . || true)
+
+          echo "Version(es) encontrada(s) en el repo:"
+          printf '%s\n' "$versions"
+          echo ""
+
+          if [ "$count" -eq 0 ]; then
+            echo "AVISO: no se encontró ninguna referencia \"?v=...\" — revisar manualmente."
+          elif [ "$count" -gt 1 ]; then
+            echo "::error::Hay $count versiones distintas de cache-busting (?v=...) en el repo. Deben ser todas iguales - correr 'node bump-version.js' antes de desplegar."
+            exit 1
+          else
+            echo "OK: una sola version ($versions) en todo el repo."
+          fi

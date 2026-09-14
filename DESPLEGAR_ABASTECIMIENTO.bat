@@ -1,5 +1,15 @@
 @echo off
 cd /d "%~dp0"
+
+echo ===== VERSIONADO AUTOMATICO (A-07) =====
+where node >nul 2>&1
+if %errorlevel%==0 (
+  node bump-version.js
+) else (
+  echo AVISO: no se encontro "node" en PATH - se omite el bump automatico de version.
+  echo Verificar a mano que todos los "?v=..." del repo sean iguales antes de continuar.
+)
+
 (
   echo ===== LIMPIAR LOCKS =====
   del /f /q ".git\index.lock" 2>nul
@@ -13,10 +23,12 @@ cd /d "%~dp0"
   echo ===== IDENTITY =====
   git config user.email "jcandia@ebema.cl"
   git config user.name "Jordan Candia"
+  echo ===== DEJAR DE TRACKEAR deploy_log.txt (una sola vez, no falla si ya no esta) =====
+  git rm --cached --ignore-unmatch deploy_log.txt >nul 2>&1
   echo ===== ADD =====
   git add -A
   echo ===== COMMIT =====
-  git commit -m "fix: plan carga crossdock -3/+3, FALTA/SOBRA color, excedentes ocultados v=20260911a"
+  git commit -m "deploy: actualizacion automatica %date% %time%"
   echo ===== PULL =====
   git pull --rebase origin main
   echo ===== PUSH =====
