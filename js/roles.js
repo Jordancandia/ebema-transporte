@@ -1,4 +1,4 @@
-import { getDatabase, saveDatabase, getCentreName } from './data.js?v=20260913c';
+import { getDatabase, saveDatabase, getCentreName } from './data.js?v=20260914b';
 import { showAlert, escapeHtml } from './utils.js';
 import { supabase } from './supabase-client.js?v=20260913d';
 
@@ -626,7 +626,7 @@ function renderUsersTable(usersList, viewContainer, isFiltered = false) {
       const db2 = getDatabase();
       const pos = db2.users.findIndex(u => u.email === email);
       if (pos !== -1) db2.users.splice(pos, 1);
-      saveDatabase(db2);
+      saveDatabase(db2, { syncOnly: ['users'] });
 
       showAlert(`${name} eliminado correctamente.`);
       const stageContainer = document.getElementById('stage-area');

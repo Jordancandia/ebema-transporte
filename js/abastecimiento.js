@@ -11,7 +11,7 @@
 // ============================================================================
 
 import { supabase } from './supabase-client.js?v=20260913d';
-import { getDatabase } from './data.js?v=20260913c';
+import { getDatabase } from './data.js?v=20260914b';
 import { showAlert, escapeHtml } from './utils.js';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────

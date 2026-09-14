@@ -1,4 +1,4 @@
-import { getDatabase, saveDatabase } from './data.js?v=20260913c';
+import { getDatabase, saveDatabase, deleteRow } from './data.js?v=20260914b';
 import { parseCSV, showAlert, escapeHtml, toCSV, downloadFile } from './utils.js';
 import { REGIONES, COMUNAS_POR_REGION, TIPOS_ZONA, findRegionByComuna } from './chile-geo.js';
 
@@ -766,7 +766,8 @@ function renderZonasTable(zonasList) {
       if (idx !== -1) {
         if (!confirm(`¿Eliminar la zona ${id}? Esta acción no se puede deshacer.`)) return;
         db.transportZones.splice(idx, 1);
-        saveDatabase(db);
+        saveDatabase(db, { syncOnly: ['transportZones'] });
+        deleteRow('transportZones', id).catch(err => console.error('Error al borrar zona en Supabase:', err.message || err));
         showAlert(`La zona ${id} ha sido eliminada.`);
         const subContent = document.getElementById('rutas-subview-content');
         if (subContent) renderZonasView(subContent);

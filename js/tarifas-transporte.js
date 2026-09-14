@@ -1,11 +1,11 @@
 // PANTALLA 1: Administrador de Tarifas Transporte — SIT EBEMA
 // Sub-módulos: Peajes, Combustibles y Rendimientos, Seguros y Permisos,
 // Variables Generales y Motor de Costo (ZCAP) con exportación CSV.
-import { getDatabase, saveDatabase, getCentreName, getTariffConfig, getClientTariffConfig, truckCapKg, getOrigenGroups, getGroupRepId, buildTruckTypes, TRUCK_BASE_TYPES, loadHistorico } from './data.js?v=20260913c';
+import { getDatabase, saveDatabase, getCentreName, getTariffConfig, getClientTariffConfig, truckCapKg, getOrigenGroups, getGroupRepId, buildTruckTypes, TRUCK_BASE_TYPES, loadHistorico, deleteRow } from './data.js?v=20260914b';
 import { CAP_LIST, truckTypesWithCap, calcularMatrizCostos } from './tarifas-engine.js?v=20260913a';
 import { formatCLP, parseCSV, showAlert, toCSV, downloadFile, escapeHtml } from './utils.js';
 import { supabase } from './supabase-client.js?v=20260913d';
-import { getField } from './zonas-transporte.js?v=20260913a';
+import { getField } from './zonas-transporte.js?v=20260914b';
 import { renderZcapView } from './zcap.js?v=20260913a';
 
 // FIX: Escuchar errores de sincronización con Supabase y notificar al usuario
@@ -439,8 +439,10 @@ function renderCostosExtras(content, db, cfg) {
   content.querySelectorAll('.ce-eliminar').forEach(btn => {
     btn.addEventListener('click', () => {
       if (!confirm('¿Eliminar este ítem de costo extra?')) return;
-      db.extraCosts = db.extraCosts.filter(c => c.id !== btn.dataset.ceId);
-      saveDatabase(db);
+      const ceId = btn.dataset.ceId;
+      db.extraCosts = db.extraCosts.filter(c => c.id !== ceId);
+      saveDatabase(db, { syncOnly: ['extraCosts'] });
+      deleteRow('extraCosts', ceId).catch(err => console.error('Error al borrar costo extra en Supabase:', err.message || err));
       rerender();
     });
   });

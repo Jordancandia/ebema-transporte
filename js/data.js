@@ -368,44 +368,51 @@ export async function initDatabase() {
   }
 }
 
-// Sincronizar una colección completa hacia Supabase (upsert + borrar faltantes)
-// Para tablas grandes (> URL_SAFE_LIMIT filas), el NOT IN(...) supera el límite de URL
-// del navegador. En ese caso se buscan los IDs remotos y se borra solo la diferencia.
-const URL_SAFE_LIMIT = 150;
+// Sincronizar una colección completa hacia Supabase (SOLO upsert, nunca borra).
+//
+// IMPORTANTE (fix C-02, 2026-09-14): esta función ANTES calculaba qué filas
+// remotas "sobraban" comparando contra el snapshot en memoria del navegador
+// y las borraba. Eso es peligroso porque el snapshot en memoria de una pestaña
+// puede estar desactualizado (o vacío, p. ej. justo después de cargar) respecto
+// de lo que otro usuario guardó segundos antes: un "last write wins" sobre un
+// diff de tabla completa provoca borrados silenciosos de datos ajenos, y si el
+// arreglo local llegaba vacío, el fallback `neq(pk, '___nunca___')` borraba
+// TODA la tabla. Ver el post-mortem en syncToSupabase() más abajo.
+//
+// Ahora syncTable() jamás borra filas. Los borrados explícitos del usuario
+// (eliminar una ruta, un centro, un camión, etc.) deben hacerse con
+// deleteRow()/deleteRows(), que borran por PK exacta, nunca por diferencia
+// de snapshot.
 async function syncTable(table, pk, rows) {
   if (rows.length > 0) {
     const { error } = await supabase.from(table).upsert(rows);
     if (error) throw error;
   }
+}
 
-  const localKeys = new Set(rows.map(r => String(r[pk]).replace(/"/g, '')));
+// Borrar una sola fila remota por su clave primaria exacta.
+// localName es la clave usada en TABLE_MAP/LAZY_TABLE_MAP (p. ej. 'routes',
+// 'transportZones', 'logisticsCentres'). No borra por diferencia de snapshot:
+// solo la fila cuyo pk coincide exactamente con pkValue.
+export async function deleteRow(localName, pkValue) {
+  const entry = TABLE_MAP.find(e => e.local === localName) || LAZY_TABLE_MAP.find(e => e.local === localName);
+  if (!entry) throw new Error(`deleteRow: tabla local desconocida "${localName}"`);
+  if (pkValue === undefined || pkValue === null) {
+    throw new Error(`deleteRow: pkValue vacío para "${localName}"`);
+  }
+  const { error } = await supabase.from(entry.table).delete().eq(entry.pk, pkValue);
+  if (error) throw error;
+}
 
-  if (localKeys.size > URL_SAFE_LIMIT) {
-    // Tabla grande: obtener IDs remotos y borrar solo los que ya no existen localmente
-    let remoteKeys = [];
-    let from2 = 0;
-    while (true) {
-      const { data, error } = await supabase.from(table).select(pk).range(from2, from2 + PAGE_SIZE - 1);
-      if (error) throw error;
-      remoteKeys = remoteKeys.concat((data || []).map(r => String(r[pk])));
-      if (!data || data.length < PAGE_SIZE) break;
-      from2 += PAGE_SIZE;
-    }
-    const toDelete = remoteKeys.filter(k => !localKeys.has(k));
-    // Borrar en lotes de 50 para mantener URLs dentro del límite
-    for (let i = 0; i < toDelete.length; i += 50) {
-      const batch = toDelete.slice(i, i + 50);
-      const { error } = await supabase.from(table).delete().in(pk, batch);
-      if (error) throw error;
-    }
-  } else {
-    // Tabla pequeña: usar NOT IN directo (URL corta)
-    const keys = [...localKeys];
-    let q = supabase.from(table).delete();
-    q = keys.length > 0
-      ? q.not(pk, 'in', `(${keys.map(k => `"${k}"`).join(',')})`)
-      : q.neq(pk, '___nunca___');
-    const { error } = await q;
+// Borrar varias filas remotas por su clave primaria exacta (en lotes de 50
+// para no exceder el límite de longitud de URL en el filtro `in(...)`).
+export async function deleteRows(localName, pkValues) {
+  const entry = TABLE_MAP.find(e => e.local === localName) || LAZY_TABLE_MAP.find(e => e.local === localName);
+  if (!entry) throw new Error(`deleteRows: tabla local desconocida "${localName}"`);
+  const values = (pkValues || []).filter(v => v !== undefined && v !== null);
+  for (let i = 0; i < values.length; i += 50) {
+    const batch = values.slice(i, i + 50);
+    const { error } = await supabase.from(entry.table).delete().in(entry.pk, batch);
     if (error) throw error;
   }
 }
@@ -567,12 +574,14 @@ async function syncToSupabase(db, syncOnly = null) {
   const fallidas = [];
   // Incluir tablas diferidas en la sincronización (rutas, peajes, zonas son editables)
   // SOLO si ya se cargaron en esta sesión (_routesLoaded). Si no se cargaron, db.routes/
-  // db.routeTolls/db.transportZones vienen vacíos o undefined — y syncTable() interpreta
-  // "lista local vacía" como "hay que borrar todo lo remoto que no esté en la lista local",
-  // lo que BORRA la tabla completa en Supabase. Esto causó que se vaciaran routes/
-  // route_tolls/transport_zones en producción (incidente recurrente, visto también el
-  // viernes con rutas+peajes+tarifas). Cualquier saveDatabase(db) sin syncOnly, llamado
-  // desde una vista que no invocó loadRoutesData() primero, disparaba el borrado.
+  // db.routeTolls/db.transportZones vienen vacíos o undefined, y no tiene sentido
+  // subir un upsert vacío. ANTES esto era además una medida de seguridad crítica:
+  // syncTable() interpretaba "lista local vacía" como "borrar todo lo remoto que no
+  // esté en la lista local", lo que BORRABA la tabla completa en Supabase. Eso causó
+  // que se vaciaran routes/route_tolls/transport_zones en producción (incidente
+  // recurrente, visto también el viernes con rutas+peajes+tarifas). Desde el fix de
+  // C-02 (2026-09-14), syncTable() ya nunca borra (solo upsert), así que este guard
+  // ya no es una defensa contra borrado — se mantiene solo por eficiencia.
   const lazyTables = _routesLoaded ? LAZY_TABLE_MAP : [];
   const ALL_TABLES = [...TABLE_MAP, ...lazyTables];
   const tablas = syncOnly
@@ -1213,8 +1222,21 @@ export function resetDatabase() {
 
 // Limpiar datos maestros de prueba (rutas, zonas, transportistas)
 // sin afectar centros logísticos, tipos de camión ni configuraciones.
-export function limpiarDatosMaestros() {
+//
+// Nota (fix C-02, 2026-09-14): desde que syncTable() dejó de borrar por diferencia
+// de snapshot, un simple saveDatabase(db) con los arrays locales vacíos YA NO borra
+// las filas remotas correspondientes (solo deja de re-subirlas). Por eso esta función
+// ahora borra explícitamente en Supabase con deleteRows(), usando los IDs que tenía
+// el snapshot local ANTES de vaciarlo.
+export async function limpiarDatosMaestros() {
   const db = getDatabase();
+  const idsRoutes    = (db.routes || []).map(r => r.id);
+  const idsZonas     = (db.transportZones || []).map(r => r.zona);
+  const idsTransp    = (db.transports || []).map(r => r.id);
+  const idsCamiones  = (db.transportsCamiones || []).map(r => r.id_camion);
+  const idsChoferes  = (db.transportsChoferes || []).map(r => r.rut);
+  const idsPeajes    = (db.routeTolls || []).map(r => r.id);
+
   db.routes = [];
   db.transportZones = [];
   db.transports = [];
@@ -1222,6 +1244,20 @@ export function limpiarDatosMaestros() {
   db.transportsChoferes = [];
   db.routeTolls = [];
   saveDatabase(db);
+
+  try {
+    await Promise.all([
+      deleteRows('routes', idsRoutes),
+      deleteRows('transportZones', idsZonas),
+      deleteRows('transports', idsTransp),
+      deleteRows('transportsCamiones', idsCamiones),
+      deleteRows('transportsChoferes', idsChoferes),
+      deleteRows('routeTolls', idsPeajes)
+    ]);
+  } catch (err) {
+    console.error('Error al borrar datos maestros en Supabase:', err.message || err);
+  }
+
   console.log('✓ Datos maestros limpiados: rutas, zonas, transportistas.');
   return db;
 }

@@ -1,4 +1,4 @@
-import { getDatabase, saveDatabase } from './data.js?v=20260913c';
+import { getDatabase, saveDatabase, deleteRow } from './data.js?v=20260914b';
 import { showAlert, geocodeAddress, escapeHtml, toCSV, downloadFile } from './utils.js';
 import { GRUPOS_ORIGEN } from './chile-geo.js';
 
@@ -447,7 +447,8 @@ function renderCdCards(list, parentContainer, resetGeoStep) {
       if (!confirm(`¿Eliminar definitivamente el centro "${cd.nombre}" (${cd.id})?`)) return;
 
       db.logisticsCentres = db.logisticsCentres.filter(c => c.id !== id);
-      saveDatabase(db);
+      saveDatabase(db, { syncOnly: ['logisticsCentres'] });
+      deleteRow('logisticsCentres', id).catch(err => console.error('Error al borrar centro en Supabase:', err.message || err));
       showAlert(`Centro ${cd.nombre} eliminado.`);
       renderLogisticsView(parentContainer);
     });

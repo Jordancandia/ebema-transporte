@@ -1,7 +1,7 @@
-import { getDatabase, saveDatabase, getCentreName } from './data.js?v=20260913c';
+import { getDatabase, saveDatabase, getCentreName, deleteRow } from './data.js?v=20260914b';
 import { generateSapCode, parseCSV, showAlert, geocodeAddress, escapeHtml, toCSV, downloadFile } from './utils.js';
-import { renderLogisticsView } from './logistics.js?v=20260913a';
-import { renderZonasView, getField, normalizeRegionName, standardizeComuna } from './zonas-transporte.js?v=20260913a';
+import { renderLogisticsView } from './logistics.js?v=20260914b';
+import { renderZonasView, getField, normalizeRegionName, standardizeComuna } from './zonas-transporte.js?v=20260914b';
 import { REGIONES, COMUNAS_POR_REGION, TIPOS_ZONA, GRUPOS_ORIGEN, findRegionByComuna } from './chile-geo.js';
 
 // Estilos de la característica especial de la ruta (usada por el motor de tarifas)
@@ -1058,12 +1058,11 @@ function renderRutasSubview(container) {
       done++;
       geoProgressBar.style.width = `${Math.round((done / pending.length) * 100)}%`;
       geoProgressText.innerText = `${done} / ${pending.length} — Georreferenciadas: ${ok}, Por revisar: ${manual}`;
-
-      // Guardar progreso periódicamente
-      if (done % 50 === 0) saveDatabase(activeDb);
     }
 
-    saveDatabase(activeDb);
+    // Guardar una sola vez al terminar (fix C-02: evitar N saveDatabase() dentro
+    // del loop, cada uno disparando su propia sincronización de fondo).
+    saveDatabase(activeDb, { syncOnly: ['routes'] });
     geoRunning = false;
     geoPendingCountEl.innerText = rutasSinGeoref().length;
     btnStartGeo.disabled = rutasSinGeoref().length === 0;
@@ -1099,10 +1098,9 @@ function renderRutasSubview(container) {
         if (!fuenteLocal) await new Promise(resolve => setTimeout(resolve, 1100));
       } catch { manual++; }
       done++;
-      if (done % 50 === 0) saveDatabase(activeDb);
     }
 
-    saveDatabase(activeDb);
+    saveDatabase(activeDb, { syncOnly: ['routes'] });
     const db2 = getDatabase();
     renderRoutesTable(db2.routes);
     showAlert(`Finalizado: ${ok} ubicadas automáticamente, ${manual} requieren revisión manual.`);
@@ -1209,11 +1207,10 @@ function renderRutasSubview(container) {
       kmProgressBar.style.width = `${pct}%`;
       kmProgressText.innerText = `${done} / ${total} \u2014 ${ok} OK \xb7 ${errors} errores`;
       kmLogEl.scrollTop = kmLogEl.scrollHeight;
-      if (done % 50 === 0) saveDatabase(activeDb);
       await new Promise(resolve => setTimeout(resolve, 500));
     }
 
-    saveDatabase(activeDb);
+    saveDatabase(activeDb, { syncOnly: ['routes'] });
     kmRunning = false;
     kmPendingCountEl.innerText = rutasSinKm().length;
     btnStartKm.disabled = rutasSinKm().length === 0;
@@ -1412,7 +1409,8 @@ function renderRoutesTable(routesList) {
         const r = db.routes[idx];
         if (!confirm(`¿Eliminar la ruta ${r.codigo} (${r.denominacion || r.destino})? Esta acción no se puede deshacer.`)) return;
         db.routes.splice(idx, 1);
-        saveDatabase(db);
+        saveDatabase(db, { syncOnly: ['routes'] });
+        deleteRow('routes', r.id).catch(err => console.error('Error al borrar ruta en Supabase:', err.message || err));
         showAlert(`La ruta ${r.codigo} ha sido eliminada.`);
         renderRoutesView(document.getElementById('stage-area'));
       }

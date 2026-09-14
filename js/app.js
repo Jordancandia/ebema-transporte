@@ -1,4 +1,4 @@
-import { getDatabase, saveDatabase, initDatabase, loadRoutesData } from './data.js?v=20260913c';
+import { getDatabase, saveDatabase, initDatabase, loadRoutesData } from './data.js?v=20260914b';
 import { supabase } from './supabase-client.js?v=20260913d';
 // ── Módulos cargados bajo demanda (lazy) — se cachean tras la primera carga ──
 const _mod = {};
@@ -1578,21 +1578,21 @@ async function switchTab(tabName, subName = null) {
     case 'routes': {
       await loadRoutesData();
       pageTitle.textContent = 'Rutas de Transporte' + subLabel;
-      const m = await loadMod('routes', './routes.js?v=20260913a');
+      const m = await loadMod('routes', './routes.js?v=20260914b');
       if (alias) m.setRoutesSubTab(alias);
       m.renderRoutesView(stage);
       break;
     }
     case 'roles': {
       pageTitle.textContent = 'Roles y Perfiles';
-      const m = await loadMod('roles', './roles.js?v=20260914a');
+      const m = await loadMod('roles', './roles.js?v=20260914b');
       m.renderRolesView(stage);
       break;
     }
     case 'tarifas-transporte': {
       await loadRoutesData();
       pageTitle.textContent = 'Tarifas Transporte' + subLabel;
-      const m = await loadMod('tt', './tarifas-transporte.js?v=20260913a');
+      const m = await loadMod('tt', './tarifas-transporte.js?v=20260914b');
       if (alias) m.setActiveSub(alias);
       m.renderTariffTransportView(stage);
       break;

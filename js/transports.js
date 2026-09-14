@@ -1,6 +1,6 @@
-import { getDatabase, saveDatabase, calcEjes, getOrigenGroups } from './data.js?v=20260913c';
+import { getDatabase, saveDatabase, calcEjes, getOrigenGroups } from './data.js?v=20260914b';
 import { formatRut, validateRut, generateSapCode, parseCSV, showAlert, escapeHtml } from './utils.js';
-import { renderFichaTransporte } from './ficha-transporte.js?v=20260913a';
+import { renderFichaTransporte } from './ficha-transporte.js?v=20260914b';
 import { abrirModalTroncal } from './troncales.js?v=20260913a';
 
 let editingTransportId = null;

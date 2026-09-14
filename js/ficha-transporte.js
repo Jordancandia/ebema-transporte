@@ -1,4 +1,4 @@
-import { getDatabase, saveDatabase, getCentreName, getOrigenGroups, calcEjes } from './data.js?v=20260913c';
+import { getDatabase, saveDatabase, getCentreName, getOrigenGroups, calcEjes, deleteRow, deleteRows } from './data.js?v=20260914b';
 import { formatRut, showAlert, escapeHtml } from './utils.js';
 
 // Ficha del Transportista — SIT EBEMA
@@ -322,13 +322,25 @@ export function renderFichaTransporte(container, transportId) {
       nuevos.push({ ...anterior, nombre, rut, telefono, licencia });
     }
 
+    // Detectar choferes eliminados de la lista ANTES de reemplazar obj.choferes,
+    // para poder borrar sus filas derivadas en transports_choferes (ver más abajo).
+    const rutsEliminados = (obj.choferes || [])
+      .map(c => c.rut)
+      .filter(rut => rut && !nuevos.some(n => n.rut === rut));
+
     obj.choferes = nuevos;
     // Limpiar asignaciones de camiones cuyo chofer ya no existe
     (obj.camiones || []).forEach(c => {
       if (c.choferRut && !nuevos.some(n => n.rut === c.choferRut)) c.choferRut = '';
     });
 
-    saveDatabase(database);
+    saveDatabase(database, { syncOnly: ['transports', 'transportsCamiones', 'transportsChoferes'] });
+    // transports_choferes se regenera completa desde obj.choferes en cada guardado
+    // (deriveCamionesChoferes), pero syncTable() ya no borra: hay que borrar
+    // explícitamente las filas de los choferes quitados de la lista.
+    if (rutsEliminados.length > 0) {
+      deleteRows('transportsChoferes', rutsEliminados).catch(err => console.error('Error al borrar chofer(es) en Supabase:', err.message || err));
+    }
     showAlert('Choferes guardados correctamente.');
     refresh();
   });
@@ -376,8 +388,15 @@ export function renderFichaTransporte(container, transportId) {
       if (!confirm('¿Eliminar este camión y su documentación?')) return;
       const database = getDatabase();
       const obj = getT(database);
+      const camionBorrado = (obj.camiones || []).find(c => c.id === camionId);
       obj.camiones = obj.camiones.filter(c => c.id !== camionId);
-      saveDatabase(database);
+      saveDatabase(database, { syncOnly: ['transports', 'transportsCamiones', 'transportsChoferes'] });
+      // transports_camiones se regenera completa desde obj.camiones en cada guardado
+      // (deriveCamionesChoferes), pero syncTable() ya no borra: hay que borrar
+      // explícitamente la fila del camión eliminado, cuya PK remota es la patente.
+      if (camionBorrado && camionBorrado.patente) {
+        deleteRow('transportsCamiones', camionBorrado.patente).catch(err => console.error('Error al borrar camión en Supabase:', err.message || err));
+      }
       showAlert('Camión eliminado.');
       refresh();
       return;
