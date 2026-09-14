@@ -1567,7 +1567,7 @@ async function switchTab(tabName, subName = null) {
     }
     case 'roles': {
       pageTitle.textContent = 'Roles y Perfiles';
-      const m = await loadMod('roles', './roles.js?v=20260913a');
+      const m = await loadMod('roles', './roles.js?v=20260914a');
       m.renderRolesView(stage);
       break;
     }

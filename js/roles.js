@@ -36,7 +36,7 @@ const LEGACY_ROLE_MAP = {
 };
 
 // Roles que requieren un "Centro Logístico" asociado
-const CENTRO_ROLES = ['ADMINISTRADOR_DEPOSITO', 'AGENTE_COMERCIAL'];
+const CENTRO_ROLES = [];
 // Roles que requieren un "Transportista" asociado
 const TRANSPORTE_ROLES = ['TRANSPORTISTA', 'CHOFER'];
 
