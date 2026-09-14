@@ -242,7 +242,25 @@ function renderApp() {
 // Cierre de sesión compartido (dashboard y portal de proveedores)
 async function handleLogout() {
   await supabase.auth.signOut();
+
+  // Limpiar caché local de datos de negocio (tarifas, costos, RUTs, usuarios/roles)
+  // para que no queden expuestos en un equipo compartido tras cerrar sesión (auditoría A-04).
+  const sessionEmail = (() => {
+    try { return (JSON.parse(localStorage.getItem(SESSION_KEY) || '{}').email || 'anon'); }
+    catch (_e) { return 'anon'; }
+  })();
   localStorage.removeItem(SESSION_KEY);
+  localStorage.removeItem('ebema_transporte_db');
+  localStorage.removeItem('sit_ebema_hist_v1');
+  localStorage.removeItem(`ebema_recent_quotes_${sessionEmail}`);
+  try {
+    const delReq = indexedDB.deleteDatabase('sit_ebema_idb');
+    delReq.onerror   = () => console.warn('No se pudo eliminar la caché IndexedDB local (sit_ebema_idb).');
+    delReq.onblocked = () => console.warn('Eliminación de caché IndexedDB (sit_ebema_idb) bloqueada por otra pestaña abierta.');
+  } catch (_e) {
+    console.warn('No se pudo iniciar la eliminación de la caché IndexedDB local (sit_ebema_idb).');
+  }
+
   currentSession = null;
   currentTab = 'home';
   authState = 'login';
