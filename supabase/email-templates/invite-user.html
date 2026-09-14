@@ -55,17 +55,6 @@
                         <td style="padding:4px 0; font-size:13px; color:#5c5f61;">Correo</td>
                         <td align="right" style="padding:4px 0; font-size:13px; color:#191c1d; font-weight:600;">{{ .Email }}</td>
                       </tr>
-                      <tr>
-                        <td style="padding:4px 0; font-size:13px; color:#5c5f61;">Rol asignado</td>
-                        <td align="right" style="padding:4px 0; font-size:13px; color:#191c1d; font-weight:600;">
-                          {{ if eq .Data.role "OWNER" }}Propietario
-                          {{ else if eq .Data.role "ADMIN" }}Administrador
-                          {{ else if eq .Data.role "ADMINISTRADOR_DEPOSITO" }}Administrador de Depósito
-                          {{ else if eq .Data.role "AGENTE_COMERCIAL" }}Agente Comercial
-                          {{ else }}{{ .Data.role }}
-                          {{ end }}
-                        </td>
-                      </tr>
                     </table>
                   </td>
                 </tr>
