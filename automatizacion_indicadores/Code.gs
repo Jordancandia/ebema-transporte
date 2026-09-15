@@ -186,13 +186,43 @@ function cargar_flete_pagado()  { cargarUno(etiquetaCorrida(),'ind_flete_pagado'
 function cargar_flete_cobrado() { cargarUno(etiquetaCorrida(),'ind_flete_cobrado', function(){return leerDriveXlsxPorNombre(DRIVE_NOMBRE.flete_cobrado);}, SPEC_FLETE_COBRADO); }
 function cargar_flete_tercero() { cargarUno(etiquetaCorrida(),'ind_flete_tercero', function(){return leerGmailXlsx(LABEL_FT);},            SPEC_FLETE_TERCERO); }
 
-// Crea el trigger diario 08:00 (ejecutar manualmente 1 vez).
+// Refresca fn_ind_refresh_all() como paso independiente (usado por el trigger
+// escalonado de las 08:15, después de que las 4 fuentes ya cargaron).
+function ejecutar_refresh_indicadores() {
+  var corrida = etiquetaCorrida();
+  try {
+    sbRpcRefresh();
+    logRun(corrida, 'refresh_matviews', 0, 'ok', 'fn_ind_refresh_all (trigger escalonado)');
+  } catch (e) {
+    logRun(corrida, 'refresh_matviews', 0, 'error', String(e));
+  }
+}
+
+// Crea los triggers ESCALONADOS por fuente (reemplaza el trigger único de
+// las 08:00, que combinaba las 4 cargas en una sola ejecución y podía cortarse
+// por el límite de tiempo de Apps Script a mitad de ind_flete_pagado -
+// ver incidente 14-sep-2026). Ejecutar manualmente 1 vez para reemplazar
+// el trigger viejo por estos 5.
+//
+// IMPORTANTE: atHour/nearMinute en triggers diarios de Apps Script es
+// APROXIMADO (puede disparar hasta ~15 min después de la hora indicada, y
+// el orden real entre triggers cercanos no está garantizado). Esto no
+// rompe nada porque cada trigger solo toca su propia tabla (no hay
+// dependencia entre ellos, excepto el refresh final) - pero por eso el
+// refresh se dejó con margen amplio (08:15) respecto de la última carga
+// (07:55), no pegado a los 5 min.
 function crearTriggers() {
+  var handlers = ['ejecutar_0800', 'cargar_otif', 'cargar_flete_pagado',
+    'cargar_flete_cobrado', 'cargar_flete_tercero', 'ejecutar_refresh_indicadores'];
   ScriptApp.getProjectTriggers().forEach(function (t) {
-    if (t.getHandlerFunction() === 'ejecutar_0800') ScriptApp.deleteTrigger(t);
+    if (handlers.indexOf(t.getHandlerFunction()) !== -1) ScriptApp.deleteTrigger(t);
   });
-  ScriptApp.newTrigger('ejecutar_0800').timeBased().atHour(8).nearMinute(0).everyDays(1).create();
-  Logger.log('Trigger creado: 08:00 America/Santiago -> ejecutar_0800');
+  ScriptApp.newTrigger('cargar_otif').timeBased().atHour(7).nearMinute(40).everyDays(1).create();
+  ScriptApp.newTrigger('cargar_flete_cobrado').timeBased().atHour(7).nearMinute(45).everyDays(1).create();
+  ScriptApp.newTrigger('cargar_flete_pagado').timeBased().atHour(7).nearMinute(50).everyDays(1).create();
+  ScriptApp.newTrigger('cargar_flete_tercero').timeBased().atHour(7).nearMinute(55).everyDays(1).create();
+  ScriptApp.newTrigger('ejecutar_refresh_indicadores').timeBased().atHour(8).nearMinute(15).everyDays(1).create();
+  Logger.log('Triggers escalonados creados: 07:40 otif / 07:45 flete_cobrado / 07:50 flete_pagado / 07:55 flete_tercero / 08:15 refresh');
 }
 
 // ----------------------------- CORE -----------------------------------------

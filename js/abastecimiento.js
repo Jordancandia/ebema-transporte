@@ -10,8 +10,8 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202609140046';
-import { getDatabase } from './data.js?v=202609140046';
+import { supabase } from './supabase-client.js?v=202609142120';
+import { getDatabase } from './data.js?v=202609142120';
 import { showAlert, escapeHtml } from './utils.js';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
@@ -563,6 +563,8 @@ const VISTAS_TRONCAL = {
           _pv_nombre_vendedor: pv.nombre || '',
           _pv_ce_expedicion: pv.psex || '',
           _pv_ruta: pv.ruta || '',
+          // Comuna asociada a la ruta del Pedido de Ventas, según maestro de rutas
+          _pv_comuna: lookupRuta(pv.ruta).comuna || '',
         });
       }
       return out.sort((a, b) => {
@@ -585,6 +587,11 @@ const VISTAS_TRONCAL = {
       { key: '_ton_totales', label: 'Ton Totales', cls: 'text-right num-clear font-bold' },
       { key: 'documento', label: 'Pedido de Ventas' },
       { key: '_pv_denominacion', label: 'Tipo Expedición' },
+      { key: '_pv_nombre_cliente', label: 'Nombre Cliente' },
+      { key: '_pv_nombre_vendedor', label: 'Nombre Vendedor' },
+      { key: '_pv_ce_expedicion', label: 'Centro Expedición' },
+      { key: '_pv_ruta', label: 'Ruta' },
+      { key: '_pv_comuna', label: 'Comuna' },
       { key: '_vigencia', label: 'Vigencia OC', rawHtml: true,
         valueFn: r => r._revision_saldo ? '<span class="material-symbols-outlined text-[16px] text-red-700" title="Revisión Saldo Pedido">warning</span>' : '',
         clsFn: () => 'text-center' },
@@ -596,12 +603,7 @@ const VISTAS_TRONCAL = {
           return '';
         },
         clsFn: () => 'text-center' },
-      { key: '_tipo_local_rm', label: 'Tipo Retiro', rawHtml: true,
-        valueFn: r => (r._estado === 'coordinado' && r._tipo_local_rm === 'RM')
-          ? '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold bg-blue-100 text-blue-700">RM</span>'
-          : (r._estado === 'coordinado' && r._tipo_local_rm === 'LOCAL')
-            ? '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold bg-green-100 text-green-700">LOCAL</span>'
-            : '', clsFn: () => 'text-center' },
+      { key: '_entrega_entrante', label: 'Entrega Entrante' },
       { key: '_estado', label: 'Coordinación', editable: true },
     ],
   },
@@ -950,8 +952,12 @@ const VISTAS_TRONCAL = {
           documento: r.documento,
           _origen: origen,
           _ton_num: t,
-          _tipo_exp: pv.psex || '',
+          // (FIX) Tipo de Expedición es pv.denominacion (ej. FAB-DESP, CLI-RET);
+          // pv.psex es el código de Centro de Expedición, antes mostrado por error acá.
+          _tipo_exp: pv.denominacion || '',
+          _centro_exp: pv.psex || '',
           _ruta: pv.ruta || '',
+          _comuna: lookupRuta(pv.ruta).comuna || '',
           _vendedor: pv.nombre || '',
         };
       });
@@ -972,7 +978,9 @@ const VISTAS_TRONCAL = {
       { key: '_ton_sku', label: 'Ton SKU', cls: 'text-right num-clear' },
       { key: 'documento', label: 'Pedido de Ventas' },
       { key: '_tipo_exp', label: 'Tipo de Expedición' },
+      { key: '_centro_exp', label: 'Centro Expedición' },
       { key: '_ruta', label: 'ID Ruta' },
+      { key: '_comuna', label: 'Comuna' },
       { key: '_vendedor', label: 'Nombre de Vendedor' },
     ],
   },
