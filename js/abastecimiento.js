@@ -10,8 +10,8 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202609142120';
-import { getDatabase } from './data.js?v=202609142120';
+import { supabase } from './supabase-client.js?v=202609142153';
+import { getDatabase } from './data.js?v=202609142153';
 import { showAlert, escapeHtml } from './utils.js';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
@@ -587,11 +587,6 @@ const VISTAS_TRONCAL = {
       { key: '_ton_totales', label: 'Ton Totales', cls: 'text-right num-clear font-bold' },
       { key: 'documento', label: 'Pedido de Ventas' },
       { key: '_pv_denominacion', label: 'Tipo Expedición' },
-      { key: '_pv_nombre_cliente', label: 'Nombre Cliente' },
-      { key: '_pv_nombre_vendedor', label: 'Nombre Vendedor' },
-      { key: '_pv_ce_expedicion', label: 'Centro Expedición' },
-      { key: '_pv_ruta', label: 'Ruta' },
-      { key: '_pv_comuna', label: 'Comuna' },
       { key: '_vigencia', label: 'Vigencia OC', rawHtml: true,
         valueFn: r => r._revision_saldo ? '<span class="material-symbols-outlined text-[16px] text-red-700" title="Revisión Saldo Pedido">warning</span>' : '',
         clsFn: () => 'text-center' },
