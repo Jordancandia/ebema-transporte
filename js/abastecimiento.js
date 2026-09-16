@@ -10,8 +10,8 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202609161602';
-import { getDatabase } from './data.js?v=202609161602';
+import { supabase } from './supabase-client.js?v=202609161611';
+import { getDatabase } from './data.js?v=202609161611';
 import { showAlert, escapeHtml } from './utils.js';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
@@ -178,6 +178,74 @@ async function loadEstadosRetiro() {
   const m = {};
   if (!error) (data || []).forEach(r => { m[String(r.doc_compr)] = { estado: r.estado, tipo_retiro: r.tipo_retiro, entrega_entrante: r.entrega_entrante, tipo_local_rm: r.tipo_local_rm, fab_direccion: r.fab_direccion, fab_comuna: r.fab_comuna, fab_contacto: r.fab_contacto, fab_telefono: r.fab_telefono }; });
   return m;
+}
+
+// ── Exclusiones manuales del Plan de Carga ──────────────────────────────────
+// Permite sacar del Plan de Carga, de forma persistente y reversible, un
+// Pedido de Venta 1003 completo (tipo='venta_1003', material=null) o un
+// Pedido de Traslado de Crossdocking — completo (material=null) o sólo una
+// línea/material puntual de ese pedido (tipo='crossdock_4000', material=X).
+async function loadExclusionesPlan() {
+  const { data, error } = await supabase.from('abast_plan_exclusiones').select('*').order('created_at', { ascending: false });
+  if (error) { console.error(error); return []; }
+  return data || [];
+}
+async function excluirDelPlan(tipo, doc, material, motivo) {
+  // material '' (o ausente) = excluye el documento completo, cualquier línea/material.
+  const payload = { tipo, doc: String(doc), material: material ? String(material) : '', motivo: motivo || null, created_by: await getUserEmail() };
+  const { error } = await supabase.from('abast_plan_exclusiones').upsert(payload, { onConflict: 'tipo,doc,material' });
+  if (error) { showAlert('Error al excluir: ' + error.message, 'error'); return false; }
+  return true;
+}
+async function reactivarEnPlan(id) {
+  const { error } = await supabase.from('abast_plan_exclusiones').delete().eq('id', id);
+  if (error) { showAlert('Error al reactivar: ' + error.message, 'error'); return false; }
+  return true;
+}
+// true si (doc[, material]) está excluido: aplica match exacto de material,
+// o una exclusión de todo el documento (material === '' en abast_plan_exclusiones).
+function estaExcluido(exclusiones, tipo, doc, material) {
+  const d = String(doc ?? '').trim();
+  const m = material != null ? String(material).trim() : '';
+  return exclusiones.some(e => e.tipo === tipo && String(e.doc).trim() === d && (String(e.material ?? '').trim() === '' || String(e.material).trim() === m));
+}
+// Modal para ver y reactivar (borrar) exclusiones del Plan de Carga.
+function showExclusionesModal(exclusiones, onChange) {
+  const TIPO_LBL = { venta_1003: 'Pedido de Venta 1003', crossdock_4000: 'Traslado Crossdocking 4000' };
+  const filas = exclusiones.map(e => `<tr class="border-b border-outline-variant/40">
+    <td class="py-xs pr-md text-[12px]">${escapeHtml(TIPO_LBL[e.tipo] || e.tipo)}</td>
+    <td class="py-xs pr-md text-[12px] font-bold">${escapeHtml(e.doc)}</td>
+    <td class="py-xs pr-md text-[12px]">${e.material ? escapeHtml(e.material) : '<span class="text-secondary">— (todo el pedido)</span>'}</td>
+    <td class="py-xs pr-md text-[12px] text-secondary">${escapeHtml(e.motivo || '')}</td>
+    <td class="py-xs pr-md text-[11px] text-secondary">${escapeHtml(horaChile(e.created_at))}</td>
+    <td class="py-xs pr-md text-right"><button data-reactivar="${e.id}" class="text-[11px] font-bold text-primary hover:underline">Reactivar</button></td>
+  </tr>`).join('');
+  const html = `
+  <div id="excl-modal-bg" class="fixed inset-0 bg-black/40 flex items-center justify-center z-[9999]">
+    <div class="bg-white rounded-xl shadow-2xl p-6 w-[720px] max-w-[95vw] max-h-[85vh] overflow-y-auto flex flex-col gap-3">
+      <div class="flex items-center justify-between">
+        <h3 class="text-base font-bold text-gray-800">Exclusiones del Plan de Carga</h3>
+        <button id="excl-cerrar" class="text-secondary hover:text-on-surface">
+          <span class="material-symbols-outlined">close</span></button>
+      </div>
+      <p class="text-[12px] text-secondary">Estos pedidos no se consideran en el Plan de Carga hasta que se reactiven acá.</p>
+      <table class="w-full text-[12px]">
+        <thead><tr class="text-left text-[10px] uppercase text-secondary border-b border-outline-variant">
+          <th class="pr-md py-xs">Tipo</th><th class="pr-md py-xs">Documento</th><th class="pr-md py-xs">Material</th><th class="pr-md py-xs">Motivo</th><th class="pr-md py-xs">Excluido el</th><th></th>
+        </tr></thead>
+        <tbody>${filas || '<tr><td colspan="6" class="text-secondary text-[12px] py-sm">Sin exclusiones activas.</td></tr>'}</tbody>
+      </table>
+    </div>
+  </div>`;
+  document.body.insertAdjacentHTML('beforeend', html);
+  const bg = document.getElementById('excl-modal-bg');
+  const cleanup = () => bg.remove();
+  bg.addEventListener('click', (e) => { if (e.target === bg) cleanup(); });
+  document.getElementById('excl-cerrar').addEventListener('click', cleanup);
+  bg.querySelectorAll('[data-reactivar]').forEach(btn => btn.addEventListener('click', async () => {
+    const ok = await reactivarEnPlan(Number(btn.dataset.reactivar));
+    if (ok) { showAlert('Reactivado en el Plan de Carga', 'success'); cleanup(); onChange && onChange(); }
+  }));
 }
 async function saveEstadoRetiro(docCompr, estado, tipoRetiro = null, entregaEntrante = null, extraFab = null) {
   const payload = { doc_compr: String(docCompr), estado, updated_by: await getUserEmail(), updated_at: new Date().toISOString() };
@@ -1244,7 +1312,7 @@ let planOrigen = '1003';   // centro origen del plan de carga (1003 / 1081)
 async function renderPlanCarga(stage) {
   stage.innerHTML = '<div class="text-secondary text-body-md p-md">Cargando Plan de Carga…</div>';
 
-  const [quiebresRaw, trasladosRaw, revexRaw, retirosRaw, ventasRaw, traslados4000Raw, calendarioRows, estadosRetiro] = await Promise.all([
+  const [quiebresRaw, trasladosRaw, revexRaw, retirosRaw, ventasRaw, traslados4000Raw, calendarioRows, estadosRetiro, exclusionesPlan] = await Promise.all([
     fetchAllRows('v_trc_slim_stock'),
     fetchAllRows('v_trc_sqvi_pedidos_traslados'),
     fetchAllRows('v_trc_sqvi_pedidos_traslados'),
@@ -1253,6 +1321,7 @@ async function renderPlanCarga(stage) {
     fetchAllRows('v_trc_sqvi_pedidos_traslados_4000'),
     fetchAllRows('abast_calendario'),
     loadEstadosRetiro(),
+    loadExclusionesPlan(),
   ]);
 
   // Materiales quebrados por centro (≤7 días)
@@ -1363,6 +1432,7 @@ async function renderPlanCarga(stage) {
     const tonCross = t4000
       .filter(r => String(r.ce ?? '').trim() === ce)
       .filter(r => parseNum(r.ctd_pedido) > Math.max(parseNum(r.ctd_entregada), parseNum(r.cantidad_salida)))
+      .filter(r => !estaExcluido(exclusionesPlan, 'crossdock_4000', r.doc_compr, r.material))
       .reduce((sum, r) => { const pend = parseNum(r.ctd_pedido) - Math.max(parseNum(r.ctd_entregada), parseNum(r.cantidad_salida)); const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), pend);
         det.cross.push({ pt: r.doc_compr, origen: String(r.cesu ?? '').trim(), ceDestino: String(r.ce ?? '').trim(), almDestino: String(r.alm ?? '').trim(), material: r.material, nombre: r.texto_breve, fecha: r.fe_entrega, ctdPend: pend, ton: t, pv: r.documento }); return sum + t; }, 0);
 
@@ -1378,6 +1448,7 @@ async function renderPlanCarga(stage) {
       .filter(r => String(r.ruta ?? '').trim() !== '')
       .filter(r => normTxt(r.ruta).indexOf('RETIRA') === -1)
       .filter(r => fechaEnRango(r.fe_entrega, 3, 3))
+      .filter(r => !estaExcluido(exclusionesPlan, 'venta_1003', r.doc_ventas, null))
       .forEach(r => {
         const k = `${String(r.doc_ventas ?? '').trim()}|${String(r.material ?? '').trim()}`;
         const ex = _ventasDedupMap.get(k);
@@ -1499,13 +1570,17 @@ async function renderPlanCarga(stage) {
   const NCOLS = 16; // columnas de la tabla (para el colspan del detalle)
 
   // Tabla genérica de detalle. alignRight = Set de índices de columnas numéricas.
-  function tablaDet(headers, filas, alignRight) {
+  // rawCols = Set de índices que se insertan tal cual (sin escapar), para botones
+  // de acción como "Excluir del Plan".
+  function tablaDet(headers, filas, alignRight, rawCols) {
+    rawCols = rawCols || new Set();
     const head = headers.map((h, i) => `<th class="pr-md text-[10px] uppercase text-secondary ${alignRight.has(i) ? 'text-right' : 'text-left'}">${escapeHtml(h)}</th>`).join('');
     const body = filas.length
-      ? filas.map(fila => `<tr class="border-b border-outline-variant/40">${fila.map((v, i) => `<td class="py-[2px] pr-md text-[12px] ${alignRight.has(i) ? 'text-right num-clear' : ''}">${escapeHtml(String(v ?? ''))}</td>`).join('')}</tr>`).join('')
+      ? filas.map(fila => `<tr class="border-b border-outline-variant/40">${fila.map((v, i) => `<td class="py-[2px] pr-md text-[12px] ${alignRight.has(i) ? 'text-right num-clear' : ''}">${rawCols.has(i) ? (v ?? '') : escapeHtml(String(v ?? ''))}</td>`).join('')}</tr>`).join('')
       : `<tr><td colspan="${headers.length}" class="text-secondary text-[12px] py-xs">Sin ítems.</td></tr>`;
     return `<table class="w-full text-[12px] mb-xs"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
   }
+  const btnExcluir = (tipo, doc, material) => `<button data-excluir="${escapeHtml(tipo)}|${escapeHtml(String(doc ?? ''))}|${escapeHtml(String(material ?? ''))}" title="Excluir del Plan de Carga de hoy" class="text-[11px] font-bold text-error hover:underline whitespace-nowrap">Excluir</button>`;
   function blkWrap(lbl, items, tableHtml) {
     const sub = items.reduce((s, d) => s + (d.ton || 0), 0);
     return `<div class="mb-md">
@@ -1526,11 +1601,12 @@ async function renderPlanCarga(stage) {
   // Bloque Crossdocking (columnas completas, sin ocultar)
   function blkCrossdocking(lbl, items, marcar) {
     if (!items.length) return '';
-    let heads = ['Origen','Pedido de Traslado','Centro Destino','Almacén Destino','Fecha de Entrega','ID Material','Nombre Material','Cant. Pendiente','Ton SKU','Pedido de Venta'];
+    let heads = ['Origen','Pedido de Traslado','Centro Destino','Almacén Destino','Fecha de Entrega','ID Material','Nombre Material','Cant. Pendiente','Ton SKU','Pedido de Venta','Excluir'];
     let align = new Set([7, 8]);
-    let filas = items.map(d => [d.origen, d.pt, d.ceDestino, d.almDestino, d.fecha, d.material, d.nombre, fmtNum(d.ctdPend, 1), fmtNum(d.ton, 4), d.pv]);
-    if (marcar) { heads = ['En Camión', ...heads]; align = shiftSet(align); filas = items.map((d, i) => [camMark(d), ...filas[i]]); }
-    return blkWrap(lbl, items, tablaDet(heads, filas, align));
+    let filas = items.map(d => [d.origen, d.pt, d.ceDestino, d.almDestino, d.fecha, d.material, d.nombre, fmtNum(d.ctdPend, 1), fmtNum(d.ton, 4), d.pv, btnExcluir('crossdock_4000', d.pt, d.material)]);
+    let raw = new Set([heads.length - 1]);
+    if (marcar) { heads = ['En Camión', ...heads]; align = shiftSet(align); raw = shiftSet(raw); filas = items.map((d, i) => [camMark(d), ...filas[i]]); }
+    return blkWrap(lbl, items, tablaDet(heads, filas, align, raw));
   }
  
   // Bloque Retiros de Fábrica
@@ -1545,11 +1621,13 @@ async function renderPlanCarga(stage) {
   // Bloque Pedidos de Venta
   function blkVenta(lbl, items, marcar) {
     if (!items.length) return '';
-    let heads = ['Pedido de Venta','ID Material','Nombre Material','Cantidad','Id Ruta','Comuna','Región','Fecha de Entrega','Ton SKU'];
+    let heads = ['Pedido de Venta','ID Material','Nombre Material','Cantidad','Id Ruta','Comuna','Región','Fecha de Entrega','Ton SKU','Excluir'];
     let align = new Set([3, 8]);
-    let filas = items.map(d => [d.pv, d.material, d.nombre, fmtNum(parseNum(d.cant), 1), d.ruta, d.comuna, d.region, d.fecha, fmtNum(d.ton, 4)]);
-    if (marcar) { heads = ['En Camión', ...heads]; align = shiftSet(align); filas = items.map((d, i) => [camMark(d), ...filas[i]]); }
-    return blkWrap(lbl, items, tablaDet(heads, filas, align));
+    // Excluye el Pedido de Venta completo (todas sus líneas), no sólo el material de la fila.
+    let filas = items.map(d => [d.pv, d.material, d.nombre, fmtNum(parseNum(d.cant), 1), d.ruta, d.comuna, d.region, d.fecha, fmtNum(d.ton, 4), btnExcluir('venta_1003', d.pv, null)]);
+    let raw = new Set([heads.length - 1]);
+    if (marcar) { heads = ['En Camión', ...heads]; align = shiftSet(align); raw = shiftSet(raw); filas = items.map((d, i) => [camMark(d), ...filas[i]]); }
+    return blkWrap(lbl, items, tablaDet(heads, filas, align, raw));
   }
 
   // Marca, en orden de prioridad, qué ítems entran en el camión CD según su
@@ -1666,6 +1744,8 @@ async function renderPlanCarga(stage) {
               ${planOrigen === id ? 'bg-primary text-white' : 'bg-surface-container-high text-on-surface hover:bg-surface-container-highest'}">
               <span class="material-symbols-outlined text-[16px] align-middle mr-xs">warehouse</span>${escapeHtml(CALENDARIOS[id].nombre)} (${id})
             </button>`).join('')}
+          <button data-ver-exclusiones title="Ver/reactivar exclusiones del Plan de Carga" class="bg-surface-container-high text-on-surface px-md py-sm rounded-lg text-[13px] font-bold hover:bg-surface-container-highest inline-flex items-center gap-xs">
+            <span class="material-symbols-outlined text-[16px] align-middle">visibility_off</span>Exclusiones${exclusionesPlan.length ? ` (${exclusionesPlan.length})` : ''}</button>
           <button data-refrescar title="Refrescar" class="bg-surface-container-high text-on-surface px-md py-sm rounded-lg text-[13px] font-bold hover:bg-surface-container-highest">
             <span class="material-symbols-outlined text-[16px] align-middle">refresh</span></button>
         </div>
@@ -1749,6 +1829,15 @@ async function renderPlanCarga(stage) {
       const r = resultado.find(x => x.ce === ce);
       if (r) csvDetalleCamion(r, tipo);
     }));
+    stage.querySelectorAll('[data-excluir]').forEach(btn => btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const [tipo, doc, material] = btn.dataset.excluir.split('|');
+      const etiqueta = tipo === 'venta_1003' ? `el Pedido de Venta ${doc} completo` : (material ? `el material ${material} del Pedido de Traslado ${doc}` : `el Pedido de Traslado ${doc} completo`);
+      if (!confirm(`¿Excluir del Plan de Carga de hoy ${etiqueta}?\n\nQueda excluido hasta que lo reactives desde "Exclusiones".`)) return;
+      const ok = await excluirDelPlan(tipo, doc, material || null, 'Excluido desde Plan de Carga');
+      if (ok) { showAlert('Excluido del Plan de Carga', 'success'); renderPlanCarga(stage); }
+    }));
+    stage.querySelector('[data-ver-exclusiones]')?.addEventListener('click', () => showExclusionesModal(exclusionesPlan, () => renderPlanCarga(stage)));
   }
 
   draw();
