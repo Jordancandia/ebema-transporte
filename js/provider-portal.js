@@ -1,9 +1,9 @@
 // Portal de Proveedores de Servicio — SIT EBEMA
 // El proveedor solo ve su perfil y las fichas de SUS camiones (RLS lo garantiza en el servidor).
-import { supabase } from './supabase-client.js?v=202609161537';
-import { getDatabase } from './data.js?v=202609161537';
+import { supabase } from './supabase-client.js?v=202609161540';
+import { getDatabase } from './data.js?v=202609161540';
 import { showAlert, formatRut, formatPhone, escapeHtml } from './utils.js';
-import { renderFichaTransporte } from './ficha-transporte.js?v=202609161537';
+import { renderFichaTransporte } from './ficha-transporte.js?v=202609161540';
 
 const ESTADOS = {
   pendiente: { label: 'Pendiente de aprobación', color: '#92400e', bg: '#fef3c7', border: '#fbbf24', icon: 'schedule' },
