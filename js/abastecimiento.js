@@ -10,8 +10,8 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202609151438';
-import { getDatabase } from './data.js?v=202609151438';
+import { supabase } from './supabase-client.js?v=202609161537';
+import { getDatabase } from './data.js?v=202609161537';
 import { showAlert, escapeHtml } from './utils.js';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
@@ -96,8 +96,16 @@ function maxPesoDim(peso, dim) {
 }
 
 // Tonelaje = pesoMax * cantidad / 1000
+// `cantidad` puede venir como string SAP con formato chileno (parseNum lo
+// convierte) o ya como number (p.ej. un pendiente = ctd_pedido - ctd_entregada
+// calculado en JS). Si se le aplicara parseNum a un number, String(2.0000000000000004)
+// → "2.0000000000000004" y el reemplazo de puntos (miles) borra el punto decimal,
+// inflando el valor ~1e16x (bug real detectado en Plan de Carga: crossdock con
+// pend=2.0000000000000004 por error de coma flotante en 4,392-2,392 → tonelaje
+// de 140.000.000.000.000). Con number no se debe volver a parsear como string.
 function calcTon(pesoMax, cantidad) {
-  return pesoMax * parseNum(cantidad) / 1000;
+  const c = typeof cantidad === 'number' ? cantidad : parseNum(cantidad);
+  return pesoMax * c / 1000;
 }
 
 function fmtNum(n, dec = 2) {
