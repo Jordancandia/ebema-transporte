@@ -1,12 +1,12 @@
 // PANTALLA 1: Administrador de Tarifas Transporte — SIT EBEMA
 // Sub-módulos: Peajes, Combustibles y Rendimientos, Seguros y Permisos,
 // Variables Generales y Motor de Costo (ZCAP) con exportación CSV.
-import { getDatabase, saveDatabase, getCentreName, getTariffConfig, getClientTariffConfig, truckCapKg, getOrigenGroups, getGroupRepId, buildTruckTypes, TRUCK_BASE_TYPES, loadHistorico, deleteRow } from './data.js?v=202609161540';
-import { CAP_LIST, truckTypesWithCap, calcularMatrizCostos } from './tarifas-engine.js?v=202609161540';
+import { getDatabase, saveDatabase, getCentreName, getTariffConfig, getClientTariffConfig, truckCapKg, getOrigenGroups, getGroupRepId, buildTruckTypes, TRUCK_BASE_TYPES, loadHistorico, deleteRow } from './data.js?v=202609161541';
+import { CAP_LIST, truckTypesWithCap, calcularMatrizCostos } from './tarifas-engine.js?v=202609161541';
 import { formatCLP, parseCSV, showAlert, toCSV, downloadFile, escapeHtml } from './utils.js';
-import { supabase } from './supabase-client.js?v=202609161540';
-import { getField } from './zonas-transporte.js?v=202609161540';
-import { renderZcapView } from './zcap.js?v=202609161540';
+import { supabase } from './supabase-client.js?v=202609161541';
+import { getField } from './zonas-transporte.js?v=202609161541';
+import { renderZcapView } from './zcap.js?v=202609161541';
 
 // FIX: Escuchar errores de sincronización con Supabase y notificar al usuario
 window.addEventListener('db_sync_error', (e) => {
