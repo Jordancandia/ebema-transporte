@@ -10,8 +10,8 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202609161611';
-import { getDatabase } from './data.js?v=202609161611';
+import { supabase } from './supabase-client.js?v=202609161621';
+import { getDatabase } from './data.js?v=202609161621';
 import { showAlert, escapeHtml } from './utils.js';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
@@ -1312,7 +1312,7 @@ let planOrigen = '1003';   // centro origen del plan de carga (1003 / 1081)
 async function renderPlanCarga(stage) {
   stage.innerHTML = '<div class="text-secondary text-body-md p-md">Cargando Plan de Carga…</div>';
 
-  const [quiebresRaw, trasladosRaw, revexRaw, retirosRaw, ventasRaw, traslados4000Raw, calendarioRows, estadosRetiro, exclusionesPlan] = await Promise.all([
+  const [quiebresRaw, trasladosRaw, revexRaw, retirosRaw, ventasRaw, traslados4000Raw, calendarioRows, estadosRetiro, exclusionesPlan, pvRows] = await Promise.all([
     fetchAllRows('v_trc_slim_stock'),
     fetchAllRows('v_trc_sqvi_pedidos_traslados'),
     fetchAllRows('v_trc_sqvi_pedidos_traslados'),
@@ -1322,7 +1322,15 @@ async function renderPlanCarga(stage) {
     fetchAllRows('abast_calendario'),
     loadEstadosRetiro(),
     loadExclusionesPlan(),
+    fetchAllRows('v_trc_pedidos_ventas_ref'),
   ]);
+  // Cross-reference de Pedidos de Venta (Cliente, Vendedor, Tipo de Expedición)
+  // por doc_ventas, mismo patrón usado en las vistas de Retiros y Traslados 4000.
+  const pvMap = {};
+  pvRows.forEach(r => {
+    const k = String(r.doc_ventas ?? '').trim();
+    if (k && !pvMap[k]) pvMap[k] = r;
+  });
 
   // Materiales quebrados por centro (≤7 días)
   const quiebresByCentro = {};
@@ -1468,7 +1476,8 @@ async function renderPlanCarga(stage) {
         const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), pend);
         tonDoc += t;
         const rl = lookupRuta(r.ruta);
-        lineItems.push({ pv: doc, material: r.material, nombre: r.denominacion_de_posicion, cant: pend, ruta: r.ruta, comuna: rl.comuna, region: rl.region, fecha: r.fe_entrega, ton: t });
+        const pv = pvMap[doc] || {};
+        lineItems.push({ pv: doc, material: r.material, nombre: r.denominacion_de_posicion, cant: pend, ruta: r.ruta, comuna: rl.comuna, region: rl.region, fecha: r.fe_entrega, ton: t, tipoExp: pv.denominacion || '', cliente: pv.nombre_1 || '', vendedor: pv.nombre || '' });
       });
       if (tonDoc <= 0) continue;
       if (tonDoc > 26) { tonVentaCliente += tonDoc; det.cliente.push(...lineItems); }
@@ -1621,10 +1630,10 @@ async function renderPlanCarga(stage) {
   // Bloque Pedidos de Venta
   function blkVenta(lbl, items, marcar) {
     if (!items.length) return '';
-    let heads = ['Pedido de Venta','ID Material','Nombre Material','Cantidad','Id Ruta','Comuna','Región','Fecha de Entrega','Ton SKU','Excluir'];
-    let align = new Set([3, 8]);
+    let heads = ['Pedido de Venta','ID Material','Nombre Material','Cantidad','Cliente','Vendedor','Tipo Expedición','Id Ruta','Comuna','Región','Fecha de Entrega','Ton SKU','Excluir'];
+    let align = new Set([3, 11]);
     // Excluye el Pedido de Venta completo (todas sus líneas), no sólo el material de la fila.
-    let filas = items.map(d => [d.pv, d.material, d.nombre, fmtNum(parseNum(d.cant), 1), d.ruta, d.comuna, d.region, d.fecha, fmtNum(d.ton, 4), btnExcluir('venta_1003', d.pv, null)]);
+    let filas = items.map(d => [d.pv, d.material, d.nombre, fmtNum(parseNum(d.cant), 1), d.cliente || '', d.vendedor || '', d.tipoExp || '', d.ruta, d.comuna, d.region, d.fecha, fmtNum(d.ton, 4), btnExcluir('venta_1003', d.pv, null)]);
     let raw = new Set([heads.length - 1]);
     if (marcar) { heads = ['En Camión', ...heads]; align = shiftSet(align); raw = shiftSet(raw); filas = items.map((d, i) => [camMark(d), ...filas[i]]); }
     return blkWrap(lbl, items, tablaDet(heads, filas, align, raw));
@@ -1703,7 +1712,9 @@ async function renderPlanCarga(stage) {
     const filas = [];
     cats.forEach(([cat, items, t]) => (items || []).forEach(d => {
       const enCamion = camMark(d);
-      if (t === 'T') filas.push([cat, enCamion, d.pt, '', '', d.material, d.nombre, '', '', '', d.fecha || '', d.ctd || '', fmtNum(d.ton, 4)]);
+      // (FIX) Los ítems de Crossdocking (det.cross) no tienen campo "ctd" sino
+      // "ctdPend" (cantidad pendiente, ya numérica) — antes quedaba en blanco en el CSV.
+      if (t === 'T') filas.push([cat, enCamion, d.pt, '', '', d.material, d.nombre, '', '', '', d.fecha || '', d.ctd || (d.ctdPend != null ? fmtNum(d.ctdPend, 1) : ''), fmtNum(d.ton, 4)]);
       else if (t === 'R') filas.push([cat, enCamion, d.oc, d.idProv, d.prov, d.material, d.nombre, '', '', '', d.fecha || '', fmtNum(parseNum(d.cant), 1), fmtNum(d.ton, 4)]);
       else filas.push([cat, enCamion, d.pv, '', '', d.material, d.nombre, d.ruta, d.comuna, d.region, d.fecha || '', fmtNum(parseNum(d.cant), 1), fmtNum(d.ton, 4)]);
     }));
