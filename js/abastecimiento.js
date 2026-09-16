@@ -10,8 +10,8 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202609161541';
-import { getDatabase } from './data.js?v=202609161541';
+import { supabase } from './supabase-client.js?v=202609161546';
+import { getDatabase } from './data.js?v=202609161546';
 import { showAlert, escapeHtml } from './utils.js';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
@@ -1611,12 +1611,18 @@ async function renderPlanCarga(stage) {
       : tipo === 'cliente' ? [['Venta Cliente', r.det.cliente, 'V']]
       : tipo === 'fabSuc'  ? [['Fábrica-Sucursal', r.det.fabSuc, 'R']]
       :                      [['Fábrica-Cliente', r.det.fabCli, 'R']];
-    const headers = ['Categoría','Documento','Id Proveedor','Proveedor','Id Material','Nombre Material','Ruta','Comuna','Región','Fecha','Cantidad','Ton SKU'];
+    // (AJUSTE) Antes se excluía del CSV del camión CD todo lo que no entraba en
+    // el camión (d._enCamion === false, el "2º camión"/sobra) — quedaba fuera
+    // de la descarga sin que apareciera en ninguna parte. Ahora se incluye todo
+    // con una columna "En Camión" (SÍ / EXCEDE) para que el excedente que
+    // requiere 2º camión también quede visible y trazable en el detalle.
+    const headers = ['Categoría','En Camión','Documento','Id Proveedor','Proveedor','Id Material','Nombre Material','Ruta','Comuna','Región','Fecha','Cantidad','Ton SKU'];
     const filas = [];
-    cats.forEach(([cat, items, t]) => (items || []).filter(d => tipo !== 'cd' || d._enCamion).forEach(d => {
-      if (t === 'T') filas.push([cat, d.pt, '', '', d.material, d.nombre, '', '', '', d.fecha || '', d.ctd || '', fmtNum(d.ton, 4)]);
-      else if (t === 'R') filas.push([cat, d.oc, d.idProv, d.prov, d.material, d.nombre, '', '', '', d.fecha || '', fmtNum(parseNum(d.cant), 1), fmtNum(d.ton, 4)]);
-      else filas.push([cat, d.pv, '', '', d.material, d.nombre, d.ruta, d.comuna, d.region, d.fecha || '', fmtNum(parseNum(d.cant), 1), fmtNum(d.ton, 4)]);
+    cats.forEach(([cat, items, t]) => (items || []).forEach(d => {
+      const enCamion = camMark(d);
+      if (t === 'T') filas.push([cat, enCamion, d.pt, '', '', d.material, d.nombre, '', '', '', d.fecha || '', d.ctd || '', fmtNum(d.ton, 4)]);
+      else if (t === 'R') filas.push([cat, enCamion, d.oc, d.idProv, d.prov, d.material, d.nombre, '', '', '', d.fecha || '', fmtNum(parseNum(d.cant), 1), fmtNum(d.ton, 4)]);
+      else filas.push([cat, enCamion, d.pv, '', '', d.material, d.nombre, d.ruta, d.comuna, d.region, d.fecha || '', fmtNum(parseNum(d.cant), 1), fmtNum(d.ton, 4)]);
     }));
     const esc = v => { v = v == null ? '' : String(v); return /[;"\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
     const lines = [headers.join(';')].concat(filas.map(f => f.map(esc).join(';')));
