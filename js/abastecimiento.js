@@ -10,8 +10,8 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202609161554';
-import { getDatabase } from './data.js?v=202609161554';
+import { supabase } from './supabase-client.js?v=202609161601';
+import { getDatabase } from './data.js?v=202609161601';
 import { showAlert, escapeHtml } from './utils.js';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
@@ -1347,16 +1347,21 @@ async function renderPlanCarga(stage) {
       .filter(r => String(r.ce ?? '').trim() === ce)
       .reduce((sum, r) => { const t = calcTon(parseNum(r.peso_neto_2), r.ctd_pedido); det.revex.push(itemT(r, t)); return sum + t; }, 0);
 
-    // 4. Crossdocking 4000 — SÓLO pendientes (ctd_pedido > procesado). Fecha -3/+3.
+    // 4. Crossdocking 4000 — SÓLO pendientes (ctd_pedido > procesado). SIN ventana
+    //    de fecha (AJUSTE 16-sep-2026): antes filtraba fe_entrega -3/+3 días y
+    //    dejaba fuera del Plan de Carga pedidos de crossdock ya creados en SAP
+    //    con fecha de entrega un poco más lejana (ej. Coquimbo: de 10 líneas
+    //    pendientes en 3 OC, sólo se veían 3 líneas de 2 OC porque la 3ª OC
+    //    tenía fe_entrega a 5 días). Se alinea con la vista de tabla
+    //    "Crossdocking", que ya no filtra por fecha y muestra TODOS los
+    //    pendientes asociados al centro destino (ver AJUSTES 3.0 2026-09-09).
     //    "Procesado" = MAX(ctd_entregada, cantidad_salida) para cubrir los tres casos:
     //      · ctd_entregada == cantidad_salida > 0  → entregado, excluir
     //      · cantidad_salida > ctd_entregada        → en tránsito; pend = ctd_pedido - cantidad_salida
     //      · cantidad_salida == 0                   → no ha salido; pend = ctd_pedido - ctd_entregada
     //    Anomalía SAP (ctd_entregada > cantidad_salida con salida=0): MAX deja pend=0 → excluido.
-    //    La vista muestra todos los pendientes; el plan aplica ventana -3/+3 días.
     const tonCross = t4000
       .filter(r => String(r.ce ?? '').trim() === ce)
-      .filter(r => fechaEnRango(r.fe_entrega, 3, 3))
       .filter(r => parseNum(r.ctd_pedido) > Math.max(parseNum(r.ctd_entregada), parseNum(r.cantidad_salida)))
       .reduce((sum, r) => { const pend = parseNum(r.ctd_pedido) - Math.max(parseNum(r.ctd_entregada), parseNum(r.cantidad_salida)); const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), pend);
         det.cross.push({ pt: r.doc_compr, origen: String(r.cesu ?? '').trim(), ceDestino: String(r.ce ?? '').trim(), almDestino: String(r.alm ?? '').trim(), material: r.material, nombre: r.texto_breve, fecha: r.fe_entrega, ctdPend: pend, ton: t, pv: r.documento }); return sum + t; }, 0);
