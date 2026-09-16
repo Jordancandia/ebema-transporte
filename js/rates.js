@@ -1,5 +1,5 @@
-import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig, truckCapKg } from './data.js?v=202609161550';
-import { calcularCostoRuta } from './tarifas-engine.js?v=202609161550';
+import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig, truckCapKg } from './data.js?v=202609161554';
+import { calcularCostoRuta } from './tarifas-engine.js?v=202609161554';
 import { formatCLP, showAlert, geocodeAddress } from './utils.js';
 import { GRUPOS_ORIGEN } from './chile-geo.js';
 import { resolveOrigenIdFromGrupo } from './routes.js';
