@@ -1,6 +1,6 @@
-import { getDatabase, saveDatabase, getCentreName } from './data.js?v=202609171541';
+import { getDatabase, saveDatabase, getCentreName } from './data.js?v=202609171550';
 import { showAlert, escapeHtml } from './utils.js';
-import { supabase } from './supabase-client.js?v=202609171541';
+import { supabase } from './supabase-client.js?v=202609171550';
 
 // --- Perfiles de Acceso (Roles y Perfiles + Row Level Security) ---
 // 5 perfiles canónicos. Cada uno determina qué puede ver/editar el usuario
@@ -18,7 +18,7 @@ const ROLE_CONFIG = {
 // Ajuste 2026-09-17: alcance de vistas de Admin. Depósito y Agente redefinido.
 const ROLE_DESCRIPTIONS = {
   'OWNER': 'Ve y edita cualquier campo de la plataforma: todos los centros, planes, rutas, tarifas de transporte y clientes.',
-  'ADMINISTRADOR_DEPOSITO': 'Solo visualización y descarga: Gestión Troncales, Rutas de Transporte y Proveedores. Sin permisos de modificación ni de invitar usuarios.',
+  'ADMINISTRADOR_DEPOSITO': 'Solo visualización y descarga: Home, Indicadores, Gestión Troncales, Rutas de Transporte y Proveedores. Sin permisos de modificación ni de invitar usuarios.',
   'AGENTE_COMERCIAL': 'Solo visualización: Cotizador Despacho, Rutas de Transporte y Gestión Troncales. Sin permisos de modificación ni de invitar usuarios.',
   'TRANSPORTISTA': 'Ve el estado de sus camiones, cuenta bancaria asociada, transportes y choferes. Edita solo lo que está en su perfil.',
   'CHOFER': 'Ve el estado de su camión asignado, datos del transporte y sus datos personales (nombre, RUT, correo, teléfono, licencia y carnet).'
@@ -224,17 +224,19 @@ export function renderRolesView(container) {
           </div>
 
           <div id="field-centro" style="display:none">
-            <label style="display:block;font-size:11px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#5c5f61;margin-bottom:6px">Centro de Preferencia</label>
-            <div style="position:relative">
-              <span class="material-symbols-outlined" style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:#5c5f61;font-size:16px;pointer-events:none">location_on</span>
-              <select id="modal-user-centro"
-                style="width:100%;padding:11px 12px 11px 36px;border:1.5px solid #e1e3e4;border-radius:8px;font-size:14px;background:white;color:#191c1d;outline:none;box-sizing:border-box;transition:border-color 0.2s;appearance:none"
-                onfocus="this.style.borderColor='#b5000b'" onblur="this.style.borderColor='#e1e3e4'">
-                <option value="">Seleccione un centro...</option>
-                ${(db.logisticsCentres || []).map(cd => `<option value="${cd.id}">${cd.nombre} (${cd.id})</option>`).join('')}
-              </select>
+            <label style="display:block;font-size:11px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#5c5f61;margin-bottom:6px">Centro(s) de Preferencia</label>
+            <label style="display:flex;align-items:center;gap:8px;padding:8px 10px;border:1.5px solid #e1e3e4;border-radius:8px;margin-bottom:8px;cursor:pointer;background:#f8f9fa">
+              <input type="checkbox" id="modal-user-centro-todos" style="width:16px;height:16px;accent-color:#b5000b" />
+              <span style="font-size:13px;font-weight:700;color:#191c1d">Todos los centros</span>
+            </label>
+            <div id="modal-user-centro-list" style="max-height:160px;overflow-y:auto;border:1.5px solid #e1e3e4;border-radius:8px;padding:8px 10px;display:flex;flex-direction:column;gap:6px">
+              ${(db.logisticsCentres || []).map(cd => `
+                <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+                  <input type="checkbox" class="modal-user-centro-item" value="${cd.id}" style="width:15px;height:15px;accent-color:#b5000b" />
+                  <span style="font-size:13px;color:#191c1d">${cd.nombre} (${cd.id})</span>
+                </label>`).join('')}
             </div>
-            <p style="font-size:11px;color:#5c5f61;margin-top:6px;line-height:1.4">Se usa solo para dirigir los correos de notificación de este usuario. No limita los datos que puede ver.</p>
+            <p style="font-size:11px;color:#5c5f61;margin-top:6px;line-height:1.4">Puede elegir uno, varios o todos los centros. Se usa solo para dirigir los correos de notificación de este usuario — no limita los datos que puede ver.</p>
           </div>
 
           <div id="field-transportista" style="display:none">
@@ -306,6 +308,7 @@ export function renderRolesView(container) {
 
   // Selector de roles visual
   setupRoleSelector();
+  setupCentroSelector();
 
   // Submit del modal
   document.getElementById('modal-user-form').addEventListener('submit', (e) => {
@@ -326,6 +329,46 @@ function setupRoleSelector() {
       updateRoleFields(role);
     });
   });
+}
+
+// "Todos los centros" desactiva/limpia la lista de centros individuales
+function setupCentroSelector() {
+  const todosChk = document.getElementById('modal-user-centro-todos');
+  const listBox = document.getElementById('modal-user-centro-list');
+  if (!todosChk || !listBox) return;
+  todosChk.addEventListener('change', () => {
+    const itemChecks = listBox.querySelectorAll('.modal-user-centro-item');
+    if (todosChk.checked) {
+      itemChecks.forEach(c => { c.checked = false; c.disabled = true; });
+      listBox.style.opacity = '0.5';
+    } else {
+      itemChecks.forEach(c => { c.disabled = false; });
+      listBox.style.opacity = '1';
+    }
+  });
+}
+
+// Lee la selección de centros del modal: null = Todos, array = centros puntuales
+function getSelectedCentros() {
+  const todosChk = document.getElementById('modal-user-centro-todos');
+  if (todosChk && todosChk.checked) return null;
+  const checked = Array.from(document.querySelectorAll('.modal-user-centro-item:checked')).map(c => c.value);
+  return checked.length ? checked : null; // sin selección explícita = Todos por defecto
+}
+
+// Marca en el modal la selección de centros guardada (null/vacío = Todos)
+function setSelectedCentros(centros) {
+  const todosChk = document.getElementById('modal-user-centro-todos');
+  const listBox = document.getElementById('modal-user-centro-list');
+  if (!todosChk || !listBox) return;
+  const itemChecks = listBox.querySelectorAll('.modal-user-centro-item');
+  const isTodos = !centros || centros.length === 0;
+  todosChk.checked = isTodos;
+  itemChecks.forEach(c => {
+    c.checked = !isTodos && centros.includes(c.value);
+    c.disabled = isTodos;
+  });
+  listBox.style.opacity = isTodos ? '0.5' : '1';
 }
 
 // Actualiza la descripción del perfil y muestra/oculta los campos de
@@ -354,10 +397,9 @@ function openModal(userIdx = null) {
   // Limpiar selección de roles
   document.querySelectorAll('.role-option').forEach(o => o.classList.remove('selected'));
   document.querySelectorAll('input[name="modal-role"]').forEach(r => r.checked = false);
-  const centroSelect = document.getElementById('modal-user-centro');
   const transportistaSelect = document.getElementById('modal-user-transportista');
-  if (centroSelect) centroSelect.value = '';
   if (transportistaSelect) transportistaSelect.value = '';
+  setSelectedCentros(null); // por defecto: Todos los centros
 
   let selectedRole = 'AGENTE_COMERCIAL';
 
@@ -376,7 +418,7 @@ function openModal(userIdx = null) {
 
     // Seleccionar rol actual (normalizado a los 5 perfiles canónicos)
     selectedRole = normalizeRole(user.role);
-    if (centroSelect && user.centroId) centroSelect.value = user.centroId;
+    setSelectedCentros(user.centrosPreferencia || null);
     if (transportistaSelect && user.transportistaId) transportistaSelect.value = user.transportistaId;
   } else {
     // Modo creación
@@ -424,19 +466,17 @@ async function saveUser() {
   if (!email.endsWith('@ebema.cl')) return showErr('El correo debe pertenecer al dominio @ebema.cl');
   if (!selectedRole) return showErr('Seleccione un rol de acceso.');
 
-  // Centro / transportista asociado (según el perfil seleccionado)
-  const centroId = document.getElementById('modal-user-centro')?.value || '';
+  // Centro(s) de preferencia / transportista asociado (según el perfil seleccionado)
+  // getSelectedCentros() → null = Todos los centros; array = centros puntuales.
+  const centrosPreferencia = getSelectedCentros();
   const transportistaId = document.getElementById('modal-user-transportista')?.value || '';
 
-  if (CENTRO_ROLES.includes(selectedRole) && !centroId) {
-    return showErr('Seleccione el Centro Asociado para este perfil.');
-  }
   if (TRANSPORTE_ROLES.includes(selectedRole) && !transportistaId) {
     return showErr('Seleccione el Transportista Asociado para este perfil.');
   }
 
   // Limpiar asociaciones que no correspondan al perfil
-  const finalCentroId = CENTRO_ROLES.includes(selectedRole) ? centroId : null;
+  const finalCentrosPreferencia = CENTRO_ROLES.includes(selectedRole) ? centrosPreferencia : null;
   const finalTransportistaId = TRANSPORTE_ROLES.includes(selectedRole) ? transportistaId : null;
 
   if (editIdx === '') {
@@ -452,7 +492,7 @@ async function saveUser() {
     const { data, error } = await supabase.functions.invoke('invite-user', {
       body: {
         email, name, role: selectedRole,
-        centroId: finalCentroId, transportistaId: finalTransportistaId,
+        centrosPreferencia: finalCentrosPreferencia, transportistaId: finalTransportistaId,
         redirectTo: window.location.origin + window.location.pathname
       }
     });
@@ -464,7 +504,7 @@ async function saveUser() {
       return showErr((data && data.error) || error?.message || 'No se pudo enviar la invitación.');
     }
     // Reflejar en la tabla localmente (pendiente de activación)
-    db.users.push({ email, name, role: selectedRole, centroId: finalCentroId, transportistaId: finalTransportistaId, activo: true, lastAccess: 'Invitación enviada' });
+    db.users.push({ email, name, role: selectedRole, centrosPreferencia: finalCentrosPreferencia, transportistaId: finalTransportistaId, activo: true, lastAccess: 'Invitación enviada' });
     showAlert((data && (data.message || data.warning)) || `Invitación enviada a ${email}.`);
     closeModal();
     const container = document.getElementById('stage-area');
@@ -472,12 +512,12 @@ async function saveUser() {
     return;
   }
 
-  // Editar usuario (rol / centro / transportista)
+  // Editar usuario (rol / centros de preferencia / transportista)
   const idx = parseInt(editIdx);
   if (db.users[idx]) {
     db.users[idx].name = name;
     db.users[idx].role = selectedRole;
-    db.users[idx].centroId = finalCentroId;
+    db.users[idx].centrosPreferencia = finalCentrosPreferencia;
     db.users[idx].transportistaId = finalTransportistaId;
     showAlert(`Perfil de ${name} actualizado.`);
   }
@@ -524,10 +564,17 @@ function renderUsersTable(usersList, viewContainer, isFiltered = false) {
     // Normalizar nombre de rol para display (uno de los 5 perfiles canónicos)
     const roleDisplay = rc.label;
 
-    // Centro o transportista asociado (según el perfil)
+    // Centro(s) de preferencia o transportista asociado (según el perfil)
     let asociadoTxt = '';
-    if (CENTRO_ROLES.includes(normRole) && user.centroId) {
-      asociadoTxt = getCentreName(db, user.centroId) || '';
+    if (CENTRO_ROLES.includes(normRole)) {
+      const centros = user.centrosPreferencia;
+      if (!centros || centros.length === 0) {
+        asociadoTxt = 'Todos los centros';
+      } else if (centros.length === 1) {
+        asociadoTxt = getCentreName(db, centros[0]) || centros[0];
+      } else {
+        asociadoTxt = `${centros.length} centros seleccionados`;
+      }
     } else if (TRANSPORTE_ROLES.includes(normRole) && user.transportistaId) {
       const t = (db.transports || []).find(t => t.id === user.transportistaId);
       asociadoTxt = t ? (t.razonSocial || t.nombre || '') : '';

@@ -55,11 +55,14 @@ serve(async (req: Request) => {
     }
 
     // ── 3. Validar payload ───────────────────────────────────────────────────
-    const { email, name, role, centroId } = await req.json() as {
+    // centrosPreferencia: null/undefined = Todos los centros; array = centros puntuales
+    // (Admin. Depósito). Solo define a qué centros se dirigen sus correos de
+    // notificación — no filtra los datos que ve (RLS no depende de esto).
+    const { email, name, role, centrosPreferencia } = await req.json() as {
       email:    string;
       name:     string;
       role:     string;
-      centroId?: string;
+      centrosPreferencia?: string[] | null;
     };
 
     if (!email || !name || !role) {
@@ -99,7 +102,7 @@ serve(async (req: Request) => {
     const { data: inviteData, error: invErr } = await admin.auth.admin.inviteUserByEmail(
       email.toLowerCase(),
       {
-        data: { name, role, tipo: "funcionario", centroId: centroId ?? null },
+        data: { name, role, tipo: "funcionario", centrosPreferencia: centrosPreferencia ?? null },
         redirectTo,
       }
     );
@@ -117,7 +120,7 @@ serve(async (req: Request) => {
           name,
           role,
           activo:   true,
-          centroId: centroId ?? null,
+          centrosPreferencia: centrosPreferencia ?? null,
           lastAccess: null,
         },
         { onConflict: "email" }
