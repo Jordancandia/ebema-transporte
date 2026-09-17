@@ -1,6 +1,6 @@
-import { getDatabase, saveDatabase, getCentreName } from './data.js?v=202609161621';
+import { getDatabase, saveDatabase, getCentreName } from './data.js?v=202609171541';
 import { showAlert, escapeHtml } from './utils.js';
-import { supabase } from './supabase-client.js?v=202609161621';
+import { supabase } from './supabase-client.js?v=202609171541';
 
 // --- Perfiles de Acceso (Roles y Perfiles + Row Level Security) ---
 // 5 perfiles canónicos. Cada uno determina qué puede ver/editar el usuario
@@ -15,10 +15,11 @@ const ROLE_CONFIG = {
 };
 
 // Descripciones de cada perfil (se muestran al seleccionar el rol en el modal)
+// Ajuste 2026-09-17: alcance de vistas de Admin. Depósito y Agente redefinido.
 const ROLE_DESCRIPTIONS = {
   'OWNER': 'Ve y edita cualquier campo de la plataforma: todos los centros, planes, rutas, tarifas de transporte y clientes.',
-  'ADMINISTRADOR_DEPOSITO': 'Solo visualización: Home, Cotizador, Proveedores, Rutas de Transporte, Gestión Troncales e Indicadores. Sin permisos de modificación.',
-  'AGENTE_COMERCIAL': 'Solo visualización: Cotizador, Rutas de Transporte, Gestión Troncales y Proveedores. Sin permisos de modificación.',
+  'ADMINISTRADOR_DEPOSITO': 'Solo visualización y descarga: Gestión Troncales, Rutas de Transporte y Proveedores. Sin permisos de modificación ni de invitar usuarios.',
+  'AGENTE_COMERCIAL': 'Solo visualización: Cotizador Despacho, Rutas de Transporte y Gestión Troncales. Sin permisos de modificación ni de invitar usuarios.',
   'TRANSPORTISTA': 'Ve el estado de sus camiones, cuenta bancaria asociada, transportes y choferes. Edita solo lo que está en su perfil.',
   'CHOFER': 'Ve el estado de su camión asignado, datos del transporte y sus datos personales (nombre, RUT, correo, teléfono, licencia y carnet).'
 };
@@ -35,8 +36,12 @@ const LEGACY_ROLE_MAP = {
   'proveedor': 'TRANSPORTISTA'
 };
 
-// Roles que requieren un "Centro Logístico" asociado
-const CENTRO_ROLES = [];
+// Roles que requieren un "Centro Logístico" asociado.
+// Ajuste 2026-09-17: Admin. Depósito vuelve a pedir un "Centro de Preferencia"
+// — se usa únicamente para definir a qué centro se dirigen los correos de
+// notificación de ese usuario; NO filtra los datos que ve (desde el 14-sep-2026
+// Admin. Depósito ve todos los centros en sus vistas permitidas).
+const CENTRO_ROLES = ['ADMINISTRADOR_DEPOSITO'];
 // Roles que requieren un "Transportista" asociado
 const TRANSPORTE_ROLES = ['TRANSPORTISTA', 'CHOFER'];
 
@@ -219,7 +224,7 @@ export function renderRolesView(container) {
           </div>
 
           <div id="field-centro" style="display:none">
-            <label style="display:block;font-size:11px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#5c5f61;margin-bottom:6px">Centro Asociado</label>
+            <label style="display:block;font-size:11px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#5c5f61;margin-bottom:6px">Centro de Preferencia</label>
             <div style="position:relative">
               <span class="material-symbols-outlined" style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:#5c5f61;font-size:16px;pointer-events:none">location_on</span>
               <select id="modal-user-centro"
@@ -229,6 +234,7 @@ export function renderRolesView(container) {
                 ${(db.logisticsCentres || []).map(cd => `<option value="${cd.id}">${cd.nombre} (${cd.id})</option>`).join('')}
               </select>
             </div>
+            <p style="font-size:11px;color:#5c5f61;margin-top:6px;line-height:1.4">Se usa solo para dirigir los correos de notificación de este usuario. No limita los datos que puede ver.</p>
           </div>
 
           <div id="field-transportista" style="display:none">
