@@ -10,8 +10,8 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202609171550';
-import { getDatabase } from './data.js?v=202609171550';
+import { supabase } from './supabase-client.js?v=202609171610';
+import { getDatabase } from './data.js?v=202609171610';
 import { showAlert, escapeHtml } from './utils.js';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
@@ -57,6 +57,21 @@ async function getUserEmail() {
     const { data } = await supabase.auth.getUser();
     return data?.user?.email || null;
   } catch { return null; }
+}
+// Rol del usuario actual (mismo criterio que app.js: fila en getDatabase().users
+// por email, ya cargada en memoria tras el login). Usado para restringir acciones
+// sensibles (ej. excluir posiciones del Plan de Carga) a perfil OWNER.
+async function getCurrentUserRole() {
+  try {
+    const email = await getUserEmail();
+    if (!email) return null;
+    const db = getDatabase();
+    const u = (db.users || []).find(x => x.email === email);
+    return u ? u.role : null;
+  } catch { return null; }
+}
+async function esOwner() {
+  return (await getCurrentUserRole()) === 'OWNER';
 }
 
 export function setAbastSubTab(sub) {
@@ -211,7 +226,7 @@ function estaExcluido(exclusiones, tipo, doc, material) {
 }
 // Modal para ver y reactivar (borrar) exclusiones del Plan de Carga.
 function showExclusionesModal(exclusiones, onChange) {
-  const TIPO_LBL = { venta_1003: 'Pedido de Venta 1003', crossdock_4000: 'Traslado Crossdocking 4000' };
+  const TIPO_LBL = { venta_1003: 'Pedido de Venta 1003', crossdock_4000: 'Traslado Crossdocking 4000', traslados_revex: 'Traslado REVEX', traslados_1003: 'Traslado 1003' };
   const filas = exclusiones.map(e => `<tr class="border-b border-outline-variant/40">
     <td class="py-xs pr-md text-[12px]">${escapeHtml(TIPO_LBL[e.tipo] || e.tipo)}</td>
     <td class="py-xs pr-md text-[12px] font-bold">${escapeHtml(e.doc)}</td>
@@ -683,6 +698,8 @@ const VISTAS_TRONCAL = {
   pedidos_venta: {
     titulo: 'GESTIÓN TRONCALES – PEDIDOS DE VENTA CD (1003)',
     vista: 'v_trc_sqvi_pedidos_venta_1003',
+    // Excluye el Pedido de Venta completo (todas sus líneas), sólo perfil OWNER.
+    excluir: { tipo: 'venta_1003', doc: r => r.doc_ventas, material: null },
     chipFilter: { campo: 'ofvta', label: 'Oficina de Ventas' },
     filtros: [{ campo: 'doc_ventas', label: 'Buscar Pedido de Venta', tipo: 'buscar' }],
     dateRange: { campo: 'fe_entrega', label: 'Rango Fecha de Entrega' },
@@ -795,6 +812,8 @@ const VISTAS_TRONCAL = {
   pedidos_traslados: {
     titulo: 'GESTIÓN TRONCALES – PEDIDOS TRASLADOS',
     vista: 'v_trc_sqvi_pedidos_traslados',
+    // Excluye la línea (doc_compr + material), sólo perfil OWNER.
+    excluir: { tipo: 'traslados_1003', doc: r => r.doc_compr, material: r => r.material },
     chipFilter: { campo: 'ce', label: 'Centro Destino' },
     extraChips: [{ campo: 'cesu', label: 'Centro Origen' }],
     noBuscar: true,
@@ -878,6 +897,8 @@ const VISTAS_TRONCAL = {
   pedidos_traslados_revex: {
     titulo: 'GESTIÓN TRONCALES – PEDIDOS DE TRASLADO REVEX',
     vista: 'v_trc_sqvi_pedidos_traslados',
+    // Excluye la línea (doc_compr + material), sólo perfil OWNER.
+    excluir: { tipo: 'traslados_revex', doc: r => r.doc_compr, material: r => r.material },
     chipFilter: { campo: 'ce', label: 'Centro Destino' },
     noBuscar: true,
     filtros: [{ campo: 'doc_compr', label: 'BUSCAR PEDIDO DE TRASLADO', tipo: 'buscar' }],
@@ -975,6 +996,10 @@ const VISTAS_TRONCAL = {
   pedidos_traslados_4000: {
     titulo: 'GESTIÓN TRONCALES – PEDIDOS DE TRASLADOS 4000',
     vista: 'v_trc_sqvi_pedidos_traslados_4000',
+    // Excluye la línea (doc_compr + material), sólo perfil OWNER. Mismo tipo
+    // ('crossdock_4000') que usa el detalle del Plan de Carga, así que excluir
+    // acá también lo saca del Plan de Carga automáticamente.
+    excluir: { tipo: 'crossdock_4000', doc: r => r.doc_compr, material: r => r.material },
     chipFilter: { campo: 'ce', label: 'Centro Destino' },
     extraChips: [{ campo: '_origen', label: 'Origen' }],
     noBuscar: true,
@@ -1409,6 +1434,7 @@ async function renderPlanCarga(stage) {
       .filter(r => quiebresMat.has(String(r.material ?? '').trim()))
       .filter(r => fechaEnRango(r.fecha_confirmada, 10, 7))
       .filter(r => parseNum(r.ctd_confirmada) > 0)
+      .filter(r => !estaExcluido(exclusionesPlan, 'traslados_1003', r.doc_compr, r.material))
       .reduce((sum, r) => { const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), r.ctd_confirmada); det.quiebre.push(itemT(r, t)); return sum + t; }, 0);
 
     // 2. Traslados Stock / Abastecimiento  (ídem)
@@ -1417,11 +1443,13 @@ async function renderPlanCarga(stage) {
       .filter(r => !quiebresMat.has(String(r.material ?? '').trim()))
       .filter(r => fechaEnRango(r.fecha_confirmada, 10, 7))
       .filter(r => parseNum(r.ctd_confirmada) > 0)
+      .filter(r => !estaExcluido(exclusionesPlan, 'traslados_1003', r.doc_compr, r.material))
       .reduce((sum, r) => { const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), r.ctd_confirmada); det.stock.push(itemT(r, t)); return sum + t; }, 0);
 
     // 3. REVEX (peso_neto_2 × ctd_pedido — igual que la vista REVEX)
     const tonRevex = revex
       .filter(r => String(r.ce ?? '').trim() === ce)
+      .filter(r => !estaExcluido(exclusionesPlan, 'traslados_revex', r.doc_compr, r.material))
       .reduce((sum, r) => { const t = calcTon(parseNum(r.peso_neto_2), r.ctd_pedido); det.revex.push(itemT(r, t)); return sum + t; }, 0);
 
     // 4. Crossdocking 4000 — SÓLO pendientes (ctd_pedido > procesado). SIN ventana
@@ -1869,6 +1897,29 @@ async function renderVistaTabla(stage, cfg, modeIdx = 0) {
   const rawRows = await fetchAllRows(active.vista);
   const rows = active.transform ? active.transform(rawRows, ctx) : rawRows;
 
+  // Botón "Excluir" (posiciones fuera del Plan de Carga) — sólo perfil OWNER,
+  // sólo en las vistas que declaran cfg.excluir.
+  let exclusionesPlan = [];
+  let ownerFlag = false;
+  if (active.excluir) {
+    [exclusionesPlan, ownerFlag] = await Promise.all([loadExclusionesPlan(), esOwner()]);
+  }
+  const excluirColActivo = !!(active.excluir && ownerFlag);
+  function renderExcluirCell(r) {
+    const ex = active.excluir;
+    const doc = ex.doc(r);
+    const material = typeof ex.material === 'function' ? ex.material(r) : null;
+    const match = exclusionesPlan.find(e => e.tipo === ex.tipo
+      && String(e.doc ?? '').trim() === String(doc ?? '').trim()
+      && (String(e.material ?? '').trim() === '' || String(e.material ?? '').trim() === String(material ?? '').trim()));
+    if (match) {
+      return `<td class="py-xs pr-md whitespace-nowrap text-center">
+        <button data-excl-reactivar="${match.id}" title="Reactivar en el Plan de Carga" class="text-[11px] font-bold text-primary hover:underline">Reactivar</button></td>`;
+    }
+    return `<td class="py-xs pr-md whitespace-nowrap text-center">
+      <button data-excl-excluir="${escapeHtml(ex.tipo)}|${escapeHtml(String(doc ?? ''))}|${escapeHtml(String(material ?? ''))}" title="Excluir del Plan de Carga" class="text-[11px] font-bold text-error hover:underline">Excluir</button></td>`;
+  }
+
   const chip = active.chipFilter;
   const chipValues = chip ? Array.from(new Set(rows.map(r => String(r[chip.campo] ?? '')).filter(v => v))).sort() : [];
   let chipSel = 'all';
@@ -1980,7 +2031,7 @@ async function renderVistaTabla(stage, cfg, modeIdx = 0) {
     const shown = filt.slice(0, MAX);
     const act = rawRows.length ? horaChile(rawRows[0].cargado_en) : '';
     const badgesHtml = active.badges ? active.badges(filt, chipSel) : '';
-    const ncols = active.columnas.length;
+    const ncols = active.columnas.length + (excluirColActivo ? 1 : 0);
 
     const modosHtml = cfg.modes ? `<div class="flex items-center gap-xs mb-md">
       <span class="text-[11px] text-secondary font-bold uppercase mr-xs">Ver:</span>
@@ -2048,6 +2099,7 @@ async function renderVistaTabla(stage, cfg, modeIdx = 0) {
             <thead class="sticky top-0 bg-surface-container-lowest z-10">
               <tr class="text-left text-[11px] uppercase tracking-wide text-secondary border-b border-outline-variant">
                 ${active.columnas.map(c => `<th class="py-sm pr-md whitespace-nowrap">${escapeHtml(c.label)}</th>`).join('')}
+                ${excluirColActivo ? `<th class="py-sm pr-md whitespace-nowrap text-center">Plan de Carga</th>` : ''}
               </tr>
             </thead>
             <tbody>
@@ -2058,6 +2110,7 @@ async function renderVistaTabla(stage, cfg, modeIdx = 0) {
                   const abierto = active.expand && expanded.has(id);
                   return `<tr class="border-b border-outline-variant/50 hover:bg-surface-container-low ${rowCls}">
                     ${active.columnas.map(c => renderCell(r, c)).join('')}
+                    ${excluirColActivo ? renderExcluirCell(r) : ''}
                   </tr>${abierto ? detailRow(r, ncols) : ''}`;
                 }).join('')}
             </tbody>
@@ -2104,6 +2157,21 @@ async function renderVistaTabla(stage, cfg, modeIdx = 0) {
     }));
     stage.querySelector('[data-refrescar]')?.addEventListener('click', () => { clearRawCache(); renderVistaTabla(stage, cfg, modeIdx); });
     stage.querySelector('[data-csv]')?.addEventListener('click', () => exportarCSV(active, filt));
+    if (excluirColActivo) {
+      stage.querySelectorAll('[data-excl-excluir]').forEach(btn => btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const [tipo, doc, material] = btn.dataset.exclExcluir.split('|');
+        const etiqueta = material ? `el material ${material} de la posición ${doc}` : `la posición ${doc} completa`;
+        if (!confirm(`¿Excluir del Plan de Carga ${etiqueta}?\n\nSe mantiene disponible para futuros planes hasta que la reactives.`)) return;
+        const ok = await excluirDelPlan(tipo, doc, material || null, 'Excluido desde ' + cfg.titulo);
+        if (ok) { showAlert('Excluido del Plan de Carga', 'success'); exclusionesPlan = await loadExclusionesPlan(); draw(); }
+      }));
+      stage.querySelectorAll('[data-excl-reactivar]').forEach(btn => btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const ok = await reactivarEnPlan(Number(btn.dataset.exclReactivar));
+        if (ok) { showAlert('Reactivado en el Plan de Carga', 'success'); exclusionesPlan = await loadExclusionesPlan(); draw(); }
+      }));
+    }
   }
 
   draw();
