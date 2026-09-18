@@ -10,8 +10,8 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202609181127';
-import { getDatabase } from './data.js?v=202609181127';
+import { supabase } from './supabase-client.js?v=202609181211';
+import { getDatabase } from './data.js?v=202609181211';
 import { showAlert, escapeHtml } from './utils.js';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
@@ -149,7 +149,38 @@ const CENTROS_QUIEBRES = ['1005','1020','1040','1050','1060','1070','1080','1090
 const ABC_ORDEN = { AA:0, AB:1, AC:2, BA:3, BB:4, BC:5, CA:6, CB:7, CC:8 };
 function abcRank(abc) {
   const k = String(abc ?? '').trim().toUpperCase();
-  return ABC_ORDEN[k] != null ? ABC_ORDEN[k] : 99;
+  return ABC_ORDEN[k] != null ? ABC_ORDEN[k] : 99; // '' (SIN CLASIFICACIÓN) queda al final
+}
+
+// ── AJUSTES PRIORIZACIÓN PEDIDOS DE TRASLADOS 1003 (2026-09-18) ─────────────
+// Usuario "de sistema" que NO otorga prioridad de carga (cualquier otro sí).
+const USUARIO_SISTEMA = 'ZE_SIS';
+
+// Clasifica un pedido de traslado (línea material/centro) según la regla de
+// priorización de carga acordada:
+//   B) creado por un usuario ≠ ZE_SIS dentro del plazo → prioridad máxima.
+//   C) clasificación ABC = AA (esté o no quebrado)      → prioridad, bajo B.
+//   D) material QUEBRADO (stock_days ≤ 7) con cualquier otra clasificación
+//      → mismo bucket que B/C, orden AB,AC,BA,BB,BC,CA,CB,CC,SIN CLASIFICACIÓN.
+//   E) material NO quebrado (resto)                     → bucket "abastecimiento",
+//      mismo orden de clasificación que D.
+// Columnas de Plan de Carga: bucket 'prioridad' → "ABAST. QUIEBRE Y PRIORIZADO"
+// (puntos B, C, D); bucket 'abastecimiento' → "ABASTECIMIENTO" (punto E).
+function prioridadTraslado(usuario, claseAbc, quebrado) {
+  const u = String(usuario ?? '').trim().toUpperCase();
+  const abc = String(claseAbc ?? '').trim().toUpperCase();
+  if (u && u !== USUARIO_SISTEMA) {
+    return { grupo: 'B', bucket: 'prioridad', orden: -2, motivo: `USUARIO (${u})` };
+  }
+  if (abc === 'AA') {
+    return { grupo: 'C', bucket: 'prioridad', orden: -1, motivo: 'CLASIFICACIÓN ABC AA' };
+  }
+  const orden = abcRank(abc);
+  const claseLbl = abc || 'SIN CLASIFICACIÓN';
+  if (quebrado) {
+    return { grupo: 'D', bucket: 'prioridad', orden, motivo: `QUIEBRE · ${claseLbl}` };
+  }
+  return { grupo: 'E', bucket: 'abastecimiento', orden, motivo: claseLbl };
 }
 
 // Normaliza texto: quita acentos/ñ y pasa a MAYÚSCULAS.
@@ -821,18 +852,20 @@ const VISTAS_TRONCAL = {
     dateRange: { campo: 'fecha_confirmada', label: 'Rango Fecha Confirmada' },
     async preload() {
       const stockRows = await fetchAllRows('v_trc_slim_stock');
-      // Mapa quiebres: "centro|codigo_articulo" → { sd, tq } para SKU con stock_days ≤ 7
-      const quiebresMap = {};
+      // Mapa SLIM: "centro|codigo_articulo" → { sd, abc } (se conserva el de
+      // menor stock_days si el SKU/centro aparece más de una vez).
+      const skuMap = {};
       stockRows.forEach(r => {
-        const sd = parseNum(r.stock_days);
-        if (sd > 7) return;
         const k = `${String(r.centro ?? '').trim()}|${String(r.codigo_articulo ?? '').trim()}`;
-        if (!quiebresMap[k]) quiebresMap[k] = { sd, tq: tipoQuiebre(sd) };
+        const sd = parseNum(r.stock_days);
+        const abc = String(r.clase_abc ?? '').trim().toUpperCase();
+        const prev = skuMap[k];
+        if (!prev || sd < prev.sd) skuMap[k] = { sd, abc };
       });
-      return { quiebresMap };
+      return { skuMap };
     },
     transform(rows, ctx) {
-      const quiebresMap = (ctx && ctx.quiebresMap) || {};
+      const skuMap = (ctx && ctx.skuMap) || {};
       const validas = rows
         .filter(r => !String(r.cesu ?? '').startsWith('*') && String(r.material ?? '').trim() !== '')
         .filter(r => !String(r.material ?? '').startsWith('900000'));
@@ -850,11 +883,27 @@ const VISTAS_TRONCAL = {
         return `<span class="inline-flex items-center gap-[3px] px-[6px] py-[2px] rounded-full text-[11px] font-bold ${q.tq.cls}">` +
                `<span class="material-symbols-outlined text-[13px]">inventory_2</span>${short} (${q.sd}d)</span>`;
       }
+      // Badge del grupo de priorización de carga (B/C/D/E, ver prioridadTraslado).
+      function prioridadBadgeHtml(prio) {
+        const MAP = {
+          B: { txt: 'PRIORIZADO · USUARIO', cls: 'text-white bg-purple-700' },
+          C: { txt: 'PRIORIZADO · ABC AA',  cls: 'text-white bg-indigo-700' },
+          D: { txt: 'QUIEBRE',              cls: 'text-white bg-red-600' },
+          E: { txt: 'ABASTECIMIENTO',       cls: 'text-black bg-gray-300' },
+        };
+        const m = MAP[prio.grupo] || MAP.E;
+        return `<span class="inline-flex items-center px-[6px] py-[2px] rounded-full text-[11px] font-bold ${m.cls}">${m.txt}</span>`;
+      }
       const out = validas.map(r => {
         const al = alertaFecha(r.fecha_confirmada, 7);
         const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), r.ctd_confirmada);
         const kq = `${String(r.ce ?? '').trim()}|${String(r.material ?? '').trim()}`;
-        const q = quiebresMap[kq] || null;
+        const info = skuMap[kq] || null;
+        const quebrado = !!(info && info.sd <= 7);
+        const q = quebrado ? { sd: info.sd, tq: tipoQuiebre(info.sd) } : null;
+        const abc = info ? info.abc : '';
+        const usuario = String(r.creado_por ?? '').trim();
+        const prio = prioridadTraslado(usuario, abc, quebrado);
         return {
           doc_compr: String(r.doc_compr ?? '').trim(),
           cesu: r.cesu, ce: r.ce, alm: r.alm,
@@ -867,11 +916,21 @@ const VISTAS_TRONCAL = {
           _alerta_icon: alertaIconHtml(al),
           _quiebre_badge: quiebreBadgeHtml(q),
           _en_quiebre: !!q,
+          _clasificacion_abc: abc || 'SIN CLASIFICACIÓN',
+          _usuario: usuario || '—',
+          _prioridad_badge: prioridadBadgeHtml(prio),
+          _prioridad_grupo: prio.grupo,
+          _prioridad_bucket: prio.bucket,
+          _prioridad_orden: prio.orden,
         };
       });
-      // Ordenar: primero los que tienen quiebre, luego por fecha
+      // Orden = el mismo criterio de priorización de carga del Plan de Carga:
+      // bucket 'prioridad' (B/C/D) antes que 'abastecimiento' (E); dentro de
+      // cada bucket, por 'orden' (usuario > ABC AA > resto de clasificación);
+      // por último, fecha confirmada más próxima primero.
       return out.sort((a, b) => {
-        if (a._en_quiebre !== b._en_quiebre) return a._en_quiebre ? -1 : 1;
+        if (a._prioridad_bucket !== b._prioridad_bucket) return a._prioridad_bucket === 'prioridad' ? -1 : 1;
+        if (a._prioridad_orden !== b._prioridad_orden) return a._prioridad_orden - b._prioridad_orden;
         const da = parseDateSAP(a.fecha_confirmada), db2 = parseDateSAP(b.fecha_confirmada);
         return (da || new Date(9999,0)) - (db2 || new Date(9999,0));
       });
@@ -879,6 +938,7 @@ const VISTAS_TRONCAL = {
     rowClsFn(r) { return r._en_quiebre ? 'bg-red-50' : ''; },
     columnas: [
       { key: '_alerta_icon', label: 'Alerta', rawHtml: true },
+      { key: '_prioridad_badge', label: 'Prioridad Plan Carga', rawHtml: true },
       { key: '_quiebre_badge', label: 'Estado Quiebre', rawHtml: true },
       { key: 'doc_compr', label: 'Pedido de Traslado' },
       { key: 'cesu', label: 'Centro Origen' },
@@ -886,6 +946,8 @@ const VISTAS_TRONCAL = {
       { key: 'alm', label: 'Almacén Destino' },
       { key: 'material', label: 'ID Material' },
       { key: 'texto_breve', label: 'Nombre Material' },
+      { key: '_clasificacion_abc', label: 'Clasificación ABC', cls: 'text-center' },
+      { key: '_usuario', label: 'Usuario' },
       { key: 'fecha_confirmada', label: 'Fecha Confirmada', cls: 'num-clear' },
       { key: 'ctd_pedido', label: 'Cantidad Pedido', cls: 'text-right num-clear' },
       { key: '_ton_sku', label: 'Total SKU', cls: 'text-right num-clear font-bold' },
@@ -1357,17 +1419,19 @@ async function renderPlanCarga(stage) {
     if (k && !pvMap[k]) pvMap[k] = r;
   });
 
-  // Materiales quebrados por centro (≤7 días)
-  const quiebresByCentro = {};
+  // Info SLIM por centro (stock_days + clase ABC), usada por prioridadTraslado
+  // para clasificar cada línea de Traslados 1003 (AJUSTES PRIORIZACIÓN 2026-09-18).
+  const skuInfoByCentro = {};
   quiebresRaw
     .filter(r => CENTROS_QUIEBRES.includes(String(r.centro ?? '').trim()))
     .forEach(r => {
       const ce = String(r.centro).trim();
+      const mat = String(r.codigo_articulo ?? '').trim();
       const sd = parseNum(r.stock_days);
-      if (sd <= 7) {
-        if (!quiebresByCentro[ce]) quiebresByCentro[ce] = new Set();
-        quiebresByCentro[ce].add(String(r.codigo_articulo ?? '').trim());
-      }
+      const abc = String(r.clase_abc ?? '').trim().toUpperCase();
+      if (!skuInfoByCentro[ce]) skuInfoByCentro[ce] = {};
+      const prev = skuInfoByCentro[ce][mat];
+      if (!prev || sd < prev.sd) skuInfoByCentro[ce][mat] = { sd, abc };
     });
 
   // (AJUSTE) Plan de carga por CENTRO ORIGEN: sólo se consideran los pedidos de
@@ -1424,27 +1488,47 @@ async function renderPlanCarga(stage) {
     // cliente (80%) y fábrica (85%). La capacidad efectiva del CD se calcula
     // más abajo (La Calera/San Bernardo usan 15 T si no alcanzan a llenar 28 T).
     const capRef = CAP_CAMION_DEFAULT;
-    const quiebresMat = quiebresByCentro[ce] || new Set();
+    const skuInfoCe = skuInfoByCentro[ce] || {};
     const det = { quiebre: [], stock: [], revex: [], cross: [], ventaCons: [], retiro: [], cliente: [], fabSuc: [], fabCli: [] };
-    const itemT = (r, t) => ({ pt: r.doc_compr, material: r.material, nombre: r.texto_breve, fecha: r.fecha_confirmada, ctd: r.ctd_confirmada, ton: t, pv: r.documento });
+    const itemT = (r, t) => ({ pt: r.doc_compr, material: r.material, nombre: r.texto_breve, fecha: r.fecha_confirmada, ctd: r.ctd_confirmada, ton: t, pv: r.documento, usuario: r.creado_por });
+    // Clasifica una línea de Traslados 1003 según prioridadTraslado (usuario
+    // creador / clasificación ABC / quiebre) — ver AJUSTES PRIORIZACIÓN 2026-09-18.
+    const clasificaTraslado = r => {
+      const info = skuInfoCe[String(r.material ?? '').trim()] || null;
+      const quebrado = !!(info && info.sd <= 7);
+      const abc = info ? info.abc : '';
+      return prioridadTraslado(r.creado_por, abc, quebrado);
+    };
 
-    // 1. Traslados Quiebre  (excluye líneas con ctd_confirmada = 0 → ya entregadas)
-    const tonQuiebre = traslados
+    // 1. ABAST. QUIEBRE Y PRIORIZADO (puntos B, C, D del ajuste de priorización:
+    //    usuario ≠ ZE_SIS, clasificación ABC=AA, o material quebrado con otra
+    //    clasificación). Excluye líneas con ctd_confirmada = 0 → ya entregadas.
+    const baseTraslados = traslados
       .filter(r => String(r.ce ?? '').trim() === ce)
-      .filter(r => quiebresMat.has(String(r.material ?? '').trim()))
       .filter(r => fechaEnRango(r.fecha_confirmada, 10, 7))
       .filter(r => parseNum(r.ctd_confirmada) > 0)
       .filter(r => !estaExcluido(exclusionesPlan, 'traslados_1003', r.doc_compr, r.material))
-      .reduce((sum, r) => { const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), r.ctd_confirmada); det.quiebre.push(itemT(r, t)); return sum + t; }, 0);
+      .map(r => ({ r, prio: clasificaTraslado(r) }));
 
-    // 2. Traslados Stock / Abastecimiento  (ídem)
-    const tonStock = traslados
-      .filter(r => String(r.ce ?? '').trim() === ce)
-      .filter(r => !quiebresMat.has(String(r.material ?? '').trim()))
-      .filter(r => fechaEnRango(r.fecha_confirmada, 10, 7))
-      .filter(r => parseNum(r.ctd_confirmada) > 0)
-      .filter(r => !estaExcluido(exclusionesPlan, 'traslados_1003', r.doc_compr, r.material))
-      .reduce((sum, r) => { const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), r.ctd_confirmada); det.stock.push(itemT(r, t)); return sum + t; }, 0);
+    const itemsPrioridad = baseTraslados
+      .filter(x => x.prio.bucket === 'prioridad')
+      .sort((a, b) => a.prio.orden - b.prio.orden);
+    const tonQuiebre = itemsPrioridad.reduce((sum, { r, prio }) => {
+      const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), r.ctd_confirmada);
+      det.quiebre.push({ ...itemT(r, t), _motivo: prio.motivo });
+      return sum + t;
+    }, 0);
+
+    // 2. ABASTECIMIENTO (punto E: material no quebrado), mismo orden de
+    //    clasificación ABC que el punto D.
+    const itemsAbast = baseTraslados
+      .filter(x => x.prio.bucket === 'abastecimiento')
+      .sort((a, b) => a.prio.orden - b.prio.orden);
+    const tonStock = itemsAbast.reduce((sum, { r, prio }) => {
+      const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), r.ctd_confirmada);
+      det.stock.push({ ...itemT(r, t), _motivo: prio.motivo });
+      return sum + t;
+    }, 0);
 
     // 3. REVEX (peso_neto_2 × ctd_pedido — igual que la vista REVEX)
     const tonRevex = revex
@@ -1627,11 +1711,14 @@ async function renderPlanCarga(stage) {
   const camMark = d => d._enCamion === undefined ? '' : (d._enCamion ? '✓ SÍ' : '✗ EXCEDE');
   const shiftSet = (s) => new Set([...s].map(i => i + 1));
   // Bloque Traslados (Quiebre / Abastecimiento / REVEX / Crossdocking)
-  function blkTraslado(lbl, items, marcar) {
+  function blkTraslado(lbl, items, marcar, conPrioridad) {
     if (!items.length) return '';
     let heads = ['Pedido de Traslado','ID Material','Nombre Material','Fecha de Entrega','Cantidad Confirmada','Ton SKU','Pedido de Venta'];
     let align = new Set([4, 5]);
     let filas = items.map(d => [d.pt, d.material, d.nombre, d.fecha, d.ctd, fmtNum(d.ton, 4), d.pv]);
+    // Columnas Usuario / Motivo Prioridad — sólo para los bloques de
+    // ABAST. QUIEBRE Y PRIORIZADO / ABASTECIMIENTO (ver prioridadTraslado).
+    if (conPrioridad) { heads = [...heads, 'Usuario', 'Motivo Prioridad']; filas = items.map((d, i) => [...filas[i], d.usuario || '', d._motivo || '']); }
     if (marcar) { heads = ['En Camión', ...heads]; align = shiftSet(align); filas = items.map((d, i) => [camMark(d), ...filas[i]]); }
     return blkWrap(lbl, items, tablaDet(heads, filas, align));
   }
@@ -1703,8 +1790,8 @@ async function renderPlanCarga(stage) {
         blkVenta('2º Pedidos de Venta Directa Consolidados', inC.ventaCons) +
         blkRetiro('3º Retiros de Proveedor Consolidados (CD)', inC.retiro) +
         blkCrossdocking('4º Pedidos de Traslados Crossdocking', inC.cross) +
-        blkTraslado('5º Pedidos de Traslados Quiebre', inC.quiebre) +
-        blkTraslado('6º Pedidos de Traslados Abastecimiento', inC.stock);
+        blkTraslado('5º Abast. Quiebre y Priorizado', inC.quiebre, false, true) +
+        blkTraslado('6º Abastecimiento', inC.stock, false, true);
       // No se muestra sección de excedentes: el detalle incluye solo lo que entra en el camión.
     }
     else if (tipo === 'cliente') blocks = blkVenta('Pedidos de Venta directos al cliente', r.det.cliente);
@@ -1727,7 +1814,7 @@ async function renderPlanCarga(stage) {
   function csvDetalleCamion(r, tipo) {
     const cats = tipo === 'cd'
       ? [['REVEX', r.det.revex, 'T'], ['Venta Consolidada', r.det.ventaCons, 'V'], ['Retiro CD', r.det.retiro, 'R'],
-         ['Crossdocking', r.det.cross, 'T'], ['Quiebre', r.det.quiebre, 'T'], ['Abastecimiento', r.det.stock, 'T']]
+         ['Crossdocking', r.det.cross, 'T'], ['Abast. Quiebre y Priorizado', r.det.quiebre, 'T'], ['Abastecimiento', r.det.stock, 'T']]
       : tipo === 'cliente' ? [['Venta Cliente', r.det.cliente, 'V']]
       : tipo === 'fabSuc'  ? [['Fábrica-Sucursal', r.det.fabSuc, 'R']]
       :                      [['Fábrica-Cliente', r.det.fabCli, 'R']];
@@ -1736,15 +1823,18 @@ async function renderPlanCarga(stage) {
     // de la descarga sin que apareciera en ninguna parte. Ahora se incluye todo
     // con una columna "En Camión" (SÍ / EXCEDE) para que el excedente que
     // requiere 2º camión también quede visible y trazable en el detalle.
-    const headers = ['Categoría','En Camión','Documento','Id Proveedor','Proveedor','Id Material','Nombre Material','Ruta','Comuna','Región','Fecha','Cantidad','Ton SKU'];
+    // Usuario / Motivo Prioridad: sólo se completan para las categorías de
+    // Traslados 1003 (Abast. Quiebre y Priorizado / Abastecimiento).
+    const headers = ['Categoría','En Camión','Documento','Id Proveedor','Proveedor','Id Material','Nombre Material','Ruta','Comuna','Región','Fecha','Cantidad','Ton SKU','Usuario','Motivo Prioridad'];
     const filas = [];
     cats.forEach(([cat, items, t]) => (items || []).forEach(d => {
       const enCamion = camMark(d);
+      const usuario = d.usuario || '', motivo = d._motivo || '';
       // (FIX) Los ítems de Crossdocking (det.cross) no tienen campo "ctd" sino
       // "ctdPend" (cantidad pendiente, ya numérica) — antes quedaba en blanco en el CSV.
-      if (t === 'T') filas.push([cat, enCamion, d.pt, '', '', d.material, d.nombre, '', '', '', d.fecha || '', d.ctd || (d.ctdPend != null ? fmtNum(d.ctdPend, 1) : ''), fmtNum(d.ton, 4)]);
-      else if (t === 'R') filas.push([cat, enCamion, d.oc, d.idProv, d.prov, d.material, d.nombre, '', '', '', d.fecha || '', fmtNum(parseNum(d.cant), 1), fmtNum(d.ton, 4)]);
-      else filas.push([cat, enCamion, d.pv, '', '', d.material, d.nombre, d.ruta, d.comuna, d.region, d.fecha || '', fmtNum(parseNum(d.cant), 1), fmtNum(d.ton, 4)]);
+      if (t === 'T') filas.push([cat, enCamion, d.pt, '', '', d.material, d.nombre, '', '', '', d.fecha || '', d.ctd || (d.ctdPend != null ? fmtNum(d.ctdPend, 1) : ''), fmtNum(d.ton, 4), usuario, motivo]);
+      else if (t === 'R') filas.push([cat, enCamion, d.oc, d.idProv, d.prov, d.material, d.nombre, '', '', '', d.fecha || '', fmtNum(parseNum(d.cant), 1), fmtNum(d.ton, 4), '', '']);
+      else filas.push([cat, enCamion, d.pv, '', '', d.material, d.nombre, d.ruta, d.comuna, d.region, d.fecha || '', fmtNum(parseNum(d.cant), 1), fmtNum(d.ton, 4), '', '']);
     }));
     const esc = v => { v = v == null ? '' : String(v); return /[;"\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
     const lines = [headers.join(';')].concat(filas.map(f => f.map(esc).join(';')));
@@ -1799,8 +1889,8 @@ async function renderPlanCarga(stage) {
               <th class="py-sm pr-md text-right font-bold whitespace-nowrap">2º Ped. Venta Directa</th>
               <th class="py-sm pr-md text-right font-bold whitespace-nowrap">3º Retiro Proveedor</th>
               <th class="py-sm pr-md text-right font-bold whitespace-nowrap">4º Ped. Traslados CrossDock</th>
-              <th class="py-sm pr-md text-right font-bold whitespace-nowrap">5º Ped. Traslados Quiebres</th>
-              <th class="py-sm pr-md text-right font-bold whitespace-nowrap">6º Ped. Traslados Abastecimiento</th>
+              <th class="py-sm pr-md text-right font-bold whitespace-nowrap">5º Abast. Quiebre y Priorizado</th>
+              <th class="py-sm pr-md text-right font-bold whitespace-nowrap">6º Abastecimiento</th>
               <th class="py-sm pr-md text-right font-bold whitespace-nowrap">Total CD</th>
               <th class="py-sm pr-md text-right font-bold whitespace-nowrap">FALTA / SOBRA</th>
               <th class="py-sm pr-md text-right font-bold whitespace-nowrap">% Compl.</th>
