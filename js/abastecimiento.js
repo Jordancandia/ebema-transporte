@@ -10,8 +10,8 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202609181352';
-import { getDatabase } from './data.js?v=202609181352';
+import { supabase } from './supabase-client.js?v=202609181409';
+import { getDatabase } from './data.js?v=202609181409';
 import { showAlert, escapeHtml } from './utils.js';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
@@ -104,6 +104,33 @@ function parseISODate(s) {
 function fmtFechaISO(s) {
   const m = String(s ?? '').match(/^(\d{4})-(\d{2})-(\d{2})/);
   return m ? `${m[3]}.${m[2]}.${m[1]}` : (s || '');
+}
+
+// ── Días hábiles (PLAN DE CARGA 48H — AJUSTE 18-sep-2026) ──────────────────
+// Un día es hábil si no es sábado/domingo y no está en la tabla `abast_feriados`
+// (administrada manualmente en la vista Calendario Sucursales). Se usa para
+// calcular la ventana de planificación de 24h/48h saltando fines de semana y
+// feriados legales.
+function isoLocal(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+function esDiaHabil(date, feriadosSet) {
+  const dow = date.getDay();
+  if (dow === 0 || dow === 6) return false; // fin de semana
+  if (feriadosSet && feriadosSet.has(isoLocal(date))) return false;
+  return true;
+}
+// Avanza `n` días hábiles a partir de `startDate` (sin incluirlo), saltando
+// fines de semana y feriados. Ej.: hoy jueves + feriado el viernes siguiente
+// → addBusinessDays(hoy, 1, feriados) = lunes; addBusinessDays(hoy, 2, feriados) = martes.
+function addBusinessDays(startDate, n, feriadosSet) {
+  const d = new Date(startDate);
+  let count = 0;
+  while (count < n) {
+    d.setDate(d.getDate() + 1);
+    if (esDiaHabil(d, feriadosSet)) count++;
+  }
+  return d;
 }
 
 function alertaFecha(fechaStr, diasUmbral = 5) {
@@ -1437,7 +1464,7 @@ let planOrigen = '1003';   // centro origen del plan de carga (1003 / 1081)
 async function renderPlanCarga(stage) {
   stage.innerHTML = '<div class="text-secondary text-body-md p-md">Cargando Plan de Carga…</div>';
 
-  const [quiebresRaw, trasladosRaw, revexRaw, retirosRaw, ventasRaw, traslados4000Raw, calendarioRows, estadosRetiro, exclusionesPlan, pvRows] = await Promise.all([
+  const [quiebresRaw, trasladosRaw, revexRaw, retirosRaw, ventasRaw, traslados4000Raw, calendarioRows, estadosRetiro, exclusionesPlan, pvRows, feriadosRows, horizonteRows] = await Promise.all([
     fetchAllRows('v_trc_slim_stock'),
     fetchAllRows('v_trc_sqvi_pedidos_traslados'),
     fetchAllRows('v_trc_sqvi_pedidos_traslados'),
@@ -1448,7 +1475,20 @@ async function renderPlanCarga(stage) {
     loadEstadosRetiro(),
     loadExclusionesPlan(),
     fetchAllRows('v_trc_pedidos_ventas_ref'),
+    fetchAllRows('abast_feriados'),
+    fetchAllRows('abast_horizonte_centro'),
   ]);
+
+  // Feriados administrados manualmente + horizonte de planificación (24h/48h)
+  // por centro destino (tabla auxiliar de la vista Calendario Sucursales).
+  const feriadosSet = new Set((feriadosRows || []).map(r => String(r.fecha ?? '').trim()).filter(Boolean));
+  const horizonteMap = {};
+  (horizonteRows || [])
+    .filter(r => String(r.centro_origen ?? '').trim() === planOrigen)
+    .forEach(r => { horizonteMap[String(r.centro_destino ?? '').trim()] = Number(r.horizonte_horas) === 48 ? 48 : 24; });
+  const getHorizonte = ce => horizonteMap[ce] || 24;
+  const diaHabil1 = addBusinessDays(hoy00(), 1, feriadosSet); // ventana 24h (próximo día hábil)
+  const diaHabil2 = addBusinessDays(hoy00(), 2, feriadosSet); // ventana 48h (siguiente día hábil)
   // Cross-reference de Pedidos de Venta (Cliente, Vendedor, Tipo de Expedición)
   // por doc_ventas, mismo patrón usado en las vistas de Retiros y Traslados 4000.
   const pvMap = {};
@@ -1491,7 +1531,9 @@ async function renderPlanCarga(stage) {
   // Retiros ya atrasados (fecha_retiro < mañana) siguen contando (deben salir ASAP).
   // Los coordinados ANTES de este ajuste, sin `fecha_retiro` guardada, se siguen
   // contabilizando sin filtro de fecha (compatibilidad hacia atrás).
-  const mananaCutoff = hoy00(); mananaCutoff.setDate(mananaCutoff.getDate() + 1);
+  // (AJUSTE 48H) El corte usa el próximo día hábil (saltando fin de semana y
+  // feriados de `abast_feriados`) en vez de simplemente "mañana" calendario.
+  const mananaCutoff = diaHabil1;
   const retiros = esCD1003 ? retirosRaw
     .filter(r => !String(r.proveedor ?? '').startsWith('*'))
     .filter(r => String(r.contr ?? '').trim() !== '')
@@ -1519,16 +1561,19 @@ async function renderPlanCarga(stage) {
 
   const destinosOrigen = (CALENDARIOS[planOrigen] && CALENDARIOS[planOrigen].destinos) || CENTROS_QUIEBRES;
   const centrosSet = new Set(destinosOrigen);
-  const mananaTemp = new Date(); mananaTemp.setDate(mananaTemp.getDate() + 1);
-  const centrosProgramados = getCentrosProgramados(
-    calendarioRows.filter(r => String(r.centro ?? '').trim() === planOrigen),
-    mananaTemp.getDay());
 
-  // El CD 1003 despacha el sábado: si hoy es viernes, la planificación cubre el
-  // sábado (mañana) y también el lunes siguiente. Se amplían 2 días las ventanas
-  // hacia adelante para saltar el fin de semana e incluir el lunes.
-  const esViernes = new Date().getDay() === 5;
-  const diasExtraFinde = esViernes ? 2 : 0;
+  // (AJUSTE 48H, 18-sep-2026) El día objetivo ya no es fijo ("mañana"): cada
+  // centro destino tiene su propio horizonte de planificación (24h o 48h,
+  // tabla `abast_horizonte_centro`, por defecto 24h) y el día objetivo se
+  // calcula en días HÁBILES (salta sábado/domingo y los feriados de
+  // `abast_feriados`) — reemplaza el parche anterior que sólo saltaba el fin
+  // de semana cuando hoy era viernes.
+  const calendarioOrigenRows = calendarioRows.filter(r => String(r.centro ?? '').trim() === planOrigen);
+  const programadosDia1 = getCentrosProgramados(calendarioOrigenRows, diaHabil1.getDay()); // ventana 24h
+  const programadosDia2 = getCentrosProgramados(calendarioOrigenRows, diaHabil2.getDay()); // ventana 48h
+  const centrosProgramados = new Set(
+    Array.from(centrosSet).filter(ce => (getHorizonte(ce) === 48 ? programadosDia2 : programadosDia1).has(ce))
+  );
 
   const resultado = Array.from(centrosSet).map(ce => {
     // Capacidad de referencia (camión lleno) para los umbrales de camión
@@ -1718,6 +1763,7 @@ async function renderPlanCarga(stage) {
       ce, nombre: getNombreCentro(ce), cap,
       tonQuiebre, tonStock, tonRevex, tonCross, tonVentaCons, tonVentaCliente, tonRetiro, tonFabSuc, tonFabCli,
       total, faltan, sobrecarga, pct, status, statusCls, obs, enCalendario,
+      horizonte: getHorizonte(ce),
       camionCliente: tonVentaCliente > 0, camionFabSuc: tonFabSuc > 0, camionFabCli: tonFabCli > 0,
       det,
     };
@@ -1727,10 +1773,9 @@ async function renderPlanCarga(stage) {
     return b.pct - a.pct;
   });
 
-  const manana = new Date(); manana.setDate(manana.getDate() + 1);
   const diasSemana = ['Domingo','Lunes','Martes','Miércoles','Jueves','Viernes','Sábado'];
-  const fechaLabel = `${diasSemana[manana.getDay()]}, ${manana.toLocaleDateString('es-CL', { day: 'numeric', month: 'long', year: 'numeric' })}`
-    + (esViernes ? ' (incluye lunes próximo — despacho CD 1003 del sábado)' : '');
+  const fmtDiaHabil = d => `${diasSemana[d.getDay()]} ${d.toLocaleDateString('es-CL', { day: 'numeric', month: 'long' })}`;
+  const fechaLabel = `Ventana 24h: ${fmtDiaHabil(diaHabil1)} · Ventana 48h: ${fmtDiaHabil(diaHabil2)}`;
 
   function truckSVG(pct) {
     const p = Math.min(pct, 100);
@@ -1993,6 +2038,7 @@ async function renderPlanCarga(stage) {
                 <td class="py-sm pr-md font-bold whitespace-nowrap">
                   ${r.enCalendario ? '<span class="inline-flex items-center gap-xs"><span class="material-symbols-outlined text-[16px] text-primary">calendar_today</span><span class="text-[9px] font-bold text-primary bg-primary/10 px-xs rounded">PRIORITARIO</span></span> ' : ''}
                   ${escapeHtml(r.nombre)}
+                  <div class="text-[9px] font-normal text-secondary">${r.horizonte}h · ${fmtDiaHabil(r.horizonte === 48 ? diaHabil2 : diaHabil1)}</div>
                 </td>
                 <td class="py-sm pr-md text-right num-clear">${fmtNum(r.tonRevex, 1)}</td>
                 <td class="py-sm pr-md text-right num-clear">${fmtNum(r.tonVentaCons, 1)}</td>
@@ -2016,7 +2062,7 @@ async function renderPlanCarga(stage) {
       </div>
 
       <div class="mt-md pt-sm border-t border-outline-variant flex flex-wrap gap-lg text-[12px] text-secondary items-center">
-        <span class="inline-flex items-center gap-xs"><span class="material-symbols-outlined text-[14px] align-middle text-primary">calendar_today</span> PRIORITARIO = Centro en calendario de mañana</span>
+        <span class="inline-flex items-center gap-xs"><span class="material-symbols-outlined text-[14px] align-middle text-primary">calendar_today</span> PRIORITARIO = Centro en calendario del día objetivo (según su horizonte 24h/48h, ver debajo del nombre)</span>
         <span class="inline-flex items-center gap-xs">${iconCamion('text-green-700 text-[16px]')} Camión Cliente (venta ≥80%)</span>
         <span class="inline-flex items-center gap-xs">${iconCamion('text-blue-700 text-[16px]')} Camión Fábrica-Sucursal (OC ≥85% sin PV)</span>
         <span class="inline-flex items-center gap-xs">${iconCamion('text-purple-700 text-[16px]')} Camión Fábrica-Cliente (OC ≥85% con PV)</span>
@@ -2698,6 +2744,8 @@ async function renderCalendario(stage) {
             <span class="material-symbols-outlined text-[18px]">save</span>Guardar calendario
           </button>
         </div>
+        <div id="cal-horizonte"></div>
+        <div id="cal-feriados"></div>
       </div>
     </div>
   `;
@@ -2711,6 +2759,134 @@ async function renderCalendario(stage) {
   drawGrid(stage);
 
   stage.querySelector('#cal-save').addEventListener('click', () => saveCalendario(stage));
+
+  await drawHorizonte(stage);
+  await drawFeriados(stage);
+}
+
+// ── HORIZONTE DE PLANIFICACIÓN (24H / 48H) POR CENTRO DESTINO ──────────────
+// (AJUSTE 48H, 18-sep-2026) Tabla auxiliar `abast_horizonte_centro`: marca,
+// por centro origen + centro destino, si el Plan de Carga debe planificar ese
+// destino con vista a 24h (próximo día hábil) o 48h (siguiente día hábil).
+// Por defecto (sin fila guardada) un centro se planifica a 24h.
+async function loadHorizonteCentro(origen) {
+  const { data, error } = await supabase
+    .from('abast_horizonte_centro').select('*').eq('centro_origen', origen);
+  if (error) { console.error(error); showAlert('Error al cargar horizonte de planificación: ' + error.message, 'error'); return {}; }
+  const m = {};
+  (data || []).forEach(r => { m[String(r.centro_destino).trim()] = Number(r.horizonte_horas) === 48 ? 48 : 24; });
+  return m;
+}
+
+async function drawHorizonte(stage) {
+  const cont = stage.querySelector('#cal-horizonte');
+  if (!cont) return;
+  const cfg = CALENDARIOS[calOrigen];
+  const destinos = cfg.destinos;
+  const horizMap = await loadHorizonteCentro(calOrigen);
+
+  cont.innerHTML = `
+    <div class="bg-surface-container-lowest border border-outline-variant rounded-xl p-lg mt-xl">
+      <h4 class="text-[15px] font-bold text-on-surface mb-xs inline-flex items-center gap-xs">
+        <span class="material-symbols-outlined text-[20px] text-primary">update</span>Horizonte de planificación por centro (Plan de Carga a 24h / 48h)
+      </h4>
+      <p class="text-[12px] text-secondary mb-md">Define, para cada centro destino de ${escapeHtml(cfg.nombre)} (${calOrigen}), si el Plan de Carga se calcula con vista al próximo día hábil (24h) o al siguiente (48h). Por defecto: 24h.</p>
+      <div class="flex flex-wrap gap-sm">
+        ${destinos.map(id => {
+          const h = horizMap[id] || 24;
+          return `<div class="border border-outline-variant rounded-lg px-md py-sm flex items-center gap-md">
+            <span class="text-[13px] font-bold whitespace-nowrap">${escapeHtml(getNombreCentro(id))} <span class="text-secondary font-normal">(${id})</span></span>
+            <div class="inline-flex rounded-lg overflow-hidden border border-outline-variant">
+              <button data-horiz="${id}|24" class="px-sm py-[3px] text-[12px] font-bold ${h === 24 ? 'bg-primary text-white' : 'bg-surface-container-high text-on-surface hover:bg-surface-container-highest'}">24h</button>
+              <button data-horiz="${id}|48" class="px-sm py-[3px] text-[12px] font-bold ${h === 48 ? 'bg-primary text-white' : 'bg-surface-container-high text-on-surface hover:bg-surface-container-highest'}">48h</button>
+            </div>
+          </div>`;
+        }).join('')}
+      </div>
+    </div>`;
+
+  cont.querySelectorAll('[data-horiz]').forEach(btn => btn.addEventListener('click', async () => {
+    const [centroDestino, horas] = btn.dataset.horiz.split('|');
+    const email = await getUserEmail();
+    const { error } = await supabase.from('abast_horizonte_centro')
+      .upsert({
+        centro_origen: calOrigen, centro_destino: centroDestino,
+        horizonte_horas: Number(horas), updated_by: email, updated_at: new Date().toISOString(),
+      }, { onConflict: 'centro_origen,centro_destino' });
+    if (error) { showAlert('Error al guardar horizonte: ' + error.message, 'error'); return; }
+    showAlert('✓ Horizonte actualizado', 'success');
+    await drawHorizonte(stage);
+  }));
+}
+
+// ── FERIADOS (administración manual, para el cálculo de días hábiles) ──────
+async function loadFeriados() {
+  const { data, error } = await supabase
+    .from('abast_feriados').select('*').order('fecha', { ascending: true });
+  if (error) { console.error(error); showAlert('Error al cargar feriados: ' + error.message, 'error'); return []; }
+  return data || [];
+}
+
+async function drawFeriados(stage) {
+  const cont = stage.querySelector('#cal-feriados');
+  if (!cont) return;
+  const feriados = await loadFeriados();
+  const hoyIso = isoLocal(hoy00());
+
+  cont.innerHTML = `
+    <div class="bg-surface-container-lowest border border-outline-variant rounded-xl p-lg mt-lg">
+      <h4 class="text-[15px] font-bold text-on-surface mb-xs inline-flex items-center gap-xs">
+        <span class="material-symbols-outlined text-[20px] text-primary">event_busy</span>Feriados (para el cálculo de días hábiles del Plan de Carga)
+      </h4>
+      <p class="text-[12px] text-secondary mb-md">El Plan de Carga salta sábados, domingos y las fechas marcadas aquí al calcular la ventana de 24h/48h. Administre la lista manualmente.</p>
+      <div class="flex flex-wrap items-end gap-sm mb-md">
+        <div>
+          <label class="block text-[11px] text-secondary font-bold uppercase mb-xs">Fecha</label>
+          <input id="fer-fecha" type="date" class="border border-outline-variant rounded-md px-sm py-xs text-[13px]"/>
+        </div>
+        <div class="flex-1 min-w-[200px]">
+          <label class="block text-[11px] text-secondary font-bold uppercase mb-xs">Descripción</label>
+          <input id="fer-desc" type="text" placeholder="Ej. Fiestas Patrias" class="w-full border border-outline-variant rounded-md px-sm py-xs text-[13px]"/>
+        </div>
+        <button id="fer-add" class="bg-primary text-white px-md py-xs rounded-lg font-bold text-[13px] hover:opacity-90 inline-flex items-center gap-xs">
+          <span class="material-symbols-outlined text-[16px]">add</span>Agregar
+        </button>
+      </div>
+      <div class="overflow-x-auto rounded-lg border border-outline-variant max-h-[280px] overflow-y-auto">
+        <table class="w-full text-[13px]">
+          <thead class="sticky top-0 bg-surface-container-high"><tr class="text-left text-[11px] uppercase text-secondary">
+            <th class="py-xs px-md">Fecha</th><th class="py-xs px-md">Descripción</th><th class="py-xs px-md"></th>
+          </tr></thead>
+          <tbody>
+            ${feriados.length ? feriados.map(f => `
+              <tr class="border-t border-outline-variant/40 ${f.fecha < hoyIso ? 'opacity-50' : ''}">
+                <td class="py-xs px-md font-data-mono">${escapeHtml(fmtFechaISO(f.fecha))}</td>
+                <td class="py-xs px-md">${escapeHtml(f.descripcion || '')}</td>
+                <td class="py-xs px-md text-right"><button data-fer-del="${f.id}" class="text-error text-[12px] font-bold hover:underline">Eliminar</button></td>
+              </tr>`).join('') : `<tr><td colspan="3" class="py-sm px-md text-secondary text-[12px]">Sin feriados registrados.</td></tr>`}
+          </tbody>
+        </table>
+      </div>
+    </div>`;
+
+  cont.querySelector('#fer-add').addEventListener('click', async () => {
+    const fecha = cont.querySelector('#fer-fecha').value;
+    const descripcion = cont.querySelector('#fer-desc').value.trim();
+    if (!fecha) { showAlert('Seleccione una fecha', 'error'); return; }
+    const email = await getUserEmail();
+    const { error } = await supabase.from('abast_feriados')
+      .upsert({ fecha, descripcion: descripcion || null, updated_by: email, updated_at: new Date().toISOString() }, { onConflict: 'fecha' });
+    if (error) { showAlert('Error al guardar feriado: ' + error.message, 'error'); return; }
+    showAlert('✓ Feriado agregado', 'success');
+    await drawFeriados(stage);
+  });
+
+  cont.querySelectorAll('[data-fer-del]').forEach(btn => btn.addEventListener('click', async () => {
+    if (!confirm('¿Eliminar este feriado?')) return;
+    const { error } = await supabase.from('abast_feriados').delete().eq('id', btn.dataset.ferDel);
+    if (error) { showAlert('Error al eliminar feriado: ' + error.message, 'error'); return; }
+    await drawFeriados(stage);
+  }));
 }
 
 function drawGrid(stage) {
