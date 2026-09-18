@@ -1,4 +1,4 @@
-import { getDatabase, saveDatabase, getCentreName, getOrigenGroups, calcEjes, deleteRow, deleteRows } from './data.js?v=202609181244';
+import { getDatabase, saveDatabase, getCentreName, getOrigenGroups, calcEjes, deleteRow, deleteRows } from './data.js?v=202609181352';
 import { formatRut, showAlert, escapeHtml } from './utils.js';
 
 // Ficha del Transportista — SIT EBEMA
@@ -230,10 +230,10 @@ export function renderFichaTransporte(container, transportId) {
     try { sesion = JSON.parse(localStorage.getItem('ebema_user_session')); } catch (e) { /* ignorar */ }
     if (sesion && sesion.tipo === 'proveedor') {
       if (title) title.textContent = 'Portal de Proveedores';
-      import('./provider-portal.js?v=202609181244').then(m => m.renderPortalHome(stage));
+      import('./provider-portal.js?v=202609181352').then(m => m.renderPortalHome(stage));
     } else {
       if (title) title.textContent = 'Gestión de Transportes';
-      import('./transports.js?v=202609181244').then(m => m.renderTransportsView(stage));
+      import('./transports.js?v=202609181352').then(m => m.renderTransportsView(stage));
     }
   });
 

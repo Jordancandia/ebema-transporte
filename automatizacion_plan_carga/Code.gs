@@ -59,19 +59,39 @@ var CDS = [
 // disponible en "Roles y Perfiles" — ver js/roles.js CENTRO_ROLES).
 var ROLES_DESTINATARIOS = ['OWNER', 'ADMINISTRADOR_DEPOSITO'];
 
-// Columnas de tonelaje, en el orden pedido: REVEX, Venta Directa, Retiro
-// Fábrica, Crossdocking, Quiebre, Abastecimiento.
+// Columnas de tonelaje. Orden: REVEX, Venta Directa, Retiro Fábrica,
+// Crossdocking, Quiebre, Abastecimiento — y al final, marcadas como
+// "independiente" (despacho directo, no cuenta para el % de ocupación del
+// camión CD, se resaltan con COLOR_INDEPENDIENTE): CD-Cliente, Fábrica-Cliente,
+// Fábrica-Sucursal (ajuste 17-sep-2026).
 var COLUMNAS_TON = [
   { key: 'ton_revex', label: 'REVEX' },
   { key: 'ton_venta_cons', label: 'Venta Directa' },
   { key: 'ton_retiro', label: 'Retiro Fábrica' },
   { key: 'ton_cross', label: 'Crossdocking' },
   { key: 'ton_quiebre', label: 'Quiebre' },
-  { key: 'ton_stock', label: 'Abastecimiento' }
+  { key: 'ton_stock', label: 'Abastecimiento' },
+  { key: 'ton_venta_cliente', label: 'CD-Cliente', independiente: true },
+  { key: 'ton_fab_cli', label: 'Fábrica-Cliente', independiente: true },
+  { key: 'ton_fab_suc', label: 'Fábrica-Sucursal', independiente: true }
 ];
 
+// Color de fondo para las columnas de despacho independiente (17-sep-2026).
+var COLOR_INDEPENDIENTE = '#ede7f6';
+
+// Tipo de camión considerado para el % de ocupación, según la capacidad tope
+// (cap) que trae la vista resumen: 15 T (Calera/San Bernardo si no llenan
+// 28 T) o 28 T (default).
+function fmtCamion(cap) {
+  return Number(cap) === 15 ? 'Camión 15 T' : 'Camión 28 T';
+}
+
 // Orden de columnas del CSV adjunto (detalle de líneas de cada centro).
-var CSV_HEADERS = ['CATEGORIA', 'DOCUMENTO', 'MATERIAL', 'NOMBRE', 'FECHA', 'CANTIDAD', 'TON', 'PEDIDO_VENTA'];
+// (AJUSTE 18-sep-2026) Se agregan TON_BRUTO/TON_VOL de referencia, PEDIDO_VENTA
+// pasa a estar junto al documento, PROVEEDOR/ENTREGA_ENTRANTE (retiros de
+// fábrica) y RUTA/COMUNA/TIPO_EXPEDICION (pedidos de venta) — mismas columnas
+// que se agregaron al CSV descargable de la plataforma (js/abastecimiento.js).
+var CSV_HEADERS = ['CATEGORIA', 'DOCUMENTO', 'MATERIAL', 'NOMBRE', 'PEDIDO_VENTA', 'PROVEEDOR', 'ENTREGA_ENTRANTE', 'RUTA', 'COMUNA', 'TIPO_EXPEDICION', 'FECHA', 'CANTIDAD', 'TON_BRUTO', 'TON_VOL', 'TON'];
 
 // Plantillas de correo por tipo de envío (encabezado + cierre; la tabla va
 // entre medio). {fecha} = fecha de plan en formato dd-mm-yyyy.
@@ -287,46 +307,79 @@ var STATUS_BG = {
   'CARGA INSUFICIENTE': '#f5f5f5'
 };
 
-function buildHtmlBody(tipo, fechaPlanStr, centros, nombresCentro) {
-  var cfg = RUN_CONFIG[tipo];
-  var filas = centros.map(function (row) {
+// Orden de las filas dentro de la tabla de un CD: PROGRAMAR primero, luego
+// por % descendente (mismo criterio que el orden global de todosCentros,
+// se reaplica aquí por si acaso).
+function ordenarFilasCd(centros) {
+  return centros.slice().sort(function (a, b) {
+    if (a.status !== b.status) { return a.status === 'PROGRAMAR' ? -1 : (b.status === 'PROGRAMAR' ? 1 : 0); }
+    return b.pct - a.pct;
+  });
+}
+
+// Tabla HTML de un solo CD Origen (17-sep-2026: antes era una sola tabla
+// mezclando ambos CDs; ahora una tabla separada por cada uno, con encabezado
+// "Centro Origen: <nombre>"). Solo nombre del centro destino (sin código) y
+// columna "Tipo de Camión" con la capacidad tope usada para el %.
+function buildTablaCd(cd, centrosCd, nombresCentro) {
+  if (!centrosCd.length) return '';
+  var filas = ordenarFilasCd(centrosCd).map(function (row) {
     var bg = STATUS_BG[row.status] || '#ffffff';
     var celdas = COLUMNAS_TON.map(function (c) {
-      return '<td style="padding:4px 8px;text-align:right;border:1px solid #ddd">' + fmtTon(row[c.key]) + '</td>';
+      var estilo = 'padding:4px 8px;text-align:right;border:1px solid #ddd' + (c.independiente ? ';background:' + COLOR_INDEPENDIENTE : '');
+      return '<td style="' + estilo + '">' + fmtTon(row[c.key]) + '</td>';
     }).join('');
     return '<tr style="background:' + bg + '">' +
-      '<td style="padding:4px 8px;border:1px solid #ddd">' + escapeHtml(nombresCentro[row.ce] || row.ce) + ' (' + row.ce + ')</td>' +
-      '<td style="padding:4px 8px;border:1px solid #ddd">' + escapeHtml(row.cdNombre) + '</td>' +
+      '<td style="padding:4px 8px;border:1px solid #ddd">' + escapeHtml(nombresCentro[row.ce] || row.ce) + '</td>' +
       '<td style="padding:4px 8px;text-align:right;border:1px solid #ddd">' + row.pct + '%</td>' +
       '<td style="padding:4px 8px;border:1px solid #ddd;font-weight:bold">' + escapeHtml(row.status) + '</td>' +
+      '<td style="padding:4px 8px;border:1px solid #ddd">' + escapeHtml(fmtCamion(row.cap)) + '</td>' +
       celdas +
       '</tr>';
   }).join('');
 
-  var headerCols = ['Centro', 'CD Origen', '%', 'Estado'].concat(COLUMNAS_TON.map(function (c) { return c.label; }));
-  var headerHtml = headerCols.map(function (h) {
-    return '<th style="padding:4px 8px;text-align:left;border:1px solid #ddd;background:#f2f2f2">' + h + '</th>';
+  var headerCols = ['Centro', '%', 'Estado', 'Tipo de Camión'].concat(COLUMNAS_TON.map(function (c) { return c.label; }));
+  var headerHtml = headerCols.map(function (h, i) {
+    var col = COLUMNAS_TON[i - 4]; // las primeras 4 columnas no están en COLUMNAS_TON
+    var bg = (col && col.independiente) ? COLOR_INDEPENDIENTE : '#f2f2f2';
+    return '<th style="padding:4px 8px;text-align:left;border:1px solid #ddd;background:' + bg + '">' + h + '</th>';
+  }).join('');
+
+  return '<p style="font-weight:bold;margin:14px 0 4px">Centro Origen: ' + escapeHtml(cd.nombre) + '</p>' +
+    '<table style="border-collapse:collapse;font-family:Arial,sans-serif;font-size:13px;margin-bottom:8px">' +
+    '<thead><tr>' + headerHtml + '</tr></thead>' +
+    '<tbody>' + filas + '</tbody>' +
+    '</table>';
+}
+
+function buildHtmlBody(tipo, fechaPlanStr, centros, nombresCentro) {
+  var cfg = RUN_CONFIG[tipo];
+  var tablas = CDS.map(function (cd) {
+    return buildTablaCd(cd, centros.filter(function (row) { return row.cdId === cd.id; }), nombresCentro);
   }).join('');
 
   return '<p>' + escapeHtml(cfg.encabezado(fechaPlanStr)) + '</p>' +
-    '<p style="font-size:12px;color:#555">Se muestran todos tus centros; los marcados <b>PROGRAMAR</b> traen el detalle adjunto en CSV.</p>' +
-    '<table style="border-collapse:collapse;font-family:Arial,sans-serif;font-size:13px">' +
-    '<thead><tr>' + headerHtml + '</tr></thead>' +
-    '<tbody>' + filas + '</tbody>' +
-    '</table>' +
+    '<p style="font-size:12px;color:#555">Se muestran todos tus centros, separados por Centro Origen; los marcados <b>PROGRAMAR</b> traen el detalle adjunto en CSV. Las columnas CD-Cliente, Fábrica-Cliente y Fábrica-Sucursal (fondo lila) son despachos directos, independientes del Plan de Carga.</p>' +
+    tablas +
     '<p>' + escapeHtml(cfg.cierre()) + '</p>';
 }
 
 function buildTextBody(tipo, fechaPlanStr, centros, nombresCentro) {
   var cfg = RUN_CONFIG[tipo];
-  var lineas = centros.map(function (row) {
-    var partes = COLUMNAS_TON.map(function (c) { return c.label + ': ' + fmtTon(row[c.key]) + ' T'; });
-    return '- ' + (nombresCentro[row.ce] || row.ce) + ' (' + row.ce + ', ' + row.cdNombre + ', ' + row.pct + '%, ' + row.status + '): ' + partes.join(', ');
-  });
+  var bloques = CDS.map(function (cd) {
+    var centrosCd = ordenarFilasCd(centros.filter(function (row) { return row.cdId === cd.id; }));
+    if (!centrosCd.length) return '';
+    var lineas = centrosCd.map(function (row) {
+      var partes = COLUMNAS_TON.map(function (c) { return c.label + ': ' + fmtTon(row[c.key]) + ' T'; });
+      return '- ' + (nombresCentro[row.ce] || row.ce) + ' (' + row.pct + '%, ' + row.status + ', ' + fmtCamion(row.cap) + '): ' + partes.join(', ');
+    });
+    return 'Centro Origen: ' + cd.nombre + '\n' + lineas.join('\n');
+  }).filter(function (b) { return b; }).join('\n\n');
+
   return cfg.encabezado(fechaPlanStr) + '\n' +
-    'Orden de columnas: REVEX, Venta Directa, Retiro Fábrica, Crossdocking, Quiebre, Abastecimiento.\n' +
-    'Se listan todos tus centros; solo los PROGRAMAR traen CSV adjunto.\n\n' +
-    lineas.join('\n') + '\n\n' +
+    'Orden de columnas: REVEX, Venta Directa, Retiro Fábrica, Crossdocking, Quiebre, Abastecimiento, CD-Cliente, Fábrica-Cliente, Fábrica-Sucursal (estas 3 últimas son despachos directos, independientes del Plan de Carga).\n' +
+    'Se listan todos tus centros, separados por Centro Origen; solo los PROGRAMAR traen CSV adjunto.\n\n' +
+    bloques + '\n\n' +
     cfg.cierre();
 }
 
@@ -354,7 +407,9 @@ function buildCsvBlob(ce, fechaPlan, detalle) {
   detalle.forEach(function (r) {
     lines.push([
       csvCell(r.categoria), csvCell(r.documento), csvCell(r.material), csvCell(r.nombre),
-      csvCell(r.fecha), csvCell(r.cantidad), csvCell(r.ton), csvCell(r.pedido_venta)
+      csvCell(r.pedido_venta), csvCell(r.proveedor), csvCell(r.entrega_entrante),
+      csvCell(r.ruta), csvCell(r.comuna), csvCell(r.tipo_expedicion),
+      csvCell(r.fecha), csvCell(r.cantidad), csvCell(r.ton_bruto), csvCell(r.ton_vol), csvCell(r.ton)
     ].join(','));
   });
   var csv = '﻿' + lines.join('\r\n'); // BOM para que Excel abra bien los acentos
@@ -396,7 +451,7 @@ function fetchResumen(cd) {
 
 function getDetalleCentro(cd, ce) {
   return sbGet(cd.viewDetalle + '?ce=eq.' + encodeURIComponent(ce) +
-    '&select=categoria,documento,material,nombre,fecha,cantidad,ton,pedido_venta&order=categoria.asc');
+    '&select=categoria,documento,material,nombre,fecha,cantidad,ton,pedido_venta,ton_bruto,ton_vol,proveedor,entrega_entrante,ruta,comuna,tipo_expedicion&order=categoria.asc');
 }
 
 // Trae TODOS los destinatarios activos de una vez (una sola consulta por

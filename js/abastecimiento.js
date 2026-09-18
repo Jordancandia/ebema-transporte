@@ -10,8 +10,8 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202609181244';
-import { getDatabase } from './data.js?v=202609181244';
+import { supabase } from './supabase-client.js?v=202609181352';
+import { getDatabase } from './data.js?v=202609181352';
 import { showAlert, escapeHtml } from './utils.js';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
@@ -89,6 +89,22 @@ function parseDateSAP(s) {
 }
 
 function hoy00() { const d = new Date(); d.setHours(0,0,0,0); return d; }
+
+// Parsea fecha ISO (YYYY-MM-DD, formato nativo de <input type="date"> y de las
+// columnas `date` de Supabase) evitando desfases de timezone del constructor Date().
+function parseISODate(s) {
+  if (!s) return null;
+  const m = String(s).match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return null;
+  return new Date(+m[1], +m[2] - 1, +m[3]);
+}
+
+// Formatea una fecha ISO (YYYY-MM-DD) a DD.MM.YYYY, mismo formato usado para
+// las fechas SAP en el resto del módulo.
+function fmtFechaISO(s) {
+  const m = String(s ?? '').match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return m ? `${m[3]}.${m[2]}.${m[1]}` : (s || '');
+}
 
 function alertaFecha(fechaStr, diasUmbral = 5) {
   const d = parseDateSAP(fechaStr);
@@ -220,9 +236,9 @@ function tipoQuiebre(sd) {
 
 // ── Estado de coordinación de retiros (persistente) ─────────────────────────
 async function loadEstadosRetiro() {
-  const { data, error } = await supabase.from('abast_retiro_estado').select('doc_compr, estado, tipo_retiro, entrega_entrante, tipo_local_rm, fab_direccion, fab_comuna, fab_contacto, fab_telefono');
+  const { data, error } = await supabase.from('abast_retiro_estado').select('doc_compr, estado, tipo_retiro, entrega_entrante, tipo_local_rm, fab_direccion, fab_comuna, fab_contacto, fab_telefono, fecha_retiro');
   const m = {};
-  if (!error) (data || []).forEach(r => { m[String(r.doc_compr)] = { estado: r.estado, tipo_retiro: r.tipo_retiro, entrega_entrante: r.entrega_entrante, tipo_local_rm: r.tipo_local_rm, fab_direccion: r.fab_direccion, fab_comuna: r.fab_comuna, fab_contacto: r.fab_contacto, fab_telefono: r.fab_telefono }; });
+  if (!error) (data || []).forEach(r => { m[String(r.doc_compr)] = { estado: r.estado, tipo_retiro: r.tipo_retiro, entrega_entrante: r.entrega_entrante, tipo_local_rm: r.tipo_local_rm, fab_direccion: r.fab_direccion, fab_comuna: r.fab_comuna, fab_contacto: r.fab_contacto, fab_telefono: r.fab_telefono, fecha_retiro: r.fecha_retiro }; });
   return m;
 }
 
@@ -303,8 +319,9 @@ async function saveEstadoRetiro(docCompr, estado, tipoRetiro = null, entregaEntr
     if (extraFab.fab_comuna      !== undefined) payload.fab_comuna      = extraFab.fab_comuna;
     if (extraFab.fab_contacto    !== undefined) payload.fab_contacto    = extraFab.fab_contacto;
     if (extraFab.fab_telefono    !== undefined) payload.fab_telefono    = extraFab.fab_telefono;
-    // Al revertir (no_coordinado), limpiar también tipo_retiro y entrega_entrante
-    if (extraFab._clear_retiro) { payload.tipo_retiro = null; payload.entrega_entrante = null; }
+    if (extraFab.fecha_retiro    !== undefined) payload.fecha_retiro    = extraFab.fecha_retiro || null;
+    // Al revertir (no_coordinado), limpiar también tipo_retiro, entrega_entrante y fecha_retiro
+    if (extraFab._clear_retiro) { payload.tipo_retiro = null; payload.entrega_entrante = null; payload.fecha_retiro = null; }
   }
   const { error } = await supabase.from('abast_retiro_estado').upsert(payload, { onConflict: 'doc_compr' });
   if (error) { showAlert('Error al guardar estado: ' + error.message, 'error'); return false; }
@@ -349,6 +366,13 @@ function showCoordModal(row) {
               <button id="btn-rm"    class="flex-1 py-2 rounded-lg border-2 text-sm font-bold transition-all ${preselectLR === 'RM'    ? 'border-primary bg-primary/10 text-primary' : 'border-outline-variant text-secondary'}">RETIRO RM</button>
             </div>
             <input type="hidden" id="coord-local-rm" value="${preselectLR}">
+          </div>
+
+          <div class="flex flex-col gap-1">
+            <label for="coord-fecha-retiro" class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Fecha de Retiro *</label>
+            <input id="coord-fecha-retiro" type="date" required value="${row._fecha_retiro || ''}"
+              class="border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary">
+            <span class="text-[11px] text-secondary">Día en que el camión pasa a retirar. El retiro se contabiliza en el Plan de Carga a partir de esta fecha.</span>
           </div>
 
           <div id="fab-form" class="flex flex-col gap-3">
@@ -456,6 +480,13 @@ function showCoordModal(row) {
 
     document.getElementById('coord-cancel').addEventListener('click', () => { cleanup(); resolve(null); });
     document.getElementById('coord-confirm').addEventListener('click', async () => {
+      const inputFecha = document.getElementById('coord-fecha-retiro');
+      const fechaRetiro = (inputFecha?.value || '').trim();
+      if (!fechaRetiro) {
+        inputFecha.classList.add('ring-2', 'ring-red-500');
+        showAlert('Debe indicar la Fecha de Retiro', 'error');
+        return;
+      }
       const tipoLocalRM    = inputLR.value;
       const tipoRetiro     = tipoLocalRM === 'RM' ? (bg.querySelector('input[name="coord-tipo"]:checked')?.value || preselect) : null;
       const entregaEntrante = tipoLocalRM === 'RM' ? (document.getElementById('coord-entrega')?.value || '').trim() : '';
@@ -477,7 +508,7 @@ function showCoordModal(row) {
       }
 
       cleanup();
-      resolve({ tipoRetiro, entregaEntrante, tipoLocalRM, fabDir, fabCom, fabCont, fabTel });
+      resolve({ tipoRetiro, entregaEntrante, tipoLocalRM, fabDir, fabCom, fabCont, fabTel, fechaRetiro });
     });
   });
 }
@@ -573,7 +604,8 @@ const VISTAS_TRONCAL = {
         const extraFab = result ? {
           tipo_local_rm: result.tipoLocalRM, fab_direccion: result.fabDir,
           fab_comuna: result.fabCom, fab_contacto: result.fabCont, fab_telefono: result.fabTel,
-        } : { tipo_local_rm: null, fab_direccion: null, fab_comuna: null, fab_contacto: null, fab_telefono: null, _clear_retiro: true };
+          fecha_retiro: result.fechaRetiro,
+        } : { tipo_local_rm: null, fab_direccion: null, fab_comuna: null, fab_contacto: null, fab_telefono: null, fecha_retiro: null, _clear_retiro: true };
         const ok = await saveEstadoRetiro(row.doc_compr, val, tipoRetiro, entregaEntrante, extraFab);
         if (ok) {
           const oc = String(row.doc_compr);
@@ -586,11 +618,13 @@ const VISTAS_TRONCAL = {
             ctx.estados[oc].fab_comuna     = extraFab.fab_comuna;
             ctx.estados[oc].fab_contacto   = extraFab.fab_contacto;
             ctx.estados[oc].fab_telefono   = extraFab.fab_telefono;
+            ctx.estados[oc].fecha_retiro   = extraFab.fecha_retiro;
             row._tipo_local_rm  = extraFab.tipo_local_rm || '';
             row._fab_direccion  = extraFab.fab_direccion || '';
             row._fab_comuna     = extraFab.fab_comuna    || '';
             row._fab_contacto   = extraFab.fab_contacto  || '';
             row._fab_telefono   = extraFab.fab_telefono  || '';
+            row._fecha_retiro   = extraFab.fecha_retiro  || '';
             // Al revertir: limpiar también tipo_retiro y entrega_entrante en memoria
             if (extraFab._clear_retiro) {
               ctx.estados[oc].tipo_retiro      = null;
@@ -678,6 +712,7 @@ const VISTAS_TRONCAL = {
           _fab_comuna:     estObj.fab_comuna     || '',
           _fab_contacto:   estObj.fab_contacto   || '',
           _fab_telefono:   estObj.fab_telefono   || '',
+          _fecha_retiro:   estObj.fecha_retiro    || '',
           _detalle: detalle,
           // Datos cruzados de Pedidos de Ventas
           _pv_denominacion: pv.denominacion || '',
@@ -705,7 +740,10 @@ const VISTAS_TRONCAL = {
       { key: 'nombre_1', label: 'Nombre de Proveedor' },
       { key: 'ce', label: 'Centro Destino' },
       { key: 'alm', label: 'Almacén Destino' },
-      { key: 'fe_entrega', label: 'Fecha de Retiro', cls: 'num-clear' },
+      { key: 'fe_entrega', label: 'Fecha Entrega SAP', cls: 'num-clear' },
+      { key: '_fecha_retiro', label: 'Fecha de Retiro', cls: 'num-clear',
+        valueFn: r => r._fecha_retiro ? fmtFechaISO(r._fecha_retiro) : '',
+        clsFn: r => r._estado === 'coordinado' && !r._fecha_retiro ? 'num-clear text-error font-bold' : 'num-clear' },
       { key: '_ton_totales', label: 'Ton Totales', cls: 'text-right num-clear font-bold' },
       { key: 'documento', label: 'Pedido de Ventas' },
       { key: '_pv_denominacion', label: 'Tipo Expedición' },
@@ -1446,10 +1484,19 @@ async function renderPlanCarga(stage) {
     .filter(r => String(r.material ?? '').startsWith('900000'))
     .filter(r => String(r.cesu ?? '').trim() === planOrigen);
   // REVEX: cesu = centro origen (1003 o 1081), ce = centro destino donde se contabiliza
+  // Corte de fecha para el Plan de Carga: "mañana" (día que se está planificando).
+  // (AJUSTE fecha de retiro 18-sep-2026) Un retiro coordinado sólo se contabiliza en
+  // el Plan de Carga a partir del día programado en `fecha_retiro` (inclusive) —
+  // si se coordina con fecha futura, no infla el plan hasta que llegue esa fecha.
+  // Retiros ya atrasados (fecha_retiro < mañana) siguen contando (deben salir ASAP).
+  // Los coordinados ANTES de este ajuste, sin `fecha_retiro` guardada, se siguen
+  // contabilizando sin filtro de fecha (compatibilidad hacia atrás).
+  const mananaCutoff = hoy00(); mananaCutoff.setDate(mananaCutoff.getDate() + 1);
   const retiros = esCD1003 ? retirosRaw
     .filter(r => !String(r.proveedor ?? '').startsWith('*'))
     .filter(r => String(r.contr ?? '').trim() !== '')
-    .filter(r => { const _e = estadosRetiro[String(r.doc_compr ?? '').trim()] || {}; return _e.estado === 'coordinado' && (_e.tipo_local_rm === 'RM' || String(_e.entrega_entrante ?? '').trim() !== ''); }) : [];
+    .filter(r => { const _e = estadosRetiro[String(r.doc_compr ?? '').trim()] || {}; return _e.estado === 'coordinado' && (_e.tipo_local_rm === 'RM' || String(_e.entrega_entrante ?? '').trim() !== ''); })
+    .filter(r => { const _e = estadosRetiro[String(r.doc_compr ?? '').trim()] || {}; const fr = parseISODate(_e.fecha_retiro); return !fr || fr <= mananaCutoff; }) : [];
   const ventas = esCD1003 ? ventasRaw.filter(r => !String(r.mr ?? '').trim()) : [];
   // sqvi_pedidos_traslados_4000: cesu==ce (destino), origen siempre es CD 1003.
   // Deduplicar por doc_compr|pos — clave sin fecha para fusionar la fila '00.00.0000'
@@ -1606,9 +1653,11 @@ async function renderPlanCarga(stage) {
     const retirosCons = retiros
       .filter(r => String(r.ce ?? '').trim() === ce)
       .filter(r => (estadosRetiro[String(r.doc_compr ?? '').trim()] || {}).tipo_retiro === 'FAB-CD');
-    const itemR = (r, cant, t) => { const _oc = String(r.doc_compr ?? '').trim(); const ee = (estadosRetiro[_oc] || {}).entrega_entrante || '';
+    const itemR = (r, cant, t) => { const _oc = String(r.doc_compr ?? '').trim(); const _e = estadosRetiro[_oc] || {}; const ee = _e.entrega_entrante || '';
       const tonBruto = calcTon(parseNum(r.peso_bruto), cant), tonVol = calcTon(parseNum(r.tamano_dimens), cant);
-      return { oc: r.doc_compr, idProv: r.proveedor, prov: r.nombre_1, material: r.material, nombre: r.texto_breve, fecha: r.fe_entrega, cant, ton: t, tonBruto, tonVol, pv: r.documento, entrega_entrante: ee }; };
+      // Fecha de Retiro coordinada (prioridad) — si no hay, se usa la fecha de entrega SAP de referencia.
+      const fecha = _e.fecha_retiro ? fmtFechaISO(_e.fecha_retiro) : r.fe_entrega;
+      return { oc: r.doc_compr, idProv: r.proveedor, prov: r.nombre_1, material: r.material, nombre: r.texto_breve, fecha, cant, ton: t, tonBruto, tonVol, pv: r.documento, entrega_entrante: ee }; };
     const tonRetiro = retirosCons.reduce((sum, r) => {
       const cant = parseNum(r.ctd_pedido) - parseNum(r.ctd_entregada);
       const t = calcTon(maxPesoDim(r.peso_bruto, r.tamano_dimens), cant);
