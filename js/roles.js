@@ -1,6 +1,6 @@
-import { getDatabase, saveDatabase, getCentreName } from './data.js?v=202609171610';
+import { getDatabase, saveDatabase, getCentreName } from './data.js?v=202609172338';
 import { showAlert, escapeHtml } from './utils.js';
-import { supabase } from './supabase-client.js?v=202609171610';
+import { supabase } from './supabase-client.js?v=202609172338';
 
 // --- Perfiles de Acceso (Roles y Perfiles + Row Level Security) ---
 // 5 perfiles canónicos. Cada uno determina qué puede ver/editar el usuario
@@ -41,7 +41,10 @@ const LEGACY_ROLE_MAP = {
 // — se usa únicamente para definir a qué centro se dirigen los correos de
 // notificación de ese usuario; NO filtra los datos que ve (desde el 14-sep-2026
 // Admin. Depósito ve todos los centros en sus vistas permitidas).
-const CENTRO_ROLES = ['ADMINISTRADOR_DEPOSITO'];
+// Ajuste 2026-09-17 (correo Plan de Carga): se agrega OWNER — mismo criterio,
+// solo para definir a qué centro(s) se dirigen sus correos de notificación del
+// Plan de Carga; NO restringe en absoluto su acceso total a la plataforma.
+const CENTRO_ROLES = ['ADMINISTRADOR_DEPOSITO', 'OWNER'];
 // Roles que requieren un "Transportista" asociado
 const TRANSPORTE_ROLES = ['TRANSPORTISTA', 'CHOFER'];
 
@@ -560,6 +563,9 @@ function renderUsersTable(usersList, viewContainer, isFiltered = false) {
     const [avatarBg, avatarText] = getAvatarPalette(user.email);
     const initials = getInitials(user.name);
     const isActive = user.activo !== false;
+    // Pendiente de activar: se le envió invitación pero aún no define su
+    // contraseña (no ha iniciado sesión nunca).
+    const isPending = !user.lastAccess || user.lastAccess === 'Invitación enviada';
 
     // Normalizar nombre de rol para display (uno de los 5 perfiles canónicos)
     const roleDisplay = rc.label;
@@ -620,6 +626,13 @@ function renderUsersTable(usersList, viewContainer, isFiltered = false) {
             onmouseover="this.style.background='#e7e8e9';this.style.borderColor='#b5000b'" onmouseout="this.style.background='#f3f4f5';this.style.borderColor='#e1e3e4'">
             <span class="material-symbols-outlined" style="font-size:16px;color:#5c5f61">edit</span>
           </button>
+          ${isPending && isActive ? `
+          <button class="btn-resend-invite" data-idx="${realIdx}" data-email="${user.email}"
+            title="Reenviar invitación"
+            style="padding:6px;background:#fff8e1;border:1px solid #ffca28;border-radius:6px;cursor:pointer;display:flex;align-items:center;transition:all 0.15s"
+            onmouseover="this.style.background='#ffecb3'" onmouseout="this.style.background='#fff8e1'">
+            <span class="material-symbols-outlined" style="font-size:16px;color:#f57f17">forward_to_inbox</span>
+          </button>` : ''}
           <button class="btn-toggle-user" data-idx="${realIdx}"
             title="${isActive ? 'Desactivar usuario' : 'Activar usuario'}"
             style="padding:6px;background:${isActive ? '#fff8f7' : '#f0fdf4'};border:1px solid ${isActive ? '#ffb4aa' : '#a5d6a7'};border-radius:6px;cursor:pointer;display:flex;align-items:center;transition:all 0.15s"
@@ -637,6 +650,29 @@ function renderUsersTable(usersList, viewContainer, isFiltered = false) {
     `;
 
     tbody.appendChild(tr);
+  });
+
+  // Eventos: Reenviar invitación (cuentas pendientes de activar)
+  tbody.querySelectorAll('.btn-resend-invite').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      const email = e.currentTarget.getAttribute('data-email');
+      const icon = e.currentTarget.querySelector('.material-symbols-outlined');
+      const originalIcon = icon.textContent;
+
+      e.currentTarget.disabled = true;
+      icon.textContent = 'sync';
+
+      const { data, error } = await supabase.functions.invoke('resend-invite', { body: { email } });
+
+      e.currentTarget.disabled = false;
+      icon.textContent = originalIcon;
+
+      if (error || (data && data.error)) {
+        showAlert((data && data.error) || error?.message || 'No se pudo reenviar la invitación.', 'error');
+        return;
+      }
+      showAlert((data && data.message) || `Invitación reenviada a ${email}.`);
+    });
   });
 
   // Eventos: Editar usuario
