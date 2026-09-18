@@ -10,8 +10,8 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202609181211';
-import { getDatabase } from './data.js?v=202609181211';
+import { supabase } from './supabase-client.js?v=202609181244';
+import { getDatabase } from './data.js?v=202609181244';
 import { showAlert, escapeHtml } from './utils.js';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
@@ -1515,7 +1515,9 @@ async function renderPlanCarga(stage) {
       .sort((a, b) => a.prio.orden - b.prio.orden);
     const tonQuiebre = itemsPrioridad.reduce((sum, { r, prio }) => {
       const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), r.ctd_confirmada);
-      det.quiebre.push({ ...itemT(r, t), _motivo: prio.motivo });
+      const tonBruto = calcTon(parseNum(r.peso_neto), r.ctd_confirmada);
+      const tonVol = calcTon(parseNum(r.tamano_dimens), r.ctd_confirmada);
+      det.quiebre.push({ ...itemT(r, t), _motivo: prio.motivo, tonBruto, tonVol });
       return sum + t;
     }, 0);
 
@@ -1526,7 +1528,9 @@ async function renderPlanCarga(stage) {
       .sort((a, b) => a.prio.orden - b.prio.orden);
     const tonStock = itemsAbast.reduce((sum, { r, prio }) => {
       const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), r.ctd_confirmada);
-      det.stock.push({ ...itemT(r, t), _motivo: prio.motivo });
+      const tonBruto = calcTon(parseNum(r.peso_neto), r.ctd_confirmada);
+      const tonVol = calcTon(parseNum(r.tamano_dimens), r.ctd_confirmada);
+      det.stock.push({ ...itemT(r, t), _motivo: prio.motivo, tonBruto, tonVol });
       return sum + t;
     }, 0);
 
@@ -1534,7 +1538,7 @@ async function renderPlanCarga(stage) {
     const tonRevex = revex
       .filter(r => String(r.ce ?? '').trim() === ce)
       .filter(r => !estaExcluido(exclusionesPlan, 'traslados_revex', r.doc_compr, r.material))
-      .reduce((sum, r) => { const t = calcTon(parseNum(r.peso_neto_2), r.ctd_pedido); det.revex.push(itemT(r, t)); return sum + t; }, 0);
+      .reduce((sum, r) => { const t = calcTon(parseNum(r.peso_neto_2), r.ctd_pedido); det.revex.push({ ...itemT(r, t), tonBruto: t, tonVol: null }); return sum + t; }, 0);
 
     // 4. Crossdocking 4000 — SÓLO pendientes (ctd_pedido > procesado). SIN ventana
     //    de fecha (AJUSTE 16-sep-2026): antes filtraba fe_entrega -3/+3 días y
@@ -1554,7 +1558,8 @@ async function renderPlanCarga(stage) {
       .filter(r => parseNum(r.ctd_pedido) > Math.max(parseNum(r.ctd_entregada), parseNum(r.cantidad_salida)))
       .filter(r => !estaExcluido(exclusionesPlan, 'crossdock_4000', r.doc_compr, r.material))
       .reduce((sum, r) => { const pend = parseNum(r.ctd_pedido) - Math.max(parseNum(r.ctd_entregada), parseNum(r.cantidad_salida)); const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), pend);
-        det.cross.push({ pt: r.doc_compr, origen: String(r.cesu ?? '').trim(), ceDestino: String(r.ce ?? '').trim(), almDestino: String(r.alm ?? '').trim(), material: r.material, nombre: r.texto_breve, fecha: r.fe_entrega, ctdPend: pend, ton: t, pv: r.documento }); return sum + t; }, 0);
+        const tonBruto = calcTon(parseNum(r.peso_neto), pend), tonVol = calcTon(parseNum(r.tamano_dimens), pend);
+        det.cross.push({ pt: r.doc_compr, origen: String(r.cesu ?? '').trim(), ceDestino: String(r.ce ?? '').trim(), almDestino: String(r.alm ?? '').trim(), material: r.material, nombre: r.texto_breve, fecha: r.fe_entrega, ctdPend: pend, ton: t, pv: r.documento, tonBruto, tonVol }); return sum + t; }, 0);
 
     // 5. Notas de Venta 1003 (ofvta = centro): requiere ruta, excluye RETIRA.
     //    >26T  ⇒ CAMIÓN CLIENTE (directo al cliente, no se consolida). Fecha -3/+3.
@@ -1587,9 +1592,10 @@ async function renderPlanCarga(stage) {
         if (pend <= 0) return;
         const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), pend);
         tonDoc += t;
+        const tonBruto = calcTon(parseNum(r.peso_neto), pend), tonVol = calcTon(parseNum(r.tamano_dimens), pend);
         const rl = lookupRuta(r.ruta);
         const pv = pvMap[doc] || {};
-        lineItems.push({ pv: doc, material: r.material, nombre: r.denominacion_de_posicion, cant: pend, ruta: r.ruta, comuna: rl.comuna, region: rl.region, fecha: r.fe_entrega, ton: t, tipoExp: pv.denominacion || '', cliente: pv.nombre_1 || '', vendedor: pv.nombre || '' });
+        lineItems.push({ pv: doc, material: r.material, nombre: r.denominacion_de_posicion, cant: pend, ruta: r.ruta, comuna: rl.comuna, region: rl.region, fecha: r.fe_entrega, ton: t, tonBruto, tonVol, tipoExp: pv.denominacion || '', cliente: pv.nombre_1 || '', vendedor: pv.nombre || '' });
       });
       if (tonDoc <= 0) continue;
       if (tonDoc > 26) { tonVentaCliente += tonDoc; det.cliente.push(...lineItems); }
@@ -1600,7 +1606,9 @@ async function renderPlanCarga(stage) {
     const retirosCons = retiros
       .filter(r => String(r.ce ?? '').trim() === ce)
       .filter(r => (estadosRetiro[String(r.doc_compr ?? '').trim()] || {}).tipo_retiro === 'FAB-CD');
-    const itemR = (r, cant, t) => { const _oc = String(r.doc_compr ?? '').trim(); const ee = (estadosRetiro[_oc] || {}).entrega_entrante || ''; return { oc: r.doc_compr, idProv: r.proveedor, prov: r.nombre_1, material: r.material, nombre: r.texto_breve, fecha: r.fe_entrega, cant, ton: t, pv: r.documento, entrega_entrante: ee }; };
+    const itemR = (r, cant, t) => { const _oc = String(r.doc_compr ?? '').trim(); const ee = (estadosRetiro[_oc] || {}).entrega_entrante || '';
+      const tonBruto = calcTon(parseNum(r.peso_bruto), cant), tonVol = calcTon(parseNum(r.tamano_dimens), cant);
+      return { oc: r.doc_compr, idProv: r.proveedor, prov: r.nombre_1, material: r.material, nombre: r.texto_breve, fecha: r.fe_entrega, cant, ton: t, tonBruto, tonVol, pv: r.documento, entrega_entrante: ee }; };
     const tonRetiro = retirosCons.reduce((sum, r) => {
       const cant = parseNum(r.ctd_pedido) - parseNum(r.ctd_entregada);
       const t = calcTon(maxPesoDim(r.peso_bruto, r.tamano_dimens), cant);
@@ -1801,8 +1809,8 @@ async function renderPlanCarga(stage) {
       <div class="border border-outline-variant rounded-lg p-md bg-surface-container-lowest">
         <div class="flex items-center justify-between mb-sm">
           <h4 class="font-bold text-on-surface text-[13px]">${escapeHtml(TRUCK_TITULOS[tipo] || '')} — ${escapeHtml(r.nombre)} (${r.ce})</h4>
-          <button data-descarga="${r.ce}|${tipo}" class="bg-surface-container-high text-on-surface px-sm py-xs rounded-lg text-[12px] font-bold hover:bg-surface-container-highest inline-flex items-center gap-xs">
-            <span class="material-symbols-outlined text-[15px]">download</span>Descargar detalle</button>
+          <button data-descarga="${r.ce}|${tipo}" title="Descarga el detalle completo de la sucursal (todas las categorías: REVEX, Venta Directa, CD-Cliente, Retiro Fábrica, Fábrica-Cliente, Fábrica-Sucursal, Crossdocking, Quiebre y Abastecimiento)" class="bg-surface-container-high text-on-surface px-sm py-xs rounded-lg text-[12px] font-bold hover:bg-surface-container-highest inline-flex items-center gap-xs">
+            <span class="material-symbols-outlined text-[15px]">download</span>Descargar Plan de Carga</button>
         </div>
         ${banner}
         ${blocks || '<p class="text-secondary text-[12px]">Sin ítems.</p>'}
@@ -1810,14 +1818,26 @@ async function renderPlanCarga(stage) {
       </div></td></tr>`;
   }
 
-  // Genera el CSV del detalle de un camión (para el botón de descarga).
-  function csvDetalleCamion(r, tipo) {
-    const cats = tipo === 'cd'
-      ? [['REVEX', r.det.revex, 'T'], ['Venta Consolidada', r.det.ventaCons, 'V'], ['Retiro CD', r.det.retiro, 'R'],
-         ['Crossdocking', r.det.cross, 'T'], ['Abast. Quiebre y Priorizado', r.det.quiebre, 'T'], ['Abastecimiento', r.det.stock, 'T']]
-      : tipo === 'cliente' ? [['Venta Cliente', r.det.cliente, 'V']]
-      : tipo === 'fabSuc'  ? [['Fábrica-Sucursal', r.det.fabSuc, 'R']]
-      :                      [['Fábrica-Cliente', r.det.fabCli, 'R']];
+  // Genera el CSV del detalle de Plan de Carga de una sucursal (para el botón
+  // de descarga). (AJUSTE 18-sep-2026) Antes generaba un archivo distinto por
+  // cada tipo de camión (cd / cliente / fabSuc / fabCli), dejando los pedidos
+  // directos de Fábrica-Cliente, Fábrica-Sucursal y CD-Cliente fuera del
+  // archivo que se descarga desde el camión CD. Ahora arma UN solo CSV con
+  // todas las categorías de la sucursal (igual criterio que el adjunto del
+  // correo automático de Plan de Carga), sin importar desde qué camión se
+  // gatille la descarga.
+  function csvDetalleCamion(r) {
+    const cats = [
+      ['REVEX', r.det.revex, 'T'],
+      ['Venta Directa', r.det.ventaCons, 'V'],
+      ['CD-Cliente', r.det.cliente, 'V'],
+      ['Retiro Fábrica', r.det.retiro, 'R'],
+      ['Fábrica-Cliente', r.det.fabCli, 'R'],
+      ['Fábrica-Sucursal', r.det.fabSuc, 'R'],
+      ['Crossdocking', r.det.cross, 'T'],
+      ['Abast. Quiebre y Priorizado', r.det.quiebre, 'T'],
+      ['Abastecimiento', r.det.stock, 'T'],
+    ];
     // (AJUSTE) Antes se excluía del CSV del camión CD todo lo que no entraba en
     // el camión (d._enCamion === false, el "2º camión"/sobra) — quedaba fuera
     // de la descarga sin que apareciera en ninguna parte. Ahora se incluye todo
@@ -1825,23 +1845,35 @@ async function renderPlanCarga(stage) {
     // requiere 2º camión también quede visible y trazable en el detalle.
     // Usuario / Motivo Prioridad: sólo se completan para las categorías de
     // Traslados 1003 (Abast. Quiebre y Priorizado / Abastecimiento).
-    const headers = ['Categoría','En Camión','Documento','Id Proveedor','Proveedor','Id Material','Nombre Material','Ruta','Comuna','Región','Fecha','Cantidad','Ton SKU','Usuario','Motivo Prioridad'];
+    // Ton Bruto / Ton Vol: de referencia — el peso bruto (o neto, según la
+    // categoría) y el peso volumétrico de cada línea por separado; Ton SKU
+    // sigue siendo el mayor entre ambos (cálculo sin cambios). Para REVEX no
+    // existe comparación de volumen (usa sólo peso_neto_2), por lo que Ton Vol
+    // queda vacío.
+    // Pedido de Venta: se completa para REVEX, Crossdocking y Retiros de
+    // Fábrica cuando la línea está asociada a un pedido de venta.
+    // Entrega Entrante / Proveedor: sólo para retiros de fábrica (se quita
+    // "Id Proveedor", que no aporta valor de lectura).
+    // Ruta / Comuna / Tipo Expedición: sólo para líneas de pedidos de venta
+    // (Venta Directa / CD-Cliente); se quita "Región".
+    const headers = ['Categoría','En Camión','Documento','Id Material','Nombre Material','Pedido de Venta','Proveedor','Entrega Entrante','Ruta','Comuna','Tipo Expedición','Fecha','Cantidad','Ton Bruto','Ton Vol','Ton SKU','Usuario','Motivo Prioridad'];
+    const fmtT = v => (v == null ? '' : fmtNum(v, 4));
     const filas = [];
     cats.forEach(([cat, items, t]) => (items || []).forEach(d => {
       const enCamion = camMark(d);
       const usuario = d.usuario || '', motivo = d._motivo || '';
       // (FIX) Los ítems de Crossdocking (det.cross) no tienen campo "ctd" sino
       // "ctdPend" (cantidad pendiente, ya numérica) — antes quedaba en blanco en el CSV.
-      if (t === 'T') filas.push([cat, enCamion, d.pt, '', '', d.material, d.nombre, '', '', '', d.fecha || '', d.ctd || (d.ctdPend != null ? fmtNum(d.ctdPend, 1) : ''), fmtNum(d.ton, 4), usuario, motivo]);
-      else if (t === 'R') filas.push([cat, enCamion, d.oc, d.idProv, d.prov, d.material, d.nombre, '', '', '', d.fecha || '', fmtNum(parseNum(d.cant), 1), fmtNum(d.ton, 4), '', '']);
-      else filas.push([cat, enCamion, d.pv, '', '', d.material, d.nombre, d.ruta, d.comuna, d.region, d.fecha || '', fmtNum(parseNum(d.cant), 1), fmtNum(d.ton, 4), '', '']);
+      if (t === 'T') filas.push([cat, enCamion, d.pt, d.material, d.nombre, d.pv || '', '', '', '', '', '', d.fecha || '', d.ctd || (d.ctdPend != null ? fmtNum(d.ctdPend, 1) : ''), fmtT(d.tonBruto), fmtT(d.tonVol), fmtNum(d.ton, 4), usuario, motivo]);
+      else if (t === 'R') filas.push([cat, enCamion, d.oc, d.material, d.nombre, d.pv || '', d.prov, d.entrega_entrante || '', '', '', '', d.fecha || '', fmtNum(parseNum(d.cant), 1), fmtT(d.tonBruto), fmtT(d.tonVol), fmtNum(d.ton, 4), '', '']);
+      else filas.push([cat, enCamion, d.pv, d.material, d.nombre, '', '', '', d.ruta, d.comuna, d.tipoExp || '', d.fecha || '', fmtNum(parseNum(d.cant), 1), fmtT(d.tonBruto), fmtT(d.tonVol), fmtNum(d.ton, 4), '', '']);
     }));
     const esc = v => { v = v == null ? '' : String(v); return /[;"\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
     const lines = [headers.join(';')].concat(filas.map(f => f.map(esc).join(';')));
     const blob = new Blob(['﻿' + lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
-    a.href = url; a.download = `PlanCarga_${r.ce}_${tipo}.csv`;
+    a.href = url; a.download = `PlanCarga_${r.ce}.csv`;
     document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
   }
 
@@ -1954,9 +1986,9 @@ async function renderPlanCarga(stage) {
     }));
     stage.querySelectorAll('[data-descarga]').forEach(btn => btn.addEventListener('click', (e) => {
       e.stopPropagation();
-      const [ce, tipo] = btn.dataset.descarga.split('|');
+      const [ce] = btn.dataset.descarga.split('|');
       const r = resultado.find(x => x.ce === ce);
-      if (r) csvDetalleCamion(r, tipo);
+      if (r) csvDetalleCamion(r);
     }));
     stage.querySelectorAll('[data-excluir]').forEach(btn => btn.addEventListener('click', async (e) => {
       e.stopPropagation();
