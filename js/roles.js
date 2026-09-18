@@ -1,6 +1,6 @@
-import { getDatabase, saveDatabase, getCentreName } from './data.js?v=202609181126';
+import { getDatabase, saveDatabase, getCentreName } from './data.js?v=202609181127';
 import { showAlert, escapeHtml } from './utils.js';
-import { supabase } from './supabase-client.js?v=202609181126';
+import { supabase } from './supabase-client.js?v=202609181127';
 
 // --- Perfiles de Acceso (Roles y Perfiles + Row Level Security) ---
 // 5 perfiles canónicos. Cada uno determina qué puede ver/editar el usuario
@@ -564,8 +564,10 @@ function renderUsersTable(usersList, viewContainer, isFiltered = false) {
     const initials = getInitials(user.name);
     const isActive = user.activo !== false;
     // Pendiente de activar: se le envió invitación pero aún no define su
-    // contraseña (no ha iniciado sesión nunca).
-    const isPending = !user.lastAccess || user.lastAccess === 'Invitación enviada';
+    // contraseña (no ha iniciado sesión nunca). Ojo: en varias filas antiguas
+    // "lastAccess" no quedó en NULL sino con el texto literal 'Nunca' guardado
+    // en la BD (no solo como fallback visual), así que hay que contemplarlo.
+    const isPending = !user.lastAccess || user.lastAccess === 'Invitación enviada' || user.lastAccess === 'Nunca';
 
     // Normalizar nombre de rol para display (uno de los 5 perfiles canónicos)
     const roleDisplay = rc.label;
