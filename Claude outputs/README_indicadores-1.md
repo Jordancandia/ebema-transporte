@@ -20,15 +20,11 @@ Cada función valida `esDiaHabil()` (lunes a viernes) antes de correr.
 
 Antes, `leerGmailXlsx` siempre releía el correo más reciente de la etiqueta "Indicadores Transporte" sin importar si estaba leído o no. Ahora (`cargarFleteTercero`): busca primero un correo **no leído**; si no hay ninguno, cae al más reciente en general (para no dejar de actualizar si por algún motivo ya estaba leído). Al cargar con éxito, **marca el correo como leído**.
 
-## Despliegue (una vez)
+## Despliegue — ya realizado (18-sep-2026)
 
-1. Entra a **script.google.com** → abre el proyecto de Indicadores ya existente (cuenta `jcandia@ebema.cl`).
-2. Borra el contenido de `Code.gs` y pega el **`Code.gs`** nuevo (este mismo folder).
-3. Guarda.
-4. Ejecuta **`crearTriggers`** una sola vez → borra los 5 triggers antiguos (07:40-08:15) y crea los 5 nuevos (08:10-08:30, tabla de arriba).
-5. Revisa **Registros de ejecución** y la tabla `ind_log` tras la primera corrida automática.
+Este código ya fue pegado en **script.google.com** → proyecto **Indicadores Transporte** (cuenta `jcandia@ebema.cl`), guardado, y se ejecutó `crearTriggers()`. Se verificó en la página de Activadores: **5 triggers**, exactamente los de la tabla de arriba (08:10/08:15/08:20/08:25/08:30), sin restos del horario antiguo (07:40-08:15). No hizo falta volver a habilitar Drive API ni recargar `SUPABASE_SERVICE_KEY`.
 
-No hace falta volver a habilitar Drive API ni recargar `SUPABASE_SERVICE_KEY`.
+Revisa **Registros de ejecución** y la tabla `ind_log` tras la primera corrida automática para confirmar que todo cargó bien en producción.
 
 ## Notas (sin cambios respecto a la versión anterior)
 

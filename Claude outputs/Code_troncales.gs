@@ -12,10 +12,10 @@
  *
  *  Bloques y horarios (hora Chile, lunes a viernes):
  *   - TRONCALES        (label "SQVI Troncales", Job ZJC PLAN TRONCALES Steps 1-6)
- *       07:55, 09:35, 10:35, 11:35, 12:35, 13:35, 14:50
+ *       07:35, 09:35, 10:35, 11:35, 12:35, 13:35, 14:50
  *       (la corrida de las 13:35 ademas guarda snapshot diario, historico 7 dias)
  *   - PEDIDOS DE VENTAS (label "Pedidos de Ventas (NV)", Job ZJC PLAN ENTREGAS Steps 2-11)
- *       07:40, 11:10, 13:10, 14:40
+ *       07:10, 11:10, 13:10, 14:35
  *   - ENTREGAS          (label "Entregas", Job ZJC PLAN ENTREGAS Step 1)
  *       07:15, 12:30, 15:00
  *   - DOC TRANSPORTE    (label "Doc Transporte (DT)", Job ZJC PLAN DT Step 1)
@@ -91,14 +91,11 @@ var CHUNK = 1500; // filas por request de insercion
 // Cada uno valida dia habil (lunes-viernes) antes de tocar Gmail/Supabase.
 
 // ── TRONCALES (label "SQVI Troncales") ──────────────────────────────────────
-function ejecutar_troncales_0755() { correrTroncales(false); }
-// Un solo trigger horario (~:35) cubre 09:35, 10:35, 11:35 y 12:35 para no
-// exceder el limite de 20 triggers por proyecto (compartido con CorreoPlanCarga.gs).
-function ejecutar_troncales_horario() {
-  var h = parseInt(Utilities.formatDate(new Date(), 'America/Santiago', 'H'), 10);
-  if (h < 9 || h > 12) return;
-  correrTroncales(false);
-}
+function ejecutar_troncales_0735() { correrTroncales(false); }
+function ejecutar_troncales_0935() { correrTroncales(false); }
+function ejecutar_troncales_1035() { correrTroncales(false); }
+function ejecutar_troncales_1135() { correrTroncales(false); }
+function ejecutar_troncales_1235() { correrTroncales(false); }
 function ejecutar_troncales_1335() { correrTroncales(true); }  // guarda snapshot del dia
 function ejecutar_troncales_1450() { correrTroncales(false); }
 
@@ -120,10 +117,10 @@ function correrTroncales(esSnapshot) {
 }
 
 // ── PEDIDOS DE VENTAS (label "Pedidos de Ventas (NV)") ──────────────────────
-function ejecutar_pedidosventas_0740() { correrPedidosVentas(); }
+function ejecutar_pedidosventas_0710() { correrPedidosVentas(); }
 function ejecutar_pedidosventas_1110() { correrPedidosVentas(); }
 function ejecutar_pedidosventas_1310() { correrPedidosVentas(); }
-function ejecutar_pedidosventas_1440() { correrPedidosVentas(); }
+function ejecutar_pedidosventas_1435() { correrPedidosVentas(); }
 
 function correrPedidosVentas() {
   if (!esDiaHabil()) return;
@@ -163,15 +160,14 @@ function correrSlim() {
 // -------------------- CREACION DE TRIGGERS (ejecutar 1 sola vez) ------------
 // IMPORTANTE: reejecutar esta funcion tras cambiar horarios. Elimina los
 // triggers antiguos (version anterior de este script) y los de este mismo
-// script para no duplicar, y crea los nuevos (15 triggers; +3 de CorreoPlanCarga.gs = 18 de 20).
+// script para no duplicar, y crea los 18 nuevos.
 function crearTriggers() {
   var viejos = ['ejecutar_0730', 'ejecutar_1130', 'ejecutar_tarde', 'ejecutar_1430',
-    'ejecutar_pedidosventas_1435', 'ejecutar_troncales_0735', 'ejecutar_pedidosventas_0710', 'ejecutar_0735', 'ejecutar_1135', 'ejecutar_1335', 'ejecutar_1340', 'ejecutar_1350'];
+    'ejecutar_0735', 'ejecutar_1135', 'ejecutar_1335', 'ejecutar_1340', 'ejecutar_1350'];
   var nuevos = [
-    'ejecutar_troncales_0755', 'ejecutar_troncales_horario',
-    'ejecutar_troncales_0935', 'ejecutar_troncales_1035', 'ejecutar_troncales_1135', 'ejecutar_troncales_1235',
-    'ejecutar_troncales_1335', 'ejecutar_troncales_1450',
-    'ejecutar_pedidosventas_0740', 'ejecutar_pedidosventas_1110', 'ejecutar_pedidosventas_1310', 'ejecutar_pedidosventas_1440',
+    'ejecutar_troncales_0735', 'ejecutar_troncales_0935', 'ejecutar_troncales_1035',
+    'ejecutar_troncales_1135', 'ejecutar_troncales_1235', 'ejecutar_troncales_1335', 'ejecutar_troncales_1450',
+    'ejecutar_pedidosventas_0710', 'ejecutar_pedidosventas_1110', 'ejecutar_pedidosventas_1310', 'ejecutar_pedidosventas_1435',
     'ejecutar_entregas_0715', 'ejecutar_entregas_1230', 'ejecutar_entregas_1500',
     'ejecutar_doctransporte_0810', 'ejecutar_doctransporte_1630', 'ejecutar_doctransporte_2230',
     'ejecutar_slim_0630'
@@ -186,15 +182,18 @@ function crearTriggers() {
   }
 
   // TRONCALES
-  crear('ejecutar_troncales_0755', 7, 55);
-  ScriptApp.newTrigger('ejecutar_troncales_horario').timeBased().everyHours(1).nearMinute(35).create(); // 09:35-12:35
+  crear('ejecutar_troncales_0735', 7, 35);
+  crear('ejecutar_troncales_0935', 9, 35);
+  crear('ejecutar_troncales_1035', 10, 35);
+  crear('ejecutar_troncales_1135', 11, 35);
+  crear('ejecutar_troncales_1235', 12, 35);
   crear('ejecutar_troncales_1335', 13, 35);
   crear('ejecutar_troncales_1450', 14, 50);
   // PEDIDOS DE VENTAS
-  crear('ejecutar_pedidosventas_0740', 7, 40);
+  crear('ejecutar_pedidosventas_0710', 7, 10);
   crear('ejecutar_pedidosventas_1110', 11, 10);
   crear('ejecutar_pedidosventas_1310', 13, 10);
-  crear('ejecutar_pedidosventas_1440', 14, 40);
+  crear('ejecutar_pedidosventas_1435', 14, 35);
   // ENTREGAS
   crear('ejecutar_entregas_0715', 7, 15);
   crear('ejecutar_entregas_1230', 12, 30);
@@ -206,7 +205,7 @@ function crearTriggers() {
   // SLIM
   crear('ejecutar_slim_0630', 6, 30);
 
-  Logger.log('15 triggers creados (America/Santiago). Cada uno valida esDiaHabil() ' +
+  Logger.log('18 triggers creados (America/Santiago). Cada uno valida esDiaHabil() ' +
     'antes de correr, por lo que en sabado/domingo no hacen nada.');
 }
 

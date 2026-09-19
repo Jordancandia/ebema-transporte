@@ -6,8 +6,8 @@
 
 | Bloque | Etiqueta Gmail | Asuntos que lee | Horarios |
 |---|---|---|---|
-| **TRONCALES** | `SQVI Troncales` | Job ZJC PLAN TRONCALES, Step 1–6 | 07:55, 09:35, 10:35, 11:35, 12:35, 13:35, 14:50 |
-| **PEDIDOS DE VENTAS** | `Pedidos de Ventas (NV)` | Job ZJC PLAN ENTREGAS, Step 2–11 | 07:40, 11:10, 13:10, 14:40 |
+| **TRONCALES** | `SQVI Troncales` | Job ZJC PLAN TRONCALES, Step 1–6 | 07:35, 09:35, 10:35, 11:35, 12:35, 13:35, 14:50 |
+| **PEDIDOS DE VENTAS** | `Pedidos de Ventas (NV)` | Job ZJC PLAN ENTREGAS, Step 2–11 | 07:10, 11:10, 13:10, 14:35 |
 | **ENTREGAS** | `Entregas` | Job ZJC PLAN ENTREGAS, Step 1 | 07:15, 12:30, 15:00 |
 | **DOC TRANSPORTE** | `Doc Transporte (DT)` | Job ZJC PLAN DT, Step 1 | 08:10, 16:30, 22:30 |
 | **SLIM** | `Plan Troncales (SLIM)` | adjunto Excel "Reporte Stock Sucursales" | 06:30 (única corrida) |
@@ -34,7 +34,7 @@ Cada función valida `esDiaHabil()` (lunes a viernes) antes de tocar Gmail/Supab
 3. Guarda (Ctrl+S / ícono de guardar).
 4. Ejecuta la función **`crearTriggers`** una sola vez (arriba, selecciona la función en el menú desplegable y pulsa **Ejecutar**). Esto:
    - Borra los triggers antiguos (07:30/11:30/13:30/14:30 combinados).
-   - Crea los **15 triggers nuevos** (las 09:35–12:35 de Troncales usan un solo trigger horario `ejecutar_troncales_horario`; +3 de CorreoPlanCarga.gs = 18 de 20).
+   - Crea los **18 triggers nuevos** descritos en la tabla de arriba.
 5. Revisa **Registros de ejecución** — no debería haber errores de permisos (ya estaba autorizado).
 
 No hace falta volver a habilitar el servicio Drive ni recargar la `SUPABASE_SERVICE_KEY`: quedan igual que antes.

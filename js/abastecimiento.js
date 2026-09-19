@@ -10,8 +10,8 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202609181409';
-import { getDatabase } from './data.js?v=202609181409';
+import { supabase } from './supabase-client.js?v=202609192018';
+import { getDatabase } from './data.js?v=202609192018';
 import { showAlert, escapeHtml } from './utils.js';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
@@ -1399,20 +1399,20 @@ async function fetchAllRows(vista, force = false) {
   if (!force && cached && (Date.now() - cached.ts) < RAW_TTL) return cached.rows;
 
   const pageSize = 1000;
-  // 1) Total de filas (HEAD, sin traer datos) para paginar en paralelo
+  // 1) Total de filas (HEAD, sin traer datos) para paginar en paralelo.
+  //    OJO: si el count falla o vuelve null (pasa con vistas DISTINCT ON /
+  //    RLS), NO hay que asumir que todo cabe en 1 pagina: eso trunca en
+  //    silencio a 1000 filas y descarta el resto sin error visible. Por eso
+  //    el paso 3 (barrido de seguridad) valida esto siempre.
   let total = 0;
   try {
-    const { count } = await supabase.from(vista).select('*', { count: 'exact', head: true });
-    total = count || 0;
+    const { count, error } = await supabase.from(vista).select('*', { count: 'exact', head: true });
+    if (!error && typeof count === 'number') total = count;
   } catch { total = 0; }
 
   let rows = [];
-  if (total <= pageSize) {
-    const { data, error } = await supabase.from(vista).select('*').range(0, pageSize - 1);
-    if (error) { console.error(error); showAlert('Error al cargar datos: ' + error.message, 'error'); return cached ? cached.rows : []; }
-    rows = data || [];
-  } else {
-    // 2) Traer todas las páginas EN PARALELO (mucho más rápido que secuencial)
+  if (total > pageSize) {
+    // 2) Traer todas las paginas EN PARALELO (mucho mas rapido que secuencial)
     const pages = Math.min(Math.ceil(total / pageSize), 100);
     const reqs = [];
     for (let p = 0; p < pages; p++) {
@@ -1423,7 +1423,31 @@ async function fetchAllRows(vista, force = false) {
       if (error) { console.error(error); continue; }
       if (data) rows = rows.concat(data);
     }
+  } else {
+    const { data, error } = await supabase.from(vista).select('*').range(0, pageSize - 1);
+    if (error) { console.error(error); showAlert('Error al cargar datos: ' + error.message, 'error'); return cached ? cached.rows : []; }
+    rows = data || [];
   }
+
+  // 3) Barrido de seguridad: si el count del paso 1 fue erroneo/menor al
+  //    real (o fallo y quedo en 0), la ultima pagina recibida viene COMPLETA
+  //    (exactamente pageSize filas). En ese caso puede haber mas datos
+  //    detras: seguir pidiendo paginas siguientes hasta recibir una
+  //    incompleta o vacia. Esto evita que un count fallido trunque el
+  //    resultado en 1000 filas sin avisar (el bug que dejaba pedidos de
+  //    venta reales fuera del cruce con Retiros de Fabrica).
+  let nextOffset = rows.length;
+  let guard = 0;
+  while (rows.length > 0 && rows.length % pageSize === 0 && guard < 200) {
+    const { data, error } = await supabase.from(vista).select('*').range(nextOffset, nextOffset + pageSize - 1);
+    if (error) { console.error(error); break; }
+    if (!data || data.length === 0) break;
+    rows = rows.concat(data);
+    nextOffset += data.length;
+    guard++;
+    if (data.length < pageSize) break;
+  }
+
   _rawCache.set(vista, { rows, ts: Date.now() });
   return rows;
 }
