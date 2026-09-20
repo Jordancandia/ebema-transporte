@@ -24,8 +24,8 @@
 //     Destino → Entregado a Cliente. Si condición=CLI-RET (EBE) y el pedido
 //     está en Bodega Destino, se muestra como "Listo para Entrega Cliente".
 // ============================================================================
-import { supabase } from './supabase-client.js?v=202609201432';
-import { getDatabase, loadRoutesData } from './data.js?v=202609201432';
+import { supabase } from './supabase-client.js?v=202609201446';
+import { getDatabase, loadRoutesData } from './data.js?v=202609201446';
 
 // --- Paleta (alineada a Indicadores) ----------------------------------------
 const R = { red:'#C0000C', red2:'#EE1B22', redL:'#E88A8F', grey:'#6B6E70', greyL:'#A9ACAE', ink:'#333333', grid:'#D9D5CF', amber:'#B5730B' };
@@ -391,7 +391,10 @@ function renderSeguimiento() {
       <div class="flex items-center gap-md flex-wrap">
         <div class="relative flex-1 min-w-[240px]">
           <span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-secondary text-[20px]">search</span>
-          <input id="fter_search" type="text" placeholder="Buscar por N° de Pedido…" class="w-full pl-10 pr-3 py-2 border border-surface-variant rounded-lg text-body-md" value="${_selPedido || ''}" />
+          <input id="fter_search" type="text" placeholder="Buscar por N° de Pedido…" class="w-full pl-10 pr-10 py-2 border border-surface-variant rounded-lg text-body-md" value="${_selPedido || ''}" />
+          <button id="fter_clear" type="button" title="Borrar búsqueda" aria-label="Borrar búsqueda" class="absolute right-2 top-1/2 -translate-y-1/2 w-6 h-6 rounded-full flex items-center justify-center text-secondary hover:bg-surface-container-high ${_selPedido ? '' : 'hidden'}">
+            <span class="material-symbols-outlined text-[18px]">close</span>
+          </button>
         </div>
       </div>
     </div>
@@ -399,10 +402,21 @@ function renderSeguimiento() {
     ${sectionTitle('Todos los Pedidos')}
     <div class="flex items-center gap-md flex-wrap mb-sm">
       <select id="fter_f_estado" class="border border-surface-variant rounded-lg px-2 py-1 text-[12px]">
-        <option value="">Estado: Todos</option>
+        <option value="">Etapa: Todas</option>
         ${ESTADOS_BASE.map(e => `<option value="${e}">${e}</option>`).join('')}
         <option value="Listo para Entrega Cliente">Listo para Entrega Cliente</option>
       </select>
+      <select id="fter_f_abierto" class="border border-surface-variant rounded-lg px-2 py-1 text-[12px]">
+        <option value="">Pedido: Abiertos y cerrados</option>
+        <option value="abierto">Abiertos (sin entrega a cliente)</option>
+        <option value="cerrado">Cerrados (entregados a cliente)</option>
+      </select>
+      <select id="fter_f_centro" class="border border-surface-variant rounded-lg px-2 py-1 text-[12px]">
+        <option value="">Centro destino: Todos</option>
+        ${uniq(rows.map(r => r.punto_expedicion)).sort().map(c => `<option value="${escAttr(c)}">${escAttr(centroLabel(c))}</option>`).join('')}
+      </select>
+      <button id="fter_f_reset" type="button" class="border border-surface-variant rounded-lg px-2 py-1 text-[12px] text-secondary hover:bg-surface-container-high">Limpiar filtros</button>
+      <span id="fter_count" class="text-[12px] text-secondary ml-auto"></span>
       <select id="fter_f_condicion" class="border border-surface-variant rounded-lg px-2 py-1 text-[12px]">
         <option value="">Condición: Todas</option>
         ${uniq(rows.map(r => r.condicion_expedicion)).map(c => `<option value="${escAttr(c)}">${c}</option>`).join('')}
@@ -420,6 +434,10 @@ function renderSeguimiento() {
   const fEstado = document.getElementById('fter_f_estado');
   const fCond = document.getElementById('fter_f_condicion');
   const fVenc = document.getElementById('fter_f_venc');
+  const fAbierto = document.getElementById('fter_f_abierto');
+  const fCentro = document.getElementById('fter_f_centro');
+  const btnClear = document.getElementById('fter_clear');
+  const syncClear = () => btnClear.classList.toggle('hidden', !input.value);
 
   const drawTabla = () => {
     const q = (input.value || '').trim().toLowerCase();
@@ -429,9 +447,13 @@ function renderSeguimiento() {
     if (fCond.value) list = list.filter(r => r.condicion_expedicion === fCond.value);
     if (fVenc.value === 'si') list = list.filter(r => r.vencido);
     if (fVenc.value === 'no') list = list.filter(r => !r.vencido);
+    if (fAbierto.value === 'abierto') list = list.filter(r => r.pendiente);
+    if (fAbierto.value === 'cerrado') list = list.filter(r => !r.pendiente);
+    if (fCentro.value) list = list.filter(r => String(r.punto_expedicion) === fCentro.value);
+    document.getElementById('fter_count').textContent = list.length > 200 ? `Mostrando 200 de ${list.length} pedidos` : `${list.length} pedido${list.length === 1 ? '' : 's'}`;
     document.getElementById('fter_tabla').innerHTML = pedidosTable(list.slice(0, 200));
     document.getElementById('fter_tabla').querySelectorAll('[data-pedido]').forEach(tr => {
-      tr.addEventListener('click', () => { _selPedido = tr.getAttribute('data-pedido'); input.value = _selPedido; drawDetalle(); drawTabla(); });
+      tr.addEventListener('click', () => { _selPedido = tr.getAttribute('data-pedido'); input.value = _selPedido; syncClear(); drawDetalle(); drawTabla(); window.scrollTo({ top: 0, behavior: 'smooth' }); });
     });
   };
   const drawDetalle = () => {
@@ -441,11 +463,19 @@ function renderSeguimiento() {
     );
   };
 
-  input.addEventListener('input', () => { _selPedido = input.value.trim() || null; drawDetalle(); drawTabla(); });
+  input.addEventListener('input', () => { _selPedido = input.value.trim() || null; syncClear(); drawDetalle(); drawTabla(); });
+  btnClear.addEventListener('click', () => { input.value = ''; _selPedido = null; syncClear(); drawDetalle(); drawTabla(); input.focus(); });
+  input.addEventListener('keydown', e => { if (e.key === 'Escape' && input.value) { input.value = ''; _selPedido = null; syncClear(); drawDetalle(); drawTabla(); } });
+  document.getElementById('fter_f_reset').addEventListener('click', () => {
+    input.value = ''; _selPedido = null; [fEstado, fCond, fVenc, fAbierto, fCentro].forEach(f => { f.value = ''; });
+    syncClear(); drawDetalle(); drawTabla();
+  });
   input.addEventListener('keydown', e => { if (e.key === 'Enter') { const exact = rows.find(x => String(x.id_pedido) === input.value.trim()); if (exact) { _selPedido = exact.id_pedido; drawDetalle(); } } });
   fEstado.addEventListener('change', drawTabla);
   fCond.addEventListener('change', drawTabla);
   fVenc.addEventListener('change', drawTabla);
+  fAbierto.addEventListener('change', drawTabla);
+  fCentro.addEventListener('change', drawTabla);
 
   drawDetalle();
   drawTabla();
