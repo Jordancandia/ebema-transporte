@@ -5,9 +5,17 @@
 //  "Indicadores Transporte") — no requiere carga manual desde esta vista.
 //
 //  Reglas de negocio (definidas por el usuario, ver Resumen del Excel fuente):
-//   - OTIF = entregado a tiempo (Fecha Entrega Cliente <= Fecha Disponible Material)
-//            Y en cantidad completa (bultos entregados >= bultos solicitados).
-//   - Fill Rate = % de bultos entregados vs solicitados (tope 100%).
+//   - EVENTO DE CUMPLIMIENTO (ajuste 20-sep-2026): Despacho -> Fecha Entrega Cliente;
+//     RETIRA (CLI-RET) -> Fecha Recepción Sucursal (material disponible en sucursal;
+//     el retiro efectivo depende del cliente, no de EBEMA).
+//   - OTIF = evento a tiempo (Fecha Evento <= Fecha Disponible Material)
+//            Y en cantidad completa (bultos del evento >= bultos solicitados).
+//   - Fill Rate = % de bultos del evento vs solicitados (tope 100%).
+//   - PEDIDOS VENCIDOS / EN CURSO (gestión): pedidos con alguna etapa física pendiente (Recepción CD,
+//     Traslado, Recepción Sucursal y Entrega Cliente — también en Retira: para gestión el pedido
+//     sigue pendiente hasta la entrega al cliente, aunque el OTIF ya cerró en sucursal). Vencido = hoy > promesa;
+//     En curso = hoy <= promesa. Responsable de cierre: CD 1003 si falta Recepción CD/Traslado;
+//     si no, el centro destino. Misma lógica que las vistas SQL v_ft_* (correo diario).
 //   - Un pedido es EVALUABLE si ya fue entregado, O si está vencido sin entregar
 //     (hoy > fecha promesa y aún no se entrega) — este último cuenta como
 //     incumplimiento (OTIF=0). Los pedidos aún no vencidos y no entregados
@@ -16,20 +24,21 @@
 //     Destino → Entregado a Cliente. Si condición=CLI-RET (EBE) y el pedido
 //     está en Bodega Destino, se muestra como "Listo para Entrega Cliente".
 // ============================================================================
-import { supabase } from './supabase-client.js?v=202609192018';
-import { getDatabase, loadRoutesData } from './data.js?v=202609192018';
+import { supabase } from './supabase-client.js?v=202609201258';
+import { getDatabase, loadRoutesData } from './data.js?v=202609201258';
 
 // --- Paleta (alineada a Indicadores) ----------------------------------------
 const R = { red:'#C0000C', red2:'#EE1B22', redL:'#E88A8F', grey:'#6B6E70', greyL:'#A9ACAE', ink:'#333333', grid:'#D9D5CF', amber:'#B5730B' };
 
 let _container = null;
-let _view = 'dashboard'; // 'dashboard' | 'seguimiento'
+let _view = 'dashboard'; // 'dashboard' | 'seguimiento' | 'vencidos' | 'en_curso'
+let _centroVenc = 'Todos';
 let _cache = null;       // filas crudas + calculadas
 let _selPedido = null;   // id_pedido seleccionado en Seguimiento
 let _centroFiltro = 'Todos';
 
 export function setFleteTerceroSubTab(sub) {
-  if (['dashboard', 'seguimiento'].indexOf(sub) >= 0) _view = sub;
+  if (['dashboard', 'seguimiento', 'vencidos', 'en_curso'].indexOf(sub) >= 0) _view = sub;
 }
 
 // --- Formato -----------------------------------------------------------------
@@ -100,22 +109,41 @@ function computeRow(r) {
   const fRecepSuc = toDate(r.fecha_recep_sucursal);
   const fEntrega = toDate(r.fecha_entrega_cliente);
 
-  const entregado = !!fEntrega;
-  const vencido = !entregado && !!fPromesa && hoy > fPromesa;
-  const evaluable = entregado || vencido;
+  const esRetiro = /RET/i.test(r.condicion_expedicion || '');
+  // Evento de cumplimiento: Retira -> material disponible en sucursal; Despacho -> entrega al cliente
+  const fEvento = esRetiro ? fRecepSuc : fEntrega;
+  const entregado = !!fEntrega;   // entrega física al cliente (para el estado del ciclo)
+  const cumplido = !!fEvento;     // evento de servicio ocurrido (base del OTIF)
+  const vencido = !cumplido && !!fPromesa && hoy > fPromesa;
+  const evaluable = cumplido || vencido;
 
   const bultosPed = Number(r.cantidad_bultos) || 0;
   const bultosEnt = Number(r.bultos_entrega_cliente) || 0;
+  const bultosEvento = esRetiro ? (Number(r.bultos_recep_sucursal) || 0) : bultosEnt;
 
   let onTime = null, inFull = null, otif = null, fillRate = null;
   if (evaluable) {
-    onTime = entregado ? (fPromesa ? fEntrega <= fPromesa : false) : false;
-    inFull = bultosEnt >= bultosPed && bultosPed > 0;
+    onTime = cumplido ? (fPromesa ? fEvento <= fPromesa : false) : false;
+    inFull = bultosEvento >= bultosPed && bultosPed > 0;
     otif = (onTime && inFull) ? 1 : 0;
-    fillRate = bultosPed > 0 ? Math.min(bultosEnt / bultosPed, 1) * 100 : null;
+    fillRate = bultosPed > 0 ? Math.min(bultosEvento / bultosPed, 1) * 100 : null;
   }
 
-  const esRetiro = /RET/i.test(r.condicion_expedicion || '');
+  // Etapas físicas pendientes para GESTIÓN: hasta la Entrega Cliente, también en Retira (el OTIF sí cierra en sucursal)
+  const pendRcd = !fRecepCD, pendTras = !fTraslado, pendRsuc = !fRecepSuc, pendEnt = !fEntrega;
+  const pendiente = pendRcd || pendTras || pendRsuc || pendEnt;
+  const vencidoPend = pendiente && !!fPromesa && hoy > fPromesa;
+  const enCurso = pendiente && !!fPromesa && hoy <= fPromesa;
+  const centroResp = (pendRcd || pendTras) ? '1003' : r.punto_expedicion;
+  const etapasPend = [pendRcd && 'Recepción CD', pendTras && 'Traslado', pendRsuc && 'Recepción Sucursal', pendEnt && 'Entrega Cliente'].filter(Boolean).join(' + ');
+  const diasAtraso = vencidoPend ? bdays(fPromesa, hoy) : null;
+  const diasParaVencer = enCurso ? bdays(hoy, fPromesa) : null;
+  const estadoOp = fEntrega ? 'Entregado a Cliente'
+    : fRecepSuc ? (esRetiro ? 'Listo para Retiro en Sucursal' : 'En Bodega Destino')
+    : fTraslado ? 'En Tránsito'
+    : fRecepCD ? 'Recepción en CD (sin traslado)'
+    : 'Sin Recepción en CD';
+
   let estadoIdx, estadoLabel;
   if (entregado) { estadoIdx = 4; estadoLabel = 'Entregado a Cliente'; }
   else if (fRecepSuc) { estadoIdx = 3; estadoLabel = esRetiro ? 'Listo para Entrega Cliente' : 'En Bodega Destino'; }
@@ -133,7 +161,8 @@ function computeRow(r) {
 
   return {
     ...r,
-    entregado, vencido, evaluable, onTime, inFull, otif, fillRate,
+    entregado, cumplido, vencido, evaluable, onTime, inFull, otif, fillRate, bultosEvento,
+    pendiente, vencidoPend, enCurso, centroResp, etapasPend, diasAtraso, diasParaVencer, estadoOp,
     estadoIdx, estadoLabel, esRetiro,
     mesCreacion: r.fecha_creacion ? String(r.fecha_creacion).slice(0, 7) : null,
     dCreaRecep, dRecepTras, dTrasRecSuc, dRecSucEnt, dTotal, slaOfrecido,
@@ -174,7 +203,7 @@ export async function renderFleteTerceroView(container) {
   paintShell();
   try {
     await loadData();
-    if (_view === 'seguimiento') renderSeguimiento(); else renderDashboard();
+    renderCurrent();
   } catch (e) {
     body().innerHTML = errorHTML(e);
   }
@@ -184,12 +213,14 @@ function paintShell() {
   _container.innerHTML = `
   <div class="max-w-[1120px] mx-auto">
     <div class="flex items-center justify-between gap-md flex-wrap mb-md">
-      <div class="text-headline-sm font-bold">Flete Tercero · ${_view === 'seguimiento' ? 'Seguimiento de Pedidos' : 'Nivel de Servicio'}</div>
+      <div class="text-headline-sm font-bold">Flete Tercero · ${({ seguimiento: 'Seguimiento de Pedidos', vencidos: 'Pedidos Vencidos', en_curso: 'Pedidos en Curso' })[_view] || 'Nivel de Servicio'}</div>
       <span class="text-[11px] text-secondary border border-surface-variant rounded-full px-md py-[3px]">Actualización diaria automática · Supabase</span>
     </div>
     <div class="flex gap-sm mb-lg border-b border-surface-variant">
       ${tabBtn('dashboard', 'monitoring', 'Nivel de Servicio')}
       ${tabBtn('seguimiento', 'search', 'Seguimiento por Pedido')}
+      ${tabBtn('vencidos', 'event_busy', 'Pedidos Vencidos')}
+      ${tabBtn('en_curso', 'pending_actions', 'Pedidos en Curso')}
     </div>
     <div id="fter_body"></div>
   </div>`;
@@ -197,7 +228,7 @@ function paintShell() {
     btn.addEventListener('click', () => {
       _view = btn.getAttribute('data-fter-tab');
       paintShell();
-      if (_view === 'seguimiento') renderSeguimiento(); else renderDashboard();
+      renderCurrent();
     });
   });
 }
@@ -208,6 +239,12 @@ function tabBtn(key, icon, label) {
   </button>`;
 }
 function body() { return document.getElementById('fter_body'); }
+function renderCurrent() {
+  if (_view === 'seguimiento') renderSeguimiento();
+  else if (_view === 'vencidos') renderVencidos();
+  else if (_view === 'en_curso') renderEnCurso();
+  else renderDashboard();
+}
 function loadingHTML() { return `<div class="flex items-center justify-center py-xl text-secondary gap-2"><span class="material-symbols-outlined animate-spin">progress_activity</span>Cargando datos de flete tercero…</div>`; }
 function errorHTML(e) { return `<div class="bg-error-container text-on-error-container rounded-xl p-lg">No se pudieron cargar los datos: ${(e && e.message) || e}</div>`; }
 
@@ -268,6 +305,7 @@ function renderDashboard() {
 
     <!-- 2. Por tipo de servicio -->
     ${sectionTitle('Nivel de Servicio por Tipo de Servicio')}
+    <div class="text-[11px] text-secondary mb-sm">Retira (CLI-RET): se considera cumplido cuando el material está disponible en sucursal (Recepción Sucursal). Despacho: entrega al cliente.</div>
     ${simpleTable(['Condición Expedición', 'Pedidos Evaluables', 'OTIF %', 'Fill Rate %'],
       porTipo.map(t => [t.tipo || '–', numFmt(t.n), pctCell(t.otif), pctCell(t.fill)]))}
 
@@ -414,8 +452,8 @@ function renderSeguimiento() {
 }
 
 function detalleHTML(r) {
-  const badge = r.entregado
-    ? (r.otif ? badgeHTML('OTIF cumplido', '#1E8449') : badgeHTML('Entregado fuera de plazo / incompleto', '#C0000C'))
+  const badge = r.cumplido
+    ? (r.otif ? badgeHTML('OTIF cumplido', '#1E8449') : badgeHTML((r.esRetiro ? 'Disponible en sucursal' : 'Entregado') + ' fuera de plazo / incompleto', '#C0000C'))
     : (r.vencido ? badgeHTML('Vencido sin entregar', '#C0000C') : badgeHTML('En proceso (dentro de plazo)', '#B5730B'));
 
   return `
@@ -431,7 +469,7 @@ function detalleHTML(r) {
       ${miniField('Fecha Creación', fmtFecha(r.fecha_creacion))}
       ${miniField('Fecha Promesa (Disponible Material)', fmtFecha(r.fecha_disponible_material))}
       ${miniField('Material', r.material || '–')}
-      ${miniField('Bultos Solicitados / Entregados', `${numFmt(r.cantidad_bultos)} / ${numFmt(r.bultos_entrega_cliente)}`)}
+      ${miniField('Bultos Solicitados / Cumplidos' + (r.esRetiro ? ' (recep. sucursal)' : ' (entrega)'), `${numFmt(r.cantidad_bultos)} / ${numFmt(r.bultosEvento)}`)}
     </div>
     ${timelineHTML(r)}
   </div>`;
@@ -492,6 +530,134 @@ function estadoBadge(r) {
 }
 function badgeHTML(text, color) { return `<span class="inline-flex items-center gap-1 text-[12px] font-semibold px-3 py-1 rounded-full" style="background:${color}22;color:${color}">${text}</span>`; }
 function miniField(label, value) { return `<div><div class="text-[10px] uppercase tracking-wide text-secondary mb-[2px]">${label}</div><div class="font-semibold text-on-surface">${escAttr(String(value))}</div></div>`; }
+
+// ============================================================================
+//  PEDIDOS VENCIDOS (no regularizados) y PEDIDOS EN CURSO
+//  Misma lógica que las vistas SQL v_ft_vencidos / v_ft_en_curso (correo diario
+//  "NIVEL DE SERVICIO REVEX"). Solo etapas físicas: en Retira el retiro del
+//  cliente sí es una etapa pendiente para gestión (el OTIF cierra en Recepción Sucursal).
+// ============================================================================
+const AGING_BUCKETS = [{ k: '0-5', max: 5 }, { k: '6-20', max: 20 }, { k: '21-60', max: 60 }, { k: '>60', max: Infinity }];
+function agingKey(d) { return AGING_BUCKETS.find(b => d <= b.max).k; }
+
+function descargarCSV(nombre, headers, filas) {
+  const esc = v => { const s = v == null ? '' : String(v); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+  const csv = '﻿' + [headers.map(esc).join(',')].concat(filas.map(f => f.map(esc).join(','))).join('\r\n');
+  const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+  const a = document.createElement('a');
+  a.href = url; a.download = nombre; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+function hoyISO() { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
+function csvBtn(id) {
+  return `<button id="${id}" class="flex items-center gap-1 border border-surface-variant rounded-lg px-3 py-1 text-[12px] font-semibold text-primary hover:bg-surface-container-high"><span class="material-symbols-outlined text-[16px]">download</span>Descargar CSV</button>`;
+}
+
+function renderVencidos() {
+  const { rows } = _cache;
+  const v = rows.filter(r => r.vencidoPend);
+  const resp = uniq(v.map(r => r.centroResp));
+  const porResp = resp.map(c => {
+    const g = v.filter(r => r.centroResp === c);
+    const b = Object.fromEntries(AGING_BUCKETS.map(x => [x.k, g.filter(r => agingKey(r.diasAtraso) === x.k).length]));
+    return { centro: c, n: g.length, prom: avg(g.map(r => r.diasAtraso)), max: Math.max(...g.map(r => r.diasAtraso)), b };
+  }).sort((a, b) => b.n - a.n);
+  const total = v.length;
+  const en1003 = v.filter(r => r.centroResp === '1003').length;
+  const mas60 = v.filter(r => r.diasAtraso > 60).length;
+  const maxAtraso = total ? Math.max(...v.map(r => r.diasAtraso)) : null;
+  const totB = Object.fromEntries(AGING_BUCKETS.map(x => [x.k, v.filter(r => agingKey(r.diasAtraso) === x.k).length]));
+
+  body().innerHTML = `
+    <div class="text-[11px] text-secondary mb-md">Pedidos con fecha promesa vencida y alguna etapa física pendiente (Recepción CD, Traslado, Recepción Sucursal y Entrega Cliente). Un pedido Retira ya en sucursal sigue pendiente hasta la entrega al cliente (el OTIF cierra en sucursal). Días de atraso en días hábiles.</div>
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-md mb-lg">
+      ${tile('Vencidos por Regularizar', numFmt(total), 'con etapas pendientes', total ? 'text-[#C0000C]' : '')}
+      ${tile('Responsable CD 1003', numFmt(en1003), total ? pct(en1003 / total * 100) + ' del total (falta Recepción CD/Traslado)' : '–')}
+      ${tile('Atraso > 60 días háb.', numFmt(mas60), 'posibles registros sin cerrar en SAP')}
+      ${tile('Atraso Máximo', maxAtraso == null ? '–' : numFmt(maxAtraso) + ' d', 'días hábiles')}
+    </div>
+    ${sectionTitle('1. Resumen por Centro Responsable de Cierre')}
+    ${simpleTable(['Centro Responsable', 'Pedidos Vencidos', 'Atraso Prom. (d háb.)', 'Atraso Máx.', '0-5 d', '6-20 d', '21-60 d', '> 60 d'],
+      porResp.map(p => [centroLabel(p.centro), `<b>${numFmt(p.n)}</b>`, nf1.format(p.prom), numFmt(p.max), numFmt(p.b['0-5']), numFmt(p.b['6-20']), numFmt(p.b['21-60']), p.b['>60'] ? `<span style="color:#C0000C;font-weight:600">${numFmt(p.b['>60'])}</span>` : '0'])
+        .concat(total ? [[`<b>Total</b>`, `<b>${numFmt(total)}</b>`, nf1.format(avg(v.map(r => r.diasAtraso))), numFmt(maxAtraso), numFmt(totB['0-5']), numFmt(totB['6-20']), numFmt(totB['21-60']), numFmt(totB['>60'])]] : []))}
+    <div class="flex items-center justify-between flex-wrap gap-sm mt-lg mb-sm">
+      <div class="text-body-lg font-bold text-on-surface">2. Detalle de Pedidos a Gestionar</div>
+      <div class="flex items-center gap-sm">
+        <label class="flex items-center gap-2 text-[12px] text-secondary">Centro Responsable:
+          <select id="fter_venc_centro" class="border border-surface-variant rounded-lg px-2 py-1 text-[12px]">
+            <option value="Todos">Todos</option>
+            ${porResp.map(p => `<option value="${escAttr(p.centro)}">${escAttr(centroLabel(p.centro))}</option>`).join('')}
+          </select>
+        </label>
+        ${csvBtn('fter_venc_csv')}
+      </div>
+    </div>
+    <div id="fter_venc_tabla"></div>`;
+
+  const sel = document.getElementById('fter_venc_centro');
+  sel.value = _centroVenc;
+  const filtrado = () => v.filter(r => sel.value === 'Todos' || r.centroResp === sel.value)
+    .sort((a, b) => (a.centroResp === b.centroResp ? b.diasAtraso - a.diasAtraso : String(a.centroResp).localeCompare(String(b.centroResp))));
+  const draw = () => {
+    _centroVenc = sel.value;
+    const list = filtrado();
+    document.getElementById('fter_venc_tabla').innerHTML = list.length
+      ? simpleTable(['Centro Resp.', 'N° Pedido', 'Centro Destino', 'Condición', 'F. Creación', 'F. Promesa', 'Atraso (d háb.)', 'Estado Actual', 'Etapas Pendientes'],
+        list.map(r => [escAttr(r.centroResp), `<b>${escAttr(r.id_pedido)}</b>`, escAttr(r.punto_expedicion), escAttr(r.condicion_expedicion), fmtFecha(r.fecha_creacion), fmtFecha(r.fecha_disponible_material),
+          `<span style="color:${r.diasAtraso > 60 ? '#C0000C' : R.ink};font-weight:600">${numFmt(r.diasAtraso)}</span>`, escAttr(r.estadoOp), escAttr(r.etapasPend)]))
+      : `<div class="text-secondary text-[13px] py-md">Sin pedidos vencidos pendientes.</div>`;
+  };
+  sel.addEventListener('change', draw);
+  document.getElementById('fter_venc_csv').addEventListener('click', () => descargarCSV(
+    `Pedidos_Vencidos_${hoyISO()}.csv`,
+    ['Centro Responsable', 'ID Pedido', 'Centro Destino', 'Condicion Expedicion', 'Ruta Flete', 'Cantidad Bultos', 'Fecha Creacion', 'Fecha Promesa', 'Dias Atraso (habiles)', 'Estado Actual', 'Etapas Pendientes'],
+    filtrado().map(r => [r.centroResp, r.id_pedido, r.punto_expedicion, r.condicion_expedicion, r.ruta_flete, r.cantidad_bultos, r.fecha_creacion, r.fecha_disponible_material, r.diasAtraso, r.estadoOp, r.etapasPend])));
+  draw();
+}
+
+const ESTADOS_CURSO = ['Sin Recepción en CD', 'Recepción en CD (sin traslado)', 'En Tránsito', 'En Bodega Destino', 'Listo para Retiro en Sucursal'];
+function renderEnCurso() {
+  const { rows } = _cache;
+  const c = rows.filter(r => r.enCurso);
+  const total = c.length;
+  const urgentes = c.filter(r => r.diasParaVencer <= 1).length;
+  const estados = ESTADOS_CURSO.concat(uniq(c.map(r => r.estadoOp)).filter(e => ESTADOS_CURSO.indexOf(e) < 0));
+  const centros = uniq(c.map(r => r.punto_expedicion)).sort();
+  const filas = centros.map(ce => {
+    const g = c.filter(r => r.punto_expedicion === ce);
+    return { ce, n: g.length, porE: estados.map(e => g.filter(r => r.estadoOp === e).length), urg: g.filter(r => r.diasParaVencer <= 1).length };
+  });
+  const totE = estados.map(e => c.filter(r => r.estadoOp === e).length);
+
+  body().innerHTML = `
+    <div class="text-[11px] text-secondary mb-md">Pedidos dentro de plazo (fecha promesa vigente) que aún tienen etapas físicas pendientes. Días para vencer en días hábiles; 0-1 = vence hoy o mañana.</div>
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-md mb-lg">
+      ${tile('Pedidos en Curso', numFmt(total), 'no cerrados, dentro de plazo')}
+      ${tile('Vencen en ≤ 1 día háb.', numFmt(urgentes), 'hoy o mañana', urgentes ? 'text-[#C0000C]' : '')}
+      ${tile('Sin Recepción en CD', numFmt(totE[0]), 'aún no ingresan al CD', totE[0] ? 'text-[#B5730B]' : '')}
+      ${tile('En Tránsito / Sucursal', numFmt(totE[2] + totE[3] + totE[4]), 'camino a sucursal o ya en sucursal esperando entrega')}
+    </div>
+    ${sectionTitle('1. Pedidos en Curso por Centro Destino y Estado')}
+    ${simpleTable(['Centro Destino'].concat(estados, ['Total', 'Vencen ≤ 1 d']),
+      filas.map(f => [centroLabel(f.ce)].concat(f.porE.map(n => n ? numFmt(n) : '–'), [`<b>${numFmt(f.n)}</b>`, f.urg ? `<span style="color:#C0000C;font-weight:600">${numFmt(f.urg)}</span>` : '–']))
+        .concat(total ? [['<b>Total</b>'].concat(totE.map(n => `<b>${numFmt(n)}</b>`), [`<b>${numFmt(total)}</b>`, `<b>${numFmt(urgentes)}</b>`])] : []))}
+    <div class="flex items-center justify-between flex-wrap gap-sm mt-lg mb-sm">
+      <div class="text-body-lg font-bold text-on-surface">2. Detalle de Pedidos en Curso (más urgentes primero)</div>
+      ${csvBtn('fter_curso_csv')}
+    </div>
+    <div id="fter_curso_tabla"></div>`;
+
+  const list = c.slice().sort((a, b) => a.diasParaVencer - b.diasParaVencer || String(a.centroResp).localeCompare(String(b.centroResp)));
+  document.getElementById('fter_curso_tabla').innerHTML = list.length
+    ? simpleTable(['Para Vencer (d háb.)', 'N° Pedido', 'Centro Destino', 'Condición', 'F. Creación', 'F. Promesa', 'Estado Actual', 'Centro Resp.', 'Etapas Pendientes'],
+      list.map(r => [`<span style="color:${r.diasParaVencer <= 1 ? '#C0000C' : R.ink};font-weight:600">${numFmt(r.diasParaVencer)}</span>`, `<b>${escAttr(r.id_pedido)}</b>`, escAttr(r.punto_expedicion), escAttr(r.condicion_expedicion),
+        fmtFecha(r.fecha_creacion), fmtFecha(r.fecha_disponible_material), escAttr(r.estadoOp), escAttr(r.centroResp), escAttr(r.etapasPend)]))
+    : `<div class="text-secondary text-[13px] py-md">Sin pedidos en curso.</div>`;
+  document.getElementById('fter_curso_csv').addEventListener('click', () => descargarCSV(
+    `Pedidos_en_Curso_${hoyISO()}.csv`,
+    ['Centro Responsable', 'ID Pedido', 'Centro Destino', 'Condicion Expedicion', 'Ruta Flete', 'Cantidad Bultos', 'Fecha Creacion', 'Fecha Promesa', 'Dias Habiles para Vencer', 'Estado Actual', 'Etapas Pendientes'],
+    list.map(r => [r.centroResp, r.id_pedido, r.punto_expedicion, r.condicion_expedicion, r.ruta_flete, r.cantidad_bultos, r.fecha_creacion, r.fecha_disponible_material, r.diasParaVencer, r.estadoOp, r.etapasPend])));
+}
 
 // ============================================================================
 //  COMPONENTES REUTILIZABLES

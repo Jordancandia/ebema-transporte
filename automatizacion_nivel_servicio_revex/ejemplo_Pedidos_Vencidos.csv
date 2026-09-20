@@ -1,0 +1,73 @@
+﻿Centro Responsable,ID Pedido,Centro Destino,Condicion Expedicion,Ruta Flete,Material,Cantidad Bultos,Fecha Creacion,Fecha Promesa,Dias Atraso (habiles),Estado Actual,Etapas Pendientes
+1003 - CD RM,0000895740,1100 - CD Puerto Montt,EBE-DESP,PUERTO MONTT / PUCON,MATERIAL FLETE TERCEROS,1,13-09-2025,23-09-2025,259,Recepción en CD (sin traslado),Traslado + Recepción Sucursal + Entrega Cliente
+1003 - CD RM,0000964199,1000 - CD Quilicura,CLI-RET (EBE),RETIRA CLIENTE,MATERIAL FLETE TERCEROS,1,18-02-2026,25-02-2026,148,Sin Recepción en CD,Recepción CD + Traslado + Recepción Sucursal + Entrega Cliente
+1003 - CD RM,0000967024,1080 - CD Concepción,EBE-DESP,CONCEPCIÓN / CONCEPCIÓN,MATERIAL FLETE TERCEROS,1,24-02-2026,04-03-2026,143,Sin Recepción en CD,Recepción CD + Traslado + Recepción Sucursal + Entrega Cliente
+1003 - CD RM,0000997650,1090 - CD Temuco,EBE-DESP,TEMUCO / TRAIGUEN,1 alfombra,1,11-05-2026,14-05-2026,92,Sin Recepción en CD,Recepción CD + Traslado + Recepción Sucursal + Entrega Cliente
+1003 - CD RM,0000997650,1090 - CD Temuco,EBE-DESP,TEMUCO / TRAIGUEN,3 pallet viena,3,11-05-2026,14-05-2026,92,Sin Recepción en CD,Recepción CD + Traslado + Recepción Sucursal + Entrega Cliente
+1003 - CD RM,0000998866,1090 - CD Temuco,CLI-RET (EBE),RETIRA CLIENTE,CERAMICA,2,13-05-2026,20-05-2026,88,Sin Recepción en CD,Recepción CD + Traslado + Recepción Sucursal + Entrega Cliente
+1003 - CD RM,0000998866,1090 - CD Temuco,CLI-RET (EBE),RETIRA CLIENTE,SPC,1,13-05-2026,20-05-2026,88,Sin Recepción en CD,Recepción CD + Traslado + Recepción Sucursal + Entrega Cliente
+1003 - CD RM,0000998871,1090 - CD Temuco,CLI-RET (EBE),RETIRA CLIENTE,CERAMICA,1,13-05-2026,20-05-2026,88,Sin Recepción en CD,Recepción CD + Traslado + Recepción Sucursal + Entrega Cliente
+1003 - CD RM,0001000410,1090 - CD Temuco,CLI-RET (EBE),RETIRA CLIENTE,SPC,1,18-05-2026,27-05-2026,83,Sin Recepción en CD,Recepción CD + Traslado + Recepción Sucursal + Entrega Cliente
+1003 - CD RM,0001004019,1080 - CD Concepción,EBE-DESP,CONCEPCIÓN / CONCEPCIÓN,Ceramica,1,27-05-2026,05-06-2026,76,Sin Recepción en CD,Recepción CD + Traslado + Recepción Sucursal + Entrega Cliente
+1003 - CD RM,0001005431,1080 - CD Concepción,EBE-DESP,CONCEPCIÓN / TALCAHUANO,PANEL Y SPC,1,29-05-2026,08-06-2026,75,Sin Recepción en CD,Recepción CD + Traslado + Recepción Sucursal + Entrega Cliente
+1003 - CD RM,0001006742,1070 - CD Talca,EBE-DESP,TALCA / TALCA,ARAUITAC,1,03-06-2026,15-06-2026,70,Recepción en CD (sin traslado),Traslado + Recepción Sucursal + Entrega Cliente
+1003 - CD RM,0001008021,1090 - CD Temuco,EBE-DESP,TEMUCO / TEMUCO,ALFROMBRA,1,05-06-2026,16-06-2026,69,Sin Recepción en CD,Recepción CD + Traslado + Recepción Sucursal + Entrega Cliente
+1003 - CD RM,0001008498,1090 - CD Temuco,CLI-RET (EBE),RETIRA CLIENTE,PANEL UV,1,08-06-2026,16-06-2026,69,Sin Recepción en CD,Recepción CD + Traslado + Recepción Sucursal + Entrega Cliente
+1003 - CD RM,0001010974,1080 - CD Concepción,EBE-DESP,CONCEPCIÓN / CONCEPCIÓN,VINILICO,1,15-06-2026,24-06-2026,63,Sin Recepción en CD,Recepción CD + Traslado + Recepción Sucursal + Entrega Cliente
+1003 - CD RM,0001016085,1003 - CD RM,EBE-DESP,SANTIAGO / LAS CONDES,SPC,1,26-06-2026,03-07-2026,56,Sin Recepción en CD,Recepción CD + Traslado + Recepción Sucursal + Entrega Cliente
+1003 - CD RM,0001019068,1090 - CD Temuco,CLI-RET (EBE),RETIRA CLIENTE,MUESTRA,5,07-07-2026,14-07-2026,49,Sin Recepción en CD,Recepción CD + Traslado + Recepción Sucursal + Entrega Cliente
+1003 - CD RM,0001019070,1090 - CD Temuco,CLI-RET (EBE),RETIRA CLIENTE,MUESTRAS,1,07-07-2026,14-07-2026,49,Sin Recepción en CD,Recepción CD + Traslado + Recepción Sucursal + Entrega Cliente
+1003 - CD RM,0001019074,1090 - CD Temuco,CLI-RET (EBE),RETIRA CLIENTE,MUESTRA,1,07-07-2026,14-07-2026,49,Sin Recepción en CD,Recepción CD + Traslado + Recepción Sucursal + Entrega Cliente
+1003 - CD RM,0001020807,1080 - CD Concepción,CLI-RET (EBE),RETIRA CLIENTE,ALFOMBRA,3,10-07-2026,16-07-2026,47,Sin Recepción en CD,Recepción CD + Traslado + Recepción Sucursal + Entrega Cliente
+1003 - CD RM,0001020807,1080 - CD Concepción,CLI-RET (EBE),RETIRA CLIENTE,SPC,2,10-07-2026,16-07-2026,47,Sin Recepción en CD,Recepción CD + Traslado + Recepción Sucursal + Entrega Cliente
+1003 - CD RM,0001021062,1090 - CD Temuco,CLI-RET (EBE),RETIRA CLIENTE,MUESTRAS,1,13-07-2026,21-07-2026,44,Recepción en CD (sin traslado),Traslado + Recepción Sucursal + Entrega Cliente
+1003 - CD RM,0001021066,1090 - CD Temuco,CLI-RET (EBE),RETIRA CLIENTE,MUESTRAS,1,13-07-2026,21-07-2026,44,Recepción en CD (sin traslado),Traslado + Recepción Sucursal + Entrega Cliente
+1003 - CD RM,0001020672,1100 - CD Puerto Montt,EBE-DESP,PUERTO MONTT / PUERTO MONTT,ALFOMBRA,1,10-07-2026,22-07-2026,43,Sin Recepción en CD,Recepción CD + Traslado + Recepción Sucursal + Entrega Cliente
+1003 - CD RM,0001024536,1070 - CD Talca,CLI-RET (EBE),RETIRA CLIENTE,CERAMICA,1,24-07-2026,31-07-2026,36,Sin Recepción en CD,Recepción CD + Traslado + Recepción Sucursal + Entrega Cliente
+1003 - CD RM,0001024542,1070 - CD Talca,EBE-DESP,TALCA / TALCA,ETERFLEX,1,24-07-2026,04-08-2026,34,Recepción en CD (sin traslado),Traslado + Recepción Sucursal + Entrega Cliente
+1003 - CD RM,0001025329,1070 - CD Talca,EBE-DESP,TALCA / LINARES,ALFOMBRA,1,27-07-2026,04-08-2026,34,Sin Recepción en CD,Recepción CD + Traslado + Recepción Sucursal + Entrega Cliente
+1003 - CD RM,0001025329,1070 - CD Talca,EBE-DESP,TALCA / LINARES,SPC,1,27-07-2026,04-08-2026,34,Sin Recepción en CD,Recepción CD + Traslado + Recepción Sucursal + Entrega Cliente
+1003 - CD RM,0001025332,1020 - CD Antofagasta,EBE-DESP,ANTOFAGASTA / ANTOFAGASTA,ALFOMBRA,1,27-07-2026,04-08-2026,34,Sin Recepción en CD,Recepción CD + Traslado + Recepción Sucursal + Entrega Cliente
+1003 - CD RM,0001025338,1040 - CD Coquimbo,EBE-DESP,COQUIMBO  /  LA SERENA,ALFOMBRA,1,27-07-2026,04-08-2026,34,Sin Recepción en CD,Recepción CD + Traslado + Recepción Sucursal + Entrega Cliente
+1003 - CD RM,0001025355,1020 - CD Antofagasta,EBE-DESP,ANTOFAGASTA / CALAMA,SPC,1,27-07-2026,04-08-2026,34,Sin Recepción en CD,Recepción CD + Traslado + Recepción Sucursal + Entrega Cliente
+1003 - CD RM,0001025053,1160 - CD Chillan,CLI-RET (EBE),RETIRA CLIENTE,ALFOMBRA,2,27-07-2026,05-08-2026,33,Sin Recepción en CD,Recepción CD + Traslado + Recepción Sucursal + Entrega Cliente
+1003 - CD RM,0001025345,1090 - CD Temuco,EBE-DESP,TEMUCO / TEMUCO,PASTO Y ETERFLE,2,27-07-2026,06-08-2026,32,Sin Recepción en CD,Recepción CD + Traslado + Recepción Sucursal + Entrega Cliente
+1003 - CD RM,0001025348,1090 - CD Temuco,EBE-DESP,TEMUCO / TEMUCO,ALFOMBRA,1,27-07-2026,06-08-2026,32,Sin Recepción en CD,Recepción CD + Traslado + Recepción Sucursal + Entrega Cliente
+1003 - CD RM,0001025354,1060 - CD Rancagua,EBE-DESP,SAN FERNANDO / RANCAGUA,ETERFLEX,1,27-07-2026,07-08-2026,31,Sin Recepción en CD,Recepción CD + Traslado + Recepción Sucursal + Entrega Cliente
+1003 - CD RM,0001027830,1090 - CD Temuco,CLI-RET (EBE),RETIRA CLIENTE,alfombra,1,04-08-2026,11-08-2026,29,Sin Recepción en CD,Recepción CD + Traslado + Recepción Sucursal + Entrega Cliente
+1003 - CD RM,0001028336,1090 - CD Temuco,CLI-RET (EBE),RETIRA CLIENTE,SPC PISO,1,04-08-2026,11-08-2026,29,Sin Recepción en CD,Recepción CD + Traslado + Recepción Sucursal + Entrega Cliente
+1003 - CD RM,0001028331,1160 - CD Chillan,EBE-DESP,Chillan / Yungay,PANEL UV,1,04-08-2026,14-08-2026,26,Recepción en CD (sin traslado),Traslado + Recepción Sucursal + Entrega Cliente
+1003 - CD RM,0001029608,1090 - CD Temuco,CLI-RET (EBE),RETIRA CLIENTE,ceramica,1,07-08-2026,14-08-2026,26,Sin Recepción en CD,Recepción CD + Traslado + Recepción Sucursal + Entrega Cliente
+1003 - CD RM,0001029631,1090 - CD Temuco,EBE-DESP,TEMUCO / LAUTARO,laminado,1,07-08-2026,18-08-2026,24,Sin Recepción en CD,Recepción CD + Traslado + Recepción Sucursal + Entrega Cliente
+1003 - CD RM,0001029631,1090 - CD Temuco,EBE-DESP,TEMUCO / LAUTARO,spc piso,4,07-08-2026,18-08-2026,24,Sin Recepción en CD,Recepción CD + Traslado + Recepción Sucursal + Entrega Cliente
+1003 - CD RM,0001031704,1090 - CD Temuco,CLI-RET (EBE),RETIRA CLIENTE,alfombra,1,13-08-2026,19-08-2026,23,Sin Recepción en CD,Recepción CD + Traslado + Recepción Sucursal + Entrega Cliente
+1003 - CD RM,0001030869,1090 - CD Temuco,EBE-DESP,TEMUCO / LAUTARO,PISO SPC,1,11-08-2026,20-08-2026,22,Sin Recepción en CD,Recepción CD + Traslado + Recepción Sucursal + Entrega Cliente
+1003 - CD RM,0001030894,1090 - CD Temuco,EBE-DESP,TEMUCO / LAUTARO,ceramica,2,11-08-2026,20-08-2026,22,Sin Recepción en CD,Recepción CD + Traslado + Recepción Sucursal + Entrega Cliente
+1003 - CD RM,0001033498,1090 - CD Temuco,CLI-RET (EBE),RETIRA CLIENTE,piedra,1,18-08-2026,25-08-2026,19,Sin Recepción en CD,Recepción CD + Traslado + Recepción Sucursal + Entrega Cliente
+1003 - CD RM,0001036363,1090 - CD Temuco,EBE-DESP,TEMUCO / TEMUCO,ETERFLEX 2500 GRANITO,2,25-08-2026,03-09-2026,12,Recepción en CD (sin traslado),Traslado + Recepción Sucursal + Entrega Cliente
+1003 - CD RM,0001035896,1160 - CD Chillan,EBE-DESP,Chillan / Chillán,ALFOMBRA,7,24-08-2026,04-09-2026,11,Recepción en CD (sin traslado),Traslado + Recepción Sucursal + Entrega Cliente
+1003 - CD RM,0001038844,1090 - CD Temuco,EBE-DESP,TEMUCO / TEMUCO,ADOQUIN,30,31-08-2026,10-09-2026,7,Sin Recepción en CD,Recepción CD + Traslado + Recepción Sucursal + Entrega Cliente
+1003 - CD RM,0001038844,1090 - CD Temuco,EBE-DESP,TEMUCO / TEMUCO,PIZARRA,22,31-08-2026,10-09-2026,7,Sin Recepción en CD,Recepción CD + Traslado + Recepción Sucursal + Entrega Cliente
+1003 - CD RM,0001039734,1090 - CD Temuco,EBE-DESP,TEMUCO / TEMUCO,PALLET,1,02-09-2026,11-09-2026,6,Sin Recepción en CD,Recepción CD + Traslado + Recepción Sucursal + Entrega Cliente
+1003 - CD RM,0001039757,1090 - CD Temuco,EBE-DESP,TEMUCO / TEMUCO,ROLLO,1,02-09-2026,11-09-2026,6,Sin Recepción en CD,Recepción CD + Traslado + Recepción Sucursal + Entrega Cliente
+1003 - CD RM,0001040530,1090 - CD Temuco,EBE-DESP,TEMUCO / TEMUCO,PALLET,1,03-09-2026,11-09-2026,6,Sin Recepción en CD,Recepción CD + Traslado + Recepción Sucursal + Entrega Cliente
+1003 - CD RM,0001041393,1070 - CD Talca,EBE-DESP,TALCA / TALCA,ROLLO,1,07-09-2026,15-09-2026,4,Recepción en CD (sin traslado),Traslado + Recepción Sucursal + Entrega Cliente
+1003 - CD RM,0001041401,1070 - CD Talca,EBE-DESP,TALCA / TALCA,PALLET,1,07-09-2026,15-09-2026,4,Recepción en CD (sin traslado),Traslado + Recepción Sucursal + Entrega Cliente
+1020 - CD Antofagasta,0000974449,1020 - CD Antofagasta,EBE-DESP,ANTOFAGASTA / ANTOFAGASTA,MATERIAL FLETE TERCEROS,1,11-03-2026,19-03-2026,132,En Bodega Destino,Entrega Cliente
+1020 - CD Antofagasta,0001025076,1020 - CD Antofagasta,CLI-RET (EBE),RETIRA CLIENTE,MUESTRA,1,27-07-2026,31-07-2026,36,Listo para Retiro en Sucursal,Entrega Cliente
+1070 - CD Talca,0000995326,1070 - CD Talca,EBE-DESP,TALCA / PARRAL,ALFOMBRAS FANNY,5,30-04-2026,11-05-2026,95,En Bodega Destino,Entrega Cliente
+1070 - CD Talca,0000996735,1070 - CD Talca,EBE-DESP,TALCA / PARRAL,5 rollos de Alfombras sueltos,5,07-05-2026,20-05-2026,88,En Bodega Destino,Entrega Cliente
+1070 - CD Talca,0001044234,1070 - CD Talca,CLI-RET (EBE),RETIRA CLIENTE,PALLET,1,14-09-2026,17-09-2026,2,Listo para Retiro en Sucursal,Entrega Cliente
+1080 - CD Concepción,0000977177,1080 - CD Concepción,EBE-DESP,CONCEPCIÓN / CONCEPCIÓN,MATERIAL FLETE TERCEROS,1,17-03-2026,25-03-2026,128,En Bodega Destino,Entrega Cliente
+1080 - CD Concepción,0000981746,1080 - CD Concepción,EBE-DESP,CONCEPCIÓN / MULCHEN,MATERIAL FLETE TERCEROS,2,26-03-2026,02-04-2026,122,En Bodega Destino,Entrega Cliente
+1080 - CD Concepción,0000981746,1080 - CD Concepción,EBE-DESP,CONCEPCIÓN / MULCHEN,MATERIAL FLETE TERCEROS,3,26-03-2026,02-04-2026,122,En Bodega Destino,Entrega Cliente
+1080 - CD Concepción,0001024495,1080 - CD Concepción,CLI-RET (EBE),RETIRA CLIENTE,MUESTRAS,1,23-07-2026,30-07-2026,37,Listo para Retiro en Sucursal,Entrega Cliente
+1080 - CD Concepción,0001025085,1080 - CD Concepción,CLI-RET (EBE),RETIRA CLIENTE,MUESTRAS,1,27-07-2026,03-08-2026,35,Listo para Retiro en Sucursal,Entrega Cliente
+1080 - CD Concepción,0001036352,1080 - CD Concepción,EBE-DESP,CONCEPCIÓN / CONCEPCIÓN,ALFOMBRA,8,25-08-2026,04-09-2026,11,En Tránsito,Recepción Sucursal + Entrega Cliente
+1090 - CD Temuco,0000916820,1090 - CD Temuco,EBE-DESP,TEMUCO / TRAIGUEN,MATERIAL FLETE TERCEROS,1,04-11-2025,13-11-2025,222,En Bodega Destino,Entrega Cliente
+1090 - CD Temuco,0000916820,1090 - CD Temuco,EBE-DESP,TEMUCO / TRAIGUEN,MATERIAL FLETE TERCEROS,2,04-11-2025,13-11-2025,222,En Bodega Destino,Entrega Cliente
+1090 - CD Temuco,0001021065,1090 - CD Temuco,CLI-RET (EBE),RETIRA CLIENTE,MUESTRAS,1,13-07-2026,21-07-2026,44,En Tránsito,Recepción Sucursal + Entrega Cliente
+1090 - CD Temuco,0001039786,1090 - CD Temuco,EBE-DESP,TEMUCO / VICTORIA,PALLET,2,02-09-2026,11-09-2026,6,En Bodega Destino,Entrega Cliente
+1100 - CD Puerto Montt,0001036295,1100 - CD Puerto Montt,EBE-DESP,PUERTO MONTT / PUERTO MONTT,ALFOMBRA,12,25-08-2026,03-09-2026,12,En Tránsito,Recepción Sucursal + Entrega Cliente
+1100 - CD Puerto Montt,0001041346,1100 - CD Puerto Montt,EBE-DESP,PUERTO MONTT / LLANQUIHUE,ROLLOS,1,07-09-2026,16-09-2026,3,En Bodega Destino,Entrega Cliente
+1160 - CD Chillan,0001021862,1160 - CD Chillan,CLI-RET (EBE),RETIRA CLIENTE,VINILICO,1,14-07-2026,22-07-2026,43,En Tránsito,Recepción Sucursal + Entrega Cliente

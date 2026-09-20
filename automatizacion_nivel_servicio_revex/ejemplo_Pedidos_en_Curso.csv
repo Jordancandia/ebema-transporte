@@ -1,0 +1,16 @@
+﻿Centro Responsable,ID Pedido,Centro Destino,Condicion Expedicion,Ruta Flete,Material,Cantidad Bultos,Fecha Creacion,Fecha Promesa,Dias Habiles para Vencer,Estado Actual,Etapas Pendientes
+1003 - CD RM,0001042860,1050 - CD La Calera,EBE-DESP,LA CALERA  / PUCHUNCAVI,PALLET,1,09-09-2026,21-09-2026,0,Recepción en CD (sin traslado),Traslado + Recepción Sucursal + Entrega Cliente
+1080 - CD Concepción,0001043319,1080 - CD Concepción,EBE-DESP,CONCEPCIÓN / CABRERO-MONTEAGUI,PALLET,1,10-09-2026,21-09-2026,0,En Bodega Destino,Entrega Cliente
+1003 - CD RM,0001044824,1040 - CD Coquimbo,CLI-RET (EBE),RETIRA CLIENTE,PALLET,1,15-09-2026,21-09-2026,0,Recepción en CD (sin traslado),Traslado + Recepción Sucursal + Entrega Cliente
+1090 - CD Temuco,0001043896,1090 - CD Temuco,EBE-DESP,TEMUCO / VILLARRICA,ALF,1,11-09-2026,22-09-2026,1,En Bodega Destino,Entrega Cliente
+1090 - CD Temuco,0001044703,1090 - CD Temuco,CLI-RET (EBE),RETIRA CLIENTE,ROLLOS,2,15-09-2026,22-09-2026,1,Listo para Retiro en Sucursal,Entrega Cliente
+1003 - CD RM,0001045445,1090 - CD Temuco,CLI-RET (EBE),RETIRA CLIENTE,PALLET,1,16-09-2026,23-09-2026,2,Recepción en CD (sin traslado),Traslado + Recepción Sucursal + Entrega Cliente
+1003 - CD RM,0001044970,1100 - CD Puerto Montt,EBE-DESP,PUERTO MONTT / LLANQUIHUE,VINILICO LUNA,1,15-09-2026,24-09-2026,3,Recepción en CD (sin traslado),Traslado + Recepción Sucursal + Entrega Cliente
+1090 - CD Temuco,0001044205,1090 - CD Temuco,EBE-DESP,TEMUCO / VICTORIA,PALLET,2,14-09-2026,24-09-2026,3,En Bodega Destino,Entrega Cliente
+1003 - CD RM,0001045792,1080 - CD Concepción,CLI-RET (EBE),RETIRA CLIENTE,PALLET,1,17-09-2026,24-09-2026,3,Sin Recepción en CD,Recepción CD + Traslado + Recepción Sucursal + Entrega Cliente
+1003 - CD RM,0001045796,1080 - CD Concepción,CLI-RET (EBE),RETIRA CLIENTE,PALLET,1,17-09-2026,24-09-2026,3,Sin Recepción en CD,Recepción CD + Traslado + Recepción Sucursal + Entrega Cliente
+1003 - CD RM,0001045786,1080 - CD Concepción,CLI-RET (EBE),RETIRA CLIENTE,PASTO,2,17-09-2026,24-09-2026,3,Sin Recepción en CD,Recepción CD + Traslado + Recepción Sucursal + Entrega Cliente
+1003 - CD RM,0001045786,1080 - CD Concepción,CLI-RET (EBE),RETIRA CLIENTE,PASTOS,1,17-09-2026,24-09-2026,3,Sin Recepción en CD,Recepción CD + Traslado + Recepción Sucursal + Entrega Cliente
+1160 - CD Chillan,0001044228,1160 - CD Chillan,EBE-DESP,Chillan / Quillón,PALLET,2,14-09-2026,25-09-2026,4,En Tránsito,Recepción Sucursal + Entrega Cliente
+1080 - CD Concepción,0001044699,1080 - CD Concepción,EBE-DESP,CONCEPCIÓN / TALCAHUANO (CERRO,ALF,1,15-09-2026,25-09-2026,4,En Tránsito,Recepción Sucursal + Entrega Cliente
+1003 - CD RM,0001045799,1080 - CD Concepción,EBE-DESP,CONCEPCIÓN / CONCEPCIÓN,PALLET,1,17-09-2026,28-09-2026,5,Sin Recepción en CD,Recepción CD + Traslado + Recepción Sucursal + Entrega Cliente
