@@ -10,8 +10,8 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202609211244';
-import { getDatabase } from './data.js?v=202609211244';
+import { supabase } from './supabase-client.js?v=202609211339';
+import { getDatabase } from './data.js?v=202609211339';
 import { showAlert, escapeHtml } from './utils.js';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
