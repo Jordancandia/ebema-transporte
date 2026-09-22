@@ -10,8 +10,8 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202609221735';
-import { getDatabase } from './data.js?v=202609221735';
+import { supabase } from './supabase-client.js?v=202609221746';
+import { getDatabase } from './data.js?v=202609221746';
 import { showAlert, escapeHtml } from './utils.js';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
@@ -185,6 +185,19 @@ function horaChile(ts) {
     return d.toLocaleString('es-CL', { timeZone: 'America/Santiago', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
   } catch { return String(ts).slice(0, 16).replace('T', ' '); }
 }
+// (AJUSTE 22-sep-2026, pedido Jordan) Una exclusión manual del Plan de Carga
+// (`abast_plan_exclusiones`) sólo debe estar vigente el mismo día en que se
+// creó ("día de planificación"). Al día siguiente deja de aplicarse sola —
+// no hace falta reactivarla a mano — y la posición vuelve a considerarse en
+// el plan si la carga de datos (SAP) todavía la trae; si SAP ya no la trae,
+// simplemente desaparece por sí sola (comportamiento normal del plan).
+function esExclusionVigenteHoy(ts) {
+  if (!ts) return false;
+  try {
+    const fmt = d => d.toLocaleDateString('en-CA', { timeZone: 'America/Santiago' }); // 'YYYY-MM-DD'
+    return fmt(new Date(ts)) === fmt(new Date());
+  } catch { return false; }
+}
 
 const CENTROS_QUIEBRES = ['1005','1020','1040','1050','1060','1070','1080','1090','1100','1160'];
 
@@ -277,7 +290,10 @@ async function loadEstadosRetiro() {
 async function loadExclusionesPlan() {
   const { data, error } = await supabase.from('abast_plan_exclusiones').select('*').order('created_at', { ascending: false });
   if (error) { console.error(error); return []; }
-  return data || [];
+  // Sólo las exclusiones creadas HOY (día de planificación) siguen vigentes;
+  // las de días anteriores quedan en la tabla como historial pero ya no se
+  // aplican ni se muestran (ver esExclusionVigenteHoy más arriba).
+  return (data || []).filter(e => esExclusionVigenteHoy(e.created_at));
 }
 async function excluirDelPlan(tipo, doc, material, motivo) {
   // material '' (o ausente) = excluye el documento completo, cualquier línea/material.
