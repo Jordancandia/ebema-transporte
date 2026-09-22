@@ -1,58 +1,52 @@
 # Automatización Correos Troncales / Entregas / DT / Pedidos Ventas / SLIM → Supabase
 
-**Actualizado 2026-09-18.** Antes este script leía todo (TRONCALES + DT + ENTREGAS) desde una sola corrida/horario, lo que generaba lecturas simultáneas y dificultaba la carga correcta. Ahora cada "proyecto" es un **bloque independiente**: su propia etiqueta Gmail, su propio horario, y solo marca como leídos los correos que él mismo procesó.
+**Actualizado 2026-09-22.** Proyecto Apps Script **`Proyecto Troncales`** (id `1vpwi2WUDjXsKBB9UV4bpMbBn_xOB61GP-Fg66PbMgpikA-6Ywxly_Qjx`), cuenta jcandia@ebema.cl.
+
+## Cambios 22-sep-2026
+
+1. **Carga manual por Drive DESACTIVADA.** Se vuelve a la lectura original: solo correo SAP. `DRIVE_FOLDER_MANUAL_ID = ''`; si falta un correo, la fuente queda `sin_correo`. Las funciones `probar_ahora_manual_*` siguen en el código pero no leen nada.
+2. **Espera de ráfaga SAP (`esperarLoteCompleto`).** SAP envía los Steps en ráfaga y Gmail etiqueta con retraso los adjuntos grandes. Antes de leer, cada bloque espera a que el último correo de su etiqueta tenga ≥ 3 min (máx. 4 min de espera). Evita cargar un lote a medias.
+3. **Troncales tarde: 14:50 → 15:10** (`ejecutar_troncales_1510`).
+4. **Barrido de rezagados (`ejecutar_barrido_rezagados`)**: trigger cada 30 min, actúa **lun-vie de 09:00 a 15:00**. Revisa TODAS las lecturas (Troncales, Pedidos de Ventas, Entregas, DT, SLIM) y procesa solo los bloques con correos SAP no leídos. Si una ráfaga aún está llegando, lo deja para el próximo barrido. No registra `sin_correo` (sin ruido en `trc_log`). SLIM: solo carga un correo no leído **de hoy**.
+
+Motivo: SAP no envía a hora fija (22-sep: 10:46, 11:07, 11:31, 12:20, 13:12, 13:32, 14:31, 14:46, 15:03), por lo que los triggers fijos dejaban lotes sin leer hasta el día siguiente.
 
 ## Bloques, etiquetas y horarios (hora Chile, lunes a viernes)
 
-| Bloque | Etiqueta Gmail | Asuntos que lee | Horarios |
-|---|---|---|---|
-| **TRONCALES** | `SQVI Troncales` | Job ZJC PLAN TRONCALES, Step 1–6 | 07:55, 09:35, 10:35, 11:35, 12:35, 13:35, 14:50 |
-| **PEDIDOS DE VENTAS** | `Pedidos de Ventas (NV)` | Job ZJC PLAN ENTREGAS, Step 2–11 | 07:40, 11:10, 13:10, 14:40 |
-| **ENTREGAS** | `Entregas` | Job ZJC PLAN ENTREGAS, Step 1 | 07:15, 12:30, 15:00 |
-| **DOC TRANSPORTE** | `Doc Transporte (DT)` | Job ZJC PLAN DT, Step 1 | 08:10, 16:30, 22:30 |
-| **SLIM** | `Plan Troncales (SLIM)` | adjunto Excel "Reporte Stock Sucursales" | 06:30 (única corrida) |
+| Bloque | Etiqueta Gmail | Asuntos | Triggers fijos | Barrido 30 min |
+|---|---|---|---|---|
+| **TRONCALES** | `SQVI Troncales` | Job ZJC PLAN TRONCALES, Step 1–6 | 07:55, 09:35–12:35 (horario), 13:35 (snapshot), 15:10 | Sí |
+| **PEDIDOS DE VENTAS** | `Pedidos de Ventas (NV)` | Job ZJC PLAN ENTREGAS, Step 2–11 | 07:40, 11:10, 13:10, 14:40 | Sí |
+| **ENTREGAS** | `Entregas` | Job ZJC PLAN ENTREGAS, Step 1 | 07:15, 12:30, 15:00 | Sí |
+| **DOC TRANSPORTE** | `Doc Transporte (DT)` | Job ZJC PLAN DT, Step 1 | 08:10, 16:30, 22:30 | Sí |
+| **SLIM** | `Plan Troncales (SLIM)` | "Reporte Stock Sucursales" (.xlsx) | 06:30 | Sí (solo correo de hoy) |
 
-Las 5 etiquetas **ya existen** en la cuenta `jcandia@ebema.cl` (con sus filtros de Gmail ya funcionando, verificado 18-sep-2026) — no hay que crear nada nuevo en Gmail.
+La corrida de las **13:35** (TRONCALES) guarda la foto del día en `trc_hist` (7 días). El barrido no hace snapshot.
 
-La corrida de las **13:35** (TRONCALES) además guarda la foto del día en el histórico (`trc_hist`, 7 días) y poda lo que ya expiró — esto no cambió.
+**Triggers del proyecto: 20 de 20** (16 de `Code.gs` + 3 de `CorreoPlanCarga.gs` + 1 de `NivelServicioRevex.gs`). No quedan cupos: para agregar un trigger hay que consolidar otro.
 
-Cada función valida `esDiaHabil()` (lunes a viernes) antes de tocar Gmail/Supabase, así que si el trigger dispara sábado o domingo no hace nada.
+## Supabase
 
-## Qué quedó creado en Supabase (sin cambios)
+- **`trc_live`** — datos vigentes, se pisa por fuente en cada carga.
+- **`trc_hist`** — foto diaria 13:35, 7 días.
+- **`trc_log`** — bitácora: `ok` / `sin_correo` / `error` (histórico: `ok_manual`, `sin_cambio_manual` del fallback Drive ya desactivado).
 
-- **`trc_live`** — datos vigentes. En cada corrida se **pisa** por fuente.
-- **`trc_hist`** — foto diaria (solo corrida 13:35 de TRONCALES). Se conservan **7 días**.
-- **`trc_log`** — bitácora de cada corrida (para verificar qué cargó y si hubo error).
-- Vistas tipadas `v_trc_slim_stock`, `v_trc_sqvi_*` (una por fuente).
+## Actualizar el Apps Script
 
-**Pedidos de Ventas / DT / Entregas** se siguen guardando como filas JSONB en `trc_live` (fuentes `pedidos_ventas_dt_s02`…`s11`, `dt_transportes`, `entregas_creadas`), igual que antes — el parser toma automáticamente todas las columnas que traiga el HTM de SAP (nombre vendedor, nombre cliente, ruta, condición de expedición, etc. quedan disponibles tal cual las nombre SAP en el encabezado). Si quieres una vista SQL tipada específica para Pedidos de Ventas (con esas 4 columnas ya nombradas), lo armamos cuando tengas a mano un correo de ejemplo de esos Steps para confirmar los nombres exactos de columna.
+1. Abrir el proyecto → `Código.gs` → pegar el `Code.gs` de esta carpeta → Guardar.
+2. Si cambian horarios: ejecutar **`crearTriggers`** (borra y recrea los 16 triggers de este archivo; no toca los de `CorreoPlanCarga.gs` ni `NivelServicioRevex.gs`).
+3. Revisar **Registro de ejecución**.
 
-## Pasos para actualizar el Apps Script (una sola vez)
+**Ojo en el editor:** al elegir la función en el desplegable, confirmar que quedó seleccionada antes de pulsar Ejecutar (a veces ejecuta la función anterior).
 
-1. Entra a **script.google.com** → abre el proyecto **`Troncales SIT EBEMA`** (ya existente, id `1vpwi2WUDjXsKBB9UV4bpMbBn_xOB61GP-Fg66PbMgpikA-6Ywxly_Qjx`).
-2. Borra todo el contenido de `Code.gs` y pega el **`Code.gs`** nuevo (este mismo folder).
-3. Guarda (Ctrl+S / ícono de guardar).
-4. Ejecuta la función **`crearTriggers`** una sola vez (arriba, selecciona la función en el menú desplegable y pulsa **Ejecutar**). Esto:
-   - Borra los triggers antiguos (07:30/11:30/13:30/14:30 combinados).
-   - Crea los **15 triggers nuevos** (las 09:35–12:35 de Troncales usan un solo trigger horario `ejecutar_troncales_horario`; +3 de CorreoPlanCarga.gs = 18 de 20).
-5. Revisa **Registros de ejecución** — no debería haber errores de permisos (ya estaba autorizado).
+## Probar manualmente (ignoran día hábil)
 
-No hace falta volver a habilitar el servicio Drive ni recargar la `SUPABASE_SERVICE_KEY`: quedan igual que antes.
+- `probar_ahora_troncales`, `probar_ahora_troncales_snapshot`
+- `probar_ahora_pedidosventas`, `probar_ahora_entregas`, `probar_ahora_doctransporte`, `probar_ahora_slim`
 
-## Probar manualmente (ignoran el día hábil, funcionan cualquier día)
+Para reprocesar un correo: marcarlo **no leído** en Gmail y correr la función del bloque (o esperar el barrido).
 
-- `probar_ahora_troncales` — corre TRONCALES sin snapshot.
-- `probar_ahora_troncales_snapshot` — corre TRONCALES con snapshot (simula la corrida 13:35).
-- `probar_ahora_pedidosventas`, `probar_ahora_entregas`, `probar_ahora_doctransporte`, `probar_ahora_slim`.
-- `probar_ahora` / `probar_ahora_snapshot` — alias de compatibilidad, equivalen a los de TRONCALES.
+## Diagnóstico
 
-Para reprocesar un correo puntual: márcalo como **no leído** en Gmail y corre la función de prueba del bloque correspondiente.
-
-## Verificar / diagnosticar
-
-- Tabla **`trc_log`** en Supabase (ordena por `cargado_en` desc): por cada fuente verás filas cargadas, estado (`ok` / `sin_correo` / `error`) y mensaje.
-- **Importante (hallazgo 18-sep-2026):** el script anterior sólo leía la etiqueta `SQVI Troncales`, así que las fuentes `dt_transportes`, `entregas_creadas` y `pedidos_ventas_dt_s02..s11` probablemente **nunca se cargaron** en producción (esos correos llegan a las etiquetas `Doc Transporte (DT)`, `Entregas` y `Pedidos de Ventas (NV)`, no a `SQVI Troncales`). Con este cambio sí se leerán. Conviene revisar si `trc_live` tiene datos recientes para esas fuentes después de la primera corrida del día siguiente al despliegue.
-
-## Si SAP cambia las columnas de un reporte
-
-El parser SQVI arma las columnas a partir de la **fila de encabezado** del HTM. Si SAP agrega/renombra columnas, avísame para actualizar la vista correspondiente en Supabase (los datos igual se cargan en `trc_live`).
+- `trc_log` ordenado por `cargado_en desc`.
+- `sin_correo` = no había correo SAP no leído en la etiqueta a esa hora (normal si SAP aún no envía; el barrido lo recoge después).

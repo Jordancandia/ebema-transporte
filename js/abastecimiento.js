@@ -10,8 +10,8 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202609211339';
-import { getDatabase } from './data.js?v=202609211339';
+import { supabase } from './supabase-client.js?v=202609221735';
+import { getDatabase } from './data.js?v=202609221735';
 import { showAlert, escapeHtml } from './utils.js';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
@@ -1570,12 +1570,16 @@ async function renderPlanCarga(stage) {
   // contabilizando sin filtro de fecha (compatibilidad hacia atrás).
   // (AJUSTE 48H) El corte usa el próximo día hábil (saltando fin de semana y
   // feriados de `abast_feriados`) en vez de simplemente "mañana" calendario.
-  const mananaCutoff = diaHabil1;
+  // (AJUSTE 22-sep-2026) El corte de fecha se evalúa POR CENTRO DESTINO más abajo
+  // (dentro de `retirosCons`), usando el horizonte de cada centro (getHorizonte(ce):
+  // 24h→diaHabil1, 48h→diaHabil2) — antes usaba siempre diaHabil1 para todos los
+  // centros, por lo que un retiro FAB-CD coordinado con fecha_retiro en la ventana
+  // 48h (p. ej. Coquimbo) quedaba excluido del Plan de Carga aunque su centro
+  // estuviera configurado a 48 horas.
   const retiros = esCD1003 ? retirosRaw
     .filter(r => !String(r.proveedor ?? '').startsWith('*'))
     .filter(r => String(r.contr ?? '').trim() !== '')
-    .filter(r => { const _e = estadosRetiro[String(r.doc_compr ?? '').trim()] || {}; return esEstadoCoordinado(_e.estado) && _e.tipo_local_rm !== 'LOCAL' && (_e.estado === 'coordinado_santiago' || _e.tipo_local_rm === 'RM' || String(_e.entrega_entrante ?? '').trim() !== ''); })
-    .filter(r => { const _e = estadosRetiro[String(r.doc_compr ?? '').trim()] || {}; const fr = parseISODate(_e.fecha_retiro); return !fr || fr <= mananaCutoff; }) : [];
+    .filter(r => { const _e = estadosRetiro[String(r.doc_compr ?? '').trim()] || {}; return esEstadoCoordinado(_e.estado) && _e.tipo_local_rm !== 'LOCAL' && (_e.estado === 'coordinado_santiago' || _e.tipo_local_rm === 'RM' || String(_e.entrega_entrante ?? '').trim() !== ''); }) : [];
   const ventas = esCD1003 ? ventasRaw.filter(r => !String(r.mr ?? '').trim()) : [];
   // Regla Jordan 21-sep-2026: todo retiro LOCAL (tipo_local_rm='LOCAL') queda excluido del Plan de Carga;
   // los retiros de Concepción (1081) no cuentan en la tabla (los retiros son sólo del plan 1003).
@@ -1753,9 +1757,13 @@ async function renderPlanCarga(stage) {
     });
 
     // 6. Retiros proveedor CONSOLIDAR CD (tipo_retiro=FAB-CD) → parte del CD.
+    // (AJUSTE 22-sep-2026) Corte de fecha por centro: usa el horizonte de `ce`
+    // (24h→diaHabil1, 48h→diaHabil2) en vez del corte global fijo a 24h.
+    const cutoffRetiroCe = getHorizonte(ce) === 48 ? diaHabil2 : diaHabil1;
     const retirosCons = retiros
       .filter(r => String(r.ce ?? '').trim() === ce)
-      .filter(r => (estadosRetiro[String(r.doc_compr ?? '').trim()] || {}).tipo_retiro === 'FAB-CD');
+      .filter(r => (estadosRetiro[String(r.doc_compr ?? '').trim()] || {}).tipo_retiro === 'FAB-CD')
+      .filter(r => { const _e = estadosRetiro[String(r.doc_compr ?? '').trim()] || {}; const fr = parseISODate(_e.fecha_retiro); return !fr || fr <= cutoffRetiroCe; });
     const itemR = (r, cant, t) => { const _oc = String(r.doc_compr ?? '').trim(); const _e = estadosRetiro[_oc] || {}; const ee = _e.entrega_entrante || '';
       const tonBruto = calcTon(parseNum(r.peso_bruto), cant), tonVol = calcTon(parseNum(r.tamano_dimens), cant);
       // Fecha de Retiro coordinada (prioridad) — si no hay, se usa la fecha de entrega SAP de referencia.

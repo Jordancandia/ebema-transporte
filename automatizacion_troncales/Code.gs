@@ -10,6 +10,19 @@
  *  marca como leidos unicamente los que el mismo proceso. Lectura de
  *  lunes a viernes (cada entrypoint valida esDiaHabil() antes de tocar Gmail).
  *
+ *  ACTUALIZADO 2026-09-22: fallback de CARGA MANUAL por Drive. Los Jobs SAP
+ *  "ZJC PLAN TRONCALES" y "ZJC PLAN ENTREGAS" (Steps 2-11) dejaron de llegar
+ *  por correo. Mientras se resuelve en SAP, si una fuente de esos dos bloques
+ *  NO tiene correo SAP no leido, el script busca en una carpeta de Drive un
+ *  archivo Excel con el nombre exacto de la fuente (ej. "sqvi_retiros_fabrica.xlsx")
+ *  que el usuario sube manualmente (export SAP GUI -> Hoja de calculo), y lo
+ *  carga igual que si hubiera llegado por correo. No se toco ningun horario
+ *  ni la logica de Gmail: el correo SAP sigue teniendo PRIORIDAD si llega.
+ *
+ *  FIX 2026-09-22 (mismo dia): txt() convertia mal las celdas NUMERICAS del
+ *  Excel manual (ver comentario en txt() mas abajo) -> toneladas infladas
+ *  10x en Plan de Carga para datos cargados manualmente. Corregido.
+ *
  *  Bloques y horarios (hora Chile, lunes a viernes):
  *   - TRONCALES        (label "SQVI Troncales", Job ZJC PLAN TRONCALES Steps 1-6)
  *       07:55, 09:35, 10:35, 11:35, 12:35, 13:35, 14:50
@@ -25,11 +38,15 @@
  *
  *  Requisitos (ver README_DESPLIEGUE.md):
  *   1) Zona horaria del proyecto = America/Santiago
- *   2) Servicio avanzado "Drive API" habilitado (para convertir el Excel del SLIM)
+ *   2) Servicio avanzado "Drive API" habilitado (para convertir Excel SLIM
+ *      y los Excel de carga manual)
  *   3) Propiedad de script SUPABASE_SERVICE_KEY con la service_role key
  *   4) Las etiquetas Gmail y sus filtros YA EXISTEN (creadas previamente):
  *      "SQVI Troncales", "Plan Troncales (SLIM)", "Pedidos de Ventas (NV)",
  *      "Entregas", "Doc Transporte (DT)". No es necesario crearlas de nuevo.
+ *   5) Carpeta Drive de carga manual (ver DRIVE_FOLDER_MANUAL_ID abajo), con
+ *      un archivo .xlsx por fuente, nombrado exactamente como la fuente
+ *      (ej. "sqvi_retiros_fabrica.xlsx", "pedidos_ventas_dt_s02.xlsx").
  * ============================================================================
  */
 
@@ -41,6 +58,10 @@ var LABEL_TRONCALES        = 'SQVI Troncales';
 var LABEL_PEDIDOS_VENTAS   = 'Pedidos de Ventas (NV)';
 var LABEL_ENTREGAS         = 'Entregas';
 var LABEL_DOC_TRANSPORTE   = 'Doc Transporte (DT)';
+
+// Carpeta Drive de CARGA MANUAL (fallback mientras el correo SAP no llega).
+// https://drive.google.com/drive/folders/1dyTfU6fazfiwW8RFH2gNOJC5QowL4cMl
+var DRIVE_FOLDER_MANUAL_ID = ''; // DESACTIVADO 22-sep-2026 (antes '1dyTfU6fazfiwW8RFH2gNOJC5QowL4cMl')
 
 // Centros permitidos para el SLIM (columna F, sin el sufijo "_")
 var CENTROS_SLIM = ['1020','1040','1050','1060','1070','1080','1090','1100',
@@ -100,7 +121,8 @@ function ejecutar_troncales_horario() {
   correrTroncales(false);
 }
 function ejecutar_troncales_1335() { correrTroncales(true); }  // guarda snapshot del dia
-function ejecutar_troncales_1450() { correrTroncales(false); }
+function ejecutar_troncales_1510() { correrTroncales(false); }
+function ejecutar_troncales_1450() { correrTroncales(false); } // legado, sin trigger
 
 function correrTroncales(esSnapshot) {
   if (!esDiaHabil()) return;
@@ -150,6 +172,64 @@ function correrDocTransporte() {
   procesarGrupoSqvi('DOC_TRANSPORTE', LABEL_DOC_TRANSPORTE, FUENTES_DOC_TRANSPORTE, etiquetaCorrida(), false);
 }
 
+// ── BARRIDO DE REZAGADOS (22-sep-2026, pedido de Jordan) ─────────────────────
+// SAP no envia a hora fija (ej. 22-sep: 10:46, 11:07, 11:31, 12:20, 13:12,
+// 13:32, 14:31, 14:46, 15:03). Cada 30 min, de 09:00 a 15:00 (lun-vie),
+// revisa TODAS las lecturas y procesa solo los bloques que tengan correos
+// no leidos. No reemplaza a los triggers fijos; cada bloque sigue leyendo
+// solo su etiqueta. Sin snapshot. Si una rafaga SAP aun esta llegando, ese
+// bloque se deja para el proximo barrido.
+function ejecutar_barrido_rezagados() {
+  if (!esDiaHabil()) return;
+  var hm = Utilities.formatDate(new Date(), 'America/Santiago', 'H:mm').split(':');
+  var min = parseInt(hm[0], 10) * 60 + parseInt(hm[1], 10);
+  if (min < 9 * 60 || min > 15 * 60 + 10) return; // 09:00 - 15:00 (+10 min de tolerancia del trigger)
+  var bloques = [
+    ['TRONCALES', LABEL_TRONCALES, FUENTES_TRONCALES],
+    ['PEDIDOS_VENTAS', LABEL_PEDIDOS_VENTAS, FUENTES_PEDIDOS_VENTAS],
+    ['ENTREGAS', LABEL_ENTREGAS, FUENTES_ENTREGAS],
+    ['DOC_TRANSPORTE', LABEL_DOC_TRANSPORTE, FUENTES_DOC_TRANSPORTE]
+  ];
+  bloques.forEach(function (b) {
+    try {
+      if (!hayNoLeidosDeGrupo(b[1], b[2])) return;
+      procesarGrupoSqvi(b[0], b[1], b[2], etiquetaCorrida(), false, true);
+    } catch (e) { Logger.log('barrido ' + b[0] + ': ' + e); }
+  });
+  // SLIM: solo si hay un correo SLIM no leido de HOY (no recarga fotos antiguas)
+  try {
+    var lbl = GmailApp.getUserLabelByName(LABEL_SLIM);
+    if (lbl && lbl.getUnreadCount() > 0) {
+      var hoy = Utilities.formatDate(new Date(), 'America/Santiago', 'yyyy-MM-dd');
+      var msg = mensajeNoLeidoMasReciente(lbl, function (m) {
+        return tieneAdjunto(m, /\.xlsx$/i) &&
+          Utilities.formatDate(m.getDate(), 'America/Santiago', 'yyyy-MM-dd') === hoy;
+      });
+      if (msg) {
+        var corrida = etiquetaCorrida();
+        try { procesarSlim(corrida, false); }
+        catch (e) { logRun(corrida, 'slim_stock', 0, false, 'error', String(e)); }
+      }
+    }
+  } catch (e) { Logger.log('barrido SLIM: ' + e); }
+}
+
+function hayNoLeidosDeGrupo(labelName, fuentesGrupo) {
+  var label = GmailApp.getUserLabelByName(labelName);
+  if (!label || label.getUnreadCount() === 0) return false;
+  var threads = label.getThreads(0, 50);
+  for (var t = 0; t < threads.length; t++) {
+    if (!threads[t].isUnread()) continue;
+    var msgs = threads[t].getMessages();
+    for (var m = 0; m < msgs.length; m++) {
+      if (!msgs[m].isUnread()) continue;
+      var p = parseAsunto(msgs[m].getSubject());
+      if (p && p.fuente && fuentesGrupo.indexOf(p.fuente) !== -1) return true;
+    }
+  }
+  return false;
+}
+
 // ── SLIM (label "Plan Troncales (SLIM)") ─────────────────────────────────────
 function ejecutar_slim_0630() { correrSlim(); }
 
@@ -170,11 +250,11 @@ function crearTriggers() {
   var nuevos = [
     'ejecutar_troncales_0755', 'ejecutar_troncales_horario',
     'ejecutar_troncales_0935', 'ejecutar_troncales_1035', 'ejecutar_troncales_1135', 'ejecutar_troncales_1235',
-    'ejecutar_troncales_1335', 'ejecutar_troncales_1450',
+    'ejecutar_troncales_1335', 'ejecutar_troncales_1450', 'ejecutar_troncales_1510',
     'ejecutar_pedidosventas_0740', 'ejecutar_pedidosventas_1110', 'ejecutar_pedidosventas_1310', 'ejecutar_pedidosventas_1440',
     'ejecutar_entregas_0715', 'ejecutar_entregas_1230', 'ejecutar_entregas_1500',
     'ejecutar_doctransporte_0810', 'ejecutar_doctransporte_1630', 'ejecutar_doctransporte_2230',
-    'ejecutar_slim_0630'
+    'ejecutar_slim_0630', 'ejecutar_barrido_rezagados'
   ];
   ScriptApp.getProjectTriggers().forEach(function (t) {
     var h = t.getHandlerFunction();
@@ -189,7 +269,7 @@ function crearTriggers() {
   crear('ejecutar_troncales_0755', 7, 55);
   ScriptApp.newTrigger('ejecutar_troncales_horario').timeBased().everyHours(1).nearMinute(35).create(); // 09:35-12:35
   crear('ejecutar_troncales_1335', 13, 35);
-  crear('ejecutar_troncales_1450', 14, 50);
+  crear('ejecutar_troncales_1510', 15, 10); // SAP envia el ultimo lote ~14:31-14:46
   // PEDIDOS DE VENTAS
   crear('ejecutar_pedidosventas_0740', 7, 40);
   crear('ejecutar_pedidosventas_1110', 11, 10);
@@ -205,8 +285,10 @@ function crearTriggers() {
   crear('ejecutar_doctransporte_2230', 22, 30);
   // SLIM
   crear('ejecutar_slim_0630', 6, 30);
+  // BARRIDO DE REZAGADOS (cada 30 min; solo actua de 09:00 a 15:00 lun-vie)
+  ScriptApp.newTrigger('ejecutar_barrido_rezagados').timeBased().everyMinutes(30).create();
 
-  Logger.log('15 triggers creados (America/Santiago). Cada uno valida esDiaHabil() ' +
+  Logger.log('16 triggers creados (America/Santiago). Cada uno valida esDiaHabil() ' +
     'antes de correr, por lo que en sabado/domingo no hacen nada.');
 }
 
@@ -300,53 +382,99 @@ function leerExcelSlim(attachment, corrida) {
 // mapear a la fuente correcta (via FUENTES_MAP/parseAsunto) y descarta
 // cualquier correo cuya fuente no pertenezca a este grupo (por si la
 // etiqueta llegara a mezclar asuntos de otro bloque).
-function procesarGrupoSqvi(nombreGrupo, labelName, fuentesGrupo, corrida, esSnapshot) {
+//
+// Si una fuente del grupo NO tiene correo SAP no leido, se intenta como
+// FALLBACK la carpeta Drive de carga manual (ver procesarFuenteDriveManual).
+// El correo SAP siempre tiene prioridad: si llega, la carga manual no se usa.
+function procesarGrupoSqvi(nombreGrupo, labelName, fuentesGrupo, corrida, esSnapshot, esBarrido) {
   var label = GmailApp.getUserLabelByName(labelName);
+  var faltantes = fuentesGrupo.slice(); // si no hay etiqueta, se intenta igual la carga manual
+
   if (!label) {
-    fuentesGrupo.forEach(function (f) { logRun(corrida, f, 0, esSnapshot, 'error', 'No existe etiqueta ' + labelName); });
-    return;
-  }
+    Logger.log('Aviso: no existe etiqueta ' + labelName + ' (se intenta solo carga manual)');
+  } else {
+    var fuentesSet = {};
+    fuentesGrupo.forEach(function (f) { fuentesSet[f] = true; });
 
-  var fuentesSet = {};
-  fuentesGrupo.forEach(function (f) { fuentesSet[f] = true; });
-
-  // Recolecta, por cada fuente del grupo, el mensaje NO leido mas reciente
-  var porFuente = {};   // fuente -> {msg, att, date}
-  var aMarcar = [];
-  var threads = label.getThreads(0, 100);
-  for (var t = 0; t < threads.length; t++) {
-    var msgs = threads[t].getMessages();
-    for (var m = 0; m < msgs.length; m++) {
-      var msg = msgs[m];
-      if (!msg.isUnread()) continue;
-      var parsed = parseAsunto(msg.getSubject());
-      if (!parsed || !parsed.fuente) continue;
-      if (!fuentesSet[parsed.fuente]) continue; // no pertenece a este bloque
-      var att = adjunto(msg, /\.htm(l)?$/i);
-      if (!att) continue;
-      aMarcar.push(msg);
-      var d = msg.getDate().getTime();
-      if (!porFuente[parsed.fuente] || d > porFuente[parsed.fuente].date) {
-        porFuente[parsed.fuente] = { msg: msg, att: att, date: d };
+    // Recolecta, por cada fuente del grupo, el mensaje NO leido mas reciente
+    var porFuente = {};   // fuente -> {msg, att, date}
+    var aMarcar = [];
+    // FIX 22-sep-2026: SAP envia los Steps en rafaga (~10-30 s) y Gmail aplica
+    // el filtro/etiqueta con retraso a los adjuntos grandes. Si el trigger cae
+    // en medio de la rafaga, lee solo parte de los Steps y el resto queda sin
+    // leer hasta el dia siguiente. Se espera a que la etiqueta este "quieta".
+    if (esBarrido) {
+      // barrido: si la rafaga SAP aun esta llegando, se deja para el proximo barrido
+      if (edadUltimoCorreo(label) < QUIETUD_MS) { Logger.log(nombreGrupo + ': rafaga en curso, se omite'); return; }
+    } else {
+      esperarLoteCompleto(label);
+    }
+    var threads = label.getThreads(0, 100);
+    for (var t = 0; t < threads.length; t++) {
+      var msgs = threads[t].getMessages();
+      for (var m = 0; m < msgs.length; m++) {
+        var msg = msgs[m];
+        if (!msg.isUnread()) continue;
+        var parsed = parseAsunto(msg.getSubject());
+        if (!parsed || !parsed.fuente) continue;
+        if (!fuentesSet[parsed.fuente]) continue; // no pertenece a este bloque
+        var att = adjunto(msg, /\.htm(l)?$/i);
+        if (!att) continue;
+        aMarcar.push(msg);
+        var d = msg.getDate().getTime();
+        if (!porFuente[parsed.fuente] || d > porFuente[parsed.fuente].date) {
+          porFuente[parsed.fuente] = { msg: msg, att: att, date: d };
+        }
       }
     }
+
+    // Procesa cada fuente del grupo que SI tenga correo SAP
+    faltantes = [];
+    fuentesGrupo.forEach(function (fuente) {
+      var entry = porFuente[fuente];
+      if (!entry) { faltantes.push(fuente); return; } // se intenta por Drive abajo
+      try {
+        var filas = parseSqviHtml(entry.att.getDataAsString('UTF-8'), fuente, corrida);
+        reemplazarLive(fuente, filas);
+        logRun(corrida, fuente, filas.length, esSnapshot, 'ok', entry.att.getName());
+      } catch (e) {
+        logRun(corrida, fuente, 0, esSnapshot, 'error', String(e));
+      }
+    });
+
+    // Marca leidos solo los correos de este grupo que se procesaron
+    aMarcar.forEach(function (msg) { try { msg.markRead(); } catch (e) {} });
   }
 
-  // Procesa cada fuente del grupo
-  fuentesGrupo.forEach(function (fuente) {
-    var entry = porFuente[fuente];
-    if (!entry) { logRun(corrida, fuente, 0, esSnapshot, 'sin_correo', 'Sin correo para ' + fuente); return; }
-    try {
-      var filas = parseSqviHtml(entry.att.getDataAsString('UTF-8'), fuente, corrida);
-      reemplazarLive(fuente, filas);
-      logRun(corrida, fuente, filas.length, esSnapshot, 'ok', entry.att.getName());
-    } catch (e) {
-      logRun(corrida, fuente, 0, esSnapshot, 'error', String(e));
-    }
+  // Fallback: carpeta Drive de carga manual, solo para fuentes sin correo SAP
+  // DESACTIVADO 22-sep-2026 (pedido de Jordan): se vuelve a la lectura
+  // original, solo correo SAP. Ya no se lee la carpeta Drive de carga manual.
+  if (esBarrido) return; // el barrido no registra sin_correo (evita ruido en trc_log)
+  faltantes.forEach(function (fuente) {
+    logRun(corrida, fuente, 0, esSnapshot, 'sin_correo', 'Sin correo para ' + fuente);
   });
+}
 
-  // Marca leidos solo los correos de este grupo que se procesaron
-  aMarcar.forEach(function (msg) { try { msg.markRead(); } catch (e) {} });
+// Espera (max ESPERA_MAX_MS) hasta que el ultimo correo de la etiqueta tenga
+// al menos QUIETUD_MS de antiguedad, para no cortar una rafaga de Steps SAP.
+var QUIETUD_MS = 3 * 60 * 1000;
+var ESPERA_MAX_MS = 4 * 60 * 1000;
+function edadUltimoCorreo(label) {
+  var ultimo = 0;
+  var ths = label.getThreads(0, 20);
+  for (var i = 0; i < ths.length; i++) {
+    var d = ths[i].getLastMessageDate().getTime();
+    if (d > ultimo) ultimo = d;
+  }
+  return Date.now() - ultimo;
+}
+function esperarLoteCompleto(label) {
+  var inicio = Date.now();
+  while (Date.now() - inicio < ESPERA_MAX_MS) {
+    var edad = edadUltimoCorreo(label);
+    if (edad >= QUIETUD_MS) return;
+    Utilities.sleep(Math.min(QUIETUD_MS - edad + 5000, ESPERA_MAX_MS - (Date.now() - inicio)));
+  }
 }
 
 // Extrae Job y Step del asunto del correo.
@@ -369,24 +497,7 @@ function parseAsunto(asunto) {
 // Parser de los HTML export de SAP (tablas repetidas, headers y totales).
 function parseSqviHtml(html, fuente, corrida) {
   var rows = extraerFilasHtml(html);          // array de array de celdas
-  if (rows.length === 0) return [];
-  var header = rows[0];
-  var keys = normalizarKeys(header);
-  var headerJoin = header.join('|');
-
-  var filas = [];
-  var idx = 0;
-  for (var r = 1; r < rows.length; r++) {
-    var c = rows[r];
-    if (c.join('|') === headerJoin) continue;            // header repetido
-    var noVacias = c.filter(function (x) { return x !== ''; }).length;
-    if (c[0] === '*' || (c[0] === '' && noVacias <= 3)) continue; // totales/subtotales
-    var obj = {};
-    for (var k = 0; k < keys.length; k++) obj[keys[k]] = (c[k] == null ? '' : c[k]);
-    idx++;
-    filas.push({ fuente: fuente, fila: idx, corrida: corrida, data: obj });
-  }
-  return filas;
+  return filasDesdeTabla(rows, fuente, corrida);
 }
 
 // Extrae filas/celdas de todas las <table> del HTML mediante regex.
@@ -425,8 +536,36 @@ function decodeEntities(s) {
     .replace(/&#(\d+);/g, function (_, n) { return String.fromCharCode(parseInt(n, 10)); });
 }
 
+// Construye las filas {fuente, fila, corrida, data} a partir de una tabla ya
+// convertida a array-de-arrays (viene del HTML de SAP o del Excel manual).
+// Usa la primera fila como encabezado, descarta encabezados repetidos y filas
+// de totales/subtotales SAP (fila que empieza con "*" o casi vacia).
+// DEBE producir las mismas claves que las vistas de Supabase (via normalizarKeys).
+function filasDesdeTabla(rows, fuente, corrida) {
+  rows = rows.filter(function (r) {
+    return r.some(function (x) { return x !== ''; });
+  });
+  if (rows.length === 0) return [];
+  var header = rows[0];
+  var keys = normalizarKeys(header);
+  var headerJoin = header.join('|');
+
+  var filas = [];
+  var idx = 0;
+  for (var r = 1; r < rows.length; r++) {
+    var c = rows[r];
+    if (c.join('|') === headerJoin) continue;            // header repetido
+    var noVacias = c.filter(function (x) { return x !== ''; }).length;
+    if (c[0] === '*' || (c[0] === '' && noVacias <= 3)) continue; // totales/subtotales
+    var obj = {};
+    for (var k = 0; k < keys.length; k++) obj[keys[k]] = (c[k] == null ? '' : c[k]);
+    idx++;
+    filas.push({ fuente: fuente, fila: idx, corrida: corrida, data: obj });
+  }
+  return filas;
+}
+
 // Normaliza headers a keys snake_case y desambigua duplicados (_2, _3...).
-// DEBE producir las mismas claves que las vistas de Supabase.
 function normalizarKeys(header) {
   var seen = {};
   var out = [];
@@ -444,6 +583,81 @@ function slug(h) {
   h = h.normalize ? h.normalize('NFKD').replace(/[̀-ͯ]/g, '') : h;
   h = h.replace(/[^a-zA-Z0-9]+/g, '_').replace(/^_+|_+$/g, '').toLowerCase();
   return h || 'col';
+}
+
+// ----------------------------- CARGA MANUAL (Drive, fallback) ---------------
+// Se usa SOLO cuando una fuente de TRONCALES o PEDIDOS_VENTAS no tuvo correo
+// SAP no leido. Busca en DRIVE_FOLDER_MANUAL_ID un archivo "<fuente>.xlsx"
+// (Jordan lo sube/reemplaza manualmente tras exportarlo desde SAP GUI).
+// Para no recargar lo mismo en cada corrida, guarda en Script Properties la
+// fecha de modificacion del archivo ya procesado y solo vuelve a cargar si
+// cambio (forzar=true ignora este control, usado por las pruebas manuales).
+function procesarFuenteDriveManual(fuente, corrida, esSnapshot, forzar) {
+  if (!DRIVE_FOLDER_MANUAL_ID) {
+    logRun(corrida, fuente, 0, esSnapshot, 'sin_correo', 'Sin correo SAP (carpeta manual no configurada)');
+    return;
+  }
+  var file = archivoManual(fuente);
+  if (!file) {
+    logRun(corrida, fuente, 0, esSnapshot, 'sin_correo', 'Sin correo SAP ni archivo manual (' + fuente + '.xlsx) en Drive');
+    return;
+  }
+
+  var props = PropertiesService.getScriptProperties();
+  var key = 'manual_ts_' + fuente;
+  var tsArchivo = file.getLastUpdated().getTime();
+  var tsProcesado = parseInt(props.getProperty(key) || '0', 10);
+  if (!forzar && tsArchivo <= tsProcesado) {
+    logRun(corrida, fuente, 0, esSnapshot, 'sin_cambio_manual', 'Archivo manual sin cambios desde la ultima carga');
+    return;
+  }
+
+  try {
+    var filas = leerExcelManual(file, fuente, corrida);
+    reemplazarLive(fuente, filas);
+    props.setProperty(key, String(tsArchivo));
+    logRun(corrida, fuente, filas.length, esSnapshot, 'ok_manual', file.getName());
+  } catch (e) {
+    logRun(corrida, fuente, 0, esSnapshot, 'error', 'Carga manual: ' + String(e));
+  }
+}
+
+function archivoManual(fuente) {
+  var folder = DriveApp.getFolderById(DRIVE_FOLDER_MANUAL_ID);
+  var it = folder.getFilesByName(fuente + '.xlsx');
+  return it.hasNext() ? it.next() : null;
+}
+
+// Convierte el Excel manual a Google Sheet (misma tecnica que leerExcelSlim),
+// lee TODAS las columnas/filas y las procesa igual que el HTM de SAP
+// (encabezado en fila 1, normalizarKeys, descarta totales/repetidos).
+function leerExcelManual(file, fuente, corrida) {
+  var tmp = Drive.Files.insert(
+    { title: 'tmp_manual_' + fuente + '_' + Date.now(), mimeType: 'application/vnd.google-apps.spreadsheet' },
+    file.getBlob().setContentType('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+  );
+  var rows = [];
+  try {
+    var msW = 0; var sh = null;
+    while (msW < 120000) {
+      try {
+        if (Drive.Files.get(tmp.id).mimeType === 'application/vnd.google-apps.spreadsheet') {
+          sh = SpreadsheetApp.openById(tmp.id).getSheets()[0]; break;
+        }
+      } catch (e3) {}
+      Utilities.sleep(3000); msW += 3000;
+    }
+    if (!sh) throw new Error('Conversion del Excel manual no lista');
+    var last = sh.getLastRow(); var lastCol = sh.getLastColumn();
+    if (last < 1 || lastCol < 1) return [];
+    var values = sh.getRange(1, 1, last, lastCol).getValues();
+    values.forEach(function (r) {
+      rows.push(r.map(function (v) { return txt(v); }));
+    });
+  } finally {
+    try { DriveApp.getFileById(tmp.id).setTrashed(true); } catch (e) {}
+  }
+  return filasDesdeTabla(rows, fuente, corrida);
 }
 
 // ---------------------- HELPERS GMAIL ---------------------------------------
@@ -557,6 +771,17 @@ function etiquetaCorrida() {
 function txt(v) {
   if (v == null) return '';
   if (v instanceof Date) return Utilities.formatDate(v, 'America/Santiago', 'dd.MM.yyyy');
+  // BUG FIX 2026-09-22: al convertir el Excel manual a Google Sheet, las celdas
+  // numericas (peso, cantidad, etc.) llegan como NUMBER de JS, no como el texto
+  // SAP original. String(8.6) = "8.6" (punto decimal). La plataforma (parseNum
+  // en abastecimiento.js) espera el formato SAP/Chile: PUNTO = separador de
+  // miles (lo borra), COMA = decimal. Si dejamos "8.6" tal cual, parseNum lo
+  // interpreta como miles y lo convierte en 86 (10x inflado) -> toneladas mal
+  // calculadas en Plan de Carga (bucket 5/6, Traslados 1003/4000, etc.).
+  // Fix: para numbers, reemplazar el punto decimal de JS por coma ANTES de
+  // convertir a texto, para que quede en formato chileno como si viniera del
+  // HTM de correo. Los enteros (sin punto) no se ven afectados.
+  if (typeof v === 'number') return String(v).replace('.', ',');
   return String(v).trim();
 }
 
@@ -583,3 +808,15 @@ function probar_ahora_slim() {
 // Compatibilidad con el nombre de prueba anterior (equivale a troncales).
 function probar_ahora()          { probar_ahora_troncales(); }
 function probar_ahora_snapshot() { probar_ahora_troncales_snapshot(); }
+
+// Prueba SOLO la carga manual (Drive) de cada bloque, ignorando el control de
+// "sin cambios" (forzar=true), asi puedes probar aunque ya la hayas cargado
+// antes. Util para validar un archivo recien subido a la carpeta Drive.
+function probar_ahora_manual_troncales() {
+  var corrida = etiquetaCorrida();
+  FUENTES_TRONCALES.forEach(function (f) { procesarFuenteDriveManual(f, corrida, false, true); });
+}
+function probar_ahora_manual_pedidosventas() {
+  var corrida = etiquetaCorrida();
+  FUENTES_PEDIDOS_VENTAS.forEach(function (f) { procesarFuenteDriveManual(f, corrida, false, true); });
+}

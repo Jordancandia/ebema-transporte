@@ -6,9 +6,11 @@
  *  ADMINISTRADOR_DEPOSITO. Por corrida y por destinatario se envía UN SOLO
  *  correo, asunto siempre "PLAN DE CARGA – [FECHA]" (sin centro/cantidad en
  *  el asunto — aplica igual para todos). El cuerpo trae una tabla con TODOS
- *  los centros que le correspondan (tengan o no carga), y un archivo CSV
- *  adjunto INDEPENDIENTE solo por cada centro que esté en estado PROGRAMAR
- *  (≥80% de camión lleno) — el correo solo se envía si hay al menos uno.
+ *  los centros que le correspondan (tengan o no carga), separados por Centro
+ *  Origen y por horizonte de planificación (24h / 48h, según
+ *  abast_horizonte_centro), y un archivo CSV adjunto INDEPENDIENTE solo por
+ *  cada centro que esté en estado PROGRAMAR (≥80% de camión lleno) — el
+ *  correo solo se envía si hay al menos uno.
  *
  *  Qué centros le corresponden a cada destinatario:
  *   - Si tiene centro(s) en su "Centro de Preferencia" (app_users.centrosPreferencia)
@@ -21,12 +23,21 @@
  *    15:30  CIERRE
  *
  *  Fuente de datos: vistas server-side v_trc_plan_carga_1003(_detalle) y
- *  v_trc_plan_carga_1081(_detalle) en Supabase PRD (humhokvdowfqicjopbhf).
- *  Esta automatización NO reimplementa la lógica de negocio del Plan de
- *  Carga — solo consulta esas vistas.
+ *  v_trc_plan_carga_1081(_detalle) en Supabase PRD (humhokvdowfqicjopbhf), más
+ *  la tabla abast_horizonte_centro (24h/48h por centro_origen+centro_destino,
+ *  default 24h si no hay fila). Esta automatización NO reimplementa la
+ *  lógica de negocio del Plan de Carga — solo consulta esas vistas/tablas.
  *
- *  Spec funcional completa: spec_correo_plan_carga_2026-09-17.md (memoria del
- *  proyecto SIT EBEMA en Claude).
+ *  Adjuntos CSV: nombre de archivo con prefijo del Centro Origen (ej.
+ *  "1003_PlanCarga_1040_2026-09-23.csv" / "1081_PlanCarga_1100_2026-09-23.csv"),
+ *  con la fecha objetivo del centro según su horizonte (24h -> próximo día
+ *  hábil; 48h -> día hábil siguiente a ese). Separador de campos ";" y
+ *  separador decimal "," (formato Excel/Chile) en las columnas de peso
+ *  (TON_BRUTO, TON_VOL, TON).
+ *
+ *  Spec funcional completa: spec_correo_plan_carga_2026-09-17.md y
+ *  feature_plan_carga_48h_feriados_2026-09-18.md (memoria del proyecto
+ *  SIT EBEMA en Claude).
  *
  *  Requisitos (igual que automatizacion_troncales/README_DESPLIEGUE.md):
  *   1) Zona horaria del proyecto Apps Script = America/Santiago
@@ -86,12 +97,44 @@ function fmtCamion(cap) {
   return Number(cap) === 15 ? 'Camión 15 T' : 'Camión 28 T';
 }
 
+// Orden de prioridad en el que los ítems compiten por la capacidad del
+// camión CD (mismo criterio y mismo orden que marcarCapacidadCD() en
+// js/abastecimiento.js): REVEX, Venta Directa, Retiro CD, Crossdocking,
+// Quiebre, Abastecimiento. Las categorías de despacho directo (CD-Cliente,
+// Fábrica-Cliente, Fábrica-Sucursal) no compiten por esta capacidad — se
+// despachan en camión propio, independiente del Plan de Carga.
+var CATEGORIA_ORDEN_CD = ['REVEX', 'Venta Directa', 'Retiro CD', 'Crossdocking', 'Quiebre', 'Abastecimiento'];
+
+// Marca cada línea del detalle como "SÍ entra en el camión" o "EXCEDE" según
+// capacidad acumulada (misma lógica que marcarCapacidadCD() de la
+// plataforma: se recorre en orden de prioridad y se va sumando tonelaje;
+// apenas la suma supera el cap, esa línea y las siguientes de su categoría
+// quedan EXCEDE). Las categorías de despacho directo quedan en blanco (no
+// aplica, no compiten por este camión).
+function marcarEnCamion(detalle, cap) {
+  var acc = 0;
+  CATEGORIA_ORDEN_CD.forEach(function (cat) {
+    detalle.forEach(function (r) {
+      if (r.categoria !== cat) return;
+      var ton = Number(r.ton) || 0;
+      if (acc + ton <= cap + 1e-9) { r.enCamion = '✓ SÍ'; acc += ton; }
+      else { r.enCamion = '✗ EXCEDE'; }
+    });
+  });
+  detalle.forEach(function (r) {
+    if (r.enCamion === undefined) r.enCamion = '';
+  });
+  return detalle;
+}
+
 // Orden de columnas del CSV adjunto (detalle de líneas de cada centro).
 // (AJUSTE 18-sep-2026) Se agregan TON_BRUTO/TON_VOL de referencia, PEDIDO_VENTA
 // pasa a estar junto al documento, PROVEEDOR/ENTREGA_ENTRANTE (retiros de
 // fábrica) y RUTA/COMUNA/TIPO_EXPEDICION (pedidos de venta) — mismas columnas
 // que se agregaron al CSV descargable de la plataforma (js/abastecimiento.js).
-var CSV_HEADERS = ['CATEGORIA', 'DOCUMENTO', 'MATERIAL', 'NOMBRE', 'PEDIDO_VENTA', 'PROVEEDOR', 'ENTREGA_ENTRANTE', 'RUTA', 'COMUNA', 'TIPO_EXPEDICION', 'FECHA', 'CANTIDAD', 'TON_BRUTO', 'TON_VOL', 'TON'];
+// (AJUSTE 22-sep-2026) Separador de campos ";" (antes ","), habilita usar ","
+// como separador decimal en TON_BRUTO/TON_VOL/TON sin romper el parseo.
+var CSV_HEADERS = ['CATEGORIA', 'EN_CAMION', 'DOCUMENTO', 'MATERIAL', 'NOMBRE', 'PEDIDO_VENTA', 'PROVEEDOR', 'ENTREGA_ENTRANTE', 'RUTA', 'COMUNA', 'TIPO_EXPEDICION', 'FECHA', 'CANTIDAD', 'TON_BRUTO', 'TON_VOL', 'TON'];
 
 // Plantillas de correo por tipo de envío (encabezado + cierre; la tabla va
 // entre medio). {fecha} = fecha de plan en formato dd-mm-yyyy.
@@ -157,16 +200,25 @@ function procesarCorreoPlanCarga(tipo) {
     return;
   }
 
-  var fechaPlan = siguienteDiaHabil(hoy);
-  var fechaPlanStr = Utilities.formatDate(fechaPlan, 'America/Santiago', 'dd-MM-yyyy');
-  var fechaPlanISO = Utilities.formatDate(fechaPlan, 'America/Santiago', 'yyyy-MM-dd');
+  // Fecha objetivo según horizonte: 24h -> próximo día hábil; 48h -> el día
+  // hábil siguiente a ese (AJUSTE 22-sep-2026, antes había una sola fecha
+  // global para todos los centros).
+  var fechaPlan24 = siguienteDiaHabil(hoy);
+  var fechaPlan48 = siguienteDiaHabil(fechaPlan24);
+  var fechaPlan24Str = Utilities.formatDate(fechaPlan24, 'America/Santiago', 'dd-MM-yyyy');
+  var fechaPlan48Str = Utilities.formatDate(fechaPlan48, 'America/Santiago', 'dd-MM-yyyy');
+  var fechaPlan24ISO = Utilities.formatDate(fechaPlan24, 'America/Santiago', 'yyyy-MM-dd');
+  var fechaPlan48ISO = Utilities.formatDate(fechaPlan48, 'America/Santiago', 'yyyy-MM-dd');
 
-  Logger.log('[%s] Corrida %s — fecha de plan %s', corrida, tipo, fechaPlanStr);
+  Logger.log('[%s] Corrida %s — fecha 24h %s / fecha 48h %s', corrida, tipo, fechaPlan24Str, fechaPlan48Str);
 
   // 1) Junta TODOS los centros de ambos CDs (con o sin carga), calculando
-  //    pct/status para cada uno. El cuadro del correo muestra todos; solo los
-  //    que queden en PROGRAMAR generan CSV adjunto y disparan el envío.
-  var todosCentros = []; // { cd, ce, nombre, pct, status, ton_* }
+  //    pct/status para cada uno, y el horizonte (24h/48h) configurado para
+  //    ese centro_origen+centro_destino (abast_horizonte_centro, default 24h
+  //    si no hay fila). El cuadro del correo muestra todos, separados por
+  //    Centro Origen y por horizonte; solo los que queden en PROGRAMAR
+  //    generan CSV adjunto y disparan el envío.
+  var todosCentros = []; // { cd, ce, nombre, pct, status, horizonteHoras, fechaObjetivo, ton_* }
   CDS.forEach(function (cd) {
     var resumen;
     try {
@@ -175,6 +227,13 @@ function procesarCorreoPlanCarga(tipo) {
       Logger.log('[%s] Error consultando %s: %s', corrida, cd.viewResumen, e);
       return;
     }
+    var horizontes;
+    try {
+      horizontes = fetchHorizontes(cd);
+    } catch (e) {
+      Logger.log('[%s] Error consultando abast_horizonte_centro para %s: %s', corrida, cd.id, e);
+      horizontes = {};
+    }
     resumen.forEach(function (row) {
       var ce = String(row.ce || '').trim();
       if (cd.destinos.indexOf(ce) === -1) return; // defensivo: fuera del alcance de este CD
@@ -182,11 +241,15 @@ function procesarCorreoPlanCarga(tipo) {
       var total = Number(row.total_cd) || 0;
       var pct = cap > 0 ? Math.round((total / cap) * 100) : 0;
       var status = pct >= 80 ? 'PROGRAMAR' : (pct >= 70 ? 'REVISAR' : 'CARGA INSUFICIENTE');
+      var horizonteHoras = Number(horizontes[ce]) === 48 ? 48 : 24;
       row.cdId = cd.id;
       row.cdNombre = cd.nombre;
       row.pct = pct;
       row.status = status;
       row.ce = ce;
+      row.horizonteHoras = horizonteHoras;
+      row.fechaObjetivo = horizonteHoras === 48 ? fechaPlan48 : fechaPlan24;
+      row.fechaObjetivoISO = horizonteHoras === 48 ? fechaPlan48ISO : fechaPlan24ISO;
       todosCentros.push(row);
     });
   });
@@ -222,11 +285,13 @@ function procesarCorreoPlanCarga(tipo) {
     return;
   }
 
-  var asunto = 'PLAN DE CARGA – ' + fechaPlanStr;
+  var asunto = 'PLAN DE CARGA – ' + fechaPlan24Str;
 
   // 3) Por destinatario: arma SU cuadro completo (todos los centros que le
-  //    correspondan, tengan o no carga) y envía UN correo con esa tabla +
-  //    un CSV adjunto SOLO por cada centro en PROGRAMAR.
+  //    correspondan, tengan o no carga, separados por Centro Origen y por
+  //    horizonte 24h/48h) y envía UN correo con esa tabla + un CSV adjunto
+  //    SOLO por cada centro en PROGRAMAR, con la fecha objetivo de su
+  //    horizonte y el Centro Origen como prefijo del nombre de archivo.
   destinatarios.forEach(function (u) {
     var esTodos = !u.centrosPreferencia || !u.centrosPreferencia.length;
     var misCentros = esTodos
@@ -238,8 +303,8 @@ function procesarCorreoPlanCarga(tipo) {
     var misProgramados = misCentros.filter(function (row) { return row.status === 'PROGRAMAR'; });
     if (!misProgramados.length) return; // nada en PROGRAMAR para este destinatario hoy: no se envía
 
-    var htmlBody = buildHtmlBody(tipo, fechaPlanStr, misCentros, nombresCentro);
-    var textBody = buildTextBody(tipo, fechaPlanStr, misCentros, nombresCentro);
+    var htmlBody = buildHtmlBody(tipo, fechaPlan24Str, fechaPlan48Str, misCentros, nombresCentro);
+    var textBody = buildTextBody(tipo, fechaPlan24Str, fechaPlan48Str, misCentros, nombresCentro);
 
     var adjuntos = [];
     var detallesPorCentro = {};
@@ -253,7 +318,7 @@ function procesarCorreoPlanCarga(tipo) {
         detalle = [];
       }
       detallesPorCentro[row.ce] = detalle;
-      adjuntos.push(buildCsvBlob(row.ce, fechaPlan, detalle));
+      adjuntos.push(buildCsvBlob(row.cdId, row.ce, row.fechaObjetivo, detalle, row.cap));
     });
 
     try {
@@ -263,12 +328,12 @@ function procesarCorreoPlanCarga(tipo) {
         name: 'SIT EBEMA Transporte'
       });
       misProgramados.forEach(function (row) {
-        logCorreo(corrida, tipo, row.cdId, row.ce, fechaPlanISO, u.email, row.pct, row.status,
+        logCorreo(corrida, tipo, row.cdId, row.ce, row.fechaObjetivoISO, u.email, row.pct, row.status,
           (detallesPorCentro[row.ce] || []).length, 'ok', '');
       });
     } catch (e) {
       misProgramados.forEach(function (row) {
-        logCorreo(corrida, tipo, row.cdId, row.ce, fechaPlanISO, u.email, row.pct, row.status,
+        logCorreo(corrida, tipo, row.cdId, row.ce, row.fechaObjetivoISO, u.email, row.pct, row.status,
           (detallesPorCentro[row.ce] || []).length, 'error', String(e));
       });
     }
@@ -282,7 +347,7 @@ function procesarCorreoPlanCarga(tipo) {
       return esTodos || u.centrosPreferencia.indexOf(row.ce) !== -1;
     });
     if (!alguien) {
-      logCorreo(corrida, tipo, row.cdId, row.ce, fechaPlanISO, '', row.pct, row.status, 0,
+      logCorreo(corrida, tipo, row.cdId, row.ce, row.fechaObjetivoISO, '', row.pct, row.status, 0,
         'sin_destinatarios', 'Ningún usuario activo con ese centro (ni con "todos los centros")');
     }
   });
@@ -317,69 +382,92 @@ function ordenarFilasCd(centros) {
   });
 }
 
-// Tabla HTML de un solo CD Origen (17-sep-2026: antes era una sola tabla
-// mezclando ambos CDs; ahora una tabla separada por cada uno, con encabezado
-// "Centro Origen: <nombre>"). Solo nombre del centro destino (sin código) y
-// columna "Tipo de Camión" con la capacidad tope usada para el %.
-function buildTablaCd(cd, centrosCd, nombresCentro) {
-  if (!centrosCd.length) return '';
-  var filas = ordenarFilasCd(centrosCd).map(function (row) {
-    var bg = STATUS_BG[row.status] || '#ffffff';
-    var celdas = COLUMNAS_TON.map(function (c) {
-      var estilo = 'padding:4px 8px;text-align:right;border:1px solid #ddd' + (c.independiente ? ';background:' + COLOR_INDEPENDIENTE : '');
-      return '<td style="' + estilo + '">' + fmtTon(row[c.key]) + '</td>';
-    }).join('');
-    return '<tr style="background:' + bg + '">' +
-      '<td style="padding:4px 8px;border:1px solid #ddd">' + escapeHtml(nombresCentro[row.ce] || row.ce) + '</td>' +
-      '<td style="padding:4px 8px;text-align:right;border:1px solid #ddd">' + row.pct + '%</td>' +
-      '<td style="padding:4px 8px;border:1px solid #ddd;font-weight:bold">' + escapeHtml(row.status) + '</td>' +
-      '<td style="padding:4px 8px;border:1px solid #ddd">' + escapeHtml(fmtCamion(row.cap)) + '</td>' +
-      celdas +
-      '</tr>';
-  }).join('');
-
+// Encabezado de columnas (compartido entre los sub-cuadros 24h/48h de un
+// mismo Centro Origen).
+function headerColumnasHtml() {
   var headerCols = ['Centro', '%', 'Estado', 'Tipo de Camión'].concat(COLUMNAS_TON.map(function (c) { return c.label; }));
-  var headerHtml = headerCols.map(function (h, i) {
+  return headerCols.map(function (h, i) {
     var col = COLUMNAS_TON[i - 4]; // las primeras 4 columnas no están en COLUMNAS_TON
     var bg = (col && col.independiente) ? COLOR_INDEPENDIENTE : '#f2f2f2';
     return '<th style="padding:4px 8px;text-align:left;border:1px solid #ddd;background:' + bg + '">' + h + '</th>';
   }).join('');
-
-  return '<p style="font-weight:bold;margin:14px 0 4px">Centro Origen: ' + escapeHtml(cd.nombre) + '</p>' +
-    '<table style="border-collapse:collapse;font-family:Arial,sans-serif;font-size:13px;margin-bottom:8px">' +
-    '<thead><tr>' + headerHtml + '</tr></thead>' +
-    '<tbody>' + filas + '</tbody>' +
-    '</table>';
 }
 
-function buildHtmlBody(tipo, fechaPlanStr, centros, nombresCentro) {
+function filaHtml(row, nombresCentro) {
+  var bg = STATUS_BG[row.status] || '#ffffff';
+  var celdas = COLUMNAS_TON.map(function (c) {
+    var estilo = 'padding:4px 8px;text-align:right;border:1px solid #ddd' + (c.independiente ? ';background:' + COLOR_INDEPENDIENTE : '');
+    return '<td style="' + estilo + '">' + fmtTon(row[c.key]) + '</td>';
+  }).join('');
+  return '<tr style="background:' + bg + '">' +
+    '<td style="padding:4px 8px;border:1px solid #ddd">' + escapeHtml(nombresCentro[row.ce] || row.ce) + '</td>' +
+    '<td style="padding:4px 8px;text-align:right;border:1px solid #ddd">' + row.pct + '%</td>' +
+    '<td style="padding:4px 8px;border:1px solid #ddd;font-weight:bold">' + escapeHtml(row.status) + '</td>' +
+    '<td style="padding:4px 8px;border:1px solid #ddd">' + escapeHtml(fmtCamion(row.cap)) + '</td>' +
+    celdas +
+    '</tr>';
+}
+
+// Tabla(s) HTML de un Centro Origen (17-sep-2026: una tabla por CD, con
+// encabezado "Centro Origen: <nombre>"). AJUSTE 22-sep-2026: dentro de cada
+// Centro Origen se separa además por horizonte de planificación (24h/48h),
+// cada sub-cuadro con su propia fecha objetivo — un centro a 48h (ej.
+// Coquimbo) aparece en el bloque "48h" con la fecha del día hábil siguiente,
+// no la del bloque 24h.
+function buildTablaCd(cd, centrosCd, nombresCentro, fechaPlan24Str, fechaPlan48Str) {
+  if (!centrosCd.length) return '';
+  var grupos = [
+    { horas: 24, titulo: 'Planificación a 24h (fecha objetivo: ' + fechaPlan24Str + ')' },
+    { horas: 48, titulo: 'Planificación a 48h (fecha objetivo: ' + fechaPlan48Str + ')' }
+  ];
+  return grupos.map(function (g) {
+    var centrosGrupo = centrosCd.filter(function (row) { return (row.horizonteHoras || 24) === g.horas; });
+    if (!centrosGrupo.length) return '';
+    var filas = ordenarFilasCd(centrosGrupo).map(function (row) { return filaHtml(row, nombresCentro); }).join('');
+    return '<p style="font-weight:bold;margin:14px 0 4px">Centro Origen: ' + escapeHtml(cd.nombre) + ' — ' + g.titulo + '</p>' +
+      '<table style="border-collapse:collapse;font-family:Arial,sans-serif;font-size:13px;margin-bottom:8px">' +
+      '<thead><tr>' + headerColumnasHtml() + '</tr></thead>' +
+      '<tbody>' + filas + '</tbody>' +
+      '</table>';
+  }).join('');
+}
+
+function buildHtmlBody(tipo, fechaPlan24Str, fechaPlan48Str, centros, nombresCentro) {
   var cfg = RUN_CONFIG[tipo];
   var tablas = CDS.map(function (cd) {
-    return buildTablaCd(cd, centros.filter(function (row) { return row.cdId === cd.id; }), nombresCentro);
+    return buildTablaCd(cd, centros.filter(function (row) { return row.cdId === cd.id; }), nombresCentro, fechaPlan24Str, fechaPlan48Str);
   }).join('');
 
-  return '<p>' + escapeHtml(cfg.encabezado(fechaPlanStr)) + '</p>' +
-    '<p style="font-size:12px;color:#555">Se muestran todos tus centros, separados por Centro Origen; los marcados <b>PROGRAMAR</b> traen el detalle adjunto en CSV. Las columnas CD-Cliente, Fábrica-Cliente y Fábrica-Sucursal (fondo lila) son despachos directos, independientes del Plan de Carga.</p>' +
+  return '<p>' + escapeHtml(cfg.encabezado(fechaPlan24Str)) + '</p>' +
+    '<p style="font-size:12px;color:#555">Se muestran todos tus centros, separados por Centro Origen y por horizonte de planificación (24h / 48h); los marcados <b>PROGRAMAR</b> traen el detalle adjunto en CSV con la fecha objetivo correspondiente a su horizonte. Las columnas CD-Cliente, Fábrica-Cliente y Fábrica-Sucursal (fondo lila) son despachos directos, independientes del Plan de Carga.</p>' +
     tablas +
     '<p>' + escapeHtml(cfg.cierre()) + '</p>';
 }
 
-function buildTextBody(tipo, fechaPlanStr, centros, nombresCentro) {
+function buildTextBody(tipo, fechaPlan24Str, fechaPlan48Str, centros, nombresCentro) {
   var cfg = RUN_CONFIG[tipo];
-  var bloques = CDS.map(function (cd) {
-    var centrosCd = ordenarFilasCd(centros.filter(function (row) { return row.cdId === cd.id; }));
-    if (!centrosCd.length) return '';
-    var lineas = centrosCd.map(function (row) {
-      var partes = COLUMNAS_TON.map(function (c) { return c.label + ': ' + fmtTon(row[c.key]) + ' T'; });
-      return '- ' + (nombresCentro[row.ce] || row.ce) + ' (' + row.pct + '%, ' + row.status + ', ' + fmtCamion(row.cap) + '): ' + partes.join(', ');
+  var grupos = [
+    { horas: 24, titulo: 'Planificación a 24h (fecha objetivo: ' + fechaPlan24Str + ')' },
+    { horas: 48, titulo: 'Planificación a 48h (fecha objetivo: ' + fechaPlan48Str + ')' }
+  ];
+  var bloques = [];
+  CDS.forEach(function (cd) {
+    var centrosCd = centros.filter(function (row) { return row.cdId === cd.id; });
+    grupos.forEach(function (g) {
+      var centrosGrupo = ordenarFilasCd(centrosCd.filter(function (row) { return (row.horizonteHoras || 24) === g.horas; }));
+      if (!centrosGrupo.length) return;
+      var lineas = centrosGrupo.map(function (row) {
+        var partes = COLUMNAS_TON.map(function (c) { return c.label + ': ' + fmtTon(row[c.key]) + ' T'; });
+        return '- ' + (nombresCentro[row.ce] || row.ce) + ' (' + row.pct + '%, ' + row.status + ', ' + fmtCamion(row.cap) + '): ' + partes.join(', ');
+      });
+      bloques.push('Centro Origen: ' + cd.nombre + ' — ' + g.titulo + '\n' + lineas.join('\n'));
     });
-    return 'Centro Origen: ' + cd.nombre + '\n' + lineas.join('\n');
-  }).filter(function (b) { return b; }).join('\n\n');
+  });
 
-  return cfg.encabezado(fechaPlanStr) + '\n' +
+  return cfg.encabezado(fechaPlan24Str) + '\n' +
     'Orden de columnas: REVEX, Venta Directa, Retiro Fábrica, Crossdocking, Quiebre, Abastecimiento, CD-Cliente, Fábrica-Cliente, Fábrica-Sucursal (estas 3 últimas son despachos directos, independientes del Plan de Carga).\n' +
-    'Se listan todos tus centros, separados por Centro Origen; solo los PROGRAMAR traen CSV adjunto.\n\n' +
-    bloques + '\n\n' +
+    'Se listan todos tus centros, separados por Centro Origen y por horizonte de planificación (24h/48h); solo los PROGRAMAR traen CSV adjunto con la fecha objetivo correspondiente.\n\n' +
+    bloques.join('\n\n') + '\n\n' +
     cfg.cierre();
 }
 
@@ -402,26 +490,42 @@ function etiquetaCorrida() {
 }
 
 // ---------------------- CSV DEL DETALLE (uno por centro) ----------------------
-function buildCsvBlob(ce, fechaPlan, detalle) {
-  var lines = [CSV_HEADERS.join(',')];
+// (AJUSTE 22-sep-2026) Prefijo del Centro Origen en el nombre de archivo
+// (ej. "1003_PlanCarga_1040_2026-09-23.csv"), fecha objetivo según el
+// horizonte de ESE centro (24h/48h, ya resuelta antes de llamar a esta
+// función), separador decimal "," en TON_BRUTO/TON_VOL/TON (separador de
+// campo ";", ver CSV_HEADERS), y columna EN_CAMION (marcarEnCamion) que
+// distingue qué líneas quedan dentro de la capacidad del camión CD ("✓ SÍ")
+// de las que la exceden ("✗ EXCEDE"); en blanco para las categorías de
+// despacho directo (CD-Cliente, Fábrica-Cliente, Fábrica-Sucursal).
+function buildCsvBlob(cdOrigenId, ce, fechaObjetivo, detalle, cap) {
+  marcarEnCamion(detalle, Number(cap) || 0);
+  var lines = [CSV_HEADERS.join(';')];
   detalle.forEach(function (r) {
     lines.push([
-      csvCell(r.categoria), csvCell(r.documento), csvCell(r.material), csvCell(r.nombre),
+      csvCell(r.categoria), csvCell(r.enCamion), csvCell(r.documento), csvCell(r.material), csvCell(r.nombre),
       csvCell(r.pedido_venta), csvCell(r.proveedor), csvCell(r.entrega_entrante),
       csvCell(r.ruta), csvCell(r.comuna), csvCell(r.tipo_expedicion),
-      csvCell(r.fecha), csvCell(r.cantidad), csvCell(r.ton_bruto), csvCell(r.ton_vol), csvCell(r.ton)
-    ].join(','));
+      csvCell(r.fecha), csvCell(r.cantidad), csvNum(r.ton_bruto), csvNum(r.ton_vol), csvNum(r.ton)
+    ].join(';'));
   });
   var csv = '﻿' + lines.join('\r\n'); // BOM para que Excel abra bien los acentos
-  var nombreArchivo = 'PlanCarga_' + ce + '_' + Utilities.formatDate(fechaPlan, 'America/Santiago', 'yyyy-MM-dd') + '.csv';
+  var nombreArchivo = cdOrigenId + '_PlanCarga_' + ce + '_' + Utilities.formatDate(fechaObjetivo, 'America/Santiago', 'yyyy-MM-dd') + '.csv';
   return Utilities.newBlob(csv, 'text/csv;charset=utf-8', nombreArchivo);
 }
 
 function csvCell(v) {
   if (v == null) return '';
   var s = String(v);
-  if (/[",\n]/.test(s)) s = '"' + s.replace(/"/g, '""') + '"';
+  if (/[;"\n]/.test(s)) s = '"' + s.replace(/"/g, '""') + '"';
   return s;
+}
+
+// Igual que csvCell pero para columnas numéricas de peso: usa "," como
+// separador decimal (formato Excel/Chile) en vez de ".".
+function csvNum(v) {
+  if (v == null || v === '') return '';
+  return String(v).replace('.', ',');
 }
 
 // ---------------------- HELPERS SUPABASE (REST) -------------------------------
@@ -447,6 +551,18 @@ function sbGet(path) {
 
 function fetchResumen(cd) {
   return sbGet(cd.viewResumen + '?select=ce,total_cd,cap,ton_quiebre,ton_stock,ton_revex,ton_cross,ton_venta_cons,ton_venta_cliente,ton_retiro,ton_fab_suc,ton_fab_cli');
+}
+
+// Horizonte de planificación (24h/48h) por centro_destino, para el
+// centro_origen de este CD. Sin fila guardada en abast_horizonte_centro =
+// 24h por defecto (mismo criterio que js/abastecimiento.js en la plataforma).
+function fetchHorizontes(cd) {
+  var rows = sbGet('abast_horizonte_centro?centro_origen=eq.' + encodeURIComponent(cd.id) + '&select=centro_destino,horizonte_horas');
+  var map = {};
+  rows.forEach(function (r) {
+    map[String(r.centro_destino)] = Number(r.horizonte_horas) === 48 ? 48 : 24;
+  });
+  return map;
 }
 
 function getDetalleCentro(cd, ce) {
