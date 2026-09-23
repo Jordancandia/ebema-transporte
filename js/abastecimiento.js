@@ -10,8 +10,8 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202609230851';
-import { getDatabase } from './data.js?v=202609230851';
+import { supabase } from './supabase-client.js?v=202609231440';
+import { getDatabase } from './data.js?v=202609231440';
 import { showAlert, escapeHtml } from './utils.js';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
@@ -411,57 +411,63 @@ function showCoordModal(row) {
             <input type="hidden" id="coord-local-rm" value="${preselectLR}">
           </div>
 
-          <div class="flex flex-col gap-1">
-            <label for="coord-fecha-retiro" class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Fecha de Retiro *</label>
-            <input id="coord-fecha-retiro" type="date" required value="${row._fecha_retiro || ''}"
-              class="border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary">
-            <span class="text-[11px] text-secondary">Día en que el camión pasa a retirar. El retiro se contabiliza en el Plan de Carga a partir de esta fecha.</span>
-          </div>
+          <button type="button" id="toggle-info-btn" class="flex items-center gap-1 text-xs font-semibold text-primary self-start ${preselectLR === 'RM' ? 'hidden' : ''}">
+            <span id="toggle-info-arrow">\u25B8</span> Agregar Información
+          </button>
 
-          <div id="fab-form" class="flex flex-col gap-3">
+          <div id="info-wrap" class="flex flex-col gap-4 ${preselectLR === 'LOCAL' ? 'hidden' : ''}">
             <div class="flex flex-col gap-1">
-              <label class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Dirección de Fábrica</label>
-              ${dirs.length > 0 ? `<select id="coord-dir-sel" class="border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary">
-                <option value="">— Seleccionar dirección guardada —</option>
-                ${dirOpts}
-                <option value="__manual__">+ Ingresar nueva dirección</option>
-              </select>` : ''}
-              <input id="coord-direccion" type="text" placeholder="Dirección" value="${row._fab_direccion || ''}"
-                class="border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary ${dirs.length > 0 ? 'hidden' : ''}">
+              <label for="coord-fecha-retiro" class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Fecha de Retiro</label>
+              <input id="coord-fecha-retiro" type="date" value="${row._fecha_retiro || ''}"
+                class="border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary">
+              <span class="text-[11px] text-secondary">Día en que el camión pasa a retirar. El retiro se contabiliza en el Plan de Carga a partir de esta fecha.</span>
             </div>
-            <div class="flex gap-2">
-              <div class="flex flex-col gap-1 flex-1">
-                <label class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Comuna</label>
-                <input id="coord-comuna" type="text" placeholder="Comuna" value="${row._fab_comuna || ''}"
-                  class="border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary">
-              </div>
-            </div>
-            <div class="flex gap-2">
-              <div class="flex flex-col gap-1 flex-1">
-                <label class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Persona de Contacto</label>
-                <input id="coord-contacto" type="text" placeholder="Nombre contacto" value="${row._fab_contacto || ''}"
-                  class="border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary">
-              </div>
-              <div class="flex flex-col gap-1 flex-1">
-                <label class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Teléfono</label>
-                <input id="coord-telefono" type="text" placeholder="+56 9..." value="${row._fab_telefono || ''}"
-                  class="border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary">
-              </div>
-            </div>
-            <label id="coord-guardar-prov-wrap" class="flex items-center gap-2 text-xs text-secondary cursor-pointer ${dirs.length > 0 ? 'hidden' : ''}">
-              <input type="checkbox" id="coord-guardar-prov" checked class="accent-primary"> Guardar esta dirección en el proveedor
-            </label>
-          </div>
 
-          <div id="entrega-wrap" class="flex flex-col gap-1 ${preselectLR !== 'RM' ? 'hidden' : ''}">
-            <label for="coord-entrega" class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Entrega Entrante SAP</label>
-            <input id="coord-entrega" type="text" placeholder="Número SAP de entrega" value="${row._entrega_entrante || ''}"
-              class="border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary">
-          </div>
+            <div id="fab-form" class="flex flex-col gap-3">
+              <div class="flex flex-col gap-1">
+                <label class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Dirección de Fábrica</label>
+                ${dirs.length > 0 ? `<select id="coord-dir-sel" class="border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary">
+                  <option value="">— Seleccionar dirección guardada —</option>
+                  ${dirOpts}
+                  <option value="__manual__">+ Ingresar nueva dirección</option>
+                </select>` : ''}
+                <input id="coord-direccion" type="text" placeholder="Dirección" value="${row._fab_direccion || ''}"
+                  class="border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary ${dirs.length > 0 ? 'hidden' : ''}">
+              </div>
+              <div class="flex gap-2">
+                <div class="flex flex-col gap-1 flex-1">
+                  <label class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Comuna</label>
+                  <input id="coord-comuna" type="text" placeholder="Comuna" value="${row._fab_comuna || ''}"
+                    class="border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary">
+                </div>
+              </div>
+              <div class="flex gap-2">
+                <div class="flex flex-col gap-1 flex-1">
+                  <label class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Persona de Contacto</label>
+                  <input id="coord-contacto" type="text" placeholder="Nombre contacto" value="${row._fab_contacto || ''}"
+                    class="border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary">
+                </div>
+                <div class="flex flex-col gap-1 flex-1">
+                  <label class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Teléfono</label>
+                  <input id="coord-telefono" type="text" placeholder="+56 9..." value="${row._fab_telefono || ''}"
+                    class="border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary">
+                </div>
+              </div>
+              <label id="coord-guardar-prov-wrap" class="flex items-center gap-2 text-xs text-secondary cursor-pointer ${dirs.length > 0 ? 'hidden' : ''}">
+                <input type="checkbox" id="coord-guardar-prov" checked class="accent-primary"> Guardar esta dirección en el proveedor
+              </label>
+            </div>
 
-          <div id="tipo-fab-wrap" class="flex flex-col gap-1 ${preselectLR !== 'RM' ? 'hidden' : ''}">
-            <span class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Clasificación Fábrica</span>
-            <div class="flex gap-3 mt-1">${radios}</div>
+            <div id="entrega-wrap" class="flex flex-col gap-1 ${preselectLR !== 'RM' ? 'hidden' : ''}">
+              <label for="coord-entrega" class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Entrega Entrante SAP</label>
+              <input id="coord-entrega" type="text" placeholder="Número SAP de entrega" value="${row._entrega_entrante || ''}"
+                class="border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary">
+            </div>
+
+            <div id="tipo-fab-wrap" class="flex flex-col gap-1 ${preselectLR !== 'RM' ? 'hidden' : ''}">
+              <span class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Clasificación Fábrica</span>
+              <div class="flex gap-3 mt-1">${radios}</div>
+            </div>
           </div>
 
           <div class="flex gap-2 justify-end pt-1">
@@ -480,6 +486,9 @@ function showCoordModal(row) {
     const inputLR  = document.getElementById('coord-local-rm');
     const entregaWrap = document.getElementById('entrega-wrap');
     const tipoFabWrap = document.getElementById('tipo-fab-wrap');
+    const infoWrap = document.getElementById('info-wrap');
+    const toggleInfoBtn = document.getElementById('toggle-info-btn');
+    const toggleInfoArrow = document.getElementById('toggle-info-arrow');
     function setLR(v) {
       inputLR.value = v;
       [btnLocal, btnRm].forEach(b => b.classList.remove('border-primary','bg-primary/10','text-primary'));
@@ -487,11 +496,21 @@ function showCoordModal(row) {
       const active = v === 'LOCAL' ? btnLocal : btnRm;
       active.classList.add('border-primary','bg-primary/10','text-primary');
       active.classList.remove('border-outline-variant','text-secondary');
-      if (v === 'RM') { entregaWrap.classList.remove('hidden'); tipoFabWrap.classList.remove('hidden'); }
-      else            { entregaWrap.classList.add('hidden');    tipoFabWrap.classList.add('hidden'); }
+      if (v === 'RM') {
+        entregaWrap.classList.remove('hidden'); tipoFabWrap.classList.remove('hidden');
+        infoWrap.classList.remove('hidden'); toggleInfoBtn.classList.add('hidden');
+      } else {
+        entregaWrap.classList.add('hidden');    tipoFabWrap.classList.add('hidden');
+        infoWrap.classList.add('hidden'); toggleInfoBtn.classList.remove('hidden');
+        toggleInfoArrow.textContent = '\u25B8';
+      }
     }
     btnLocal.addEventListener('click', () => setLR('LOCAL'));
     btnRm.addEventListener('click',    () => setLR('RM'));
+    toggleInfoBtn.addEventListener('click', () => {
+      const isHidden = infoWrap.classList.toggle('hidden');
+      toggleInfoArrow.textContent = isHidden ? '\u25B8' : '\u25BE';
+    });
 
     // Selector de direcciones guardadas
     const dirSel = document.getElementById('coord-dir-sel');
@@ -523,14 +542,14 @@ function showCoordModal(row) {
 
     document.getElementById('coord-cancel').addEventListener('click', () => { cleanup(); resolve(null); });
     document.getElementById('coord-confirm').addEventListener('click', async () => {
+      const tipoLocalRM    = inputLR.value;
       const inputFecha = document.getElementById('coord-fecha-retiro');
       const fechaRetiro = (inputFecha?.value || '').trim();
-      if (!fechaRetiro) {
+      if (tipoLocalRM !== 'LOCAL' && !fechaRetiro) {
         inputFecha.classList.add('ring-2', 'ring-red-500');
         showAlert('Debe indicar la Fecha de Retiro', 'error');
         return;
       }
-      const tipoLocalRM    = inputLR.value;
       const tipoRetiro     = tipoLocalRM === 'RM' ? (bg.querySelector('input[name="coord-tipo"]:checked')?.value || preselect) : null;
       const entregaEntrante = tipoLocalRM === 'RM' ? (document.getElementById('coord-entrega')?.value || '').trim() : '';
       const fabDir  = inputDir  ? inputDir.value.trim()  : '';
