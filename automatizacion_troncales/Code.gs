@@ -120,8 +120,11 @@ function ejecutar_troncales_horario() {
   if (h < 9 || h > 12) return;
   correrTroncales(false);
 }
-function ejecutar_troncales_1335() { correrTroncales(true); }  // guarda snapshot del dia
-function ejecutar_troncales_1510() { correrTroncales(false); }
+function ejecutar_troncales_1335() { correrTroncales(false); }
+// Snapshot movido a las 15:30 (23-sep-2026, pedido de Jordan): guarda lo que
+// haya en trc_live a esa hora, sin depender de que llegue correo a las 13:35.
+function ejecutar_troncales_1530() { correrTroncales(true); }
+function ejecutar_troncales_1510() { correrTroncales(false); } // legado, sin trigger
 function ejecutar_troncales_1450() { correrTroncales(false); } // legado, sin trigger
 
 function correrTroncales(esSnapshot) {
@@ -183,7 +186,7 @@ function ejecutar_barrido_rezagados() {
   if (!esDiaHabil()) return;
   var hm = Utilities.formatDate(new Date(), 'America/Santiago', 'H:mm').split(':');
   var min = parseInt(hm[0], 10) * 60 + parseInt(hm[1], 10);
-  if (min < 9 * 60 || min > 15 * 60 + 10) return; // 09:00 - 15:00 (+10 min de tolerancia del trigger)
+  if (min < 8 * 60 + 15 || min > 15 * 60 + 20 + 10) return; // 08:15 - 15:20 (+10 min de tolerancia del trigger)
   var bloques = [
     ['TRONCALES', LABEL_TRONCALES, FUENTES_TRONCALES],
     ['PEDIDOS_VENTAS', LABEL_PEDIDOS_VENTAS, FUENTES_PEDIDOS_VENTAS],
@@ -246,11 +249,11 @@ function correrSlim() {
 // script para no duplicar, y crea los nuevos (15 triggers; +3 de CorreoPlanCarga.gs = 18 de 20).
 function crearTriggers() {
   var viejos = ['ejecutar_0730', 'ejecutar_1130', 'ejecutar_tarde', 'ejecutar_1430',
-    'ejecutar_pedidosventas_1435', 'ejecutar_troncales_0735', 'ejecutar_pedidosventas_0710', 'ejecutar_0735', 'ejecutar_1135', 'ejecutar_1335', 'ejecutar_1340', 'ejecutar_1350'];
+    'ejecutar_pedidosventas_1435', 'ejecutar_troncales_0735', 'ejecutar_pedidosventas_0710', 'ejecutar_0735', 'ejecutar_1135', 'ejecutar_1335', 'ejecutar_1340', 'ejecutar_1350', 'ejecutar_troncales_1510'];
   var nuevos = [
     'ejecutar_troncales_0755', 'ejecutar_troncales_horario',
     'ejecutar_troncales_0935', 'ejecutar_troncales_1035', 'ejecutar_troncales_1135', 'ejecutar_troncales_1235',
-    'ejecutar_troncales_1335', 'ejecutar_troncales_1450', 'ejecutar_troncales_1510',
+    'ejecutar_troncales_1335', 'ejecutar_troncales_1450', 'ejecutar_troncales_1530',
     'ejecutar_pedidosventas_0740', 'ejecutar_pedidosventas_1110', 'ejecutar_pedidosventas_1310', 'ejecutar_pedidosventas_1440',
     'ejecutar_entregas_0715', 'ejecutar_entregas_1230', 'ejecutar_entregas_1500',
     'ejecutar_doctransporte_0810', 'ejecutar_doctransporte_1630', 'ejecutar_doctransporte_2230',
@@ -269,7 +272,7 @@ function crearTriggers() {
   crear('ejecutar_troncales_0755', 7, 55);
   ScriptApp.newTrigger('ejecutar_troncales_horario').timeBased().everyHours(1).nearMinute(35).create(); // 09:35-12:35
   crear('ejecutar_troncales_1335', 13, 35);
-  crear('ejecutar_troncales_1510', 15, 10); // SAP envia el ultimo lote ~14:31-14:46
+  crear('ejecutar_troncales_1530', 15, 30); // snapshot: guarda lo que haya en trc_live a esa hora
   // PEDIDOS DE VENTAS
   crear('ejecutar_pedidosventas_0740', 7, 40);
   crear('ejecutar_pedidosventas_1110', 11, 10);
@@ -285,8 +288,8 @@ function crearTriggers() {
   crear('ejecutar_doctransporte_2230', 22, 30);
   // SLIM
   crear('ejecutar_slim_0630', 6, 30);
-  // BARRIDO DE REZAGADOS (cada 30 min; solo actua de 09:00 a 15:00 lun-vie)
-  ScriptApp.newTrigger('ejecutar_barrido_rezagados').timeBased().everyMinutes(30).create();
+  // BARRIDO DE REZAGADOS (cada 15 min; solo actua de 08:15 a 15:20 lun-vie)
+  ScriptApp.newTrigger('ejecutar_barrido_rezagados').timeBased().everyMinutes(15).create();
 
   Logger.log('16 triggers creados (America/Santiago). Cada uno valida esDiaHabil() ' +
     'antes de correr, por lo que en sabado/domingo no hacen nada.');

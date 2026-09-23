@@ -10,8 +10,8 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202609231440';
-import { getDatabase } from './data.js?v=202609231440';
+import { supabase } from './supabase-client.js?v=202609231711';
+import { getDatabase } from './data.js?v=202609231711';
 import { showAlert, escapeHtml } from './utils.js';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
@@ -716,7 +716,7 @@ const VISTAS_TRONCAL = {
       const pvMap = (ctx && ctx.pvMap) || {};
       const validas = rows
         .filter(r => !String(r.proveedor ?? '').startsWith('*'))
-        .filter(r => String(r.contr ?? '').trim() !== '');
+        .filter(r => String(r.doc_compr ?? '').trim() !== ''); // contr (Contrato de Compra) es opcional, no filtrar por eso
       // Agrupar por Orden de Compra (doc_compr)
       const g = new Map();
       validas.forEach(r => {
