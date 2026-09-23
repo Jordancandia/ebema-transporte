@@ -10,8 +10,8 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202609221746';
-import { getDatabase } from './data.js?v=202609221746';
+import { supabase } from './supabase-client.js?v=202609230851';
+import { getDatabase } from './data.js?v=202609230851';
 import { showAlert, escapeHtml } from './utils.js';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
@@ -1775,11 +1775,20 @@ async function renderPlanCarga(stage) {
     // 6. Retiros proveedor CONSOLIDAR CD (tipo_retiro=FAB-CD) → parte del CD.
     // (AJUSTE 22-sep-2026) Corte de fecha por centro: usa el horizonte de `ce`
     // (24h→diaHabil1, 48h→diaHabil2) en vez del corte global fijo a 24h.
+    // (AJUSTE 23-sep-2026, pedido Jordan) El corte NO debe ser un rango abierto
+    // (`fr <= cutoffRetiroCe`): eso hacía que un retiro con fecha_retiro = mañana
+    // (diaHabil1) apareciera también en el plan de un centro a 48h (cutoff =
+    // diaHabil2), aunque ese retiro es "para retirar mañana", no para la ventana
+    // de 48h. Ahora sólo cuenta si: (a) está atrasado — fecha_retiro < diaHabil1,
+    // debe salir ASAP y se sigue mostrando igual — o (b) su fecha_retiro coincide
+    // EXACTAMENTE con el día objetivo de este centro (diaHabil1 si es 24h,
+    // diaHabil2 si es 48h). Un retiro fechado exactamente en diaHabil1 para un
+    // centro a 48h ya no se cuenta en este plan (pertenece al plan de mañana).
     const cutoffRetiroCe = getHorizonte(ce) === 48 ? diaHabil2 : diaHabil1;
     const retirosCons = retiros
       .filter(r => String(r.ce ?? '').trim() === ce)
       .filter(r => (estadosRetiro[String(r.doc_compr ?? '').trim()] || {}).tipo_retiro === 'FAB-CD')
-      .filter(r => { const _e = estadosRetiro[String(r.doc_compr ?? '').trim()] || {}; const fr = parseISODate(_e.fecha_retiro); return !fr || fr <= cutoffRetiroCe; });
+      .filter(r => { const _e = estadosRetiro[String(r.doc_compr ?? '').trim()] || {}; const fr = parseISODate(_e.fecha_retiro); return !fr || fr.getTime() < diaHabil1.getTime() || fr.getTime() === cutoffRetiroCe.getTime(); });
     const itemR = (r, cant, t) => { const _oc = String(r.doc_compr ?? '').trim(); const _e = estadosRetiro[_oc] || {}; const ee = _e.entrega_entrante || '';
       const tonBruto = calcTon(parseNum(r.peso_bruto), cant), tonVol = calcTon(parseNum(r.tamano_dimens), cant);
       // Fecha de Retiro coordinada (prioridad) — si no hay, se usa la fecha de entrega SAP de referencia.
