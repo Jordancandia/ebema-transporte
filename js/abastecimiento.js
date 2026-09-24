@@ -10,8 +10,8 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202609241309';
-import { getDatabase } from './data.js?v=202609241309';
+import { supabase } from './supabase-client.js?v=202609241316';
+import { getDatabase } from './data.js?v=202609241316';
 import { showAlert, escapeHtml } from './utils.js';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
@@ -1955,9 +1955,17 @@ async function renderPlanCarga(stage) {
       det,
     };
   }).sort((a, b) => {
-    // (AJUSTE 3.0) Prioridad del día primero, luego % completitud
-    if (a.enCalendario !== b.enCalendario) return a.enCalendario ? -1 : 1;
-    return b.pct - a.pct;
+    // (AJUSTE 24-sep-2026, pedido Jordan) Prioridad real de despacho:
+    // 1) Centros en agenda que SÍ alcanzan carga suficiente (pct >= 70) van
+    //    primero: son los camiones que por agenda tienen espacio asegurado.
+    // 2) El resto (en agenda pero con carga insuficiente, o fuera de agenda)
+    //    compite por los cupos restantes; entre ellos gana quien tenga más
+    //    toneladas totales, sin importar si estaba o no en la agenda.
+    const aPrioriza = a.enCalendario && a.pct >= 70;
+    const bPrioriza = b.enCalendario && b.pct >= 70;
+    if (aPrioriza !== bPrioriza) return aPrioriza ? -1 : 1;
+    if (aPrioriza && bPrioriza) return b.pct - a.pct;
+    return b.total - a.total;
   });
 
   const diasSemana = ['Domingo','Lunes','Martes','Miércoles','Jueves','Viernes','Sábado'];
