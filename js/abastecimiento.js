@@ -10,8 +10,8 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202609241035';
-import { getDatabase } from './data.js?v=202609241035';
+import { supabase } from './supabase-client.js?v=202609241259';
+import { getDatabase } from './data.js?v=202609241259';
 import { showAlert, escapeHtml } from './utils.js';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
@@ -1682,9 +1682,9 @@ async function renderPlanCarga(stage) {
   const calendarioOrigenRows = calendarioRows.filter(r => String(r.centro ?? '').trim() === planOrigen);
   const programadosDia1 = getCentrosProgramados(calendarioOrigenRows, diaHabil1.getDay()); // ventana 24h
   const programadosDia2 = getCentrosProgramados(calendarioOrigenRows, diaHabil2.getDay()); // ventana 48h
-  const centrosProgramados = new Set(
-    Array.from(centrosSet).filter(ce => (getHorizonte(ce) === 48 ? programadosDia2 : programadosDia1).has(ce))
-  );
+  // (AJUSTE 24-sep-2026) `enCalendario` ya no se precalcula acá: se evalúa por
+  // centro dentro del map de abajo, contra el horizonte EFECTIVO (que puede
+  // promoverse de 48h a 24h según la carga disponible para mañana).
 
   const resultado = Array.from(centrosSet).map(ce => {
     // Capacidad de referencia (camión lleno) para los umbrales de camión
@@ -1832,21 +1832,32 @@ async function renderPlanCarga(stage) {
     // está retirando hoy, no está atrasado — sólo pasa a considerarse atrasado
     // (y por lo tanto reaparece en el plan) a partir del día SIGUIENTE a su
     // fecha_retiro si sigue sin cerrarse (estado sigue "coordinado").
-    const cutoffRetiroCe = getHorizonte(ce) === 48 ? diaHabil2 : diaHabil1;
-    const retirosCons = retiros
-      .filter(r => String(r.ce ?? '').trim() === ce)
-      .filter(r => (estadosRetiro[String(r.doc_compr ?? '').trim()] || {}).tipo_retiro === 'FAB-CD')
-      .filter(r => { const _e = estadosRetiro[String(r.doc_compr ?? '').trim()] || {}; const fr = parseISODate(_e.fecha_retiro); return !fr || fr.getTime() < hoy00().getTime() || fr.getTime() === cutoffRetiroCe.getTime(); });
     const itemR = (r, cant, t) => { const _oc = String(r.doc_compr ?? '').trim(); const _e = estadosRetiro[_oc] || {}; const ee = _e.entrega_entrante || '';
       const tonBruto = calcTon(parseNum(r.peso_bruto), cant), tonVol = calcTon(parseNum(r.tamano_dimens), cant);
       // Fecha de Retiro coordinada (prioridad) — si no hay, se usa la fecha de entrega SAP de referencia.
       const fecha = _e.fecha_retiro ? fmtFechaISO(_e.fecha_retiro) : r.fe_entrega;
       return { oc: r.doc_compr, idProv: r.proveedor, prov: r.nombre_1, material: r.material, nombre: r.texto_breve, fecha, cant, ton: t, tonBruto, tonVol, pv: r.documento, entrega_entrante: ee }; };
-    const tonRetiro = retirosCons.reduce((sum, r) => {
-      const cant = parseNum(r.ctd_pedido) - parseNum(r.ctd_entregada);
-      const t = calcTon(maxPesoDim(r.peso_bruto, r.tamano_dimens), cant);
-      det.retiro.push(itemR(r, cant, t)); return sum + t;
-    }, 0);
+    // (AJUSTE 24-sep-2026, pedido Jordan) Se calcula el Retiro CD para AMBAS
+    // fechas objetivo posibles (mañana=diaHabil1 y pasado mañana=diaHabil2),
+    // en vez de una sola según el horizonte configurado. Esto permite evaluar
+    // más abajo si conviene "adelantar" un centro a 48h a 24h (ver promovido24).
+    function retirosParaFecha(fechaObjetivoCe) {
+      return retiros
+        .filter(r => String(r.ce ?? '').trim() === ce)
+        .filter(r => (estadosRetiro[String(r.doc_compr ?? '').trim()] || {}).tipo_retiro === 'FAB-CD')
+        .filter(r => { const _e = estadosRetiro[String(r.doc_compr ?? '').trim()] || {}; const fr = parseISODate(_e.fecha_retiro); return !fr || fr.getTime() < hoy00().getTime() || fr.getTime() === fechaObjetivoCe.getTime(); });
+    }
+    function sumarRetiro(lista) {
+      let sum = 0; const items = [];
+      lista.forEach(r => {
+        const cant = parseNum(r.ctd_pedido) - parseNum(r.ctd_entregada);
+        const t = calcTon(maxPesoDim(r.peso_bruto, r.tamano_dimens), cant);
+        items.push(itemR(r, cant, t)); sum += t;
+      });
+      return { sum, items };
+    }
+    const retiro24 = sumarRetiro(retirosParaFecha(diaHabil1));
+    const retiro48 = sumarRetiro(retirosParaFecha(diaHabil2));
 
     // 6b. Camiones DIRECTOS de fábrica (AJUSTE 21-sep-2026). Sólo OC en estado COORDINADO con
     //   fecha de retiro = fecha de planificación del centro (24h→día hábil 1, 48h→día hábil 2)
@@ -1883,21 +1894,43 @@ async function renderPlanCarga(stage) {
     Object.values(ocCli).forEach(b => { if (b.ton > capFab * UMBRAL_FABRICA) { tonFabCli += b.ton; det.fabCli.push(...b.items); } });
     Object.values(provSuc).forEach(b => { if (b.ton > capFab * UMBRAL_FABRICA) { tonFabSuc += b.ton; det.fabSuc.push(...b.items); } });
 
+    // (AJUSTE 24-sep-2026, pedido Jordan) Promoción automática 48h → 24h: un
+    // centro configurado a 48h despacha MAÑANA (24h) en vez de esperar el plan
+    // de 48h si, con lo que ya está disponible para mañana (Retiro CD exacto a
+    // diaHabil1 + REVEX + Venta Directa + Crossdocking + Quiebre + Abastecimiento,
+    // que no dependen de la fecha del centro), el camión ya se completa. Se
+    // evalúa de nuevo cada vez que se renderiza el plan — si hoy no alcanza,
+    // sigue esperando a 48h; si al día siguiente llegó más carga y entre lo
+    // nuevo y lo antiguo ya se completa, se adelanta ese día.
+    const totalSinRetiroCd = tonRevex + tonVentaCons + tonCross + tonQuiebre + tonStock;
+    function capParaTotal(t) {
+      return CENTROS_CAMION_REDUCIDO.includes(ce) ? (t >= CAP_CAMION_DEFAULT ? CAP_CAMION_DEFAULT : CAP_CAMION_REDUCIDO) : CAP_CAMION_DEFAULT;
+    }
+    const total24 = totalSinRetiroCd + retiro24.sum;
+    const cap24 = capParaTotal(total24);
+    const horizonteConfig = getHorizonte(ce);
+    const promovido24 = horizonteConfig === 48 && total24 >= cap24;
+    const horizonteEfectivo = promovido24 ? 24 : horizonteConfig;
+    const { sum: tonRetiro, items: retiroItems } = horizonteEfectivo === 24 ? retiro24 : retiro48;
+    det.retiro.push(...retiroItems);
+
     // Total del CAMIÓN CD (consolidado). Orden de prioridad con que se llena el
     // camión: REVEX → Venta 1003 consolidable → Retiro CD → Crossdocking →
     // Traslados Quiebre → Traslados Abastecimiento.
-    const total = tonRevex + tonVentaCons + tonRetiro + tonCross + tonQuiebre + tonStock;
+    const total = totalSinRetiroCd + tonRetiro;
 
     // Capacidad efectiva del CD. La Calera (1050) y San Bernardo (1005) usan un
     // camión de 15 T si en el corte no alcanzan a llenar uno de 28 T.
-    let cap = CAP_CAMION_DEFAULT;
-    if (CENTROS_CAMION_REDUCIDO.includes(ce)) cap = total >= CAP_CAMION_DEFAULT ? CAP_CAMION_DEFAULT : CAP_CAMION_REDUCIDO;
+    const cap = capParaTotal(total);
 
     const pct = cap > 0 ? Math.round(total / cap * 100) : 0;
     const sobrecarga = Math.max(0, total - cap);
     // FALTA/SOBRA: positivo (rojo) = falta carga, negativo mostrado en verde = sobra.
     const faltan = Math.max(0, cap - total);
-    const enCalendario = centrosProgramados.has(ce);
+    // (AJUSTE 24-sep-2026) Si el centro se promovió a 24h, el calendario de
+    // sucursales también se revisa contra el día objetivo efectivo (mañana),
+    // no contra el día original de 48h.
+    const enCalendario = (horizonteEfectivo === 48 ? programadosDia2 : programadosDia1).has(ce);
 
     let status, statusCls;
     if (pct >= 80) { status = 'PROGRAMAR'; statusCls = 'bg-green-700 text-white'; }
@@ -1908,12 +1941,13 @@ async function renderPlanCarga(stage) {
     if (!enCalendario && pct >= 70) obs = 'CUPO EXTRA';
     if (enCalendario && pct < 70) obs = 'EN CALENDARIO - CARGA BAJA';
     if (sobrecarga > 0) obs = (obs ? obs + ' · ' : '') + '2º CAMIÓN (~' + fmtNum(sobrecarga, 1) + ' T)';
+    if (promovido24) obs = (obs ? obs + ' · ' : '') + 'ADELANTADO A 24H (carga completa)';
 
     return {
       ce, nombre: getNombreCentro(ce), cap,
       tonQuiebre, tonStock, tonRevex, tonCross, tonVentaCons, tonVentaCliente, tonRetiro, tonFabSuc, tonFabCli,
       total, faltan, sobrecarga, pct, status, statusCls, obs, enCalendario,
-      horizonte: getHorizonte(ce),
+      horizonte: horizonteEfectivo, horizonteConfig, promovido24,
       camionCliente: tonVentaCliente > 0, camionFabSuc: tonFabSuc > 0, camionFabCli: tonFabCli > 0,
       det,
     };
