@@ -10,8 +10,8 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202609241000';
-import { getDatabase } from './data.js?v=202609241000';
+import { supabase } from './supabase-client.js?v=202609241035';
+import { getDatabase } from './data.js?v=202609241035';
 import { showAlert, escapeHtml } from './utils.js';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
@@ -1209,12 +1209,16 @@ const VISTAS_TRONCAL = {
         const ex = _dedupMap.get(k);
         if (!ex || (!esValida(ex.fe_entrega) && esValida(r.fe_entrega))) _dedupMap.set(k, r);
       });
+      // (AJUSTE 24-sep-2026, pedido Jordan) Pendiente = ctd_pedido - ctd_entregada.
+      // Cuando ctd_entregada == ctd_pedido, SAP ya generó la entrega (aunque la
+      // salida física — cantidad_salida — todavía no se registre) y el pedido
+      // deja de considerarse pendiente.
       const validas = Array.from(_dedupMap.values())
         .filter(r => String(r.cesu ?? '').trim() !== '' && !String(r.cesu ?? '').startsWith('*'))
         .filter(r => String(r.material ?? '').trim() !== '')
-        .filter(r => parseNum(r.ctd_pedido) > parseNum(r.cantidad_salida));
+        .filter(r => parseNum(r.ctd_pedido) > parseNum(r.ctd_entregada));
       const out = validas.map(r => {
-        const pend = parseNum(r.ctd_pedido) - parseNum(r.cantidad_salida);
+        const pend = parseNum(r.ctd_pedido) - parseNum(r.ctd_entregada);
         const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), pend);
         const origen = String(r.documento ?? '').trim() ? 'PEDIDO DE VENTAS' : 'STOCK';
         const docPV = String(r.documento ?? '').trim();
@@ -1741,23 +1745,20 @@ async function renderPlanCarga(stage) {
       .filter(r => !estaExcluido(exclusionesPlan, 'traslados_revex', r.doc_compr, r.material))
       .reduce((sum, r) => { const t = calcTon(parseNum(r.peso_neto_2), r.ctd_pedido); det.revex.push({ ...itemT(r, t), tonBruto: t, tonVol: null }); return sum + t; }, 0);
 
-    // 4. Crossdocking 4000 — SÓLO pendientes (ctd_pedido > cantidad_salida). SIN
-    //    ventana de fecha (AJUSTE 16-sep-2026): antes filtraba fe_entrega -3/+3
-    //    días y dejaba fuera del Plan de Carga pedidos de crossdock ya creados
-    //    en SAP con fecha de entrega un poco más lejana.
-    //    (AJUSTE 24-sep-2026, pedido Jordan) "Pendiente" se define IGUAL que en
-    //    la vista de tabla "Pedidos de Traslados 4000" (Crossdocking): sólo se
-    //    compara contra cantidad_salida, NO contra MAX(ctd_entregada,
-    //    cantidad_salida). Antes, un PT con ctd_entregada == ctd_pedido pero
-    //    cantidad_salida < ctd_pedido (SAP lo marca "entregado" en papel pero
-    //    todavía no salió físicamente) quedaba con pend=0 y se excluía del Plan
-    //    de Carga, aunque la vista de tabla sí lo sigue mostrando como
-    //    pendiente. Regla: todo PT que aparezca en esa vista debe considerarse.
+    // 4. Crossdocking 4000 — SÓLO pendientes. SIN ventana de fecha (AJUSTE
+    //    16-sep-2026): antes filtraba fe_entrega -3/+3 días y dejaba fuera del
+    //    Plan de Carga pedidos de crossdock ya creados en SAP con fecha de
+    //    entrega un poco más lejana.
+    //    (AJUSTE 24-sep-2026, pedido Jordan) "Pendiente" = ctd_pedido -
+    //    ctd_entregada, igual que la vista de tabla "Pedidos de Traslados 4000".
+    //    Cuando ctd_entregada == ctd_pedido, SAP ya generó la entrega (la
+    //    salida física — cantidad_salida — llegará después) y deja de
+    //    considerarse pendiente, aunque cantidad_salida todavía sea menor.
     const tonCross = t4000
       .filter(r => String(r.ce ?? '').trim() === ce)
-      .filter(r => parseNum(r.ctd_pedido) > parseNum(r.cantidad_salida))
+      .filter(r => parseNum(r.ctd_pedido) > parseNum(r.ctd_entregada))
       .filter(r => !estaExcluido(exclusionesPlan, 'crossdock_4000', r.doc_compr, r.material))
-      .reduce((sum, r) => { const pend = parseNum(r.ctd_pedido) - parseNum(r.cantidad_salida); const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), pend);
+      .reduce((sum, r) => { const pend = parseNum(r.ctd_pedido) - parseNum(r.ctd_entregada); const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), pend);
         const tonBruto = calcTon(parseNum(r.peso_neto), pend), tonVol = calcTon(parseNum(r.tamano_dimens), pend);
         det.cross.push({ pt: r.doc_compr, origen: String(r.cesu ?? '').trim(), ceDestino: String(r.ce ?? '').trim(), almDestino: String(r.alm ?? '').trim(), material: r.material, nombre: r.texto_breve, fecha: r.fe_entrega, ctdPend: pend, ton: t, pv: r.documento, tonBruto, tonVol }); return sum + t; }, 0);
 
