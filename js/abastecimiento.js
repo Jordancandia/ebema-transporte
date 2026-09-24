@@ -10,8 +10,8 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202609241259';
-import { getDatabase } from './data.js?v=202609241259';
+import { supabase } from './supabase-client.js?v=202609241309';
+import { getDatabase } from './data.js?v=202609241309';
 import { showAlert, escapeHtml } from './utils.js';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
@@ -1909,7 +1909,10 @@ async function renderPlanCarga(stage) {
     const total24 = totalSinRetiroCd + retiro24.sum;
     const cap24 = capParaTotal(total24);
     const horizonteConfig = getHorizonte(ce);
-    const promovido24 = horizonteConfig === 48 && total24 >= cap24;
+    // (AJUSTE 24-sep-2026, pedido Jordan) El umbral para promover NO es llenar
+    // el camión al 100%: basta con superar el 90% de la capacidad (mismo
+    // umbral que ya se usa para los camiones directos de fábrica, UMBRAL_FABRICA).
+    const promovido24 = horizonteConfig === 48 && total24 > cap24 * UMBRAL_FABRICA;
     const horizonteEfectivo = promovido24 ? 24 : horizonteConfig;
     const { sum: tonRetiro, items: retiroItems } = horizonteEfectivo === 24 ? retiro24 : retiro48;
     det.retiro.push(...retiroItems);
