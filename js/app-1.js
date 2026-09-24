@@ -1,5 +1,5 @@
-import { getDatabase, saveDatabase, initDatabase, loadRoutesData } from './data.js?v=202609231711';
-import { supabase } from './supabase-client.js?v=202609231711';
+import { getDatabase, saveDatabase, initDatabase, loadRoutesData } from './data.js?v=202609240929';
+import { supabase } from './supabase-client.js?v=202609240929';
 // Cache-busting automatico: cada carga de pagina pide los modulos con un
 // timestamp nuevo, para que nunca quede una version vieja pegada en cache
 // del navegador tras un despliegue (bug: 'se recargo y se perdieron los
