@@ -10,8 +10,8 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202609240952';
-import { getDatabase } from './data.js?v=202609240952';
+import { supabase } from './supabase-client.js?v=202609241000';
+import { getDatabase } from './data.js?v=202609241000';
 import { showAlert, escapeHtml } from './utils.js';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
@@ -124,13 +124,33 @@ function esDiaHabil(date, feriadosSet) {
 // fines de semana y feriados. Ej.: hoy jueves + feriado el viernes siguiente
 // → addBusinessDays(hoy, 1, feriados) = lunes; addBusinessDays(hoy, 2, feriados) = martes.
 function addBusinessDays(startDate, n, feriadosSet) {
+  // (AJUSTE 24-sep-2026) Soporta n negativo (retrocede días hábiles) para
+  // poder calcular ventanas -N/+N días hábiles, ej. fechaEnRangoHabil().
   const d = new Date(startDate);
+  const step = n >= 0 ? 1 : -1;
+  const objetivo = Math.abs(n);
   let count = 0;
-  while (count < n) {
-    d.setDate(d.getDate() + 1);
+  while (count < objetivo) {
+    d.setDate(d.getDate() + step);
     if (esDiaHabil(d, feriadosSet)) count++;
   }
   return d;
+}
+// (AJUSTE 24-sep-2026, pedido Jordan) Igual que fechaEnRango() pero contando
+// DÍAS HÁBILES (salta sábado/domingo y feriados de abast_feriados) en vez de
+// días corridos. Ejemplo: hoy jueves, un pedido con fecha 28-sep (lunes) está
+// a 2 días hábiles (no 4 días corridos) y debe entrar en una ventana ±3 hábil.
+function fechaEnRangoHabil(fechaStr, diasHabilesAntes, diasHabilesDespues, feriadosSet) {
+  const d = parseDateSAP(fechaStr);
+  if (!d) return false;
+  const hoy = hoy00();
+  if (d.getTime() === hoy.getTime()) return true;
+  if (d.getTime() > hoy.getTime()) {
+    const limite = addBusinessDays(hoy, diasHabilesDespues, feriadosSet);
+    return d.getTime() <= limite.getTime();
+  }
+  const limite = addBusinessDays(hoy, -diasHabilesAntes, feriadosSet);
+  return d.getTime() >= limite.getTime();
 }
 
 function alertaFecha(fechaStr, diasUmbral = 5) {
@@ -1682,9 +1702,11 @@ async function renderPlanCarga(stage) {
     // 1. ABAST. QUIEBRE Y PRIORIZADO (puntos B, C, D del ajuste de priorización:
     //    usuario ≠ ZE_SIS, clasificación ABC=AA, o material quebrado con otra
     //    clasificación). Excluye líneas con ctd_confirmada = 0 → ya entregadas.
+    // (AJUSTE 24-sep-2026, pedido Jordan) Ventana -10/+7 en DÍAS HÁBILES, igual
+    // criterio que Ventas 1003.
     const baseTraslados = traslados
       .filter(r => String(r.ce ?? '').trim() === ce)
-      .filter(r => fechaEnRango(r.fecha_confirmada, 10, 7))
+      .filter(r => fechaEnRangoHabil(r.fecha_confirmada, 10, 7, feriadosSet))
       .filter(r => parseNum(r.ctd_confirmada) > 0)
       .filter(r => !estaExcluido(exclusionesPlan, 'traslados_1003', r.doc_compr, r.material))
       .map(r => ({ r, prio: clasificaTraslado(r) }));
@@ -1750,7 +1772,11 @@ async function renderPlanCarga(stage) {
       .filter(r => String(r.ofvta ?? '').trim() === ce)
       .filter(r => String(r.ruta ?? '').trim() !== '')
       .filter(r => normTxt(r.ruta).indexOf('RETIRA') === -1)
-      .filter(r => fechaEnRango(r.fe_entrega, 3, 3))
+      // (AJUSTE 24-sep-2026, pedido Jordan) La ventana -3/+3 es en DÍAS HÁBILES,
+      // sin contar sábados/domingos/feriados — antes eran días corridos y un
+      // pedido a 2 días hábiles pero 4 días corridos (ej. jueves → lunes) quedaba
+      // excluido incorrectamente.
+      .filter(r => fechaEnRangoHabil(r.fe_entrega, 3, 3, feriadosSet))
       .filter(r => !estaExcluido(exclusionesPlan, 'venta_1003', r.doc_ventas, null))
       .forEach(r => {
         const k = `${String(r.doc_ventas ?? '').trim()}|${String(r.material ?? '').trim()}`;
