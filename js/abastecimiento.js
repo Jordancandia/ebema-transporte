@@ -10,8 +10,8 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202609240929';
-import { getDatabase } from './data.js?v=202609240929';
+import { supabase } from './supabase-client.js?v=202609240952';
+import { getDatabase } from './data.js?v=202609240952';
 import { showAlert, escapeHtml } from './utils.js';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
@@ -1719,24 +1719,23 @@ async function renderPlanCarga(stage) {
       .filter(r => !estaExcluido(exclusionesPlan, 'traslados_revex', r.doc_compr, r.material))
       .reduce((sum, r) => { const t = calcTon(parseNum(r.peso_neto_2), r.ctd_pedido); det.revex.push({ ...itemT(r, t), tonBruto: t, tonVol: null }); return sum + t; }, 0);
 
-    // 4. Crossdocking 4000 — SÓLO pendientes (ctd_pedido > procesado). SIN ventana
-    //    de fecha (AJUSTE 16-sep-2026): antes filtraba fe_entrega -3/+3 días y
-    //    dejaba fuera del Plan de Carga pedidos de crossdock ya creados en SAP
-    //    con fecha de entrega un poco más lejana (ej. Coquimbo: de 10 líneas
-    //    pendientes en 3 OC, sólo se veían 3 líneas de 2 OC porque la 3ª OC
-    //    tenía fe_entrega a 5 días). Se alinea con la vista de tabla
-    //    "Crossdocking", que ya no filtra por fecha y muestra TODOS los
-    //    pendientes asociados al centro destino (ver AJUSTES 3.0 2026-09-09).
-    //    "Procesado" = MAX(ctd_entregada, cantidad_salida) para cubrir los tres casos:
-    //      · ctd_entregada == cantidad_salida > 0  → entregado, excluir
-    //      · cantidad_salida > ctd_entregada        → en tránsito; pend = ctd_pedido - cantidad_salida
-    //      · cantidad_salida == 0                   → no ha salido; pend = ctd_pedido - ctd_entregada
-    //    Anomalía SAP (ctd_entregada > cantidad_salida con salida=0): MAX deja pend=0 → excluido.
+    // 4. Crossdocking 4000 — SÓLO pendientes (ctd_pedido > cantidad_salida). SIN
+    //    ventana de fecha (AJUSTE 16-sep-2026): antes filtraba fe_entrega -3/+3
+    //    días y dejaba fuera del Plan de Carga pedidos de crossdock ya creados
+    //    en SAP con fecha de entrega un poco más lejana.
+    //    (AJUSTE 24-sep-2026, pedido Jordan) "Pendiente" se define IGUAL que en
+    //    la vista de tabla "Pedidos de Traslados 4000" (Crossdocking): sólo se
+    //    compara contra cantidad_salida, NO contra MAX(ctd_entregada,
+    //    cantidad_salida). Antes, un PT con ctd_entregada == ctd_pedido pero
+    //    cantidad_salida < ctd_pedido (SAP lo marca "entregado" en papel pero
+    //    todavía no salió físicamente) quedaba con pend=0 y se excluía del Plan
+    //    de Carga, aunque la vista de tabla sí lo sigue mostrando como
+    //    pendiente. Regla: todo PT que aparezca en esa vista debe considerarse.
     const tonCross = t4000
       .filter(r => String(r.ce ?? '').trim() === ce)
-      .filter(r => parseNum(r.ctd_pedido) > Math.max(parseNum(r.ctd_entregada), parseNum(r.cantidad_salida)))
+      .filter(r => parseNum(r.ctd_pedido) > parseNum(r.cantidad_salida))
       .filter(r => !estaExcluido(exclusionesPlan, 'crossdock_4000', r.doc_compr, r.material))
-      .reduce((sum, r) => { const pend = parseNum(r.ctd_pedido) - Math.max(parseNum(r.ctd_entregada), parseNum(r.cantidad_salida)); const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), pend);
+      .reduce((sum, r) => { const pend = parseNum(r.ctd_pedido) - parseNum(r.cantidad_salida); const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), pend);
         const tonBruto = calcTon(parseNum(r.peso_neto), pend), tonVol = calcTon(parseNum(r.tamano_dimens), pend);
         det.cross.push({ pt: r.doc_compr, origen: String(r.cesu ?? '').trim(), ceDestino: String(r.ce ?? '').trim(), almDestino: String(r.alm ?? '').trim(), material: r.material, nombre: r.texto_breve, fecha: r.fe_entrega, ctdPend: pend, ton: t, pv: r.documento, tonBruto, tonVol }); return sum + t; }, 0);
 
