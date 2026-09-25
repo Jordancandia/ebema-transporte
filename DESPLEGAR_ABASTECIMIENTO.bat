@@ -1,6 +1,19 @@
 @echo off
 cd /d "%~dp0"
 
+echo ===== CSS TAILWIND COMPILADO =====
+where node >nul 2>&1
+if %errorlevel%==0 (
+  if not exist "node_modules\tailwindcss" (
+    echo Instalando Tailwind por primera vez...
+    call npm install --no-audit --no-fund
+  )
+  call npm run build:css
+  if errorlevel 1 echo AVISO: fallo la compilacion de css\tailwind.css - se mantiene la version anterior.
+) else (
+  echo AVISO: no se encontro "node" - se omite la compilacion de css\tailwind.css.
+)
+
 echo ===== VERSIONADO AUTOMATICO (A-07) =====
 where node >nul 2>&1
 if %errorlevel%==0 (

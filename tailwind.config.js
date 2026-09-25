@@ -1,4 +1,7 @@
+// Tailwind compilado (reemplaza el CDN cdn.tailwindcss.com, que compilaba en el navegador).
+// Regenerar: npm run build:css  (lo hace DESPLEGAR_ABASTECIMIENTO.bat automáticamente)
 module.exports = {
+  content: ["./index.html", "./js/**/*.js"],
   darkMode: "class",
   theme: {
     extend: {
@@ -92,5 +95,6 @@ module.exports = {
   },
   plugins: [
     require('@tailwindcss/forms'),
+    require('@tailwindcss/container-queries'),
   ],
 }

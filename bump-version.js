@@ -31,7 +31,7 @@ const SKIP_DIRS = new Set([
 // Acepta el formato viejo (8 dígitos + letra opcional, ej. 20260914b) y el nuevo
 // formato de este script (12 dígitos = YYYYMMDDHHmm), para poder migrar el repo
 // completo la primera vez que se corre.
-const VERSION_RE = /(\.js)\?v=(?:\d{12}|\d{8}[a-z]?)/g;
+const VERSION_RE = /(\.(?:js|css))\?v=(?:\d{12}|\d{8}[a-z]?)/g;
 
 function newVersion() {
   const d = new Date();
