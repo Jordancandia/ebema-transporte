@@ -159,28 +159,20 @@ function correrPedidosVentas() {
 function ejecutar_entregas_0715() { correrEntregas(); }
 function ejecutar_entregas_1230() { correrEntregas(); }
 function ejecutar_entregas_1500() { correrEntregas(); }
-function ejecutar_entregas_2300() { correrEntregas(true); } // CIERRE del dia (24-sep-2026)
 
-// Tras cada lectura acumula en abast_entregas_dia (clave entrega+pos, por fecha de
-// creacion). En el cierre de las 23:00 elimina lo creado hoy que ya no viene en SAP.
-function correrEntregas(cierre) {
+function correrEntregas() {
   if (!esDiaHabil()) return;
   procesarGrupoSqvi('ENTREGAS', LABEL_ENTREGAS, FUENTES_ENTREGAS, etiquetaCorrida(), false);
-  sbRpcAcumularEntregasDt(!!cierre);
 }
 
 // ── DOC TRANSPORTE (label "Doc Transporte (DT)") ─────────────────────────────
 function ejecutar_doctransporte_0810() { correrDocTransporte(); }
 function ejecutar_doctransporte_1630() { correrDocTransporte(); }
-function ejecutar_doctransporte_2230() { correrDocTransporte(); } // legado, sin trigger
-function ejecutar_doctransporte_2300() { correrDocTransporte(true); } // CIERRE del dia (24-sep-2026)
-// Trigger unico 23:00: lee Entregas y DT y cierra el dia (borra anulados) al final.
-function ejecutar_cierre_2300() { correrEntregas(false); correrDocTransporte(true); }
+function ejecutar_doctransporte_2230() { correrDocTransporte(); }
 
-function correrDocTransporte(cierre) {
+function correrDocTransporte() {
   if (!esDiaHabil()) return;
   procesarGrupoSqvi('DOC_TRANSPORTE', LABEL_DOC_TRANSPORTE, FUENTES_DOC_TRANSPORTE, etiquetaCorrida(), false);
-  sbRpcAcumularEntregasDt(!!cierre);
 }
 
 // ── BARRIDO DE REZAGADOS (22-sep-2026, pedido de Jordan) ─────────────────────
@@ -263,8 +255,8 @@ function crearTriggers() {
     'ejecutar_troncales_0935', 'ejecutar_troncales_1035', 'ejecutar_troncales_1135', 'ejecutar_troncales_1235',
     'ejecutar_troncales_1335', 'ejecutar_troncales_1450', 'ejecutar_troncales_1530',
     'ejecutar_pedidosventas_0740', 'ejecutar_pedidosventas_1110', 'ejecutar_pedidosventas_1310', 'ejecutar_pedidosventas_1440',
-    'ejecutar_entregas_0715', 'ejecutar_entregas_1230', 'ejecutar_entregas_1500', 'ejecutar_entregas_2300',
-    'ejecutar_doctransporte_0810', 'ejecutar_doctransporte_1630', 'ejecutar_doctransporte_2230', 'ejecutar_doctransporte_2300', 'ejecutar_cierre_2300',
+    'ejecutar_entregas_0715', 'ejecutar_entregas_1230', 'ejecutar_entregas_1500',
+    'ejecutar_doctransporte_0810', 'ejecutar_doctransporte_1630', 'ejecutar_doctransporte_2230',
     'ejecutar_slim_0630', 'ejecutar_barrido_rezagados'
   ];
   ScriptApp.getProjectTriggers().forEach(function (t) {
@@ -293,7 +285,7 @@ function crearTriggers() {
   // DOC TRANSPORTE
   crear('ejecutar_doctransporte_0810', 8, 10);
   crear('ejecutar_doctransporte_1630', 16, 30);
-  crear('ejecutar_cierre_2300', 23, 0); // cierre del dia Entregas + DT en 1 trigger (reemplaza 22:30; limite 20 triggers/proyecto)
+  crear('ejecutar_doctransporte_2230', 22, 30);
   // SLIM
   crear('ejecutar_slim_0630', 6, 30);
   // BARRIDO DE REZAGADOS (cada 15 min; solo actua de 08:15 a 15:20 lun-vie)
@@ -754,17 +746,6 @@ function sbRpcSnapshotHoy() {
   return isNaN(n) ? 0 : n;
 }
 
-// Acumula Entregas y DT de trc_live en abast_entregas_dia / abast_dt_dia (24-sep-2026).
-function sbRpcAcumularEntregasDt(cierre) {
-  try {
-    var res = UrlFetchApp.fetch(SUPABASE_URL + '/rest/v1/rpc/fn_abast_acumular_entregas_dt', {
-      method: 'post', contentType: 'application/json',
-      headers: sbHeaders(), payload: JSON.stringify({ p_cierre: !!cierre }), muteHttpExceptions: true
-    });
-    Logger.log('acumular entregas/dt (cierre=%s) HTTP %s: %s', cierre, res.getResponseCode(), res.getContentText().slice(0, 300));
-  } catch (e) { Logger.log('acumular entregas/dt error: ' + e); }
-}
-
 function sbRpcPrune() {
   var res = UrlFetchApp.fetch(SUPABASE_URL + '/rest/v1/rpc/fn_trc_prune_hist', {
     method: 'post', contentType: 'application/json',
@@ -821,8 +802,8 @@ function correrTroncalesManual(esSnapshot) {
   }
 }
 function probar_ahora_pedidosventas() { procesarGrupoSqvi('PEDIDOS_VENTAS', LABEL_PEDIDOS_VENTAS, FUENTES_PEDIDOS_VENTAS, etiquetaCorrida(), false); }
-function probar_ahora_entregas()      { procesarGrupoSqvi('ENTREGAS', LABEL_ENTREGAS, FUENTES_ENTREGAS, etiquetaCorrida(), false); sbRpcAcumularEntregasDt(false); }
-function probar_ahora_doctransporte() { procesarGrupoSqvi('DOC_TRANSPORTE', LABEL_DOC_TRANSPORTE, FUENTES_DOC_TRANSPORTE, etiquetaCorrida(), false); sbRpcAcumularEntregasDt(false); }
+function probar_ahora_entregas()      { procesarGrupoSqvi('ENTREGAS', LABEL_ENTREGAS, FUENTES_ENTREGAS, etiquetaCorrida(), false); }
+function probar_ahora_doctransporte() { procesarGrupoSqvi('DOC_TRANSPORTE', LABEL_DOC_TRANSPORTE, FUENTES_DOC_TRANSPORTE, etiquetaCorrida(), false); }
 function probar_ahora_slim() {
   var corrida = etiquetaCorrida();
   try { procesarSlim(corrida, false); } catch (e) { logRun(corrida, 'slim_stock', 0, false, 'error', String(e)); }

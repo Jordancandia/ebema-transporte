@@ -10,8 +10,8 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202609242341';
-import { getDatabase } from './data.js?v=202609242341';
+import { supabase } from './supabase-client.js?v=202609242244';
+import { getDatabase } from './data.js?v=202609242244';
 import { showAlert, escapeHtml } from './utils.js';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
@@ -58,6 +58,21 @@ async function getUserEmail() {
     return data?.user?.email || null;
   } catch { return null; }
 }
+// Rol del usuario actual (mismo criterio que app.js: fila en getDatabase().users
+// por email, ya cargada en memoria tras el login). Usado para restringir acciones
+// sensibles (ej. excluir posiciones del Plan de Carga) a perfil OWNER.
+async function getCurrentUserRole() {
+  try {
+    const email = await getUserEmail();
+    if (!email) return null;
+    const db = getDatabase();
+    const u = (db.users || []).find(x => x.email === email);
+    return u ? u.role : null;
+  } catch { return null; }
+}
+async function esOwner() {
+  return (await getCurrentUserRole()) === 'OWNER';
+}
 
 export function setAbastSubTab(sub) {
   if (sub) currentSub = sub;
@@ -74,6 +89,69 @@ function parseDateSAP(s) {
 }
 
 function hoy00() { const d = new Date(); d.setHours(0,0,0,0); return d; }
+
+// Parsea fecha ISO (YYYY-MM-DD, formato nativo de <input type="date"> y de las
+// columnas `date` de Supabase) evitando desfases de timezone del constructor Date().
+function parseISODate(s) {
+  if (!s) return null;
+  const m = String(s).match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return null;
+  return new Date(+m[1], +m[2] - 1, +m[3]);
+}
+
+// Formatea una fecha ISO (YYYY-MM-DD) a DD.MM.YYYY, mismo formato usado para
+// las fechas SAP en el resto del módulo.
+function fmtFechaISO(s) {
+  const m = String(s ?? '').match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return m ? `${m[3]}.${m[2]}.${m[1]}` : (s || '');
+}
+
+// ── Días hábiles (PLAN DE CARGA 48H — AJUSTE 18-sep-2026) ──────────────────
+// Un día es hábil si no es sábado/domingo y no está en la tabla `abast_feriados`
+// (administrada manualmente en la vista Calendario Sucursales). Se usa para
+// calcular la ventana de planificación de 24h/48h saltando fines de semana y
+// feriados legales.
+function isoLocal(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+function esDiaHabil(date, feriadosSet) {
+  const dow = date.getDay();
+  if (dow === 0 || dow === 6) return false; // fin de semana
+  if (feriadosSet && feriadosSet.has(isoLocal(date))) return false;
+  return true;
+}
+// Avanza `n` días hábiles a partir de `startDate` (sin incluirlo), saltando
+// fines de semana y feriados. Ej.: hoy jueves + feriado el viernes siguiente
+// → addBusinessDays(hoy, 1, feriados) = lunes; addBusinessDays(hoy, 2, feriados) = martes.
+function addBusinessDays(startDate, n, feriadosSet) {
+  // (AJUSTE 24-sep-2026) Soporta n negativo (retrocede días hábiles) para
+  // poder calcular ventanas -N/+N días hábiles, ej. fechaEnRangoHabil().
+  const d = new Date(startDate);
+  const step = n >= 0 ? 1 : -1;
+  const objetivo = Math.abs(n);
+  let count = 0;
+  while (count < objetivo) {
+    d.setDate(d.getDate() + step);
+    if (esDiaHabil(d, feriadosSet)) count++;
+  }
+  return d;
+}
+// (AJUSTE 24-sep-2026, pedido Jordan) Igual que fechaEnRango() pero contando
+// DÍAS HÁBILES (salta sábado/domingo y feriados de abast_feriados) en vez de
+// días corridos. Ejemplo: hoy jueves, un pedido con fecha 28-sep (lunes) está
+// a 2 días hábiles (no 4 días corridos) y debe entrar en una ventana ±3 hábil.
+function fechaEnRangoHabil(fechaStr, diasHabilesAntes, diasHabilesDespues, feriadosSet) {
+  const d = parseDateSAP(fechaStr);
+  if (!d) return false;
+  const hoy = hoy00();
+  if (d.getTime() === hoy.getTime()) return true;
+  if (d.getTime() > hoy.getTime()) {
+    const limite = addBusinessDays(hoy, diasHabilesDespues, feriadosSet);
+    return d.getTime() <= limite.getTime();
+  }
+  const limite = addBusinessDays(hoy, -diasHabilesAntes, feriadosSet);
+  return d.getTime() >= limite.getTime();
+}
 
 function alertaFecha(fechaStr, diasUmbral = 5) {
   const d = parseDateSAP(fechaStr);
@@ -96,8 +174,16 @@ function maxPesoDim(peso, dim) {
 }
 
 // Tonelaje = pesoMax * cantidad / 1000
+// `cantidad` puede venir como string SAP con formato chileno (parseNum lo
+// convierte) o ya como number (p.ej. un pendiente = ctd_pedido - ctd_entregada
+// calculado en JS). Si se le aplicara parseNum a un number, String(2.0000000000000004)
+// → "2.0000000000000004" y el reemplazo de puntos (miles) borra el punto decimal,
+// inflando el valor ~1e16x (bug real detectado en Plan de Carga: crossdock con
+// pend=2.0000000000000004 por error de coma flotante en 4,392-2,392 → tonelaje
+// de 140.000.000.000.000). Con number no se debe volver a parsear como string.
 function calcTon(pesoMax, cantidad) {
-  return pesoMax * parseNum(cantidad) / 1000;
+  const c = typeof cantidad === 'number' ? cantidad : parseNum(cantidad);
+  return pesoMax * c / 1000;
 }
 
 function fmtNum(n, dec = 2) {
@@ -119,6 +205,19 @@ function horaChile(ts) {
     return d.toLocaleString('es-CL', { timeZone: 'America/Santiago', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
   } catch { return String(ts).slice(0, 16).replace('T', ' '); }
 }
+// (AJUSTE 22-sep-2026, pedido Jordan) Una exclusión manual del Plan de Carga
+// (`abast_plan_exclusiones`) sólo debe estar vigente el mismo día en que se
+// creó ("día de planificación"). Al día siguiente deja de aplicarse sola —
+// no hace falta reactivarla a mano — y la posición vuelve a considerarse en
+// el plan si la carga de datos (SAP) todavía la trae; si SAP ya no la trae,
+// simplemente desaparece por sí sola (comportamiento normal del plan).
+function esExclusionVigenteHoy(ts) {
+  if (!ts) return false;
+  try {
+    const fmt = d => d.toLocaleDateString('en-CA', { timeZone: 'America/Santiago' }); // 'YYYY-MM-DD'
+    return fmt(new Date(ts)) === fmt(new Date());
+  } catch { return false; }
+}
 
 const CENTROS_QUIEBRES = ['1005','1020','1040','1050','1060','1070','1080','1090','1100','1160'];
 
@@ -126,7 +225,38 @@ const CENTROS_QUIEBRES = ['1005','1020','1040','1050','1060','1070','1080','1090
 const ABC_ORDEN = { AA:0, AB:1, AC:2, BA:3, BB:4, BC:5, CA:6, CB:7, CC:8 };
 function abcRank(abc) {
   const k = String(abc ?? '').trim().toUpperCase();
-  return ABC_ORDEN[k] != null ? ABC_ORDEN[k] : 99;
+  return ABC_ORDEN[k] != null ? ABC_ORDEN[k] : 99; // '' (SIN CLASIFICACIÓN) queda al final
+}
+
+// ── AJUSTES PRIORIZACIÓN PEDIDOS DE TRASLADOS 1003 (2026-09-18) ─────────────
+// Usuario "de sistema" que NO otorga prioridad de carga (cualquier otro sí).
+const USUARIO_SISTEMA = 'ZE_SIS';
+
+// Clasifica un pedido de traslado (línea material/centro) según la regla de
+// priorización de carga acordada:
+//   B) creado por un usuario ≠ ZE_SIS dentro del plazo → prioridad máxima.
+//   C) clasificación ABC = AA (esté o no quebrado)      → prioridad, bajo B.
+//   D) material QUEBRADO (stock_days ≤ 7) con cualquier otra clasificación
+//      → mismo bucket que B/C, orden AB,AC,BA,BB,BC,CA,CB,CC,SIN CLASIFICACIÓN.
+//   E) material NO quebrado (resto)                     → bucket "abastecimiento",
+//      mismo orden de clasificación que D.
+// Columnas de Plan de Carga: bucket 'prioridad' → "ABAST. QUIEBRE Y PRIORIZADO"
+// (puntos B, C, D); bucket 'abastecimiento' → "ABASTECIMIENTO" (punto E).
+function prioridadTraslado(usuario, claseAbc, quebrado) {
+  const u = String(usuario ?? '').trim().toUpperCase();
+  const abc = String(claseAbc ?? '').trim().toUpperCase();
+  if (u && u !== USUARIO_SISTEMA) {
+    return { grupo: 'B', bucket: 'prioridad', orden: -2, motivo: `USUARIO (${u})` };
+  }
+  if (abc === 'AA') {
+    return { grupo: 'C', bucket: 'prioridad', orden: -1, motivo: 'CLASIFICACIÓN ABC AA' };
+  }
+  const orden = abcRank(abc);
+  const claseLbl = abc || 'SIN CLASIFICACIÓN';
+  if (quebrado) {
+    return { grupo: 'D', bucket: 'prioridad', orden, motivo: `QUIEBRE · ${claseLbl}` };
+  }
+  return { grupo: 'E', bucket: 'abastecimiento', orden, motivo: claseLbl };
 }
 
 // Normaliza texto: quita acentos/ñ y pasa a MAYÚSCULAS.
@@ -166,10 +296,81 @@ function tipoQuiebre(sd) {
 
 // ── Estado de coordinación de retiros (persistente) ─────────────────────────
 async function loadEstadosRetiro() {
-  const { data, error } = await supabase.from('abast_retiro_estado').select('doc_compr, estado, tipo_retiro, entrega_entrante, tipo_local_rm, fab_direccion, fab_comuna, fab_contacto, fab_telefono');
+  const { data, error } = await supabase.from('abast_retiro_estado').select('doc_compr, estado, tipo_retiro, entrega_entrante, tipo_local_rm, fab_direccion, fab_comuna, fab_contacto, fab_telefono, fecha_retiro');
   const m = {};
-  if (!error) (data || []).forEach(r => { m[String(r.doc_compr)] = { estado: r.estado, tipo_retiro: r.tipo_retiro, entrega_entrante: r.entrega_entrante, tipo_local_rm: r.tipo_local_rm, fab_direccion: r.fab_direccion, fab_comuna: r.fab_comuna, fab_contacto: r.fab_contacto, fab_telefono: r.fab_telefono }; });
+  if (!error) (data || []).forEach(r => { m[String(r.doc_compr)] = { estado: r.estado, tipo_retiro: r.tipo_retiro, entrega_entrante: r.entrega_entrante, tipo_local_rm: r.tipo_local_rm, fab_direccion: r.fab_direccion, fab_comuna: r.fab_comuna, fab_contacto: r.fab_contacto, fab_telefono: r.fab_telefono, fecha_retiro: r.fecha_retiro }; });
   return m;
+}
+
+// ── Exclusiones manuales del Plan de Carga ──────────────────────────────────
+// Permite sacar del Plan de Carga, de forma persistente y reversible, un
+// Pedido de Venta 1003 completo (tipo='venta_1003', material=null) o un
+// Pedido de Traslado de Crossdocking — completo (material=null) o sólo una
+// línea/material puntual de ese pedido (tipo='crossdock_4000', material=X).
+async function loadExclusionesPlan() {
+  const { data, error } = await supabase.from('abast_plan_exclusiones').select('*').order('created_at', { ascending: false });
+  if (error) { console.error(error); return []; }
+  // Sólo las exclusiones creadas HOY (día de planificación) siguen vigentes;
+  // las de días anteriores quedan en la tabla como historial pero ya no se
+  // aplican ni se muestran (ver esExclusionVigenteHoy más arriba).
+  return (data || []).filter(e => esExclusionVigenteHoy(e.created_at));
+}
+async function excluirDelPlan(tipo, doc, material, motivo) {
+  // material '' (o ausente) = excluye el documento completo, cualquier línea/material.
+  const payload = { tipo, doc: String(doc), material: material ? String(material) : '', motivo: motivo || null, created_by: await getUserEmail() };
+  const { error } = await supabase.from('abast_plan_exclusiones').upsert(payload, { onConflict: 'tipo,doc,material' });
+  if (error) { showAlert('Error al excluir: ' + error.message, 'error'); return false; }
+  return true;
+}
+async function reactivarEnPlan(id) {
+  const { error } = await supabase.from('abast_plan_exclusiones').delete().eq('id', id);
+  if (error) { showAlert('Error al reactivar: ' + error.message, 'error'); return false; }
+  return true;
+}
+// true si (doc[, material]) está excluido: aplica match exacto de material,
+// o una exclusión de todo el documento (material === '' en abast_plan_exclusiones).
+function estaExcluido(exclusiones, tipo, doc, material) {
+  const d = String(doc ?? '').trim();
+  const m = material != null ? String(material).trim() : '';
+  return exclusiones.some(e => e.tipo === tipo && String(e.doc).trim() === d && (String(e.material ?? '').trim() === '' || String(e.material).trim() === m));
+}
+// Modal para ver y reactivar (borrar) exclusiones del Plan de Carga.
+function showExclusionesModal(exclusiones, onChange) {
+  const TIPO_LBL = { venta_1003: 'Pedido de Venta 1003', crossdock_4000: 'Traslado Crossdocking 4000', traslados_revex: 'Traslado REVEX', traslados_1003: 'Traslado 1003' };
+  const filas = exclusiones.map(e => `<tr class="border-b border-outline-variant/40">
+    <td class="py-xs pr-md text-[12px]">${escapeHtml(TIPO_LBL[e.tipo] || e.tipo)}</td>
+    <td class="py-xs pr-md text-[12px] font-bold">${escapeHtml(e.doc)}</td>
+    <td class="py-xs pr-md text-[12px]">${e.material ? escapeHtml(e.material) : '<span class="text-secondary">— (todo el pedido)</span>'}</td>
+    <td class="py-xs pr-md text-[12px] text-secondary">${escapeHtml(e.motivo || '')}</td>
+    <td class="py-xs pr-md text-[11px] text-secondary">${escapeHtml(horaChile(e.created_at))}</td>
+    <td class="py-xs pr-md text-right"><button data-reactivar="${e.id}" class="text-[11px] font-bold text-primary hover:underline">Reactivar</button></td>
+  </tr>`).join('');
+  const html = `
+  <div id="excl-modal-bg" class="fixed inset-0 bg-black/40 flex items-center justify-center z-[9999]">
+    <div class="bg-white rounded-xl shadow-2xl p-6 w-[720px] max-w-[95vw] max-h-[85vh] overflow-y-auto flex flex-col gap-3">
+      <div class="flex items-center justify-between">
+        <h3 class="text-base font-bold text-gray-800">Exclusiones del Plan de Carga</h3>
+        <button id="excl-cerrar" class="text-secondary hover:text-on-surface">
+          <span class="material-symbols-outlined">close</span></button>
+      </div>
+      <p class="text-[12px] text-secondary">Estos pedidos no se consideran en el Plan de Carga hasta que se reactiven acá.</p>
+      <table class="w-full text-[12px]">
+        <thead><tr class="text-left text-[10px] uppercase text-secondary border-b border-outline-variant">
+          <th class="pr-md py-xs">Tipo</th><th class="pr-md py-xs">Documento</th><th class="pr-md py-xs">Material</th><th class="pr-md py-xs">Motivo</th><th class="pr-md py-xs">Excluido el</th><th></th>
+        </tr></thead>
+        <tbody>${filas || '<tr><td colspan="6" class="text-secondary text-[12px] py-sm">Sin exclusiones activas.</td></tr>'}</tbody>
+      </table>
+    </div>
+  </div>`;
+  document.body.insertAdjacentHTML('beforeend', html);
+  const bg = document.getElementById('excl-modal-bg');
+  const cleanup = () => bg.remove();
+  bg.addEventListener('click', (e) => { if (e.target === bg) cleanup(); });
+  document.getElementById('excl-cerrar').addEventListener('click', cleanup);
+  bg.querySelectorAll('[data-reactivar]').forEach(btn => btn.addEventListener('click', async () => {
+    const ok = await reactivarEnPlan(Number(btn.dataset.reactivar));
+    if (ok) { showAlert('Reactivado en el Plan de Carga', 'success'); cleanup(); onChange && onChange(); }
+  }));
 }
 async function saveEstadoRetiro(docCompr, estado, tipoRetiro = null, entregaEntrante = null, extraFab = null) {
   const payload = { doc_compr: String(docCompr), estado, updated_by: await getUserEmail(), updated_at: new Date().toISOString() };
@@ -181,8 +382,9 @@ async function saveEstadoRetiro(docCompr, estado, tipoRetiro = null, entregaEntr
     if (extraFab.fab_comuna      !== undefined) payload.fab_comuna      = extraFab.fab_comuna;
     if (extraFab.fab_contacto    !== undefined) payload.fab_contacto    = extraFab.fab_contacto;
     if (extraFab.fab_telefono    !== undefined) payload.fab_telefono    = extraFab.fab_telefono;
-    // Al revertir (no_coordinado), limpiar también tipo_retiro y entrega_entrante
-    if (extraFab._clear_retiro) { payload.tipo_retiro = null; payload.entrega_entrante = null; }
+    if (extraFab.fecha_retiro    !== undefined) payload.fecha_retiro    = extraFab.fecha_retiro || null;
+    // Al revertir (no_coordinado), limpiar también tipo_retiro, entrega_entrante y fecha_retiro
+    if (extraFab._clear_retiro) { payload.tipo_retiro = null; payload.entrega_entrante = null; payload.fecha_retiro = null; }
   }
   const { error } = await supabase.from('abast_retiro_estado').upsert(payload, { onConflict: 'doc_compr' });
   if (error) { showAlert('Error al guardar estado: ' + error.message, 'error'); return false; }
@@ -229,50 +431,63 @@ function showCoordModal(row) {
             <input type="hidden" id="coord-local-rm" value="${preselectLR}">
           </div>
 
-          <div id="fab-form" class="flex flex-col gap-3">
+          <button type="button" id="toggle-info-btn" class="flex items-center gap-1 text-xs font-semibold text-primary self-start ${preselectLR === 'RM' ? 'hidden' : ''}">
+            <span id="toggle-info-arrow">\u25B8</span> Agregar Información
+          </button>
+
+          <div id="info-wrap" class="flex flex-col gap-4 ${preselectLR === 'LOCAL' ? 'hidden' : ''}">
             <div class="flex flex-col gap-1">
-              <label class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Dirección de Fábrica</label>
-              ${dirs.length > 0 ? `<select id="coord-dir-sel" class="border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary">
-                <option value="">— Seleccionar dirección guardada —</option>
-                ${dirOpts}
-                <option value="__manual__">+ Ingresar nueva dirección</option>
-              </select>` : ''}
-              <input id="coord-direccion" type="text" placeholder="Dirección" value="${row._fab_direccion || ''}"
-                class="border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary ${dirs.length > 0 ? 'hidden' : ''}">
+              <label for="coord-fecha-retiro" class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Fecha de Retiro</label>
+              <input id="coord-fecha-retiro" type="date" value="${row._fecha_retiro || ''}"
+                class="border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary">
+              <span class="text-[11px] text-secondary">Día en que el camión pasa a retirar. El retiro se contabiliza en el Plan de Carga a partir de esta fecha.</span>
             </div>
-            <div class="flex gap-2">
-              <div class="flex flex-col gap-1 flex-1">
-                <label class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Comuna</label>
-                <input id="coord-comuna" type="text" placeholder="Comuna" value="${row._fab_comuna || ''}"
-                  class="border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary">
-              </div>
-            </div>
-            <div class="flex gap-2">
-              <div class="flex flex-col gap-1 flex-1">
-                <label class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Persona de Contacto</label>
-                <input id="coord-contacto" type="text" placeholder="Nombre contacto" value="${row._fab_contacto || ''}"
-                  class="border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary">
-              </div>
-              <div class="flex flex-col gap-1 flex-1">
-                <label class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Teléfono</label>
-                <input id="coord-telefono" type="text" placeholder="+56 9..." value="${row._fab_telefono || ''}"
-                  class="border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary">
-              </div>
-            </div>
-            <label id="coord-guardar-prov-wrap" class="flex items-center gap-2 text-xs text-secondary cursor-pointer ${dirs.length > 0 ? 'hidden' : ''}">
-              <input type="checkbox" id="coord-guardar-prov" checked class="accent-primary"> Guardar esta dirección en el proveedor
-            </label>
-          </div>
 
-          <div id="entrega-wrap" class="flex flex-col gap-1 ${preselectLR !== 'RM' ? 'hidden' : ''}">
-            <label for="coord-entrega" class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Entrega Entrante SAP</label>
-            <input id="coord-entrega" type="text" placeholder="Número SAP de entrega" value="${row._entrega_entrante || ''}"
-              class="border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary">
-          </div>
+            <div id="fab-form" class="flex flex-col gap-3">
+              <div class="flex flex-col gap-1">
+                <label class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Dirección de Fábrica</label>
+                ${dirs.length > 0 ? `<select id="coord-dir-sel" class="border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary">
+                  <option value="">— Seleccionar dirección guardada —</option>
+                  ${dirOpts}
+                  <option value="__manual__">+ Ingresar nueva dirección</option>
+                </select>` : ''}
+                <input id="coord-direccion" type="text" placeholder="Dirección" value="${row._fab_direccion || ''}"
+                  class="border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary ${dirs.length > 0 ? 'hidden' : ''}">
+              </div>
+              <div class="flex gap-2">
+                <div class="flex flex-col gap-1 flex-1">
+                  <label class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Comuna</label>
+                  <input id="coord-comuna" type="text" placeholder="Comuna" value="${row._fab_comuna || ''}"
+                    class="border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary">
+                </div>
+              </div>
+              <div class="flex gap-2">
+                <div class="flex flex-col gap-1 flex-1">
+                  <label class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Persona de Contacto</label>
+                  <input id="coord-contacto" type="text" placeholder="Nombre contacto" value="${row._fab_contacto || ''}"
+                    class="border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary">
+                </div>
+                <div class="flex flex-col gap-1 flex-1">
+                  <label class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Teléfono</label>
+                  <input id="coord-telefono" type="text" placeholder="+56 9..." value="${row._fab_telefono || ''}"
+                    class="border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary">
+                </div>
+              </div>
+              <label id="coord-guardar-prov-wrap" class="flex items-center gap-2 text-xs text-secondary cursor-pointer ${dirs.length > 0 ? 'hidden' : ''}">
+                <input type="checkbox" id="coord-guardar-prov" checked class="accent-primary"> Guardar esta dirección en el proveedor
+              </label>
+            </div>
 
-          <div id="tipo-fab-wrap" class="flex flex-col gap-1 ${preselectLR !== 'RM' ? 'hidden' : ''}">
-            <span class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Clasificación Fábrica</span>
-            <div class="flex gap-3 mt-1">${radios}</div>
+            <div id="entrega-wrap" class="flex flex-col gap-1 ${preselectLR !== 'RM' ? 'hidden' : ''}">
+              <label for="coord-entrega" class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Entrega Entrante SAP</label>
+              <input id="coord-entrega" type="text" placeholder="Número SAP de entrega" value="${row._entrega_entrante || ''}"
+                class="border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary">
+            </div>
+
+            <div id="tipo-fab-wrap" class="flex flex-col gap-1 ${preselectLR !== 'RM' ? 'hidden' : ''}">
+              <span class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Clasificación Fábrica</span>
+              <div class="flex gap-3 mt-1">${radios}</div>
+            </div>
           </div>
 
           <div class="flex gap-2 justify-end pt-1">
@@ -291,6 +506,9 @@ function showCoordModal(row) {
     const inputLR  = document.getElementById('coord-local-rm');
     const entregaWrap = document.getElementById('entrega-wrap');
     const tipoFabWrap = document.getElementById('tipo-fab-wrap');
+    const infoWrap = document.getElementById('info-wrap');
+    const toggleInfoBtn = document.getElementById('toggle-info-btn');
+    const toggleInfoArrow = document.getElementById('toggle-info-arrow');
     function setLR(v) {
       inputLR.value = v;
       [btnLocal, btnRm].forEach(b => b.classList.remove('border-primary','bg-primary/10','text-primary'));
@@ -298,11 +516,21 @@ function showCoordModal(row) {
       const active = v === 'LOCAL' ? btnLocal : btnRm;
       active.classList.add('border-primary','bg-primary/10','text-primary');
       active.classList.remove('border-outline-variant','text-secondary');
-      if (v === 'RM') { entregaWrap.classList.remove('hidden'); tipoFabWrap.classList.remove('hidden'); }
-      else            { entregaWrap.classList.add('hidden');    tipoFabWrap.classList.add('hidden'); }
+      if (v === 'RM') {
+        entregaWrap.classList.remove('hidden'); tipoFabWrap.classList.remove('hidden');
+        infoWrap.classList.remove('hidden'); toggleInfoBtn.classList.add('hidden');
+      } else {
+        entregaWrap.classList.add('hidden');    tipoFabWrap.classList.add('hidden');
+        infoWrap.classList.add('hidden'); toggleInfoBtn.classList.remove('hidden');
+        toggleInfoArrow.textContent = '\u25B8';
+      }
     }
     btnLocal.addEventListener('click', () => setLR('LOCAL'));
     btnRm.addEventListener('click',    () => setLR('RM'));
+    toggleInfoBtn.addEventListener('click', () => {
+      const isHidden = infoWrap.classList.toggle('hidden');
+      toggleInfoArrow.textContent = isHidden ? '\u25B8' : '\u25BE';
+    });
 
     // Selector de direcciones guardadas
     const dirSel = document.getElementById('coord-dir-sel');
@@ -335,6 +563,13 @@ function showCoordModal(row) {
     document.getElementById('coord-cancel').addEventListener('click', () => { cleanup(); resolve(null); });
     document.getElementById('coord-confirm').addEventListener('click', async () => {
       const tipoLocalRM    = inputLR.value;
+      const inputFecha = document.getElementById('coord-fecha-retiro');
+      const fechaRetiro = (inputFecha?.value || '').trim();
+      if (tipoLocalRM !== 'LOCAL' && !fechaRetiro) {
+        inputFecha.classList.add('ring-2', 'ring-red-500');
+        showAlert('Debe indicar la Fecha de Retiro', 'error');
+        return;
+      }
       const tipoRetiro     = tipoLocalRM === 'RM' ? (bg.querySelector('input[name="coord-tipo"]:checked')?.value || preselect) : null;
       const entregaEntrante = tipoLocalRM === 'RM' ? (document.getElementById('coord-entrega')?.value || '').trim() : '';
       const fabDir  = inputDir  ? inputDir.value.trim()  : '';
@@ -355,7 +590,7 @@ function showCoordModal(row) {
       }
 
       cleanup();
-      resolve({ tipoRetiro, entregaEntrante, tipoLocalRM, fabDir, fabCom, fabCont, fabTel });
+      resolve({ tipoRetiro, entregaEntrante, tipoLocalRM, fabDir, fabCom, fabCont, fabTel, fechaRetiro });
     });
   });
 }
@@ -451,7 +686,8 @@ const VISTAS_TRONCAL = {
         const extraFab = result ? {
           tipo_local_rm: result.tipoLocalRM, fab_direccion: result.fabDir,
           fab_comuna: result.fabCom, fab_contacto: result.fabCont, fab_telefono: result.fabTel,
-        } : { tipo_local_rm: null, fab_direccion: null, fab_comuna: null, fab_contacto: null, fab_telefono: null, _clear_retiro: true };
+          fecha_retiro: result.fechaRetiro,
+        } : { tipo_local_rm: null, fab_direccion: null, fab_comuna: null, fab_contacto: null, fab_telefono: null, fecha_retiro: null, _clear_retiro: true };
         const ok = await saveEstadoRetiro(row.doc_compr, val, tipoRetiro, entregaEntrante, extraFab);
         if (ok) {
           const oc = String(row.doc_compr);
@@ -464,11 +700,13 @@ const VISTAS_TRONCAL = {
             ctx.estados[oc].fab_comuna     = extraFab.fab_comuna;
             ctx.estados[oc].fab_contacto   = extraFab.fab_contacto;
             ctx.estados[oc].fab_telefono   = extraFab.fab_telefono;
+            ctx.estados[oc].fecha_retiro   = extraFab.fecha_retiro;
             row._tipo_local_rm  = extraFab.tipo_local_rm || '';
             row._fab_direccion  = extraFab.fab_direccion || '';
             row._fab_comuna     = extraFab.fab_comuna    || '';
             row._fab_contacto   = extraFab.fab_contacto  || '';
             row._fab_telefono   = extraFab.fab_telefono  || '';
+            row._fecha_retiro   = extraFab.fecha_retiro  || '';
             // Al revertir: limpiar también tipo_retiro y entrega_entrante en memoria
             if (extraFab._clear_retiro) {
               ctx.estados[oc].tipo_retiro      = null;
@@ -498,7 +736,7 @@ const VISTAS_TRONCAL = {
       const pvMap = (ctx && ctx.pvMap) || {};
       const validas = rows
         .filter(r => !String(r.proveedor ?? '').startsWith('*'))
-        .filter(r => String(r.contr ?? '').trim() !== '');
+        .filter(r => String(r.doc_compr ?? '').trim() !== ''); // contr (Contrato de Compra) es opcional, no filtrar por eso
       // Agrupar por Orden de Compra (doc_compr)
       const g = new Map();
       validas.forEach(r => {
@@ -556,6 +794,7 @@ const VISTAS_TRONCAL = {
           _fab_comuna:     estObj.fab_comuna     || '',
           _fab_contacto:   estObj.fab_contacto   || '',
           _fab_telefono:   estObj.fab_telefono   || '',
+          _fecha_retiro:   estObj.fecha_retiro    || '',
           _detalle: detalle,
           // Datos cruzados de Pedidos de Ventas
           _pv_denominacion: pv.denominacion || '',
@@ -583,7 +822,10 @@ const VISTAS_TRONCAL = {
       { key: 'nombre_1', label: 'Nombre de Proveedor' },
       { key: 'ce', label: 'Centro Destino' },
       { key: 'alm', label: 'Almacén Destino' },
-      { key: 'fe_entrega', label: 'Fecha de Retiro', cls: 'num-clear' },
+      { key: 'fe_entrega', label: 'Fecha Entrega SAP', cls: 'num-clear' },
+      { key: '_fecha_retiro', label: 'Fecha de Retiro', cls: 'num-clear',
+        valueFn: r => r._fecha_retiro ? fmtFechaISO(r._fecha_retiro) : '',
+        clsFn: r => r._estado === 'coordinado' && !r._fecha_retiro ? 'num-clear text-error font-bold' : 'num-clear' },
       { key: '_ton_totales', label: 'Ton Totales', cls: 'text-right num-clear font-bold' },
       { key: 'documento', label: 'Pedido de Ventas' },
       { key: '_pv_denominacion', label: 'Tipo Expedición' },
@@ -607,6 +849,8 @@ const VISTAS_TRONCAL = {
   pedidos_venta: {
     titulo: 'GESTIÓN TRONCALES – PEDIDOS DE VENTA CD (1003)',
     vista: 'v_trc_sqvi_pedidos_venta_1003',
+    // Excluye el Pedido de Venta completo (todas sus líneas), sólo perfil OWNER.
+    excluir: { tipo: 'venta_1003', doc: r => r.doc_ventas, material: null },
     chipFilter: { campo: 'ofvta', label: 'Oficina de Ventas' },
     filtros: [{ campo: 'doc_ventas', label: 'Buscar Pedido de Venta', tipo: 'buscar' }],
     dateRange: { campo: 'fe_entrega', label: 'Rango Fecha de Entrega' },
@@ -719,6 +963,8 @@ const VISTAS_TRONCAL = {
   pedidos_traslados: {
     titulo: 'GESTIÓN TRONCALES – PEDIDOS TRASLADOS',
     vista: 'v_trc_sqvi_pedidos_traslados',
+    // Excluye la línea (doc_compr + material), sólo perfil OWNER.
+    excluir: { tipo: 'traslados_1003', doc: r => r.doc_compr, material: r => r.material },
     chipFilter: { campo: 'ce', label: 'Centro Destino' },
     extraChips: [{ campo: 'cesu', label: 'Centro Origen' }],
     noBuscar: true,
@@ -726,18 +972,20 @@ const VISTAS_TRONCAL = {
     dateRange: { campo: 'fecha_confirmada', label: 'Rango Fecha Confirmada' },
     async preload() {
       const stockRows = await fetchAllRows('v_trc_slim_stock');
-      // Mapa quiebres: "centro|codigo_articulo" → { sd, tq } para SKU con stock_days ≤ 7
-      const quiebresMap = {};
+      // Mapa SLIM: "centro|codigo_articulo" → { sd, abc } (se conserva el de
+      // menor stock_days si el SKU/centro aparece más de una vez).
+      const skuMap = {};
       stockRows.forEach(r => {
-        const sd = parseNum(r.stock_days);
-        if (sd > 7) return;
         const k = `${String(r.centro ?? '').trim()}|${String(r.codigo_articulo ?? '').trim()}`;
-        if (!quiebresMap[k]) quiebresMap[k] = { sd, tq: tipoQuiebre(sd) };
+        const sd = parseNum(r.stock_days);
+        const abc = String(r.clase_abc ?? '').trim().toUpperCase();
+        const prev = skuMap[k];
+        if (!prev || sd < prev.sd) skuMap[k] = { sd, abc };
       });
-      return { quiebresMap };
+      return { skuMap };
     },
     transform(rows, ctx) {
-      const quiebresMap = (ctx && ctx.quiebresMap) || {};
+      const skuMap = (ctx && ctx.skuMap) || {};
       const validas = rows
         .filter(r => !String(r.cesu ?? '').startsWith('*') && String(r.material ?? '').trim() !== '')
         .filter(r => !String(r.material ?? '').startsWith('900000'));
@@ -755,11 +1003,27 @@ const VISTAS_TRONCAL = {
         return `<span class="inline-flex items-center gap-[3px] px-[6px] py-[2px] rounded-full text-[11px] font-bold ${q.tq.cls}">` +
                `<span class="material-symbols-outlined text-[13px]">inventory_2</span>${short} (${q.sd}d)</span>`;
       }
+      // Badge del grupo de priorización de carga (B/C/D/E, ver prioridadTraslado).
+      function prioridadBadgeHtml(prio) {
+        const MAP = {
+          B: { txt: 'PRIORIZADO · USUARIO', cls: 'text-white bg-purple-700' },
+          C: { txt: 'PRIORIZADO · ABC AA',  cls: 'text-white bg-indigo-700' },
+          D: { txt: 'QUIEBRE',              cls: 'text-white bg-red-600' },
+          E: { txt: 'ABASTECIMIENTO',       cls: 'text-black bg-gray-300' },
+        };
+        const m = MAP[prio.grupo] || MAP.E;
+        return `<span class="inline-flex items-center px-[6px] py-[2px] rounded-full text-[11px] font-bold ${m.cls}">${m.txt}</span>`;
+      }
       const out = validas.map(r => {
         const al = alertaFecha(r.fecha_confirmada, 7);
         const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), r.ctd_confirmada);
         const kq = `${String(r.ce ?? '').trim()}|${String(r.material ?? '').trim()}`;
-        const q = quiebresMap[kq] || null;
+        const info = skuMap[kq] || null;
+        const quebrado = !!(info && info.sd <= 7);
+        const q = quebrado ? { sd: info.sd, tq: tipoQuiebre(info.sd) } : null;
+        const abc = info ? info.abc : '';
+        const usuario = String(r.creado_por ?? '').trim();
+        const prio = prioridadTraslado(usuario, abc, quebrado);
         return {
           doc_compr: String(r.doc_compr ?? '').trim(),
           cesu: r.cesu, ce: r.ce, alm: r.alm,
@@ -772,11 +1036,21 @@ const VISTAS_TRONCAL = {
           _alerta_icon: alertaIconHtml(al),
           _quiebre_badge: quiebreBadgeHtml(q),
           _en_quiebre: !!q,
+          _clasificacion_abc: abc || 'SIN CLASIFICACIÓN',
+          _usuario: usuario || '—',
+          _prioridad_badge: prioridadBadgeHtml(prio),
+          _prioridad_grupo: prio.grupo,
+          _prioridad_bucket: prio.bucket,
+          _prioridad_orden: prio.orden,
         };
       });
-      // Ordenar: primero los que tienen quiebre, luego por fecha
+      // Orden = el mismo criterio de priorización de carga del Plan de Carga:
+      // bucket 'prioridad' (B/C/D) antes que 'abastecimiento' (E); dentro de
+      // cada bucket, por 'orden' (usuario > ABC AA > resto de clasificación);
+      // por último, fecha confirmada más próxima primero.
       return out.sort((a, b) => {
-        if (a._en_quiebre !== b._en_quiebre) return a._en_quiebre ? -1 : 1;
+        if (a._prioridad_bucket !== b._prioridad_bucket) return a._prioridad_bucket === 'prioridad' ? -1 : 1;
+        if (a._prioridad_orden !== b._prioridad_orden) return a._prioridad_orden - b._prioridad_orden;
         const da = parseDateSAP(a.fecha_confirmada), db2 = parseDateSAP(b.fecha_confirmada);
         return (da || new Date(9999,0)) - (db2 || new Date(9999,0));
       });
@@ -784,6 +1058,7 @@ const VISTAS_TRONCAL = {
     rowClsFn(r) { return r._en_quiebre ? 'bg-red-50' : ''; },
     columnas: [
       { key: '_alerta_icon', label: 'Alerta', rawHtml: true },
+      { key: '_prioridad_badge', label: 'Prioridad Plan Carga', rawHtml: true },
       { key: '_quiebre_badge', label: 'Estado Quiebre', rawHtml: true },
       { key: 'doc_compr', label: 'Pedido de Traslado' },
       { key: 'cesu', label: 'Centro Origen' },
@@ -791,6 +1066,8 @@ const VISTAS_TRONCAL = {
       { key: 'alm', label: 'Almacén Destino' },
       { key: 'material', label: 'ID Material' },
       { key: 'texto_breve', label: 'Nombre Material' },
+      { key: '_clasificacion_abc', label: 'Clasificación ABC', cls: 'text-center' },
+      { key: '_usuario', label: 'Usuario' },
       { key: 'fecha_confirmada', label: 'Fecha Confirmada', cls: 'num-clear' },
       { key: 'ctd_pedido', label: 'Cantidad Pedido', cls: 'text-right num-clear' },
       { key: '_ton_sku', label: 'Total SKU', cls: 'text-right num-clear font-bold' },
@@ -802,6 +1079,8 @@ const VISTAS_TRONCAL = {
   pedidos_traslados_revex: {
     titulo: 'GESTIÓN TRONCALES – PEDIDOS DE TRASLADO REVEX',
     vista: 'v_trc_sqvi_pedidos_traslados',
+    // Excluye la línea (doc_compr + material), sólo perfil OWNER.
+    excluir: { tipo: 'traslados_revex', doc: r => r.doc_compr, material: r => r.material },
     chipFilter: { campo: 'ce', label: 'Centro Destino' },
     noBuscar: true,
     filtros: [{ campo: 'doc_compr', label: 'BUSCAR PEDIDO DE TRASLADO', tipo: 'buscar' }],
@@ -899,6 +1178,10 @@ const VISTAS_TRONCAL = {
   pedidos_traslados_4000: {
     titulo: 'GESTIÓN TRONCALES – PEDIDOS DE TRASLADOS 4000',
     vista: 'v_trc_sqvi_pedidos_traslados_4000',
+    // Excluye la línea (doc_compr + material), sólo perfil OWNER. Mismo tipo
+    // ('crossdock_4000') que usa el detalle del Plan de Carga, así que excluir
+    // acá también lo saca del Plan de Carga automáticamente.
+    excluir: { tipo: 'crossdock_4000', doc: r => r.doc_compr, material: r => r.material },
     chipFilter: { campo: 'ce', label: 'Centro Destino' },
     extraChips: [{ campo: '_origen', label: 'Origen' }],
     noBuscar: true,
@@ -926,12 +1209,16 @@ const VISTAS_TRONCAL = {
         const ex = _dedupMap.get(k);
         if (!ex || (!esValida(ex.fe_entrega) && esValida(r.fe_entrega))) _dedupMap.set(k, r);
       });
+      // (AJUSTE 24-sep-2026, pedido Jordan) Pendiente = ctd_pedido - ctd_entregada.
+      // Cuando ctd_entregada == ctd_pedido, SAP ya generó la entrega (aunque la
+      // salida física — cantidad_salida — todavía no se registre) y el pedido
+      // deja de considerarse pendiente.
       const validas = Array.from(_dedupMap.values())
         .filter(r => String(r.cesu ?? '').trim() !== '' && !String(r.cesu ?? '').startsWith('*'))
         .filter(r => String(r.material ?? '').trim() !== '')
-        .filter(r => parseNum(r.ctd_pedido) > parseNum(r.cantidad_salida));
+        .filter(r => parseNum(r.ctd_pedido) > parseNum(r.ctd_entregada));
       const out = validas.map(r => {
-        const pend = parseNum(r.ctd_pedido) - parseNum(r.cantidad_salida);
+        const pend = parseNum(r.ctd_pedido) - parseNum(r.ctd_entregada);
         const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), pend);
         const origen = String(r.documento ?? '').trim() ? 'PEDIDO DE VENTAS' : 'STOCK';
         const docPV = String(r.documento ?? '').trim();
@@ -1173,7 +1460,7 @@ async function fetchAllRows(vista, force = false) {
   const pageSize = 1000;
   // 1) Total de filas (HEAD, sin traer datos) para paginar en paralelo.
   //    OJO: si el count falla o vuelve null (pasa con vistas DISTINCT ON /
-  //    RLS), NO hay que asumir que todo cabe en 1 página — eso trunca en
+  //    RLS), NO hay que asumir que todo cabe en 1 pagina: eso trunca en
   //    silencio a 1000 filas y descarta el resto sin error visible. Por eso
   //    el paso 3 (barrido de seguridad) valida esto siempre.
   let total = 0;
@@ -1184,8 +1471,8 @@ async function fetchAllRows(vista, force = false) {
 
   let rows = [];
   if (total > pageSize) {
-    // 2) Traer todas las páginas EN PARALELO (mucho más rápido que secuencial)
-    const pages = Math.min(Math.ceil(total / pageSize), 200);
+    // 2) Traer todas las paginas EN PARALELO (mucho mas rapido que secuencial)
+    const pages = Math.min(Math.ceil(total / pageSize), 100);
     const reqs = [];
     for (let p = 0; p < pages; p++) {
       reqs.push(supabase.from(vista).select('*').range(p * pageSize, p * pageSize + pageSize - 1));
@@ -1201,13 +1488,13 @@ async function fetchAllRows(vista, force = false) {
     rows = data || [];
   }
 
-  // 3) Barrido de seguridad: si el count del paso 1 fue erróneo/menor al
-  //    real (o falló y quedó en 0), la última página recibida viene COMPLETA
-  //    (exactamente pageSize filas). En ese caso puede haber más datos
-  //    detrás: seguir pidiendo páginas siguientes hasta recibir una
-  //    incompleta o vacía. Esto es lo que evita que un count fallido trunque
-  //    el resultado en 1000 filas sin avisar (el bug que dejaba pedidos de
-  //    venta reales fuera del cruce con Retiros de Fábrica).
+  // 3) Barrido de seguridad: si el count del paso 1 fue erroneo/menor al
+  //    real (o fallo y quedo en 0), la ultima pagina recibida viene COMPLETA
+  //    (exactamente pageSize filas). En ese caso puede haber mas datos
+  //    detras: seguir pidiendo paginas siguientes hasta recibir una
+  //    incompleta o vacia. Esto evita que un count fallido trunque el
+  //    resultado en 1000 filas sin avisar (el bug que dejaba pedidos de
+  //    venta reales fuera del cruce con Retiros de Fabrica).
   let nextOffset = rows.length;
   let guard = 0;
   while (rows.length > 0 && rows.length % pageSize === 0 && guard < 200) {
@@ -1230,6 +1517,15 @@ async function fetchAllRows(vista, force = false) {
 const CAP_CAMION_DEFAULT = 28;
 const CAP_CAMION_REDUCIDO = 15;
 const CENTROS_CAMION_REDUCIDO = ['1050', '1005'];
+// Umbrales de camión completo para los camiones directos (regla 21-sep-2026):
+//  · CD-CLIENTE: pedidos de venta 1003 del MISMO cliente que suman > 80% de la capacidad.
+//  · FÁBRICA-SUCURSAL / FÁBRICA-CLIENTE: OC COORDINADAS con fecha de retiro = fecha de
+//    planificación que suman > 90% de la capacidad (mismo proveedor+destino / mismo cliente).
+const UMBRAL_CD_CLIENTE = 0.80;
+const UMBRAL_FABRICA = 0.90;
+// Condición de expedición del pedido de venta (v_trc_pedidos_ventas_ref.denominacion).
+const COND_EBEMA_RETIRA_CLIENTE_RETIRA = 'EBE-RET / CLI-RET';
+const COND_EBEMA_RETIRA_EBEMA_DESPACHA = 'EBE-RET / EBE-DESP';
 
 function getCapacidadCamion(centroId) {
   return CENTROS_CAMION_REDUCIDO.includes(String(centroId)) ? CAP_CAMION_REDUCIDO : CAP_CAMION_DEFAULT;
@@ -1254,13 +1550,17 @@ function fechaEnRango(fechaStr, diasAntes, diasDespues) {
   return diff >= -diasAntes && diff <= diasDespues;
 }
 
+// COORDINADO_RM = COORDINADO_SANTIAGO (estado legado): el retiro llega a Santiago/RM, así que cuenta
+// en el Plan de Carga (regla Jordan 21-sep-2026). 'coordinado_local' NO cuenta.
+function esEstadoCoordinado(estado) { return estado === 'coordinado' || estado === 'coordinado_santiago'; }
+
 let planDetalleAbierto = new Set();
 let planOrigen = '1003';   // centro origen del plan de carga (1003 / 1081)
 
 async function renderPlanCarga(stage) {
   stage.innerHTML = '<div class="text-secondary text-body-md p-md">Cargando Plan de Carga…</div>';
 
-  const [quiebresRaw, trasladosRaw, revexRaw, retirosRaw, ventasRaw, traslados4000Raw, calendarioRows, estadosRetiro] = await Promise.all([
+  const [quiebresRaw, trasladosRaw, revexRaw, retirosRaw, ventasRaw, traslados4000Raw, calendarioRows, estadosRetiro, exclusionesPlan, pvRows, feriadosRows, horizonteRows] = await Promise.all([
     fetchAllRows('v_trc_slim_stock'),
     fetchAllRows('v_trc_sqvi_pedidos_traslados'),
     fetchAllRows('v_trc_sqvi_pedidos_traslados'),
@@ -1269,19 +1569,43 @@ async function renderPlanCarga(stage) {
     fetchAllRows('v_trc_sqvi_pedidos_traslados_4000'),
     fetchAllRows('abast_calendario'),
     loadEstadosRetiro(),
+    loadExclusionesPlan(),
+    fetchAllRows('v_trc_pedidos_ventas_ref'),
+    fetchAllRows('abast_feriados'),
+    fetchAllRows('abast_horizonte_centro'),
   ]);
 
-  // Materiales quebrados por centro (≤7 días)
-  const quiebresByCentro = {};
+  // Feriados administrados manualmente + horizonte de planificación (24h/48h)
+  // por centro destino (tabla auxiliar de la vista Calendario Sucursales).
+  const feriadosSet = new Set((feriadosRows || []).map(r => String(r.fecha ?? '').trim()).filter(Boolean));
+  const horizonteMap = {};
+  (horizonteRows || [])
+    .filter(r => String(r.centro_origen ?? '').trim() === planOrigen)
+    .forEach(r => { horizonteMap[String(r.centro_destino ?? '').trim()] = Number(r.horizonte_horas) === 48 ? 48 : 24; });
+  const getHorizonte = ce => horizonteMap[ce] || 24;
+  const diaHabil1 = addBusinessDays(hoy00(), 1, feriadosSet); // ventana 24h (próximo día hábil)
+  const diaHabil2 = addBusinessDays(hoy00(), 2, feriadosSet); // ventana 48h (siguiente día hábil)
+  // Cross-reference de Pedidos de Venta (Cliente, Vendedor, Tipo de Expedición)
+  // por doc_ventas, mismo patrón usado en las vistas de Retiros y Traslados 4000.
+  const pvMap = {};
+  pvRows.forEach(r => {
+    const k = String(r.doc_ventas ?? '').trim();
+    if (k && !pvMap[k]) pvMap[k] = r;
+  });
+
+  // Info SLIM por centro (stock_days + clase ABC), usada por prioridadTraslado
+  // para clasificar cada línea de Traslados 1003 (AJUSTES PRIORIZACIÓN 2026-09-18).
+  const skuInfoByCentro = {};
   quiebresRaw
     .filter(r => CENTROS_QUIEBRES.includes(String(r.centro ?? '').trim()))
     .forEach(r => {
       const ce = String(r.centro).trim();
+      const mat = String(r.codigo_articulo ?? '').trim();
       const sd = parseNum(r.stock_days);
-      if (sd <= 7) {
-        if (!quiebresByCentro[ce]) quiebresByCentro[ce] = new Set();
-        quiebresByCentro[ce].add(String(r.codigo_articulo ?? '').trim());
-      }
+      const abc = String(r.clase_abc ?? '').trim().toUpperCase();
+      if (!skuInfoByCentro[ce]) skuInfoByCentro[ce] = {};
+      const prev = skuInfoByCentro[ce][mat];
+      if (!prev || sd < prev.sd) skuInfoByCentro[ce][mat] = { sd, abc };
     });
 
   // (AJUSTE) Plan de carga por CENTRO ORIGEN: sólo se consideran los pedidos de
@@ -1296,11 +1620,37 @@ async function renderPlanCarga(stage) {
     .filter(r => String(r.material ?? '').startsWith('900000'))
     .filter(r => String(r.cesu ?? '').trim() === planOrigen);
   // REVEX: cesu = centro origen (1003 o 1081), ce = centro destino donde se contabiliza
+  // Corte de fecha para el Plan de Carga: "mañana" (día que se está planificando).
+  // (AJUSTE fecha de retiro 18-sep-2026) Un retiro coordinado sólo se contabiliza en
+  // el Plan de Carga a partir del día programado en `fecha_retiro` (inclusive) —
+  // si se coordina con fecha futura, no infla el plan hasta que llegue esa fecha.
+  // Retiros ya atrasados (fecha_retiro < mañana) siguen contando (deben salir ASAP).
+  // Los coordinados ANTES de este ajuste, sin `fecha_retiro` guardada, se siguen
+  // contabilizando sin filtro de fecha (compatibilidad hacia atrás).
+  // (AJUSTE 48H) El corte usa el próximo día hábil (saltando fin de semana y
+  // feriados de `abast_feriados`) en vez de simplemente "mañana" calendario.
+  // (AJUSTE 22-sep-2026) El corte de fecha se evalúa POR CENTRO DESTINO más abajo
+  // (dentro de `retirosCons`), usando el horizonte de cada centro (getHorizonte(ce):
+  // 24h→diaHabil1, 48h→diaHabil2) — antes usaba siempre diaHabil1 para todos los
+  // centros, por lo que un retiro FAB-CD coordinado con fecha_retiro en la ventana
+  // 48h (p. ej. Coquimbo) quedaba excluido del Plan de Carga aunque su centro
+  // estuviera configurado a 48 horas.
   const retiros = esCD1003 ? retirosRaw
     .filter(r => !String(r.proveedor ?? '').startsWith('*'))
     .filter(r => String(r.contr ?? '').trim() !== '')
-    .filter(r => { const _e = estadosRetiro[String(r.doc_compr ?? '').trim()] || {}; return _e.estado === 'coordinado' && (_e.tipo_local_rm === 'RM' || String(_e.entrega_entrante ?? '').trim() !== ''); }) : [];
+    .filter(r => { const _e = estadosRetiro[String(r.doc_compr ?? '').trim()] || {}; return esEstadoCoordinado(_e.estado) && _e.tipo_local_rm !== 'LOCAL' && (_e.estado === 'coordinado_santiago' || _e.tipo_local_rm === 'RM' || String(_e.entrega_entrante ?? '').trim() !== ''); }) : [];
   const ventas = esCD1003 ? ventasRaw.filter(r => !String(r.mr ?? '').trim()) : [];
+  // Regla Jordan 21-sep-2026: todo retiro LOCAL (tipo_local_rm='LOCAL') queda excluido del Plan de Carga;
+  // los retiros de Concepción (1081) no cuentan en la tabla (los retiros son sólo del plan 1003).
+  // (AJUSTE 21-sep-2026) Base de retiros para los camiones DIRECTOS Fábrica-Sucursal /
+  // Fábrica-Cliente: sólo OC en estado COORDINADO (la fecha de retiro = fecha de
+  // planificación se valida por centro más abajo). Igual que `retiros`, sólo aplica al plan
+  // del CD 1003: el dataset de retiros no trae CD de origen y al evaluarlo también para 1081
+  // la misma OC quedaba contada en ambos planes (duplicado 1003/1081).
+  const retirosDirectosBase = esCD1003 ? retirosRaw
+    .filter(r => !String(r.proveedor ?? '').startsWith('*'))
+    .filter(r => String(r.contr ?? '').trim() !== '')
+    .filter(r => { const _e = estadosRetiro[String(r.doc_compr ?? '').trim()] || {}; return esEstadoCoordinado(_e.estado) && _e.tipo_local_rm !== 'LOCAL' && _e.tipo_retiro !== 'FAB-CD'; }) : [];
   // sqvi_pedidos_traslados_4000: cesu==ce (destino), origen siempre es CD 1003.
   // Deduplicar por doc_compr|pos — clave sin fecha para fusionar la fila '00.00.0000'
   // (cabecera SAP) con la fila de fecha real (línea de planificación), conservando
@@ -1322,60 +1672,95 @@ async function renderPlanCarga(stage) {
 
   const destinosOrigen = (CALENDARIOS[planOrigen] && CALENDARIOS[planOrigen].destinos) || CENTROS_QUIEBRES;
   const centrosSet = new Set(destinosOrigen);
-  const mananaTemp = new Date(); mananaTemp.setDate(mananaTemp.getDate() + 1);
-  const centrosProgramados = getCentrosProgramados(
-    calendarioRows.filter(r => String(r.centro ?? '').trim() === planOrigen),
-    mananaTemp.getDay());
 
-  // El CD 1003 despacha el sábado: si hoy es viernes, la planificación cubre el
-  // sábado (mañana) y también el lunes siguiente. Se amplían 2 días las ventanas
-  // hacia adelante para saltar el fin de semana e incluir el lunes.
-  const esViernes = new Date().getDay() === 5;
-  const diasExtraFinde = esViernes ? 2 : 0;
+  // (AJUSTE 48H, 18-sep-2026) El día objetivo ya no es fijo ("mañana"): cada
+  // centro destino tiene su propio horizonte de planificación (24h o 48h,
+  // tabla `abast_horizonte_centro`, por defecto 24h) y el día objetivo se
+  // calcula en días HÁBILES (salta sábado/domingo y los feriados de
+  // `abast_feriados`) — reemplaza el parche anterior que sólo saltaba el fin
+  // de semana cuando hoy era viernes.
+  const calendarioOrigenRows = calendarioRows.filter(r => String(r.centro ?? '').trim() === planOrigen);
+  const programadosDia1 = getCentrosProgramados(calendarioOrigenRows, diaHabil1.getDay()); // ventana 24h
+  const programadosDia2 = getCentrosProgramados(calendarioOrigenRows, diaHabil2.getDay()); // ventana 48h
+  // (AJUSTE 24-sep-2026) `enCalendario` ya no se precalcula acá: se evalúa por
+  // centro dentro del map de abajo, contra el horizonte EFECTIVO (que puede
+  // promoverse de 48h a 24h según la carga disponible para mañana).
 
   const resultado = Array.from(centrosSet).map(ce => {
     // Capacidad de referencia (camión lleno) para los umbrales de camión
     // cliente (80%) y fábrica (85%). La capacidad efectiva del CD se calcula
     // más abajo (La Calera/San Bernardo usan 15 T si no alcanzan a llenar 28 T).
     const capRef = CAP_CAMION_DEFAULT;
-    const quiebresMat = quiebresByCentro[ce] || new Set();
+    const skuInfoCe = skuInfoByCentro[ce] || {};
     const det = { quiebre: [], stock: [], revex: [], cross: [], ventaCons: [], retiro: [], cliente: [], fabSuc: [], fabCli: [] };
-    const itemT = (r, t) => ({ pt: r.doc_compr, material: r.material, nombre: r.texto_breve, fecha: r.fecha_confirmada, ctd: r.ctd_confirmada, ton: t, pv: r.documento });
+    const itemT = (r, t) => ({ pt: r.doc_compr, material: r.material, nombre: r.texto_breve, fecha: r.fecha_confirmada, ctd: r.ctd_confirmada, ton: t, pv: r.documento, usuario: r.creado_por });
+    // Clasifica una línea de Traslados 1003 según prioridadTraslado (usuario
+    // creador / clasificación ABC / quiebre) — ver AJUSTES PRIORIZACIÓN 2026-09-18.
+    const clasificaTraslado = r => {
+      const info = skuInfoCe[String(r.material ?? '').trim()] || null;
+      const quebrado = !!(info && info.sd <= 7);
+      const abc = info ? info.abc : '';
+      return prioridadTraslado(r.creado_por, abc, quebrado);
+    };
 
-    // 1. Traslados Quiebre  (excluye líneas con ctd_confirmada = 0 → ya entregadas)
-    const tonQuiebre = traslados
+    // 1. ABAST. QUIEBRE Y PRIORIZADO (puntos B, C, D del ajuste de priorización:
+    //    usuario ≠ ZE_SIS, clasificación ABC=AA, o material quebrado con otra
+    //    clasificación). Excluye líneas con ctd_confirmada = 0 → ya entregadas.
+    // (AJUSTE 24-sep-2026, pedido Jordan) Ventana -10/+7 en DÍAS HÁBILES, igual
+    // criterio que Ventas 1003.
+    const baseTraslados = traslados
       .filter(r => String(r.ce ?? '').trim() === ce)
-      .filter(r => quiebresMat.has(String(r.material ?? '').trim()))
-      .filter(r => fechaEnRango(r.fecha_confirmada, 10, 7))
+      .filter(r => fechaEnRangoHabil(r.fecha_confirmada, 10, 7, feriadosSet))
       .filter(r => parseNum(r.ctd_confirmada) > 0)
-      .reduce((sum, r) => { const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), r.ctd_confirmada); det.quiebre.push(itemT(r, t)); return sum + t; }, 0);
+      .filter(r => !estaExcluido(exclusionesPlan, 'traslados_1003', r.doc_compr, r.material))
+      .map(r => ({ r, prio: clasificaTraslado(r) }));
 
-    // 2. Traslados Stock / Abastecimiento  (ídem)
-    const tonStock = traslados
-      .filter(r => String(r.ce ?? '').trim() === ce)
-      .filter(r => !quiebresMat.has(String(r.material ?? '').trim()))
-      .filter(r => fechaEnRango(r.fecha_confirmada, 10, 7))
-      .filter(r => parseNum(r.ctd_confirmada) > 0)
-      .reduce((sum, r) => { const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), r.ctd_confirmada); det.stock.push(itemT(r, t)); return sum + t; }, 0);
+    const itemsPrioridad = baseTraslados
+      .filter(x => x.prio.bucket === 'prioridad')
+      .sort((a, b) => a.prio.orden - b.prio.orden);
+    const tonQuiebre = itemsPrioridad.reduce((sum, { r, prio }) => {
+      const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), r.ctd_confirmada);
+      const tonBruto = calcTon(parseNum(r.peso_neto), r.ctd_confirmada);
+      const tonVol = calcTon(parseNum(r.tamano_dimens), r.ctd_confirmada);
+      det.quiebre.push({ ...itemT(r, t), _motivo: prio.motivo, tonBruto, tonVol });
+      return sum + t;
+    }, 0);
+
+    // 2. ABASTECIMIENTO (punto E: material no quebrado), mismo orden de
+    //    clasificación ABC que el punto D.
+    const itemsAbast = baseTraslados
+      .filter(x => x.prio.bucket === 'abastecimiento')
+      .sort((a, b) => a.prio.orden - b.prio.orden);
+    const tonStock = itemsAbast.reduce((sum, { r, prio }) => {
+      const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), r.ctd_confirmada);
+      const tonBruto = calcTon(parseNum(r.peso_neto), r.ctd_confirmada);
+      const tonVol = calcTon(parseNum(r.tamano_dimens), r.ctd_confirmada);
+      det.stock.push({ ...itemT(r, t), _motivo: prio.motivo, tonBruto, tonVol });
+      return sum + t;
+    }, 0);
 
     // 3. REVEX (peso_neto_2 × ctd_pedido — igual que la vista REVEX)
     const tonRevex = revex
       .filter(r => String(r.ce ?? '').trim() === ce)
-      .reduce((sum, r) => { const t = calcTon(parseNum(r.peso_neto_2), r.ctd_pedido); det.revex.push(itemT(r, t)); return sum + t; }, 0);
+      .filter(r => !estaExcluido(exclusionesPlan, 'traslados_revex', r.doc_compr, r.material))
+      .reduce((sum, r) => { const t = calcTon(parseNum(r.peso_neto_2), r.ctd_pedido); det.revex.push({ ...itemT(r, t), tonBruto: t, tonVol: null }); return sum + t; }, 0);
 
-    // 4. Crossdocking 4000 — SÓLO pendientes (ctd_pedido > procesado). Fecha -3/+3.
-    //    "Procesado" = MAX(ctd_entregada, cantidad_salida) para cubrir los tres casos:
-    //      · ctd_entregada == cantidad_salida > 0  → entregado, excluir
-    //      · cantidad_salida > ctd_entregada        → en tránsito; pend = ctd_pedido - cantidad_salida
-    //      · cantidad_salida == 0                   → no ha salido; pend = ctd_pedido - ctd_entregada
-    //    Anomalía SAP (ctd_entregada > cantidad_salida con salida=0): MAX deja pend=0 → excluido.
-    //    La vista muestra todos los pendientes; el plan aplica ventana -3/+3 días.
+    // 4. Crossdocking 4000 — SÓLO pendientes. SIN ventana de fecha (AJUSTE
+    //    16-sep-2026): antes filtraba fe_entrega -3/+3 días y dejaba fuera del
+    //    Plan de Carga pedidos de crossdock ya creados en SAP con fecha de
+    //    entrega un poco más lejana.
+    //    (AJUSTE 24-sep-2026, pedido Jordan) "Pendiente" = ctd_pedido -
+    //    ctd_entregada, igual que la vista de tabla "Pedidos de Traslados 4000".
+    //    Cuando ctd_entregada == ctd_pedido, SAP ya generó la entrega (la
+    //    salida física — cantidad_salida — llegará después) y deja de
+    //    considerarse pendiente, aunque cantidad_salida todavía sea menor.
     const tonCross = t4000
       .filter(r => String(r.ce ?? '').trim() === ce)
-      .filter(r => fechaEnRango(r.fe_entrega, 3, 3))
-      .filter(r => parseNum(r.ctd_pedido) > Math.max(parseNum(r.ctd_entregada), parseNum(r.cantidad_salida)))
-      .reduce((sum, r) => { const pend = parseNum(r.ctd_pedido) - Math.max(parseNum(r.ctd_entregada), parseNum(r.cantidad_salida)); const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), pend);
-        det.cross.push({ pt: r.doc_compr, origen: String(r.cesu ?? '').trim(), ceDestino: String(r.ce ?? '').trim(), almDestino: String(r.alm ?? '').trim(), material: r.material, nombre: r.texto_breve, fecha: r.fe_entrega, ctdPend: pend, ton: t, pv: r.documento }); return sum + t; }, 0);
+      .filter(r => parseNum(r.ctd_pedido) > parseNum(r.ctd_entregada))
+      .filter(r => !estaExcluido(exclusionesPlan, 'crossdock_4000', r.doc_compr, r.material))
+      .reduce((sum, r) => { const pend = parseNum(r.ctd_pedido) - parseNum(r.ctd_entregada); const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), pend);
+        const tonBruto = calcTon(parseNum(r.peso_neto), pend), tonVol = calcTon(parseNum(r.tamano_dimens), pend);
+        det.cross.push({ pt: r.doc_compr, origen: String(r.cesu ?? '').trim(), ceDestino: String(r.ce ?? '').trim(), almDestino: String(r.alm ?? '').trim(), material: r.material, nombre: r.texto_breve, fecha: r.fe_entrega, ctdPend: pend, ton: t, pv: r.documento, tonBruto, tonVol }); return sum + t; }, 0);
 
     // 5. Notas de Venta 1003 (ofvta = centro): requiere ruta, excluye RETIRA.
     //    >26T  ⇒ CAMIÓN CLIENTE (directo al cliente, no se consolida). Fecha -3/+3.
@@ -1388,7 +1773,12 @@ async function renderPlanCarga(stage) {
       .filter(r => String(r.ofvta ?? '').trim() === ce)
       .filter(r => String(r.ruta ?? '').trim() !== '')
       .filter(r => normTxt(r.ruta).indexOf('RETIRA') === -1)
-      .filter(r => fechaEnRango(r.fe_entrega, 3, 3))
+      // (AJUSTE 24-sep-2026, pedido Jordan) La ventana -3/+3 es en DÍAS HÁBILES,
+      // sin contar sábados/domingos/feriados — antes eran días corridos y un
+      // pedido a 2 días hábiles pero 4 días corridos (ej. jueves → lunes) quedaba
+      // excluido incorrectamente.
+      .filter(r => fechaEnRangoHabil(r.fe_entrega, 3, 3, feriadosSet))
+      .filter(r => !estaExcluido(exclusionesPlan, 'venta_1003', r.doc_ventas, null))
       .forEach(r => {
         const k = `${String(r.doc_ventas ?? '').trim()}|${String(r.material ?? '').trim()}`;
         const ex = _ventasDedupMap.get(k);
@@ -1399,7 +1789,12 @@ async function renderPlanCarga(stage) {
     const ventasCe = Array.from(_ventasDedupMap.values());
     const ventasPorDoc = {};
     ventasCe.forEach(r => { const d = String(r.doc_ventas ?? '').trim(); (ventasPorDoc[d] = ventasPorDoc[d] || []).push(r); });
+    // (AJUSTE 21-sep-2026) CAMIÓN CD-CLIENTE: pedidos de venta 1003 con despacho directo
+    // a cliente. Se agrupan por CLIENTE (deudor): si la suma de sus pedidos supera el 80% de
+    // la capacidad del camión, salen directo al cliente (puede ser más de un pedido). Si no,
+    // pasan a Venta Directa (se consolidan con el camión CD). Antes era >26 T por pedido.
     let tonVentaCliente = 0, tonVentaCons = 0;
+    const ventasPorCliente = {};
     for (const [doc, items] of Object.entries(ventasPorDoc)) {
       const lineItems = []; let tonDoc = 0;
       items.forEach(r => {
@@ -1407,64 +1802,138 @@ async function renderPlanCarga(stage) {
         if (pend <= 0) return;
         const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), pend);
         tonDoc += t;
+        const tonBruto = calcTon(parseNum(r.peso_neto), pend), tonVol = calcTon(parseNum(r.tamano_dimens), pend);
         const rl = lookupRuta(r.ruta);
-        lineItems.push({ pv: doc, material: r.material, nombre: r.denominacion_de_posicion, cant: pend, ruta: r.ruta, comuna: rl.comuna, region: rl.region, fecha: r.fe_entrega, ton: t });
+        const pv = pvMap[doc] || {};
+        lineItems.push({ pv: doc, material: r.material, nombre: r.denominacion_de_posicion, cant: pend, ruta: r.ruta, comuna: rl.comuna, region: rl.region, fecha: r.fe_entrega, ton: t, tonBruto, tonVol, tipoExp: pv.denominacion || '', cliente: pv.nombre_1 || '', vendedor: pv.nombre || '' });
       });
       if (tonDoc <= 0) continue;
-      if (tonDoc > 26) { tonVentaCliente += tonDoc; det.cliente.push(...lineItems); }
-      else { tonVentaCons += tonDoc; det.ventaCons.push(...lineItems); }
+      const clienteKey = String(items[0].deudor ?? '').trim() || String((pvMap[doc] || {}).nombre_1 ?? '').trim() || doc;
+      const g = (ventasPorCliente[clienteKey] = ventasPorCliente[clienteKey] || { ton: 0, items: [] });
+      g.ton += tonDoc; g.items.push(...lineItems);
     }
+    Object.values(ventasPorCliente).forEach(g => {
+      if (g.ton > capRef * UMBRAL_CD_CLIENTE) { tonVentaCliente += g.ton; det.cliente.push(...g.items); }
+      else { tonVentaCons += g.ton; det.ventaCons.push(...g.items); }
+    });
 
     // 6. Retiros proveedor CONSOLIDAR CD (tipo_retiro=FAB-CD) → parte del CD.
-    const retirosCons = retiros
-      .filter(r => String(r.ce ?? '').trim() === ce)
-      .filter(r => (estadosRetiro[String(r.doc_compr ?? '').trim()] || {}).tipo_retiro === 'FAB-CD');
-    const itemR = (r, cant, t) => { const _oc = String(r.doc_compr ?? '').trim(); const ee = (estadosRetiro[_oc] || {}).entrega_entrante || ''; return { oc: r.doc_compr, idProv: r.proveedor, prov: r.nombre_1, material: r.material, nombre: r.texto_breve, fecha: r.fe_entrega, cant, ton: t, pv: r.documento, entrega_entrante: ee }; };
-    const tonRetiro = retirosCons.reduce((sum, r) => {
-      const cant = parseNum(r.ctd_pedido) - parseNum(r.ctd_entregada);
-      const t = calcTon(maxPesoDim(r.peso_bruto, r.tamano_dimens), cant);
-      det.retiro.push(itemR(r, cant, t)); return sum + t;
-    }, 0);
+    // (AJUSTE 22-sep-2026) Corte de fecha por centro: usa el horizonte de `ce`
+    // (24h→diaHabil1, 48h→diaHabil2) en vez del corte global fijo a 24h.
+    // (AJUSTE 23-sep-2026, pedido Jordan) El corte NO debe ser un rango abierto
+    // (`fr <= cutoffRetiroCe`): eso hacía que un retiro con fecha_retiro = mañana
+    // (diaHabil1) apareciera también en el plan de un centro a 48h (cutoff =
+    // diaHabil2), aunque ese retiro es "para retirar mañana", no para la ventana
+    // de 48h. Ahora sólo cuenta si: (a) está atrasado, o (b) su fecha_retiro
+    // coincide EXACTAMENTE con el día objetivo de este centro (diaHabil1 si es
+    // 24h, diaHabil2 si es 48h).
+    // (AJUSTE 24-sep-2026, pedido Jordan) "Atrasado" se compara contra HOY, no
+    // contra "mañana" (diaHabil1): un retiro con fecha_retiro = hoy todavía se
+    // está retirando hoy, no está atrasado — sólo pasa a considerarse atrasado
+    // (y por lo tanto reaparece en el plan) a partir del día SIGUIENTE a su
+    // fecha_retiro si sigue sin cerrarse (estado sigue "coordinado").
+    const itemR = (r, cant, t) => { const _oc = String(r.doc_compr ?? '').trim(); const _e = estadosRetiro[_oc] || {}; const ee = _e.entrega_entrante || '';
+      const tonBruto = calcTon(parseNum(r.peso_bruto), cant), tonVol = calcTon(parseNum(r.tamano_dimens), cant);
+      // Fecha de Retiro coordinada (prioridad) — si no hay, se usa la fecha de entrega SAP de referencia.
+      const fecha = _e.fecha_retiro ? fmtFechaISO(_e.fecha_retiro) : r.fe_entrega;
+      return { oc: r.doc_compr, idProv: r.proveedor, prov: r.nombre_1, material: r.material, nombre: r.texto_breve, fecha, cant, ton: t, tonBruto, tonVol, pv: r.documento, entrega_entrante: ee }; };
+    // (AJUSTE 24-sep-2026, pedido Jordan) Se calcula el Retiro CD para AMBAS
+    // fechas objetivo posibles (mañana=diaHabil1 y pasado mañana=diaHabil2),
+    // en vez de una sola según el horizonte configurado. Esto permite evaluar
+    // más abajo si conviene "adelantar" un centro a 48h a 24h (ver promovido24).
+    function retirosParaFecha(fechaObjetivoCe) {
+      return retiros
+        .filter(r => String(r.ce ?? '').trim() === ce)
+        .filter(r => (estadosRetiro[String(r.doc_compr ?? '').trim()] || {}).tipo_retiro === 'FAB-CD')
+        .filter(r => { const _e = estadosRetiro[String(r.doc_compr ?? '').trim()] || {}; const fr = parseISODate(_e.fecha_retiro); return !fr || fr.getTime() < hoy00().getTime() || fr.getTime() === fechaObjetivoCe.getTime(); });
+    }
+    function sumarRetiro(lista) {
+      let sum = 0; const items = [];
+      lista.forEach(r => {
+        const cant = parseNum(r.ctd_pedido) - parseNum(r.ctd_entregada);
+        const t = calcTon(maxPesoDim(r.peso_bruto, r.tamano_dimens), cant);
+        items.push(itemR(r, cant, t)); sum += t;
+      });
+      return { sum, items };
+    }
+    const retiro24 = sumarRetiro(retirosParaFecha(diaHabil1));
+    const retiro48 = sumarRetiro(retirosParaFecha(diaHabil2));
 
-    // 6b. Retiros FÁBRICA (alm ≠ 4000, pendientes):
-    //   - CAMIÓN FÁBRICA-CLIENTE: una OC asociada a pedido de venta cuyo total ≥85% cap.
-    //   - CAMIÓN FÁBRICA-SUCURSAL: OC(s) del mismo proveedor (sin PV) cuyo total ≥85% cap.
-    const retirosFab = retiros
+    // 6b. Camiones DIRECTOS de fábrica (AJUSTE 21-sep-2026). Sólo OC en estado COORDINADO con
+    //   fecha de retiro = fecha de planificación del centro (24h→día hábil 1, 48h→día hábil 2)
+    //   y que no consolidan en CD (tipo_retiro ≠ FAB-CD):
+    //   - CAMIÓN FÁBRICA-SUCURSAL: OC de retiro de stock (sin pedido de venta) u OC de un pedido
+    //     de venta con condición EBEMA RETIRA-CLIENTE RETIRA. Se agrupan por proveedor (mismo
+    //     centro destino); el grupo es camión si suma > 90% de la capacidad.
+    //   - CAMIÓN FÁBRICA-CLIENTE: OC de un pedido de venta con condición EBEMA RETIRA-EBEMA
+    //     DESPACHA. Se agrupan por cliente; el grupo es camión si suma > 90% de la capacidad.
+    const fechaPlanCe = getHorizonte(ce) === 48 ? diaHabil2 : diaHabil1;
+    const retirosFab = retirosDirectosBase
       .filter(r => String(r.ce ?? '').trim() === ce)
-      .filter(r => (estadosRetiro[String(r.doc_compr ?? '').trim()] || {}).tipo_retiro !== 'FAB-CD')
-      .filter(r => (parseNum(r.ctd_pedido) - parseNum(r.ctd_entregada)) > 0);
-    const ocCli = {}, provSuc = {};   // oc/proveedor -> { ton, items:[] }
+      .filter(r => (parseNum(r.ctd_pedido) - parseNum(r.ctd_entregada)) > 0)
+      .filter(r => { const fr = parseISODate((estadosRetiro[String(r.doc_compr ?? '').trim()] || {}).fecha_retiro); return !!fr && fr.getTime() === fechaPlanCe.getTime(); });
+    const ocCli = {}, provSuc = {};   // cliente/proveedor -> { ton, items:[] }
     retirosFab.forEach(r => {
       const cant = parseNum(r.ctd_pedido) - parseNum(r.ctd_entregada);
       const t = calcTon(maxPesoDim(r.peso_bruto, r.tamano_dimens), cant);
       const item = itemR(r, cant, t);
-      if (String(r.documento ?? '').trim() !== '') {
-        const oc = String(r.doc_compr ?? '').trim();
-        (ocCli[oc] = ocCli[oc] || { ton: 0, items: [] }); ocCli[oc].ton += t; ocCli[oc].items.push(item);
-      } else {
+      const docPV = String(r.documento ?? '').trim();
+      const pvR = pvMap[docPV] || {};
+      const cond = normTxt(pvR.denominacion).replace(/\s+/g, ' ');
+      if (docPV === '' || cond === COND_EBEMA_RETIRA_CLIENTE_RETIRA) {
         const p = String(r.proveedor ?? '').trim();
         (provSuc[p] = provSuc[p] || { ton: 0, items: [] }); provSuc[p].ton += t; provSuc[p].items.push(item);
+      } else if (cond === COND_EBEMA_RETIRA_EBEMA_DESPACHA) {
+        const c = String(pvR.nombre_1 ?? '').trim() || docPV;
+        (ocCli[c] = ocCli[c] || { ton: 0, items: [] }); ocCli[c].ton += t; ocCli[c].items.push(item);
       }
+      // Otras condiciones de expedición (p. ej. despacho directo del proveedor) no forman camión propio.
     });
+    const capFab = getCapacidadCamion(ce);
     let tonFabCli = 0, tonFabSuc = 0;
-    Object.values(ocCli).forEach(b => { tonFabCli += b.ton; det.fabCli.push(...b.items); });
-    Object.values(provSuc).forEach(b => { tonFabSuc += b.ton; det.fabSuc.push(...b.items); });
+    Object.values(ocCli).forEach(b => { if (b.ton > capFab * UMBRAL_FABRICA) { tonFabCli += b.ton; det.fabCli.push(...b.items); } });
+    Object.values(provSuc).forEach(b => { if (b.ton > capFab * UMBRAL_FABRICA) { tonFabSuc += b.ton; det.fabSuc.push(...b.items); } });
+
+    // (AJUSTE 24-sep-2026, pedido Jordan) Promoción automática 48h → 24h: un
+    // centro configurado a 48h despacha MAÑANA (24h) en vez de esperar el plan
+    // de 48h si, con lo que ya está disponible para mañana (Retiro CD exacto a
+    // diaHabil1 + REVEX + Venta Directa + Crossdocking + Quiebre + Abastecimiento,
+    // que no dependen de la fecha del centro), el camión ya se completa. Se
+    // evalúa de nuevo cada vez que se renderiza el plan — si hoy no alcanza,
+    // sigue esperando a 48h; si al día siguiente llegó más carga y entre lo
+    // nuevo y lo antiguo ya se completa, se adelanta ese día.
+    const totalSinRetiroCd = tonRevex + tonVentaCons + tonCross + tonQuiebre + tonStock;
+    function capParaTotal(t) {
+      return CENTROS_CAMION_REDUCIDO.includes(ce) ? (t >= CAP_CAMION_DEFAULT ? CAP_CAMION_DEFAULT : CAP_CAMION_REDUCIDO) : CAP_CAMION_DEFAULT;
+    }
+    const total24 = totalSinRetiroCd + retiro24.sum;
+    const cap24 = capParaTotal(total24);
+    const horizonteConfig = getHorizonte(ce);
+    // (AJUSTE 24-sep-2026, pedido Jordan) El umbral para promover NO es llenar
+    // el camión al 100%: basta con superar el 90% de la capacidad (mismo
+    // umbral que ya se usa para los camiones directos de fábrica, UMBRAL_FABRICA).
+    const promovido24 = horizonteConfig === 48 && total24 > cap24 * UMBRAL_FABRICA;
+    const horizonteEfectivo = promovido24 ? 24 : horizonteConfig;
+    const { sum: tonRetiro, items: retiroItems } = horizonteEfectivo === 24 ? retiro24 : retiro48;
+    det.retiro.push(...retiroItems);
 
     // Total del CAMIÓN CD (consolidado). Orden de prioridad con que se llena el
     // camión: REVEX → Venta 1003 consolidable → Retiro CD → Crossdocking →
     // Traslados Quiebre → Traslados Abastecimiento.
-    const total = tonRevex + tonVentaCons + tonRetiro + tonCross + tonQuiebre + tonStock;
+    const total = totalSinRetiroCd + tonRetiro;
 
     // Capacidad efectiva del CD. La Calera (1050) y San Bernardo (1005) usan un
     // camión de 15 T si en el corte no alcanzan a llenar uno de 28 T.
-    let cap = CAP_CAMION_DEFAULT;
-    if (CENTROS_CAMION_REDUCIDO.includes(ce)) cap = total >= CAP_CAMION_DEFAULT ? CAP_CAMION_DEFAULT : CAP_CAMION_REDUCIDO;
+    const cap = capParaTotal(total);
 
     const pct = cap > 0 ? Math.round(total / cap * 100) : 0;
     const sobrecarga = Math.max(0, total - cap);
     // FALTA/SOBRA: positivo (rojo) = falta carga, negativo mostrado en verde = sobra.
     const faltan = Math.max(0, cap - total);
-    const enCalendario = centrosProgramados.has(ce);
+    // (AJUSTE 24-sep-2026) Si el centro se promovió a 24h, el calendario de
+    // sucursales también se revisa contra el día objetivo efectivo (mañana),
+    // no contra el día original de 48h.
+    const enCalendario = (horizonteEfectivo === 48 ? programadosDia2 : programadosDia1).has(ce);
 
     let status, statusCls;
     if (pct >= 80) { status = 'PROGRAMAR'; statusCls = 'bg-green-700 text-white'; }
@@ -1475,24 +1944,33 @@ async function renderPlanCarga(stage) {
     if (!enCalendario && pct >= 70) obs = 'CUPO EXTRA';
     if (enCalendario && pct < 70) obs = 'EN CALENDARIO - CARGA BAJA';
     if (sobrecarga > 0) obs = (obs ? obs + ' · ' : '') + '2º CAMIÓN (~' + fmtNum(sobrecarga, 1) + ' T)';
+    if (promovido24) obs = (obs ? obs + ' · ' : '') + 'ADELANTADO A 24H (carga completa)';
 
     return {
       ce, nombre: getNombreCentro(ce), cap,
       tonQuiebre, tonStock, tonRevex, tonCross, tonVentaCons, tonVentaCliente, tonRetiro, tonFabSuc, tonFabCli,
       total, faltan, sobrecarga, pct, status, statusCls, obs, enCalendario,
+      horizonte: horizonteEfectivo, horizonteConfig, promovido24,
       camionCliente: tonVentaCliente > 0, camionFabSuc: tonFabSuc > 0, camionFabCli: tonFabCli > 0,
       det,
     };
   }).sort((a, b) => {
-    // (AJUSTE 3.0) Prioridad del día primero, luego % completitud
-    if (a.enCalendario !== b.enCalendario) return a.enCalendario ? -1 : 1;
-    return b.pct - a.pct;
+    // (AJUSTE 24-sep-2026, pedido Jordan) Prioridad real de despacho:
+    // 1) Centros en agenda que SÍ alcanzan carga suficiente (pct >= 70) van
+    //    primero: son los camiones que por agenda tienen espacio asegurado.
+    // 2) El resto (en agenda pero con carga insuficiente, o fuera de agenda)
+    //    compite por los cupos restantes; entre ellos gana quien tenga más
+    //    toneladas totales, sin importar si estaba o no en la agenda.
+    const aPrioriza = a.enCalendario && a.pct >= 70;
+    const bPrioriza = b.enCalendario && b.pct >= 70;
+    if (aPrioriza !== bPrioriza) return aPrioriza ? -1 : 1;
+    if (aPrioriza && bPrioriza) return b.pct - a.pct;
+    return b.total - a.total;
   });
 
-  const manana = new Date(); manana.setDate(manana.getDate() + 1);
   const diasSemana = ['Domingo','Lunes','Martes','Miércoles','Jueves','Viernes','Sábado'];
-  const fechaLabel = `${diasSemana[manana.getDay()]}, ${manana.toLocaleDateString('es-CL', { day: 'numeric', month: 'long', year: 'numeric' })}`
-    + (esViernes ? ' (incluye lunes próximo — despacho CD 1003 del sábado)' : '');
+  const fmtDiaHabil = d => `${diasSemana[d.getDay()]} ${d.toLocaleDateString('es-CL', { day: 'numeric', month: 'long' })}`;
+  const fechaLabel = `Ventana 24h: ${fmtDiaHabil(diaHabil1)} · Ventana 48h: ${fmtDiaHabil(diaHabil2)}`;
 
   function truckSVG(pct) {
     const p = Math.min(pct, 100);
@@ -1510,13 +1988,17 @@ async function renderPlanCarga(stage) {
   const NCOLS = 16; // columnas de la tabla (para el colspan del detalle)
 
   // Tabla genérica de detalle. alignRight = Set de índices de columnas numéricas.
-  function tablaDet(headers, filas, alignRight) {
+  // rawCols = Set de índices que se insertan tal cual (sin escapar), para botones
+  // de acción como "Excluir del Plan".
+  function tablaDet(headers, filas, alignRight, rawCols) {
+    rawCols = rawCols || new Set();
     const head = headers.map((h, i) => `<th class="pr-md text-[10px] uppercase text-secondary ${alignRight.has(i) ? 'text-right' : 'text-left'}">${escapeHtml(h)}</th>`).join('');
     const body = filas.length
-      ? filas.map(fila => `<tr class="border-b border-outline-variant/40">${fila.map((v, i) => `<td class="py-[2px] pr-md text-[12px] ${alignRight.has(i) ? 'text-right num-clear' : ''}">${escapeHtml(String(v ?? ''))}</td>`).join('')}</tr>`).join('')
+      ? filas.map(fila => `<tr class="border-b border-outline-variant/40">${fila.map((v, i) => `<td class="py-[2px] pr-md text-[12px] ${alignRight.has(i) ? 'text-right num-clear' : ''}">${rawCols.has(i) ? (v ?? '') : escapeHtml(String(v ?? ''))}</td>`).join('')}</tr>`).join('')
       : `<tr><td colspan="${headers.length}" class="text-secondary text-[12px] py-xs">Sin ítems.</td></tr>`;
     return `<table class="w-full text-[12px] mb-xs"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
   }
+  const btnExcluir = (tipo, doc, material) => `<button data-excluir="${escapeHtml(tipo)}|${escapeHtml(String(doc ?? ''))}|${escapeHtml(String(material ?? ''))}" title="Excluir del Plan de Carga de hoy" class="text-[11px] font-bold text-error hover:underline whitespace-nowrap">Excluir</button>`;
   function blkWrap(lbl, items, tableHtml) {
     const sub = items.reduce((s, d) => s + (d.ton || 0), 0);
     return `<div class="mb-md">
@@ -1526,22 +2008,26 @@ async function renderPlanCarga(stage) {
   const camMark = d => d._enCamion === undefined ? '' : (d._enCamion ? '✓ SÍ' : '✗ EXCEDE');
   const shiftSet = (s) => new Set([...s].map(i => i + 1));
   // Bloque Traslados (Quiebre / Abastecimiento / REVEX / Crossdocking)
-  function blkTraslado(lbl, items, marcar) {
+  function blkTraslado(lbl, items, marcar, conPrioridad) {
     if (!items.length) return '';
     let heads = ['Pedido de Traslado','ID Material','Nombre Material','Fecha de Entrega','Cantidad Confirmada','Ton SKU','Pedido de Venta'];
     let align = new Set([4, 5]);
     let filas = items.map(d => [d.pt, d.material, d.nombre, d.fecha, d.ctd, fmtNum(d.ton, 4), d.pv]);
+    // Columnas Usuario / Motivo Prioridad — sólo para los bloques de
+    // ABAST. QUIEBRE Y PRIORIZADO / ABASTECIMIENTO (ver prioridadTraslado).
+    if (conPrioridad) { heads = [...heads, 'Usuario', 'Motivo Prioridad']; filas = items.map((d, i) => [...filas[i], d.usuario || '', d._motivo || '']); }
     if (marcar) { heads = ['En Camión', ...heads]; align = shiftSet(align); filas = items.map((d, i) => [camMark(d), ...filas[i]]); }
     return blkWrap(lbl, items, tablaDet(heads, filas, align));
   }
   // Bloque Crossdocking (columnas completas, sin ocultar)
   function blkCrossdocking(lbl, items, marcar) {
     if (!items.length) return '';
-    let heads = ['Origen','Pedido de Traslado','Centro Destino','Almacén Destino','Fecha de Entrega','ID Material','Nombre Material','Cant. Pendiente','Ton SKU','Pedido de Venta'];
+    let heads = ['Origen','Pedido de Traslado','Centro Destino','Almacén Destino','Fecha de Entrega','ID Material','Nombre Material','Cant. Pendiente','Ton SKU','Pedido de Venta','Excluir'];
     let align = new Set([7, 8]);
-    let filas = items.map(d => [d.origen, d.pt, d.ceDestino, d.almDestino, d.fecha, d.material, d.nombre, fmtNum(d.ctdPend, 1), fmtNum(d.ton, 4), d.pv]);
-    if (marcar) { heads = ['En Camión', ...heads]; align = shiftSet(align); filas = items.map((d, i) => [camMark(d), ...filas[i]]); }
-    return blkWrap(lbl, items, tablaDet(heads, filas, align));
+    let filas = items.map(d => [d.origen, d.pt, d.ceDestino, d.almDestino, d.fecha, d.material, d.nombre, fmtNum(d.ctdPend, 1), fmtNum(d.ton, 4), d.pv, btnExcluir('crossdock_4000', d.pt, d.material)]);
+    let raw = new Set([heads.length - 1]);
+    if (marcar) { heads = ['En Camión', ...heads]; align = shiftSet(align); raw = shiftSet(raw); filas = items.map((d, i) => [camMark(d), ...filas[i]]); }
+    return blkWrap(lbl, items, tablaDet(heads, filas, align, raw));
   }
  
   // Bloque Retiros de Fábrica
@@ -1556,11 +2042,13 @@ async function renderPlanCarga(stage) {
   // Bloque Pedidos de Venta
   function blkVenta(lbl, items, marcar) {
     if (!items.length) return '';
-    let heads = ['Pedido de Venta','ID Material','Nombre Material','Cantidad','Id Ruta','Comuna','Región','Fecha de Entrega','Ton SKU'];
-    let align = new Set([3, 8]);
-    let filas = items.map(d => [d.pv, d.material, d.nombre, fmtNum(parseNum(d.cant), 1), d.ruta, d.comuna, d.region, d.fecha, fmtNum(d.ton, 4)]);
-    if (marcar) { heads = ['En Camión', ...heads]; align = shiftSet(align); filas = items.map((d, i) => [camMark(d), ...filas[i]]); }
-    return blkWrap(lbl, items, tablaDet(heads, filas, align));
+    let heads = ['Pedido de Venta','ID Material','Nombre Material','Cantidad','Cliente','Vendedor','Tipo Expedición','Id Ruta','Comuna','Región','Fecha de Entrega','Ton SKU','Excluir'];
+    let align = new Set([3, 11]);
+    // Excluye el Pedido de Venta completo (todas sus líneas), no sólo el material de la fila.
+    let filas = items.map(d => [d.pv, d.material, d.nombre, fmtNum(parseNum(d.cant), 1), d.cliente || '', d.vendedor || '', d.tipoExp || '', d.ruta, d.comuna, d.region, d.fecha, fmtNum(d.ton, 4), btnExcluir('venta_1003', d.pv, null)]);
+    let raw = new Set([heads.length - 1]);
+    if (marcar) { heads = ['En Camión', ...heads]; align = shiftSet(align); raw = shiftSet(raw); filas = items.map((d, i) => [camMark(d), ...filas[i]]); }
+    return blkWrap(lbl, items, tablaDet(heads, filas, align, raw));
   }
 
   // Marca, en orden de prioridad, qué ítems entran en el camión CD según su
@@ -1577,9 +2065,9 @@ async function renderPlanCarga(stage) {
 
   const TRUCK_TITULOS = {
     cd: 'Camión CD (consolidado)',
-    cliente: 'Camión Cliente (pedido de venta ≥80%)',
-    fabSuc: 'Camión Fábrica-Sucursal (OC ≥85% sin pedido de venta)',
-    fabCli: 'Camión Fábrica-Cliente (OC ≥85% con pedido de venta)',
+    cliente: 'Camión CD-Cliente (pedidos del mismo cliente >80%)',
+    fabSuc: 'Camión Fábrica-Sucursal (OC coordinadas, mismo proveedor, >90%)',
+    fabCli: 'Camión Fábrica-Cliente (OC coordinadas, mismo cliente, >90%)',
   };
 
   function detalleRow(r, tipo) {
@@ -1599,8 +2087,8 @@ async function renderPlanCarga(stage) {
         blkVenta('2º Pedidos de Venta Directa Consolidados', inC.ventaCons) +
         blkRetiro('3º Retiros de Proveedor Consolidados (CD)', inC.retiro) +
         blkCrossdocking('4º Pedidos de Traslados Crossdocking', inC.cross) +
-        blkTraslado('5º Pedidos de Traslados Quiebre', inC.quiebre) +
-        blkTraslado('6º Pedidos de Traslados Abastecimiento', inC.stock);
+        blkTraslado('5º Abast. Quiebre y Priorizado', inC.quiebre, false, true) +
+        blkTraslado('6º Abastecimiento', inC.stock, false, true);
       // No se muestra sección de excedentes: el detalle incluye solo lo que entra en el camión.
     }
     else if (tipo === 'cliente') blocks = blkVenta('Pedidos de Venta directos al cliente', r.det.cliente);
@@ -1610,8 +2098,8 @@ async function renderPlanCarga(stage) {
       <div class="border border-outline-variant rounded-lg p-md bg-surface-container-lowest">
         <div class="flex items-center justify-between mb-sm">
           <h4 class="font-bold text-on-surface text-[13px]">${escapeHtml(TRUCK_TITULOS[tipo] || '')} — ${escapeHtml(r.nombre)} (${r.ce})</h4>
-          <button data-descarga="${r.ce}|${tipo}" class="bg-surface-container-high text-on-surface px-sm py-xs rounded-lg text-[12px] font-bold hover:bg-surface-container-highest inline-flex items-center gap-xs">
-            <span class="material-symbols-outlined text-[15px]">download</span>Descargar detalle</button>
+          <button data-descarga="${r.ce}|${tipo}" title="Descarga el detalle completo de la sucursal (todas las categorías: REVEX, Venta Directa, CD-Cliente, Retiro Fábrica, Fábrica-Cliente, Fábrica-Sucursal, Crossdocking, Quiebre y Abastecimiento)" class="bg-surface-container-high text-on-surface px-sm py-xs rounded-lg text-[12px] font-bold hover:bg-surface-container-highest inline-flex items-center gap-xs">
+            <span class="material-symbols-outlined text-[15px]">download</span>Descargar Plan de Carga</button>
         </div>
         ${banner}
         ${blocks || '<p class="text-secondary text-[12px]">Sin ítems.</p>'}
@@ -1619,27 +2107,62 @@ async function renderPlanCarga(stage) {
       </div></td></tr>`;
   }
 
-  // Genera el CSV del detalle de un camión (para el botón de descarga).
-  function csvDetalleCamion(r, tipo) {
-    const cats = tipo === 'cd'
-      ? [['REVEX', r.det.revex, 'T'], ['Venta Consolidada', r.det.ventaCons, 'V'], ['Retiro CD', r.det.retiro, 'R'],
-         ['Crossdocking', r.det.cross, 'T'], ['Quiebre', r.det.quiebre, 'T'], ['Abastecimiento', r.det.stock, 'T']]
-      : tipo === 'cliente' ? [['Venta Cliente', r.det.cliente, 'V']]
-      : tipo === 'fabSuc'  ? [['Fábrica-Sucursal', r.det.fabSuc, 'R']]
-      :                      [['Fábrica-Cliente', r.det.fabCli, 'R']];
-    const headers = ['Categoría','Documento','Id Proveedor','Proveedor','Id Material','Nombre Material','Ruta','Comuna','Región','Fecha','Cantidad','Ton SKU'];
+  // Genera el CSV del detalle de Plan de Carga de una sucursal (para el botón
+  // de descarga). (AJUSTE 18-sep-2026) Antes generaba un archivo distinto por
+  // cada tipo de camión (cd / cliente / fabSuc / fabCli), dejando los pedidos
+  // directos de Fábrica-Cliente, Fábrica-Sucursal y CD-Cliente fuera del
+  // archivo que se descarga desde el camión CD. Ahora arma UN solo CSV con
+  // todas las categorías de la sucursal (igual criterio que el adjunto del
+  // correo automático de Plan de Carga), sin importar desde qué camión se
+  // gatille la descarga.
+  function csvDetalleCamion(r) {
+    const cats = [
+      ['REVEX', r.det.revex, 'T'],
+      ['Venta Directa', r.det.ventaCons, 'V'],
+      ['CD-Cliente', r.det.cliente, 'V'],
+      ['Retiro Fábrica', r.det.retiro, 'R'],
+      ['Fábrica-Cliente', r.det.fabCli, 'R'],
+      ['Fábrica-Sucursal', r.det.fabSuc, 'R'],
+      ['Crossdocking', r.det.cross, 'T'],
+      ['Abast. Quiebre y Priorizado', r.det.quiebre, 'T'],
+      ['Abastecimiento', r.det.stock, 'T'],
+    ];
+    // (AJUSTE) Antes se excluía del CSV del camión CD todo lo que no entraba en
+    // el camión (d._enCamion === false, el "2º camión"/sobra) — quedaba fuera
+    // de la descarga sin que apareciera en ninguna parte. Ahora se incluye todo
+    // con una columna "En Camión" (SÍ / EXCEDE) para que el excedente que
+    // requiere 2º camión también quede visible y trazable en el detalle.
+    // Usuario / Motivo Prioridad: sólo se completan para las categorías de
+    // Traslados 1003 (Abast. Quiebre y Priorizado / Abastecimiento).
+    // Ton Bruto / Ton Vol: de referencia — el peso bruto (o neto, según la
+    // categoría) y el peso volumétrico de cada línea por separado; Ton SKU
+    // sigue siendo el mayor entre ambos (cálculo sin cambios). Para REVEX no
+    // existe comparación de volumen (usa sólo peso_neto_2), por lo que Ton Vol
+    // queda vacío.
+    // Pedido de Venta: se completa para REVEX, Crossdocking y Retiros de
+    // Fábrica cuando la línea está asociada a un pedido de venta.
+    // Entrega Entrante / Proveedor: sólo para retiros de fábrica (se quita
+    // "Id Proveedor", que no aporta valor de lectura).
+    // Ruta / Comuna / Tipo Expedición: sólo para líneas de pedidos de venta
+    // (Venta Directa / CD-Cliente); se quita "Región".
+    const headers = ['Categoría','En Camión','Documento','Id Material','Nombre Material','Pedido de Venta','Proveedor','Entrega Entrante','Ruta','Comuna','Tipo Expedición','Fecha','Cantidad','Ton Bruto','Ton Vol','Ton SKU','Usuario','Motivo Prioridad'];
+    const fmtT = v => (v == null ? '' : fmtNum(v, 4));
     const filas = [];
-    cats.forEach(([cat, items, t]) => (items || []).filter(d => tipo !== 'cd' || d._enCamion).forEach(d => {
-      if (t === 'T') filas.push([cat, d.pt, '', '', d.material, d.nombre, '', '', '', d.fecha || '', d.ctd || '', fmtNum(d.ton, 4)]);
-      else if (t === 'R') filas.push([cat, d.oc, d.idProv, d.prov, d.material, d.nombre, '', '', '', d.fecha || '', fmtNum(parseNum(d.cant), 1), fmtNum(d.ton, 4)]);
-      else filas.push([cat, d.pv, '', '', d.material, d.nombre, d.ruta, d.comuna, d.region, d.fecha || '', fmtNum(parseNum(d.cant), 1), fmtNum(d.ton, 4)]);
+    cats.forEach(([cat, items, t]) => (items || []).forEach(d => {
+      const enCamion = camMark(d);
+      const usuario = d.usuario || '', motivo = d._motivo || '';
+      // (FIX) Los ítems de Crossdocking (det.cross) no tienen campo "ctd" sino
+      // "ctdPend" (cantidad pendiente, ya numérica) — antes quedaba en blanco en el CSV.
+      if (t === 'T') filas.push([cat, enCamion, d.pt, d.material, d.nombre, d.pv || '', '', '', '', '', '', d.fecha || '', d.ctd || (d.ctdPend != null ? fmtNum(d.ctdPend, 1) : ''), fmtT(d.tonBruto), fmtT(d.tonVol), fmtNum(d.ton, 4), usuario, motivo]);
+      else if (t === 'R') filas.push([cat, enCamion, d.oc, d.material, d.nombre, d.pv || '', d.prov, d.entrega_entrante || '', '', '', '', d.fecha || '', fmtNum(parseNum(d.cant), 1), fmtT(d.tonBruto), fmtT(d.tonVol), fmtNum(d.ton, 4), '', '']);
+      else filas.push([cat, enCamion, d.pv, d.material, d.nombre, '', '', '', d.ruta, d.comuna, d.tipoExp || '', d.fecha || '', fmtNum(parseNum(d.cant), 1), fmtT(d.tonBruto), fmtT(d.tonVol), fmtNum(d.ton, 4), '', '']);
     }));
     const esc = v => { v = v == null ? '' : String(v); return /[;"\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
     const lines = [headers.join(';')].concat(filas.map(f => f.map(esc).join(';')));
     const blob = new Blob(['﻿' + lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
-    a.href = url; a.download = `PlanCarga_${r.ce}_${tipo}.csv`;
+    a.href = url; a.download = `PlanCarga_${r.ce}.csv`;
     document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
   }
 
@@ -1671,6 +2194,8 @@ async function renderPlanCarga(stage) {
               ${planOrigen === id ? 'bg-primary text-white' : 'bg-surface-container-high text-on-surface hover:bg-surface-container-highest'}">
               <span class="material-symbols-outlined text-[16px] align-middle mr-xs">warehouse</span>${escapeHtml(CALENDARIOS[id].nombre)} (${id})
             </button>`).join('')}
+          <button data-ver-exclusiones title="Ver/reactivar exclusiones del Plan de Carga" class="bg-surface-container-high text-on-surface px-md py-sm rounded-lg text-[13px] font-bold hover:bg-surface-container-highest inline-flex items-center gap-xs">
+            <span class="material-symbols-outlined text-[16px] align-middle">visibility_off</span>Exclusiones${exclusionesPlan.length ? ` (${exclusionesPlan.length})` : ''}</button>
           <button data-refrescar title="Refrescar" class="bg-surface-container-high text-on-surface px-md py-sm rounded-lg text-[13px] font-bold hover:bg-surface-container-highest">
             <span class="material-symbols-outlined text-[16px] align-middle">refresh</span></button>
         </div>
@@ -1685,8 +2210,8 @@ async function renderPlanCarga(stage) {
               <th class="py-sm pr-md text-right font-bold whitespace-nowrap">2º Ped. Venta Directa</th>
               <th class="py-sm pr-md text-right font-bold whitespace-nowrap">3º Retiro Proveedor</th>
               <th class="py-sm pr-md text-right font-bold whitespace-nowrap">4º Ped. Traslados CrossDock</th>
-              <th class="py-sm pr-md text-right font-bold whitespace-nowrap">5º Ped. Traslados Quiebres</th>
-              <th class="py-sm pr-md text-right font-bold whitespace-nowrap">6º Ped. Traslados Abastecimiento</th>
+              <th class="py-sm pr-md text-right font-bold whitespace-nowrap">5º Abast. Quiebre y Priorizado</th>
+              <th class="py-sm pr-md text-right font-bold whitespace-nowrap">6º Abastecimiento</th>
               <th class="py-sm pr-md text-right font-bold whitespace-nowrap">Total CD</th>
               <th class="py-sm pr-md text-right font-bold whitespace-nowrap">FALTA / SOBRA</th>
               <th class="py-sm pr-md text-right font-bold whitespace-nowrap">% Compl.</th>
@@ -1708,6 +2233,7 @@ async function renderPlanCarga(stage) {
                 <td class="py-sm pr-md font-bold whitespace-nowrap">
                   ${r.enCalendario ? '<span class="inline-flex items-center gap-xs"><span class="material-symbols-outlined text-[16px] text-primary">calendar_today</span><span class="text-[9px] font-bold text-primary bg-primary/10 px-xs rounded">PRIORITARIO</span></span> ' : ''}
                   ${escapeHtml(r.nombre)}
+                  <div class="text-[9px] font-normal text-secondary">${r.horizonte}h · ${fmtDiaHabil(r.horizonte === 48 ? diaHabil2 : diaHabil1)}</div>
                 </td>
                 <td class="py-sm pr-md text-right num-clear">${fmtNum(r.tonRevex, 1)}</td>
                 <td class="py-sm pr-md text-right num-clear">${fmtNum(r.tonVentaCons, 1)}</td>
@@ -1731,10 +2257,10 @@ async function renderPlanCarga(stage) {
       </div>
 
       <div class="mt-md pt-sm border-t border-outline-variant flex flex-wrap gap-lg text-[12px] text-secondary items-center">
-        <span class="inline-flex items-center gap-xs"><span class="material-symbols-outlined text-[14px] align-middle text-primary">calendar_today</span> PRIORITARIO = Centro en calendario de mañana</span>
-        <span class="inline-flex items-center gap-xs">${iconCamion('text-green-700 text-[16px]')} Camión Cliente (venta ≥80%)</span>
-        <span class="inline-flex items-center gap-xs">${iconCamion('text-blue-700 text-[16px]')} Camión Fábrica-Sucursal (OC ≥85% sin PV)</span>
-        <span class="inline-flex items-center gap-xs">${iconCamion('text-purple-700 text-[16px]')} Camión Fábrica-Cliente (OC ≥85% con PV)</span>
+        <span class="inline-flex items-center gap-xs"><span class="material-symbols-outlined text-[14px] align-middle text-primary">calendar_today</span> PRIORITARIO = Centro en calendario del día objetivo (según su horizonte 24h/48h, ver debajo del nombre)</span>
+        <span class="inline-flex items-center gap-xs">${iconCamion('text-green-700 text-[16px]')} Camión CD-Cliente (mismo cliente >80%)</span>
+        <span class="inline-flex items-center gap-xs">${iconCamion('text-blue-700 text-[16px]')} Camión Fábrica-Sucursal (OC coordinadas >90%)</span>
+        <span class="inline-flex items-center gap-xs">${iconCamion('text-purple-700 text-[16px]')} Camión Fábrica-Cliente (OC coordinadas >90%)</span>
         <span>Pincha cualquier camión para ver su contenido · Camión CD 1 por sucursal · Capacidad 28 T (15 T Calera/San Bernardo) · FALTA en rojo, SOBRA en verde</span>
       </div>
     </div>`;
@@ -1750,10 +2276,19 @@ async function renderPlanCarga(stage) {
     }));
     stage.querySelectorAll('[data-descarga]').forEach(btn => btn.addEventListener('click', (e) => {
       e.stopPropagation();
-      const [ce, tipo] = btn.dataset.descarga.split('|');
+      const [ce] = btn.dataset.descarga.split('|');
       const r = resultado.find(x => x.ce === ce);
-      if (r) csvDetalleCamion(r, tipo);
+      if (r) csvDetalleCamion(r);
     }));
+    stage.querySelectorAll('[data-excluir]').forEach(btn => btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const [tipo, doc, material] = btn.dataset.excluir.split('|');
+      const etiqueta = tipo === 'venta_1003' ? `el Pedido de Venta ${doc} completo` : (material ? `el material ${material} del Pedido de Traslado ${doc}` : `el Pedido de Traslado ${doc} completo`);
+      if (!confirm(`¿Excluir del Plan de Carga de hoy ${etiqueta}?\n\nQueda excluido hasta que lo reactives desde "Exclusiones".`)) return;
+      const ok = await excluirDelPlan(tipo, doc, material || null, 'Excluido desde Plan de Carga');
+      if (ok) { showAlert('Excluido del Plan de Carga', 'success'); renderPlanCarga(stage); }
+    }));
+    stage.querySelector('[data-ver-exclusiones]')?.addEventListener('click', () => showExclusionesModal(exclusionesPlan, () => renderPlanCarga(stage)));
   }
 
   draw();
@@ -1773,6 +2308,29 @@ async function renderVistaTabla(stage, cfg, modeIdx = 0) {
   const ctx = active.preload ? await active.preload() : {};
   const rawRows = await fetchAllRows(active.vista);
   const rows = active.transform ? active.transform(rawRows, ctx) : rawRows;
+
+  // Botón "Excluir" (posiciones fuera del Plan de Carga) — sólo perfil OWNER,
+  // sólo en las vistas que declaran cfg.excluir.
+  let exclusionesPlan = [];
+  let ownerFlag = false;
+  if (active.excluir) {
+    [exclusionesPlan, ownerFlag] = await Promise.all([loadExclusionesPlan(), esOwner()]);
+  }
+  const excluirColActivo = !!(active.excluir && ownerFlag);
+  function renderExcluirCell(r) {
+    const ex = active.excluir;
+    const doc = ex.doc(r);
+    const material = typeof ex.material === 'function' ? ex.material(r) : null;
+    const match = exclusionesPlan.find(e => e.tipo === ex.tipo
+      && String(e.doc ?? '').trim() === String(doc ?? '').trim()
+      && (String(e.material ?? '').trim() === '' || String(e.material ?? '').trim() === String(material ?? '').trim()));
+    if (match) {
+      return `<td class="py-xs pr-md whitespace-nowrap text-center">
+        <button data-excl-reactivar="${match.id}" title="Reactivar en el Plan de Carga" class="text-[11px] font-bold text-primary hover:underline">Reactivar</button></td>`;
+    }
+    return `<td class="py-xs pr-md whitespace-nowrap text-center">
+      <button data-excl-excluir="${escapeHtml(ex.tipo)}|${escapeHtml(String(doc ?? ''))}|${escapeHtml(String(material ?? ''))}" title="Excluir del Plan de Carga" class="text-[11px] font-bold text-error hover:underline">Excluir</button></td>`;
+  }
 
   const chip = active.chipFilter;
   const chipValues = chip ? Array.from(new Set(rows.map(r => String(r[chip.campo] ?? '')).filter(v => v))).sort() : [];
@@ -1885,7 +2443,7 @@ async function renderVistaTabla(stage, cfg, modeIdx = 0) {
     const shown = filt.slice(0, MAX);
     const act = rawRows.length ? horaChile(rawRows[0].cargado_en) : '';
     const badgesHtml = active.badges ? active.badges(filt, chipSel) : '';
-    const ncols = active.columnas.length;
+    const ncols = active.columnas.length + (excluirColActivo ? 1 : 0);
 
     const modosHtml = cfg.modes ? `<div class="flex items-center gap-xs mb-md">
       <span class="text-[11px] text-secondary font-bold uppercase mr-xs">Ver:</span>
@@ -1953,6 +2511,7 @@ async function renderVistaTabla(stage, cfg, modeIdx = 0) {
             <thead class="sticky top-0 bg-surface-container-lowest z-10">
               <tr class="text-left text-[11px] uppercase tracking-wide text-secondary border-b border-outline-variant">
                 ${active.columnas.map(c => `<th class="py-sm pr-md whitespace-nowrap">${escapeHtml(c.label)}</th>`).join('')}
+                ${excluirColActivo ? `<th class="py-sm pr-md whitespace-nowrap text-center">Plan de Carga</th>` : ''}
               </tr>
             </thead>
             <tbody>
@@ -1963,6 +2522,7 @@ async function renderVistaTabla(stage, cfg, modeIdx = 0) {
                   const abierto = active.expand && expanded.has(id);
                   return `<tr class="border-b border-outline-variant/50 hover:bg-surface-container-low ${rowCls}">
                     ${active.columnas.map(c => renderCell(r, c)).join('')}
+                    ${excluirColActivo ? renderExcluirCell(r) : ''}
                   </tr>${abierto ? detailRow(r, ncols) : ''}`;
                 }).join('')}
             </tbody>
@@ -2009,6 +2569,21 @@ async function renderVistaTabla(stage, cfg, modeIdx = 0) {
     }));
     stage.querySelector('[data-refrescar]')?.addEventListener('click', () => { clearRawCache(); renderVistaTabla(stage, cfg, modeIdx); });
     stage.querySelector('[data-csv]')?.addEventListener('click', () => exportarCSV(active, filt));
+    if (excluirColActivo) {
+      stage.querySelectorAll('[data-excl-excluir]').forEach(btn => btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const [tipo, doc, material] = btn.dataset.exclExcluir.split('|');
+        const etiqueta = material ? `el material ${material} de la posición ${doc}` : `la posición ${doc} completa`;
+        if (!confirm(`¿Excluir del Plan de Carga ${etiqueta}?\n\nSe mantiene disponible para futuros planes hasta que la reactives.`)) return;
+        const ok = await excluirDelPlan(tipo, doc, material || null, 'Excluido desde ' + cfg.titulo);
+        if (ok) { showAlert('Excluido del Plan de Carga', 'success'); exclusionesPlan = await loadExclusionesPlan(); draw(); }
+      }));
+      stage.querySelectorAll('[data-excl-reactivar]').forEach(btn => btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const ok = await reactivarEnPlan(Number(btn.dataset.exclReactivar));
+        if (ok) { showAlert('Reactivado en el Plan de Carga', 'success'); exclusionesPlan = await loadExclusionesPlan(); draw(); }
+      }));
+    }
   }
 
   draw();
@@ -2364,6 +2939,8 @@ async function renderCalendario(stage) {
             <span class="material-symbols-outlined text-[18px]">save</span>Guardar calendario
           </button>
         </div>
+        <div id="cal-horizonte"></div>
+        <div id="cal-feriados"></div>
       </div>
     </div>
   `;
@@ -2377,6 +2954,134 @@ async function renderCalendario(stage) {
   drawGrid(stage);
 
   stage.querySelector('#cal-save').addEventListener('click', () => saveCalendario(stage));
+
+  await drawHorizonte(stage);
+  await drawFeriados(stage);
+}
+
+// ── HORIZONTE DE PLANIFICACIÓN (24H / 48H) POR CENTRO DESTINO ──────────────
+// (AJUSTE 48H, 18-sep-2026) Tabla auxiliar `abast_horizonte_centro`: marca,
+// por centro origen + centro destino, si el Plan de Carga debe planificar ese
+// destino con vista a 24h (próximo día hábil) o 48h (siguiente día hábil).
+// Por defecto (sin fila guardada) un centro se planifica a 24h.
+async function loadHorizonteCentro(origen) {
+  const { data, error } = await supabase
+    .from('abast_horizonte_centro').select('*').eq('centro_origen', origen);
+  if (error) { console.error(error); showAlert('Error al cargar horizonte de planificación: ' + error.message, 'error'); return {}; }
+  const m = {};
+  (data || []).forEach(r => { m[String(r.centro_destino).trim()] = Number(r.horizonte_horas) === 48 ? 48 : 24; });
+  return m;
+}
+
+async function drawHorizonte(stage) {
+  const cont = stage.querySelector('#cal-horizonte');
+  if (!cont) return;
+  const cfg = CALENDARIOS[calOrigen];
+  const destinos = cfg.destinos;
+  const horizMap = await loadHorizonteCentro(calOrigen);
+
+  cont.innerHTML = `
+    <div class="bg-surface-container-lowest border border-outline-variant rounded-xl p-lg mt-xl">
+      <h4 class="text-[15px] font-bold text-on-surface mb-xs inline-flex items-center gap-xs">
+        <span class="material-symbols-outlined text-[20px] text-primary">update</span>Horizonte de planificación por centro (Plan de Carga a 24h / 48h)
+      </h4>
+      <p class="text-[12px] text-secondary mb-md">Define, para cada centro destino de ${escapeHtml(cfg.nombre)} (${calOrigen}), si el Plan de Carga se calcula con vista al próximo día hábil (24h) o al siguiente (48h). Por defecto: 24h.</p>
+      <div class="flex flex-wrap gap-sm">
+        ${destinos.map(id => {
+          const h = horizMap[id] || 24;
+          return `<div class="border border-outline-variant rounded-lg px-md py-sm flex items-center gap-md">
+            <span class="text-[13px] font-bold whitespace-nowrap">${escapeHtml(getNombreCentro(id))} <span class="text-secondary font-normal">(${id})</span></span>
+            <div class="inline-flex rounded-lg overflow-hidden border border-outline-variant">
+              <button data-horiz="${id}|24" class="px-sm py-[3px] text-[12px] font-bold ${h === 24 ? 'bg-primary text-white' : 'bg-surface-container-high text-on-surface hover:bg-surface-container-highest'}">24h</button>
+              <button data-horiz="${id}|48" class="px-sm py-[3px] text-[12px] font-bold ${h === 48 ? 'bg-primary text-white' : 'bg-surface-container-high text-on-surface hover:bg-surface-container-highest'}">48h</button>
+            </div>
+          </div>`;
+        }).join('')}
+      </div>
+    </div>`;
+
+  cont.querySelectorAll('[data-horiz]').forEach(btn => btn.addEventListener('click', async () => {
+    const [centroDestino, horas] = btn.dataset.horiz.split('|');
+    const email = await getUserEmail();
+    const { error } = await supabase.from('abast_horizonte_centro')
+      .upsert({
+        centro_origen: calOrigen, centro_destino: centroDestino,
+        horizonte_horas: Number(horas), updated_by: email, updated_at: new Date().toISOString(),
+      }, { onConflict: 'centro_origen,centro_destino' });
+    if (error) { showAlert('Error al guardar horizonte: ' + error.message, 'error'); return; }
+    showAlert('✓ Horizonte actualizado', 'success');
+    await drawHorizonte(stage);
+  }));
+}
+
+// ── FERIADOS (administración manual, para el cálculo de días hábiles) ──────
+async function loadFeriados() {
+  const { data, error } = await supabase
+    .from('abast_feriados').select('*').order('fecha', { ascending: true });
+  if (error) { console.error(error); showAlert('Error al cargar feriados: ' + error.message, 'error'); return []; }
+  return data || [];
+}
+
+async function drawFeriados(stage) {
+  const cont = stage.querySelector('#cal-feriados');
+  if (!cont) return;
+  const feriados = await loadFeriados();
+  const hoyIso = isoLocal(hoy00());
+
+  cont.innerHTML = `
+    <div class="bg-surface-container-lowest border border-outline-variant rounded-xl p-lg mt-lg">
+      <h4 class="text-[15px] font-bold text-on-surface mb-xs inline-flex items-center gap-xs">
+        <span class="material-symbols-outlined text-[20px] text-primary">event_busy</span>Feriados (para el cálculo de días hábiles del Plan de Carga)
+      </h4>
+      <p class="text-[12px] text-secondary mb-md">El Plan de Carga salta sábados, domingos y las fechas marcadas aquí al calcular la ventana de 24h/48h. Administre la lista manualmente.</p>
+      <div class="flex flex-wrap items-end gap-sm mb-md">
+        <div>
+          <label class="block text-[11px] text-secondary font-bold uppercase mb-xs">Fecha</label>
+          <input id="fer-fecha" type="date" class="border border-outline-variant rounded-md px-sm py-xs text-[13px]"/>
+        </div>
+        <div class="flex-1 min-w-[200px]">
+          <label class="block text-[11px] text-secondary font-bold uppercase mb-xs">Descripción</label>
+          <input id="fer-desc" type="text" placeholder="Ej. Fiestas Patrias" class="w-full border border-outline-variant rounded-md px-sm py-xs text-[13px]"/>
+        </div>
+        <button id="fer-add" class="bg-primary text-white px-md py-xs rounded-lg font-bold text-[13px] hover:opacity-90 inline-flex items-center gap-xs">
+          <span class="material-symbols-outlined text-[16px]">add</span>Agregar
+        </button>
+      </div>
+      <div class="overflow-x-auto rounded-lg border border-outline-variant max-h-[280px] overflow-y-auto">
+        <table class="w-full text-[13px]">
+          <thead class="sticky top-0 bg-surface-container-high"><tr class="text-left text-[11px] uppercase text-secondary">
+            <th class="py-xs px-md">Fecha</th><th class="py-xs px-md">Descripción</th><th class="py-xs px-md"></th>
+          </tr></thead>
+          <tbody>
+            ${feriados.length ? feriados.map(f => `
+              <tr class="border-t border-outline-variant/40 ${f.fecha < hoyIso ? 'opacity-50' : ''}">
+                <td class="py-xs px-md font-data-mono">${escapeHtml(fmtFechaISO(f.fecha))}</td>
+                <td class="py-xs px-md">${escapeHtml(f.descripcion || '')}</td>
+                <td class="py-xs px-md text-right"><button data-fer-del="${f.id}" class="text-error text-[12px] font-bold hover:underline">Eliminar</button></td>
+              </tr>`).join('') : `<tr><td colspan="3" class="py-sm px-md text-secondary text-[12px]">Sin feriados registrados.</td></tr>`}
+          </tbody>
+        </table>
+      </div>
+    </div>`;
+
+  cont.querySelector('#fer-add').addEventListener('click', async () => {
+    const fecha = cont.querySelector('#fer-fecha').value;
+    const descripcion = cont.querySelector('#fer-desc').value.trim();
+    if (!fecha) { showAlert('Seleccione una fecha', 'error'); return; }
+    const email = await getUserEmail();
+    const { error } = await supabase.from('abast_feriados')
+      .upsert({ fecha, descripcion: descripcion || null, updated_by: email, updated_at: new Date().toISOString() }, { onConflict: 'fecha' });
+    if (error) { showAlert('Error al guardar feriado: ' + error.message, 'error'); return; }
+    showAlert('✓ Feriado agregado', 'success');
+    await drawFeriados(stage);
+  });
+
+  cont.querySelectorAll('[data-fer-del]').forEach(btn => btn.addEventListener('click', async () => {
+    if (!confirm('¿Eliminar este feriado?')) return;
+    const { error } = await supabase.from('abast_feriados').delete().eq('id', btn.dataset.ferDel);
+    if (error) { showAlert('Error al eliminar feriado: ' + error.message, 'error'); return; }
+    await drawFeriados(stage);
+  }));
 }
 
 function drawGrid(stage) {

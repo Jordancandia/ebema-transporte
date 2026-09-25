@@ -168,18 +168,7 @@ var RUN_CONFIG = {
 // --------------------------- ENTRYPOINTS ------------------------------------
 function ejecutar_0830() { procesarCorreoPlanCarga('INICIAL'); }
 function ejecutar_1200() { procesarCorreoPlanCarga('ACTUALIZACION'); }
-function ejecutar_1530() { snapshotPlanCarga(); procesarCorreoPlanCarga('CIERRE'); }
-
-// Foto oficial del Plan de Carga a las 15:30 (base del indicador de Efectividad).
-function snapshotPlanCarga() {
-  var d = new Date().getDay(); if (d === 0 || d === 6) return;
-  try {
-    var res = UrlFetchApp.fetch(SUPABASE_URL + '/rest/v1/rpc/fn_abast_snapshot_plan_carga', {
-      method: 'post', contentType: 'application/json', headers: sbHeaders(), payload: '{}', muteHttpExceptions: true
-    });
-    Logger.log('snapshot plan carga HTTP %s: %s', res.getResponseCode(), res.getContentText().slice(0, 200));
-  } catch (e) { Logger.log('snapshot plan carga error: ' + e); }
-}
+function ejecutar_1530() { procesarCorreoPlanCarga('CIERRE'); }
 
 // Pruebas manuales (Ejecutar en el editor de Apps Script).
 function probar_inicial()        { procesarCorreoPlanCarga('INICIAL'); }

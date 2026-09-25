@@ -10,8 +10,8 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202609242244';
-import { getDatabase } from './data.js?v=202609242244';
+import { supabase } from './supabase-client.js?v=202609242341';
+import { getDatabase } from './data.js?v=202609242341';
 import { showAlert, escapeHtml } from './utils.js';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
@@ -84,7 +84,10 @@ export function setAbastSubTab(sub) {
 function parseDateSAP(s) {
   if (!s) return null;
   const m = String(s).match(/^(\d{2})\.(\d{2})\.(\d{4})$/);
-  if (!m) return null;
+  if (!m) {
+    const i = String(s).match(/^(\d{4})-(\d{2})-(\d{2})/);   // columnas date de Supabase
+    return i ? new Date(+i[1], +i[2] - 1, +i[3]) : null;
+  }
   return new Date(+m[3], +m[2] - 1, +m[1]);
 }
 
@@ -1267,32 +1270,31 @@ const VISTAS_TRONCAL = {
     ],
   },
 
-  // ── DOCUMENTOS DE TRANSPORTE (Job ZJC PLAN DT, Step 1) ─────────────────────
-  // Agrupado por Transporte (nro transporte). Drill-down muestra entregas/materiales.
+  // ── DOCUMENTOS DE TRANSPORTE (rediseño 24-sep-2026) ───────────────────────
+  // Acumulado por día en abast_dt_dia (lecturas 08:10 / 16:30 / cierre 23:00).
+  // Por defecto muestra sólo los DT creados HOY. Capacidad = columna GeEs (ton).
   documentos_transporte: {
     titulo: 'GESTIÓN TRONCALES – DOCUMENTOS DE TRANSPORTE',
-    vista: 'v_trc_dt_transportes',
-    chipFilter: { campo: '_centro_destino', label: 'Centro' },
-    extraChips: [{ campo: 'ruta', label: 'Ruta' }],
+    vista: 'v_abast_dt_dia',
+    chipFilter: { campo: 'ptrp', label: 'Centro Expedición' },
+    extraChips: [{ campo: 'sucursal_destino', label: 'Sucursal Destino' }, { campo: 'denominacion', label: 'Tipo Despacho' }],
     searchLabel: 'BUSCADOR GENERAL',
     filtros: [],
-    dateRange: { campo: 'fe_entrega', label: 'Rango Fecha de Entrega' },
+    dateRange: { campo: 'fecha_creacion', label: 'Fecha Creación' },
+    dateDefaultHoy: true,
     expand: {
       key: 'transporte', idKey: 'transporte', numCols: 2,
-      headers: ['Entrega','Material','Descripción','Cantidad','UM','Doc. Compra','Hoja Entrega'],
+      headers: ['Entrega','Sucursal Destino','Material','Descripción','Cantidad','UM','Ton (máx bruto/vol)'],
       build(row) {
         return (row._detalle || []).map(d => [
-          d.entrega, d.material, d.denominacion_de_posicion,
-          d.cantidad_entrega, d.um, d.doc_compr, d.hoja_entr,
+          d.entrega, d.sucursal_destino, d.material, d.descripcion, d.cantidad, d.um,
+          d.sin_peso ? 'sin peso' : fmtNum(d.ton_linea, 3),
         ]);
       },
     },
     transform(rows) {
-      // Filtrar filas vacías
-      const validas = rows.filter(r => String(r.transporte ?? '').trim() !== '');
-      // Agrupar por Transporte
       const g = new Map();
-      validas.forEach(r => {
+      rows.forEach(r => {
         const t = String(r.transporte ?? '').trim();
         if (!t) return;
         (g.get(t) || g.set(t, []).get(t)).push(r);
@@ -1300,129 +1302,148 @@ const VISTAS_TRONCAL = {
       const out = [];
       for (const [trp, items] of g.entries()) {
         const f = items[0];
-        const entregas = [...new Set(items.map(i => String(i.entrega ?? '').trim()).filter(Boolean))];
-        // Calcular toneladas si hay peso
-        let tonTotal = 0;
-        const detalle = items.map(r => {
-          const qty = parseNum(r.cantidad_entrega);
-          return {
-            entrega: r.entrega, material: r.material,
-            denominacion_de_posicion: r.denominacion_de_posicion,
-            cantidad_entrega: r.cantidad_entrega, um: r.um,
-            doc_compr: r.doc_compr, hoja_entr: r.hoja_entr,
-          };
-        });
-        // Extraer centro destino del destinatario o del primer dígito de ruta
-        const centroDestino = String(f.destinat ?? '').trim();
+        const cap = Math.max(0, ...items.map(i => Number(i.capacidad_ton) || 0));
+        const ton = items.reduce((s, i) => s + (Number(i.ton_linea) || 0), 0);
+        const sucs = [...new Set(items.map(i => i.sucursal_destino).filter(Boolean))];
         out.push({
           transporte: trp,
-          cltr: f.cltr,
           denominacion: f.denominacion,
-          denom_transporte: f.denom_transporte,
-          agservtran: f.agservtran,
-          nombre_1: f.nombre_1,
-          creado_el: f.creado_el,
+          ptrp: f.ptrp,
+          nombre_transportista: f.nombre_transportista,
+          fecha_creacion: f.fecha_creacion,
           ruta: f.ruta,
-          fe_entrega: f.fe_entrega,
-          _centro_destino: centroDestino,
-          _num_entregas: entregas.length,
-          _num_materiales: items.length,
-          _entregas_list: entregas.join(', '),
-          _detalle: detalle,
+          sucursal_destino: sucs.length === 1 ? sucs[0] : sucs.join(' / '),
+          _num_entregas: new Set(items.map(i => i.entrega)).size,
+          _capacidad: cap || '',
+          _ton: fmtNum(ton, 2),
+          _pct: cap > 0 ? Math.min(100, ton / cap * 100).toFixed(1) + '%' : '',
+          _detalle: items,
         });
       }
-      // Ordenar por fecha entrega (más próxima primero)
-      return out.sort((a, b) => {
-        const da = parseDateSAP(a.fe_entrega), db2 = parseDateSAP(b.fe_entrega);
-        return (da || new Date(9999,0)) - (db2 || new Date(9999,0));
-      });
+      return out.sort((a, b) => String(b.fecha_creacion).localeCompare(String(a.fecha_creacion)) || String(a.transporte).localeCompare(String(b.transporte)));
     },
     columnas: [
-      { key: 'transporte', label: 'N° Transporte', expandable: true },
-      { key: 'denominacion', label: 'Tipo Transporte' },
-      { key: 'nombre_1', label: 'Transportista' },
+      { key: 'transporte', label: 'Doc. Transporte', expandable: true },
+      { key: 'denominacion', label: 'Tipo Despacho' },
+      { key: 'ptrp', label: 'Centro Exp.' },
+      { key: 'nombre_transportista', label: 'Transportista' },
+      { key: 'fecha_creacion', label: 'Fecha Creación', cls: 'num-clear' },
       { key: 'ruta', label: 'Ruta' },
-      { key: '_centro_destino', label: 'Destinatario' },
-      { key: 'fe_entrega', label: 'Fecha Entrega', cls: 'num-clear' },
+      { key: 'sucursal_destino', label: 'Sucursal Destino' },
       { key: '_num_entregas', label: 'Entregas', cls: 'text-center font-bold' },
-      { key: '_num_materiales', label: 'Materiales', cls: 'text-center' },
+      { key: '_capacidad', label: 'Capacidad (t)', cls: 'text-right' },
+      { key: '_ton', label: 'Ton Cargadas', cls: 'text-right' },
+      { key: '_pct', label: '% Consolidación', cls: 'text-right font-bold' },
     ],
   },
 
-  // ── ENTREGAS CREADAS (Job ZJC PLAN ENTREGAS, Step 1) ───────────────────────
-  // Agrupado por Entrega. Drill-down muestra materiales de cada entrega.
+  // ── ENTREGAS CREADAS (rediseño 24-sep-2026) ───────────────────────────────
+  // Acumulado por día en abast_entregas_dia (cierre 23:00). Almacén vacío se
+  // infiere (EL→4000; ClVt ZV01/03/04→2000; resto→3000). Almacén 4000 está
+  // físicamente en 1003 → Centro Expedición = 1003. Estado Plan compara la
+  // suma de entregas por Doc.Modelo+Material vs la foto del Plan de Carga (15:30
+  // del día hábil anterior).
   entregas_creadas: {
     titulo: 'GESTIÓN TRONCALES – ENTREGAS CREADAS',
-    vista: 'v_trc_entregas_creadas',
-    chipFilter: { campo: 'ce', label: 'Centro' },
-    extraChips: [{ campo: 'ruta', label: 'Ruta' }, { campo: 'clent', label: 'Clase Entrega' }],
+    vista: 'v_abast_entregas_dia',
+    chipFilter: { campo: 'centro_fisico', label: 'Centro Expedición' },
+    extraChips: [{ campo: 'almacen', label: 'Almacén' }, { campo: 'clent', label: 'Tipo Entrega' }, { campo: 'estado_plan', label: 'Estado Plan' }],
     searchLabel: 'BUSCADOR GENERAL',
     filtros: [],
-    dateRange: { campo: 'creado_el', label: 'Rango Fecha Creación' },
-    expand: {
-      key: 'entrega', idKey: 'entrega', numCols: 2,
-      headers: ['Material','Descripción','Cantidad Entrega','UM','Doc. Modelo','Pos. Modelo'],
-      build(row) {
-        return (row._detalle || []).map(d => [
-          d.material, d.denominacion_de_posicion,
-          d.cantidad_entrega, d.um, d.doc_modelo, d.posmod,
-        ]);
-      },
-    },
-    transform(rows) {
-      const validas = rows.filter(r => String(r.entrega ?? '').trim() !== '');
-      // Agrupar por Entrega
-      const g = new Map();
-      validas.forEach(r => {
-        const e = String(r.entrega ?? '').trim();
-        if (!e) return;
-        (g.get(e) || g.set(e, []).get(e)).push(r);
-      });
-      const out = [];
-      for (const [ent, items] of g.entries()) {
-        const f = items[0];
-        const rl = lookupRuta(f.ruta);
-        const detalle = items.map(r => ({
-          material: r.material,
-          denominacion_de_posicion: r.denominacion_de_posicion,
-          cantidad_entrega: r.cantidad_entrega,
-          um: r.um, doc_modelo: r.doc_modelo, posmod: r.posmod,
-        }));
-        out.push({
-          entrega: ent,
-          creado_por: f.creado_por,
-          creado_el: f.creado_el,
-          clent: f.clent,
-          tpdoc: f.tpdoc,
-          ce: f.ce,
-          psex: f.psex,
-          ruta: f.ruta,
-          _comuna: rl.comuna,
-          _region: rl.region,
-          clvt: f.clvt,
-          doc_modelo: f.doc_modelo,
-          _num_materiales: items.length,
-          _detalle: detalle,
-        });
-      }
-      // Ordenar por fecha creación descendente (más reciente primero)
-      return out.sort((a, b) => {
-        const da = parseDateSAP(a.creado_el), db2 = parseDateSAP(b.creado_el);
-        return (db2 || new Date(0)) - (da || new Date(0));
-      });
+    dateRange: { campo: 'fecha_creacion', label: 'Fecha Creación' },
+    dateDefaultHoy: true,
+    columnas: [
+      { key: 'entrega', label: 'N° Entrega' },
+      { key: 'fecha_creacion', label: 'Fecha Creación', cls: 'num-clear' },
+      { key: 'clent', label: 'Tipo Entrega' },
+      { key: 'ce', label: 'Tipo Exp.' },
+      { key: 'almacen', label: 'Almacén', valueFn: r => r.almacen + (r.almacen_inferido ? '*' : '') },
+      { key: 'centro_fisico', label: 'Centro Exp.' },
+      { key: 'ruta', label: 'Ruta' },
+      { key: 'material', label: 'Material' },
+      { key: 'descripcion', label: 'Descripción' },
+      { key: 'cantidad', label: 'Cant. Entrega', cls: 'text-right' },
+      { key: 'doc_modelo', label: 'Doc. Precedente' },
+      { key: 'cant_plan', label: 'Cant. Plan', cls: 'text-right' },
+      { key: 'cant_entregas_doc', label: 'Σ Entregas Doc', cls: 'text-right' },
+      { key: 'estado_plan', label: 'Estado Plan', badge: r => ({
+          CUADRA: 'bg-green-100 text-green-800', PARCIAL: 'bg-amber-100 text-amber-800',
+          EXCEDE: 'bg-red-100 text-red-800' }[r.estado_plan] || 'bg-surface-container-high text-secondary') },
+    ],
+  },
+
+  // ── INDICADORES: CONSOLIDACIÓN DE CARGA (24-sep-2026) ─────────────────────
+  // Por DT: Σ max(ton bruto, ton vol) / capacidad (GeEs), tope 100%. KPI = promedio simple.
+  ind_consolidacion: {
+    titulo: 'INDICADORES – NIVEL DE CONSOLIDACIÓN DE CARGA',
+    vista: 'v_ind_consolidacion_dt',
+    chipFilter: { campo: 'centro_expedicion', label: 'Centro Expedición' },
+    extraChips: [{ campo: 'tipo_despacho', label: 'Tipo Despacho' }],
+    searchLabel: 'BUSCADOR GENERAL',
+    filtros: [],
+    dateRange: { campo: 'fecha_creacion', label: 'Fecha Creación DT' },
+    badges(filt) {
+      const conCap = filt.filter(r => r.pct_consolidacion != null);
+      const prom = conCap.length ? conCap.reduce((s, r) => s + Number(r.pct_consolidacion), 0) / conCap.length * 100 : null;
+      const sinPeso = filt.reduce((s, r) => s + (Number(r.lineas_sin_peso) || 0), 0);
+      return badgePill('Consolidación promedio', prom == null ? '—' : prom.toFixed(1) + '%', 'bg-primary text-white')
+        + badgePill('Viajes (DT)', filt.length, 'bg-surface-container-high text-on-surface')
+        + badgePill('DT sin capacidad', filt.length - conCap.length, 'bg-amber-100 text-amber-800')
+        + badgePill('Líneas sin peso', sinPeso, 'bg-amber-100 text-amber-800');
     },
     columnas: [
-      { key: 'entrega', label: 'N° Entrega', expandable: true },
-      { key: 'creado_por', label: 'Creado Por' },
-      { key: 'creado_el', label: 'Fecha Creación', cls: 'num-clear' },
-      { key: 'clent', label: 'Clase Entrega' },
-      { key: 'ce', label: 'Centro' },
-      { key: 'ruta', label: 'Ruta' },
-      { key: '_comuna', label: 'Comuna' },
-      { key: '_region', label: 'Región' },
-      { key: 'clvt', label: 'Clase Venta' },
-      { key: 'doc_modelo', label: 'Doc. Modelo' },
-      { key: '_num_materiales', label: 'Materiales', cls: 'text-center font-bold' },
+      { key: 'transporte', label: 'Doc. Transporte' },
+      { key: 'fecha_creacion', label: 'Fecha', cls: 'num-clear' },
+      { key: 'tipo_despacho', label: 'Tipo Despacho' },
+      { key: 'centro_expedicion', label: 'Centro Exp.' },
+      { key: 'transportista', label: 'Transportista' },
+      { key: 'sucursal_destino', label: 'Destino' },
+      { key: 'n_entregas', label: 'Entregas', cls: 'text-center' },
+      { key: 'capacidad_ton', label: 'Capacidad (t)', cls: 'text-right' },
+      { key: 'ton_cargadas', label: 'Ton Cargadas', cls: 'text-right' },
+      { key: 'pct_consolidacion', label: '% Consolidación', cls: 'text-right font-bold',
+        valueFn: r => r.pct_consolidacion == null ? '' : (Number(r.pct_consolidacion) * 100).toFixed(1) + '%' },
+      { key: 'lineas_sin_peso', label: 'Líneas sin peso', cls: 'text-center' },
+    ],
+  },
+
+  // ── INDICADORES: EFECTIVIDAD PLAN DE CARGA (24-sep-2026) ──────────────────
+  // Por línea (documento+SKU) de la foto 15:30: cumple si la cantidad en DT
+  // (vía entregas del Doc. Precedente) >= cantidad planificada.
+  ind_efectividad_plan: {
+    titulo: 'INDICADORES – EFECTIVIDAD PLAN DE CARGA',
+    vista: 'v_ind_efectividad_plan',
+    chipFilter: { campo: 'ce', label: 'Centro Destino' },
+    extraChips: [{ campo: 'cd_origen', label: 'CD Origen' }, { campo: 'categoria', label: 'Categoría' }, { campo: 'estado', label: 'Estado' }],
+    searchLabel: 'BUSCADOR GENERAL',
+    filtros: [],
+    dateRange: { campo: 'fecha', label: 'Fecha Plan (foto 15:30)' },
+    badges(filt) {
+      // Líneas EN PLAZO (aún dentro de las 48h hábiles) no entran al cálculo.
+      const medibles = filt.filter(r => r.estado !== 'EN PLAZO');
+      const ok = medibles.filter(r => r.linea_cumple).length;
+      const pct = medibles.length ? ok / medibles.length * 100 : null;
+      return badgePill('Efectividad', pct == null ? '—' : pct.toFixed(1) + '%', 'bg-primary text-white')
+        + badgePill('Líneas medidas', medibles.length, 'bg-surface-container-high text-on-surface')
+        + badgePill('Cumplen', ok, 'bg-green-100 text-green-800')
+        + badgePill('En plazo (48h)', filt.length - medibles.length, 'bg-blue-100 text-blue-800');
+    },
+    columnas: [
+      { key: 'fecha', label: 'Fecha Plan', cls: 'num-clear' },
+      { key: 'cd_origen', label: 'CD' },
+      { key: 'ce', label: 'Centro Dest.' },
+      { key: 'categoria', label: 'Categoría' },
+      { key: 'documento', label: 'Documento' },
+      { key: 'material', label: 'Material' },
+      { key: 'nombre', label: 'Descripción' },
+      { key: 'cant_plan', label: 'Cant. Plan', cls: 'text-right' },
+      { key: 'fecha_limite', label: 'Límite 48h', cls: 'num-clear' },
+      { key: 'entregas', label: 'Entregas' },
+      { key: 'cant_entregada', label: 'Cant. Entregas', cls: 'text-right' },
+      { key: 'cant_dt', label: 'Cant. DT', cls: 'text-right' },
+      { key: 'estado', label: 'Estado', badge: r => ({
+          CUMPLE: 'bg-green-100 text-green-800', PARCIAL: 'bg-amber-100 text-amber-800',
+          'CON ENTREGA SIN DT': 'bg-blue-100 text-blue-800', 'EN PLAZO': 'bg-surface-container-high text-secondary', 'NO CARGADO': 'bg-red-100 text-red-800' }[r.estado] || '') },
     ],
   },
 
@@ -2346,6 +2367,10 @@ async function renderVistaTabla(stage, cfg, modeIdx = 0) {
   (active.filtros || []).forEach(f => { filtroTextos[f.campo] = ''; });
   let texto = '';
   let rangoDesde = '', rangoHasta = '';   // filtro por rango de fecha (dateRange)
+  if (active.dateDefaultHoy) {             // vistas diarias: por defecto sólo HOY
+    const h = new Date();
+    rangoDesde = rangoHasta = `${h.getFullYear()}-${String(h.getMonth() + 1).padStart(2, '0')}-${String(h.getDate()).padStart(2, '0')}`;
+  }
   const expanded = new Set();
 
   // ISO (yyyy-mm-dd de <input type=date>) → Date 00:00
