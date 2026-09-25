@@ -1,5 +1,5 @@
-import { getDatabase, saveDatabase, initDatabase, loadRoutesData } from './data.js?v=202609242341';
-import { supabase } from './supabase-client.js?v=202609242341';
+import { getDatabase, saveDatabase, initDatabase, loadRoutesData } from './data.js?v=202609242352';
+import { supabase } from './supabase-client.js?v=202609242352';
 // Cache-busting automatico: cada carga de pagina pide los modulos con un
 // timestamp nuevo, para que nunca quede una version vieja pegada en cache
 // del navegador tras un despliegue (bug: 'se recargo y se perdieron los
@@ -1274,8 +1274,7 @@ const SIDEBAR_MENU = [
       { tab: 'abastecimiento', sub: 'plan_carga',             icon: 'local_shipping',             label: 'Plan de Carga' },
       { tab: 'abastecimiento', sub: 'entregas_creadas',       icon: 'assignment_turned_in',       label: 'Entregas Creadas' },
       { tab: 'abastecimiento', sub: 'documentos_transporte',  icon: 'description',                label: 'Documentos de Transporte' },
-      { tab: 'abastecimiento', sub: 'ind_consolidacion',      icon: 'local_shipping',             label: 'Ind. Consolidación Carga' },
-      { tab: 'abastecimiento', sub: 'ind_efectividad_plan',   icon: 'fact_check',                 label: 'Ind. Efectividad Plan Carga' },
+      { tab: 'abastecimiento', sub: 'ind_plan_carga',         icon: 'insights',                   label: 'Indicadores Plan de Carga' },
     ]
   },
   {

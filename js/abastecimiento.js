@@ -10,8 +10,8 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202609242341';
-import { getDatabase } from './data.js?v=202609242341';
+import { supabase } from './supabase-client.js?v=202609242352';
+import { getDatabase } from './data.js?v=202609242352';
 import { showAlert, escapeHtml } from './utils.js';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
@@ -1277,7 +1277,7 @@ const VISTAS_TRONCAL = {
     titulo: 'GESTIÓN TRONCALES – DOCUMENTOS DE TRANSPORTE',
     vista: 'v_abast_dt_dia',
     chipFilter: { campo: 'ptrp', label: 'Centro Expedición' },
-    extraChips: [{ campo: 'sucursal_destino', label: 'Sucursal Destino' }, { campo: 'denominacion', label: 'Tipo Despacho' }],
+    extraChips: [{ campo: 'denominacion', label: 'Tipo Despacho' }],
     searchLabel: 'BUSCADOR GENERAL',
     filtros: [],
     dateRange: { campo: 'fecha_creacion', label: 'Fecha Creación' },
@@ -1372,10 +1372,15 @@ const VISTAS_TRONCAL = {
     ],
   },
 
-  // ── INDICADORES: CONSOLIDACIÓN DE CARGA (24-sep-2026) ─────────────────────
-  // Por DT: Σ max(ton bruto, ton vol) / capacidad (GeEs), tope 100%. KPI = promedio simple.
-  ind_consolidacion: {
-    titulo: 'INDICADORES – NIVEL DE CONSOLIDACIÓN DE CARGA',
+  // ── INDICADORES PLAN DE CARGA (24-sep-2026): una vista, 2 modos ─────────
+  // Consolidación: por DT Σ max(ton bruto, ton vol) / capacidad (GeEs), tope 100%, promedio simple.
+  // Efectividad: por línea (documento+SKU) de la foto 15:30; entregas del Doc. Precedente
+  // creadas en D..D+2 hábiles, buscadas en los DT; cumple si cant. DT >= cant. plan.
+  ind_plan_carga: {
+    titulo: 'INDICADORES – PLAN DE CARGA',
+    modes: [
+      {
+      label: 'Consolidación de Carga',
     vista: 'v_ind_consolidacion_dt',
     chipFilter: { campo: 'centro_expedicion', label: 'Centro Expedición' },
     extraChips: [{ campo: 'tipo_despacho', label: 'Tipo Despacho' }],
@@ -1405,13 +1410,9 @@ const VISTAS_TRONCAL = {
         valueFn: r => r.pct_consolidacion == null ? '' : (Number(r.pct_consolidacion) * 100).toFixed(1) + '%' },
       { key: 'lineas_sin_peso', label: 'Líneas sin peso', cls: 'text-center' },
     ],
-  },
-
-  // ── INDICADORES: EFECTIVIDAD PLAN DE CARGA (24-sep-2026) ──────────────────
-  // Por línea (documento+SKU) de la foto 15:30: cumple si la cantidad en DT
-  // (vía entregas del Doc. Precedente) >= cantidad planificada.
-  ind_efectividad_plan: {
-    titulo: 'INDICADORES – EFECTIVIDAD PLAN DE CARGA',
+        },
+      {
+      label: 'Efectividad Plan de Carga',
     vista: 'v_ind_efectividad_plan',
     chipFilter: { campo: 'ce', label: 'Centro Destino' },
     extraChips: [{ campo: 'cd_origen', label: 'CD Origen' }, { campo: 'categoria', label: 'Categoría' }, { campo: 'estado', label: 'Estado' }],
@@ -1445,8 +1446,9 @@ const VISTAS_TRONCAL = {
           CUMPLE: 'bg-green-100 text-green-800', PARCIAL: 'bg-amber-100 text-amber-800',
           'CON ENTREGA SIN DT': 'bg-blue-100 text-blue-800', 'EN PLAZO': 'bg-surface-container-high text-secondary', 'NO CARGADO': 'bg-red-100 text-red-800' }[r.estado] || '') },
     ],
+        },
+    ],
   },
-
 };
 
 // Etiqueta contadora (badge)
