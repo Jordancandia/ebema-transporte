@@ -10,8 +10,9 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202609242352';
-import { getDatabase } from './data.js?v=202609242352';
+import { supabase } from './supabase-client.js?v=202609251928';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202609251928';
+import { getDatabase } from './data.js?v=202609251928';
 import { showAlert, escapeHtml } from './utils.js';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
@@ -339,7 +340,7 @@ function estaExcluido(exclusiones, tipo, doc, material) {
 }
 // Modal para ver y reactivar (borrar) exclusiones del Plan de Carga.
 function showExclusionesModal(exclusiones, onChange) {
-  const TIPO_LBL = { venta_1003: 'Pedido de Venta 1003', crossdock_4000: 'Traslado Crossdocking 4000', traslados_revex: 'Traslado REVEX', traslados_1003: 'Traslado 1003' };
+  const TIPO_LBL = { venta_1003: 'Pedido de Venta 1003', crossdock_4000: 'Traslado Crossdocking 4000', traslados_revex: 'Traslado REVEX', traslados_1003: 'Traslado 1003', retiro_fabrica: 'Retiro de Fábrica' };
   const filas = exclusiones.map(e => `<tr class="border-b border-outline-variant/40">
     <td class="py-xs pr-md text-[12px]">${escapeHtml(TIPO_LBL[e.tipo] || e.tipo)}</td>
     <td class="py-xs pr-md text-[12px] font-bold">${escapeHtml(e.doc)}</td>
@@ -654,6 +655,8 @@ const VISTAS_TRONCAL = {
   retiros: {
     titulo: 'GESTIÓN TRONCALES – RETIROS DE FÁBRICA',
     vista: 'v_trc_sqvi_retiros_fabrica',
+    // Excluye la Orden de Compra completa del Plan de Carga (OWNER / Planner Abastecimiento).
+    excluir: { tipo: 'retiro_fabrica', doc: r => r.doc_compr, material: null },
     chipFilter: { campo: 'ce', label: 'Centro' },
     extraChips: [
       { campo: '_tipo_retiro', label: 'Tipo Retiro' },
@@ -1709,7 +1712,7 @@ async function renderPlanCarga(stage) {
   // centro dentro del map de abajo, contra el horizonte EFECTIVO (que puede
   // promoverse de 48h a 24h según la carga disponible para mañana).
 
-  const resultado = Array.from(centrosSet).map(ce => {
+  const resultadoTodos = Array.from(centrosSet).map(ce => {
     // Capacidad de referencia (camión lleno) para los umbrales de camión
     // cliente (80%) y fábrica (85%). La capacidad efectiva del CD se calcula
     // más abajo (La Calera/San Bernardo usan 15 T si no alcanzan a llenar 28 T).
@@ -1867,6 +1870,7 @@ async function renderPlanCarga(stage) {
     function retirosParaFecha(fechaObjetivoCe) {
       return retiros
         .filter(r => String(r.ce ?? '').trim() === ce)
+        .filter(r => !estaExcluido(exclusionesPlan, 'retiro_fabrica', r.doc_compr, r.material))
         .filter(r => (estadosRetiro[String(r.doc_compr ?? '').trim()] || {}).tipo_retiro === 'FAB-CD')
         .filter(r => { const _e = estadosRetiro[String(r.doc_compr ?? '').trim()] || {}; const fr = parseISODate(_e.fecha_retiro); return !fr || fr.getTime() < hoy00().getTime() || fr.getTime() === fechaObjetivoCe.getTime(); });
     }
@@ -1893,6 +1897,7 @@ async function renderPlanCarga(stage) {
     const fechaPlanCe = getHorizonte(ce) === 48 ? diaHabil2 : diaHabil1;
     const retirosFab = retirosDirectosBase
       .filter(r => String(r.ce ?? '').trim() === ce)
+      .filter(r => !estaExcluido(exclusionesPlan, 'retiro_fabrica', r.doc_compr, r.material))
       .filter(r => (parseNum(r.ctd_pedido) - parseNum(r.ctd_entregada)) > 0)
       .filter(r => { const fr = parseISODate((estadosRetiro[String(r.doc_compr ?? '').trim()] || {}).fecha_retiro); return !!fr && fr.getTime() === fechaPlanCe.getTime(); });
     const ocCli = {}, provSuc = {};   // cliente/proveedor -> { ton, items:[] }
@@ -1990,6 +1995,8 @@ async function renderPlanCarga(stage) {
     if (aPrioriza && bPrioriza) return b.pct - a.pct;
     return b.total - a.total;
   });
+  // Perfiles con centros asignados: sólo sus sucursales destino
+  const resultado = resultadoTodos.filter(r => enAlcance(r.ce));
 
   const diasSemana = ['Domingo','Lunes','Martes','Miércoles','Jueves','Viernes','Sábado'];
   const fmtDiaHabil = d => `${diasSemana[d.getDay()]} ${d.toLocaleDateString('es-CL', { day: 'numeric', month: 'long' })}`;
@@ -2021,7 +2028,8 @@ async function renderPlanCarga(stage) {
       : `<tr><td colspan="${headers.length}" class="text-secondary text-[12px] py-xs">Sin ítems.</td></tr>`;
     return `<table class="w-full text-[12px] mb-xs"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
   }
-  const btnExcluir = (tipo, doc, material) => `<button data-excluir="${escapeHtml(tipo)}|${escapeHtml(String(doc ?? ''))}|${escapeHtml(String(material ?? ''))}" title="Excluir del Plan de Carga de hoy" class="text-[11px] font-bold text-error hover:underline whitespace-nowrap">Excluir</button>`;
+  const PUEDE_EXCLUIR = can('excluir');
+  const btnExcluir = (tipo, doc, material) => !PUEDE_EXCLUIR ? '' : `<button data-excluir="${escapeHtml(tipo)}|${escapeHtml(String(doc ?? ''))}|${escapeHtml(String(material ?? ''))}" title="Excluir del Plan de Carga de hoy" class="text-[11px] font-bold text-error hover:underline whitespace-nowrap">Excluir</button>`;
   function blkWrap(lbl, items, tableHtml) {
     const sub = items.reduce((s, d) => s + (d.ton || 0), 0);
     return `<div class="mb-md">
@@ -2049,6 +2057,7 @@ async function renderPlanCarga(stage) {
     let align = new Set([7, 8]);
     let filas = items.map(d => [d.origen, d.pt, d.ceDestino, d.almDestino, d.fecha, d.material, d.nombre, fmtNum(d.ctdPend, 1), fmtNum(d.ton, 4), d.pv, btnExcluir('crossdock_4000', d.pt, d.material)]);
     let raw = new Set([heads.length - 1]);
+    if (!PUEDE_EXCLUIR) { heads = heads.slice(0, -1); filas = filas.map(f => f.slice(0, -1)); raw = new Set(); }
     if (marcar) { heads = ['En Camión', ...heads]; align = shiftSet(align); raw = shiftSet(raw); filas = items.map((d, i) => [camMark(d), ...filas[i]]); }
     return blkWrap(lbl, items, tablaDet(heads, filas, align, raw));
   }
@@ -2070,6 +2079,7 @@ async function renderPlanCarga(stage) {
     // Excluye el Pedido de Venta completo (todas sus líneas), no sólo el material de la fila.
     let filas = items.map(d => [d.pv, d.material, d.nombre, fmtNum(parseNum(d.cant), 1), d.cliente || '', d.vendedor || '', d.tipoExp || '', d.ruta, d.comuna, d.region, d.fecha, fmtNum(d.ton, 4), btnExcluir('venta_1003', d.pv, null)]);
     let raw = new Set([heads.length - 1]);
+    if (!PUEDE_EXCLUIR) { heads = heads.slice(0, -1); filas = filas.map(f => f.slice(0, -1)); raw = new Set(); }
     if (marcar) { heads = ['En Camión', ...heads]; align = shiftSet(align); raw = shiftSet(raw); filas = items.map((d, i) => [camMark(d), ...filas[i]]); }
     return blkWrap(lbl, items, tablaDet(heads, filas, align, raw));
   }
@@ -2217,8 +2227,8 @@ async function renderPlanCarga(stage) {
               ${planOrigen === id ? 'bg-primary text-white' : 'bg-surface-container-high text-on-surface hover:bg-surface-container-highest'}">
               <span class="material-symbols-outlined text-[16px] align-middle mr-xs">warehouse</span>${escapeHtml(CALENDARIOS[id].nombre)} (${id})
             </button>`).join('')}
-          <button data-ver-exclusiones title="Ver/reactivar exclusiones del Plan de Carga" class="bg-surface-container-high text-on-surface px-md py-sm rounded-lg text-[13px] font-bold hover:bg-surface-container-highest inline-flex items-center gap-xs">
-            <span class="material-symbols-outlined text-[16px] align-middle">visibility_off</span>Exclusiones${exclusionesPlan.length ? ` (${exclusionesPlan.length})` : ''}</button>
+          ${PUEDE_EXCLUIR ? `<button data-ver-exclusiones title="Ver/reactivar exclusiones del Plan de Carga" class="bg-surface-container-high text-on-surface px-md py-sm rounded-lg text-[13px] font-bold hover:bg-surface-container-highest inline-flex items-center gap-xs">
+            <span class="material-symbols-outlined text-[16px] align-middle">visibility_off</span>Exclusiones${exclusionesPlan.length ? ` (${exclusionesPlan.length})` : ''}</button>` : ''}
           <button data-refrescar title="Refrescar" class="bg-surface-container-high text-on-surface px-md py-sm rounded-lg text-[13px] font-bold hover:bg-surface-container-highest">
             <span class="material-symbols-outlined text-[16px] align-middle">refresh</span></button>
         </div>
@@ -2330,14 +2340,17 @@ async function renderVistaTabla(stage, cfg, modeIdx = 0) {
   stage.innerHTML = `<div class="text-secondary text-body-md p-md">Cargando ${escapeHtml(cfg.titulo)}…</div>`;
   const ctx = active.preload ? await active.preload() : {};
   const rawRows = await fetchAllRows(active.vista);
-  const rows = active.transform ? active.transform(rawRows, ctx) : rawRows;
+  // Perfiles con centros asignados sólo ven filas de sus centros (campo de centro de la vista)
+  const _campoCentro = active.centroCampo || active.chipFilter?.campo;
+  const _rowsAll = active.transform ? active.transform(rawRows, ctx) : rawRows;
+  const rows = _campoCentro ? filtrarPorCentro(_rowsAll, _campoCentro) : _rowsAll;
 
   // Botón "Excluir" (posiciones fuera del Plan de Carga) — sólo perfil OWNER,
   // sólo en las vistas que declaran cfg.excluir.
   let exclusionesPlan = [];
   let ownerFlag = false;
   if (active.excluir) {
-    [exclusionesPlan, ownerFlag] = await Promise.all([loadExclusionesPlan(), esOwner()]);
+    [exclusionesPlan, ownerFlag] = await Promise.all([loadExclusionesPlan(), Promise.resolve(can('excluir'))]);
   }
   const excluirColActivo = !!(active.excluir && ownerFlag);
   function renderExcluirCell(r) {
@@ -2420,7 +2433,7 @@ async function renderVistaTabla(stage, cfg, modeIdx = 0) {
   function renderCell(r, c) {
     const cls = c.clsFn ? c.clsFn(r) : (c.cls || '');
     // Editable (select persistente)
-    if (c.editable && active.editable && active.editable.key === c.key) {
+    if (c.editable && active.editable && active.editable.key === c.key && can('coordinar_retiro')) {
       const cur = r[c.key];
       const opts = active.editable.options.map(o => `<option value="${escapeHtml(o.v)}" ${o.v === cur ? 'selected' : ''}>${escapeHtml(o.l)}</option>`).join('');
       const estilo = cur === 'coordinado' ? 'text-green-700 font-bold border-green-400' : 'text-secondary border-outline-variant';

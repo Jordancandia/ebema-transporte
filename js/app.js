@@ -1,5 +1,6 @@
-import { getDatabase, saveDatabase, initDatabase, loadRoutesData } from './data.js?v=202609242352';
-import { supabase } from './supabase-client.js?v=202609242352';
+import { getDatabase, saveDatabase, initDatabase, loadRoutesData } from './data.js?v=202609251928';
+import { supabase } from './supabase-client.js?v=202609251928';
+import { setSesionPermisos, puedeVerMenu, can, esSoloLectura, PERFILES } from './permisos.js?v=202609251928';
 // ── Módulos cargados bajo demanda (lazy) — se cachean tras la primera carga ──
 const _mod = {};
 async function loadMod(key, modPath) {
@@ -8,9 +9,9 @@ async function loadMod(key, modPath) {
 }
 // Pre-warm: carga indicadores y abastecimiento en background tras login
 function prewarmMods() {
-  setTimeout(() => loadMod('ind',   './indicadores.js?v=202609242352'), 600);
+  setTimeout(() => loadMod('ind',   './indicadores.js?v=202609251928'), 600);
   setTimeout(() => loadRoutesData(), 800);  // pre-fetch tablas pesadas en background
-  setTimeout(() => loadMod('abast', './abastecimiento.js?v=202609242352'), 2000);
+  setTimeout(() => loadMod('abast', './abastecimiento.js?v=202609251928'), 2000);
 }
 import { showAlert, formatRut, validateRut, formatPhone } from './utils.js';
 
@@ -215,7 +216,8 @@ async function checkSession() {
       return;
     }
 
-    currentSession = { email, name: u.name, role: u.role, tipo: 'funcionario' };
+    currentSession = { email, name: u.name, role: u.role, tipo: 'funcionario', centros: Array.isArray(u.centrosAsignados) ? u.centrosAsignados : [] };
+    setSesionPermisos(currentSession.role, currentSession.centros);
     localStorage.setItem(SESSION_KEY, JSON.stringify(currentSession));
   } catch (err) {
     console.error('Error verificando sesión:', err);
@@ -233,7 +235,7 @@ function renderApp() {
   if (!currentSession) {
     renderAuthView();
   } else if (currentSession.tipo === 'proveedor') {
-    import('./provider-portal.js?v=202609242352').then(m => m.renderProviderShell(currentSession, handleLogout));
+    import('./provider-portal.js?v=202609251928').then(m => m.renderProviderShell(currentSession, handleLogout));
   } else {
     renderDashboardShell();
   }
@@ -1138,38 +1140,18 @@ function renderRecoverView() {
 }
 
 // ==========================================================================
-// PERMISOS POR ROL
-// null = acceso total; array = grupos/tabs permitidos (por tab o group key)
+// PERMISOS POR PERFIL — matriz central en js/permisos.js (25-sep-2026)
+// Lo que un perfil no puede ver/hacer se oculta, sin mensajes.
 // ==========================================================================
-const READ_ONLY_ROLES = ['AGENTE_COMERCIAL', 'ADMINISTRADOR_DEPOSITO'];
-
-const ROLE_ALLOWED_GROUPS = {
-  'OWNER':                  null,
-  // Ajuste 2026-09-17: Admin. Depósito → Home, Indicadores, Gestión Troncales, Rutas de Transporte, Proveedores.
-  'ADMINISTRADOR_DEPOSITO': ['home', 'indicadores', 'abastecimiento', 'rutas', 'proveedores'],
-  // Ajuste 2026-09-17: Agente → Cotizador Despacho, Rutas de Transporte, Gestión Troncales.
-  'AGENTE_COMERCIAL':       ['rates', 'rutas', 'abastecimiento'],
-  'TRANSPORTISTA':          null,
-  'CHOFER':                 null,
-};
-
-// Devuelve true si el rol tiene acceso al item del menú
 function roleCanSeeEntry(entry) {
-  const role = currentSession?.role || 'AGENTE_COMERCIAL';
-  const allowed = ROLE_ALLOWED_GROUPS[role];
-  if (!allowed) return true; // OWNER / TRANSPORTISTA / CHOFER ven todo
-  const key = entry.group || entry.tab;
-  return allowed.includes(key);
+  return puedeVerMenu(entry.group || entry.tab);
+}
+function childVisible(entry, c) {
+  return puedeVerMenu(entry.group, c.sub);
 }
 
 // Display name para el topbar (sin guiones bajos ni mayúsculas crudas)
-const ROLE_DISPLAY = {
-  'OWNER': 'Owner',
-  'ADMINISTRADOR_DEPOSITO': 'Admin. Depósito',
-  'AGENTE_COMERCIAL': 'Agente',
-  'TRANSPORTISTA': 'Transportista',
-  'CHOFER': 'Chofer',
-};
+const ROLE_DISPLAY = Object.fromEntries(Object.entries(PERFILES).map(([k, v]) => [k, v.label]));
 
 // ==========================================================================
 // MENU LATERAL - estructura declarativa con grupos desplegables
@@ -1272,7 +1254,7 @@ function sidebarNavHTML() {
             <span class="material-symbols-outlined text-[18px] transition-transform sidebar-chevron">expand_more</span>
           </a>
           <div class="sidebar-group-children hidden mt-xs space-y-[2px]">
-            ${entry.children.map(c => `
+            ${entry.children.filter(c => childVisible(entry, c)).map(c => `
               <a class="${NAV_BASE_CHILD}" data-tab="${c.tab}" data-sub="${c.sub}">
                 <span class="material-symbols-outlined text-[16px]">${c.icon}</span>
                 <span>${c.label}</span>
@@ -1290,67 +1272,83 @@ function sidebarNavHTML() {
 
 
 // ==========================================================================
-// MODO SOLO LECTURA – bloquea escritura para AGENTE y ADMIN_DEPOSITO
+// MODO SOLO LECTURA (perfiles sin acción 'editar' en permisos.js)
+// Oculta en silencio las acciones de escritura. Sin avisos ni campos atenuados.
+// Un MutationObserver re-aplica el ocultamiento a lo que las vistas pintan
+// de forma asíncrona (tablas que cargan después, detalles expandibles, etc.).
 // ==========================================================================
 const WRITE_ICONS = new Set([
   'save','add','delete','edit','upload','add_circle','person_add','person_off',
   'how_to_reg','remove','cloud_upload','create','mode_edit','delete_forever',
-  'send','publish','check_circle','done_all','download','import_export',
+  'send','publish','check_circle','done_all','download','import_export','file_download',
 ]);
 const WRITE_WORDS = ['guardar','agregar','crear','eliminar','actualizar','nuevo',
-  'nueva','cargar','importar','subir','enviar','calcular','aplicar','confirmar',
-  'descargar','exportar','publicar','guardar cambios'];
+  'nueva','importar','subir','enviar','confirmar','descargar','exportar','publicar',
+  'csv','excluir','reactivar','coordinar','invitar','editar'];
+// Botones de navegación/filtro que nunca se ocultan
+const NAV_ATTRS = ['data-chip','data-echip','data-exp','data-truck','data-origen','data-refrescar',
+  'data-modo','data-rango-clear','data-close','data-cancel','data-tab','data-sub'];
+// Vistas sin restricciones de escritura en la interfaz (calculadoras)
+const TABS_SIN_READONLY = ['rates', 'home', 'indicadores'];
+
+let _roObserver = null;
+
+function botonDescargaPermitido(btn) {
+  if (can('descargar')) return true;
+  const esPlan = currentTab === 'abastecimiento' && currentSub === 'plan_carga';
+  if (!can('descargar_plan') || !esPlan) return false;
+  return btn.hasAttribute('data-descarga') || btn.hasAttribute('data-csv');
+}
+
+function ocultarEscritura(stage) {
+  stage.querySelectorAll('button:not([data-ro-ok])').forEach(btn => {
+    if (NAV_ATTRS.some(a => btn.hasAttribute(a))) { btn.setAttribute('data-ro-ok', ''); return; }
+    const esDescarga = btn.hasAttribute('data-descarga') || btn.hasAttribute('data-csv');
+    if (esDescarga) {
+      if (botonDescargaPermitido(btn)) btn.setAttribute('data-ro-ok', '');
+      else btn.style.display = 'none';
+      return;
+    }
+    const iconTxt = btn.querySelector('.material-symbols-outlined')?.textContent?.trim() ?? '';
+    const btnTxt  = btn.textContent?.trim().toLowerCase() ?? '';
+    const isWrite = WRITE_ICONS.has(iconTxt) || WRITE_WORDS.some(w => btnTxt.includes(w));
+    const isNav   = btnTxt.includes('buscar') || btn.id?.includes('search') || iconTxt === 'close' || iconTxt === 'search';
+    if (isWrite && !isNav) btn.style.display = 'none';
+  });
+  // Campos editables dentro de tablas (celdas editables en línea)
+  stage.querySelectorAll('tbody input:not([type=radio]):not([type=checkbox]), tbody select, tbody textarea').forEach(el => {
+    el.disabled = true;
+  });
+}
 
 function applyReadOnlyMode(stage) {
-  const role = currentSession?.role;
-  if (!READ_ONLY_ROLES.includes(role)) return;
+  if (_roObserver) { _roObserver.disconnect(); _roObserver = null; }
+  if (!esSoloLectura() || TABS_SIN_READONLY.includes(currentTab)) return;
 
-  // Banner
-  const banner = document.createElement('div');
-  banner.style.cssText = 'display:flex;align-items:center;gap:8px;padding:10px 16px;background:#fff8e1;border:1px solid #ffe082;border-radius:8px;margin-bottom:16px;font-size:13px;color:#5c3a00;font-weight:600';
-  banner.innerHTML = '<span class="material-symbols-outlined" style="font-size:18px;color:#f59e0b">visibility</span> Modo solo lectura — su perfil no tiene permisos de modificación.';
-  if (stage.firstChild) stage.insertBefore(banner, stage.firstChild);
-
-  // Deshabilitar inputs y selects (excepto de búsqueda)
-  stage.querySelectorAll('input:not([type=radio]):not([type=checkbox]), select, textarea').forEach(el => {
-    const isSearch = el.id?.includes('search') || el.placeholder?.toLowerCase().includes('buscar');
-    if (!isSearch) {
-      el.disabled = true;
-      el.style.opacity = '0.55';
-      el.style.cursor = 'not-allowed';
-    }
+  ocultarEscritura(stage);
+  let pend = false;
+  _roObserver = new MutationObserver(() => {
+    if (pend) return;
+    pend = true;
+    requestAnimationFrame(() => { pend = false; ocultarEscritura(stage); });
   });
+  _roObserver.observe(stage, { childList: true, subtree: true });
 
-  // Ocultar botones de escritura
-  stage.querySelectorAll('button').forEach(btn => {
-    // Excluir botones de búsqueda/navegación/logout/cerrar
-    const iconEl = btn.querySelector('.material-symbols-outlined');
-    const iconTxt = iconEl?.textContent?.trim() ?? '';
-    const btnTxt = btn.textContent?.trim().toLowerCase() ?? '';
-
-    const isWriteIcon = WRITE_ICONS.has(iconTxt);
-    const isWriteText = WRITE_WORDS.some(w => btnTxt.includes(w));
-    const isSearch    = btnTxt.includes('buscar') || btn.id?.includes('search');
-    const isClose     = iconTxt === 'close' || iconTxt === 'search';
-
-    if ((isWriteIcon || isWriteText) && !isSearch && !isClose) {
-      btn.style.display = 'none';
-    }
-  });
-
-  // Interceptar envíos de formulario
-  stage.querySelectorAll('form').forEach(form => {
-    form.addEventListener('submit', e => {
-      e.preventDefault();
-      e.stopImmediatePropagation();
-    }, true);
-  });
+  // Interceptar envíos de formulario dentro de la vista (un solo listener por stage)
+  if (stage._roSubmit) return;
+  stage._roSubmit = true;
+  stage.addEventListener('submit', e => {
+    if (!esSoloLectura() || TABS_SIN_READONLY.includes(currentTab)) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+  }, true);
 }
 
 // ==========================================================================
 // SHELL DEL DASHBOARD DE SIT EBEMA
 // ==========================================================================
 function renderDashboardShell() {
+  setSesionPermisos(currentSession?.role, currentSession?.centros);
   appRoot.innerHTML = `
     <!-- SideNavBar Anchor -->
     <nav class="flex flex-col h-full py-lg px-md h-full w-64 fixed left-0 top-0 border-r border-surface-variant bg-surface z-50">
@@ -1452,19 +1450,41 @@ function _stageSpinner(stage) {
   </div>`;
 }
 
+// Resuelve la clave de menú (grupo o ítem) de una vista y valida el acceso
+function vistaPermitida(tabName, subName) {
+  const simple = SIDEBAR_MENU.find(e => !e.group && e.tab === tabName);
+  if (simple) return puedeVerMenu(simple.tab);
+  const grupos = SIDEBAR_MENU.filter(e => e.group && e.children?.some(c => c.tab === tabName));
+  if (!grupos.length) return false;
+  // Coincidencia exacta tab+sub primero (p.ej. abastecimiento:proveedores vive en el grupo Proveedores)
+  const exacto = grupos.find(g => g.children.some(c => c.tab === tabName && c.sub === subName));
+  if (exacto) return puedeVerMenu(exacto.group, subName);
+  if (subName == null) return grupos.some(g => g.children.some(c => c.tab === tabName && puedeVerMenu(g.group, c.sub)));
+  return false;
+}
+function primeraVistaPermitida() {
+  for (const e of SIDEBAR_MENU) {
+    if (!e.group) { if (puedeVerMenu(e.tab)) return { tab: e.tab, sub: null }; continue; }
+    const c = e.children.find(ch => puedeVerMenu(e.group, ch.sub));
+    if (c) return { tab: c.tab, sub: c.sub };
+  }
+  return null;
+}
+
 async function switchTab(tabName, subName = null) {
-  // Verificar acceso al tab según rol
-  const _allowed = ROLE_ALLOWED_GROUPS[currentSession?.role];
-  if (_allowed) {
-    const _key = SIDEBAR_MENU.find(e => e.tab === tabName)?.tab
-              || SIDEBAR_MENU.find(e => e.group && e.children?.some(c => c.tab === tabName))?.group;
-    if (_key && !_allowed.includes(_key)) {
-      // Redirigir al primer tab permitido
-      const firstEntry = SIDEBAR_MENU.find(e => roleCanSeeEntry(e));
-      const fallbackTab = firstEntry?.tab || (firstEntry?.children?.[0]?.tab);
-      const fallbackSub = firstEntry?.children?.[0]?.sub || null;
-      if (fallbackTab && fallbackTab !== tabName) { switchTab(fallbackTab, fallbackSub); return; }
+  // Grupo sin pestaña explícita → primera pestaña permitida (sólo perfiles con menú restringido)
+  if (subName == null && !SIDEBAR_MENU.some(e => !e.group && e.tab === tabName) && !puedeVerMenu('__todo__')) {
+    for (const g of SIDEBAR_MENU.filter(e => e.group)) {
+      const c = g.children.find(ch => ch.tab === tabName && puedeVerMenu(g.group, ch.sub));
+      if (c) { subName = c.sub; break; }
     }
+  }
+  // Verificar acceso a la vista según perfil (permisos.js)
+  if (!vistaPermitida(tabName, subName)) {
+    const fb = primeraVistaPermitida();
+    if (fb && !(fb.tab === tabName && fb.sub === subName)) { switchTab(fb.tab, fb.sub); return; }
+    document.getElementById('stage-area').innerHTML = '';
+    return;
   }
   currentTab = tabName;
   currentSub = subName;
@@ -1506,7 +1526,7 @@ async function switchTab(tabName, subName = null) {
   switch (tabName) {
     case 'home': {
       pageTitle.textContent = 'Indicadores';
-      const m = await loadMod('ind', './indicadores.js?v=202609242352');
+      const m = await loadMod('ind', './indicadores.js?v=202609251928');
       m.renderIndicadoresHome(stage);
       break;
     }
@@ -1519,28 +1539,28 @@ async function switchTab(tabName, subName = null) {
     }
     case 'transports': {
       pageTitle.textContent = 'Proveedores' + subLabel;
-      const m = await loadMod('trans', './transports.js?v=202609242352');
+      const m = await loadMod('trans', './transports.js?v=202609251928');
       m.renderTransportsView(stage);
       break;
     }
     case 'routes': {
       await loadRoutesData();
       pageTitle.textContent = 'Rutas de Transporte' + subLabel;
-      const m = await loadMod('routes', './routes.js?v=202609242352');
+      const m = await loadMod('routes', './routes.js?v=202609251928');
       if (alias) m.setRoutesSubTab(alias);
       m.renderRoutesView(stage);
       break;
     }
     case 'roles': {
       pageTitle.textContent = 'Roles y Perfiles';
-      const m = await loadMod('roles', './roles.js?v=202609242352');
+      const m = await loadMod('roles', './roles.js?v=202609251928');
       m.renderRolesView(stage);
       break;
     }
     case 'tarifas-transporte': {
       await loadRoutesData();
       pageTitle.textContent = 'Tarifas Transporte' + subLabel;
-      const m = await loadMod('tt', './tarifas-transporte.js?v=202609242352');
+      const m = await loadMod('tt', './tarifas-transporte.js?v=202609251928');
       if (alias) m.setActiveSub(alias);
       m.renderTariffTransportView(stage);
       break;
@@ -1548,7 +1568,7 @@ async function switchTab(tabName, subName = null) {
     case 'tarifas-clientes': {
       await loadRoutesData();
       pageTitle.textContent = 'Tarifas Clientes' + subLabel;
-      const m = await loadMod('tc', './tarifas-clientes.js?v=202609242352');
+      const m = await loadMod('tc', './tarifas-clientes.js?v=202609251928');
       if (alias) m.setActiveSubC(alias);
       m.renderClientTariffView(stage);
       break;
@@ -1556,14 +1576,14 @@ async function switchTab(tabName, subName = null) {
     case 'abastecimiento': {
       await loadRoutesData();
       pageTitle.textContent = 'Gestión Troncales' + subLabel;
-      const m = await loadMod('abast', './abastecimiento.js?v=202609242352');
+      const m = await loadMod('abast', './abastecimiento.js?v=202609251928');
       if (subName) m.setAbastSubTab(subName);
       m.renderAbastecimientoView(stage);
       break;
     }
     case 'indicadores': {
       pageTitle.textContent = 'Indicadores';
-      const m = await loadMod('ind', './indicadores.js?v=202609242352');
+      const m = await loadMod('ind', './indicadores.js?v=202609251928');
       if (subName) m.setIndicadoresSubTab(subName);
       m.renderIndicadoresView(stage);
       break;
@@ -1571,7 +1591,7 @@ async function switchTab(tabName, subName = null) {
     case 'flete-tercero': {
       await loadRoutesData();
       pageTitle.textContent = 'Flete Tercero' + subLabel;
-      const m = await loadMod('fter', './flete-tercero.js?v=202609242352');
+      const m = await loadMod('fter', './flete-tercero.js?v=202609251928');
       if (subName) m.setFleteTerceroSubTab(subName);
       m.renderFleteTerceroView(stage);
       break;

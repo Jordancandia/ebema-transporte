@@ -1,6 +1,7 @@
-import { getDatabase, saveDatabase, getCentreName } from './data.js?v=202609242352';
+import { getDatabase, saveDatabase, getCentreName } from './data.js?v=202609251928';
 import { showAlert, escapeHtml } from './utils.js';
-import { supabase } from './supabase-client.js?v=202609242352';
+import { supabase } from './supabase-client.js?v=202609251928';
+import { ROLES_CON_CENTROS } from './permisos.js?v=202609251928';
 
 // --- Perfiles de Acceso (Roles y Perfiles + Row Level Security) ---
 // 5 perfiles canónicos. Cada uno determina qué puede ver/editar el usuario
@@ -8,6 +9,8 @@ import { supabase } from './supabase-client.js?v=202609242352';
 // usando el rol y, cuando corresponde, el centro/transportista asociado.
 const ROLE_CONFIG = {
   'OWNER':                  { bg: '#ffdad5', text: '#93000a', border: '#ffb4aa', icon: 'workspace_premium', label: 'Owner' },
+  'PLANNER_OPERACIONES':    { bg: '#ede7f6', text: '#4527a0', border: '#b39ddb', icon: 'monitoring',         label: 'Planner Operaciones' },
+  'PLANNER_ABASTECIMIENTO': { bg: '#e0f2f1', text: '#00695c', border: '#80cbc4', icon: 'inventory_2',        label: 'Planner Abastecimiento' },
   'ADMINISTRADOR_DEPOSITO': { bg: '#e3f2fd', text: '#0d47a1', border: '#90caf9', icon: 'warehouse',          label: 'Admin. Depósito' },
   'AGENTE_COMERCIAL':       { bg: '#e8f5e9', text: '#1b5e20', border: '#a5d6a7', icon: 'request_quote',      label: 'Agente' },
   'TRANSPORTISTA':          { bg: '#fff3e0', text: '#e65100', border: '#ffcc80', icon: 'local_shipping',    label: 'Transportista' },
@@ -17,9 +20,11 @@ const ROLE_CONFIG = {
 // Descripciones de cada perfil (se muestran al seleccionar el rol en el modal)
 // Ajuste 2026-09-17: alcance de vistas de Admin. Depósito y Agente redefinido.
 const ROLE_DESCRIPTIONS = {
-  'OWNER': 'Ve y edita cualquier campo de la plataforma: todos los centros, planes, rutas, tarifas de transporte y clientes.',
-  'ADMINISTRADOR_DEPOSITO': 'Solo visualización y descarga: Home, Indicadores, Gestión Troncales, Rutas de Transporte y Proveedores. Sin permisos de modificación ni de invitar usuarios.',
-  'AGENTE_COMERCIAL': 'Solo visualización: Cotizador Despacho, Rutas de Transporte y Gestión Troncales. Sin permisos de modificación ni de invitar usuarios.',
+  'OWNER': 'Administrador del sistema: ve todas las vistas y centros, edita, elimina, descarga bases de datos e invita usuarios asignando perfiles.',
+  'PLANNER_OPERACIONES': 'Solo visualización de todas las vistas y centros, excepto Cotizador Despacho, Tarifas Transporte, Tarifas Clientes y Roles.',
+  'PLANNER_ABASTECIMIENTO': 'Proveedores y Gestión Troncales de sus centros asignados, con edición, descarga y exclusión de líneas del Plan de Carga.',
+  'ADMINISTRADOR_DEPOSITO': 'Solo visualización de sus centros asignados: Home, Cotizador, Proveedores, Rutas, Gestión Troncales (con descarga del Plan de Carga), Indicadores y Flete Tercero.',
+  'AGENTE_COMERCIAL': 'Perfil comercial. Solo visualización de sus centros asignados: Cotizador Despacho, Rutas de Transporte y Gestión Troncales (con descarga del Plan de Carga).',
   'TRANSPORTISTA': 'Ve el estado de sus camiones, cuenta bancaria asociada, transportes y choferes. Edita solo lo que está en su perfil.',
   'CHOFER': 'Ve el estado de su camión asignado, datos del transporte y sus datos personales (nombre, RUT, correo, teléfono, licencia y carnet).'
 };
@@ -242,6 +247,22 @@ export function renderRolesView(container) {
             <p style="font-size:11px;color:#5c5f61;margin-top:6px;line-height:1.4">Puede elegir uno, varios o todos los centros. Se usa solo para dirigir los correos de notificación de este usuario — no limita los datos que puede ver.</p>
           </div>
 
+          <div id="field-centros-asig" style="display:none">
+            <label style="display:block;font-size:11px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#5c5f61;margin-bottom:6px">Centros Asignados</label>
+            <div style="display:flex;gap:8px;margin-bottom:6px">
+              <button type="button" id="asig-todos" style="font-size:11px;font-weight:700;color:#b5000b;background:none;border:none;cursor:pointer;padding:0">Marcar todos</button>
+              <button type="button" id="asig-ninguno" style="font-size:11px;font-weight:700;color:#5c5f61;background:none;border:none;cursor:pointer;padding:0">Limpiar</button>
+            </div>
+            <div id="modal-user-asig-list" style="max-height:160px;overflow-y:auto;border:1.5px solid #e1e3e4;border-radius:8px;padding:8px 10px;display:flex;flex-direction:column;gap:6px">
+              ${(db.logisticsCentres || []).map(cd => `
+                <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+                  <input type="checkbox" class="modal-user-asig-item" value="${cd.id}" style="width:15px;height:15px;accent-color:#b5000b" />
+                  <span style="font-size:13px;color:#191c1d">${cd.nombre} (${cd.id})</span>
+                </label>`).join('')}
+            </div>
+            <p style="font-size:11px;color:#5c5f61;margin-top:6px;line-height:1.4">El usuario solo verá información de estos centros (centro destino).</p>
+          </div>
+
           <div id="field-transportista" style="display:none">
             <label style="display:block;font-size:11px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#5c5f61;margin-bottom:6px">Transportista Asociado</label>
             <div style="position:relative">
@@ -312,6 +333,7 @@ export function renderRolesView(container) {
   // Selector de roles visual
   setupRoleSelector();
   setupCentroSelector();
+  setupAsignadosSelector();
 
   // Submit del modal
   document.getElementById('modal-user-form').addEventListener('submit', (e) => {
@@ -351,6 +373,19 @@ function setupCentroSelector() {
   });
 }
 
+// Centros asignados (restricción de datos por centro)
+function getCentrosAsignados() {
+  return Array.from(document.querySelectorAll('.modal-user-asig-item:checked')).map(c => c.value);
+}
+function setCentrosAsignados(centros) {
+  const sel = Array.isArray(centros) ? centros.map(String) : [];
+  document.querySelectorAll('.modal-user-asig-item').forEach(c => { c.checked = sel.includes(c.value); });
+}
+function setupAsignadosSelector() {
+  document.getElementById('asig-todos')?.addEventListener('click', () => document.querySelectorAll('.modal-user-asig-item').forEach(c => { c.checked = true; }));
+  document.getElementById('asig-ninguno')?.addEventListener('click', () => document.querySelectorAll('.modal-user-asig-item').forEach(c => { c.checked = false; }));
+}
+
 // Lee la selección de centros del modal: null = Todos, array = centros puntuales
 function getSelectedCentros() {
   const todosChk = document.getElementById('modal-user-centro-todos');
@@ -383,6 +418,8 @@ function updateRoleFields(role) {
   const fieldCentro = document.getElementById('field-centro');
   const fieldTransportista = document.getElementById('field-transportista');
   if (fieldCentro) fieldCentro.style.display = CENTRO_ROLES.includes(role) ? 'block' : 'none';
+  const fieldAsig = document.getElementById('field-centros-asig');
+  if (fieldAsig) fieldAsig.style.display = ROLES_CON_CENTROS.includes(role) ? 'block' : 'none';
   if (fieldTransportista) fieldTransportista.style.display = TRANSPORTE_ROLES.includes(role) ? 'block' : 'none';
 }
 
@@ -403,6 +440,7 @@ function openModal(userIdx = null) {
   const transportistaSelect = document.getElementById('modal-user-transportista');
   if (transportistaSelect) transportistaSelect.value = '';
   setSelectedCentros(null); // por defecto: Todos los centros
+  setCentrosAsignados([]);
 
   let selectedRole = 'AGENTE_COMERCIAL';
 
@@ -422,6 +460,7 @@ function openModal(userIdx = null) {
     // Seleccionar rol actual (normalizado a los 5 perfiles canónicos)
     selectedRole = normalizeRole(user.role);
     setSelectedCentros(user.centrosPreferencia || null);
+    setCentrosAsignados(user.centrosAsignados || []);
     if (transportistaSelect && user.transportistaId) transportistaSelect.value = user.transportistaId;
   } else {
     // Modo creación
@@ -478,6 +517,11 @@ async function saveUser() {
     return showErr('Seleccione el Transportista Asociado para este perfil.');
   }
 
+  const centrosAsignados = ROLES_CON_CENTROS.includes(selectedRole) ? getCentrosAsignados() : [];
+  if (ROLES_CON_CENTROS.includes(selectedRole) && centrosAsignados.length === 0) {
+    return showErr('Asigne al menos un centro a este perfil.');
+  }
+
   // Limpiar asociaciones que no correspondan al perfil
   const finalCentrosPreferencia = CENTRO_ROLES.includes(selectedRole) ? centrosPreferencia : null;
   const finalTransportistaId = TRANSPORTE_ROLES.includes(selectedRole) ? transportistaId : null;
@@ -495,7 +539,7 @@ async function saveUser() {
     const { data, error } = await supabase.functions.invoke('invite-user', {
       body: {
         email, name, role: selectedRole,
-        centrosPreferencia: finalCentrosPreferencia, transportistaId: finalTransportistaId,
+        centrosPreferencia: finalCentrosPreferencia, centrosAsignados, transportistaId: finalTransportistaId,
         redirectTo: window.location.origin + window.location.pathname
       }
     });
@@ -507,7 +551,7 @@ async function saveUser() {
       return showErr((data && data.error) || error?.message || 'No se pudo enviar la invitación.');
     }
     // Reflejar en la tabla localmente (pendiente de activación)
-    db.users.push({ email, name, role: selectedRole, centrosPreferencia: finalCentrosPreferencia, transportistaId: finalTransportistaId, activo: true, lastAccess: 'Invitación enviada' });
+    db.users.push({ email, name, role: selectedRole, centrosPreferencia: finalCentrosPreferencia, centrosAsignados, transportistaId: finalTransportistaId, activo: true, lastAccess: 'Invitación enviada' });
     showAlert((data && (data.message || data.warning)) || `Invitación enviada a ${email}.`);
     closeModal();
     const container = document.getElementById('stage-area');
@@ -521,11 +565,12 @@ async function saveUser() {
     db.users[idx].name = name;
     db.users[idx].role = selectedRole;
     db.users[idx].centrosPreferencia = finalCentrosPreferencia;
+    db.users[idx].centrosAsignados = centrosAsignados;
     db.users[idx].transportistaId = finalTransportistaId;
     showAlert(`Perfil de ${name} actualizado.`);
   }
 
-  saveDatabase(db);
+  saveDatabase(db, { syncOnly: ['users'] });
   closeModal();
   const container = document.getElementById('stage-area');
   if (container) renderRolesView(container);
@@ -574,7 +619,12 @@ function renderUsersTable(usersList, viewContainer, isFiltered = false) {
 
     // Centro(s) de preferencia o transportista asociado (según el perfil)
     let asociadoTxt = '';
-    if (CENTRO_ROLES.includes(normRole)) {
+    if (ROLES_CON_CENTROS.includes(normRole)) {
+      const asig = user.centrosAsignados || [];
+      asociadoTxt = asig.length === 0 ? 'Sin centros asignados'
+        : asig.length === 1 ? (getCentreName(db, asig[0]) || asig[0])
+        : `${asig.length} centros asignados`;
+    } else if (CENTRO_ROLES.includes(normRole)) {
       const centros = user.centrosPreferencia;
       if (!centros || centros.length === 0) {
         asociadoTxt = 'Todos los centros';

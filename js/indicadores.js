@@ -4,7 +4,8 @@
 //  Lee en vivo las vistas v_ind_* de Supabase (RLS: usuario @ebema.cl con rol).
 //  Paleta alineada a las presentaciones (PPT) del Comité de Transporte.
 // ============================================================================
-import { supabase } from './supabase-client.js?v=202609242352';
+import { supabase } from './supabase-client.js?v=202609251928';
+import { centrosAlcance } from './permisos.js?v=202609251928';
 
 // --- Paleta PPT -------------------------------------------------------------
 const C = {
@@ -654,13 +655,20 @@ export async function renderIndicadoresHome(container){
   container.innerHTML = loadingHTML();
   try {
     const y='2026-01';
-    const [ns,tar,mar] = await Promise.all([
-      supabase.from('v_ind_ns_general_mes').select('*').gte('mes_label',y).order('mes_label'),
-      supabase.from('v_ind_tarifa_general_mes').select('*').gte('mes_label',y).order('mes_label'),
-      supabase.from('v_ind_margen_general_mes').select('*').gte('mes_label',y).order('mes_label')
-    ]);
-    const e=ns.error||tar.error||mar.error; if(e) throw e;
-    const D={ns:ns.data||[],tar:tar.data||[],mar:mar.data||[]};
+    let D;
+    if (centrosAlcance() !== null) {
+      // Perfil con centros asignados: la BD devuelve sólo sus grupos (RLS en v_ind_*_grupo_mes);
+      // se agregan por mes para armar el resumen de su(s) centro(s).
+      D = await homeDatosAlcance(y);
+    } else {
+      const [ns,tar,mar] = await Promise.all([
+        supabase.from('v_ind_ns_general_mes').select('*').gte('mes_label',y).order('mes_label'),
+        supabase.from('v_ind_tarifa_general_mes').select('*').gte('mes_label',y).order('mes_label'),
+        supabase.from('v_ind_margen_general_mes').select('*').gte('mes_label',y).order('mes_label')
+      ]);
+      const e=ns.error||tar.error||mar.error; if(e) throw e;
+      D={ns:ns.data||[],tar:tar.data||[],mar:mar.data||[]};
+    }
     const nsLast=D.ns[D.ns.length-1]||{}, tarLast=D.tar.length>1?D.tar[D.tar.length-2]:(D.tar[D.tar.length-1]||{}), marAcc=sum(D.mar.map(r=>r.margen))/1e6;
     container.innerHTML=`<div class="max-w-[1120px] mx-auto">
       <div class="text-headline-sm font-bold mb-1">Indicadores de Transporte</div>
@@ -675,6 +683,21 @@ export async function renderIndicadoresHome(container){
     barChart('h_tar',D.tar.map(r=>r.tarifa_kg),D.tar.map(r=>mesCorto(r.mes_label)),0,niceMax(D.tar.map(r=>r.tarifa_kg)),C.orange,' $/kg',D.tar.length-1,v=>'$'+Math.round(v));
     barChart('h_mar',D.mar.map(r=>r.margen/1e6),D.mar.map(r=>mesCorto(r.mes_label)),Math.min(-2,niceMin(D.mar.map(r=>r.margen/1e6))),2,C.red,' MM',D.mar.length-1,v=>'$'+Math.round(v));
   } catch(e){ container.innerHTML=errorHTML(e); }
+}
+// Resumen mensual agregado de los grupos visibles para el usuario (perfiles por centro)
+async function homeDatosAlcance(y){
+  const [ns,tar,mar] = await Promise.all([
+    supabase.from('v_ind_ns_grupo_mes').select('*').gte('mes_label',y),
+    supabase.from('v_ind_tarifa_grupo_mes').select('*').eq('segmento','TODOS').gte('mes_label',y),
+    supabase.from('v_ind_margen_grupo_mes').select('*').eq('segmento','TODOS').gte('mes_label',y)
+  ]);
+  const e=ns.error||tar.error||mar.error; if(e) throw e;
+  const porMes=(rows,fn)=>{ const m={}; (rows||[]).forEach(r=>{ (m[r.mes_label]=m[r.mes_label]||[]).push(r); }); return Object.keys(m).sort().map(k=>fn(k,m[k])); };
+  return {
+    ns: porMes(ns.data,(k,rs)=>({ mes_label:k, otif_pct:wavg(rs.map(r=>[r.otif_pct,r.lineas])), fillrate_pct:wavg(rs.map(r=>[r.fillrate_pct,r.lineas])), lineas_evaluadas:sum(rs.map(r=>r.lineas)) })),
+    tar: porMes(tar.data,(k,rs)=>({ mes_label:k, toneladas:sum(rs.map(r=>r.toneladas)), tarifa_kg:wavg(rs.map(r=>[r.tarifa_kg,r.toneladas])) })),
+    mar: porMes(mar.data,(k,rs)=>({ mes_label:k, cobrado:sum(rs.map(r=>r.cobrado)), pagado:sum(rs.map(r=>r.pagado)), margen:sum(rs.map(r=>r.margen)) }))
+  };
 }
 function homeCard(titulo,valor,sub,chartId,neg){
   return `<section class="bg-surface-container-lowest border border-surface-variant rounded-xl p-md">

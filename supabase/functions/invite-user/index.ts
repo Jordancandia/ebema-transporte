@@ -14,6 +14,7 @@ const CORS_HEADERS = {
 const ROLES_PERMITIDOS_INVITAR = ["OWNER", "ADMIN"];
 const ROLES_VALIDOS_FUNCIONARIO = [
   "OWNER", "ADMIN", "ADMINISTRADOR_DEPOSITO", "AGENTE_COMERCIAL",
+  "PLANNER_ABASTECIMIENTO", "PLANNER_OPERACIONES",
 ];
 
 serve(async (req: Request) => {
@@ -58,11 +59,13 @@ serve(async (req: Request) => {
     // centrosPreferencia: null/undefined = Todos los centros; array = centros puntuales
     // (Admin. Depósito). Solo define a qué centros se dirigen sus correos de
     // notificación — no filtra los datos que ve (RLS no depende de esto).
-    const { email, name, role, centrosPreferencia } = await req.json() as {
+    // centrosAsignados: centros cuyos datos puede ver el usuario (RLS vía app_centros()).
+    const { email, name, role, centrosPreferencia, centrosAsignados } = await req.json() as {
       email:    string;
       name:     string;
       role:     string;
       centrosPreferencia?: string[] | null;
+      centrosAsignados?: string[] | null;
     };
 
     if (!email || !name || !role) {
@@ -121,6 +124,7 @@ serve(async (req: Request) => {
           role,
           activo:   true,
           centrosPreferencia: centrosPreferencia ?? null,
+          centrosAsignados: Array.isArray(centrosAsignados) ? centrosAsignados : [],
           lastAccess: null,
         },
         { onConflict: "email" }

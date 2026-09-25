@@ -1,7 +1,7 @@
-import { getDatabase, saveDatabase, calcEjes, getOrigenGroups } from './data.js?v=202609242352';
+import { getDatabase, saveDatabase, calcEjes, getOrigenGroups } from './data.js?v=202609251928';
 import { formatRut, validateRut, generateSapCode, parseCSV, showAlert, escapeHtml } from './utils.js';
-import { renderFichaTransporte } from './ficha-transporte.js?v=202609242352';
-import { abrirModalTroncal } from './troncales.js?v=202609242352';
+import { renderFichaTransporte } from './ficha-transporte.js?v=202609251928';
+import { abrirModalTroncal } from './troncales.js?v=202609251928';
 
 let editingTransportId = null;
 let filtroTipo = ''; // '' | 'ultima_milla' | 'troncal'
@@ -373,7 +373,7 @@ export function renderTransportsView(container) {
         documentos: {},
         centrosServicio: []
       });
-      saveDatabase(db2);
+      saveDatabase(db2, { syncOnly: ['transports', 'transportsCamiones', 'transportsChoferes'] });
       showAlert(`Proveedor Última Milla "${razonSocial}" creado. Agrega patentes y choferes desde Editar.`);
     } else {
       db2.troncales = db2.troncales || [];
@@ -387,7 +387,7 @@ export function renderTransportsView(container) {
         rutasCobertura: [],
         centrosServicio: []
       });
-      saveDatabase(db2);
+      saveDatabase(db2, { syncOnly: ['transports', 'transportsCamiones', 'transportsChoferes'] });
       showAlert(`Proveedor Troncal "${razonSocial}" creado. Agrega patentes, choferes y rutas desde Editar.`);
     }
 
@@ -415,7 +415,7 @@ export function renderTransportsView(container) {
       email:       container.querySelector('#t-email').value,
       ownerEmail:  container.querySelector('#t-email').value.trim().toLowerCase(),
     };
-    saveDatabase(db2);
+    saveDatabase(db2, { syncOnly: ['transports', 'transportsCamiones', 'transportsChoferes'] });
     showAlert('Proveedor actualizado correctamente.');
     closeEdit();
     renderTransportsView(container);
@@ -485,7 +485,7 @@ export function renderTransportsView(container) {
       t.codigoSap = generateSapCode('TRSP', db2.transports, 'codigoSap');
       db2.transports.push(t);
     });
-    saveDatabase(db2);
+    saveDatabase(db2, { syncOnly: ['transports', 'transportsCamiones', 'transportsChoferes'] });
     showAlert(`${parsedTransports.length} proveedores importados.`);
     closeBulk();
     renderTransportsView(container);
@@ -618,7 +618,7 @@ function renderProveedoresTable(db, tipoFiltro, textoBusqueda) {
       const item = (arr||[]).find(x => x.id === id);
       if (!item) return;
       item.activo = item.activo === false ? true : false;
-      saveDatabase(db2);
+      saveDatabase(db2, { syncOnly: ['transports', 'transportsCamiones', 'transportsChoferes'] });
       showAlert(`${item.razonSocial} ${item.activo ? 'activado' : 'dado de baja'}.`);
       renderTransportsView(document.getElementById('stage-area'));
     });
