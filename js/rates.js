@@ -3,12 +3,12 @@
 // Última milla, con reglas de minimización A/B/C. El cálculo vive en
 // cotizador-engine.js y usa las tarifas de la vista Tarifas Clientes
 // (ZCAP, ZFMI, ZFMP y Tarifa Express por ruta y tipo de camión).
-import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig } from './data.js?v=202609271622';
+import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig } from './data.js?v=202609271820';
 import {
   buildCotizadorContext, cotizar, cdsDeComuna, normComuna,
   getRetiroTroncalTarifas, RETIRO_TRONCAL_DEFAULT, TRUCK_ORDER, HUB_GRUPO, FLUJOS
-} from './cotizador-engine.js?v=202609271622';
-import { getRol } from './permisos.js?v=202609271622';
+} from './cotizador-engine.js?v=202609271820';
+import { getRol } from './permisos.js?v=202609271820';
 import { formatCLP, showAlert, escapeHtml, loadLeaflet } from './utils.js';
 
 // --- Historial de cotizaciones recientes por perfil (localStorage) ---
@@ -656,7 +656,7 @@ export function renderRatesView(container) {
       </div>`).join('');
     el.total.textContent = formatCLP(res.total);
 
-    el.decisiones.innerHTML = res.decisiones.length ? `
+    el.decisiones.innerHTML = /* Panel 'Alternativas evaluadas' oculto (27-sep-2026) */ false && res.decisiones.length ? `
       <div class="border border-outline-variant rounded p-sm bg-surface-container-lowest">
         <div class="flex justify-between items-center mb-xs">
           <p class="font-label-caps text-label-caps text-secondary">ALTERNATIVAS EVALUADAS</p>
