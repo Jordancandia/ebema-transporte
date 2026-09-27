@@ -14,8 +14,8 @@
 // ZFMP = ZCAP ÷ kilos a consolidar, ZFMI = ZCAP camión mínimo ÷ pedidos promedio
 // del cluster, Tarifa Express = ZCAP × (1 + recargo exclusividad del centro).
 // ---------------------------------------------------------------------------
-import { getOrigenGroups, truckCapKg } from './data.js?v=202609271516';
-import { buildZcapMap } from './zcap.js?v=202609271516';
+import { getOrigenGroups, truckCapKg } from './data.js?v=202609271520';
+import { buildZcapMap } from './zcap.js?v=202609271520';
 
 export const TRUCK_ORDER = ['Camión 5 Ton', 'Camión 10 Ton', 'Camión 15 Ton', 'Camión 28 Ton'];
 export const TRUCK_TRONCAL = 'Camión 28 Ton';
@@ -233,8 +233,7 @@ const fmtKgRate = n => '$' + (Math.round(n * 100) / 100).toLocaleString('es-CL')
 // ── Precio tramo local CONSOLIDADO (retiro o última milla) ─────────────────
 // Precio = MAX(ZFMI, MIN(kilos × ZFMP camión, ZCAP camión))
 //   · Camión según kilos (5/10/15/28). Sobre 28 t: kilos × ZFMP 28T sin tope.
-//   · Piso monotónico: si los kilos superan un camión menor completo, el precio
-//     no baja del ZCAP de ese camión (evita que agregar kilos abarate el flete).
+//   · El camión se define sólo por los kilos (menor capacidad ≥ kilos).
 export function precioLocalConsolidado(entry, kilos) {
   if (!entry) return null;
   const trucks = TRUCK_ORDER.map(t => entry.trucks[t]).filter(t => t && t.zcap > 0 && t.zfmp);
@@ -254,12 +253,6 @@ export function precioLocalConsolidado(entry, kilos) {
   } else {
     precio = bruto;
     regla = `${fmtKg(kilos)} × ZFMP ${fmtKgRate(t.zfmp)} (${t.type})`;
-  }
-  const i = trucks.indexOf(t);
-  const prev = i > 0 ? trucks[i - 1] : null;
-  if (!sobre28 && prev && kilos > prev.cap && precio < prev.zcap) {
-    precio = prev.zcap;
-    regla = `Piso ZCAP ${prev.type} completo (kilos superan su capacidad)`;
   }
   const zfmi = entry.zfmi || 0;
   if (precio < zfmi) {
