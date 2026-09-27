@@ -1,7 +1,7 @@
 // Capa de datos de SIT EBEMA
 // Fuente principal: Supabase (PostgreSQL compartido, protegido con RLS).
 // localStorage se mantiene como copia local de respaldo (modo sin conexión).
-import { supabase } from './supabase-client.js?v=202609271942';
+import { supabase } from './supabase-client.js?v=202609271857';
 
 const STORAGE_KEY = 'ebema_transporte_db';
 
@@ -275,78 +275,6 @@ let memoryDb = null;
 // (PostgREST limita cada respuesta a un máximo de filas, por defecto 1000;
 // sin esto, tablas grandes como "routes" se truncarían silenciosamente).
 const PAGE_SIZE = 1000;
-// ── Histórico Tarifas desde FLETE 360 (vista v_hist_tarifas, 6 meses móviles) ──
-// Reemplaza la carga manual de CSV: una fila por documento de transporte × entrega × ruta,
-// centro = ID Expedición, toneladas = Σ Peso (Kg) / 1000. Se carga bajo demanda al abrir
-// Tarifas Transporte / Tarifas Clientes y queda cacheado en la sesión.
-let _histF360Loaded  = false;
-let _histF360Loading = null;
-export async function loadHistoricoFlete360(force = false) {
-  const getCcfg = () => {
-    if (!memoryDb) return null;
-    if (!memoryDb.clientTariffConfig || !memoryDb.clientTariffConfig.length) {
-      memoryDb.clientTariffConfig = [{ id: 'global', data: defaultClientTariffConfig() }];
-    }
-    return memoryDb.clientTariffConfig[0].data || (memoryDb.clientTariffConfig[0].data = defaultClientTariffConfig());
-  };
-  if (_histF360Loaded && !force) return getCcfg()?.historico || [];
-  if (_histF360Loading && !force) return _histF360Loading;
-  _histF360Loading = (async () => {
-    try {
-      let from = 0, all = [];
-      while (true) {
-        const { data, error } = await supabase
-          .from('v_hist_tarifas')
-          .select('fecha,centro_expedicion,documento,entrega,id_ruta,gasto,hes,id_cliente,id_obra,id_transportista,transportista,cap_camion,ton')
-          .order('documento', { ascending: true })
-          .order('entrega',   { ascending: true })
-          .order('id_ruta',   { ascending: true })
-          .range(from, from + PAGE_SIZE - 1);
-        if (error) throw error;
-        all = all.concat(data || []);
-        if (!data || data.length < PAGE_SIZE) break;
-        from += PAGE_SIZE;
-      }
-      const rows = all.map(r => ({
-        fecha:           r.fecha || '',
-        oficina:         String(r.centro_expedicion || ''),
-        documento:       String(r.documento || ''),
-        gasto:           Number(r.gasto) || 0,
-        hes:             r.hes || '',
-        idCliente:       r.id_cliente || '',
-        idObra:          r.id_obra || '',
-        transportista:   r.transportista || '',
-        capTons:         Number(r.cap_camion) || 0,
-        entrega:         r.entrega || '',
-        idRuta:          r.id_ruta || '',
-        idTransportista: r.id_transportista || '',
-        ton:             Number(r.ton) || 0
-      })).filter(r => r.documento && r.idRuta);
-      const ccfg = getCcfg();
-      if (ccfg && rows.length) {
-        const d = new Date(); const pad = n => String(n).padStart(2, '0');
-        const fechas = rows.map(r => r.fecha).filter(Boolean).sort();
-        ccfg.historico = rows;
-        ccfg.histMeta = {
-          fileName: 'FLETE 360 — 6 meses móviles',
-          fuente: 'flete360',
-          rowCount: rows.length,
-          desde: fechas[0] || '', hasta: fechas[fechas.length - 1] || '',
-          uploadDate: `${pad(d.getDate())}-${pad(d.getMonth() + 1)}-${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`
-        };
-      }
-      _histF360Loaded = rows.length > 0;
-      return rows;
-    } catch (e) {
-      console.warn('No se pudo cargar histórico FLETE 360 (v_hist_tarifas):', e.message || e);
-      return [];
-    } finally {
-      _histF360Loading = null;
-    }
-  })();
-  return _histF360Loading;
-}
-
 async function fetchAllRows(table) {
   let from = 0;
   let all = [];
@@ -368,8 +296,6 @@ export async function initDatabase() {
   // Resetear estado diferido en cada login (permite recarga tras cerrar sesión)
   _routesLoaded  = false;
   _routesLoading = null;
-  _histF360Loaded  = false;
-  _histF360Loading = null;
   try {
     const results = await Promise.all(
       TABLE_MAP.map(t => fetchAllRows(t.table))

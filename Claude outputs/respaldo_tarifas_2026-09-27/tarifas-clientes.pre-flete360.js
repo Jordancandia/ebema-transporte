@@ -1,10 +1,10 @@
 // MÓDULO: Administrador de Tarifas Clientes — SIT EBEMA v2.1
 // Vistas: Histórico (6M) | Consolidación | Densidad Logística | Frecuencia y Especiales | Cluster | Resultados
-import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig, saveHistorico, loadHistorico, saveHistoricoGlobal, getOrigenGroups, loadHistoricoFlete360 } from './data.js?v=202609271942';
-import { CAP_LIST, truckTypesWithCap, calcularCostoRuta } from './tarifas-engine.js?v=202609271942';
-import { buildZcapMap } from './zcap.js?v=202609271942';
+import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig, saveHistorico, loadHistorico, saveHistoricoGlobal, getOrigenGroups } from './data.js?v=202609271857';
+import { CAP_LIST, truckTypesWithCap, calcularCostoRuta } from './tarifas-engine.js?v=202609271857';
+import { buildZcapMap } from './zcap.js?v=202609271857';
 import { formatCLP, showAlert, toCSV, downloadFile, formatDateDDMMYYYY, escapeHtml } from './utils.js';
-import { supabase } from './supabase-client.js?v=202609271942';
+import { supabase } from './supabase-client.js?v=202609271857';
 
 // ─────────────────────────────────────────────────────────────
 // ESTADO DE MÓDULO
@@ -67,10 +67,7 @@ function allGroups() {
 // Calcula la relación Oficina SAP → origen_grupo a partir de las rutas del CSV
 function computeOficinaGrupos(db, rows) {
   const counts = {}; // { oficina: { grupo: count } }
-  // FLETE 360: la oficina es el ID Expedición (código de centro) → grupo directo del centro.
-  const cdGrupo = new Map((db.logisticsCentres || []).map(c => [String(c.id), c.origen_grupo || String(c.id)]));
   rows.forEach(r => {
-    if (cdGrupo.has(String(r.oficina))) return;
     const route = findRoute(db, r.idRuta);
     const grupo  = route?.origen_grupo;
     if (!grupo) return;
@@ -81,7 +78,6 @@ function computeOficinaGrupos(db, rows) {
   Object.entries(counts).forEach(([oficina, grupoCounts]) => {
     result[oficina] = Object.entries(grupoCounts).sort((a, b) => b[1] - a[1])[0][0];
   });
-  rows.forEach(r => { const g = cdGrupo.get(String(r.oficina)); if (g) result[r.oficina] = g; });
   // Fallback para oficinas sin rutas en db
   rows.forEach(r => {
     if (!result[r.oficina]) result[r.oficina] = `Centro ${r.oficina}`;
@@ -316,23 +312,6 @@ function renderHistorico(content, db, ccfg) {
   }
 
   const grupos = allGroups();
-  // Resumen por Centro de Expedición: documentos, entregas, toneladas, gasto, transportistas, rutas
-  const porCentro = new Map();
-  histData.forEach(r => {
-    const k = r.oficina || '—';
-    if (!porCentro.has(k)) porCentro.set(k, { docs: new Map(), entregas: new Set(), ton: 0, transp: new Set(), rutas: new Set(), caps: new Map() });
-    const e = porCentro.get(k);
-    if (!e.docs.has(r.documento)) { e.docs.set(r.documento, r.gasto); const cb = getCapBucket(r.capTons); e.caps.set(cb, (e.caps.get(cb) || 0) + 1); }
-    if (r.entrega) e.entregas.add(r.entrega);
-    e.ton += r.ton; if (r.transportista) e.transp.add(r.transportista); if (r.idRuta) e.rutas.add(r.idRuta);
-  });
-  const resumenCentro = [...porCentro.entries()].sort((a, b) => b[1].docs.size - a[1].docs.size).map(([c, e]) => {
-    const gasto = [...e.docs.values()].reduce((s, g) => s + g, 0);
-    return { centro: c, grupo: getCentroGroup(c), docs: e.docs.size, entregas: e.entregas.size, ton: e.ton, gasto,
-      entPorDoc: e.docs.size ? e.entregas.size / e.docs.size : 0, tonPorDoc: e.docs.size ? e.ton / e.docs.size : 0,
-      clp_kg: e.ton > 0 ? gasto / (e.ton * 1000) : 0, transp: e.transp.size, rutas: e.rutas.size,
-      caps: [5, 10, 15, 28].map(b => `${b}T:${e.caps.get(b) || 0}`).join(' · ') };
-  });
   let rows = histData;
   if (histFilterGrupo  !== 'all') rows = rows.filter(r => getCentroGroup(r.oficina) === histFilterGrupo);
   if (histFilterEstado === 'pagado')    rows = rows.filter(r => r.hes !== '');
@@ -351,15 +330,14 @@ function renderHistorico(content, db, ccfg) {
         ${hasData ? `<button id="hist-clear" class="border border-red-200 hover:bg-red-50 text-red-700 px-md py-sm rounded text-xs font-bold uppercase flex items-center gap-xs"><span class="material-symbols-outlined text-[16px]">delete</span> Vaciar</button>` : ''}
       </div>
 
-      <div class="flex items-center gap-md bg-surface-container-low border border-outline-variant p-md rounded mb-md flex-wrap">
-        <span class="material-symbols-outlined text-secondary">cloud_sync</span>
-        <div class="flex-1 min-w-[260px]">
-          <p class="font-body-md font-bold text-on-surface">Fuente: FLETE 360 (ind_flete_pagado) — ventana móvil de 6 meses</p>
-          <p class="text-[11px] text-secondary">Se actualiza automáticamente con la carga diaria de Indicadores (08:00). Grano: documento de transporte × entrega × ruta; centro = ID Expedición; toneladas = Σ Peso (Kg).</p>
-          ${ccfg.histMeta.uploadDate ? `<p class="text-[11px] text-primary mt-xs"><b>${escapeHtml(ccfg.histMeta.fileName || '')}</b> — ${Number(ccfg.histMeta.rowCount || 0).toLocaleString()} filas${ccfg.histMeta.desde ? ` · ${ccfg.histMeta.desde} a ${ccfg.histMeta.hasta}` : ''} · leído ${ccfg.histMeta.uploadDate}</p>` : ''}
+      <div class="flex items-center gap-md bg-surface-container-low border border-outline-variant p-md rounded mb-md">
+        <span class="material-symbols-outlined text-secondary">upload_file</span>
+        <div class="flex-1">
+          <p class="font-body-md font-bold text-on-surface">Cargar CSV de despachos históricos</p>
+          <p class="text-[11px] text-secondary">Columnas: Fecha Transporte; Oficina Entrega; Documento Transporte; Gasto Transporte; HES; ID Cliente; ID Obra; Transportista; Cap. Camión; Entrega; ID Ruta; ID Transportista; Ton</p>
+          ${ccfg.histMeta.uploadDate ? `<p class="text-[11px] text-primary mt-xs">Cargado: <b>${ccfg.histMeta.fileName}</b> — ${ccfg.histMeta.rowCount.toLocaleString()} filas el ${ccfg.histMeta.uploadDate}</p>` : ''}
         </div>
-        <button id="hist-f360" class="bg-primary hover:bg-[#930007] text-white font-bold px-md py-sm rounded text-[11px] uppercase flex items-center gap-xs"><span class="material-symbols-outlined text-[16px]">refresh</span> Actualizar desde FLETE 360</button>
-        <label class="text-[11px] text-secondary cursor-pointer underline" title="Respaldo manual: solo si FLETE 360 no está disponible">CSV manual<input type="file" id="hist-csv" accept=".csv" class="hidden"></label>
+        <input type="file" id="hist-csv" accept=".csv" class="text-[12px]">
       </div>
 
       ${hasData && summary ? `
@@ -369,41 +347,6 @@ function renderHistorico(content, db, ccfg) {
         ${statCard('Toneladas',    summary.totalTon.toFixed(1) + ' T',           'scale')}
         ${statCard('Gasto Total',  formatCLP(summary.totalGasto),                'payments')}
         ${statCard('HES Pendiente',summary.pendDocs.toLocaleString() + ' desp.', 'pending', summary.pendDocs > 0 ? 'text-amber-600' : 'text-green-600')}
-      </div>
-
-      <div class="bg-surface border border-outline-variant rounded overflow-x-auto mb-md">
-        <table class="w-full border-collapse text-[12px]">
-          <thead><tr class="bg-surface-container-high border-b border-outline-variant text-left">
-            <th class="p-sm font-label-caps text-secondary uppercase">Centro Exp.</th>
-            <th class="p-sm font-label-caps text-secondary uppercase">Centro Origen</th>
-            <th class="p-sm font-label-caps text-secondary uppercase text-right">Doc. Transp.</th>
-            <th class="p-sm font-label-caps text-secondary uppercase text-right">Entregas</th>
-            <th class="p-sm font-label-caps text-secondary uppercase text-right">Ent./Doc.</th>
-            <th class="p-sm font-label-caps text-secondary uppercase text-right">Toneladas</th>
-            <th class="p-sm font-label-caps text-secondary uppercase text-right">Ton/Doc.</th>
-            <th class="p-sm font-label-caps text-secondary uppercase text-right">Gasto</th>
-            <th class="p-sm font-label-caps text-secondary uppercase text-right">$/Kg</th>
-            <th class="p-sm font-label-caps text-secondary uppercase text-right">Transp.</th>
-            <th class="p-sm font-label-caps text-secondary uppercase text-right">Rutas</th>
-            <th class="p-sm font-label-caps text-secondary uppercase">Docs por camión</th>
-          </tr></thead>
-          <tbody class="divide-y divide-outline-variant">
-            ${resumenCentro.map(c => `<tr>
-              <td class="p-sm font-data-mono font-bold">${escapeHtml(c.centro)}</td>
-              <td class="p-sm text-[11px]">${escapeHtml(c.grupo)}</td>
-              <td class="p-sm text-right font-data-mono">${c.docs.toLocaleString('es-CL')}</td>
-              <td class="p-sm text-right font-data-mono">${c.entregas.toLocaleString('es-CL')}</td>
-              <td class="p-sm text-right font-data-mono">${c.entPorDoc.toFixed(1)}</td>
-              <td class="p-sm text-right font-data-mono">${c.ton.toLocaleString('es-CL', { maximumFractionDigits: 0 })}</td>
-              <td class="p-sm text-right font-data-mono">${c.tonPorDoc.toFixed(1)}</td>
-              <td class="p-sm text-right font-data-mono">${formatCLP(c.gasto)}</td>
-              <td class="p-sm text-right font-data-mono">${c.clp_kg.toFixed(1)}</td>
-              <td class="p-sm text-right font-data-mono">${c.transp}</td>
-              <td class="p-sm text-right font-data-mono">${c.rutas}</td>
-              <td class="p-sm text-[10px] text-secondary font-data-mono whitespace-nowrap">${c.caps}</td>
-            </tr>`).join('')}
-          </tbody>
-        </table>
       </div>
 
       <div class="flex items-center gap-sm flex-wrap mb-md">
@@ -428,8 +371,6 @@ function renderHistorico(content, db, ccfg) {
             <tr class="bg-surface-container-high border-b border-outline-variant text-left">
               <th class="p-sm font-label-caps text-secondary uppercase">Fecha</th>
               <th class="p-sm font-label-caps text-secondary uppercase">Centro</th>
-              <th class="p-sm font-label-caps text-secondary uppercase">Doc. Transp.</th>
-              <th class="p-sm font-label-caps text-secondary uppercase">Entrega</th>
               <th class="p-sm font-label-caps text-secondary uppercase">Ruta</th>
               <th class="p-sm font-label-caps text-secondary uppercase">Transportista</th>
               <th class="p-sm font-label-caps text-secondary uppercase text-right">Cap.</th>
@@ -443,8 +384,6 @@ function renderHistorico(content, db, ccfg) {
               <tr class="hover:bg-surface-container-low">
                 <td class="p-sm font-data-mono text-[11px]">${r.fecha}</td>
                 <td class="p-sm font-bold text-[11px]">${getCentroGroup(r.oficina)}</td>
-                <td class="p-sm font-data-mono text-[11px]">${escapeHtml(r.documento)}</td>
-                <td class="p-sm font-data-mono text-[11px]">${escapeHtml(r.entrega || '')}</td>
                 <td class="p-sm font-bold">${r.idRuta}</td>
                 <td class="p-sm text-secondary truncate max-w-[150px]" title="${r.transportista}">${r.transportista.split(' ').slice(0, 2).join(' ')}</td>
                 <td class="p-sm text-right font-data-mono">${CAP_LABELS[getCapBucket(r.capTons)] || r.capTons + 'T'}</td>
@@ -499,16 +438,6 @@ function renderHistorico(content, db, ccfg) {
     saveDatabase(db);
     saveHistorico([]); // limpiar IndexedDB
     saveHistoricoGlobal([], {}); // limpiar también la copia compartida en Supabase
-    renderHistorico(content, db, ccfg);
-  });
-  document.getElementById('hist-f360')?.addEventListener('click', async (ev) => {
-    const btn = ev.currentTarget; btn.disabled = true; btn.textContent = 'Actualizando…';
-    const rows = await loadHistoricoFlete360(true);
-    if (!rows.length) { showAlert('No se pudo leer FLETE 360 (sin datos o sin permisos).', 'error'); renderHistorico(content, db, ccfg); return; }
-    histData = rows; histPage = 0; histFilterGrupo = 'all'; histFilterEstado = 'all';
-    oficinaToGrupo = computeOficinaGrupos(db, rows);
-    saveDatabase(db); // persiste histMeta (el detalle no se guarda en la config)
-    showAlert(`${rows.length.toLocaleString('es-CL')} filas leídas desde FLETE 360 (6 meses móviles).`);
     renderHistorico(content, db, ccfg);
   });
   document.getElementById('hist-fg')?.addEventListener('change', (e) => { histFilterGrupo  = e.target.value; histPage = 0; renderHistorico(content, db, ccfg); });

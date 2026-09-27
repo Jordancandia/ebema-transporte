@@ -1,12 +1,12 @@
 // PANTALLA 1: Administrador de Tarifas Transporte — SIT EBEMA
 // Sub-módulos: Peajes, Combustibles y Rendimientos, Seguros y Permisos,
 // Variables Generales y Motor de Costo (ZCAP) con exportación CSV.
-import { getDatabase, saveDatabase, getCentreName, getTariffConfig, getClientTariffConfig, truckCapKg, getOrigenGroups, getGroupRepId, buildTruckTypes, TRUCK_BASE_TYPES, loadHistorico, deleteRow } from './data.js?v=202609271857';
-import { CAP_LIST, truckTypesWithCap, calcularMatrizCostos } from './tarifas-engine.js?v=202609271857';
+import { getDatabase, saveDatabase, getCentreName, getTariffConfig, getClientTariffConfig, truckCapKg, getOrigenGroups, getGroupRepId, buildTruckTypes, TRUCK_BASE_TYPES, loadHistorico, loadHistoricoFlete360, deleteRow } from './data.js?v=202609271942';
+import { CAP_LIST, truckTypesWithCap, calcularMatrizCostos } from './tarifas-engine.js?v=202609271942';
 import { formatCLP, parseCSV, showAlert, toCSV, downloadFile, escapeHtml } from './utils.js';
-import { supabase } from './supabase-client.js?v=202609271857';
-import { getField } from './zonas-transporte.js?v=202609271857';
-import { renderZcapView } from './zcap.js?v=202609271857';
+import { supabase } from './supabase-client.js?v=202609271942';
+import { getField } from './zonas-transporte.js?v=202609271942';
+import { renderZcapView } from './zcap.js?v=202609271942';
 
 // FIX: Escuchar errores de sincronización con Supabase y notificar al usuario
 window.addEventListener('db_sync_error', (e) => {
@@ -3137,7 +3137,7 @@ function renderParticipacion(content, db, cfg) {
       </div>
       ${!hasHist ? `
       <div class="bg-amber-50 border border-amber-200 text-amber-800 text-[12px] p-md rounded">
-        Sin datos históricos. Presione <b>Actualizar Histórico</b> o cargue el CSV en <b>Tarifas Clientes → Histórico</b>.
+        Sin datos históricos. Presione <b>Actualizar Histórico</b> (fuente FLETE 360, 6 meses móviles).
       </div>` : gruposMostrar.map(gm => tablaHtml(gm.nombre, calcGrupo(gm.grupos, gm.filtroGrupo || null), tablasExpandidas.has(gm.nombre))).join('')}
     `;
 
@@ -3145,7 +3145,7 @@ function renderParticipacion(content, db, cfg) {
       const btn = document.getElementById('part-sync-hist');
       if (btn) { btn.disabled = true; btn.textContent = 'Cargando...'; }
       try {
-        const fresh = await loadHistorico();
+        const fresh = await loadHistoricoFlete360(true);
         if (fresh && fresh.length > 0) {
           histDataLocal = fresh;
           getClientTariffConfig(db).historico = fresh;
@@ -3196,7 +3196,7 @@ function renderParticipacion(content, db, cfg) {
   // Auto-cargar histórico desde IndexedDB al abrir la vista
   if (histDataLocal.length === 0) {
     content.innerHTML = `<div class="flex items-center gap-sm text-secondary p-lg"><span class="material-symbols-outlined animate-spin">refresh</span> Cargando histórico...</div>`;
-    loadHistorico().then(fresh => {
+    loadHistoricoFlete360().then(fresh => {
       if (fresh && fresh.length > 0) {
         histDataLocal = fresh;
         getClientTariffConfig(db).historico = fresh;
@@ -3647,7 +3647,7 @@ function renderResultados(content, db, cfg) {
     try {
       // Cargar histórico si no está disponible aún
       if (!getClientTariffConfig(db).historico?.length) {
-        const fresh = await loadHistorico();
+        const fresh = await loadHistoricoFlete360();
         if (fresh?.length) getClientTariffConfig(db).historico = fresh;
       }
       // Guardar participación fresca en cfg antes de sincronizar ZCAP
