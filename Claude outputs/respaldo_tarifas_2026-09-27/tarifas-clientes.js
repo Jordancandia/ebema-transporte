@@ -1,10 +1,10 @@
 // MÓDULO: Administrador de Tarifas Clientes — SIT EBEMA v2.1
 // Vistas: Histórico (6M) | Consolidación | Densidad Logística | Frecuencia y Especiales | Cluster | Resultados
-import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig, saveHistorico, loadHistorico, saveHistoricoGlobal, getOrigenGroups } from './data.js?v=202609271539';
-import { CAP_LIST, truckTypesWithCap, calcularCostoRuta } from './tarifas-engine.js?v=202609271539';
-import { buildZcapMap } from './zcap.js?v=202609271539';
+import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig, saveHistorico, loadHistorico, saveHistoricoGlobal, getOrigenGroups } from './data.js?v=202609271533';
+import { CAP_LIST, truckTypesWithCap, calcularCostoRuta } from './tarifas-engine.js?v=202609271533';
+import { buildZcapMap } from './zcap.js?v=202609271533';
 import { formatCLP, showAlert, toCSV, downloadFile, formatDateDDMMYYYY, escapeHtml } from './utils.js';
-import { supabase } from './supabase-client.js?v=202609271539';
+import { supabase } from './supabase-client.js?v=202609271533';
 
 // ─────────────────────────────────────────────────────────────
 // ESTADO DE MÓDULO
@@ -921,9 +921,8 @@ function renderEspeciales(content, db, ccfg) {
         <p class="text-[11px] text-secondary mb-sm">% aplicado sobre ZCAP para calcular Tarifa Express en vista Tarifa Min/Max.</p>
         <div class="grid grid-cols-2 md:grid-cols-4 gap-sm">
           ${getOrigenGroups(db).map(g => {
-            const gk = g.grupo.replace(/\s/g, '_');
-            const _rv = ccfg.especiales?.recargoExclusividad?.[gk] ?? ccfg.especiales?.recargoExclusividad?.[g.grupo];
-            const val = (_rv && typeof _rv === 'object') ? (_rv.activo === false ? 0 : (Number(_rv.pct) || 0)) : (Number(_rv) || 0);
+            const gk = g.grupo.replace(/\\s/g, '_');
+            const val = ccfg.especiales?.recargoExclusividad?.[gk] || 0;
             return `
             <div class="flex flex-col gap-xs">
               <label class="font-label-caps text-label-caps text-secondary uppercase text-[10px]">${g.nombre || g.grupo}</label>
@@ -1919,9 +1918,7 @@ function renderZfmi(content, db, cfg, ccfg) {
     const rutaCodigo      = ruta.codigo || String(ruta.id || '');
     const zfmiData        = zfmiByRuta.get(rutaCodigo);
     // Tarifa Express = ZCAP × (1 + recargo%) — recargo por centro configurado en Frecuencia
-    const _rTab          = ccfg.especiales?.recargoExclusividad || {};
-    const _rVal          = _rTab[grupoKey] ?? _rTab[grupo];
-    const recargoPct     = (_rVal && typeof _rVal === 'object') ? (_rVal.activo === false ? 0 : (Number(_rVal.pct) || 0)) : (Number(_rVal) || 0);
+    const recargoPct      = getPath(ccfg, `especiales.recargoExclusividad.${grupoKey}`, 0);
     const tarifaExpress   = zcap > 0 ? zcap * (1 + recargoPct / 100) : null;
     // ZFMI: igual para todos los tipos de camión de la misma ruta
     //   kilosTarifaMin (col) = kilosMin(camión mín) / pedidosPromedio     → ej. 4000/3.5 = 1143 kg

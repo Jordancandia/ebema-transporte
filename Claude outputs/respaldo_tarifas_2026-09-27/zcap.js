@@ -2,8 +2,8 @@
 // Regional:       ZCAP = Costo Base + km × Tarifa/KM
 // Interregional:  ZCAP = item10_costoRutaTotal (motor completo)
 // Troncales:      ZCAP = motor completo para rutas definidas por el usuario
-import { getDatabase, saveDatabase, getTariffConfig, truckCapKg, getOrigenGroups, TRUCK_BASE_TYPES } from './data.js?v=202609271539';
-import { calcularCostoRuta } from './tarifas-engine.js?v=202609271539';
+import { getDatabase, saveDatabase, getTariffConfig, truckCapKg, getOrigenGroups, TRUCK_BASE_TYPES } from './data.js?v=202609271533';
+import { calcularCostoRuta } from './tarifas-engine.js?v=202609271533';
 import { formatCLP, escapeHtml } from './utils.js';
 
 const TRUCK_ORDER = ['Camión 5 Ton', 'Camión 10 Ton', 'Camión 15 Ton', 'Camión 28 Ton'];
@@ -58,21 +58,22 @@ export function calcZcapRow(db, cfg, ruta, truck, troncalesSet) {
   const esTroncal = troncalesSet.has(ruta.codigo);
 
   if (!esTroncal && ruta.clasificRuta === 'Regional') {
-    // ZCAP Regional (regla de negocio confirmada 27-sep-2026):
-    //   ZCAP = Costo Base (baseRate) + Costo Base KM (baseKM) + km ruta × Tarifa/KM
-    //   Tarifa/KM = tarifa AJUSTADA (rateAjustNorm / rateAjustEsp si la ruta es ISLA/EXTREMA);
-    //   si no hay ajustada, usa la ponderada calculada por el motor (ratePerKm / ratePerKmExtrema).
-    //   Kmbase ya no descuenta km (se cobra el km completo entre puntos).
+    // ZCAP Regional:
+    //   Con KM Base: B.CostoBase + C.TBaseKM + max(0, km − KMBase) × D.Tarifa/KM
+    //     Si km ≤ KMBase → tarifa plana = B + C  (sin extra km)
+    //   Sin KM Base (KMBase=0): B.CostoBase + km × D.Tarifa/KM
     const defaultBase = TRUCK_BASE_TYPES.find(b => b.type === truck.type)?.baseRate || 0;
-    const num = v => (v === null || v === undefined || v === '' ? null : Number(v));
-    const costoBase   = num(truck.baseRate) ?? defaultBase;
-    const costoBaseKm = num(truck.baseKM) ?? 0;
+    // Usar ?? para no tratar 0 como "sin valor" — baseRate=0 es válido para 28 Ton
+    const costoBase   = truck.baseRate != null ? Number(truck.baseRate) : defaultBase;  // C: T.Base KM
+    const baseCosto   = truck.baseKM   != null ? Number(truck.baseKM)   : 0;            // B: Costo Base
     const isExtrema   = ['ISLA','EXTREMA'].includes((ruta.caracteristica||'').toUpperCase());
-    const rateNorm    = num(truck.rateAjustNorm) || num(truck.ratePerKm) || 0;
     const rate = isExtrema
-      ? (num(truck.rateAjustEsp) || num(truck.ratePerKmExtrema) || rateNorm)
-      : rateNorm;
-    return costoBase + costoBaseKm + km * rate;
+      ? (Number(truck.ratePerKmExtrema) || Number(truck.ratePerKm) || 0)
+      : (Number(truck.ratePerKm) || 0);
+    const kmBase = truck.Kmbase != null ? Number(truck.Kmbase) : 0;
+    // Siempre: B + C + max(0, km − KMBase) × D
+    // KMBase=0 → extra = km×D (sin tramo fijo). KMBase>0 y km≤KMBase → extra=0 (tarifa plana B+C)
+    return (costoBase + baseCosto) + Math.max(0, km - kmBase) * rate;
   }
   // Interregional o Troncal → motor completo
   const capKg = truckCapKg(truck.type);

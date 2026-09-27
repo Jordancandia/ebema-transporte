@@ -14,8 +14,8 @@
 // ZFMP = ZCAP ÷ kilos a consolidar, ZFMI = ZCAP camión mínimo ÷ pedidos promedio
 // del cluster, Tarifa Express = ZCAP × (1 + recargo exclusividad del centro).
 // ---------------------------------------------------------------------------
-import { getOrigenGroups, truckCapKg } from './data.js?v=202609271533';
-import { buildZcapMap } from './zcap.js?v=202609271533';
+import { getOrigenGroups, truckCapKg } from './data.js?v=202609271539';
+import { buildZcapMap } from './zcap.js?v=202609271539';
 
 export const TRUCK_ORDER = ['Camión 5 Ton', 'Camión 10 Ton', 'Camión 15 Ton', 'Camión 28 Ton'];
 export const TRUCK_TRONCAL = 'Camión 28 Ton';
@@ -340,13 +340,17 @@ function mejorTroncal(ctx, o, d, kilos) {
 
 // Mejor retiro desde un nodo: primera milla local vs tarifa fija troncal (Regla B,
 // sólo para la comuna dentro de la zona Regional del centro)
-function mejorRetiro(ctx, o, nRet, kilos) {
+// Regla B: el retiro lo puede hacer el camión troncal que va al centro de
+// DESTINO de la carga (ej. retiro en Pudahuel con destino Talca → troncal de
+// Talca, $30.000). Sin troncal (mismo centro) aplica la tarifa del centro de retiro.
+function mejorRetiro(ctx, o, nRet, kilos, d) {
   const opciones = [];
   const local = precioLocalConsolidado(findRuta(ctx, o, nRet), kilos);
   if (local) opciones.push({ monto: local.precio, regla: local.regla, ruta: local.ruta, camion: local.camion, tipo: 'local' });
-  const fija = Number(getRetiroTroncalTarifas(ctx.ccfg)[o]) || 0;
+  const cdTroncal = d && d !== o ? d : o;
+  const fija = Number(getRetiroTroncalTarifas(ctx.ccfg)[cdTroncal]) || 0;
   if (fija > 0 && esRegional(ctx, o, nRet)) {
-    opciones.push({ monto: Math.round(fija), regla: `Tarifa fija retiro con camión troncal ${nombreG(ctx, o)} (Regla B)`, camion: TRUCK_TRONCAL, tipo: 'troncal' });
+    opciones.push({ monto: Math.round(fija), regla: `Tarifa fija retiro con camión troncal de ${nombreG(ctx, cdTroncal)} (Regla B)`, camion: TRUCK_TRONCAL, tipo: 'troncal' });
   }
   if (!opciones.length) return null;
   opciones.sort((a, b) => a.monto - b.monto);
@@ -425,10 +429,12 @@ export function cotizar(ctx, input) {
       if (exclusivo) {
         const p = precioLocalExclusivo(findRuta(ctx, o, nRet), kilos);
         ret = p ? { monto: p.precio, regla: p.regla, ruta: p.ruta, camion: p.camion, tipo: 'exclusivo' } : null;
-      } else ret = mejorRetiro(ctx, o, nRet, kilos);
+      }
     }
-    if (calzada && !ret) return;
+    if (calzada && exclusivo && !ret) return;
     destinos.forEach(d => {
+      if (calzada && !exclusivo) ret = mejorRetiro(ctx, o, nRet, kilos, d);
+      if (calzada && !ret) return;
       const ult = ultimaDe(d);
       if (!ult) return;
       const k = o + '>' + d;
