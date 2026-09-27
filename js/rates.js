@@ -3,12 +3,12 @@
 // Última milla, con reglas de minimización A/B/C. El cálculo vive en
 // cotizador-engine.js y usa las tarifas de la vista Tarifas Clientes
 // (ZCAP, ZFMI, ZFMP y Tarifa Express por ruta y tipo de camión).
-import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig } from './data.js?v=202609271431';
+import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig } from './data.js?v=202609271437';
 import {
   buildCotizadorContext, cotizar, cdsDeComuna, normComuna,
   getRetiroTroncalTarifas, RETIRO_TRONCAL_DEFAULT, TRUCK_ORDER, HUB_GRUPO, FLUJOS
-} from './cotizador-engine.js?v=202609271431';
-import { getRol } from './permisos.js?v=202609271431';
+} from './cotizador-engine.js?v=202609271437';
+import { getRol } from './permisos.js?v=202609271437';
 import { formatCLP, showAlert, escapeHtml, loadLeaflet } from './utils.js';
 
 // --- Historial de cotizaciones recientes por perfil (localStorage) ---
@@ -498,7 +498,9 @@ export function renderRatesView(container) {
             </div>`).join('')}`).join('')}
       </div>` : '';
 
-    el.avisos.innerHTML = res.avisos.map(a =>
+    el.avisos.innerHTML = (res.alertas || []).map(a =>
+      `<div class="flex gap-xs text-[12px] font-bold text-red-800 bg-red-50 border border-red-300 rounded p-xs"><span class="material-symbols-outlined text-[16px]">warning</span><span>${escapeHtml(a)}</span></div>`).join('') +
+      res.avisos.map(a =>
       `<div class="flex gap-xs text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded p-xs"><span class="material-symbols-outlined text-[14px]">info</span><span>${escapeHtml(a)}</span></div>`).join('');
 
     pintarMapa(input, res);

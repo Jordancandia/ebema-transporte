@@ -14,8 +14,8 @@
 // ZFMP = ZCAP ÷ kilos a consolidar, ZFMI = ZCAP camión mínimo ÷ pedidos promedio
 // del cluster, Tarifa Express = ZCAP × (1 + recargo exclusividad del centro).
 // ---------------------------------------------------------------------------
-import { getOrigenGroups, truckCapKg } from './data.js?v=202609271431';
-import { buildZcapMap } from './zcap.js?v=202609271431';
+import { getOrigenGroups, truckCapKg } from './data.js?v=202609271437';
+import { buildZcapMap } from './zcap.js?v=202609271437';
 
 export const TRUCK_ORDER = ['Camión 5 Ton', 'Camión 10 Ton', 'Camión 15 Ton', 'Camión 28 Ton'];
 export const TRUCK_TRONCAL = 'Camión 28 Ton';
@@ -144,10 +144,10 @@ export function buildCotizadorContext(db, cfg, ccfg) {
   // Rutas activas con tarifa por (grupo | comuna destino)
   const rutaPorGrupoDest = new Map();
   // Control de calidad: rutas cuyo km es menor al 90% de la distancia en línea
-  // recta desde su centro de origen (ej. km medidos desde otro centro) se
-  // excluyen del cálculo para no generar precios erróneos.
+  // recta desde su centro de origen (ej. km medidos desde otro centro). NO se
+  // excluyen: se usan igual y la cotización muestra una alerta si las ocupa.
   const cdCoords = new Map((db.logisticsCentres || []).map(c => [String(c.id), c]));
-  const excluidas = new Map(); // grupo|comuna → { codigo, km, lineal }
+  const inconsistentes = new Map(); // codigo → { codigo, km, lineal }
   const comunas = new Map(); // norm → { nombre, lat, lon, cds: [{grupo, km, codigo}] }
   (db.routes || []).filter(r => r.activo).forEach(r => {
     const codigo = r.codigo || String(r.id || '');
@@ -160,8 +160,7 @@ export function buildCotizadorContext(db, cfg, ccfg) {
       const lineal = haversineKm(Number(cd.lat), Number(cd.lon), Number(r.lat), Number(r.lon));
       const km = Number(r.km) || 0;
       if (lineal > 30 && km < lineal * 0.9) {
-        excluidas.set(grupo + '|' + dn, { codigo, km, lineal: Math.round(lineal) });
-        return;
+        inconsistentes.set(codigo, { codigo, km, lineal: Math.round(lineal) });
       }
     }
     const key = grupo + '|' + dn;
@@ -181,23 +180,13 @@ export function buildCotizadorContext(db, cfg, ccfg) {
   });
   comunas.forEach(c => c.cds.sort((a, b) => a.km - b.km));
 
-  return { tarifas, grupoInfo, rutaPorGrupoDest, comunas, ccfg, excluidas };
+  return { tarifas, grupoInfo, rutaPorGrupoDest, comunas, ccfg, inconsistentes };
 }
 
 function haversineKm(lat1, lon1, lat2, lon2) {
   const R = 6371, rad = d => d * Math.PI / 180;
   const a = Math.sin(rad(lat2 - lat1) / 2) ** 2 + Math.cos(rad(lat1)) * Math.cos(rad(lat2)) * Math.sin(rad(lon2 - lon1) / 2) ** 2;
   return 2 * R * Math.asin(Math.sqrt(a));
-}
-
-// Rutas excluidas por km inconsistente que tocan las comunas cotizadas
-function avisosExcluidas(ctx, comunasNorm) {
-  const out = [];
-  (ctx.excluidas || new Map()).forEach((v, k) => {
-    const dn = k.slice(k.indexOf('|') + 1);
-    if (comunasNorm.includes(dn)) out.push(`${v.codigo} (${v.km} km cargados; ${v.lineal} km en línea recta)`);
-  });
-  return out.length ? [`Rutas excluidas por km inconsistente — corregir en Rutas de Transporte: ${out.join(', ')}.`] : [];
 }
 
 export function findRuta(ctx, grupo, comunaNorm) {
@@ -342,7 +331,7 @@ export const FLUJOS = {
 
 // input = { flujo, servicio, cdOrigen, comunaRetiro, cdDestino, comunaDespacho, kilos, camion, kmDirecto }
 export function cotizar(ctx, input) {
-  const out = { ok: false, error: null, total: 0, tramos: [], decisiones: [], avisos: [], cdOrigen: null, cdDestino: null, camionMilla: null, ruta: '' };
+  const out = { ok: false, error: null, total: 0, tramos: [], decisiones: [], avisos: [], alertas: [], cdOrigen: null, cdDestino: null, camionMilla: null, ruta: '', _ctx: ctx };
   const flujo = FLUJOS[input.flujo] ? input.flujo : 'EBE-DESP';
   const def = FLUJOS[flujo];
   const kilos = Number(input.kilos) || 0;
@@ -355,7 +344,6 @@ export function cotizar(ctx, input) {
   if (!calzada && !input.cdOrigen) { out.error = 'Seleccione el centro de origen.'; return out; }
   if (retira === 'CD' && !input.cdDestino) { out.error = 'Seleccione el centro donde retira el cliente.'; return out; }
   if (retira === 'NO' && !nDes) { out.error = 'Ingrese la comuna de destino.'; return out; }
-  out.avisos.push(...avisosExcluidas(ctx, [nRet, normComuna(input.comunaDespacho)].filter(Boolean)));
   if (retira === 'CD') {
     nDes = ctx.grupoInfo.get(input.cdDestino)?.comuna || '';
     if (!input.comunaDespacho) input = { ...input, comunaDespacho: ctx.grupoInfo.get(input.cdDestino)?.nombre || input.cdDestino };
@@ -492,6 +480,14 @@ export function cotizar(ctx, input) {
 
 // Ahorro = diferencia con el segundo mejor recorrido
 function finalizar(out) {
+  const inc = out._ctx?.inconsistentes;
+  if (inc) {
+    out.tramos.forEach(t => {
+      const v = t.ruta && inc.get(t.ruta);
+      if (v) out.alertas.push(`Inconsistencia de datos en ruta ${v.codigo} (${t.label}): tiene ${v.km} km cargados y hay ${v.lineal} km en línea recta desde su centro. El precio de este tramo puede estar subestimado — revisar en Rutas de Transporte.`);
+    });
+  }
+  delete out._ctx;
   out.ahorro = out.decisiones.reduce((s, d) => {
     const ord = d.opciones.map(o => o.monto).sort((a, b) => a - b);
     return s + (ord.length > 1 ? ord[1] - ord[0] : 0);

@@ -10,9 +10,9 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202609271431';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202609271431';
-import { getDatabase } from './data.js?v=202609271431';
+import { supabase } from './supabase-client.js?v=202609271437';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202609271437';
+import { getDatabase } from './data.js?v=202609271437';
 import { showAlert, escapeHtml } from './utils.js';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
