@@ -3,13 +3,13 @@
 // Última milla, con reglas de minimización A/B/C. El cálculo vive en
 // cotizador-engine.js y usa las tarifas de la vista Tarifas Clientes
 // (ZCAP, ZFMI, ZFMP y Tarifa Express por ruta y tipo de camión).
-import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig } from './data.js?v=202609271412';
+import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig } from './data.js?v=202609271424';
 import {
   buildCotizadorContext, cotizar, cdsDeComuna, normComuna,
   getRetiroTroncalTarifas, RETIRO_TRONCAL_DEFAULT, TRUCK_ORDER, HUB_GRUPO, FLUJOS
-} from './cotizador-engine.js?v=202609271412';
-import { getRol } from './permisos.js?v=202609271412';
-import { formatCLP, showAlert, escapeHtml } from './utils.js';
+} from './cotizador-engine.js?v=202609271424';
+import { getRol } from './permisos.js?v=202609271424';
+import { formatCLP, showAlert, escapeHtml, loadLeaflet } from './utils.js';
 
 // --- Historial de cotizaciones recientes por perfil (localStorage) ---
 const RECENT_QUOTES_MAX = 15;
@@ -78,6 +78,57 @@ function radioCard(name, value, titulo, sub, checked) {
     </label>`;
 }
 
+// Lista desplegable con búsqueda (se abre al hacer clic, filtra al escribir)
+function comboHtml(id, placeholder, conHidden) {
+  return `<div class="relative" data-combo="${id}">
+      <input type="text" id="${conHidden ? id + '-txt' : id}" placeholder="${placeholder}" class="${inputCls} pr-8" autocomplete="off">
+      ${conHidden ? `<input type="hidden" id="${id}">` : ''}
+      <span class="material-symbols-outlined absolute right-2 top-1/2 -translate-y-1/2 text-secondary text-[20px] pointer-events-none">expand_more</span>
+      <div class="q-combo-panel hidden absolute left-0 right-0 mt-1 max-h-64 overflow-y-auto bg-white border border-outline-variant rounded shadow-lg" style="z-index:1000"></div>
+    </div>`;
+}
+
+// items: [{ value, label }]. hiddenEl = null → el valor es el texto (comunas).
+function initCombo(wrap, items, hiddenEl, onChange) {
+  const txt = wrap.querySelector('input[type=text]');
+  const panel = wrap.querySelector('.q-combo-panel');
+  const norm = v => String(v || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+  let activos = [];
+  const pintar = (mostrarTodo) => {
+    const q = norm(txt.value);
+    activos = (mostrarTodo || !q) ? items : items.filter(i => norm(i.label).includes(q));
+    panel.innerHTML = activos.length
+      ? activos.slice(0, 80).map((i, k) => `<div data-k="${k}" class="px-sm py-xs text-[13px] cursor-pointer hover:bg-primary/10">${escapeHtml(i.label)}</div>`).join('')
+      : '<div class="px-sm py-xs text-[12px] text-secondary italic">Sin coincidencias</div>';
+    panel.classList.remove('hidden');
+  };
+  const elegir = (item) => {
+    txt.value = item.label;
+    if (hiddenEl) hiddenEl.value = item.value;
+    panel.classList.add('hidden');
+    onChange();
+  };
+  txt.addEventListener('focus', () => pintar(true));
+  txt.addEventListener('click', () => pintar(true));
+  txt.addEventListener('input', () => {
+    if (hiddenEl) {
+      const exacto = items.find(i => norm(i.label) === norm(txt.value));
+      hiddenEl.value = exacto ? exacto.value : '';
+    }
+    pintar(false);
+    onChange();
+  });
+  txt.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && activos.length) { e.preventDefault(); elegir(activos[0]); }
+    if (e.key === 'Escape') panel.classList.add('hidden');
+  });
+  panel.addEventListener('mousedown', (e) => {
+    const d = e.target.closest('[data-k]');
+    if (d) { e.preventDefault(); elegir(activos[Number(d.dataset.k)]); }
+  });
+  txt.addEventListener('blur', () => setTimeout(() => panel.classList.add('hidden'), 150));
+}
+
 export function renderRatesView(container) {
   const db = getDatabase();
   const cfg = getTariffConfig(db);
@@ -95,9 +146,6 @@ export function renderRatesView(container) {
   const esOwner = getRol() === 'OWNER';
   const quoteId = `${Math.floor(1000 + Math.random() * 9000)}-QT`;
 
-  const cdOptions = (sel) => grupos.map(g =>
-    `<option value="${escapeHtml(g.grupo)}" ${g.grupo === sel ? 'selected' : ''}>${escapeHtml(g.nombre)}${g.grupo === HUB_GRUPO ? ' (Quilicura)' : ''}</option>`).join('');
-
   container.innerHTML = `
     <div class="mb-xl">
       <h1 class="font-headline-lg text-headline-lg text-on-surface">Cotizador de Despacho</h1>
@@ -113,16 +161,23 @@ export function renderRatesView(container) {
         </div>
         <form class="space-y-lg" id="q-form" onsubmit="return false">
           <div class="space-y-xs">
-            <label class="${labelCls}">FLUJO</label>
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-md">
-              ${radioCard('q-flujo', 'EBE-DESP', 'EBE-DESP · Stock', 'Centro origen → comuna destino', true)}
-              ${radioCard('q-flujo', 'FAB-DESP/EBE-DESP', 'FAB-DESP / EBE-DESP · Calzada', 'Fábrica entrega en centro → EBEMA despacha', false)}
-              ${radioCard('q-flujo', 'EBE-RET/CLI-RET', 'EBE-RET / CLI-RET · Calzada', 'EBEMA retira → cliente retira en centro', false)}
-              ${radioCard('q-flujo', 'EBE-RET/EBE-DESP', 'EBE-RET / EBE-DESP · Calzada', 'EBEMA retira → EBEMA despacha', false)}
+            <label class="${labelCls}">1. TIPO DE NEGOCIO</label>
+            <div class="grid grid-cols-2 gap-md">
+              ${radioCard('q-negocio', 'STOCK', 'Stock', 'Mercadería disponible en un centro EBEMA', true)}
+              ${radioCard('q-negocio', 'CALZADA', 'Calzada', 'Mercadería que viene desde fábrica/proveedor', false)}
             </div>
           </div>
           <div class="space-y-xs">
-            <label class="${labelCls}">TIPO DE SERVICIO</label>
+            <label class="${labelCls}">2. FLUJO</label>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-md" id="q-flujos">
+              <div data-tipo="STOCK">${radioCard('q-flujo', 'EBE-DESP', 'EBE-DESP', 'Centro origen → EBEMA despacha a comuna destino', true)}</div>
+              <div data-tipo="CALZADA" class="hidden">${radioCard('q-flujo', 'FAB-DESP/EBE-DESP', 'FAB-DESP / EBE-DESP', 'Fábrica entrega en centro → EBEMA despacha', false)}</div>
+              <div data-tipo="CALZADA" class="hidden">${radioCard('q-flujo', 'EBE-RET/CLI-RET', 'EBE-RET / CLI-RET', 'EBEMA retira en fábrica → cliente retira en centro', false)}</div>
+              <div data-tipo="CALZADA" class="hidden">${radioCard('q-flujo', 'EBE-RET/EBE-DESP', 'EBE-RET / EBE-DESP', 'EBEMA retira en fábrica → EBEMA despacha', false)}</div>
+            </div>
+          </div>
+          <div class="space-y-xs">
+            <label class="${labelCls}">3. TIPO DE SERVICIO</label>
             <div class="grid grid-cols-2 gap-md">
               ${radioCard('q-servicio', 'consolidado', 'Consolidado', 'Comparte camión, paga por kilos', true)}
               ${radioCard('q-servicio', 'exclusivo', 'Exclusivo', 'Camión dedicado — Tarifa Express', false)}
@@ -133,27 +188,22 @@ export function renderRatesView(container) {
           <div class="grid grid-cols-1 md:grid-cols-2 gap-lg">
             <div class="space-y-xs" id="q-bloque-origen-centro">
               <label class="${labelCls}">CENTRO ORIGEN</label>
-              <select id="q-cd-origen" class="${inputCls}">
-                <option value="">Seleccione centro...</option>${cdOptions('')}
-              </select>
+              ${comboHtml('q-cd-origen', 'Seleccione centro...', true)}
             </div>
             <div class="space-y-xs hidden" id="q-bloque-origen-comuna">
               <label class="${labelCls}">COMUNA RETIRO</label>
-              <input type="text" id="q-comuna-retiro" list="q-comunas" placeholder="Ej: Frutillar" class="${inputCls}" autocomplete="off">
+              ${comboHtml('q-comuna-retiro', 'Escriba o seleccione comuna...', false)}
             </div>
             <div class="space-y-xs" id="q-bloque-destino-comuna">
               <label class="${labelCls}" id="q-lbl-destino">COMUNA DESTINO</label>
-              <input type="text" id="q-comuna-despacho" list="q-comunas" placeholder="Ej: Puerto Varas" class="${inputCls}" autocomplete="off">
+              ${comboHtml('q-comuna-despacho', 'Escriba o seleccione comuna...', false)}
             </div>
             <div class="space-y-xs hidden" id="q-bloque-destino-centro">
               <label class="${labelCls}">CENTRO DESTINO (RETIRA CLIENTE)</label>
-              <select id="q-cd-destino" class="${inputCls}">
-                <option value="">Seleccione centro...</option>${cdOptions('')}
-              </select>
+              ${comboHtml('q-cd-destino', 'Seleccione centro...', true)}
             </div>
           </div>
           <p class="text-[11px] text-secondary -mt-sm">Los centros intermedios (retiro, traslado troncal y última milla) se eligen automáticamente según el recorrido de menor precio.</p>
-          <datalist id="q-comunas">${comunasOrdenadas.map(c => `<option value="${escapeHtml(c.nombre)}">`).join('')}</datalist>
 
           <div class="grid grid-cols-1 md:grid-cols-3 gap-lg">
             <div class="space-y-xs">
@@ -259,13 +309,24 @@ export function renderRatesView(container) {
     bDestinoComuna: $('q-bloque-destino-comuna'), bDestinoCentro: $('q-bloque-destino-centro'), bloqueCamion: $('q-bloque-camion'),
     resumen: $('q-resumen'), tramos: $('q-tramos'), total: $('q-total'), decisiones: $('q-decisiones'), avisos: $('q-avisos')
   };
-  const state = { flujo: 'EBE-DESP', servicio: 'consolidado', ultimo: null };
+  const state = { negocio: 'STOCK', flujo: 'EBE-DESP', servicio: 'consolidado', ultimo: null };
 
   // --- Radio cards ---
-  container.querySelectorAll('input[type=radio]').forEach(r => r.addEventListener('change', () => {
-    container.querySelectorAll(`label[data-card="${r.name}"]`).forEach(l => {
-      l.className = l.dataset.value === r.value ? cardOn : cardOff;
+  function marcar(name, value) {
+    container.querySelectorAll(`input[name="${name}"]`).forEach(r => { r.checked = r.value === value; });
+    container.querySelectorAll(`label[data-card="${name}"]`).forEach(l => {
+      l.className = l.dataset.value === value ? cardOn : cardOff;
     });
+  }
+  container.querySelectorAll('input[type=radio]').forEach(r => r.addEventListener('change', () => {
+    marcar(r.name, r.value);
+    if (r.name === 'q-negocio') {
+      state.negocio = r.value;
+      // Stock tiene un solo flujo; Calzada abre sus 3 flujos
+      if (r.value === 'STOCK') state.flujo = 'EBE-DESP';
+      else if (FLUJOS[state.flujo].tipo !== 'CALZADA') state.flujo = 'FAB-DESP/EBE-DESP';
+      marcar('q-flujo', state.flujo);
+    }
     if (r.name === 'q-flujo') state.flujo = r.value;
     if (r.name === 'q-servicio') state.servicio = r.value;
     aplicarVisibilidad();
@@ -274,6 +335,7 @@ export function renderRatesView(container) {
 
   function aplicarVisibilidad() {
     const f = FLUJOS[state.flujo];
+    container.querySelectorAll('#q-flujos [data-tipo]').forEach(d => d.classList.toggle('hidden', d.dataset.tipo !== state.negocio));
     el.bOrigenCentro.classList.toggle('hidden', f.origen !== 'CENTRO');
     el.bOrigenComuna.classList.toggle('hidden', f.origen !== 'COMUNA');
     el.bDestinoComuna.classList.toggle('hidden', f.destino !== 'COMUNA');
@@ -281,25 +343,34 @@ export function renderRatesView(container) {
     el.bloqueCamion.classList.toggle('hidden', state.servicio !== 'exclusivo');
   }
 
-  [el.comunaRetiro, el.comunaDespacho].forEach(inp => inp.addEventListener('input', recalcular));
-  [el.cdOrigen, el.cdDestino, el.camion].forEach(sel => sel.addEventListener('change', recalcular));
+  const itemsCentros = grupos.map(g => ({ value: g.grupo, label: g.nombre + (g.grupo === HUB_GRUPO ? ' (Quilicura)' : '') }));
+  const itemsComunas = comunasOrdenadas.map(c => ({ value: c.nombre, label: c.nombre }));
+  initCombo(container.querySelector('[data-combo="q-cd-origen"]'), itemsCentros, el.cdOrigen, recalcular);
+  initCombo(container.querySelector('[data-combo="q-cd-destino"]'), itemsCentros, el.cdDestino, recalcular);
+  initCombo(container.querySelector('[data-combo="q-comuna-retiro"]'), itemsComunas, null, recalcular);
+  initCombo(container.querySelector('[data-combo="q-comuna-despacho"]'), itemsComunas, null, recalcular);
+  el.camion.addEventListener('change', recalcular);
   el.kilos.addEventListener('input', recalcular);
 
   // --- Mapa ---
-  let fleetMap = null, capa = null;
-  try {
+  let fleetMap = null, capa = null, ultimoMapa = null;
+  loadLeaflet().then(L => {
+    if (!document.getElementById('quote-fleet-map')) return;
     fleetMap = L.map('quote-fleet-map').setView([-36.5, -71.5], 5);
     L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
       maxZoom: 19,
       attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>'
     }).addTo(fleetMap);
     capa = L.layerGroup().addTo(fleetMap);
-  } catch (err) {
+    if (ultimoMapa) pintarMapa(ultimoMapa.input, ultimoMapa.res);
+  }).catch(err => {
     console.error('Error al cargar Leaflet:', err);
-    $('quote-fleet-map').innerHTML = '<div class="flex justify-center items-center h-full text-secondary bg-surface-container-low">Mapa no disponible.</div>';
-  }
+    const m = document.getElementById('quote-fleet-map');
+    if (m) m.innerHTML = '<div class="flex justify-center items-center h-full text-secondary bg-surface-container-low">Mapa no disponible.</div>';
+  });
 
   function pintarMapa(input, res) {
+    ultimoMapa = { input, res };
     if (!fleetMap || !capa) return;
     capa.clearLayers();
     if (!res || !res.ok) return;
