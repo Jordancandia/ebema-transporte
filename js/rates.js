@@ -3,12 +3,12 @@
 // Última milla, con reglas de minimización A/B/C. El cálculo vive en
 // cotizador-engine.js y usa las tarifas de la vista Tarifas Clientes
 // (ZCAP, ZFMI, ZFMP y Tarifa Express por ruta y tipo de camión).
-import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig } from './data.js?v=202609271559';
+import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig } from './data.js?v=202609271605';
 import {
   buildCotizadorContext, cotizar, cdsDeComuna, normComuna,
   getRetiroTroncalTarifas, RETIRO_TRONCAL_DEFAULT, TRUCK_ORDER, HUB_GRUPO, FLUJOS
-} from './cotizador-engine.js?v=202609271559';
-import { getRol } from './permisos.js?v=202609271559';
+} from './cotizador-engine.js?v=202609271605';
+import { getRol } from './permisos.js?v=202609271605';
 import { formatCLP, showAlert, escapeHtml, loadLeaflet } from './utils.js';
 
 // --- Historial de cotizaciones recientes por perfil (localStorage) ---
@@ -262,8 +262,11 @@ export function renderRatesView(container) {
         <h3 class="font-headline-sm text-headline-sm font-bold text-on-surface">Recorrido Cotizado</h3>
         <p class="font-body-md text-[12px] text-secondary">Recorrido por carretera · pase el mouse sobre cada tramo para ver su costo</p>
       </div>
-      <div class="bg-surface border border-outline-variant rounded overflow-hidden">
-        <div id="quote-fleet-map" class="h-[350px] relative" style="z-index: 1;"></div>
+      <div class="grid grid-cols-12 gap-lg">
+        <div class="col-span-12 lg:col-span-5 bg-surface-container-lowest border border-outline-variant rounded p-lg shadow-sm" id="q-flujo-diagrama"></div>
+        <div class="col-span-12 lg:col-span-7 bg-surface border border-outline-variant rounded overflow-hidden">
+          <div id="quote-fleet-map" class="h-[440px] relative" style="z-index: 1;"></div>
+        </div>
       </div>
     </div>
 
@@ -469,6 +472,98 @@ export function renderRatesView(container) {
     if (bounds.length > 1) fleetMap.fitBounds(bounds, { padding: [30, 30] });
   }
 
+  // --- Diagrama de flujo: RETIRO → CD → SUCURSAL → ENTREGA ---
+  function pintarFlujo(input, res) {
+    const cont = document.getElementById('q-flujo-diagrama');
+    if (!cont) return;
+    if (!res || !res.ok) {
+      cont.innerHTML = `<p class="font-label-caps text-label-caps text-secondary mb-sm">FLUJO DEL DESPACHO</p>
+        <p class="text-[12px] text-secondary italic">Complete la cotización para ver el recorrido por tramos.</p>`;
+      return;
+    }
+    const nom = g => ctx.grupoInfo.get(g)?.nombre || g || '—';
+    const T = k => res.tramos.filter(t => t.key === k || (k === 'troncal' && /^troncal/.test(t.key)));
+    const retiro = T('retiro')[0], troncales = T('troncal'), ultima = T('ultima')[0];
+    const directo = res.tramos.find(t => ['directo', 'directo_camion', 'exclusivo'].includes(t.key));
+    const viaHub = troncales.length === 2;
+    const calzadaRet = !!input.comunaRetiro;
+    const clienteRetira = input.retira === 'CD';
+
+    // Nodos: activo / inactivo, título y detalle
+    const nodos = [
+      { tag: 'RETIRO', icon: 'factory', activo: calzadaRet,
+        det: calzadaRet ? input.comunaRetiro : (input.flujo === 'EBE-DESP' ? 'Stock en centro' : 'Fábrica entrega en CD') },
+      { tag: 'CD', icon: 'warehouse', activo: !directo || !calzadaRet,
+        det: directo && calzadaRet ? 'No pasa por centro' : nom(res.cdOrigen) },
+      { tag: 'SUCURSAL', icon: 'store', activo: !directo && res.cdDestino && (res.cdDestino !== res.cdOrigen || clienteRetira),
+        det: directo ? (clienteRetira ? nom(res.cdDestino) : 'No pasa por centro') : (res.cdDestino === res.cdOrigen && !clienteRetira ? 'Mismo centro' : nom(res.cdDestino)) },
+      { tag: 'ENTREGA', icon: clienteRetira ? 'person_pin_circle' : 'local_shipping', activo: true,
+        det: clienteRetira ? `Cliente retira en ${nom(res.cdDestino)}` : (input.comunaDespacho || '—') }
+    ];
+    if (directo && clienteRetira) nodos[2].activo = true;
+
+    // Conectores entre nodos (i → i+1)
+    const con = [null, null, null];
+    if (directo) {
+      con[0] = con[1] = con[2] = { tipo: 'directo', monto: directo.monto, span: true };
+    } else {
+      if (retiro) con[0] = { tipo: 'retiro', monto: retiro.monto };
+      if (troncales.length) con[1] = { tipo: 'troncal', monto: troncales.reduce((a, t) => a + t.monto, 0), nota: viaHub ? 'vía Quilicura' : '' };
+      if (ultima && !clienteRetira) con[2] = { tipo: 'ultima', monto: ultima.monto };
+    }
+
+    const nodoHtml = n => {
+      const col = n.activo ? '#1d4ed8' : '#9ca3af';
+      return `<div class="flex flex-col items-center text-center" style="width:22%">
+        <div style="width:44px;height:44px;border-radius:50%;background:${n.activo ? col : '#f3f4f6'};color:${n.activo ? '#fff' : col};display:flex;align-items:center;justify-content:center;border:2px solid ${col}">
+          <span class="material-symbols-outlined" style="font-size:22px">${n.icon}</span>
+        </div>
+        <div style="font:bold 11px Arial;letter-spacing:.04em;margin-top:6px;color:${n.activo ? '#111827' : '#9ca3af'}">${n.tag}</div>
+        <div style="font-size:11px;line-height:13px;color:${n.activo ? '#374151' : '#9ca3af'};margin-top:2px;word-break:break-word">${escapeHtml(n.det)}</div>
+      </div>`;
+    };
+    const conHtml = c => {
+      if (!c) return `<div class="flex-1 flex flex-col items-center" style="margin-top:21px"><div style="height:3px;width:100%;background:repeating-linear-gradient(90deg,#d1d5db 0 6px,transparent 6px 10px)"></div></div>`;
+      const color = COLORES_TRAMO[c.tipo].color;
+      return `<div class="flex-1 flex flex-col items-center" style="margin-top:14px">
+        <div style="font:bold 11px Arial;color:${color};white-space:nowrap">${c.span ? '' : formatCLP(c.monto)}</div>
+        <div style="height:5px;width:100%;background:${color};border-radius:3px;position:relative"><span style="position:absolute;right:-2px;top:-5px;width:0;height:0;border-left:8px solid ${color};border-top:7px solid transparent;border-bottom:7px solid transparent"></span></div>
+        <div style="font-size:10px;color:${color};margin-top:2px;white-space:nowrap">${c.nota || ''}</div>
+      </div>`;
+    };
+    let cadena = '';
+    nodos.forEach((n, i) => { cadena += nodoHtml(n); if (i < 3) cadena += conHtml(con[i]); });
+
+    const servicio = input.servicio === 'exclusivo' ? 'Exclusivo' : 'Consolidado';
+    const detalle = res.tramos.map(t => {
+      const tipo = t.key === 'retiro' ? 'retiro' : /^troncal/.test(t.key) ? 'troncal' : t.key === 'ultima' ? 'ultima' : 'directo';
+      const c = COLORES_TRAMO[tipo];
+      return `<div class="flex gap-sm items-stretch">
+        <div style="width:5px;border-radius:3px;background:${c.color}"></div>
+        <div class="flex-1 py-[2px]">
+          <div class="flex justify-between gap-sm"><span class="text-[12px] font-bold text-on-surface">${escapeHtml(t.label)}</span><span class="font-data-mono text-[12px] font-bold">${formatCLP(t.monto)}</span></div>
+          <div class="text-[11px] text-secondary">${t.camion ? escapeHtml(t.camion) + ' · ' : ''}${t.ruta ? escapeHtml(t.ruta) + ' · ' : ''}${escapeHtml(t.regla || '')}</div>
+        </div>
+      </div>`;
+    }).join('');
+
+    cont.innerHTML = `
+      <div class="flex justify-between items-start mb-md">
+        <p class="font-label-caps text-label-caps text-secondary">FLUJO DEL DESPACHO</p>
+        <div class="flex gap-xs">
+          <span class="inline-flex px-2 py-0.5 rounded text-[10px] font-bold ${input.tipoNegocio === 'CALZADA' ? 'bg-amber-100 text-amber-800' : 'bg-blue-100 text-blue-800'}">${escapeHtml(input.flujo)}</span>
+          <span class="inline-flex px-2 py-0.5 rounded text-[10px] font-bold bg-surface-container-high text-secondary">${servicio}</span>
+        </div>
+      </div>
+      <div class="flex items-start mb-md">${cadena}</div>
+      ${directo ? `<div class="text-center text-[11px] font-bold mb-md" style="color:${COLORES_TRAMO.directo.color}">${escapeHtml(directo.label)} · ${formatCLP(directo.monto)}</div>` : ''}
+      <div class="space-y-sm border-t border-outline-variant pt-md">${detalle}</div>
+      <div class="flex justify-between items-center border-t border-outline-variant mt-md pt-sm">
+        <span class="font-label-caps text-label-caps text-secondary">TOTAL</span>
+        <span class="font-data-mono text-[16px] font-extrabold text-primary">${formatCLP(res.total)}</span>
+      </div>`;
+  }
+
   // --- Cálculo ---
   let kmToken = 0;
   function leerInput() {
@@ -535,6 +630,7 @@ export function renderRatesView(container) {
       el.avisos.innerHTML = '';
       state.ultimo = null;
       pintarMapa(input, null);
+      pintarFlujo(input, null);
       return;
     }
 
@@ -572,6 +668,7 @@ export function renderRatesView(container) {
       `<div class="flex gap-xs text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded p-xs"><span class="material-symbols-outlined text-[14px]">info</span><span>${escapeHtml(a)}</span></div>`).join('');
 
     pintarMapa(input, res);
+    pintarFlujo(input, res);
     guardarHistorial(input, res);
   }
 
