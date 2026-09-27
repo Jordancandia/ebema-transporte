@@ -14,8 +14,8 @@
 // ZFMP = ZCAP ÷ kilos a consolidar, ZFMI = ZCAP camión mínimo ÷ pedidos promedio
 // del cluster, Tarifa Express = ZCAP × (1 + recargo exclusividad del centro).
 // ---------------------------------------------------------------------------
-import { getOrigenGroups, truckCapKg } from './data.js?v=202609271820';
-import { buildZcapMap } from './zcap.js?v=202609271820';
+import { getOrigenGroups, truckCapKg } from './data.js?v=202609271827';
+import { buildZcapMap } from './zcap.js?v=202609271827';
 
 export const TRUCK_ORDER = ['Camión 5 Ton', 'Camión 10 Ton', 'Camión 15 Ton', 'Camión 28 Ton'];
 export const TRUCK_TRONCAL = 'Camión 28 Ton';
@@ -31,6 +31,8 @@ export const UMBRAL_DIRECTO_STOCK = 0.8;   // CD-CLIENTE
 export const DESVIO_MAX_KM = 10;
 export const KILOS_MIN_EN_RUTA = 1800;
 export const CARGO_ENTREGA_EN_RUTA = 20000;
+// Tarifa fija de retiro troncal: sólo comunas RM con ruta de retiro < 30 km
+export const KM_MAX_RETIRO_TRONCAL = 30;
 
 // Camión que queda lleno sobre el umbral con los kilos cotizados (o n camiones 28 Ton)
 export function elegirCamionDirecto(kilos, umbral) {
@@ -359,7 +361,9 @@ function mejorRetiro(ctx, o, nRet, kilos, d) {
   const fija = Number(getRetiroTroncalTarifas(ctx.ccfg)[cdTroncal]) || 0;
   // Sólo para retiros en comunas de la Región Metropolitana
   const enRM = /metropolitana/i.test(ctx.comunas.get(nRet)?.region || '');
-  if (fija > 0 && enRM && esRegional(ctx, o, nRet)) {
+  // ...y sólo si la ruta del centro a la comuna de retiro tiene menos de 30 km
+  const kmRetiro = Number(findRuta(ctx, o, nRet)?.km) || Infinity;
+  if (fija > 0 && enRM && kmRetiro < KM_MAX_RETIRO_TRONCAL && esRegional(ctx, o, nRet)) {
     opciones.push({ monto: Math.round(fija), regla: `Tarifa fija retiro con camión troncal de ${nombreG(ctx, cdTroncal)} (Regla B)`, camion: TRUCK_TRONCAL, tipo: 'troncal' });
   }
   if (!opciones.length) return null;
