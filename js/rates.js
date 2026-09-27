@@ -3,12 +3,12 @@
 // Última milla, con reglas de minimización A/B/C. El cálculo vive en
 // cotizador-engine.js y usa las tarifas de la vista Tarifas Clientes
 // (ZCAP, ZFMI, ZFMP y Tarifa Express por ruta y tipo de camión).
-import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig } from './data.js?v=202609271606';
+import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig } from './data.js?v=202609271611';
 import {
   buildCotizadorContext, cotizar, cdsDeComuna, normComuna,
   getRetiroTroncalTarifas, RETIRO_TRONCAL_DEFAULT, TRUCK_ORDER, HUB_GRUPO, FLUJOS
-} from './cotizador-engine.js?v=202609271606';
-import { getRol } from './permisos.js?v=202609271606';
+} from './cotizador-engine.js?v=202609271611';
+import { getRol } from './permisos.js?v=202609271611';
 import { formatCLP, showAlert, escapeHtml, loadLeaflet } from './utils.js';
 
 // --- Historial de cotizaciones recientes por perfil (localStorage) ---
@@ -300,7 +300,7 @@ export function renderRatesView(container) {
         <span class="material-symbols-outlined text-secondary" id="q-admin-chevron">expand_more</span>
       </button>
       <div id="q-admin-body" class="hidden mt-md">
-        <p class="text-[12px] text-secondary mb-md">Monto fijo por retiro cuando la carga la recoge el camión troncal del centro de DESTINO (ej. retiro en Pudahuel con destino Talca → tarifa de Talca). Si no hay troncal, aplica la tarifa del centro de retiro. El cotizador lo compara con la primera milla local y aplica el menor. Deje en 0 para desactivar un centro.</p>
+        <p class="text-[12px] text-secondary mb-md">Sólo aplica a retiros en comunas de la Región Metropolitana. Monto fijo por retiro cuando la carga la recoge el camión troncal del centro de DESTINO (ej. retiro en Pudahuel con destino Talca → tarifa de Talca). Si no hay troncal, aplica la tarifa del centro de retiro. El cotizador lo compara con la primera milla local y aplica el menor. Deje en 0 para desactivar un centro.</p>
         <div class="grid grid-cols-2 md:grid-cols-4 gap-md" id="q-admin-grid"></div>
         <div class="flex justify-end mt-md">
           <button type="button" id="q-admin-save" class="flex items-center gap-xs bg-primary text-white font-bold px-md py-sm rounded text-[12px] uppercase tracking-wider">

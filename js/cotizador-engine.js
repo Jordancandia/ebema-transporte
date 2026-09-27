@@ -14,8 +14,8 @@
 // ZFMP = ZCAP ÷ kilos a consolidar, ZFMI = ZCAP camión mínimo ÷ pedidos promedio
 // del cluster, Tarifa Express = ZCAP × (1 + recargo exclusividad del centro).
 // ---------------------------------------------------------------------------
-import { getOrigenGroups, truckCapKg } from './data.js?v=202609271606';
-import { buildZcapMap } from './zcap.js?v=202609271606';
+import { getOrigenGroups, truckCapKg } from './data.js?v=202609271611';
+import { buildZcapMap } from './zcap.js?v=202609271611';
 
 export const TRUCK_ORDER = ['Camión 5 Ton', 'Camión 10 Ton', 'Camión 15 Ton', 'Camión 28 Ton'];
 export const TRUCK_TRONCAL = 'Camión 28 Ton';
@@ -188,7 +188,8 @@ export function buildCotizadorContext(db, cfg, ccfg) {
     if (better) rutaPorGrupoDest.set(key, entry);
 
     let c = comunas.get(dn);
-    if (!c) { c = { norm: dn, nombre: r.destino, lat: null, lon: null, cds: [] }; comunas.set(dn, c); }
+    if (!c) { c = { norm: dn, nombre: r.destino, lat: null, lon: null, region: '', cds: [] }; comunas.set(dn, c); }
+    if (!c.region && r.region) c.region = r.region;
     if (c.lat == null && r.lat != null && r.lon != null) { c.lat = Number(r.lat); c.lon = Number(r.lon); }
     if (r.clasificRuta === 'Regional' && !c.cds.some(x => x.grupo === grupo)) {
       c.cds.push({ grupo, km: Number(r.km) || 0, codigo });
@@ -349,7 +350,9 @@ function mejorRetiro(ctx, o, nRet, kilos, d) {
   if (local) opciones.push({ monto: local.precio, regla: local.regla, ruta: local.ruta, camion: local.camion, tipo: 'local' });
   const cdTroncal = d && d !== o ? d : o;
   const fija = Number(getRetiroTroncalTarifas(ctx.ccfg)[cdTroncal]) || 0;
-  if (fija > 0 && esRegional(ctx, o, nRet)) {
+  // Sólo para retiros en comunas de la Región Metropolitana
+  const enRM = /metropolitana/i.test(ctx.comunas.get(nRet)?.region || '');
+  if (fija > 0 && enRM && esRegional(ctx, o, nRet)) {
     opciones.push({ monto: Math.round(fija), regla: `Tarifa fija retiro con camión troncal de ${nombreG(ctx, cdTroncal)} (Regla B)`, camion: TRUCK_TRONCAL, tipo: 'troncal' });
   }
   if (!opciones.length) return null;
