@@ -1,4 +1,4 @@
-import { getDatabase, saveDatabase, deleteRow } from './data.js?v=202609271544';
+import { getDatabase, saveDatabase, deleteRow } from './data.js?v=202609271559';
 import { showAlert, geocodeAddress, escapeHtml, toCSV, downloadFile } from './utils.js';
 import { GRUPOS_ORIGEN } from './chile-geo.js';
 
@@ -119,9 +119,9 @@ export function renderLogisticsView(container) {
 
     if (adjustMap) { adjustMap.remove(); adjustMap = null; }
     adjustMap = L.map('cd-map-adjust').setView([coords.lat, coords.lon], coords.found ? 15 : 11);
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 19,
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>'
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
     }).addTo(adjustMap);
     adjustMarker = L.marker([coords.lat, coords.lon], { draggable: true }).addTo(adjustMap)
       .bindTooltip('Arrastre para ajustar la ubicación exacta', { permanent: false });
@@ -165,9 +165,9 @@ export function renderLogisticsView(container) {
     map = L.map('logistics-map').setView([-34.5, -71.5], 6);
 
     // Capa de Mapa estilo Premium Dark (CartoDB Dark Matter)
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 19,
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>'
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
     }).addTo(map);
 
     const bounds = [];

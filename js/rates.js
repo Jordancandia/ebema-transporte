@@ -3,12 +3,12 @@
 // Última milla, con reglas de minimización A/B/C. El cálculo vive en
 // cotizador-engine.js y usa las tarifas de la vista Tarifas Clientes
 // (ZCAP, ZFMI, ZFMP y Tarifa Express por ruta y tipo de camión).
-import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig } from './data.js?v=202609271544';
+import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig } from './data.js?v=202609271559';
 import {
   buildCotizadorContext, cotizar, cdsDeComuna, normComuna,
   getRetiroTroncalTarifas, RETIRO_TRONCAL_DEFAULT, TRUCK_ORDER, HUB_GRUPO, FLUJOS
-} from './cotizador-engine.js?v=202609271544';
-import { getRol } from './permisos.js?v=202609271544';
+} from './cotizador-engine.js?v=202609271559';
+import { getRol } from './permisos.js?v=202609271559';
 import { formatCLP, showAlert, escapeHtml, loadLeaflet } from './utils.js';
 
 // --- Historial de cotizaciones recientes por perfil (localStorage) ---
@@ -62,6 +62,14 @@ async function kmCarretera(a, b) {
   _kmCache.set(key, res);
   return res;
 }
+
+const _geoCache = new Map();
+const COLORES_TRAMO = {
+  retiro:   { color: '#f59e0b', label: 'Retiro (primera milla)' },
+  troncal:  { color: '#b5000b', label: 'Traslado troncal' },
+  ultima:   { color: '#16a34a', label: 'Última milla' },
+  directo:  { color: '#7c3aed', label: 'Directo' }
+};
 
 const cardOn  = 'flex items-center gap-sm border-2 border-primary bg-primary/5 p-md rounded-lg cursor-pointer transition-all';
 const cardOff = 'flex items-center gap-sm border-2 border-outline-variant p-md rounded-lg cursor-pointer transition-all';
@@ -252,7 +260,7 @@ export function renderRatesView(container) {
     <div class="mt-xl">
       <div class="flex justify-between items-end mb-md">
         <h3 class="font-headline-sm text-headline-sm font-bold text-on-surface">Recorrido Cotizado</h3>
-        <p class="font-body-md text-[12px] text-secondary">Retiro · CD origen · CD destino · Despacho</p>
+        <p class="font-body-md text-[12px] text-secondary">Recorrido por carretera · pase el mouse sobre cada tramo para ver su costo</p>
       </div>
       <div class="bg-surface border border-outline-variant rounded overflow-hidden">
         <div id="quote-fleet-map" class="h-[350px] relative" style="z-index: 1;"></div>
@@ -352,15 +360,25 @@ export function renderRatesView(container) {
   el.kilos.addEventListener('input', recalcular);
 
   // --- Mapa ---
-  let fleetMap = null, capa = null, ultimoMapa = null;
+  let fleetMap = null, capa = null, ultimoMapa = null, mapaToken = 0;
   loadLeaflet().then(L => {
     if (!document.getElementById('quote-fleet-map')) return;
     fleetMap = L.map('quote-fleet-map').setView([-36.5, -71.5], 5);
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-      maxZoom: 19,
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>'
+    // OpenStreetMap estándar (sin API key). CARTO pasó a exigir API key.
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19, subdomains: 'abc',
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> · Rutas: OSRM'
     }).addTo(fleetMap);
     capa = L.layerGroup().addTo(fleetMap);
+    // Leyenda de colores por tipo de tramo
+    const leyenda = L.control({ position: 'bottomleft' });
+    leyenda.onAdd = () => {
+      const d = L.DomUtil.create('div');
+      d.style.cssText = 'background:rgba(255,255,255,.92);padding:6px 8px;border-radius:6px;font:11px Arial;line-height:16px;box-shadow:0 1px 4px rgba(0,0,0,.2)';
+      d.innerHTML = Object.values(COLORES_TRAMO).map(c => `<div><span style="display:inline-block;width:18px;height:4px;background:${c.color};vertical-align:middle;margin-right:6px;border-radius:2px"></span>${c.label}</div>`).join('');
+      return d;
+    };
+    leyenda.addTo(fleetMap);
     if (ultimoMapa) pintarMapa(ultimoMapa.input, ultimoMapa.res);
   }).catch(err => {
     console.error('Error al cargar Leaflet:', err);
@@ -368,35 +386,87 @@ export function renderRatesView(container) {
     if (m) m.innerHTML = '<div class="flex justify-center items-center h-full text-secondary bg-surface-container-low">Mapa no disponible.</div>';
   });
 
-  function pintarMapa(input, res) {
+  // Recorrido por carretera (OSRM, sin API key) con caché de sesión
+  async function geometriaRuta(a, b) {
+    const key = `${a[0]},${a[1]}|${b[0]},${b[1]}`;
+    if (_geoCache.has(key)) return _geoCache.get(key);
+    let geo = null;
+    try {
+      const resp = await fetch(`https://router.project-osrm.org/route/v1/driving/${a[1]},${a[0]};${b[1]},${b[0]}?overview=simplified&geometries=geojson`);
+      if (resp.ok) {
+        const data = await resp.json();
+        const c = data?.routes?.[0]?.geometry?.coordinates;
+        if (c && c.length > 1) geo = c.map(([lon, lat]) => [lat, lon]);
+      }
+    } catch (_) { /* sin red: línea recta */ }
+    _geoCache.set(key, geo);
+    return geo;
+  }
+
+  async function pintarMapa(input, res) {
     ultimoMapa = { input, res };
     if (!fleetMap || !capa) return;
+    const token = ++mapaToken;
     capa.clearLayers();
     if (!res || !res.ok) return;
-    const pts = [];
-    const add = (lat, lon, txt, color) => {
-      if (lat == null || lon == null) return;
-      L.circleMarker([lat, lon], { radius: 7, color, fillColor: color, fillOpacity: 0.9, weight: 2 }).addTo(capa).bindPopup(txt);
-      pts.push([lat, lon]);
-    };
+
     const cRet = ctx.comunas.get(normComuna(input.comunaRetiro));
     const cDes = ctx.comunas.get(normComuna(input.comunaDespacho));
-    const gO = ctx.grupoInfo.get(res.cdOrigen), gD = ctx.grupoInfo.get(res.cdDestino);
-    const directo = res.tramos.some(t => t.key === 'directo');
-    if (input.comunaRetiro && cRet) add(cRet.lat, cRet.lon, `<strong>Retiro:</strong> ${escapeHtml(cRet.nombre)}`, '#f59e0b');
-    if (!directo && gO) add(gO.lat, gO.lon, `<strong>CD origen:</strong> ${escapeHtml(gO.cdNombre)}`, '#3b82f6');
-    if (!directo && res.tramos.some(t => t.key === 'troncal2')) {
-      const h = ctx.grupoInfo.get(HUB_GRUPO);
-      if (h) add(h.lat, h.lon, '<strong>Hub:</strong> Quilicura', '#a855f7');
-    }
-    if (!directo && gD && res.cdDestino !== res.cdOrigen) add(gD.lat, gD.lon, `<strong>CD destino:</strong> ${escapeHtml(gD.cdNombre)}`, '#3b82f6');
-    if (input.retira !== 'CD' && cDes) add(cDes.lat, cDes.lon, `<strong>Despacho:</strong> ${escapeHtml(cDes.nombre)}`, '#16a34a');
-    if (pts.length > 1) {
-      L.polyline(pts, { color: '#b5000b', weight: 3, dashArray: '6 6' }).addTo(capa);
-      fleetMap.fitBounds(pts, { padding: [40, 40] });
-    } else if (pts.length === 1) {
-      fleetMap.setView(pts[0], 10);
-    }
+    const gO = ctx.grupoInfo.get(res.cdOrigen), gD = ctx.grupoInfo.get(res.cdDestino), hub = ctx.grupoInfo.get(HUB_GRUPO);
+    const P = (o, nombre, tipo) => (o && o.lat != null && o.lon != null) ? { ll: [Number(o.lat), Number(o.lon)], nombre, tipo } : null;
+    const pRet = P(cRet, `Retiro: ${cRet?.nombre || ''}`, 'retiro');
+    const pO = P(gO, `CD ${gO?.cdNombre || ''}`, 'cd');
+    const pH = P(hub, 'Hub Quilicura', 'cd');
+    const pD = P(gD, `CD ${gD?.cdNombre || ''}`, 'cd');
+    const pDes = P(cDes, `Despacho: ${cDes?.nombre || ''}`, 'despacho');
+
+    // Tramos → segmentos (desde, hasta, tipo)
+    const seg = [];
+    res.tramos.forEach(t => {
+      if (t.key === 'retiro') seg.push([pRet, pO, 'retiro', t]);
+      else if (t.key === 'troncal1') seg.push([pO, res.tramos.some(x => x.key === 'troncal2') ? pH : pD, 'troncal', t]);
+      else if (t.key === 'troncal2') seg.push([pH, pD, 'troncal', t]);
+      else if (t.key === 'ultima' && input.retira !== 'CD') seg.push([pD, pDes, 'ultima', t]);
+      else if (t.key === 'directo' || t.key === 'directo_camion' || t.key === 'exclusivo') {
+        const desde = input.comunaRetiro ? pRet : pO;
+        const hasta = input.retira === 'CD' ? pD : pDes;
+        seg.push([desde, hasta, 'directo', t]);
+      }
+    });
+    const validos = seg.filter(([a, b]) => a && b && (a.ll[0] !== b.ll[0] || a.ll[1] !== b.ll[1]));
+
+    // Paradas numeradas en orden de recorrido
+    const paradas = [];
+    validos.forEach(([a, b]) => { [a, b].forEach(p => { if (!paradas.some(x => x.nombre === p.nombre)) paradas.push(p); }); });
+    if (!paradas.length) { [pRet, pO, pDes].filter(Boolean).forEach(p => paradas.push(p)); }
+    const bounds = [];
+    paradas.forEach((p, i) => {
+      const color = p.tipo === 'retiro' ? '#f59e0b' : p.tipo === 'despacho' ? '#16a34a' : '#1d4ed8';
+      L.marker(p.ll, { icon: L.divIcon({ className: '', iconSize: [24, 24], iconAnchor: [12, 12],
+        html: `<div style="width:24px;height:24px;border-radius:50%;background:${color};color:#fff;font:bold 12px Arial;display:flex;align-items:center;justify-content:center;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.4)">${i + 1}</div>` }) })
+        .addTo(capa).bindTooltip(`${i + 1}. ${escapeHtml(p.nombre)}`, { direction: 'top', offset: [0, -10] });
+      bounds.push(p.ll);
+    });
+    if (bounds.length > 1) fleetMap.fitBounds(bounds, { padding: [40, 40] });
+    else if (bounds.length === 1) fleetMap.setView(bounds[0], 10);
+
+    // Líneas: primero rectas punteadas, luego se reemplazan por la carretera real
+    const lineas = validos.map(([a, b, tipo, t]) => {
+      const c = COLORES_TRAMO[tipo];
+      return L.polyline([a.ll, b.ll], { color: c.color, weight: 3, dashArray: '6 6', opacity: 0.8 })
+        .addTo(capa).bindTooltip(`${escapeHtml(t.label)} · ${formatCLP(t.monto)}`, { sticky: true });
+    });
+    const geos = await Promise.all(validos.map(([a, b]) => geometriaRuta(a.ll, b.ll)));
+    if (token !== mapaToken) return;
+    geos.forEach((g, i) => {
+      if (!g) return;
+      const [, , tipo, t] = validos[i];
+      capa.removeLayer(lineas[i]);
+      L.polyline(g, { color: COLORES_TRAMO[tipo].color, weight: 5, opacity: 0.85 })
+        .addTo(capa).bindTooltip(`${escapeHtml(t.label)} · ${formatCLP(t.monto)}`, { sticky: true });
+      g.forEach(ll => bounds.push(ll));
+    });
+    if (bounds.length > 1) fleetMap.fitBounds(bounds, { padding: [30, 30] });
   }
 
   // --- Cálculo ---
