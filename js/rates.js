@@ -3,12 +3,12 @@
 // Última milla, con reglas de minimización A/B/C. El cálculo vive en
 // cotizador-engine.js y usa las tarifas de la vista Tarifas Clientes
 // (ZCAP, ZFMI, ZFMP y Tarifa Express por ruta y tipo de camión).
-import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig } from './data.js?v=202609271611';
+import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig } from './data.js?v=202609271622';
 import {
   buildCotizadorContext, cotizar, cdsDeComuna, normComuna,
   getRetiroTroncalTarifas, RETIRO_TRONCAL_DEFAULT, TRUCK_ORDER, HUB_GRUPO, FLUJOS
-} from './cotizador-engine.js?v=202609271611';
-import { getRol } from './permisos.js?v=202609271611';
+} from './cotizador-engine.js?v=202609271622';
+import { getRol } from './permisos.js?v=202609271622';
 import { formatCLP, showAlert, escapeHtml, loadLeaflet } from './utils.js';
 
 // --- Historial de cotizaciones recientes por perfil (localStorage) ---
@@ -429,6 +429,7 @@ export function renderRatesView(container) {
       if (t.key === 'retiro') seg.push([pRet, pO, 'retiro', t]);
       else if (t.key === 'troncal1') seg.push([pO, res.tramos.some(x => x.key === 'troncal2') ? pH : pD, 'troncal', t]);
       else if (t.key === 'troncal2') seg.push([pH, pD, 'troncal', t]);
+      else if (t.key === 'troncal_ruta') seg.push([pO, pDes, 'troncal', t]);
       else if (t.key === 'ultima' && input.retira !== 'CD') seg.push([pD, pDes, 'ultima', t]);
       else if (t.key === 'directo' || t.key === 'directo_camion' || t.key === 'exclusivo') {
         const desde = input.comunaRetiro ? pRet : pO;
@@ -484,6 +485,8 @@ export function renderRatesView(container) {
     const nom = g => ctx.grupoInfo.get(g)?.nombre || g || '—';
     const T = k => res.tramos.filter(t => t.key === k || (k === 'troncal' && /^troncal/.test(t.key)));
     const retiro = T('retiro')[0], troncales = T('troncal'), ultima = T('ultima')[0];
+    const enRuta = res.tramos.some(t => t.key === 'troncal_ruta');
+    const cargoRuta = res.tramos.find(t => t.key === 'cargo_ruta');
     const directo = res.tramos.find(t => ['directo', 'directo_camion', 'exclusivo'].includes(t.key));
     const viaHub = troncales.length === 2;
     const calzadaRet = !!input.comunaRetiro;
@@ -496,11 +499,12 @@ export function renderRatesView(container) {
       { tag: 'CD', icon: 'warehouse', activo: !directo || !calzadaRet,
         det: directo && calzadaRet ? 'No pasa por centro' : nom(res.cdOrigen) },
       { tag: 'SUCURSAL', icon: 'store', activo: !directo && res.cdDestino && (res.cdDestino !== res.cdOrigen || clienteRetira),
-        det: directo ? (clienteRetira ? nom(res.cdDestino) : 'No pasa por centro') : (res.cdDestino === res.cdOrigen && !clienteRetira ? 'Mismo centro' : nom(res.cdDestino)) },
+        det: directo ? (clienteRetira ? nom(res.cdDestino) : 'No pasa por centro') : enRuta ? `Troncal hacia ${nom(res.cdDestino)} — no entra` : (res.cdDestino === res.cdOrigen && !clienteRetira ? 'Mismo centro' : nom(res.cdDestino)) },
       { tag: 'ENTREGA', icon: clienteRetira ? 'person_pin_circle' : 'local_shipping', activo: true,
         det: clienteRetira ? `Cliente retira en ${nom(res.cdDestino)}` : (input.comunaDespacho || '—') }
     ];
     if (directo && clienteRetira) nodos[2].activo = true;
+    if (enRuta) nodos[2].activo = false;
 
     // Conectores entre nodos (i → i+1)
     const con = [null, null, null];
@@ -508,8 +512,13 @@ export function renderRatesView(container) {
       con[0] = con[1] = con[2] = { tipo: 'directo', monto: directo.monto, span: true };
     } else {
       if (retiro) con[0] = { tipo: 'retiro', monto: retiro.monto };
-      if (troncales.length) con[1] = { tipo: 'troncal', monto: troncales.reduce((a, t) => a + t.monto, 0), nota: viaHub ? 'vía Quilicura' : '' };
-      if (ultima && !clienteRetira) con[2] = { tipo: 'ultima', monto: ultima.monto };
+      if (enRuta) {
+        con[1] = { tipo: 'troncal', monto: troncales.reduce((a, t) => a + t.monto, 0) + (cargoRuta?.monto || 0), nota: 'entrega en ruta' };
+        con[2] = { tipo: 'troncal', monto: 0, span: true, nota: '' };
+      } else {
+        if (troncales.length) con[1] = { tipo: 'troncal', monto: troncales.reduce((a, t) => a + t.monto, 0), nota: viaHub ? 'vía Quilicura' : '' };
+        if (ultima && !clienteRetira) con[2] = { tipo: 'ultima', monto: ultima.monto };
+      }
     }
 
     const nodoHtml = n => {
@@ -536,7 +545,7 @@ export function renderRatesView(container) {
 
     const servicio = input.servicio === 'exclusivo' ? 'Exclusivo' : 'Consolidado';
     const detalle = res.tramos.map(t => {
-      const tipo = t.key === 'retiro' ? 'retiro' : /^troncal/.test(t.key) ? 'troncal' : t.key === 'ultima' ? 'ultima' : 'directo';
+      const tipo = t.key === 'retiro' ? 'retiro' : (/^troncal/.test(t.key) || t.key === 'cargo_ruta') ? 'troncal' : t.key === 'ultima' ? 'ultima' : 'directo';
       const c = COLORES_TRAMO[tipo];
       return `<div class="flex gap-sm items-stretch">
         <div style="width:5px;border-radius:3px;background:${c.color}"></div>

@@ -14,8 +14,8 @@
 // ZFMP = ZCAP ÷ kilos a consolidar, ZFMI = ZCAP camión mínimo ÷ pedidos promedio
 // del cluster, Tarifa Express = ZCAP × (1 + recargo exclusividad del centro).
 // ---------------------------------------------------------------------------
-import { getOrigenGroups, truckCapKg } from './data.js?v=202609271611';
-import { buildZcapMap } from './zcap.js?v=202609271611';
+import { getOrigenGroups, truckCapKg } from './data.js?v=202609271622';
+import { buildZcapMap } from './zcap.js?v=202609271622';
 
 export const TRUCK_ORDER = ['Camión 5 Ton', 'Camión 10 Ton', 'Camión 15 Ton', 'Camión 28 Ton'];
 export const TRUCK_TRONCAL = 'Camión 28 Ton';
@@ -24,6 +24,13 @@ export const HUB_GRUPO = 'SANTIAGO'; // Hub troncal: CD Quilicura
 // Umbrales de camión directo (mismos del Plan de Carga, 21-sep-2026)
 export const UMBRAL_DIRECTO_CALZADA = 0.9; // FABRICA-CLIENTE / FABRICA-SUCURSAL
 export const UMBRAL_DIRECTO_STOCK = 0.8;   // CD-CLIENTE
+
+// Entrega en ruta troncal: el troncal deja la carga en la comuna de destino si
+// queda en su camino (desvío ≤ 10 km) y la carga supera 1.800 kg; se cobra el
+// troncal proporcional hasta la comuna + cargo fijo, sin última milla.
+export const DESVIO_MAX_KM = 10;
+export const KILOS_MIN_EN_RUTA = 1800;
+export const CARGO_ENTREGA_EN_RUTA = 20000;
 
 // Camión que queda lleno sobre el umbral con los kilos cotizados (o n camiones 28 Ton)
 export function elegirCamionDirecto(kilos, umbral) {
@@ -458,6 +465,42 @@ export function cotizar(ctx, input) {
       caminos.push({ o, d, total, tramos, nombre: partes.join(' → '), camion: ult.camion || ret?.camion });
     });
   });
+
+  // ── Entrega en ruta troncal ──
+  // desvío = km(centro origen → comuna) + km(centro destino → comuna) − km(centro origen → centro destino)
+  if (retira === 'NO' && kilos > KILOS_MIN_EN_RUTA) {
+    origenes.forEach(o => {
+      const eOC = findRuta(ctx, o, nDes);
+      if (!eOC || !(eOC.km > 0)) return;
+      destinos.forEach(d => {
+        if (d === o) return;
+        const eOD = findRuta(ctx, o, ctx.grupoInfo.get(d)?.comuna);
+        const eDC = findRuta(ctx, d, nDes);
+        if (!eOD || !eDC || !(eOD.km > 0)) return;
+        const desvio = Math.round(eOC.km + eDC.km - eOD.km);
+        if (desvio > DESVIO_MAX_KM) return;
+        const tr = precioTroncal(eOC, kilos);
+        if (!tr) return;
+        let ret = null;
+        if (calzada) {
+          if (exclusivo) {
+            const p = precioLocalExclusivo(findRuta(ctx, o, nRet), kilos);
+            ret = p ? { monto: p.precio, regla: p.regla, ruta: p.ruta, camion: p.camion, tipo: 'exclusivo' } : null;
+          } else ret = mejorRetiro(ctx, o, nRet, kilos, d);
+          if (!ret) return;
+        }
+        const tramos = [];
+        if (ret) tramos.push({ key: 'retiro', label: 'Retiro (primera milla)', monto: ret.monto, regla: ret.regla, ruta: ret.ruta, camion: ret.camion });
+        tramos.push({ key: 'troncal_ruta', label: `Traslado troncal con entrega en ruta (${input.comunaDespacho})`, monto: tr.precio, ruta: tr.ruta, camion: tr.camion,
+          regla: `${tr.regla} · en ruta ${nombreG(ctx, o)} → ${nombreG(ctx, d)}: ${eOC.km} + ${eDC.km} − ${eOD.km} = desvío ${Math.max(0, desvio)} km (máx. ${DESVIO_MAX_KM})${desvio < 0 ? ' — la comuna queda antes del centro destino' : ''}` });
+        tramos.push({ key: 'cargo_ruta', label: 'Cargo entrega en ruta', monto: CARGO_ENTREGA_EN_RUTA, regla: `Cargo fijo por parada del troncal (carga > ${KILOS_MIN_EN_RUTA.toLocaleString('es-CL')} kg)` });
+        const total = tramos.reduce((a, t) => a + t.monto, 0);
+        const inicio = calzada ? `Retiro ${ret.tipo === 'troncal' ? 'troncal' : (ret.tipo === 'exclusivo' ? 'exclusivo' : 'local')} ${nombreG(ctx, o)}` : `${flujo === 'EBE-DESP' ? 'Stock' : 'Recepción fábrica en'} ${nombreG(ctx, o)}`;
+        caminos.push({ o, d, total, tramos, enRuta: true, camion: tr.camion,
+          nombre: `${inicio} → entrega en ruta a ${input.comunaDespacho} (troncal hacia ${nombreG(ctx, d)})` });
+      });
+    });
+  }
 
   // ── Camión directo (misma regla del Plan de Carga) ──
   // Se habilita si los kilos llenan un camión sobre el umbral: >90% en Calzada
