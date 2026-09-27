@@ -14,12 +14,28 @@
 // ZFMP = ZCAP ÷ kilos a consolidar, ZFMI = ZCAP camión mínimo ÷ pedidos promedio
 // del cluster, Tarifa Express = ZCAP × (1 + recargo exclusividad del centro).
 // ---------------------------------------------------------------------------
-import { getOrigenGroups, truckCapKg } from './data.js?v=202609271437';
-import { buildZcapMap } from './zcap.js?v=202609271437';
+import { getOrigenGroups, truckCapKg } from './data.js?v=202609271516';
+import { buildZcapMap } from './zcap.js?v=202609271516';
 
 export const TRUCK_ORDER = ['Camión 5 Ton', 'Camión 10 Ton', 'Camión 15 Ton', 'Camión 28 Ton'];
 export const TRUCK_TRONCAL = 'Camión 28 Ton';
 export const HUB_GRUPO = 'SANTIAGO'; // Hub troncal: CD Quilicura
+
+// Umbrales de camión directo (mismos del Plan de Carga, 21-sep-2026)
+export const UMBRAL_DIRECTO_CALZADA = 0.9; // FABRICA-CLIENTE / FABRICA-SUCURSAL
+export const UMBRAL_DIRECTO_STOCK = 0.8;   // CD-CLIENTE
+
+// Camión que queda lleno sobre el umbral con los kilos cotizados (o n camiones 28 Ton)
+export function elegirCamionDirecto(kilos, umbral) {
+  const caps = { 'Camión 5 Ton': 5000, 'Camión 10 Ton': 10000, 'Camión 15 Ton': 15000, 'Camión 28 Ton': 28000 };
+  for (const tipo of TRUCK_ORDER) {
+    const cap = caps[tipo];
+    if (kilos <= cap) return kilos > umbral * cap ? { tipo, n: 1, fill: kilos / cap } : null;
+  }
+  const n = Math.ceil(kilos / 28000);
+  const fill = kilos / (n * 28000);
+  return fill > umbral ? { tipo: TRUCK_TRONCAL, n, fill } : null;
+}
 
 // Tarifa fija de retiro con camión troncal (Regla B) — valores iniciales del
 // requerimiento. Se administran desde el Cotizador (OWNER) y se guardan en
@@ -350,11 +366,18 @@ export function cotizar(ctx, input) {
   }
 
   // Nodos de origen: centro indicado, o todos los centros con ruta a la comuna de retiro
-  const origenes = calzada ? candidatos(ctx, nRet) : [input.cdOrigen];
+  // Primera y última milla: sólo desde el/los CD que atienden la comuna con ruta
+  // REGIONAL (ej. Pudahuel → Santiago). Si la comuna no tiene ruta Regional, se
+  // usa cualquier centro con ruta a ella.
+  const soloRegionales = (lista, comunaNorm) => {
+    const reg = lista.filter(g => esRegional(ctx, g, comunaNorm));
+    return reg.length ? reg : lista;
+  };
+  const origenes = calzada ? soloRegionales(candidatos(ctx, nRet), nRet) : [input.cdOrigen];
   if (!origenes.length) { out.error = `No hay rutas creadas hacia la comuna de retiro "${input.comunaRetiro}".`; return out; }
 
   // Nodos de destino: centro de retiro del cliente, o todos los centros con ruta a la comuna
-  const destinos = retira === 'CD' ? [input.cdDestino] : candidatos(ctx, nDes);
+  const destinos = retira === 'CD' ? [input.cdDestino] : soloRegionales(candidatos(ctx, nDes), nDes);
   if (!destinos.length) { out.error = `No hay rutas creadas hacia la comuna de destino "${input.comunaDespacho}".`; return out; }
 
   // ── EXCLUSIVO: Tarifa Express punto a punto desde el mejor nodo de origen ──
@@ -433,6 +456,33 @@ export function cotizar(ctx, input) {
       caminos.push({ o, d, total, tramos, nombre: partes.join(' → '), camion: ult.camion || ret?.camion });
     });
   });
+
+  // ── Camión directo (misma regla del Plan de Carga) ──
+  // Se habilita si los kilos llenan un camión sobre el umbral: >90% en Calzada
+  // (FABRICA-CLIENTE / FABRICA-SUCURSAL) y >80% en Stock (CD-CLIENTE). Precio =
+  // ZCAP del camión en la ruta directa; compite con los recorridos por centros.
+  const umbral = calzada ? UMBRAL_DIRECTO_CALZADA : UMBRAL_DIRECTO_STOCK;
+  const camionDirecto = elegirCamionDirecto(kilos, umbral);
+  if (camionDirecto) {
+    const destDirecto = retira === 'CD' ? ctx.grupoInfo.get(destinos[0])?.comuna : nDes;
+    origenes.forEach(o => {
+      // Si el centro de salida ya atiende el destino, el recorrido por centros es el mismo viaje
+      if (retira === 'CD' ? o === destinos[0] : esRegional(ctx, o, destDirecto)) return;
+      const e = findRuta(ctx, o, destDirecto);
+      const t = e?.trucks[camionDirecto.tipo];
+      if (!t || !(t.zcap > 0)) return;
+      const monto = Math.round(t.zcap * camionDirecto.n);
+      const desde = calzada ? `${input.comunaRetiro} (zona ${nombreG(ctx, o)})` : nombreG(ctx, o);
+      const hasta = retira === 'CD' ? nombreG(ctx, destinos[0]) : input.comunaDespacho;
+      caminos.push({
+        o, d: retira === 'CD' ? destinos[0] : o, total: monto, camion: t.type,
+        nombre: `Camión directo ${t.type}${camionDirecto.n > 1 ? ' × ' + camionDirecto.n : ''} ${desde} → ${hasta}`,
+        tramos: [{ key: 'directo_camion', label: `Camión directo ${calzada ? (retira === 'CD' ? 'fábrica → sucursal' : 'fábrica → cliente') : 'centro → cliente'}`,
+          monto, ruta: e.codigo, camion: t.type,
+          regla: `ZCAP ${t.type} ${fmt(t.zcap)}${camionDirecto.n > 1 ? ' × ' + camionDirecto.n : ''} — ${Math.round(camionDirecto.fill * 100)}% de ocupación (umbral ${Math.round(umbral * 100)}%)` }]
+      });
+    });
+  }
 
   // Regla A — directo punto a punto cuando retiro y despacho comparten centro Regional
   const km = Number(input.kmDirecto) || 0;
