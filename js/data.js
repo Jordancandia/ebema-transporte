@@ -1,7 +1,7 @@
 // Capa de datos de SIT EBEMA
 // Fuente principal: Supabase (PostgreSQL compartido, protegido con RLS).
 // localStorage se mantiene como copia local de respaldo (modo sin conexión).
-import { supabase } from './supabase-client.js?v=202609271410';
+import { supabase } from './supabase-client.js?v=202609271412';
 
 const STORAGE_KEY = 'ebema_transporte_db';
 
@@ -43,6 +43,13 @@ export async function loadRoutesData() {
       const results = await Promise.all(LAZY_TABLE_MAP.map(t => fetchAllRows(t.table)));
       if (!memoryDb) return; // sesión no iniciada aún
       LAZY_TABLE_MAP.forEach((t, i) => { memoryDb[t.local] = results[i] || []; });
+      // Las rutas llegan de Supabase con origen_grupo = null: se deriva desde el
+      // centro de origen (origenId) para que Tarifas Clientes y el Cotizador
+      // resuelvan el Centro Origen (recargo exclusividad, % consolidación, ZFMI).
+      const _cdGrupo = new Map((memoryDb.logisticsCentres || []).map(c => [String(c.id), c.origen_grupo || String(c.id).toUpperCase()]));
+      (memoryDb.routes || []).forEach(r => {
+        if (!r.origen_grupo) r.origen_grupo = _cdGrupo.get(String(r.origenId)) || '';
+      });
       _routesLoaded = true;
     } catch (err) {
       _routesLoading = null; // permitir reintento

@@ -2,8 +2,8 @@
 // Regional:       ZCAP = Costo Base + km × Tarifa/KM
 // Interregional:  ZCAP = item10_costoRutaTotal (motor completo)
 // Troncales:      ZCAP = motor completo para rutas definidas por el usuario
-import { getDatabase, saveDatabase, getTariffConfig, truckCapKg, getOrigenGroups, TRUCK_BASE_TYPES } from './data.js?v=202609271410';
-import { calcularCostoRuta } from './tarifas-engine.js?v=202609271410';
+import { getDatabase, saveDatabase, getTariffConfig, truckCapKg, getOrigenGroups, TRUCK_BASE_TYPES } from './data.js?v=202609271412';
+import { calcularCostoRuta } from './tarifas-engine.js?v=202609271412';
 import { formatCLP, escapeHtml } from './utils.js';
 
 const TRUCK_ORDER = ['Camión 5 Ton', 'Camión 10 Ton', 'Camión 15 Ton', 'Camión 28 Ton'];
@@ -329,7 +329,9 @@ function renderContenido(db, cfg, grupos, container) {
 // Usado por otras vistas (Tarifas $/Kg) para leer el mismo valor sin recalcular.
 export function buildZcapMap(db, cfg) {
   const grupos       = getOrigenGroups(db);
-  const troncalesSet = new Set(cfg.variables?.troncales || []);
+  // Fix 27-sep-2026: la lista de troncales se guarda en troncalesRoutes (antes se
+  // leía 'troncales', inexistente, y el ZCAP troncal ignoraba la config IDA).
+  const troncalesSet = new Set(cfg.variables?.troncalesRoutes || []);
   const rutas        = (db.routes || []).filter(r => r.activo);
   const map          = new Map();
 
