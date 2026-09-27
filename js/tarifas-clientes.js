@@ -1,10 +1,10 @@
 // MÓDULO: Administrador de Tarifas Clientes — SIT EBEMA v2.1
 // Vistas: Histórico (6M) | Consolidación | Densidad Logística | Frecuencia y Especiales | Cluster | Resultados
-import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig, saveHistorico, loadHistorico, saveHistoricoGlobal, getOrigenGroups, loadHistoricoFlete360 } from './data.js?v=202609271942';
-import { CAP_LIST, truckTypesWithCap, calcularCostoRuta } from './tarifas-engine.js?v=202609271942';
-import { buildZcapMap } from './zcap.js?v=202609271942';
+import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig, saveHistorico, loadHistorico, saveHistoricoGlobal, getOrigenGroups, loadHistoricoFlete360 } from './data.js?v=202609271948';
+import { CAP_LIST, truckTypesWithCap, calcularCostoRuta } from './tarifas-engine.js?v=202609271948';
+import { buildZcapMap } from './zcap.js?v=202609271948';
 import { formatCLP, showAlert, toCSV, downloadFile, formatDateDDMMYYYY, escapeHtml } from './utils.js';
-import { supabase } from './supabase-client.js?v=202609271942';
+import { supabase } from './supabase-client.js?v=202609271948';
 
 // ─────────────────────────────────────────────────────────────
 // ESTADO DE MÓDULO
@@ -1664,7 +1664,7 @@ function renderResultados(content, db, cfg, ccfg) {
     const capKg    = truck.capKg != null ? truck.capKg
                    : (Number(String(truck.type).match(/(\d+)/)?.[1] || 0) * 1000);
     const bkt      = capKg / 1000;
-    const factorPct       = getPath(ccfg, `consolidacionObjetivo.${grupoKey}.${bkt}`, 80);
+    const factorPct       = objetivoConsol(ccfg, grupoKey, bkt);
     const kilosConsolidar = capKg * (factorPct / 100);
     const zfmp            = (zcap > 0 && kilosConsolidar > 0) ? zcap / kilosConsolidar : null;
 
@@ -1933,6 +1933,17 @@ function renderResultados(content, db, cfg, ccfg) {
 // ═══════════════════════════════════════════════════════════════
 const ZFMI_PAGE = 50;
 
+// Objetivo de consolidación (%) por centro y camión. La vista Consolidación guarda
+// Santiago y San Bernardo fusionados bajo "SANTIAGO_+_SAN_BERNARDO"; las rutas llegan con
+// su grupo real, así que se busca primero la clave propia y luego la fusionada.
+function objetivoConsol(ccfg, grupoKey, bkt) {
+  const t = ccfg.consolidacionObjetivo || {};
+  const k = String(grupoKey || '');
+  const merged = (k === 'SANTIAGO' || k === 'SAN_BERNARDO') ? t['SANTIAGO_+_SAN_BERNARDO'] : null;
+  const v = t[k]?.[bkt] ?? merged?.[bkt];
+  return (v === undefined || v === null || v === '') ? 80 : Number(v);
+}
+
 function renderZfmi(content, db, cfg, ccfg) {
   const zcapMap = buildZcapMap(db, cfg); // "rutaCodigo||truckType" → { zcap, truck, ruta }
   const opClusterMap = computeOpClusterMap(db, ccfg); // mismo cluster operativo que la vista Cluster
@@ -1960,7 +1971,7 @@ function renderZfmi(content, db, cfg, ccfg) {
     const rutaCodigo = ruta.codigo || String(ruta.id || '');
     if (zfmiByRuta.has(rutaCodigo)) return; // ya guardado
     const bkt       = capKg / 1000;
-    const factorPct = getPath(ccfg, `consolidacionObjetivo.${grupoKey}.${bkt}`, 80);
+    const factorPct = objetivoConsol(ccfg, grupoKey, bkt);
     const kilosMin  = capKg * (factorPct / 100);
     zfmiByRuta.set(rutaCodigo, {
       minTruckType: truck.type || (capKg / 1000 + 'T'),
@@ -1984,7 +1995,7 @@ function renderZfmi(content, db, cfg, ccfg) {
     const capKg    = truck.capKg != null ? truck.capKg
                    : (Number(String(truck.type).match(/(\d+)/)?.[1] || 0) * 1000);
     const bkt             = capKg / 1000;
-    const factorPct       = getPath(ccfg, `consolidacionObjetivo.${grupoKey}.${bkt}`, 80);
+    const factorPct       = objetivoConsol(ccfg, grupoKey, bkt);
     const kilosConsolidar = capKg * (factorPct / 100);
     const zfmx            = zcap > 0 ? zcap : null;
     const rutaCodigo      = ruta.codigo || String(ruta.id || '');

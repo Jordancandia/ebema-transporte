@@ -14,8 +14,8 @@
 // ZFMP = ZCAP ÷ kilos a consolidar, ZFMI = ZCAP camión mínimo ÷ pedidos promedio
 // del cluster, Tarifa Express = ZCAP × (1 + recargo exclusividad del centro).
 // ---------------------------------------------------------------------------
-import { getOrigenGroups, truckCapKg } from './data.js?v=202609271948';
-import { buildZcapMap } from './zcap.js?v=202609271948';
+import { getOrigenGroups, truckCapKg } from './data.js?v=202609271942';
+import { buildZcapMap } from './zcap.js?v=202609271942';
 
 export const TRUCK_ORDER = ['Camión 5 Ton', 'Camión 10 Ton', 'Camión 15 Ton', 'Camión 28 Ton'];
 export const TRUCK_TRONCAL = 'Camión 28 Ton';
@@ -116,7 +116,7 @@ export function buildTarifaClienteIndex(db, cfg, ccfg) {
     const codigo = ruta.codigo || String(ruta.id || '');
     const cap = truckCapKg(truck.type);
     const bkt = cap / 1000;
-    const factorPct = Number(getPath(ccfg, `consolidacionObjetivo.${grupoKey}.${bkt}`, null) ?? ((grupoKey === 'SANTIAGO' || grupoKey === 'SAN_BERNARDO') ? getPath(ccfg, `consolidacionObjetivo.SANTIAGO_+_SAN_BERNARDO.${bkt}`, 80) : 80)) || 80;
+    const factorPct = Number(getPath(ccfg, `consolidacionObjetivo.${grupoKey}.${bkt}`, 80)) || 80;
     const kilosConsolidar = cap * (factorPct / 100);
     const zcapN = Number(zcap) || 0;
     const zfmp = (zcapN > 0 && kilosConsolidar > 0) ? zcapN / kilosConsolidar : null;
