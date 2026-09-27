@@ -14,8 +14,8 @@
 // ZFMP = ZCAP ÷ kilos a consolidar, ZFMI = ZCAP camión mínimo ÷ pedidos promedio
 // del cluster, Tarifa Express = ZCAP × (1 + recargo exclusividad del centro).
 // ---------------------------------------------------------------------------
-import { getOrigenGroups, truckCapKg } from './data.js?v=202609271352';
-import { buildZcapMap } from './zcap.js?v=202609271352';
+import { getOrigenGroups, truckCapKg } from './data.js?v=202609271410';
+import { buildZcapMap } from './zcap.js?v=202609271410';
 
 export const TRUCK_ORDER = ['Camión 5 Ton', 'Camión 10 Ton', 'Camión 15 Ton', 'Camión 28 Ton'];
 export const TRUCK_TRONCAL = 'Camión 28 Ton';
@@ -248,171 +248,218 @@ export function precioTroncal(entry, kilos) {
 }
 
 // ── Cotización principal ───────────────────────────────────────────────────
+// El usuario sólo indica origen y destino; el motor elige internamente los
+// nodos (CD de retiro, CD de última milla y ruta troncal) de menor precio.
 // input = {
 //   tipoNegocio: 'STOCK' | 'CALZADA',
 //   servicio:    'consolidado' | 'exclusivo',
-//   cdOrigen:    grupo (STOCK)                       — CD donde está el stock
-//   comunaRetiro, cdRetiro (opcional, override)      — CALZADA
-//   comunaDespacho, cdDespacho (opcional, override)
+//   cdOrigen:    grupo (STOCK) — CD donde está el stock
+//   comunaRetiro (CALZADA), comunaDespacho
 //   kilos, camion (exclusivo, opcional → automático por kilos)
 //   retira: 'NO' | 'CD' | 'FABRICA'
 //   kmDirecto: km carretera retiro → despacho (Regla A, opcional)
 // }
+const nombreG = (ctx, g) => ctx.grupoInfo.get(g)?.nombre || g;
+
+// CD candidatos para una comuna: todos los centros con ruta tarifada a ella
+function candidatos(ctx, comunaNorm) {
+  return [...ctx.grupoInfo.keys()].filter(g => findRuta(ctx, g, comunaNorm));
+}
+function esRegional(ctx, g, comunaNorm) {
+  const c = ctx.comunas.get(comunaNorm);
+  return !!c && c.cds.some(x => x.grupo === g);
+}
+
+// Mejor traslado troncal entre dos nodos: directo CD→CD o vía Hub Quilicura
+function mejorTroncal(ctx, o, d, kilos) {
+  if (o === d) return { monto: 0, legs: [], nombre: 'Sin troncal' };
+  const infoD = ctx.grupoInfo.get(d);
+  const alts = [];
+  const pDir = precioTroncal(findRuta(ctx, o, infoD?.comuna), kilos);
+  if (pDir) alts.push({ monto: pDir.precio, legs: [pDir], nombre: `Troncal directo ${nombreG(ctx, o)} → ${nombreG(ctx, d)}` });
+  if (o !== HUB_GRUPO && d !== HUB_GRUPO) {
+    const hub = ctx.grupoInfo.get(HUB_GRUPO);
+    const p1 = precioTroncal(findRuta(ctx, o, hub?.comuna), kilos);
+    const p2 = precioTroncal(findRuta(ctx, HUB_GRUPO, infoD?.comuna), kilos);
+    if (p1 && p2) alts.push({ monto: p1.precio + p2.precio, legs: [p1, p2], nombre: `Troncal ${nombreG(ctx, o)} → Hub Quilicura → ${nombreG(ctx, d)}` });
+  }
+  if (!alts.length) return null;
+  alts.sort((a, b) => a.monto - b.monto);
+  return alts[0];
+}
+
+// Mejor retiro desde un nodo: primera milla local vs tarifa fija troncal (Regla B,
+// sólo para la comuna dentro de la zona Regional del centro)
+function mejorRetiro(ctx, o, nRet, kilos) {
+  const opciones = [];
+  const local = precioLocalConsolidado(findRuta(ctx, o, nRet), kilos);
+  if (local) opciones.push({ monto: local.precio, regla: local.regla, ruta: local.ruta, camion: local.camion, tipo: 'local' });
+  const fija = Number(getRetiroTroncalTarifas(ctx.ccfg)[o]) || 0;
+  if (fija > 0 && esRegional(ctx, o, nRet)) {
+    opciones.push({ monto: Math.round(fija), regla: `Tarifa fija retiro con camión troncal ${nombreG(ctx, o)} (Regla B)`, camion: TRUCK_TRONCAL, tipo: 'troncal' });
+  }
+  if (!opciones.length) return null;
+  opciones.sort((a, b) => a.monto - b.monto);
+  return opciones[0];
+}
+
+export const FLUJOS = {
+  'EBE-DESP':          { tipo: 'STOCK',   label: 'EBE-DESP — Stock: EBEMA despacha',                         origen: 'CENTRO', destino: 'COMUNA' },
+  'FAB-DESP/EBE-DESP': { tipo: 'CALZADA', label: 'FAB-DESP / EBE-DESP — Fábrica entrega en centro, EBEMA despacha', origen: 'CENTRO', destino: 'COMUNA' },
+  'EBE-RET/CLI-RET':   { tipo: 'CALZADA', label: 'EBE-RET / CLI-RET — EBEMA retira, cliente retira en centro',    origen: 'COMUNA', destino: 'CENTRO' },
+  'EBE-RET/EBE-DESP':  { tipo: 'CALZADA', label: 'EBE-RET / EBE-DESP — EBEMA retira y despacha',                  origen: 'COMUNA', destino: 'COMUNA' }
+};
+
+// input = { flujo, servicio, cdOrigen, comunaRetiro, cdDestino, comunaDespacho, kilos, camion, kmDirecto }
 export function cotizar(ctx, input) {
-  const out = { ok: false, error: null, total: 0, tramos: [], decisiones: [], avisos: [], cdOrigen: null, cdDestino: null, camionMilla: null };
+  const out = { ok: false, error: null, total: 0, tramos: [], decisiones: [], avisos: [], cdOrigen: null, cdDestino: null, camionMilla: null, ruta: '' };
+  const flujo = FLUJOS[input.flujo] ? input.flujo : 'EBE-DESP';
+  const def = FLUJOS[flujo];
   const kilos = Number(input.kilos) || 0;
-  const calzada = input.tipoNegocio === 'CALZADA';
-  const retira = input.retira || 'NO';
-  if (!(kilos > 0)) { out.error = 'Ingrese los kilos a cotizar.'; return out; }
-
-  // CD origen
-  let cdO = null;
-  if (calzada) {
-    if (!input.comunaRetiro) { out.error = 'Ingrese la comuna de retiro.'; return out; }
-    cdO = input.cdRetiro || resolverCD(ctx, input.comunaRetiro);
-    if (!cdO) { out.error = `La comuna de retiro "${input.comunaRetiro}" no tiene un CD asignado (ruta Regional).`; return out; }
-  } else {
-    cdO = input.cdOrigen;
-    if (!cdO) { out.error = 'Seleccione el CD de origen del stock.'; return out; }
-  }
-  // CD destino
-  if (!input.comunaDespacho) { out.error = 'Ingrese la comuna de despacho.'; return out; }
-  const cdD = input.cdDespacho || resolverCD(ctx, input.comunaDespacho);
-  if (!cdD) { out.error = `La comuna de despacho "${input.comunaDespacho}" no tiene un CD asignado (ruta Regional).`; return out; }
-  out.cdOrigen = cdO; out.cdDestino = cdD;
-
+  const calzada = def.origen === 'COMUNA';          // EBEMA retira → hay primera milla
+  const retira = def.destino === 'CENTRO' ? 'CD' : 'NO'; // cliente retira en centro → sin última milla
   const nRet = normComuna(input.comunaRetiro);
-  const nDes = normComuna(input.comunaDespacho);
-  const infoO = ctx.grupoInfo.get(cdO), infoD = ctx.grupoInfo.get(cdD);
-
-  // Regla C — cliente retira en fábrica: sin costo de transporte
-  if (calzada && retira === 'FABRICA') {
-    out.tramos.push({ key: 'fabrica', label: 'Cliente retira en fábrica', monto: 0, regla: 'Regla C — sin transporte EBEMA' });
-    out.ok = true; out.total = 0; return finalizar(out);
+  let nDes = normComuna(input.comunaDespacho);
+  if (!(kilos > 0)) { out.error = 'Ingrese los kilos a cotizar.'; return out; }
+  if (calzada && !nRet) { out.error = 'Ingrese la comuna de retiro.'; return out; }
+  if (!calzada && !input.cdOrigen) { out.error = 'Seleccione el centro de origen.'; return out; }
+  if (retira === 'CD' && !input.cdDestino) { out.error = 'Seleccione el centro donde retira el cliente.'; return out; }
+  if (retira === 'NO' && !nDes) { out.error = 'Ingrese la comuna de destino.'; return out; }
+  if (retira === 'CD') {
+    nDes = ctx.grupoInfo.get(input.cdDestino)?.comuna || '';
+    if (!input.comunaDespacho) input = { ...input, comunaDespacho: ctx.grupoInfo.get(input.cdDestino)?.nombre || input.cdDestino };
   }
 
-  // ── EXCLUSIVO: Tarifa Express de la ruta CD origen → comuna, por camión ──
+  // Nodos de origen: centro indicado, o todos los centros con ruta a la comuna de retiro
+  const origenes = calzada ? candidatos(ctx, nRet) : [input.cdOrigen];
+  if (!origenes.length) { out.error = `No hay rutas creadas hacia la comuna de retiro "${input.comunaRetiro}".`; return out; }
+
+  // Nodos de destino: centro de retiro del cliente, o todos los centros con ruta a la comuna
+  const destinos = retira === 'CD' ? [input.cdDestino] : candidatos(ctx, nDes);
+  if (!destinos.length) { out.error = `No hay rutas creadas hacia la comuna de destino "${input.comunaDespacho}".`; return out; }
+
+  // ── EXCLUSIVO: Tarifa Express punto a punto desde el mejor nodo de origen ──
   if (input.servicio === 'exclusivo') {
-    const destNorm = retira === 'CD' ? (infoD?.comuna || nDes) : nDes;
-    const entry = findRuta(ctx, cdO, destNorm);
-    if (!entry) { out.error = `No existe ruta creada ${cdO} → ${input.comunaDespacho}.`; return out; }
     const tipo = input.camion || camionPorKilos(kilos);
-    const t = entry.trucks[tipo];
-    if (!t || !t.tarifaExpress) { out.error = `La ruta ${entry.codigo} no tiene Tarifa Express para ${tipo}.`; return out; }
+    const origExc = calzada
+      ? (origenes.filter(o => esRegional(ctx, o, nRet)).length ? origenes.filter(o => esRegional(ctx, o, nRet)) : origenes)
+      : origenes;
+    const destNorm = retira === 'CD' ? ctx.grupoInfo.get(destinos[0])?.comuna : nDes;
+    const alts = [];
+    // EBE-RET / CLI-RET exclusivo: el camión va de la fábrica al centro de retiro
+    // del cliente → Tarifa Express de la ruta centro destino → comuna de retiro.
+    if (calzada && retira === 'CD') {
+      const e = findRuta(ctx, destinos[0], nRet);
+      const t = e?.trucks[tipo];
+      if (t && t.tarifaExpress) alts.push({ o: destinos[0], e, t });
+    }
+    if (!alts.length) origExc.forEach(o => {
+      const e = findRuta(ctx, o, destNorm);
+      const t = e?.trucks[tipo];
+      if (t && t.tarifaExpress) alts.push({ o, e, t });
+    });
+    if (!alts.length) { out.error = `No hay Tarifa Express ${tipo} hacia ${input.comunaDespacho}.`; return out; }
+    alts.sort((a, b) => a.t.tarifaExpress - b.t.tarifaExpress);
+    const { o, e, t } = alts[0];
     let n = 1;
     if (kilos > t.cap) { n = Math.ceil(kilos / t.cap); out.avisos.push(`Los kilos superan la capacidad de ${tipo}: se cotizan ${n} camiones.`); }
     const monto = Math.round(t.tarifaExpress * n);
-    out.camionMilla = tipo;
-    out.tramos.push({
-      key: 'exclusivo', label: 'Servicio exclusivo (punto a punto)', monto, ruta: entry.codigo, camion: tipo,
-      regla: `Tarifa Express ${tipo} = ZCAP ${fmt(t.zcap)} × (1 + ${t.recargoPct}%)` + (n > 1 ? ` × ${n}` : '')
-    });
-    if (calzada && nRet && nRet !== infoO?.comuna) out.avisos.push('Exclusivo CALZADA: se cotiza desde el CD asignado a la comuna de retiro; no incluye el desvío a la fábrica.');
+    out.cdOrigen = o; out.cdDestino = retira === 'CD' ? destinos[0] : null; out.camionMilla = tipo;
+    out.ruta = calzada && retira === 'CD'
+      ? `${input.comunaRetiro} → ${nombreG(ctx, destinos[0])} (exclusivo, cliente retira)`
+      : `${calzada ? input.comunaRetiro : nombreG(ctx, o)} → ${input.comunaDespacho} (exclusivo)`;
+    out.tramos.push({ key: 'exclusivo', label: 'Servicio exclusivo (punto a punto)', monto, ruta: e.codigo, camion: tipo,
+      regla: `Tarifa Express ${tipo} = ZCAP ${fmt(t.zcap)} × (1 + ${t.recargoPct}%)` + (n > 1 ? ` × ${n}` : '') });
+    if (alts.length > 1) out.decisiones.push({ tramo: 'Centro de salida', opciones: alts.slice(0, 4).map((a, i) => ({ nombre: `Desde ${nombreG(ctx, a.o)}`, monto: Math.round(a.t.tarifaExpress * n), elegida: i === 0 })) });
+    if (calzada && retira !== 'CD') out.avisos.push('Exclusivo con retiro: se cotiza con la Tarifa Express desde el centro de la zona de retiro hasta el destino.');
     out.ok = true; out.total = monto; return finalizar(out);
   }
 
-  // ── CONSOLIDADO multi-tramo ──
-  let total = 0;
-
-  // 1. Retiro (primera milla) — Regla B
-  let retiro = null;
-  if (calzada) {
-    const eRet = findRuta(ctx, cdO, nRet);
-    const local = precioLocalConsolidado(eRet, kilos);
-    const fija = getRetiroTroncalTarifas(ctx.ccfg)[cdO];
-    const opciones = [];
-    if (local) opciones.push({ nombre: 'Primera milla local', monto: local.precio, regla: local.regla, ruta: local.ruta, camion: local.camion });
-    if (fija != null && Number(fija) > 0) opciones.push({ nombre: 'Retiro con camión troncal', monto: Math.round(Number(fija)), regla: `Tarifa fija retiro troncal ${infoO?.nombre || cdO} (Regla B)`, camion: TRUCK_TRONCAL });
-    if (!opciones.length) { out.error = `No hay tarifa de retiro para ${input.comunaRetiro} (sin ruta ${cdO} → ${input.comunaRetiro} ni tarifa troncal).`; return out; }
-    opciones.sort((a, b) => a.monto - b.monto);
-    retiro = { key: 'retiro', label: 'Retiro (primera milla)', ...opciones[0] };
-    if (opciones.length > 1) out.decisiones.push({ tramo: 'Retiro', opciones: opciones.map((o, i) => ({ ...o, elegida: i === 0 })) });
-    if (local) out.camionMilla = local.camion;
-  }
-
-  // 2. Troncal
-  const troncales = [];
-  if (cdO !== cdD) {
-    const alternativas = [];
-    const eDir = findRuta(ctx, cdO, infoD?.comuna);
-    const pDir = precioTroncal(eDir, kilos);
-    if (pDir) alternativas.push({ nombre: `Troncal directo ${infoO?.nombre || cdO} → ${infoD?.nombre || cdD}`, monto: pDir.precio, legs: [pDir] });
-    if (cdO !== HUB_GRUPO && cdD !== HUB_GRUPO) {
-      const hub = ctx.grupoInfo.get(HUB_GRUPO);
-      const p1 = precioTroncal(findRuta(ctx, cdO, hub?.comuna), kilos);
-      const p2 = precioTroncal(findRuta(ctx, HUB_GRUPO, infoD?.comuna), kilos);
-      if (p1 && p2) alternativas.push({ nombre: `Vía Hub Quilicura`, monto: p1.precio + p2.precio, legs: [p1, p2] });
+  // ── CONSOLIDADO: enumera todas las combinaciones de nodos y elige la menor ──
+  const caminos = [];
+  const cacheTroncal = new Map();
+  const ultimaCache = new Map();
+  const ultimaDe = d => {
+    if (!ultimaCache.has(d)) {
+      if (retira === 'CD') ultimaCache.set(d, { monto: 0, regla: 'Regla C — cliente retira en CD' });
+      else {
+        const p = precioLocalConsolidado(findRuta(ctx, d, nDes), kilos);
+        ultimaCache.set(d, p ? { monto: p.precio, regla: p.regla, ruta: p.ruta, camion: p.camion } : null);
+      }
     }
-    if (!alternativas.length) { out.error = `No existe ruta troncal entre ${infoO?.nombre || cdO} y ${infoD?.nombre || cdD}.`; return out; }
-    alternativas.sort((a, b) => a.monto - b.monto);
-    const elegida = alternativas[0];
-    elegida.legs.forEach((l, i) => troncales.push({
-      key: 'troncal' + (i + 1), label: `Traslado ${i + 1} (inter-nodo)`, monto: l.precio, regla: l.regla, ruta: l.ruta, camion: l.camion
-    }));
-    if (alternativas.length > 1) out.decisiones.push({ tramo: 'Troncal', opciones: alternativas.map((a, i) => ({ nombre: a.nombre, monto: a.monto, regla: a.legs.map(l => l.ruta).join(' + '), elegida: i === 0 })) });
-  }
+    return ultimaCache.get(d);
+  };
 
-  // 3. Última milla — Regla C
-  let ultima = null;
-  if (retira === 'CD') {
-    ultima = { key: 'ultima', label: 'Última milla', monto: 0, regla: 'Regla C — cliente retira en CD' };
-  } else {
-    const eUlt = findRuta(ctx, cdD, nDes);
-    const p = precioLocalConsolidado(eUlt, kilos);
-    if (!p) { out.error = `No existe ruta creada ${infoD?.nombre || cdD} → ${input.comunaDespacho}.`; return out; }
-    ultima = { key: 'ultima', label: 'Última milla', monto: p.precio, regla: p.regla, ruta: p.ruta, camion: p.camion };
-    out.camionMilla = p.camion;
-  }
+  origenes.forEach(o => {
+    const ret = calzada ? mejorRetiro(ctx, o, nRet, kilos) : null;
+    if (calzada && !ret) return;
+    destinos.forEach(d => {
+      const ult = ultimaDe(d);
+      if (!ult) return;
+      const k = o + '>' + d;
+      if (!cacheTroncal.has(k)) cacheTroncal.set(k, mejorTroncal(ctx, o, d, kilos));
+      const tr = cacheTroncal.get(k);
+      if (!tr) return;
+      const tramos = [];
+      if (ret) tramos.push({ key: 'retiro', label: 'Retiro (primera milla)', monto: ret.monto, regla: ret.regla, ruta: ret.ruta, camion: ret.camion });
+      tr.legs.forEach((l, i) => tramos.push({ key: 'troncal' + (i + 1), label: `Traslado ${i + 1} (inter-nodo)`, monto: l.precio, regla: l.regla, ruta: l.ruta, camion: l.camion }));
+      tramos.push({ key: 'ultima', label: retira === 'CD' ? 'Entrega (cliente retira en centro)' : 'Última milla', monto: ult.monto, regla: ult.regla, ruta: ult.ruta, camion: ult.camion });
+      const total = tramos.reduce((s, t) => s + t.monto, 0);
+      const partes = [];
+      if (calzada) partes.push(`Retiro ${ret.tipo === 'troncal' ? 'troncal' : 'local'} ${nombreG(ctx, o)}`);
+      else partes.push(`${flujo === 'EBE-DESP' ? 'Stock' : 'Recepción fábrica en'} ${nombreG(ctx, o)}`);
+      if (tr.legs.length === 2) partes.push('Hub Quilicura');
+      if (o !== d) partes.push(nombreG(ctx, d));
+      partes.push(retira === 'CD' ? 'retira cliente' : 'despacho');
+      caminos.push({ o, d, total, tramos, nombre: partes.join(' → '), camion: ult.camion || ret?.camion });
+    });
+  });
 
-  // Regla A — triangulación regional (retiro y despacho en el mismo CD)
-  if (calzada && cdO === cdD && retira === 'NO') {
-    const viaCD = retiro.monto + ultima.monto;
-    const eUlt = findRuta(ctx, cdD, nDes);
-    const km = Number(input.kmDirecto) || 0;
-    let directo = null;
-    if (eUlt && km > 0 && eUlt.km > 0) {
-      const tipo = camionPorKilos(kilos);
-      const t = eUlt.trucks[tipo] || eUlt.trucks[TRUCK_TRONCAL];
-      if (t && t.zcap > 0) {
-        const porKm = t.zcap / eUlt.km;
-        const bruto = km * porKm;
-        const piso = eUlt.zfmi || 0;
-        const monto = Math.round(Math.max(piso, bruto));
-        directo = {
-          monto, camion: t.type,
+  // Regla A — directo punto a punto cuando retiro y despacho comparten centro Regional
+  const km = Number(input.kmDirecto) || 0;
+  if (calzada && retira === 'NO') {
+    const comunes = origenes.filter(g => esRegional(ctx, g, nRet) && esRegional(ctx, g, nDes));
+    if (comunes.length && !km) out.avisos.push('Regla A: calculando distancia directa retiro → despacho…');
+    comunes.forEach(g => {
+      const e = findRuta(ctx, g, nDes);
+      if (!e || !(km > 0) || !(e.km > 0)) return;
+      const t = e.trucks[camionPorKilos(kilos)] || e.trucks[TRUCK_TRONCAL];
+      if (!t || !(t.zcap > 0)) return;
+      const porKm = t.zcap / e.km;
+      const bruto = km * porKm;
+      const piso = e.zfmi || 0;
+      const monto = Math.round(Math.max(piso, bruto));
+      caminos.push({
+        o: g, d: g, total: monto, camion: t.type, nombre: `Directo ${input.comunaRetiro} → ${input.comunaDespacho} (Regla A)`,
+        tramos: [{ key: 'directo', label: 'Directo retiro → despacho (Regla A)', monto, camion: t.type,
           regla: bruto >= piso
-            ? `${km.toLocaleString('es-CL')} km × ${fmt(porKm)}/km (ZCAP ${t.type} ${eUlt.codigo} ÷ ${eUlt.km} km)`
-            : `Mínimo ZFMI ${eUlt.codigo} (${km} km × ${fmt(porKm)}/km = ${fmt(bruto)})`
-        };
-      }
-    } else if (!km) {
-      out.avisos.push('Regla A: no se pudo obtener la distancia directa retiro → despacho; se cotiza vía CD.');
-    }
-    if (directo) {
-      const opciones = [
-        { nombre: `Vía CD ${infoO?.nombre || cdO} (retiro + última milla)`, monto: viaCD, regla: 'Retiro + Última milla' },
-        { nombre: 'Directo punto a punto', monto: directo.monto, regla: directo.regla }
-      ].sort((a, b) => a.monto - b.monto);
-      out.decisiones.push({ tramo: 'Regla A — Triangulación', opciones: opciones.map((o, i) => ({ ...o, elegida: i === 0 })) });
-      if (directo.monto < viaCD) {
-        out.tramos.push({ key: 'directo', label: 'Directo retiro → despacho (Regla A)', monto: directo.monto, regla: directo.regla, camion: directo.camion });
-        out.camionMilla = directo.camion;
-        out.total = directo.monto;
-        out.ok = true;
-        return finalizar(out);
-      }
-    }
+            ? `${km.toLocaleString('es-CL')} km × ${fmt(porKm)}/km (ZCAP ${t.type} ${e.codigo} ÷ ${e.km} km)`
+            : `Mínimo ZFMI ${e.codigo} (${km} km × ${fmt(porKm)}/km = ${fmt(bruto)})` }]
+      });
+    });
   }
 
-  if (retiro) { out.tramos.push(retiro); total += retiro.monto; }
-  troncales.forEach(t => { out.tramos.push(t); total += t.monto; });
-  out.tramos.push(ultima); total += ultima.monto;
-  out.total = total;
+  if (!caminos.length) {
+    out.error = `No se encontró un recorrido tarifado entre ${calzada ? input.comunaRetiro : nombreG(ctx, input.cdOrigen)} y ${input.comunaDespacho}.`;
+    return out;
+  }
+  caminos.sort((a, b) => a.total - b.total);
+  const best = caminos[0];
+  out.tramos = best.tramos;
+  out.total = best.total;
+  out.cdOrigen = best.o;
+  out.cdDestino = best.d;
+  out.camionMilla = best.camion || null;
+  out.ruta = best.nombre;
+  // Alternativas: mejores recorridos distintos (máx. 5)
+  const vistos = new Set();
+  const top = caminos.filter(c => (vistos.has(c.nombre) ? false : vistos.add(c.nombre))).slice(0, 5);
+  if (top.length > 1) out.decisiones.push({ tramo: `Recorridos evaluados (${caminos.length})`, opciones: top.map((c, i) => ({ nombre: c.nombre, monto: c.total, elegida: i === 0 })) });
   out.ok = true;
   return finalizar(out);
 }
 
-// Ahorro total = Σ (segunda mejor − elegida) de cada decisión
+// Ahorro = diferencia con el segundo mejor recorrido
 function finalizar(out) {
   out.ahorro = out.decisiones.reduce((s, d) => {
     const ord = d.opciones.map(o => o.monto).sort((a, b) => a - b);

@@ -3,12 +3,12 @@
 // Última milla, con reglas de minimización A/B/C. El cálculo vive en
 // cotizador-engine.js y usa las tarifas de la vista Tarifas Clientes
 // (ZCAP, ZFMI, ZFMP y Tarifa Express por ruta y tipo de camión).
-import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig } from './data.js?v=202609271352';
+import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig } from './data.js?v=202609271410';
 import {
-  buildCotizadorContext, cotizar, resolverCD, cdsDeComuna, normComuna,
-  getRetiroTroncalTarifas, RETIRO_TRONCAL_DEFAULT, TRUCK_ORDER, HUB_GRUPO
-} from './cotizador-engine.js?v=202609271352';
-import { getRol } from './permisos.js?v=202609271352';
+  buildCotizadorContext, cotizar, cdsDeComuna, normComuna,
+  getRetiroTroncalTarifas, RETIRO_TRONCAL_DEFAULT, TRUCK_ORDER, HUB_GRUPO, FLUJOS
+} from './cotizador-engine.js?v=202609271410';
+import { getRol } from './permisos.js?v=202609271410';
 import { formatCLP, showAlert, escapeHtml } from './utils.js';
 
 // --- Historial de cotizaciones recientes por perfil (localStorage) ---
@@ -113,10 +113,12 @@ export function renderRatesView(container) {
         </div>
         <form class="space-y-lg" id="q-form" onsubmit="return false">
           <div class="space-y-xs">
-            <label class="${labelCls}">TIPO DE NEGOCIO</label>
-            <div class="grid grid-cols-2 gap-md">
-              ${radioCard('q-negocio', 'STOCK', 'Stock', 'Mercadería disponible en un CD', true)}
-              ${radioCard('q-negocio', 'CALZADA', 'Calzada', 'Requiere retiro en fábrica/proveedor', false)}
+            <label class="${labelCls}">FLUJO</label>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-md">
+              ${radioCard('q-flujo', 'EBE-DESP', 'EBE-DESP · Stock', 'Centro origen → comuna destino', true)}
+              ${radioCard('q-flujo', 'FAB-DESP/EBE-DESP', 'FAB-DESP / EBE-DESP · Calzada', 'Fábrica entrega en centro → EBEMA despacha', false)}
+              ${radioCard('q-flujo', 'EBE-RET/CLI-RET', 'EBE-RET / CLI-RET · Calzada', 'EBEMA retira → cliente retira en centro', false)}
+              ${radioCard('q-flujo', 'EBE-RET/EBE-DESP', 'EBE-RET / EBE-DESP · Calzada', 'EBEMA retira → EBEMA despacha', false)}
             </div>
           </div>
           <div class="space-y-xs">
@@ -127,39 +129,30 @@ export function renderRatesView(container) {
             </div>
           </div>
 
-          <!-- Origen -->
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-lg" id="q-bloque-stock">
-            <div class="space-y-xs">
-              <label class="${labelCls}">CD ORIGEN DEL STOCK</label>
+          <!-- Origen y destino: los nodos intermedios los calcula el motor -->
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-lg">
+            <div class="space-y-xs" id="q-bloque-origen-centro">
+              <label class="${labelCls}">CENTRO ORIGEN</label>
               <select id="q-cd-origen" class="${inputCls}">
-                <option value="">Seleccione CD...</option>${cdOptions('')}
+                <option value="">Seleccione centro...</option>${cdOptions('')}
+              </select>
+            </div>
+            <div class="space-y-xs hidden" id="q-bloque-origen-comuna">
+              <label class="${labelCls}">COMUNA RETIRO</label>
+              <input type="text" id="q-comuna-retiro" list="q-comunas" placeholder="Ej: Frutillar" class="${inputCls}" autocomplete="off">
+            </div>
+            <div class="space-y-xs" id="q-bloque-destino-comuna">
+              <label class="${labelCls}" id="q-lbl-destino">COMUNA DESTINO</label>
+              <input type="text" id="q-comuna-despacho" list="q-comunas" placeholder="Ej: Puerto Varas" class="${inputCls}" autocomplete="off">
+            </div>
+            <div class="space-y-xs hidden" id="q-bloque-destino-centro">
+              <label class="${labelCls}">CENTRO DESTINO (RETIRA CLIENTE)</label>
+              <select id="q-cd-destino" class="${inputCls}">
+                <option value="">Seleccione centro...</option>${cdOptions('')}
               </select>
             </div>
           </div>
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-lg hidden" id="q-bloque-calzada">
-            <div class="space-y-xs">
-              <label class="${labelCls}">COMUNA DE RETIRO</label>
-              <input type="text" id="q-comuna-retiro" list="q-comunas" placeholder="Ej: Frutillar" class="${inputCls}" autocomplete="off">
-            </div>
-            <div class="space-y-xs">
-              <label class="${labelCls}">CD ASIGNADO AL RETIRO</label>
-              <select id="q-cd-retiro" class="${inputCls}"><option value="">Automático</option>${cdOptions('')}</select>
-              <p class="text-[11px] text-secondary" id="q-cd-retiro-hint"></p>
-            </div>
-          </div>
-
-          <!-- Destino -->
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-lg">
-            <div class="space-y-xs">
-              <label class="${labelCls}">COMUNA DE DESPACHO</label>
-              <input type="text" id="q-comuna-despacho" list="q-comunas" placeholder="Ej: Puerto Varas" class="${inputCls}" autocomplete="off">
-            </div>
-            <div class="space-y-xs">
-              <label class="${labelCls}">CD DE DESTINO</label>
-              <select id="q-cd-despacho" class="${inputCls}"><option value="">Automático</option>${cdOptions('')}</select>
-              <p class="text-[11px] text-secondary" id="q-cd-despacho-hint"></p>
-            </div>
-          </div>
+          <p class="text-[11px] text-secondary -mt-sm">Los centros intermedios (retiro, traslado troncal y última milla) se eligen automáticamente según el recorrido de menor precio.</p>
           <datalist id="q-comunas">${comunasOrdenadas.map(c => `<option value="${escapeHtml(c.nombre)}">`).join('')}</datalist>
 
           <div class="grid grid-cols-1 md:grid-cols-3 gap-lg">
@@ -175,14 +168,6 @@ export function renderRatesView(container) {
               <select id="q-camion" class="${inputCls}">
                 <option value="">Automático según kilos</option>
                 ${TRUCK_ORDER.map(t => `<option value="${t}">${t}</option>`).join('')}
-              </select>
-            </div>
-            <div class="space-y-xs">
-              <label class="${labelCls}">ENTREGA</label>
-              <select id="q-retira" class="${inputCls}">
-                <option value="NO">Despacho a cliente</option>
-                <option value="CD">Cliente retira en CD</option>
-                <option value="FABRICA" class="hidden" id="q-opt-fabrica">Cliente retira en fábrica</option>
               </select>
             </div>
           </div>
@@ -267,51 +252,37 @@ export function renderRatesView(container) {
   // --- Referencias ---
   const $ = id => document.getElementById(id);
   const el = {
-    cdOrigen: $('q-cd-origen'), comunaRetiro: $('q-comuna-retiro'), cdRetiro: $('q-cd-retiro'),
-    comunaDespacho: $('q-comuna-despacho'), cdDespacho: $('q-cd-despacho'), kilos: $('q-kilos'),
-    camion: $('q-camion'), retira: $('q-retira'), optFabrica: $('q-opt-fabrica'),
-    bloqueStock: $('q-bloque-stock'), bloqueCalzada: $('q-bloque-calzada'), bloqueCamion: $('q-bloque-camion'),
-    hintRetiro: $('q-cd-retiro-hint'), hintDespacho: $('q-cd-despacho-hint'),
+    cdOrigen: $('q-cd-origen'), comunaRetiro: $('q-comuna-retiro'),
+    comunaDespacho: $('q-comuna-despacho'), kilos: $('q-kilos'),
+    camion: $('q-camion'), cdDestino: $('q-cd-destino'),
+    bOrigenCentro: $('q-bloque-origen-centro'), bOrigenComuna: $('q-bloque-origen-comuna'),
+    bDestinoComuna: $('q-bloque-destino-comuna'), bDestinoCentro: $('q-bloque-destino-centro'), bloqueCamion: $('q-bloque-camion'),
     resumen: $('q-resumen'), tramos: $('q-tramos'), total: $('q-total'), decisiones: $('q-decisiones'), avisos: $('q-avisos')
   };
-  const state = { negocio: 'STOCK', servicio: 'consolidado', ultimo: null };
+  const state = { flujo: 'EBE-DESP', servicio: 'consolidado', ultimo: null };
 
   // --- Radio cards ---
   container.querySelectorAll('input[type=radio]').forEach(r => r.addEventListener('change', () => {
     container.querySelectorAll(`label[data-card="${r.name}"]`).forEach(l => {
       l.className = l.dataset.value === r.value ? cardOn : cardOff;
     });
-    if (r.name === 'q-negocio') state.negocio = r.value;
+    if (r.name === 'q-flujo') state.flujo = r.value;
     if (r.name === 'q-servicio') state.servicio = r.value;
     aplicarVisibilidad();
     recalcular();
   }));
 
   function aplicarVisibilidad() {
-    const calzada = state.negocio === 'CALZADA';
-    el.bloqueStock.classList.toggle('hidden', calzada);
-    el.bloqueCalzada.classList.toggle('hidden', !calzada);
+    const f = FLUJOS[state.flujo];
+    el.bOrigenCentro.classList.toggle('hidden', f.origen !== 'CENTRO');
+    el.bOrigenComuna.classList.toggle('hidden', f.origen !== 'COMUNA');
+    el.bDestinoComuna.classList.toggle('hidden', f.destino !== 'COMUNA');
+    el.bDestinoCentro.classList.toggle('hidden', f.destino !== 'CENTRO');
     el.bloqueCamion.classList.toggle('hidden', state.servicio !== 'exclusivo');
-    el.optFabrica.classList.toggle('hidden', !calzada);
-    el.optFabrica.disabled = !calzada;
-    if (!calzada && el.retira.value === 'FABRICA') el.retira.value = 'NO';
   }
 
-  // CD sugerido al escribir una comuna (el usuario puede cambiarlo)
-  function sugerirCD(inputEl, selectEl, hintEl) {
-    const cds = cdsDeComuna(ctx, inputEl.value);
-    if (!inputEl.value.trim()) { selectEl.value = ''; hintEl.textContent = ''; return; }
-    if (!cds.length) {
-      selectEl.value = '';
-      hintEl.textContent = ctx.comunas.has(normComuna(inputEl.value)) ? 'Sin ruta Regional: seleccione el CD manualmente.' : 'Comuna no encontrada en rutas.';
-      return;
-    }
-    selectEl.value = cds[0];
-    hintEl.textContent = cds.length > 1 ? `También atendida por: ${cds.slice(1).map(g => ctx.grupoInfo.get(g)?.nombre || g).join(', ')}` : '';
-  }
-  el.comunaRetiro.addEventListener('input', () => { sugerirCD(el.comunaRetiro, el.cdRetiro, el.hintRetiro); recalcular(); });
-  el.comunaDespacho.addEventListener('input', () => { sugerirCD(el.comunaDespacho, el.cdDespacho, el.hintDespacho); recalcular(); });
-  [el.cdOrigen, el.cdRetiro, el.cdDespacho, el.camion, el.retira].forEach(s => s.addEventListener('change', recalcular));
+  [el.comunaRetiro, el.comunaDespacho].forEach(inp => inp.addEventListener('input', recalcular));
+  [el.cdOrigen, el.cdDestino, el.camion].forEach(sel => sel.addEventListener('change', recalcular));
   el.kilos.addEventListener('input', recalcular);
 
   // --- Mapa ---
@@ -342,7 +313,7 @@ export function renderRatesView(container) {
     const cDes = ctx.comunas.get(normComuna(input.comunaDespacho));
     const gO = ctx.grupoInfo.get(res.cdOrigen), gD = ctx.grupoInfo.get(res.cdDestino);
     const directo = res.tramos.some(t => t.key === 'directo');
-    if (input.tipoNegocio === 'CALZADA' && cRet) add(cRet.lat, cRet.lon, `<strong>Retiro:</strong> ${escapeHtml(cRet.nombre)}`, '#f59e0b');
+    if (input.comunaRetiro && cRet) add(cRet.lat, cRet.lon, `<strong>Retiro:</strong> ${escapeHtml(cRet.nombre)}`, '#f59e0b');
     if (!directo && gO) add(gO.lat, gO.lon, `<strong>CD origen:</strong> ${escapeHtml(gO.cdNombre)}`, '#3b82f6');
     if (!directo && res.tramos.some(t => t.key === 'troncal2')) {
       const h = ctx.grupoInfo.get(HUB_GRUPO);
@@ -361,30 +332,32 @@ export function renderRatesView(container) {
   // --- Cálculo ---
   let kmToken = 0;
   function leerInput() {
+    const f = FLUJOS[state.flujo];
     return {
-      tipoNegocio: state.negocio,
+      flujo: state.flujo,
+      tipoNegocio: f.tipo,
       servicio: state.servicio,
-      cdOrigen: el.cdOrigen.value,
-      comunaRetiro: state.negocio === 'CALZADA' ? el.comunaRetiro.value.trim() : '',
-      cdRetiro: el.cdRetiro.value || null,
-      comunaDespacho: el.comunaDespacho.value.trim(),
-      cdDespacho: el.cdDespacho.value || null,
+      cdOrigen: f.origen === 'CENTRO' ? el.cdOrigen.value : '',
+      comunaRetiro: f.origen === 'COMUNA' ? el.comunaRetiro.value.trim() : '',
+      cdDestino: f.destino === 'CENTRO' ? el.cdDestino.value : '',
+      comunaDespacho: f.destino === 'COMUNA' ? el.comunaDespacho.value.trim() : '',
       kilos: Number(el.kilos.value) || 0,
       camion: el.camion.value || null,
-      retira: el.retira.value
+      retira: f.destino === 'CENTRO' ? 'CD' : 'NO'
     };
   }
 
   function recalcular() {
     const input = leerInput();
-    // Regla A necesita la distancia directa retiro → despacho (mismo CD)
+    // Regla A necesita la distancia directa retiro → despacho cuando ambas
+    // comunas comparten un centro Regional
     let kmInfo = null;
-    if (input.tipoNegocio === 'CALZADA' && input.servicio === 'consolidado' && input.retira === 'NO') {
-      const cdO = input.cdRetiro || resolverCD(ctx, input.comunaRetiro);
-      const cdD = input.cdDespacho || resolverCD(ctx, input.comunaDespacho);
+    if (input.flujo === 'EBE-RET/EBE-DESP' && input.servicio === 'consolidado') {
+      const cdsRet = cdsDeComuna(ctx, input.comunaRetiro);
+      const comparten = cdsDeComuna(ctx, input.comunaDespacho).some(g => cdsRet.includes(g));
       const a = ctx.comunas.get(normComuna(input.comunaRetiro));
       const b = ctx.comunas.get(normComuna(input.comunaDespacho));
-      if (cdO && cdO === cdD && a?.lat != null && b?.lat != null) {
+      if (comparten && a?.lat != null && b?.lat != null) {
         const key = `${a.lat},${a.lon}|${b.lat},${b.lon}`;
         if (_kmCache.has(key)) {
           kmInfo = _kmCache.get(key);
@@ -407,14 +380,11 @@ export function renderRatesView(container) {
     const fila = (k, v) => `<li class="flex justify-between gap-md border-b border-outline-variant pb-xs"><span class="text-secondary">${k}</span><span class="font-bold text-on-surface text-right">${v}</span></li>`;
     const calzada = input.tipoNegocio === 'CALZADA';
     el.resumen.innerHTML =
-      fila('Tipo de negocio', calzada ? 'CALZADA' : 'STOCK') +
+      fila('Flujo', escapeHtml(input.flujo) + ` · ${input.tipoNegocio}`) +
       fila('Servicio', input.servicio === 'exclusivo' ? 'Exclusivo' : 'Consolidado') +
-      fila('Retiro', calzada
-        ? `${escapeHtml(input.comunaRetiro || '—')} → ${escapeHtml(nombreCD(res.cdOrigen))}`
-        : `Stock ${escapeHtml(nombreCD(input.cdOrigen))}`) +
-      fila('Despacho', input.retira === 'CD'
-        ? `Retira en ${escapeHtml(nombreCD(res.cdDestino))}`
-        : `${escapeHtml(input.comunaDespacho || '—')} → ${escapeHtml(nombreCD(res.cdDestino))}`) +
+      fila('Origen', input.comunaRetiro ? `Retiro en ${escapeHtml(input.comunaRetiro)}` : `Centro ${escapeHtml(nombreCD(input.cdOrigen))}`) +
+      fila('Destino', input.retira === 'CD' ? `Cliente retira en ${escapeHtml(nombreCD(input.cdDestino))}` : escapeHtml(input.comunaDespacho || '—')) +
+      (res.ok ? fila('Recorrido óptimo', escapeHtml(res.ruta || '—')) : '') +
       fila('Kilos cotizados', input.kilos ? input.kilos.toLocaleString('es-CL') + ' kg' : '—') +
       fila('Vehículo milla', escapeHtml(res.camionMilla || '—')) +
       (kmInfo ? fila('Distancia directa', `${kmInfo.km.toLocaleString('es-CL')} km${kmInfo.estimado ? ' (est.)' : ''}`) : '');
@@ -470,12 +440,12 @@ export function renderRatesView(container) {
   function guardarHistorial(input, res) {
     clearTimeout(histTimer);
     histTimer = setTimeout(() => {
-      const origen = input.tipoNegocio === 'CALZADA' ? input.comunaRetiro : (ctx.grupoInfo.get(input.cdOrigen)?.nombre || input.cdOrigen);
-      const destino = input.retira === 'CD' ? `Retira ${ctx.grupoInfo.get(res.cdDestino)?.nombre || res.cdDestino}` : input.comunaDespacho;
+      const origen = input.comunaRetiro || (ctx.grupoInfo.get(input.cdOrigen)?.nombre || input.cdOrigen);
+      const destino = input.retira === 'CD' ? `Retira ${ctx.grupoInfo.get(input.cdDestino)?.nombre || input.cdDestino}` : input.comunaDespacho;
       saveRecentQuote({
-        firma: [input.tipoNegocio, input.servicio, origen, destino, input.kilos, input.camion || '', input.retira].join('|'),
+        firma: [input.flujo, input.servicio, origen, destino, input.kilos, input.camion || '', input.retira].join('|'),
         fecha: new Date().toLocaleString('es-CL', { dateStyle: 'short', timeStyle: 'short' }),
-        negocio: input.tipoNegocio,
+        negocio: input.tipoNegocio, flujo: input.flujo,
         servicio: input.servicio === 'exclusivo' ? 'Exclusivo' : 'Consolidado',
         origen, destino, kilos: input.kilos, monto: res.total
       });
@@ -528,7 +498,7 @@ function renderHistoryTable(list) {
   tbody.innerHTML = list.map(q => `
     <tr class="border-b border-outline-variant">
       <td class="p-md font-data-mono text-data-mono whitespace-nowrap">${escapeHtml(q.fecha)}</td>
-      <td class="p-md"><span class="inline-flex px-2 py-0.5 rounded text-[10px] font-bold ${q.negocio === 'CALZADA' ? 'bg-amber-100 text-amber-800' : 'bg-blue-100 text-blue-800'}">${escapeHtml(q.negocio)}</span> ${escapeHtml(q.servicio)}</td>
+      <td class="p-md"><span class="inline-flex px-2 py-0.5 rounded text-[10px] font-bold ${q.negocio === 'CALZADA' ? 'bg-amber-100 text-amber-800' : 'bg-blue-100 text-blue-800'}">${escapeHtml(q.flujo || q.negocio)}</span> ${escapeHtml(q.servicio)}</td>
       <td class="p-md">${escapeHtml(q.origen)} → ${escapeHtml(q.destino)}</td>
       <td class="p-md text-right font-data-mono">${Number(q.kilos || 0).toLocaleString('es-CL')}</td>
       <td class="p-md text-right font-bold">${formatCLP(q.monto)}</td>
