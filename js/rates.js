@@ -3,12 +3,12 @@
 // Última milla, con reglas de minimización A/B/C. El cálculo vive en
 // cotizador-engine.js y usa las tarifas de la vista Tarifas Clientes
 // (ZCAP, ZFMI, ZFMP y Tarifa Express por ruta y tipo de camión).
-import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig } from './data.js?v=202609271827';
+import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig } from './data.js?v=202609271857';
 import {
   buildCotizadorContext, cotizar, cdsDeComuna, normComuna,
   getRetiroTroncalTarifas, RETIRO_TRONCAL_DEFAULT, TRUCK_ORDER, HUB_GRUPO, FLUJOS
-} from './cotizador-engine.js?v=202609271827';
-import { getRol } from './permisos.js?v=202609271827';
+} from './cotizador-engine.js?v=202609271857';
+import { getRol } from './permisos.js?v=202609271857';
 import { formatCLP, showAlert, escapeHtml, loadLeaflet } from './utils.js';
 
 // --- Historial de cotizaciones recientes por perfil (localStorage) ---

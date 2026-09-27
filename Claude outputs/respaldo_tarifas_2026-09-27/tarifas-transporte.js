@@ -1,12 +1,12 @@
 // PANTALLA 1: Administrador de Tarifas Transporte — SIT EBEMA
 // Sub-módulos: Peajes, Combustibles y Rendimientos, Seguros y Permisos,
 // Variables Generales y Motor de Costo (ZCAP) con exportación CSV.
-import { getDatabase, saveDatabase, getCentreName, getTariffConfig, getClientTariffConfig, truckCapKg, getOrigenGroups, getGroupRepId, buildTruckTypes, TRUCK_BASE_TYPES, loadHistorico, deleteRow } from './data.js?v=202609271857';
-import { CAP_LIST, truckTypesWithCap, calcularMatrizCostos } from './tarifas-engine.js?v=202609271857';
+import { getDatabase, saveDatabase, getCentreName, getTariffConfig, getClientTariffConfig, truckCapKg, getOrigenGroups, getGroupRepId, buildTruckTypes, TRUCK_BASE_TYPES, loadHistorico, deleteRow } from './data.js?v=202609271827';
+import { CAP_LIST, truckTypesWithCap, calcularMatrizCostos } from './tarifas-engine.js?v=202609271827';
 import { formatCLP, parseCSV, showAlert, toCSV, downloadFile, escapeHtml } from './utils.js';
-import { supabase } from './supabase-client.js?v=202609271857';
-import { getField } from './zonas-transporte.js?v=202609271857';
-import { renderZcapView } from './zcap.js?v=202609271857';
+import { supabase } from './supabase-client.js?v=202609271827';
+import { getField } from './zonas-transporte.js?v=202609271827';
+import { renderZcapView } from './zcap.js?v=202609271827';
 
 // FIX: Escuchar errores de sincronización con Supabase y notificar al usuario
 window.addEventListener('db_sync_error', (e) => {
@@ -2162,20 +2162,13 @@ function syncTarifasZcap(db, cfg, grupoFiltro = '') {
   function metricas(items) {
     const norm = items.filter(m => (m.ruta.caracteristica || 'NORMAL').toUpperCase() === 'NORMAL');
     const esp  = items.filter(m => (m.ruta.caracteristica || 'NORMAL').toUpperCase() !== 'NORMAL');
-    // Promedio ponderado normalizado: Σ(costo/km × %part) / Σ%part de las rutas del pool.
-    // Normalizar evita inflar la tarifa cuando los % guardados no suman 100 dentro del pool
-    // (ej. Puerto Montt sumaba 200% porque las rutas antes ISLA/EXTREMA ahora son NORMAL).
     function pond(sub) {
-      let sumW = 0;
-      const tot = sub.reduce((s, m) => {
+      return sub.reduce((s, m) => {
         const p = participacion[m.ruta.id] || participacion[m.ruta.codigo]
           || (m.ruta._allCodigos||[]).reduce((f,c) => f || participacion[c], null)
           || (m.ruta._allIds||[]).reduce((f,id) => f || participacion[id], null);
-        const w = Number(p?.pct) || 0;
-        sumW += w;
-        return s + (m.item11_costoKmFinal || 0) * w;
+        return s + (m.item11_costoKmFinal || 0) * ((p?.pct || 0) / 100);
       }, 0);
-      return sumW > 0 ? tot / sumW : 0;
     }
     function prom(sub) {
       return sub.length ? sub.reduce((s, m) => s + (m.item11_costoKmFinal || 0), 0) / sub.length : 0;
