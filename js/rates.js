@@ -3,12 +3,12 @@
 // Última milla, con reglas de minimización A/B/C. El cálculo vive en
 // cotizador-engine.js y usa las tarifas de la vista Tarifas Clientes
 // (ZCAP, ZFMI, ZFMP y Tarifa Express por ruta y tipo de camión).
-import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig } from './data.js?v=202609271527';
+import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig } from './data.js?v=202609271533';
 import {
   buildCotizadorContext, cotizar, cdsDeComuna, normComuna,
   getRetiroTroncalTarifas, RETIRO_TRONCAL_DEFAULT, TRUCK_ORDER, HUB_GRUPO, FLUJOS
-} from './cotizador-engine.js?v=202609271527';
-import { getRol } from './permisos.js?v=202609271527';
+} from './cotizador-engine.js?v=202609271533';
+import { getRol } from './permisos.js?v=202609271533';
 import { formatCLP, showAlert, escapeHtml, loadLeaflet } from './utils.js';
 
 // --- Historial de cotizaciones recientes por perfil (localStorage) ---
@@ -149,7 +149,12 @@ export function renderRatesView(container) {
   container.innerHTML = `
     <div class="mb-xl">
       <h1 class="font-headline-lg text-headline-lg text-on-surface">Cotizador de Despacho</h1>
-      <p class="font-body-lg text-body-lg text-secondary">Precio al cliente por tramo — retiro, traslado troncal y última milla — con la alternativa de menor costo.</p>
+      <div class="flex flex-wrap items-center justify-between gap-md">
+        <p class="font-body-lg text-body-lg text-secondary">Precio al cliente por tramo — retiro, traslado troncal y última milla — con la alternativa de menor costo.</p>
+        ${esOwner ? `<button type="button" data-exp="retiro-troncal-top" id="q-admin-link" class="flex items-center gap-xs border border-primary text-primary hover:bg-primary/5 font-bold px-md py-sm rounded text-[12px] uppercase tracking-wider">
+          <span class="material-symbols-outlined text-[16px]">settings</span> Tarifas retiro troncal
+        </button>` : ''}
+      </div>
     </div>
 
     <div class="grid grid-cols-12 gap-lg">
@@ -522,6 +527,11 @@ export function renderRatesView(container) {
   // --- Administrador Regla B (OWNER) ---
   if (esOwner) {
     const body = $('q-admin-body'), chevron = $('q-admin-chevron'), grid = $('q-admin-grid');
+    $('q-admin-link').addEventListener('click', () => {
+      body.classList.remove('hidden');
+      chevron.textContent = 'expand_less';
+      $('q-admin-toggle').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
     $('q-admin-toggle').addEventListener('click', () => {
       body.classList.toggle('hidden');
       chevron.textContent = body.classList.contains('hidden') ? 'expand_more' : 'expand_less';

@@ -14,8 +14,8 @@
 // ZFMP = ZCAP ÷ kilos a consolidar, ZFMI = ZCAP camión mínimo ÷ pedidos promedio
 // del cluster, Tarifa Express = ZCAP × (1 + recargo exclusividad del centro).
 // ---------------------------------------------------------------------------
-import { getOrigenGroups, truckCapKg } from './data.js?v=202609271527';
-import { buildZcapMap } from './zcap.js?v=202609271527';
+import { getOrigenGroups, truckCapKg } from './data.js?v=202609271533';
+import { buildZcapMap } from './zcap.js?v=202609271533';
 
 export const TRUCK_ORDER = ['Camión 5 Ton', 'Camión 10 Ton', 'Camión 15 Ton', 'Camión 28 Ton'];
 export const TRUCK_TRONCAL = 'Camión 28 Ton';
@@ -388,7 +388,10 @@ export function cotizar(ctx, input) {
     const reg = lista.filter(g => esRegional(ctx, g, comunaNorm));
     return reg.length ? reg : lista;
   };
-  const origenes = calzada ? soloRegionales(candidatos(ctx, nRet), nRet) : [input.cdOrigen];
+  // Retiros en la Región Metropolitana: centro preferente Quilicura (SANTIAGO)
+  // cuando atiende la comuna, aunque San Bernardo también tenga ruta Regional.
+  const preferente = lista => (lista.includes(HUB_GRUPO) ? [HUB_GRUPO] : lista);
+  const origenes = calzada ? preferente(soloRegionales(candidatos(ctx, nRet), nRet)) : [input.cdOrigen];
   if (!origenes.length) { out.error = `No hay rutas creadas hacia la comuna de retiro "${input.comunaRetiro}".`; return out; }
 
   // Nodos de destino: centro de retiro del cliente, o todos los centros con ruta a la comuna
