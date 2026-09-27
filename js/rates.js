@@ -3,12 +3,12 @@
 // Última milla, con reglas de minimización A/B/C. El cálculo vive en
 // cotizador-engine.js y usa las tarifas de la vista Tarifas Clientes
 // (ZCAP, ZFMI, ZFMP y Tarifa Express por ruta y tipo de camión).
-import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig } from './data.js?v=202609271520';
+import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig } from './data.js?v=202609271527';
 import {
   buildCotizadorContext, cotizar, cdsDeComuna, normComuna,
   getRetiroTroncalTarifas, RETIRO_TRONCAL_DEFAULT, TRUCK_ORDER, HUB_GRUPO, FLUJOS
-} from './cotizador-engine.js?v=202609271520';
-import { getRol } from './permisos.js?v=202609271520';
+} from './cotizador-engine.js?v=202609271527';
+import { getRol } from './permisos.js?v=202609271527';
 import { formatCLP, showAlert, escapeHtml, loadLeaflet } from './utils.js';
 
 // --- Historial de cotizaciones recientes por perfil (localStorage) ---
@@ -180,7 +180,7 @@ export function renderRatesView(container) {
             <label class="${labelCls}">3. TIPO DE SERVICIO</label>
             <div class="grid grid-cols-2 gap-md">
               ${radioCard('q-servicio', 'consolidado', 'Consolidado', 'Comparte camión, paga por kilos', true)}
-              ${radioCard('q-servicio', 'exclusivo', 'Exclusivo', 'Camión dedicado — Tarifa Express', false)}
+              ${radioCard('q-servicio', 'exclusivo', 'Exclusivo', 'Camión dedicado por tramo — Tarifa Express', false)}
             </div>
           </div>
 
@@ -213,12 +213,8 @@ export function renderRatesView(container) {
                 <span class="absolute right-3 top-1/2 -translate-y-1/2 text-secondary text-xs font-bold">KG</span>
               </div>
             </div>
-            <div class="space-y-xs hidden" id="q-bloque-camion">
-              <label class="${labelCls}">TIPO DE CAMIÓN</label>
-              <select id="q-camion" class="${inputCls}">
-                <option value="">Automático según kilos</option>
-                ${TRUCK_ORDER.map(t => `<option value="${t}">${t}</option>`).join('')}
-              </select>
+            <div class="space-y-xs md:col-span-2 flex items-end">
+              <p class="text-[11px] text-secondary">El tipo de camión se asigna automáticamente según los kilos en cada tramo.</p>
             </div>
           </div>
         </form>
@@ -304,9 +300,9 @@ export function renderRatesView(container) {
   const el = {
     cdOrigen: $('q-cd-origen'), comunaRetiro: $('q-comuna-retiro'),
     comunaDespacho: $('q-comuna-despacho'), kilos: $('q-kilos'),
-    camion: $('q-camion'), cdDestino: $('q-cd-destino'),
+    cdDestino: $('q-cd-destino'),
     bOrigenCentro: $('q-bloque-origen-centro'), bOrigenComuna: $('q-bloque-origen-comuna'),
-    bDestinoComuna: $('q-bloque-destino-comuna'), bDestinoCentro: $('q-bloque-destino-centro'), bloqueCamion: $('q-bloque-camion'),
+    bDestinoComuna: $('q-bloque-destino-comuna'), bDestinoCentro: $('q-bloque-destino-centro'),
     resumen: $('q-resumen'), tramos: $('q-tramos'), total: $('q-total'), decisiones: $('q-decisiones'), avisos: $('q-avisos')
   };
   const state = { negocio: 'STOCK', flujo: 'EBE-DESP', servicio: 'consolidado', ultimo: null };
@@ -340,7 +336,6 @@ export function renderRatesView(container) {
     el.bOrigenComuna.classList.toggle('hidden', f.origen !== 'COMUNA');
     el.bDestinoComuna.classList.toggle('hidden', f.destino !== 'COMUNA');
     el.bDestinoCentro.classList.toggle('hidden', f.destino !== 'CENTRO');
-    el.bloqueCamion.classList.toggle('hidden', state.servicio !== 'exclusivo');
   }
 
   const itemsCentros = grupos.map(g => ({ value: g.grupo, label: g.nombre + (g.grupo === HUB_GRUPO ? ' (Quilicura)' : '') }));
@@ -349,7 +344,6 @@ export function renderRatesView(container) {
   initCombo(container.querySelector('[data-combo="q-cd-destino"]'), itemsCentros, el.cdDestino, recalcular);
   initCombo(container.querySelector('[data-combo="q-comuna-retiro"]'), itemsComunas, null, recalcular);
   initCombo(container.querySelector('[data-combo="q-comuna-despacho"]'), itemsComunas, null, recalcular);
-  el.camion.addEventListener('change', recalcular);
   el.kilos.addEventListener('input', recalcular);
 
   // --- Mapa ---
@@ -413,7 +407,6 @@ export function renderRatesView(container) {
       cdDestino: f.destino === 'CENTRO' ? el.cdDestino.value : '',
       comunaDespacho: f.destino === 'COMUNA' ? el.comunaDespacho.value.trim() : '',
       kilos: Number(el.kilos.value) || 0,
-      camion: el.camion.value || null,
       retira: f.destino === 'CENTRO' ? 'CD' : 'NO'
     };
   }
