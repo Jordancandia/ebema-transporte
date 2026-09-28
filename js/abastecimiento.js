@@ -10,9 +10,9 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202609281318';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202609281318';
-import { getDatabase } from './data.js?v=202609281318';
+import { supabase } from './supabase-client.js?v=202609281730';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202609281730';
+import { getDatabase } from './data.js?v=202609281730';
 import { showAlert, escapeHtml } from './utils.js';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
@@ -1472,7 +1472,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202609281318');
+    const m = await import('./ind-plan-carga.js?v=202609281730');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (VISTAS_TRONCAL[currentSub])       await renderVistaTabla(stage, VISTAS_TRONCAL[currentSub]);

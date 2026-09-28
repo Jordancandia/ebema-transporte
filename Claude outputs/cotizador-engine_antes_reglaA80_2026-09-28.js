@@ -14,8 +14,8 @@
 // ZFMP = ZCAP ÷ kilos a consolidar, ZFMI = ZCAP camión mínimo ÷ pedidos promedio
 // del cluster, Tarifa Express = ZCAP × (1 + recargo exclusividad del centro).
 // ---------------------------------------------------------------------------
-import { getOrigenGroups, truckCapKg } from './data.js?v=202609281730';
-import { buildZcapMap } from './zcap.js?v=202609281730';
+import { getOrigenGroups, truckCapKg } from './data.js?v=202609281318';
+import { buildZcapMap } from './zcap.js?v=202609281318';
 
 export const TRUCK_ORDER = ['Camión 5 Ton', 'Camión 10 Ton', 'Camión 15 Ton', 'Camión 28 Ton'];
 export const TRUCK_TRONCAL = 'Camión 28 Ton';
@@ -556,57 +556,27 @@ export function cotizar(ctx, input) {
     });
   }
 
-  // Regla A — retiro y despacho atendidos por el mismo centro Regional (28-sep-2026)
-  //  Consolidado: el directo sólo se habilita si los kilos alcanzan los kilos a
-  //   consolidar (80%) del camión según kilos → cobra el trayecto completo
-  //   (ZCAP × km directo ÷ km ruta). Bajo el 80% la carga pasa obligatoriamente
-  //   por la sucursal, pero el precio queda topado en ese camión directo completo.
-  //  Exclusivo: un solo camión dedicado retiro → despacho (Tarifa Express × km directo ÷ km ruta).
+  // Regla A — directo punto a punto cuando retiro y despacho comparten centro Regional
   const km = Number(input.kmDirecto) || 0;
-  if (calzada && retira === 'NO') {
+  if (calzada && retira === 'NO' && !exclusivo) {
     const comunes = origenes.filter(g => esRegional(ctx, g, nRet) && esRegional(ctx, g, nDes));
-    if (comunes.length && !km) out.avisos.push('Calculando distancia directa retiro → despacho…');
+    if (comunes.length && !km) out.avisos.push('Regla A: calculando distancia directa retiro → despacho…');
     comunes.forEach(g => {
       const e = findRuta(ctx, g, nDes);
       if (!e || !(km > 0) || !(e.km > 0)) return;
-      const tipo = camionPorKilos(kilos);
-      const t = e.trucks[tipo] || e.trucks[TRUCK_TRONCAL];
+      const t = e.trucks[camionPorKilos(kilos)] || e.trucks[TRUCK_TRONCAL];
       if (!t || !(t.zcap > 0)) return;
-      const n = Math.max(1, Math.ceil(kilos / t.cap));
-      const factorKm = km / e.km;
-      const kmTxt = `${km.toLocaleString('es-CL')} km ÷ ${e.km} km ruta ${e.codigo}`;
-
-      if (exclusivo) {
-        if (!t.tarifaExpress) return;
-        const monto = Math.round(t.tarifaExpress * n * factorKm);
-        caminos.push({
-          o: g, d: g, total: monto, camion: t.type, nombre: `Camión exclusivo ${input.comunaRetiro} → ${input.comunaDespacho}`,
-          tramos: [{ key: 'directo', label: 'Camión exclusivo retiro → despacho', monto, camion: t.type, ruta: e.codigo,
-            regla: `Tarifa Express ${t.type}${n > 1 ? ' × ' + n : ''} ${fmt(t.tarifaExpress)} × (${kmTxt})` }]
-        });
-        return;
-      }
-
-      const montoDirecto = Math.round(t.zcap * n * factorKm);
-      const ocupacion = kilos / (t.kilosConsolidar * n);
-      if (ocupacion >= 1) {
-        caminos.push({
-          o: g, d: g, total: montoDirecto, camion: t.type, nombre: `Directo ${input.comunaRetiro} → ${input.comunaDespacho}`,
-          tramos: [{ key: 'directo', label: 'Directo retiro → despacho', monto: montoDirecto, camion: t.type, ruta: e.codigo,
-            regla: `${t.type} completo: ZCAP ${fmt(t.zcap)}${n > 1 ? ' × ' + n : ''} × (${kmTxt}) — carga ≥ ${Math.round(t.kilosConsolidar).toLocaleString('es-CL')} kg (80%)` }]
-        });
-      } else {
-        // Bajo el 80%: consolida en la sucursal, con tope en el camión directo completo
-        caminos.forEach(c => {
-          if (c.o !== g || c.d !== g || c.enRuta || c.topado) return;
-          if (!c.tramos.some(x => x.key === 'ultima')) return;
-          if (c.total <= montoDirecto) return;
-          c.tramos.push({ key: 'ajuste_tope', label: `Ajuste: tope camión directo completo (${t.type})`, monto: montoDirecto - c.total,
-            regla: `El precio no supera el camión directo completo: ZCAP ${fmt(t.zcap)} × (${kmTxt}) = ${fmt(montoDirecto)}` });
-          c.total = montoDirecto;
-          c.topado = true;
-        });
-      }
+      const porKm = t.zcap / e.km;
+      const bruto = km * porKm;
+      const piso = e.zfmi || 0;
+      const monto = Math.round(Math.max(piso, bruto));
+      caminos.push({
+        o: g, d: g, total: monto, camion: t.type, nombre: `Directo ${input.comunaRetiro} → ${input.comunaDespacho} (Regla A)`,
+        tramos: [{ key: 'directo', label: 'Directo retiro → despacho (Regla A)', monto, camion: t.type,
+          regla: bruto >= piso
+            ? `${km.toLocaleString('es-CL')} km × ${fmt(porKm)}/km (ZCAP ${t.type} ${e.codigo} ÷ ${e.km} km)`
+            : `Mínimo ZFMI ${e.codigo} (${km} km × ${fmt(porKm)}/km = ${fmt(bruto)})` }]
+      });
     });
   }
 

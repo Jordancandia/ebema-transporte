@@ -3,12 +3,12 @@
 // Última milla, con reglas de minimización A/B/C. El cálculo vive en
 // cotizador-engine.js y usa las tarifas de la vista Tarifas Clientes
 // (ZCAP, ZFMI, ZFMP y Tarifa Express por ruta y tipo de camión).
-import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig } from './data.js?v=202609281318';
+import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig } from './data.js?v=202609281730';
 import {
   buildCotizadorContext, cotizar, cdsDeComuna, normComuna,
   getRetiroTroncalTarifas, RETIRO_TRONCAL_DEFAULT, TRUCK_ORDER, HUB_GRUPO, FLUJOS
-} from './cotizador-engine.js?v=202609281318';
-import { getRol } from './permisos.js?v=202609281318';
+} from './cotizador-engine.js?v=202609281730';
+import { getRol } from './permisos.js?v=202609281730';
 import { formatCLP, showAlert, escapeHtml, loadLeaflet } from './utils.js';
 
 // --- Historial de cotizaciones recientes por perfil (localStorage) ---
@@ -545,7 +545,7 @@ export function renderRatesView(container) {
 
     const servicio = input.servicio === 'exclusivo' ? 'Exclusivo' : 'Consolidado';
     const detalle = res.tramos.map(t => {
-      const tipo = t.key === 'retiro' ? 'retiro' : (/^troncal/.test(t.key) || t.key === 'cargo_ruta') ? 'troncal' : t.key === 'ultima' ? 'ultima' : 'directo';
+      const tipo = t.key === 'retiro' ? 'retiro' : (/^troncal/.test(t.key) || t.key === 'cargo_ruta') ? 'troncal' : (t.key === 'ultima' || t.key === 'ajuste_tope') ? 'ultima' : 'directo';
       const c = COLORES_TRAMO[tipo];
       return `<div class="flex gap-sm items-stretch">
         <div style="width:5px;border-radius:3px;background:${c.color}"></div>
