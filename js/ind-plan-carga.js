@@ -12,8 +12,8 @@
 // Tailwind del sitio está compilado y no incluye clases nuevas.
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202609281145';
-import { filtrarPorCentro, getRol } from './permisos.js?v=202609281145';
+import { supabase } from './supabase-client.js?v=202609281254';
+import { filtrarPorCentro, getRol } from './permisos.js?v=202609281254';
 import { showAlert, escapeHtml } from './utils.js';
 
 const META_CONS = 85;   // % consolidación objetivo por viaje
