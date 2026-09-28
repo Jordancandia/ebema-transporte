@@ -4,8 +4,8 @@
 //  Lee en vivo las vistas v_ind_* de Supabase (RLS: usuario @ebema.cl con rol).
 //  Paleta alineada a las presentaciones (PPT) del Comité de Transporte.
 // ============================================================================
-import { supabase } from './supabase-client.js?v=202609272137';
-import { centrosAlcance } from './permisos.js?v=202609272137';
+import { supabase } from './supabase-client.js?v=202609272111';
+import { centrosAlcance } from './permisos.js?v=202609272111';
 
 // --- Paleta PPT -------------------------------------------------------------
 const C = {
@@ -19,7 +19,7 @@ const R = {
 };
 // Semáforo rojo→gris para heatmaps del Consolidado
 function tintRG(t){ const s=['#F2EFEC','#F7D6D8','#EFAEB2','#E58990','#D9636B']; t=Math.min(1,Math.max(0,t)); return s[Math.min(s.length-1,Math.floor(t*s.length))]; }
-function heatConsolRG(v){ return tintRG(1-Math.min(100,v||0)/100); }  // más intenso = menor consolidación (peor)
+function heatConsolRG(v){ return tintRG((v||0)/100); }
 function heatTarRG(v){ return tintRG(Math.min(1,(v||0)/60)); }
 
 // --- Estado -----------------------------------------------------------------
@@ -39,11 +39,8 @@ export function setIndicadoresSubTab(sub){
 const nf0 = new Intl.NumberFormat('es-CL', { maximumFractionDigits: 0 });
 const nf1 = new Intl.NumberFormat('es-CL', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
 const pct = v => (v==null?'–':nf1.format(v)+'%');
-const sgn = v => (v<0?'-':'');
-const money = v => (v==null?'–':sgn(v)+'$'+nf1.format(Math.abs(v)));
-const money0 = v => sgn(v)+'$'+nf0.format(Math.abs(Math.round(v)));
-const money1 = v => sgn(v)+'$'+nf1.format(Math.abs(v));
-const mm = v => (v==null?'–':sgn(v)+'$'+nf1.format(Math.abs(v))+' MM');
+const money = v => (v==null?'–':'$'+nf1.format(v));
+const mm = v => (v==null?'–':'$'+nf1.format(v)+' MM');
 const mesCorto = lbl => (({'01':'ene','02':'feb','03':'mar','04':'abr','05':'may','06':'jun','07':'jul','08':'ago','09':'sep','10':'oct','11':'nov','12':'dic'})[String(lbl).slice(5,7)]||lbl);
 const nice = s => s.charAt(0)+s.slice(1).toLowerCase();
 
@@ -169,29 +166,13 @@ function generalHTML(d){
   const scMonto=sum(d.sc.map(r=>r.monto_no_cobrado))/1e6, scEnt=sum(d.sc.map(r=>r.entregas_sin_cobro));
   const worst=d.mar.reduce((a,b)=>(b.margen<(a?a.margen:1e15)?b:a),null)||{};
   const ftDesp=overallFT(d.ft,'Despacha'), ftRet=overallFT(d.ft,'Retira');
-  // --- Resumen ejecutivo: último mes cerrado vs mes anterior (27-sep-2026) ---
-  const _l=(a,k)=>a[a.length-1-k]||{}, _dif=(a,b)=>(a!=null&&b!=null)?a-b:null;
-  const n1=_l(nsClosed,0), n0=_l(nsClosed,1), t1=_l(tarClosed,0), t0=_l(tarClosed,1);
-  const marC=d.mar.filter(r=>r.mes_label<_curM), m1=_l(marC,0), m0=_l(marC,1);
-  const conC=d.con.filter(r=>r.mes_label<_curM), k1=_l(conC,0), k0=_l(conC,1);
-  const pp=v=>nf1.format(v)+' pp';
-  const resumen=`<div class="flex items-baseline gap-sm flex-wrap mb-sm"><div class="text-body-lg font-bold">Resumen ejecutivo</div>
-      <div class="text-[12px] text-secondary">último mes cerrado de cada indicador vs el mes anterior · clic para ir al detalle</div></div>
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(165px,1fr));gap:12px;margin-bottom:20px">
-      ${kpiExec({k:'OTIF',v:pct(n1.otif_pct),st:semaforo(n1.otif_pct,META.otif,5),meta:META.otif+'%',delta:_dif(n1.otif_pct,n0.otif_pct),dfmt:pp,prevLbl:mesCorto(n0.mes_label||''),per:mesCorto(n1.mes_label||''),ancla:'sec-ns'})}
-      ${kpiExec({k:'Fill Rate',v:pct(n1.fillrate_pct),st:semaforo(n1.fillrate_pct,META.fill,5),meta:META.fill+'%',delta:_dif(n1.fillrate_pct,n0.fillrate_pct),dfmt:pp,prevLbl:mesCorto(n0.mes_label||''),per:mesCorto(n1.mes_label||''),ancla:'sec-ns'})}
-      ${kpiExec({k:'Tarifa $/kg',v:money(t1.tarifa_kg),sub:'menor es mejor',delta:_dif(t1.tarifa_kg,t0.tarifa_kg),dfmt:money1,better:'down',prevLbl:mesCorto(t0.mes_label||''),per:mesCorto(t1.mes_label||'')+' · '+(t1.toneladas!=null?nf0.format(t1.toneladas)+' t':''),ancla:'sec-tar'})}
-      ${kpiExec({k:'Margen de flete',v:mm((m1.margen||0)/1e6),st:(m1.margen==null?null:(m1.margen>=0?{c:'#1E8449',t:'Positivo'}:{c:'#C0000C',t:'Negativo'})),delta:_dif((m1.margen||0)/1e6,(m0.margen||0)/1e6),dfmt:money1,prevLbl:mesCorto(m0.mes_label||''),per:mesCorto(m1.mes_label||''),ancla:'sec-mar'})}
-      ${kpiExec({k:'Cobertura',v:pct(m1.cobertura_pct),st:semaforo(m1.cobertura_pct,META.cobertura,10),meta:META.cobertura+'%',delta:_dif(m1.cobertura_pct,m0.cobertura_pct),dfmt:pp,prevLbl:mesCorto(m0.mes_label||''),per:'cobrado / pagado · '+mesCorto(m1.mes_label||''),ancla:'sec-mar'})}
-      ${kpiExec({k:'Consolidación',v:pct(k1.consol_pct),st:semaforo(k1.consol_pct,META.consol,10),meta:META.consol+'%',delta:_dif(k1.consol_pct,k0.consol_pct),dfmt:pp,prevLbl:mesCorto(k0.mes_label||''),per:'% capacidad camión · '+mesCorto(k1.mes_label||''),ancla:'sec-op'})}
-    </div>`;
-  return resumen+`
+  return `
     ${card('1 · Nivel de Servicio — última milla','OTIF y Fill Rate',
-      tileS('OTIF — promedio cerrado',pct(avgOc),(closedRange||'meses cerrados'),semaforo(avgOc,META.otif,5))+
+      tile('OTIF — promedio cerrado',pct(avgOc),(closedRange||'meses cerrados'))+
       tile('OTIF — '+mesCorto(_curM)+' (en curso)',pct(nsCur.otif_pct),(nsCur.otif_pct==null?'s/ dato en fuente':'parcial'),'opacity-60')+
-      tileS('Fill — promedio cerrado',pct(avgFc),(closedRange||'meses cerrados'),semaforo(avgFc,META.fill,5))+
+      tile('Fill — promedio cerrado',pct(avgFc),(closedRange||'meses cerrados'))+
       tile('Fill — '+mesCorto(_curM)+' (en curso)',pct(nsCur.fillrate_pct),(nsCur.fillrate_pct==null?'s/ dato en fuente':'parcial'),'opacity-60'),
-      legend([{n:'OTIF %',c:R.red},{n:'Fill Rate %',c:R.grey},{n:'Mes en curso',c:R.greyL},{n:'Meta OTIF '+META.otif+'%',c:'#1E8449'}])+`<div id="g_ns"></div>`,'sec-ns')}
+      legend([{n:'OTIF %',c:R.red},{n:'Fill Rate %',c:R.grey},{n:'Mes en curso',c:R.greyL}])+`<div id="g_ns"></div>`)}
     ${card('2 · Pesos por Kilo — última milla','Tarifas $/kg y Toneladas Despachadas',
       tile('Tarifa $/kg — '+mesCorto(_curM)+' (en curso)',money(tarCur.tarifa_kg),'parcial','opacity-60')+
       tile('Tarifa $/kg ponderada — cerrados',money(tarWavgC),(tarClosedRange||'meses cerrados'))+
@@ -199,15 +180,15 @@ function generalHTML(d){
       tile('Toneladas promedio — cerrados',(tonAvgC!=null?nf0.format(tonAvgC)+' t':'–'),(tarClosedRange||'meses cerrados')),
       `<div class="grid grid-cols-1 md:grid-cols-2 gap-md">`+
       `<div>`+legend([{n:'Tarifa $/kg',c:R.red2}])+`<div id="g_tar"></div></div>`+
-      `<div>`+legend([{n:'Toneladas (t)',c:R.grey}])+`<div id="g_ton"></div></div></div>`,'sec-tar')}
+      `<div>`+legend([{n:'Toneladas (t)',c:R.grey}])+`<div id="g_ton"></div></div></div>`)}
     ${card('3 · Margen de Flete — última milla','Margen ($MM) y Cobertura',
       tile('Margen acumulado',mm(marAcc),'excl. EbemaClick',marAcc<0?'text-[#C0000C]':'')+
-      tileS('Cobertura promedio',pct(cobAvg),'cobrado / pagado',semaforo(cobAvg,META.cobertura,10))+
+      tile('Cobertura promedio',pct(cobAvg),'cobrado / pagado')+
       tile('Sin cobrar',mm(scMonto),nf0.format(scEnt)+' entregas','text-[#C0000C]')+
       tile('Peor mes',mm(worst.margen/1e6),mesCorto(worst.mes_label||''),'text-[#C0000C]'),
       `<div class="grid grid-cols-1 md:grid-cols-2 gap-md">`+
       `<div>`+legend([{n:'Margen $MM',c:R.red}])+`<div id="g_mar"></div></div>`+
-      `<div>`+legend([{n:'Cobertura %',c:R.grey}])+`<div id="g_cob"></div></div></div>`,'sec-mar')}
+      `<div>`+legend([{n:'Cobertura %',c:R.grey}])+`<div id="g_cob"></div></div></div>`)}
     ${card('3.1 · Flete no cobrado — última milla','Flete pagado - No cobrado',
       tile('No cobrado acumulado',mm(sum(d.scm.map(r=>r.monto))/1e6),'2026','text-[#C0000C]')+
       tile('Entregas sin cobro',nf0.format(sum(d.scm.map(r=>r.entregas))),'acumulado')+
@@ -219,10 +200,10 @@ function generalHTML(d){
       tile('Documentos sin HES',nf0.format(d.shes.docs_sin_hes||0),'sin costo final')+
       tile('Toneladas sin reconocer costo',(d.shes.ton_sin_hes!=null?nf1.format(d.shes.ton_sin_hes)+' t':'–'),'sin HES'),
       `<div class="grid grid-cols-1 md:grid-cols-2 gap-md">`+
-      `<div><div class="text-[12px] text-secondary mb-1 font-medium">Nivel de consolidación % — más rojo = menor consolidación</div>`+
+      `<div><div class="text-[12px] text-secondary mb-1 font-medium">Nivel de consolidación % — intensidad = mayor</div>`+
       heatmapHTML(d.tq,'consol_pct',heatConsolRG,v=>nf1.format(v))+`</div>`+
-      `<div><div class="text-[12px] text-secondary mb-1 font-medium">Pesos por kilo $/kg — más rojo = más caro</div>`+
-      heatmapHTML(d.tq,'tarifa_kg',heatTarRG,money1)+`</div></div>`)}
+      `<div><div class="text-[12px] text-secondary mb-1 font-medium">Pesos por kilo $/kg — intensidad = más caro</div>`+
+      heatmapHTML(d.tq,'tarifa_kg',heatTarRG,v=>'$'+nf1.format(v))+`</div></div>`)}
 
     ${card('3.3 · Impacto EbemaClick','Costo, despachos y toneladas',
       tile('Despachos',nf0.format(sum(d.ebm.map(r=>r.entregas))),'entregas · período')+
@@ -242,12 +223,12 @@ function generalHTML(d){
       `<div>`+legend([{n:'Días Despacha',c:R.red},{n:'Días Retira',c:R.grey}])+`<div id="g_rev_dias"></div></div></div>`)}
     ${card('5 · Operación — última milla','Consolidación y Tiempo de Facturación',
       tile('Consolidación — '+mesCorto((d.con[d.con.length-2]||d.con[d.con.length-1]||{}).mes_label||''),pct((d.con[d.con.length-2]||d.con[d.con.length-1]||{}).consol_pct),'% capacidad usada')+
-      tileS('Consolidación promedio',pct(avg(d.con.map(r=>r.consol_pct))),'año',semaforo(avg(d.con.map(r=>r.consol_pct)),META.consol,10))+
+      tile('Consolidación promedio',pct(avg(d.con.map(r=>r.consol_pct))),'año')+
       tile('Días entrega→transporte',(function(){var r=d.tie[d.tie.length-2]||d.tie[d.tie.length-1]||{};return r.dias_prom!=null?nf1.format(r.dias_prom)+' d':'–';})(),'último mes')+
       tile('Días promedio',(function(){var v=avg(d.tie.map(r=>r.dias_prom));return v!=null?nf1.format(v)+' d':'–';})(),'año'),
       `<div class="grid grid-cols-1 md:grid-cols-2 gap-md">`+
       `<div>`+legend([{n:'Consolidación %',c:R.red2}])+`<div id="g_consol"></div></div>`+
-      `<div>`+legend([{n:'Días entrega→transporte',c:R.grey}])+`<div id="g_tiempo"></div></div></div>`,'sec-op')}
+      `<div>`+legend([{n:'Días entrega→transporte',c:R.grey}])+`<div id="g_tiempo"></div></div></div>`)}
 
     <div class="text-[11px] text-secondary mt-lg leading-relaxed">Todos los indicadores son de <b>última milla</b> (entregas a cliente); se excluye reposición troncal. El <b>3.2</b> es específicamente troncal Quilicura (solo documentos con HES). OTIF/Fill incluyen el mes en curso cuando el archivo de notas de venta lo trae (hoy la fuente llega a julio). Tarifa, margen y operación incluyen el mes en curso parcial.</div>`;
 }
@@ -369,62 +350,35 @@ function heatmapHTML(rows, key, colorFn, fmt){
 // ============================================================================
 //  DIBUJO
 // ============================================================================
-// ---- Núcleo de gráficos v2 (27-sep-2026) ------------------------------------
-// Dibuja al ANCHO REAL del contenedor (texto siempre ~11 px, antes escalaba con
-// el viewBox fijo 560 → 5-16 px), escala de ejes "redonda", etiquetas que no se
-// pisan, línea de meta opcional y redibujo al cambiar el tamaño de la ventana.
-let W=560, PR=18; const H=220,PL=46,PT=18,PB=28;   // PR crece a 66 cuando hay etiqueta de meta
-const FS=11, META_C='#1E8449';
-const META={ otif:90, fill:95, consol:85, cobertura:100 };   // metas (editar aquí)
-const _charts=new Map(); let _rsT=null;
-window.addEventListener('resize',function(){ clearTimeout(_rsT); _rsT=setTimeout(function(){
-  _charts.forEach(function(fn,id){ var el=document.getElementById(id); if(el&&el.isConnected&&el.clientWidth) fn(); else _charts.delete(id); });
-},200); });
-function _prep(elId,fn){ var el=document.getElementById(elId); if(!el) return null; _charts.set(elId,fn); W=Math.max(300,Math.round(el.clientWidth||560)); return el; }
-function niceScale(mn,mx,n){ n=n||4; if(!(mx>mn)) mx=mn+1; var raw=(mx-mn)/n, p=Math.pow(10,Math.floor(Math.log10(raw))), f=raw/p;
-  var st=(f<=1?1:f<=2?2:f<=2.5?2.5:f<=5?5:10)*p; return {mn:Math.floor(mn/st+1e-9)*st, mx:Math.ceil(mx/st-1e-9)*st, st:st}; }
+const W=560,H=210,PL=46,PR=14,PT=14,PB=26;
+function px(i,n){return PL+(W-PL-PR)*(n===1?0.5:i/(n-1));}
 function bx(i,n){var w=(W-PL-PR)/n;return PL+w*i+w/2;}
-function px(i,n){return bx(i,n);}
 function py(v,mn,mx){return PT+(H-PT-PB)*(1-(v-mn)/(mx-mn));}
-function gridY(out,sc,fmt){ for(var v=sc.mn; v<=sc.mx+sc.st*1e-6; v+=sc.st){ var y=py(v,sc.mn,sc.mx);
-  out.push('<line x1="'+PL+'" y1="'+y.toFixed(1)+'" x2="'+(W-PR)+'" y2="'+y.toFixed(1)+'" stroke="'+C.grid+'" stroke-width="1"/>');
-  out.push('<text x="'+(PL-7)+'" y="'+(y+4).toFixed(1)+'" text-anchor="end" fill="'+C.muted+'" font-size="'+FS+'">'+fmt(Math.abs(v)<1e-9?0:v)+'</text>'); } }
-function xLabels(out,labels){ var n=labels.length, k=Math.max(1,Math.ceil(n*40/(W-PL-PR)));
-  for(var i=0;i<n;i++){ if(i%k && i!==n-1) continue; out.push('<text x="'+bx(i,n).toFixed(1)+'" y="'+(H-8)+'" text-anchor="middle" fill="'+C.muted+'" font-size="'+FS+'">'+labels[i]+'</text>'); } }
-function metaLine(out,meta,sc){ if(!meta||meta.v==null||meta.v<sc.mn||meta.v>sc.mx) return; var y=py(meta.v,sc.mn,sc.mx);
-  out.push('<line x1="'+PL+'" y1="'+y.toFixed(1)+'" x2="'+(W-PR)+'" y2="'+y.toFixed(1)+'" stroke="'+META_C+'" stroke-width="1.5" stroke-dasharray="5 4"/>');
-  out.push('<text x="'+(W-PR+4)+'" y="'+(y+4).toFixed(1)+'" fill="'+META_C+'" font-size="'+FS+'" font-weight="700">'+(meta.short||('Meta '+meta.v+'%'))+'</text>');
-  out.push('<line x1="'+PL+'" y1="'+y.toFixed(1)+'" x2="'+(W-PR)+'" y2="'+y.toFixed(1)+'" stroke="transparent" stroke-width="10" data-t="'+(meta.lbl||('Meta '+meta.v))+'"/>'); }
-function svgOpen(){return '<svg viewBox="0 0 '+W+' '+H+'" width="100%" style="height:auto;overflow:visible;display:block" role="img">';}
+function gridY(out,mn,mx,fmt){for(var t=0;t<=4;t++){var val=mn+(mx-mn)*t/4,y=py(val,mn,mx);out.push('<line x1="'+PL+'" y1="'+y.toFixed(1)+'" x2="'+(W-PR)+'" y2="'+y.toFixed(1)+'" stroke="'+C.grid+'" stroke-width="1"/>');out.push('<text x="'+(PL-6)+'" y="'+(y+3).toFixed(1)+'" text-anchor="end" fill="'+C.muted+'" font-size="10">'+fmt(val)+'</text>');}}
+function xLabels(out,labels){for(var i=0;i<labels.length;i++)out.push('<text x="'+bx(i,labels.length).toFixed(1)+'" y="'+(H-8)+'" text-anchor="middle" fill="'+C.muted+'" font-size="9.5">'+labels[i]+'</text>');}
+function svgOpen(){return '<svg viewBox="0 0 '+W+' '+H+'" style="width:100%;height:auto;overflow:visible" role="img">';}
 function valLbl(v){ return Math.abs(v)>=1000? nf0.format(v) : nf1.format(v); }
-function tickDefault(sc){ return sc.st<1? function(v){return nf1.format(v);} : function(v){return nf0.format(v);}; }
 
-function lineChart(elId,series,labels,mn,mx,unit,softFrom,meta){
-  var el=_prep(elId,function(){lineChart(elId,series,labels,mn,mx,unit,softFrom,meta);}); if(!el) return; PR=meta?66:18;
+function lineChart(elId,series,labels,mn,mx,unit,softFrom){
+  var el=document.getElementById(elId); if(!el) return;
   if(softFrom==null) softFrom=labels.length;
-  var sc=niceScale(mn,mx), lo=sc.mn, hi=sc.mx, n=labels.length;
-  var out=[svgOpen()]; gridY(out,sc,tickDefault(sc)); metaLine(out,meta,sc);
-  var dense=(W-PL-PR)/Math.max(n,1) < 38;
+  var out=[svgOpen()]; gridY(out,mn,mx,function(v){return Math.round(v);});
+  out.push('<line x1="'+PL+'" y1="'+(H-PB)+'" x2="'+(W-PR)+'" y2="'+(H-PB)+'" stroke="'+C.grid+'" stroke-width="1"/>');
   for(var s=0;s<series.length;s++){var ser=series[s];
+    // trazo por segmentos (rompe en nulos; tramo "en curso" punteado y translúcido)
     for(var i=1;i<ser.v.length;i++){
       if(ser.v[i]==null||ser.v[i-1]==null) continue;
-      var X0=bx(i-1,n),Y0=py(ser.v[i-1],lo,hi),X1=bx(i,n),Y1=py(ser.v[i],lo,hi), soft=(i>=softFrom);
+      var X0=px(i-1,ser.v.length),Y0=py(ser.v[i-1],mn,mx),X1=px(i,ser.v.length),Y1=py(ser.v[i],mn,mx);
+      var soft=(i>=softFrom);
       out.push('<path d="M'+X0.toFixed(1)+' '+Y0.toFixed(1)+' L'+X1.toFixed(1)+' '+Y1.toFixed(1)+'" fill="none" stroke="'+ser.c+'" stroke-width="2" stroke-linecap="round"'+(soft?' stroke-dasharray="4 3" opacity="0.5"':'')+'/>');
     }
-    var vv=ser.v.filter(function(x){return x!=null;}), vmax=Math.max.apply(null,vv), vmin=Math.min.apply(null,vv);
-    for(var j=0;j<ser.v.length;j++){ var v=ser.v[j]; if(v==null) continue;
-      var CX=bx(j,n),CY=py(v,lo,hi),op=(j>=softFrom?'0.5':'1');
-      out.push('<circle cx="'+CX.toFixed(1)+'" cy="'+CY.toFixed(1)+'" r="4" fill="'+ser.c+'" stroke="#fff" stroke-width="2" opacity="'+op+'"/>');
-      // etiqueta: arriba si es el valor más alto del punto, abajo si no (no se pisan)
-      var others=series.filter(function(o,k){return k!==s && o.v[j]!=null;}).map(function(o){return o.v[j];});
-      var arriba=!others.length || v>=Math.max.apply(null,others);
-      var show=!dense || j===0 || j===ser.v.length-1 || v===vmax || v===vmin;
-      if(show) out.push('<text x="'+CX.toFixed(1)+'" y="'+(arriba?CY-9:CY+17).toFixed(1)+'" text-anchor="middle" fill="'+ser.c+'" font-size="'+FS+'" font-weight="600" opacity="'+op+'">'+nf1.format(v)+'</text>');
-      // zona de hover amplia (más grande que el punto)
-      out.push('<circle cx="'+CX.toFixed(1)+'" cy="'+CY.toFixed(1)+'" r="12" fill="transparent" data-t="'+ser.n+' '+labels[j]+': '+nf1.format(v)+unit+(j>=softFrom?' (en curso)':'')+'"/>');
+    for(var j=0;j<ser.v.length;j++){ if(ser.v[j]==null) continue;
+      var CX=px(j,ser.v.length),CY=py(ser.v[j],mn,mx),op=(j>=softFrom?'0.5':'1');
+      out.push('<circle cx="'+CX.toFixed(1)+'" cy="'+CY.toFixed(1)+'" r="3.4" fill="'+ser.c+'" stroke="#fff" stroke-width="1.5" opacity="'+op+'" data-t="'+ser.n+' '+labels[j]+': '+nf1.format(ser.v[j])+unit+(j>=softFrom?' (en curso)':'')+'"/>');
+      var lyy=(s===0? CY-7 : CY+13);
+      out.push('<text x="'+CX.toFixed(1)+'" y="'+lyy.toFixed(1)+'" text-anchor="middle" fill="'+ser.c+'" font-size="8.5" font-weight="600" opacity="'+op+'">'+nf1.format(ser.v[j])+'</text>');
     }
   }
-  out.push('<line x1="'+PL+'" y1="'+(H-PB)+'" x2="'+(W-PR)+'" y2="'+(H-PB)+'" stroke="'+C.grid+'" stroke-width="1"/>');
   xLabels(out,labels); out.push('</svg>'); el.innerHTML=out.join(''); bind(el);
 }
 // Devuelve etiqueta 'YYYY-MM' del mes en curso
@@ -443,13 +397,9 @@ function semTable(rows,cols){
   var body=rows.map(function(r,i){
     var tds=cols.map(function(c){
       var v=c.get(r), prev=i>0?c.get(rows[i-1]):null, d=(v!=null&&prev!=null)?(v-prev):null;
-      // Δ redondeado a 0 se muestra "=" (antes salía "$-0,0"); color según si subir es bueno o malo
-      if(d!=null && /^[^1-9]*$/.test(c.dfmt(Math.abs(d)))) d=0;
-      var dtxt=(d==null)?'–':(d===0?'=':((d>0?'+':'')+c.dfmt(d)));
-      var bueno=(d==null||d===0)?null:((c.better==='down')? d<0 : d>0);
-      var dsty=bueno==null?'color:#808285':(bueno?'color:#1E8449':'color:#C0000C');
-      var arrow=bueno==null?'':(d>0?'▲ ':'▼ ');
-      return `<td class="text-right pr-sm tabular-nums">${v==null?'–':c.fmt(v)}</td><td class="text-right pr-sm tabular-nums" style="${dsty}">${arrow}${dtxt}</td>`;
+      var dtxt=(d==null)?'–':((d>0?'+':'')+c.dfmt(d));
+      var dcls=(d==null)?'text-secondary':(d<0?'text-[#C0000C]':'text-[#333]');
+      return `<td class="text-right pr-sm tabular-nums">${v==null?'–':c.fmt(v)}</td><td class="text-right pr-sm tabular-nums ${dcls}">${dtxt}</td>`;
     }).join('');
     return `<tr class="border-t border-surface-variant"><td class="py-[3px] pr-sm whitespace-nowrap">${semLbl(r.semana)}</td>${tds}</tr>`;
   }).join('');
@@ -464,78 +414,75 @@ function nsConCurso(ns){
   } else if(have){ rows[rows.length-1]._curso=true; }
   return rows;
 }
-function barChart(elId,vals,labels,mn,mx,color,unit,part,tickFmt,meta){
-  var el=_prep(elId,function(){barChart(elId,vals,labels,mn,mx,color,unit,part,tickFmt,meta);}); if(!el) return; PR=meta?66:18;
-  var sc=niceScale(Math.min(mn,0),mx), lo=sc.mn, hi=sc.mx, n=vals.length;
-  var out=[svgOpen()]; gridY(out,sc,tickFmt||tickDefault(sc));
-  var zeroY=py(0,lo,hi);
-  out.push('<line x1="'+PL+'" y1="'+zeroY.toFixed(1)+'" x2="'+(W-PR)+'" y2="'+zeroY.toFixed(1)+'" stroke="'+C.muted+'" stroke-width="1"/>');
-  var band=(W-PL-PR)/Math.max(n,1), bw=Math.min(56,band*0.62), lbl=band>=26;
-  for(var i=0;i<n;i++){var v=vals[i]; if(v==null) continue; var y=py(v,lo,hi),top=Math.min(y,zeroY),h=Math.max(Math.abs(y-zeroY),1);
+function barChart(elId,vals,labels,mn,mx,color,unit,part,tickFmt){
+  var el=document.getElementById(elId); if(!el) return;
+  var out=[svgOpen()]; gridY(out,mn,mx,tickFmt||function(v){return Math.round(v);});
+  var zeroY=py(0,mn,mx);
+  out.push('<line x1="'+PL+'" y1="'+zeroY.toFixed(1)+'" x2="'+(W-PR)+'" y2="'+zeroY.toFixed(1)+'" stroke="'+C.grid+'" stroke-width="1"/>');
+  var bw=(W-PL-PR)/vals.length*0.6;
+  for(var i=0;i<vals.length;i++){var v=vals[i],y=py(v,mn,mx),top=Math.min(y,zeroY),h=Math.max(Math.abs(y-zeroY),1);
     var op=(part!=null&&i>=part)?'0.5':'1',extra=(part!=null&&i>=part)?' (parcial)':'';
-    out.push('<rect x="'+(bx(i,n)-bw/2).toFixed(1)+'" y="'+top.toFixed(1)+'" width="'+bw.toFixed(1)+'" height="'+h.toFixed(1)+'" rx="4" fill="'+color+'" opacity="'+op+'"/>');
-    if(lbl){ var lblY=(v>=0? top-5 : top+h+14);
-      out.push('<text x="'+bx(i,n).toFixed(1)+'" y="'+lblY.toFixed(1)+'" text-anchor="middle" fill="'+C.ink+'" font-size="'+FS+'" font-weight="600" opacity="'+op+'">'+valLbl(v)+'</text>'); }
-    out.push('<rect x="'+(bx(i,n)-band/2).toFixed(1)+'" y="'+PT+'" width="'+band.toFixed(1)+'" height="'+(H-PT-PB)+'" fill="transparent" data-t="'+labels[i]+': '+nf1.format(v)+unit+extra+'"/>');
+    out.push('<rect x="'+(bx(i,vals.length)-bw/2).toFixed(1)+'" y="'+top.toFixed(1)+'" width="'+bw.toFixed(1)+'" height="'+h.toFixed(1)+'" rx="3" fill="'+color+'" opacity="'+op+'" data-t="'+labels[i]+': '+nf1.format(v)+unit+extra+'"/>');
+    var lblY=(v>=0? top-3 : top+h+9);
+    out.push('<text x="'+bx(i,vals.length).toFixed(1)+'" y="'+lblY.toFixed(1)+'" text-anchor="middle" fill="'+C.ink+'" font-size="8.5" font-weight="600" opacity="'+op+'">'+valLbl(v)+'</text>');
   }
-  metaLine(out,meta,sc);
   xLabels(out,labels); out.push('</svg>'); el.innerHTML=out.join(''); bind(el);
 }
 // Ranking horizontal
 function hbarChart(elId,items,color,unit,hlLabel){
-  var el=_prep(elId,function(){hbarChart(elId,items,color,unit,hlLabel);}); if(!el) return;
-  var n=items.length, rowH=26, lblW=Math.min(150,Math.max(90,W*0.22)), valW=56;
-  var vals=items.map(function(it){return it.value;}), mx=Math.max.apply(null,vals.concat([0])), mn=Math.min.apply(null,vals.concat([0]));
-  var span=(mx-mn)||1, x0=lblW, xw=W-lblW-valW;
-  var zero=x0+(0-mn)/span*xw, HH=rowH*n+6;
-  var out=['<svg viewBox="0 0 '+W+' '+HH+'" width="100%" style="height:auto;overflow:visible;display:block" role="img">'];
+  var el=document.getElementById(elId); if(!el) return;
+  var n=items.length, rowH=Math.max(16,(H-8)/Math.max(n,1)), lblW=96;
+  var vals=items.map(it=>it.value), mx=Math.max.apply(null,vals.concat([0])), mn=Math.min.apply(null,vals.concat([0]));
+  var span=(mx-mn)||1, x0=lblW, xw=W-lblW-40;
+  var zero=x0+(0-mn)/span*xw;
+  var out=['<svg viewBox="0 0 '+W+' '+(rowH*n+6)+'" style="width:100%;height:auto;overflow:visible" role="img">'];
   for(var i=0;i<n;i++){var it=items[i],y=i*rowH+3,bxx=x0+(it.value-mn)/span*xw;
-    var left=Math.min(zero,bxx),w=Math.max(Math.abs(bxx-zero),2), hl=(it.label===hlLabel);
-    out.push('<text x="'+(lblW-8)+'" y="'+(y+rowH*0.6).toFixed(1)+'" text-anchor="end" fill="'+(hl?C.ink:C.muted)+'" font-size="'+FS+'" font-weight="'+(hl?'700':'400')+'">'+it.label+'</text>');
-    out.push('<rect x="'+left.toFixed(1)+'" y="'+(y+4).toFixed(1)+'" width="'+w.toFixed(1)+'" height="'+(rowH-10)+'" rx="4" fill="'+color+'" opacity="'+(hlLabel&&!hl?'0.45':'1')+'"/>');
-    out.push('<text x="'+(bxx+(it.value>=0?6:-6)).toFixed(1)+'" y="'+(y+rowH*0.6).toFixed(1)+'" text-anchor="'+(it.value>=0?'start':'end')+'" fill="'+C.ink+'" font-size="'+FS+'">'+nf1.format(it.value)+'</text>');
-    out.push('<rect x="0" y="'+y+'" width="'+W+'" height="'+rowH+'" fill="transparent" data-t="'+it.label+': '+nf1.format(it.value)+unit+'"/>');
+    var left=Math.min(zero,bxx),w=Math.max(Math.abs(bxx-zero),1);
+    var hl=(it.label===hlLabel);
+    out.push('<text x="'+(lblW-6)+'" y="'+(y+rowH*0.62).toFixed(1)+'" text-anchor="end" fill="'+(hl?C.ink:C.muted)+'" font-size="10.5" font-weight="'+(hl?'700':'400')+'">'+it.label+'</text>');
+    out.push('<rect x="'+left.toFixed(1)+'" y="'+(y+2).toFixed(1)+'" width="'+w.toFixed(1)+'" height="'+(rowH-6).toFixed(1)+'" rx="2.5" fill="'+color+'" opacity="'+(hl?'1':'0.55')+'" data-t="'+it.label+': '+nf1.format(it.value)+unit+'"/>');
+    out.push('<text x="'+(bxx+ (it.value>=0?4:-4)).toFixed(1)+'" y="'+(y+rowH*0.62).toFixed(1)+'" text-anchor="'+(it.value>=0?'start':'end')+'" fill="'+C.muted+'" font-size="9.5">'+nf1.format(it.value)+'</text>');
   }
   out.push('</svg>'); el.innerHTML=out.join(''); bind(el);
 }
 
 function drawGeneral(d){
   const nsC=nsConCurso(d.ns), nsL=nsC.map(r=>mesCorto(r.mes_label)), softNs=nsC.findIndex(r=>r._curso);
-  lineChart('g_ns',[{n:'OTIF',v:nsC.map(r=>r.otif_pct),c:R.red},{n:'Fill',v:nsC.map(r=>r.fillrate_pct),c:R.grey}],nsL,60,100,'%',softNs<0?undefined:softNs,{v:META.otif,lbl:'Meta OTIF '+META.otif+'%'});
+  lineChart('g_ns',[{n:'OTIF',v:nsC.map(r=>r.otif_pct),c:R.red},{n:'Fill',v:nsC.map(r=>r.fillrate_pct),c:R.grey}],nsL,60,100,'%',softNs<0?undefined:softNs);
   const tarL=d.tar.map(r=>mesCorto(r.mes_label)), pIdx=d.tar.length-1;
-  barChart('g_tar',d.tar.map(r=>r.tarifa_kg),tarL,0,niceMax(d.tar.map(r=>r.tarifa_kg)),R.red2,' $/kg',pIdx,money0);
+  barChart('g_tar',d.tar.map(r=>r.tarifa_kg),tarL,0,niceMax(d.tar.map(r=>r.tarifa_kg)),R.red2,' $/kg',pIdx,v=>'$'+Math.round(v));
   barChart('g_ton',d.tar.map(r=>r.toneladas),tarL,0,niceMax(d.tar.map(r=>r.toneladas)),R.grey,' t',pIdx,v=>Math.round(v/1000)+'k');
   const marL=d.mar.map(r=>mesCorto(r.mes_label)), marV=d.mar.map(r=>r.margen/1e6);
-  barChart('g_mar',marV,marL,Math.min(-2,niceMin(marV)),2,R.red,' MM',d.mar.length-1,money0);
-  lineChart('g_cob',[{n:'Cobertura',v:d.mar.map(r=>r.cobertura_pct),c:R.grey}],marL,60,100,'%',undefined,{v:META.cobertura,lbl:'Meta cobertura '+META.cobertura+'%'});
+  barChart('g_mar',marV,marL,Math.min(-2,niceMin(marV)),2,R.red,' MM',d.mar.length-1,v=>'$'+Math.round(v));
+  lineChart('g_cob',[{n:'Cobertura',v:d.mar.map(r=>r.cobertura_pct),c:R.grey}],marL,60,100,'%');
   const fm=[...new Set(d.ft.map(r=>r.mes_label))].sort();
   const ftv=(mod,f)=>fm.map(m=>{const r=d.ft.find(x=>x.mes_label===m&&x.modalidad===mod);return r?(r[f]||0):0;});
-  lineChart('g_rev_otif',[{n:'Despacha',v:ftv('Despacha','otif_pct'),c:R.red},{n:'Retira',v:ftv('Retira','otif_pct'),c:R.grey}],fm.map(mesCorto),0,100,'%',undefined,{v:META.otif,lbl:'Meta OTIF '+META.otif+'%'});
+  lineChart('g_rev_otif',[{n:'Despacha',v:ftv('Despacha','otif_pct'),c:R.red},{n:'Retira',v:ftv('Retira','otif_pct'),c:R.grey}],fm.map(mesCorto),0,100,'%');
   const _ped=ftv('Despacha','pedidos').concat(ftv('Retira','pedidos'));
   lineChart('g_rev_ped',[{n:'Despacha',v:ftv('Despacha','pedidos'),c:R.red},{n:'Retira',v:ftv('Retira','pedidos'),c:R.grey}],fm.map(mesCorto),0,niceMax(_ped),'');
   const _dias=ftv('Despacha','ciclo_prom_dias').concat(ftv('Retira','ciclo_prom_dias'));
   lineChart('g_rev_dias',[{n:'Despacha',v:ftv('Despacha','ciclo_prom_dias'),c:R.red},{n:'Retira',v:ftv('Retira','ciclo_prom_dias'),c:R.grey}],fm.map(mesCorto),0,niceMax(_dias),' d');
   const conL=d.con.map(r=>mesCorto(r.mes_label));
-  barChart('g_consol',d.con.map(r=>r.consol_pct),conL,0,100,R.red2,'%',d.con.length-1,v=>Math.round(v),{v:META.consol,lbl:'Meta '+META.consol+'%'});
+  barChart('g_consol',d.con.map(r=>r.consol_pct),conL,0,100,R.red2,'%',d.con.length-1,v=>Math.round(v));
   const tieL=d.tie.map(r=>mesCorto(r.mes_label));
   barChart('g_tiempo',d.tie.map(r=>r.dias_prom),tieL,0,niceMax(d.tie.map(r=>r.dias_prom)),R.grey,' d',d.tie.length-1,v=>Math.round(v));
   const scmL=d.scm.map(r=>mesCorto(r.mes_label));
-  barChart('g_scm',d.scm.map(r=>r.monto/1e6),scmL,0,niceMax(d.scm.map(r=>r.monto/1e6)),R.red2,' MM',d.scm.length-1,money0);
+  barChart('g_scm',d.scm.map(r=>r.monto/1e6),scmL,0,niceMax(d.scm.map(r=>r.monto/1e6)),R.red2,' MM',d.scm.length-1,v=>'$'+Math.round(v));
   var ebmMap={}; (d.ebm||[]).forEach(function(r){ebmMap[r.mes_label]=r;});
   var ebmL=mesesPeriodo();
-  barChart('g_ebc_mes',ebmL.map(function(m){return ((ebmMap[m]&&ebmMap[m].pagado)||0)/1e6;}),ebmL.map(mesCorto),0,niceMax((d.ebm||[]).map(function(r){return r.pagado/1e6;})),R.red2,' MM',null,money1);
+  barChart('g_ebc_mes',ebmL.map(function(m){return ((ebmMap[m]&&ebmMap[m].pagado)||0)/1e6;}),ebmL.map(mesCorto),0,niceMax((d.ebm||[]).map(function(r){return r.pagado/1e6;})),R.red2,' MM',null,function(v){return '$'+nf1.format(v);});
 }
 
 function drawCentro(d, grupo){
   const ns=weeks(d.ns.filter(r=>r.grupo===grupo));
   const tar=weeks(d.tar.filter(r=>r.grupo===grupo));
   const mar=weeks(d.mar.filter(r=>r.grupo===grupo));
-  lineChart('c_ns',[{n:'OTIF',v:ns.map(r=>r.otif_pct),c:C.navy},{n:'Fill',v:ns.map(r=>r.fillrate_pct),c:C.blue}],ns.map(r=>r.semana.replace('2026-','')),0,100,'%',undefined,{v:META.otif,lbl:'Meta OTIF '+META.otif+'%'});
-  barChart('c_tar',tar.map(r=>r.tarifa_kg),tar.map(r=>r.semana.replace('2026-','')),0,niceMax(tar.map(r=>r.tarifa_kg)),C.orange,' $/kg',null,money0);
+  lineChart('c_ns',[{n:'OTIF',v:ns.map(r=>r.otif_pct),c:C.navy},{n:'Fill',v:ns.map(r=>r.fillrate_pct),c:C.blue}],ns.map(r=>r.semana.replace('2026-','')),0,100,'%');
+  barChart('c_tar',tar.map(r=>r.tarifa_kg),tar.map(r=>r.semana.replace('2026-','')),0,niceMax(tar.map(r=>r.tarifa_kg)),C.orange,' $/kg',null,v=>'$'+Math.round(v));
   barChart('c_ton',tar.map(r=>r.toneladas),tar.map(r=>r.semana.replace('2026-','')),0,niceMax(tar.map(r=>r.toneladas)),C.blue,' t',null,v=>Math.round(v)+'');
   const marV=mar.map(r=>r.margen/1e6);
   barChart('c_mar',marV,mar.map(r=>r.semana.replace('2026-','')),Math.min(-0.5,niceMin(marV)),Math.max(0.5,niceMax(marV)),C.red,' MM',null,v=>nf1.format(v));
-  lineChart('c_cob',[{n:'Cobertura',v:mar.map(r=>r.cobertura_pct),c:C.navy}],mar.map(r=>r.semana.replace('2026-','')),0,100,'%',undefined,{v:META.cobertura,lbl:'Meta cobertura '+META.cobertura+'%'});
+  lineChart('c_cob',[{n:'Cobertura',v:mar.map(r=>r.cobertura_pct),c:C.navy}],mar.map(r=>r.semana.replace('2026-','')),0,100,'%');
   // Rankings (última semana cerrada de cada familia)
   const hl=nice(grupo);
   hbarChart('r_otif',rankLast(d.ns,'otif_pct',true).map(r=>({label:nice(r.grupo),value:r.otif_pct})),C.navy,'%',hl);
@@ -550,18 +497,18 @@ function drawCentro(d, grupo){
   hbarChart('c_caro',caro.map(r=>({label:r.destino,value:r.tarifa_kg})),C.orange,' $/kg','');
   // Operación
   const cw=weeks((d.con||[]).filter(r=>r.grupo===grupo));
-  barChart('c_consol',cw.map(r=>r.consol_pct),cw.map(r=>r.semana.replace('2026-','')),0,100,C.green,'%',null,v=>Math.round(v),{v:META.consol,lbl:'Meta '+META.consol+'%'});
+  barChart('c_consol',cw.map(r=>r.consol_pct),cw.map(r=>r.semana.replace('2026-','')),0,100,C.green,'%',null,v=>Math.round(v));
   const tm=(d.tie||[]).filter(r=>r.grupo===grupo).slice().sort((a,b)=>a.mes_label<b.mes_label?-1:1);
   barChart('c_tiempo',tm.map(r=>r.dias_prom),tm.map(r=>mesCorto(r.mes_label)),0,niceMax(tm.map(r=>r.dias_prom)),C.blue,' d',null,v=>Math.round(v));
   const sm=(d.scm||[]).filter(r=>r.grupo===grupo).slice().sort((a,b)=>a.mes_label<b.mes_label?-1:1);
-  barChart('c_scm',sm.map(r=>r.monto/1e6),sm.map(r=>mesCorto(r.mes_label)),0,niceMax(sm.map(r=>r.monto/1e6)),C.red,' MM',null,money0);
+  barChart('c_scm',sm.map(r=>r.monto/1e6),sm.map(r=>mesCorto(r.mes_label)),0,niceMax(sm.map(r=>r.monto/1e6)),C.red,' MM',null,v=>'$'+Math.round(v));
 }
 
 // ============================================================================
 //  UI helpers
 // ============================================================================
-function card(title,lead,tiles,chartsHTML,ancla){
-  return `<section data-card ${ancla?'id="'+ancla+'" style="scroll-margin-top:80px"':''} class="bg-surface-container-lowest border border-surface-variant rounded-xl p-md md:p-lg mb-lg">
+function card(title,lead,tiles,chartsHTML){
+  return `<section data-card class="bg-surface-container-lowest border border-surface-variant rounded-xl p-md md:p-lg mb-lg">
     <div class="text-label-caps text-secondary uppercase mb-1">${title}</div>
     <div class="text-headline-sm font-bold mb-md">${lead}</div>
     ${tiles?`<div class="grid grid-cols-2 md:grid-cols-4 gap-sm mb-md">${tiles}</div>`:''}
@@ -572,35 +519,6 @@ function tile(k,v,d,cls=''){
     <div class="text-[11px] text-secondary">${k}</div>
     <div class="text-2xl font-bold leading-tight ${cls}">${v}</div>
     <div class="text-[11px] text-secondary mt-[2px]">${d||''}</div></div>`;
-}
-// --- Semáforo vs meta (27-sep-2026) -------------------------------------------
-// better='up' (más es mejor) | 'down' (menos es mejor). tol = margen "cerca de meta".
-function semaforo(v,meta,tol,better){
-  if(v==null||meta==null) return null;
-  var ok = better==='down' ? v<=meta : v>=meta;
-  var cerca = better==='down' ? v<=meta+tol : v>=meta-tol;
-  return ok ? {c:'#1E8449',t:'Sobre meta'} : cerca ? {c:'#B5730B',t:'Cerca de meta'} : {c:'#C0000C',t:'Bajo meta'};
-}
-function stChip(st){ return st?`<div class="text-[11px] font-semibold mt-[2px]" style="color:${st.c}">● ${st.t}</div>`:''; }
-function tileS(k,v,d,st,cls=''){
-  return `<div class="bg-surface-container-low border border-surface-variant rounded-lg px-md py-sm" style="${st?'border-left:4px solid '+st.c:''}">
-    <div class="text-[11px] text-secondary">${k}</div>
-    <div class="text-2xl font-bold leading-tight ${cls}">${v}</div>${stChip(st)}
-    <div class="text-[11px] text-secondary mt-[2px]">${d||''}</div></div>`;
-}
-// Tarjeta del resumen ejecutivo: valor + variación vs período anterior + semáforo
-function kpiExec(o){
-  var d=o.delta, dTxt='', dSty='color:#808285';
-  if(d!=null){ var z=Math.abs(d)<1e-9 || /^[^1-9]*$/.test(o.dfmt(Math.abs(d)));
-    var bueno=z?null:((o.better==='down')?d<0:d>0);
-    dTxt=z?'= vs '+o.prevLbl:((d>0?'▲ +':'▼ ')+o.dfmt(d)+' vs '+o.prevLbl);
-    dSty=bueno==null?'color:#808285':(bueno?'color:#1E8449':'color:#C0000C'); }
-  return `<a href="#${o.ancla}" style="display:block;text-decoration:none;color:inherit;background:#fff;border:1px solid #e3e0dc;border-radius:12px;padding:12px 14px;${o.st?'border-top:4px solid '+o.st.c:'border-top:4px solid #A9ACAE'}">
-    <div style="font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:#6B6E70">${o.k}</div>
-    <div style="font-size:28px;font-weight:800;line-height:1.15;color:#1c1b1a;font-variant-numeric:tabular-nums">${o.v}</div>
-    ${o.st?`<div style="font-size:12px;font-weight:700;color:${o.st.c}">● ${o.st.t}${o.meta!=null?' · meta '+o.meta:''}</div>`:`<div style="font-size:12px;color:#808285">${o.sub||'&nbsp;'}</div>`}
-    <div style="font-size:12px;margin-top:2px;${dSty}">${dTxt||'&nbsp;'}</div>
-    <div style="font-size:11px;color:#808285;margin-top:2px">${o.per||''}</div></a>`;
 }
 function legend(items){
   return `<div class="flex flex-wrap gap-md text-[12px] text-secondary mb-sm">`+
@@ -761,9 +679,9 @@ export async function renderIndicadoresHome(container){
         ${homeCard('Margen de Flete',mm(marAcc),'acumulado 2026 · excl. EbemaClick','h_mar',marAcc<0)}
       </div></div>`;
     ensureTip();
-    lineChart('h_ns',[{n:'OTIF',v:D.ns.map(r=>r.otif_pct),c:C.navy},{n:'Fill',v:D.ns.map(r=>r.fillrate_pct),c:C.blue}],D.ns.map(r=>mesCorto(r.mes_label)),60,100,'%',undefined,{v:META.otif,lbl:'Meta OTIF '+META.otif+'%'});
-    barChart('h_tar',D.tar.map(r=>r.tarifa_kg),D.tar.map(r=>mesCorto(r.mes_label)),0,niceMax(D.tar.map(r=>r.tarifa_kg)),C.orange,' $/kg',D.tar.length-1,money0);
-    barChart('h_mar',D.mar.map(r=>r.margen/1e6),D.mar.map(r=>mesCorto(r.mes_label)),Math.min(-2,niceMin(D.mar.map(r=>r.margen/1e6))),2,C.red,' MM',D.mar.length-1,money0);
+    lineChart('h_ns',[{n:'OTIF',v:D.ns.map(r=>r.otif_pct),c:C.navy},{n:'Fill',v:D.ns.map(r=>r.fillrate_pct),c:C.blue}],D.ns.map(r=>mesCorto(r.mes_label)),60,100,'%');
+    barChart('h_tar',D.tar.map(r=>r.tarifa_kg),D.tar.map(r=>mesCorto(r.mes_label)),0,niceMax(D.tar.map(r=>r.tarifa_kg)),C.orange,' $/kg',D.tar.length-1,v=>'$'+Math.round(v));
+    barChart('h_mar',D.mar.map(r=>r.margen/1e6),D.mar.map(r=>mesCorto(r.mes_label)),Math.min(-2,niceMin(D.mar.map(r=>r.margen/1e6))),2,C.red,' MM',D.mar.length-1,v=>'$'+Math.round(v));
   } catch(e){ container.innerHTML=errorHTML(e); }
 }
 // Resumen mensual agregado de los grupos visibles para el usuario (perfiles por centro)
@@ -839,8 +757,8 @@ function nivelHTML(d,grupos,grupo){
       `<div id="n_semtab"></div></div>`)}
 
     ${card('Nivel de Servicio por Tipo de Venta Stock y Calzada','OTIF y Tiempo de Entrega',
-      tileS('OTIF Stock',pct(stock.otif_pct),(stock.lineas||0)+' líneas · 4 sem',semaforo(stock.otif_pct,META.otif,5))+
-      tileS('OTIF Calzada',pct(calz.otif_pct),(calz.lineas||0)+' líneas · 4 sem',semaforo(calz.otif_pct,META.otif,5))+
+      tile('OTIF Stock',pct(stock.otif_pct),(stock.lineas||0)+' líneas · 4 sem')+
+      tile('OTIF Calzada',pct(calz.otif_pct),(calz.lineas||0)+' líneas · 4 sem',(calz.otif_pct!=null&&calz.otif_pct<60)?'text-[#C0000C]':'')+
       tile('Días Stock',(stock.dias_prom!=null?nf1.format(stock.dias_prom)+' d':'–'),'venta→entrega')+
       tile('Días Calzada',(calz.dias_prom!=null?nf1.format(calz.dias_prom)+' d':'–'),'venta→entrega'),
       `<div class="grid grid-cols-1 md:grid-cols-2 gap-md">`+
@@ -876,7 +794,7 @@ function heatComunaHTML(rows){
 }
 function drawNivel(d,grupo){
   const s4=last4(d.sem,grupo);
-  lineChart('n_sem',[{n:'OTIF',v:s4.map(r=>r.otif_pct),c:R.red},{n:'Fill',v:s4.map(r=>r.fillrate_pct),c:R.grey}],s4.map(r=>semLbl(r.semana)),0,100,'%',undefined,{v:META.otif,lbl:'Meta OTIF '+META.otif+'%'});
+  lineChart('n_sem',[{n:'OTIF',v:s4.map(r=>r.otif_pct),c:R.red},{n:'Fill',v:s4.map(r=>r.fillrate_pct),c:R.grey}],s4.map(r=>semLbl(r.semana)),0,100,'%');
   const nt=document.getElementById('n_semtab'); if(nt) nt.innerHTML=semTable(s4,[
     {label:'OTIF',get:r=>r.otif_pct,fmt:pct,dfmt:v=>nf1.format(v)+' pp'},
     {label:'Fill',get:r=>r.fillrate_pct,fmt:pct,dfmt:v=>nf1.format(v)+' pp'}]);
@@ -975,19 +893,19 @@ function tarifaHTML(d,grupos,grupo){
 }
 function drawTarifa(d,grupo){
   const s4=last4(d.sem,grupo);
-  barChart('t_sem',s4.map(r=>r.tarifa_kg),s4.map(r=>semLbl(r.semana)),0,niceMax(s4.map(r=>r.tarifa_kg)),R.red2,' $/kg',null,money0);
+  barChart('t_sem',s4.map(r=>r.tarifa_kg),s4.map(r=>semLbl(r.semana)),0,niceMax(s4.map(r=>r.tarifa_kg)),R.red2,' $/kg',null,v=>'$'+Math.round(v));
   const tt=document.getElementById('t_semtab'); if(tt) tt.innerHTML=semTable(s4,[
-    {label:'$/kg',get:r=>r.tarifa_kg,fmt:money,dfmt:money1,better:'down'},
+    {label:'$/kg',get:r=>r.tarifa_kg,fmt:money,dfmt:v=>'$'+nf1.format(v)},
     {label:'Ton',get:r=>r.toneladas,fmt:v=>nf0.format(v),dfmt:v=>nf0.format(v)}]);
   const tm=d.tm.filter(r=>r.grupo===grupo && r.segmento===_segT).slice().sort((a,b)=>a.mes_label<b.mes_label?-1:1);
   const tmL=tm.map(r=>mesCorto(r.mes_label)), pIdx=tm.length-1;
-  barChart('t_tar',tm.map(r=>r.tarifa_kg),tmL,0,niceMax(tm.map(r=>r.tarifa_kg)),R.red2,' $/kg',pIdx,money0);
+  barChart('t_tar',tm.map(r=>r.tarifa_kg),tmL,0,niceMax(tm.map(r=>r.tarifa_kg)),R.red2,' $/kg',pIdx,v=>'$'+Math.round(v));
   barChart('t_ton',tm.map(r=>r.toneladas),tmL,0,niceMax(tm.map(r=>r.toneladas)),R.grey,' t',pIdx,v=>Math.round(v));
   const cm4=(d.consm||[]).filter(r=>r.grupo===grupo).slice().sort((a,b)=>a.mes_label<b.mes_label?-1:1);
-  barChart('t_consol_mes',cm4.map(r=>r.consol_pct),cm4.map(r=>mesCorto(r.mes_label)),0,100,R.red2,'%',null,v=>Math.round(v),{v:META.consol,lbl:'Meta '+META.consol+'%'});
+  barChart('t_consol_mes',cm4.map(r=>r.consol_pct),cm4.map(r=>mesCorto(r.mes_label)),0,100,R.red2,'%',null,v=>Math.round(v));
   const cw=(d.capw||[]).filter(r=>r.grupo===grupo), csems=last4Sem(cw);
   const caps2=['5','10','15','28'];
-  barChart('t_cap_sem',caps2.map(cap=>{var vs=cw.filter(r=>r.cap===cap && csems.indexOf(r.semana)>=0 && r.consol_pct!=null).map(r=>r.consol_pct);return avg(vs)||0;}),caps2.map(c=>c+'t'),0,100,R.grey,'%',null,v=>Math.round(v),{v:META.consol,lbl:'Meta '+META.consol+'%'});
+  barChart('t_cap_sem',caps2.map(cap=>{var vs=cw.filter(r=>r.cap===cap && csems.indexOf(r.semana)>=0 && r.consol_pct!=null).map(r=>r.consol_pct);return avg(vs)||0;}),caps2.map(c=>c+'t'),0,100,R.grey,'%',null,v=>Math.round(v));
   const cc=d.com.filter(r=>r.grupo===grupo && r.segmento===_segT && (r.toneladas||0)>=10 && r.tarifa_kg!=null && r.comuna!=='(s/comuna)');
   hbarChart('t_caro',cc.slice().sort((a,b)=>b.tarifa_kg-a.tarifa_kg).slice(0,5).map(r=>({label:r.comuna,value:r.tarifa_kg})),R.red2,' $/kg','');
   hbarChart('t_barato',cc.slice().sort((a,b)=>a.tarifa_kg-b.tarifa_kg).slice(0,5).map(r=>({label:r.comuna,value:r.tarifa_kg})),R.grey,' $/kg','');
@@ -996,7 +914,7 @@ function drawTarifa(d,grupo){
     const ebcM=mesesPeriodo();   // ene → mes en curso (todo el período)
     const sumM=(m,f)=>sum(ebcG.filter(x=>x.mes_label===m).map(r=>r[f]||0));
     lineChart('t_ebc',[{n:'Pagado',v:ebcM.map(m=>sumM(m,'pagado')/1e6),c:R.red2},{n:'Cobrado',v:ebcM.map(m=>sumM(m,'cobrado')/1e6),c:R.red}],ebcM.map(mesCorto),0,niceMax(ebcG.map(r=>r.pagado/1e6)),' MM');
-    barChart('t_ebc_neto',ebcM.map(m=>(sumM(m,'pagado')-sumM(m,'cobrado'))/1e6),ebcM.map(mesCorto),0,niceMax(ebcG.map(r=>(r.pagado-r.cobrado)/1e6)),R.grey,' MM',null,money1);
+    barChart('t_ebc_neto',ebcM.map(m=>(sumM(m,'pagado')-sumM(m,'cobrado'))/1e6),ebcM.map(mesCorto),0,niceMax(ebcG.map(r=>(r.pagado-r.cobrado)/1e6)),R.grey,' MM',null,v=>'$'+nf1.format(v));
   }
 }
 
@@ -1039,25 +957,23 @@ function margenHTML(d,grupos,grupo){
     </div>
     <div class="text-[11px] text-secondary -mt-sm mb-md">Solo <b>última milla</b> (entregas a cliente). Excluye traslados troncales de reposición.</div>
     ${card('Semana Móvil Margen de Flete — '+nice(grupo),'Margen $MM y Cobertura Semanal',
-      (function(){ var s4=last4(d.sem,grupo), w=s4[s4.length-1]||{};
-        return tileS('Margen — '+semLbl(w.semana||''),mm((w.margen||0)/1e6),'última semana cerrada',w.margen==null?null:(w.margen>=0?{c:'#1E8449',t:'Positivo'}:{c:'#C0000C',t:'Negativo'}))+
-          tileS('Cobertura — '+semLbl(w.semana||''),pct(w.cobertura_pct),'cobrado / pagado',semaforo(w.cobertura_pct,META.cobertura,10))+
-          tile('Margen 4 semanas',mm(sum(s4.map(r=>r.margen))/1e6),'acumulado')+
-          tile('Pagado 4 semanas',mm(sum(s4.map(r=>r.pagado))/1e6),'flete pagado'); })(),
+      '',
       `<div class="grid grid-cols-1 md:grid-cols-2 gap-md items-center">`+
       `<div>`+legend([{n:'Margen $MM',c:R.red2}])+`<div id="m_sem"></div></div>`+
       `<div id="m_semtab"></div></div>`)}
-    ${card('1 · Pagado vs Cobrado y Cobertura — semanal','Últimas 4 semanas cerradas ($MM y %)','',
+    ${card('1 · Pagado vs Cobrado — semanal','Últimas 4 semanas cerradas por centro ($MM)','',
+      legend([{n:'Cobrado',c:R.red},{n:'Pagado',c:R.grey}])+`<div id="m_pc"></div>`)}
+    ${card('2 · Margen y cobertura — semanal','Últimas 4 semanas cerradas ($MM y %)','',
       `<div class="grid grid-cols-1 md:grid-cols-2 gap-md">`+
-      `<div>`+legend([{n:'Cobrado',c:R.red},{n:'Pagado',c:R.grey}])+`<div id="m_pc"></div></div>`+
-      `<div>`+legend([{n:'Cobertura %',c:R.red},{n:'Meta '+META.cobertura+'%',c:'#1E8449'}])+`<div id="m_cob"></div></div></div>`)}
-    ${card('2 · Flete no cobrado — mensual','Entregas con flete cobrado en 0 (monto sugerido no cobrado)',
+      `<div>`+legend([{n:'Margen $MM',c:R.red2}])+`<div id="m_margen"></div></div>`+
+      `<div>`+legend([{n:'Cobertura %',c:R.red}])+`<div id="m_cob"></div></div></div>`)}
+    ${card('3 · Flete no cobrado — mensual','Entregas con flete cobrado en 0 (monto sugerido no cobrado)',
       tile('No cobrado (sugerido)',mm(scMonto),'acumulado','text-[#EE1B22]')+
       tile('Entregas sin cobro',nf0.format(scEnt),'acumulado')+
       tile('Líneas',nf0.format(sum(sc.map(r=>r.lineas))),'acumulado')+
       tile('Costo asumido',mm(sum(sc.map(r=>r.monto))/1e6),'flete pagado','text-[#EE1B22]'),
       legend([{n:'No cobrado $MM (sugerido)',c:R.red2}])+`<div id="m_scm"></div>`)}
-    ${card('3 · Ranking Vendedor — Flete Cobrado','Brecha = pagado − cobrado (mayor brecha = más subcobra)','',
+    ${card('Ranking Vendedor - Flete Cobrado','Brecha = pagado − cobrado (mayor brecha = más subcobra)','',
       vendMargenTablaHTML(d.vn,grupo))}
     <div class="text-[11px] text-secondary mt-lg leading-relaxed">Flete no cobrado = entregas con flete cobrado = 0; monto = flete sugerido (lo que no se cobró). Ranking excluye EbemaClick.</div>
   </div>`;
@@ -1079,13 +995,14 @@ function vendMargenTablaHTML(rows,grupo){
 }
 function drawMargen(d,grupo){
   const s4=last4(d.sem,grupo);
-  barChart('m_sem',s4.map(r=>r.margen/1e6),s4.map(r=>semLbl(r.semana)),Math.min(-0.5,niceMin(s4.map(r=>r.margen/1e6))),Math.max(0.5,niceMax(s4.map(r=>r.margen/1e6))),R.red2,' MM',null,money1);
+  barChart('m_sem',s4.map(r=>r.margen/1e6),s4.map(r=>semLbl(r.semana)),Math.min(-0.5,niceMin(s4.map(r=>r.margen/1e6))),Math.max(0.5,niceMax(s4.map(r=>r.margen/1e6))),R.red2,' MM',null,v=>'$'+nf1.format(v));
   const mt=document.getElementById('m_semtab'); if(mt) mt.innerHTML=semTable(s4,[
-    {label:'Margen',get:r=>r.margen/1e6,fmt:v=>mm(v),dfmt:money1},
+    {label:'Margen',get:r=>r.margen/1e6,fmt:v=>mm(v),dfmt:v=>'$'+nf1.format(v)},
     {label:'Cobertura',get:r=>r.cobertura_pct,fmt:pct,dfmt:v=>nf1.format(v)+' pp'}]);
   const wL=s4.map(r=>semLbl(r.semana));
   lineChart('m_pc',[{n:'Cobrado',v:s4.map(r=>r.cobrado/1e6),c:R.red},{n:'Pagado',v:s4.map(r=>r.pagado/1e6),c:R.grey}],wL,0,niceMax(s4.map(r=>Math.max(r.cobrado,r.pagado)/1e6)),' MM');
-  lineChart('m_cob',[{n:'Cobertura',v:s4.map(r=>r.cobertura_pct),c:R.red}],wL,0,120,'%',undefined,{v:META.cobertura,lbl:'Meta cobertura '+META.cobertura+'%'});
+  barChart('m_margen',s4.map(r=>r.margen/1e6),wL,Math.min(-1,niceMin(s4.map(r=>r.margen/1e6))),Math.max(1,niceMax(s4.map(r=>r.margen/1e6))),R.red2,' MM',null,v=>'$'+nf1.format(v));
+  lineChart('m_cob',[{n:'Cobertura',v:s4.map(r=>r.cobertura_pct),c:R.red}],wL,0,120,'%');
   const sc=d.sc.filter(r=>r.grupo===grupo && r.segmento===_segM).slice().sort((a,b)=>a.mes_label<b.mes_label?-1:1);
-  barChart('m_scm',sc.map(r=>(r.monto_sugerido||0)/1e6),sc.map(r=>mesCorto(r.mes_label)),0,niceMax(sc.map(r=>(r.monto_sugerido||0)/1e6)),R.red2,' MM',sc.length-1,money1);
+  barChart('m_scm',sc.map(r=>(r.monto_sugerido||0)/1e6),sc.map(r=>mesCorto(r.mes_label)),0,niceMax(sc.map(r=>(r.monto_sugerido||0)/1e6)),R.red2,' MM',sc.length-1,v=>'$'+nf1.format(v));
 }

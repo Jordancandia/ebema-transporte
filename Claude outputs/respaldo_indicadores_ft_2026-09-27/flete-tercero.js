@@ -24,8 +24,8 @@
 //     Destino → Entregado a Cliente. Si condición=CLI-RET (EBE) y el pedido
 //     está en Bodega Destino, se muestra como "Listo para Entrega Cliente".
 // ============================================================================
-import { supabase } from './supabase-client.js?v=202609272137';
-import { getDatabase, loadRoutesData } from './data.js?v=202609272137';
+import { supabase } from './supabase-client.js?v=202609272111';
+import { getDatabase, loadRoutesData } from './data.js?v=202609272111';
 
 // --- Paleta (alineada a Indicadores) ----------------------------------------
 const R = { red:'#C0000C', red2:'#EE1B22', redL:'#E88A8F', grey:'#6B6E70', greyL:'#A9ACAE', ink:'#333333', grid:'#D9D5CF', amber:'#B5730B' };
@@ -298,20 +298,21 @@ function renderDashboard() {
     <!-- 1. Nivel de servicio general -->
     <div class="grid grid-cols-2 md:grid-cols-4 gap-md mb-lg">
       ${tile('Pedidos Evaluables', numFmt(evals.length), `de ${rows.length} pedidos totales`)}
-      ${tile('OTIF', pct(otifPct), 'a tiempo y completos', '', stMeta(otifPct, META_FT.otif))}
-      ${tile('Fill Rate', pct(fillPct), '% bultos entregados', '', stMeta(fillPct, META_FT.fill))}
+      ${tile('OTIF', pct(otifPct), 'a tiempo y completos', otifPct != null && otifPct < 50 ? 'text-[#C0000C]' : '')}
+      ${tile('Fill Rate', pct(fillPct), '% bultos entregados')}
       ${tile('En Proceso', numFmt(enProceso), 'aún no vencidos')}
     </div>
 
     <!-- 2. Por tipo de servicio -->
     ${sectionTitle('Nivel de Servicio por Tipo de Servicio')}
     <div class="text-[11px] text-secondary mb-sm">Retira (CLI-RET): se considera cumplido cuando el material está disponible en sucursal (Recepción Sucursal). Despacho: entrega al cliente.</div>
-    ${barTable(porTipo.map(t => ({ label: escAttr(t.tipo || '–'), n: t.n, otif: t.otif, fill: t.fill })), 'Condición expedición')}
+    ${simpleTable(['Condición Expedición', 'Pedidos Evaluables', 'OTIF %', 'Fill Rate %'],
+      porTipo.map(t => [t.tipo || '–', numFmt(t.n), pctCell(t.otif), pctCell(t.fill)]))}
 
     <!-- 3. Por centro destino -->
     ${sectionTitle('Nivel de Servicio por Centro Destino')}
-    <div class="text-[11px] text-secondary mb-sm">Ordenado por cantidad de pedidos evaluables. La marca negra es la meta.</div>
-    ${barTable(porCentro.map(c => ({ label: escAttr(centroLabel(c.centro)), n: c.n, otif: c.otif, fill: c.fill })), 'Centro destino')}
+    ${simpleTable(['Centro Destino', 'Pedidos Evaluables', 'OTIF %', 'Fill Rate %'],
+      porCentro.map(c => [centroLabel(c.centro), numFmt(c.n), pctCell(c.otif), pctCell(c.fill)]))}
 
     <!-- 4. Evolutivo mensual -->
     <div class="flex items-center justify-between flex-wrap gap-sm mt-lg mb-sm">
@@ -348,14 +349,13 @@ function renderDashboard() {
   const sel = document.getElementById('fter_centro_filtro');
   const drawEvol = () => {
     const ev = evolutivoFor(sel.value);
-    document.getElementById('fter_evolutivo').innerHTML = lineChartSVG(
-      [{ n: 'OTIF %', values: ev.map(e => e.otif), color: R.red }, { n: 'Fill Rate %', values: ev.map(e => e.fill), color: R.grey }],
-      ev.map(e => mesCorto(e.mes)),
-      { v: META_FT.otif, short: 'Meta ' + META_FT.otif + '%' }
-    ) + `<details class="mb-lg -mt-md"><summary class="cursor-pointer text-[12px] font-semibold text-secondary py-1">Ver tabla mensual</summary>` + simpleTable(
+    document.getElementById('fter_evolutivo').innerHTML = simpleTable(
       ['Mes', 'Pedidos Evaluables', 'OTIF %', 'Fill Rate %'],
-      ev.map(e => [mesCorto(e.mes), numFmt(e.n), pctCell(e.otif, META_FT.otif), pctCell(e.fill, META_FT.fill)])
-    ) + `</details>`;
+      ev.map(e => [mesCorto(e.mes), numFmt(e.n), pctCell(e.otif), pctCell(e.fill)])
+    ) + lineChartSVG(
+      [{ n: 'OTIF %', values: ev.map(e => e.otif), color: R.red }, { n: 'Fill Rate %', values: ev.map(e => e.fill), color: R.grey }],
+      ev.map(e => mesCorto(e.mes))
+    );
   };
   sel.value = _centroFiltro;
   sel.addEventListener('change', () => { _centroFiltro = sel.value; drawEvol(); });
@@ -368,14 +368,13 @@ function renderDashboard() {
     const cb = cuelloBotellaCalc(baseRows);
     document.getElementById('fter_cuello').innerHTML = `
       <div class="text-[11px] text-secondary mb-sm">${numFmt(cb.n)} pedidos considerados${centroSel !== 'Todos' ? ' en ' + escAttr(centroLabel(centroSel)) : ''}</div>
-      <div class="grid grid-cols-1 md:grid-cols-3 gap-md mb-md">
+      ${hbarChart(cb.etapas.map(e => ({ label: e.label, value: e.prom, isMax: cb.maxEtapa === e })))}
+      ${simpleTable(['Etapa', 'Días Promedio', '% del Lead Time', '¿Cuello de botella?'],
+        cb.etapas.map(e => [e.label, diasFmt(e.prom), e.prom != null ? pct((e.prom / cb.sumaEtapas) * 100) : '–', (cb.maxEtapa && e === cb.maxEtapa) ? '◀ MÁXIMO' : '']))}
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-md mt-md mb-xl">
         ${tile('Lead Time Total', diasFmt(cb.leadTotal), 'Creación → Entrega, real')}
         ${tile('SLA Ofrecido', diasFmt(cb.slaProm), 'Creación +1 hábil → Promesa')}
-        ${(function () { const dif = (cb.leadTotal != null && cb.slaProm != null) ? cb.leadTotal - cb.slaProm : null;
-          return tile('Diferencia', (dif != null && dif > 0 ? '+' : '') + diasFmt(dif), 'Real − SLA ofrecido', '', dif == null ? null : (dif > 0 ? { c: '#C0000C', t: 'Sobre el SLA' } : { c: '#1E8449', t: 'Dentro del SLA' })); })()}
-      </div>
-      <div class="bg-surface-container-lowest border border-surface-variant rounded-xl p-md mb-xl">
-      ${hbarChart(cb.etapas.map(e => ({ label: e.label, value: e.prom, isMax: cb.maxEtapa === e, share: (e.prom != null && cb.sumaEtapas) ? e.prom / cb.sumaEtapas * 100 : null })))}
+        ${tile('Diferencia', diasFmt(cb.leadTotal != null && cb.slaProm != null ? cb.leadTotal - cb.slaProm : null), 'Real − SLA ofrecido', (cb.leadTotal != null && cb.slaProm != null && cb.leadTotal - cb.slaProm > 0) ? 'text-[#C0000C]' : 'text-[#1E8449]')}
       </div>`;
   };
   selCB.addEventListener('change', drawCB);
@@ -571,31 +570,6 @@ function miniField(label, value) { return `<div><div class="text-[10px] uppercas
 const AGING_BUCKETS = [{ k: '0-5', max: 5 }, { k: '6-20', max: 20 }, { k: '21-60', max: 60 }, { k: '>60', max: Infinity }];
 function agingKey(d) { return AGING_BUCKETS.find(b => d <= b.max).k; }
 
-
-// --- Piezas visuales para Vencidos / En Curso (27-sep-2026) -------------------
-const ETAPA_COLOR = { 'Recepción CD': '#6B6E70', 'Traslado': '#8A6D3B', 'Recepción Sucursal': '#2E75B6', 'Entrega Cliente': '#C0000C' };
-function chipsEtapas(txt) {
-  if (!txt) return '–';
-  return `<div style="display:flex;flex-wrap:wrap;gap:4px">${String(txt).split(' + ').map(e => `<span style="font-size:11px;font-weight:600;white-space:nowrap;padding:2px 8px;border-radius:999px;background:${(ETAPA_COLOR[e] || '#6B6E70')}18;color:${ETAPA_COLOR[e] || '#6B6E70'};border:1px solid ${(ETAPA_COLOR[e] || '#6B6E70')}40">${escAttr(e)}</span>`).join('')}</div>`;
-}
-// Severidad del atraso: 0-5 · 6-20 · 21-60 · >60 días hábiles
-const AGING_C = { '0-5': '#E0B252', '6-20': '#D98A00', '21-60': '#D9636B', '>60': '#C0000C' };
-function atrasoPill(d) {
-  const c = AGING_C[agingKey(d)];
-  return `<span style="display:inline-block;min-width:44px;text-align:center;font-weight:700;font-variant-numeric:tabular-nums;padding:2px 8px;border-radius:6px;background:${c}22;color:${c === '#E0B252' ? '#8A6400' : c}">${numFmt(d)} d</span>`;
-}
-function venceePill(d) {
-  const c = d <= 1 ? '#C0000C' : d <= 3 ? '#B5730B' : '#6B6E70';
-  return `<span style="display:inline-block;min-width:44px;text-align:center;font-weight:700;padding:2px 8px;border-radius:6px;background:${c}18;color:${c}">${d <= 0 ? 'hoy' : numFmt(d) + ' d'}</span>`;
-}
-function agingBar(b, n) {
-  if (!n) return '';
-  return `<div style="display:flex;height:12px;border-radius:6px;overflow:hidden;min-width:140px;background:#EFECE8">${AGING_BUCKETS.map(x => b[x.k] ? `<div title="${x.k} d: ${b[x.k]}" style="width:${b[x.k] / n * 100}%;background:${AGING_C[x.k]};border-right:2px solid #fff"></div>` : '').join('')}</div>`;
-}
-function agingLegend() {
-  return `<div class="flex items-center gap-md flex-wrap mb-sm text-[11px] text-secondary">Atraso (días hábiles): ${AGING_BUCKETS.map(x => `<span class="flex items-center gap-1"><span class="inline-block w-2.5 h-2.5 rounded-sm" style="background:${AGING_C[x.k]}"></span>${x.k}</span>`).join('')}</div>`;
-}
-
 function descargarCSV(nombre, headers, filas) {
   const esc = v => { const s = v == null ? '' : String(v); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
   const csv = '﻿' + [headers.map(esc).join(',')].concat(filas.map(f => f.map(esc).join(','))).join('\r\n');
@@ -627,16 +601,15 @@ function renderVencidos() {
   body().innerHTML = `
     <div class="text-[11px] text-secondary mb-md">Pedidos con fecha promesa vencida y alguna etapa física pendiente (Recepción CD, Traslado, Recepción Sucursal y Entrega Cliente). Un pedido Retira ya en sucursal sigue pendiente hasta la entrega al cliente (el OTIF cierra en sucursal). Días de atraso en días hábiles.</div>
     <div class="grid grid-cols-2 md:grid-cols-4 gap-md mb-lg">
-      ${tile('Vencidos por Regularizar', numFmt(total), 'con etapas pendientes', '', total ? { c: '#C0000C', t: 'Requieren gestión' } : { c: '#1E8449', t: 'Sin vencidos' })}
+      ${tile('Vencidos por Regularizar', numFmt(total), 'con etapas pendientes', total ? 'text-[#C0000C]' : '')}
       ${tile('Responsable CD 1003', numFmt(en1003), total ? pct(en1003 / total * 100) + ' del total (falta Recepción CD/Traslado)' : '–')}
       ${tile('Atraso > 60 días háb.', numFmt(mas60), 'posibles registros sin cerrar en SAP')}
       ${tile('Atraso Máximo', maxAtraso == null ? '–' : numFmt(maxAtraso) + ' d', 'días hábiles')}
     </div>
     ${sectionTitle('1. Resumen por Centro Responsable de Cierre')}
-    ${agingLegend()}
-    ${simpleTable(['Centro Responsable', 'Pedidos Vencidos', 'Distribución del atraso', 'Atraso Prom. (d háb.)', 'Atraso Máx.', '0-5 d', '6-20 d', '21-60 d', '> 60 d'],
-      porResp.map(p => [centroLabel(p.centro), `<b>${numFmt(p.n)}</b>`, agingBar(p.b, p.n), nf1.format(p.prom), atrasoPill(p.max), numFmt(p.b['0-5']), numFmt(p.b['6-20']), numFmt(p.b['21-60']), p.b['>60'] ? `<span style="color:#C0000C;font-weight:700">${numFmt(p.b['>60'])}</span>` : '0'])
-        .concat(total ? [[`<b>Total</b>`, `<b>${numFmt(total)}</b>`, agingBar(totB, total), nf1.format(avg(v.map(r => r.diasAtraso))), atrasoPill(maxAtraso), numFmt(totB['0-5']), numFmt(totB['6-20']), numFmt(totB['21-60']), numFmt(totB['>60'])]] : []))}
+    ${simpleTable(['Centro Responsable', 'Pedidos Vencidos', 'Atraso Prom. (d háb.)', 'Atraso Máx.', '0-5 d', '6-20 d', '21-60 d', '> 60 d'],
+      porResp.map(p => [centroLabel(p.centro), `<b>${numFmt(p.n)}</b>`, nf1.format(p.prom), numFmt(p.max), numFmt(p.b['0-5']), numFmt(p.b['6-20']), numFmt(p.b['21-60']), p.b['>60'] ? `<span style="color:#C0000C;font-weight:600">${numFmt(p.b['>60'])}</span>` : '0'])
+        .concat(total ? [[`<b>Total</b>`, `<b>${numFmt(total)}</b>`, nf1.format(avg(v.map(r => r.diasAtraso))), numFmt(maxAtraso), numFmt(totB['0-5']), numFmt(totB['6-20']), numFmt(totB['21-60']), numFmt(totB['>60'])]] : []))}
     <div class="flex items-center justify-between flex-wrap gap-sm mt-lg mb-sm">
       <div class="text-body-lg font-bold text-on-surface">2. Detalle de Pedidos a Gestionar</div>
       <div class="flex items-center gap-sm">
@@ -661,7 +634,7 @@ function renderVencidos() {
     document.getElementById('fter_venc_tabla').innerHTML = list.length
       ? simpleTable(['Centro Resp.', 'N° Pedido', 'Centro Destino', 'Condición', 'F. Creación', 'F. Promesa', 'Atraso (d háb.)', 'Estado Actual', 'Etapas Pendientes'],
         list.map(r => [escAttr(r.centroResp), `<b>${escAttr(r.id_pedido)}</b>`, escAttr(r.punto_expedicion), escAttr(r.condicion_expedicion), fmtFecha(r.fecha_creacion), fmtFecha(r.fecha_disponible_material),
-          atrasoPill(r.diasAtraso), escAttr(r.estadoOp), chipsEtapas(r.etapasPend)]))
+          `<span style="color:${r.diasAtraso > 60 ? '#C0000C' : R.ink};font-weight:600">${numFmt(r.diasAtraso)}</span>`, escAttr(r.estadoOp), escAttr(r.etapasPend)]))
       : `<div class="text-secondary text-[13px] py-md">Sin pedidos vencidos pendientes.</div>`;
   };
   sel.addEventListener('change', draw);
@@ -707,8 +680,8 @@ function renderEnCurso() {
   const list = c.slice().sort((a, b) => a.diasParaVencer - b.diasParaVencer || String(a.centroResp).localeCompare(String(b.centroResp)));
   document.getElementById('fter_curso_tabla').innerHTML = list.length
     ? simpleTable(['Para Vencer (d háb.)', 'N° Pedido', 'Centro Destino', 'Condición', 'F. Creación', 'F. Promesa', 'Estado Actual', 'Centro Resp.', 'Etapas Pendientes'],
-      list.map(r => [venceePill(r.diasParaVencer), `<b>${escAttr(r.id_pedido)}</b>`, escAttr(r.punto_expedicion), escAttr(r.condicion_expedicion),
-        fmtFecha(r.fecha_creacion), fmtFecha(r.fecha_disponible_material), escAttr(r.estadoOp), escAttr(r.centroResp), chipsEtapas(r.etapasPend)]))
+      list.map(r => [`<span style="color:${r.diasParaVencer <= 1 ? '#C0000C' : R.ink};font-weight:600">${numFmt(r.diasParaVencer)}</span>`, `<b>${escAttr(r.id_pedido)}</b>`, escAttr(r.punto_expedicion), escAttr(r.condicion_expedicion),
+        fmtFecha(r.fecha_creacion), fmtFecha(r.fecha_disponible_material), escAttr(r.estadoOp), escAttr(r.centroResp), escAttr(r.etapasPend)]))
     : `<div class="text-secondary text-[13px] py-md">Sin pedidos en curso.</div>`;
   document.getElementById('fter_curso_csv').addEventListener('click', () => descargarCSV(
     `Pedidos_en_Curso_${hoyISO()}.csv`,
@@ -720,54 +693,22 @@ function renderEnCurso() {
 //  COMPONENTES REUTILIZABLES
 // ============================================================================
 function sectionTitle(t) { return `<div class="text-body-lg font-bold text-on-surface mt-lg mb-sm">${t}</div>`; }
-function tile(label, value, sub, extraCls = '', st = null) {
-  return `<div class="bg-surface-container-lowest border border-surface-variant rounded-xl p-md" style="${st ? 'border-top:4px solid ' + st.c : ''}">
+function tile(label, value, sub, extraCls = '') {
+  return `<div class="bg-surface-container-lowest border border-surface-variant rounded-xl p-md">
     <div class="text-[11px] uppercase tracking-wide text-secondary mb-1">${label}</div>
     <div class="text-headline-sm font-bold ${extraCls}">${value}</div>
-    ${st ? `<div class="text-[12px] font-semibold" style="color:${st.c}">● ${st.t}</div>` : ''}
     <div class="text-[11px] text-secondary mt-1">${sub}</div>
   </div>`;
 }
-// Semáforo vs meta: verde ≥ meta · ámbar hasta 5 pp bajo · rojo más abajo
-function stMeta(v, meta) {
-  if (v == null) return null;
-  return v >= meta ? { c: '#1E8449', t: 'Sobre meta ' + meta + '%' } : v >= meta - 5 ? { c: '#B5730B', t: 'Cerca de meta ' + meta + '%' } : { c: '#C0000C', t: 'Bajo meta ' + meta + '%' };
-}
-// Tabla con barras: OTIF y Fill Rate como barras horizontales con marca de meta (más legible que % sueltos)
-function barTable(filas, colLabel) {
-  const bar = (v, meta) => {
-    const st = stMeta(v, meta), w = v == null ? 0 : Math.max(0, Math.min(100, v));
-    return `<div style="display:flex;align-items:center;gap:8px">
-      <div style="position:relative;flex:1;height:12px;background:#EFECE8;border-radius:6px;min-width:80px">
-        <div style="position:absolute;left:0;top:0;bottom:0;width:${w}%;background:${st ? st.c : '#A9ACAE'};border-radius:6px"></div>
-        <div title="Meta ${meta}%" style="position:absolute;left:${meta}%;top:-3px;bottom:-3px;width:2px;background:#333"></div>
-      </div>
-      <div style="width:52px;text-align:right;font-weight:700;font-variant-numeric:tabular-nums;color:${st ? st.c : '#6B6E70'}">${pct(v)}</div></div>`;
-  };
-  return `<div class="bg-surface-container-lowest border border-surface-variant rounded-xl p-md mb-lg overflow-x-auto">
-    <table class="w-full text-[13px] border-collapse" style="min-width:560px">
-      <thead><tr class="text-left text-secondary text-[11px] uppercase tracking-wide">
-        <th class="py-2 pr-3">${colLabel}</th><th class="py-2 pr-3 text-right">Pedidos</th>
-        <th class="py-2 pr-3" style="width:36%">OTIF <span class="normal-case">(meta ${META_FT.otif}%)</span></th>
-        <th class="py-2" style="width:36%">Fill Rate <span class="normal-case">(meta ${META_FT.fill}%)</span></th></tr></thead>
-      <tbody>${filas.map(f => `<tr class="border-t border-surface-variant">
-        <td class="py-2 pr-3 whitespace-nowrap font-semibold">${f.label}</td>
-        <td class="py-2 pr-3 text-right tabular-nums">${numFmt(f.n)}</td>
-        <td class="py-2 pr-3">${bar(f.otif, META_FT.otif)}</td><td class="py-2">${bar(f.fill, META_FT.fill)}</td></tr>`).join('')}</tbody>
-    </table></div>`;
-}
-// Metas (editar aquí). Semáforo: verde ≥ meta · ámbar hasta 5 pp bajo meta · rojo más abajo
-const META_FT = { otif: 90, fill: 95 };
-function pctCell(v, meta) {
+function pctCell(v) {
   if (v == null) return '–';
-  const m = meta || 90;
-  const color = v >= m ? '#1E8449' : (v >= m - 5 ? '#B5730B' : '#C0000C');
+  const color = v < 50 ? '#C0000C' : (v < 80 ? '#B5730B' : '#1E8449');
   return `<span style="color:${color};font-weight:600">${pct(v)}</span>`;
 }
 function simpleTable(headers, rows) {
   return `<div class="overflow-x-auto"><table class="w-full text-[13px] border-collapse mb-md">
     <thead><tr class="text-left text-secondary border-b border-surface-variant">${headers.map(h => `<th class="py-2 pr-3">${h}</th>`).join('')}</tr></thead>
-    <tbody>${rows.map(row => `<tr class="border-b border-surface-variant hover:bg-surface-container-low">${row.map(c => `<td class="py-2 pr-3 align-middle" style="${/^\d{2}-\d{2}-\d{4}$/.test(String(c)) ? 'white-space:nowrap' : ''}">${c}</td>`).join('')}</tr>`).join('')}</tbody>
+    <tbody>${rows.map(row => `<tr class="border-b border-surface-variant">${row.map(c => `<td class="py-2 pr-3">${c}</td>`).join('')}</tr>`).join('')}</tbody>
   </table></div>`;
 }
 function legend(items) {
@@ -786,13 +727,13 @@ function stackedBars(labels, mixRows, tipos) {
       const segs = tipos.map((t, i) => {
         const v = m.pct[t] || 0;
         // Etiqueta de dato dentro del segmento: solo si hay espacio suficiente (>= 10%)
-        const label = v >= 12 ? `<span style="font-size:11px;font-weight:700;color:#fff;line-height:1">${Math.round(v)}%</span>` : '';
+        const label = v >= 10 ? `<span style="font-size:8px;font-weight:700;color:#fff;line-height:1">${Math.round(v)}%</span>` : '';
         return `<div style="height:${v}%;background:${mixColor(i)};display:flex;align-items:center;justify-content:center" title="${t}: ${nf1.format(v)}% (${m.porT[t] || 0} pedidos)">${label}</div>`;
       }).join('');
       return `<div class="flex flex-col items-center gap-1" style="width:${w}%">
-        <div class="text-[11px] font-semibold text-secondary">${m.total}</div>
+        <div class="text-[9px] font-semibold text-secondary">${m.total}</div>
         <div class="w-full flex flex-col-reverse rounded overflow-hidden bg-surface-container-high" style="height:90px">${segs}</div>
-        <div class="text-[11px] text-secondary whitespace-nowrap">${labels[idx]}</div>
+        <div class="text-[9px] text-secondary">${labels[idx]}</div>
       </div>`;
     }).join('')}
   </div>`;
@@ -805,9 +746,9 @@ function hbarChart(items) {
       const wpct = i.value != null ? Math.max((i.value / maxV) * 100, 3) : 0;
       const color = i.isMax ? R.red : R.grey;
       return `<div>
-        <div class="flex justify-between items-baseline text-[12px] text-secondary mb-[2px]">
+        <div class="flex justify-between items-baseline text-[11px] text-secondary mb-[2px]">
           <span>${i.label}${i.isMax ? ' <span style="color:' + R.red + ';font-weight:700">◀ MÁXIMO</span>' : ''}</span>
-          <span class="font-semibold" style="color:${color}">${diasFmt(i.value)}${i.share != null ? ` <span class="text-secondary font-normal">· ${nf1.format(i.share)}% del lead time</span>` : ''}</span>
+          <span class="font-semibold" style="color:${color}">${diasFmt(i.value)}</span>
         </div>
         <div class="w-full h-4 bg-surface-container-high rounded overflow-hidden">
           <div style="width:${wpct}%;background:${color};height:100%"></div>
@@ -816,42 +757,31 @@ function hbarChart(items) {
     }).join('')}
   </div>`;
 }
-function lineChartSVG(seriesArr, labels, meta) {
-  // v2 (27-sep-2026): se dibuja al ancho real del contenedor → texto 11 px fijo (antes viewBox 900 escalado, 7-9 px)
-  const cont = document.getElementById('fter_body');
-  const W = Math.max(320, Math.round(((cont && cont.clientWidth) || 900) - 34)), H = 230, padL = 40, padR = meta ? 66 : 14, padT = 20, padB = 26, FS = 11;
+function lineChartSVG(seriesArr, labels) {
+  const W = 900, H = 190, padL = 30, padR = 8, padT = 18, padB = 22;
   const w = W - padL - padR, h = H - padT - padB;
   const max = 100, min0 = 0;
-  const n = labels.length, band = w / Math.max(n, 1);
-  const x = i => padL + band * i + band / 2;
+  const n = labels.length;
+  const x = i => padL + (n <= 1 ? w / 2 : (w * i / (n - 1)));
   const y = v => padT + h - (h * (v - min0) / (max - min0 || 1));
-  const dense = band < 40;
-  let svg = `<div class="bg-surface-container-lowest border border-surface-variant rounded-xl p-md mb-lg">${legend(seriesArr.map(s => ({ n: s.n, c: s.color })))}<svg viewBox="0 0 ${W} ${H}" width="100%" style="height:auto;display:block;overflow:visible" role="img">`;
+  let svg = `<div class="bg-surface-container-lowest border border-surface-variant rounded-xl p-md mb-lg"><svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto" role="img">`;
   [0, 25, 50, 75, 100].forEach(g => {
     const yy = y(g);
-    svg += `<line x1="${padL}" y1="${yy}" x2="${W - padR}" y2="${yy}" stroke="${R.grid}" stroke-width="1"/><text x="${padL - 7}" y="${yy + 4}" font-size="${FS}" fill="${R.grey}" text-anchor="end">${g}</text>`;
+    svg += `<line x1="${padL}" y1="${yy}" x2="${W - padR}" y2="${yy}" stroke="${R.grid}" stroke-width="1"/><text x="2" y="${yy + 3}" font-size="9" fill="${R.grey}">${g}</text>`;
   });
-  if (meta) {
-    const ym = y(meta.v);
-    svg += `<line x1="${padL}" y1="${ym}" x2="${W - padR}" y2="${ym}" stroke="#1E8449" stroke-width="1.5" stroke-dasharray="5 4"/><text x="${W - padR + 4}" y="${ym + 4}" font-size="${FS}" font-weight="700" fill="#1E8449">${meta.short || ('Meta ' + meta.v + '%')}</text>`;
-  }
   seriesArr.forEach((s, si) => {
     const pts = s.values.map((v, i) => (v == null ? null : `${x(i)},${y(v)}`)).filter(Boolean).join(' ');
-    svg += `<polyline points="${pts}" fill="none" stroke="${s.color}" stroke-width="2" stroke-linejoin="round"/>`;
-    const vv = s.values.filter(v => v != null), vmax = Math.max(...vv), vmin = Math.min(...vv);
+    svg += `<polyline points="${pts}" fill="none" stroke="${s.color}" stroke-width="2"/>`;
+    // Etiqueta de dato por punto: primera serie arriba del punto, segunda serie abajo (evita superposición)
+    const dy = si % 2 === 0 ? -8 : 14;
     s.values.forEach((v, i) => {
       if (v == null) return;
-      // etiqueta arriba si es el valor más alto del mes, abajo si no → no se pisan
-      const others = seriesArr.filter((o, k) => k !== si && o.values[i] != null).map(o => o.values[i]);
-      const arriba = !others.length || v >= Math.max(...others);
-      const show = !dense || i === 0 || i === n - 1 || v === vmax || v === vmin;
-      svg += `<circle cx="${x(i)}" cy="${y(v)}" r="4" fill="${s.color}" stroke="#fff" stroke-width="2"><title>${s.n} ${labels[i]}: ${nf1.format(v)}%</title></circle>`;
-      if (show) svg += `<text x="${x(i)}" y="${y(v) + (arriba ? -9 : 17)}" font-size="${FS}" font-weight="700" fill="${s.color}" text-anchor="middle">${nf1.format(v)}%</text>`;
+      svg += `<circle cx="${x(i)}" cy="${y(v)}" r="2.6" fill="${s.color}"/>`;
+      svg += `<text x="${x(i)}" y="${y(v) + dy}" font-size="8.5" font-weight="700" fill="${s.color}" text-anchor="middle">${nf1.format(v)}%</text>`;
     });
   });
-  const k = Math.max(1, Math.ceil(n * 44 / w));
-  labels.forEach((l, i) => { if (i % k && i !== n - 1) return; svg += `<text x="${x(i)}" y="${H - 6}" font-size="${FS}" fill="${R.grey}" text-anchor="middle">${l}</text>`; });
-  svg += '</svg></div>';
+  labels.forEach((l, i) => { svg += `<text x="${x(i)}" y="${H - 4}" font-size="9" fill="${R.grey}" text-anchor="middle">${l}</text>`; });
+  svg += '</svg>' + legend(seriesArr.map(s => ({ n: s.n, c: s.color }))) + '</div>';
   return svg;
 }
 
