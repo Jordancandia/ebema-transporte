@@ -1,7 +1,7 @@
 // Capa de datos de SIT EBEMA
 // Fuente principal: Supabase (PostgreSQL compartido, protegido con RLS).
 // localStorage se mantiene como copia local de respaldo (modo sin conexión).
-import { supabase } from './supabase-client.js?v=202609281145';
+import { supabase } from './supabase-client.js?v=202609281010';
 
 const STORAGE_KEY = 'ebema_transporte_db';
 
@@ -50,8 +50,6 @@ export async function loadRoutesData() {
       (memoryDb.routes || []).forEach(r => {
         if (!r.origen_grupo) r.origen_grupo = _cdGrupo.get(String(r.origenId)) || '';
       });
-      // Foto post-derivación: origen_grupo derivado localmente no cuenta como cambio
-      LAZY_TABLE_MAP.forEach(t => _snapshotTable(t.table, t.pk, memoryDb[t.local]));
       _routesLoaded = true;
     } catch (err) {
       _routesLoading = null; // permitir reintento
@@ -384,11 +382,9 @@ export async function initDatabase() {
     })();
 
     memoryDb = {};
-    _lastSynced.clear();
     let hayPendientes = false;
     TABLE_MAP.forEach((t, i) => {
       const remoteRows = results[i] || [];
-      _snapshotTable(t.table, t.pk, remoteRows);
       const localRows  = localBackup[t.local] || [];
 
       if (localRows.length > remoteRows.length && t.pk) {
@@ -468,36 +464,10 @@ export async function initDatabase() {
 // (eliminar una ruta, un centro, un camión, etc.) deben hacerse con
 // deleteRow()/deleteRows(), que borran por PK exacta, nunca por diferencia
 // de snapshot.
-// ─── Sync diferencial (fix 28-09-2026, incidente audit_log 1,3 GB) ─────────
-// Antes: cada saveDatabase() hacía upsert de TODAS las filas de cada tabla
-// (≈2.500 rutas + ≈4.300 peajes por guardado), generando UPDATE sin cambio real
-// y ~7 MB de audit_log por clic. Ahora se guarda una "foto" (pk → JSON) de lo
-// último leído/escrito en Supabase y solo se suben filas nuevas o modificadas.
-// Si una tabla no tiene foto (nunca se cargó), se mantiene el upsert completo.
-const _lastSynced = new Map(); // table -> Map(pk -> json)
-
-function _rowKey(row, pk) { return String(row?.[pk]); }
-
-function _snapshotTable(table, pk, rows) {
-  const m = new Map();
-  (rows || []).forEach(r => { if (r && r[pk] !== undefined && r[pk] !== null) m.set(_rowKey(r, pk), JSON.stringify(r)); });
-  _lastSynced.set(table, m);
-}
-
 async function syncTable(table, pk, rows) {
-  if (!rows || rows.length === 0) return;
-  const snap = _lastSynced.get(table);
-  const changed = snap
-    ? rows.filter(r => snap.get(_rowKey(r, pk)) !== JSON.stringify(r))
-    : rows;
-  if (changed.length === 0) return;
-  for (let i = 0; i < changed.length; i += 500) {
-    const batch = changed.slice(i, i + 500);
-    const { error } = await supabase.from(table).upsert(batch);
+  if (rows.length > 0) {
+    const { error } = await supabase.from(table).upsert(rows);
     if (error) throw error;
-    const m = _lastSynced.get(table) || new Map();
-    batch.forEach(r => m.set(_rowKey(r, pk), JSON.stringify(r)));
-    _lastSynced.set(table, m);
   }
 }
 
