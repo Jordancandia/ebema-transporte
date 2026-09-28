@@ -10,9 +10,9 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202609281942';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202609281942';
-import { getDatabase } from './data.js?v=202609281942';
+import { supabase } from './supabase-client.js?v=202609281802';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202609281802';
+import { getDatabase } from './data.js?v=202609281802';
 import { showAlert, escapeHtml } from './utils.js';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
@@ -765,12 +765,11 @@ const VISTAS_TRONCAL = {
           return { doc_compr: oc, ce: r.ce, material: r.material, texto_breve: r.texto_breve, pedido: ctdP, pendiente: pend, ton: t };
         });
         // Tipo de retiro (AJUSTE): 4000=FÁBRICA-CD (Consolidar CD), 2000=FÁBRICA-SUCURSAL
-        // (Fábrica Directo). Si OC >=85% cap camión (UMBRAL_FABRICA, AJUSTE 28-sep-2026)
-        // y tiene pedido de venta ⇒ FÁBRICA-CLIENTE.
+        // (Fábrica Directo). Si OC >=80% cap camión y tiene pedido de venta ⇒ FÁBRICA-CLIENTE.
         const tienePedidoVenta = String(f.documento ?? '').trim() !== '';
         const cap = getCapacidadCamion(f.ce);
         let tipoRetiro;
-        if (ton >= cap * UMBRAL_FABRICA && tienePedidoVenta) tipoRetiro = 'FAB-CLTE';
+        if (ton >= cap * 0.80 && tienePedidoVenta) tipoRetiro = 'FAB-CLTE';
         else if (almVal === '4000') tipoRetiro = 'FAB-CD';
         else if (almVal === '2000') tipoRetiro = 'FAB-SUC';
         else tipoRetiro = 'FAB-SUC';
@@ -941,12 +940,12 @@ const VISTAS_TRONCAL = {
         return (da || new Date(9999,0)) - (db2 || new Date(9999,0));
       });
     },
-    // Tipo de entrega: ≥85% cap camión (UMBRAL_CD_CLIENTE, AJUSTE 28-sep-2026) ⇒ CD-CLIENTE (camión directo al cliente);
+    // Tipo de entrega: ≥80% cap camión ⇒ CD-CLIENTE (camión directo al cliente);
     // menos ⇒ CD-SUCURSAL (se consolida con carga).
     postFilter(filas) {
       filas.forEach(r => {
         const cap = getCapacidadCamion(r.ofvta);
-        r._directo = r._ton_num >= cap * UMBRAL_CD_CLIENTE;
+        r._directo = r._ton_num >= cap * 0.80;
         r._tipo_entrega = r._directo ? 'CD-CLIENTE' : 'CD-SUCURSAL';
       });
       return filas;
@@ -1473,7 +1472,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202609281942');
+    const m = await import('./ind-plan-carga.js?v=202609281802');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (VISTAS_TRONCAL[currentSub])       await renderVistaTabla(stage, VISTAS_TRONCAL[currentSub]);
@@ -1550,67 +1549,18 @@ async function fetchAllRows(vista, force = false) {
 const CAP_CAMION_DEFAULT = 28;
 const CAP_CAMION_REDUCIDO = 15;
 const CENTROS_CAMION_REDUCIDO = ['1050', '1005'];
-// Umbrales de camión completo para los camiones directos (regla 21-sep-2026,
-// AJUSTE 28-sep-2026 pedido Jordan: los TRES tipos de camión directo pasan a 85%):
-//  · CD-CLIENTE: pedidos de venta 1003 del MISMO cliente que suman > 85% de la capacidad.
+// Umbrales de camión completo para los camiones directos (regla 21-sep-2026):
+//  · CD-CLIENTE: pedidos de venta 1003 del MISMO cliente que suman > 80% de la capacidad.
 //  · FÁBRICA-SUCURSAL / FÁBRICA-CLIENTE: OC COORDINADAS con fecha de retiro = fecha de
-//    planificación que suman > 85% de la capacidad (mismo proveedor+destino / mismo cliente).
-const UMBRAL_CD_CLIENTE = 0.85;
-const UMBRAL_FABRICA = 0.85;
-// Umbral de la promoción automática 48h → 24h del camión CD (AJUSTE 24-sep-2026).
-// Se mantiene en 90%: el cambio a 85% del 28-sep aplica sólo a camiones directos.
-const UMBRAL_PROMOCION_24H = 0.90;
+//    planificación que suman > 90% de la capacidad (mismo proveedor+destino / mismo cliente).
+const UMBRAL_CD_CLIENTE = 0.80;
+const UMBRAL_FABRICA = 0.90;
 // Condición de expedición del pedido de venta (v_trc_pedidos_ventas_ref.denominacion).
 const COND_EBEMA_RETIRA_CLIENTE_RETIRA = 'EBE-RET / CLI-RET';
 const COND_EBEMA_RETIRA_EBEMA_DESPACHA = 'EBE-RET / EBE-DESP';
 
 function getCapacidadCamion(centroId) {
   return CENTROS_CAMION_REDUCIDO.includes(String(centroId)) ? CAP_CAMION_REDUCIDO : CAP_CAMION_DEFAULT;
-}
-
-// (AJUSTE 28-sep-2026, pedido Jordan) Reparte las líneas de un grupo que ya
-// califica como camión directo (mismo cliente / mismo proveedor) en N camiones
-// de capacidad `cap`, para que el detalle muestre qué va en cada camión.
-//  · Un documento (NV u OC) va completo en un mismo camión; sólo si el documento
-//    supera por sí solo la capacidad se reparte por líneas.
-//  · N = mínimo de camiones necesarios (ceil(ton/cap)); los documentos se asignan
-//    de mayor a menor al camión menos cargado donde quepan (cargas parejas).
-// Devuelve [{ items, ton }] — cada camión con sus líneas.
-function armarCamiones(items, cap, docKey) {
-  const EPS = 1e-9;
-  if (!items || !items.length) return [];
-  const porDoc = new Map();
-  items.forEach(it => {
-    const k = docKey(it);
-    if (!porDoc.has(k)) porDoc.set(k, { items: [], ton: 0 });
-    const b = porDoc.get(k); b.items.push(it); b.ton += it.ton || 0;
-  });
-  const bloques = [], gigantes = [];
-  porDoc.forEach(b => {
-    if (b.ton <= cap + EPS) { bloques.push(b); return; }
-    // Documento mayor que un camión: se reparte por líneas (primer ajuste decreciente).
-    const trozos = [];
-    [...b.items].sort((x, y) => (y.ton || 0) - (x.ton || 0)).forEach(it => {
-      let t = trozos.find(z => z.ton + (it.ton || 0) <= cap + EPS);
-      if (!t) { t = { items: [], ton: 0 }; trozos.push(t); }
-      t.items.push(it); t.ton += it.ton || 0;
-    });
-    trozos.forEach(t => (t.ton > cap + EPS ? gigantes : bloques).push(t)); // línea sola > cap ⇒ camión propio
-  });
-  bloques.sort((a, b) => b.ton - a.ton);
-  const total = bloques.reduce((s, b) => s + b.ton, 0);
-  let n = Math.max(1, Math.ceil(total / cap - EPS));
-  for (;;) {
-    const cams = Array.from({ length: n }, () => ({ items: [], ton: 0 }));
-    let ok = true;
-    for (const b of bloques) {
-      const cand = cams.filter(c => c.ton + b.ton <= cap + EPS).sort((x, y) => x.ton - y.ton)[0];
-      if (!cand) { ok = false; break; }
-      cand.items.push(...b.items); cand.ton += b.ton;
-    }
-    if (ok) return cams.filter(c => c.items.length).concat(gigantes).sort((a, b) => b.ton - a.ton);
-    n++;
-  }
 }
 
 function getCentrosProgramados(calendarioRows, diaNum) {
@@ -1872,49 +1822,32 @@ async function renderPlanCarga(stage) {
     const ventasPorDoc = {};
     ventasCe.forEach(r => { const d = String(r.doc_ventas ?? '').trim(); (ventasPorDoc[d] = ventasPorDoc[d] || []).push(r); });
     // (AJUSTE 21-sep-2026) CAMIÓN CD-CLIENTE: pedidos de venta 1003 con despacho directo
-    // a cliente. Se agrupan por CLIENTE (deudor): si la suma de sus pedidos supera el 85% de
+    // a cliente. Se agrupan por CLIENTE (deudor): si la suma de sus pedidos supera el 80% de
     // la capacidad del camión, salen directo al cliente (puede ser más de un pedido). Si no,
-    // pasan a Venta Directa (se consolidan con el camión CD).
-    // (AJUSTE 28-sep-2026, pedido Jordan)
-    //  · Las NV directas CD-CLIENTE se planifican el día hábil ANTERIOR a su fecha de
-    //    entrega: una NV con entrega 30.09 entra en el plan del 28.09 para despacharse
-    //    el 29.09 (= diaHabil1). Condición: fecha entrega − 1 día hábil ≤ diaHabil1, que
-    //    equivale a fecha entrega ≤ diaHabil2. Las NV de un cliente que forman camión
-    //    directo pero cuya fecha aún no llega se DIFIEREN (no entran hoy ni se consolidan).
-    //    Las NV consolidables mantienen la regla de siempre (ventana ±3 días hábiles).
-    //  · Umbral 85% (antes 80%).
-    //  · Si el cliente requiere más de un camión, se reparte en N camiones (armarCamiones)
-    //    y el ícono muestra X2 / X3.
+    // pasan a Venta Directa (se consolidan con el camión CD). Antes era >26 T por pedido.
     let tonVentaCliente = 0, tonVentaCons = 0;
-    const limiteDirectoCli = diaHabil2;
-    const ventasPorGrupo = {};
+    const ventasPorCliente = {};
     for (const [doc, items] of Object.entries(ventasPorDoc)) {
-      const pv = pvMap[doc] || {};
-      const clienteKey = String(items[0].deudor ?? '').trim() || String(pv.nombre_1 ?? '').trim() || doc;
+      const lineItems = []; let tonDoc = 0;
       items.forEach(r => {
         const pend = parseNum(r.ctd_confirmada) - parseNum(r.cantidad_entrg);
         if (pend <= 0) return;
         const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), pend);
-        if (t <= 0) return;
+        tonDoc += t;
         const tonBruto = calcTon(parseNum(r.peso_neto), pend), tonVol = calcTon(parseNum(r.tamano_dimens), pend);
         const rl = lookupRuta(r.ruta);
-        const item = { pv: doc, material: r.material, nombre: r.denominacion_de_posicion, cant: pend, ruta: r.ruta, comuna: rl.comuna, region: rl.region, fecha: r.fe_entrega, ton: t, tonBruto, tonVol, tipoExp: pv.denominacion || '', cliente: pv.nombre_1 || '', vendedor: pv.nombre || '' };
-        const fe = parseDateSAP(r.fe_entrega);
-        const vigente = !fe || fe.getTime() <= limiteDirectoCli.getTime();
-        const gk = clienteKey + '|' + (vigente ? 'VIGENTE' : isoLocal(fe));
-        const g = (ventasPorGrupo[gk] = ventasPorGrupo[gk] || { ton: 0, items: [], vigente, nombre: pv.nombre_1 || clienteKey });
-        g.ton += t; g.items.push(item);
+        const pv = pvMap[doc] || {};
+        lineItems.push({ pv: doc, material: r.material, nombre: r.denominacion_de_posicion, cant: pend, ruta: r.ruta, comuna: rl.comuna, region: rl.region, fecha: r.fe_entrega, ton: t, tonBruto, tonVol, tipoExp: pv.denominacion || '', cliente: pv.nombre_1 || '', vendedor: pv.nombre || '' });
       });
+      if (tonDoc <= 0) continue;
+      const clienteKey = String(items[0].deudor ?? '').trim() || String((pvMap[doc] || {}).nombre_1 ?? '').trim() || doc;
+      const g = (ventasPorCliente[clienteKey] = ventasPorCliente[clienteKey] || { ton: 0, items: [] });
+      g.ton += tonDoc; g.items.push(...lineItems);
     }
-    const camionesCliente = [];
-    let tonClienteDiferido = 0;
-    Object.values(ventasPorGrupo).forEach(g => {
-      if (g.ton > capRef * UMBRAL_CD_CLIENTE) {
-        if (!g.vigente) { tonClienteDiferido += g.ton; return; } // camión directo de otro día
-        armarCamiones(g.items, capRef, d => d.pv).forEach(c => camionesCliente.push({ ...c, grupo: g.nombre, cap: capRef }));
-      } else { tonVentaCons += g.ton; det.ventaCons.push(...g.items); }
+    Object.values(ventasPorCliente).forEach(g => {
+      if (g.ton > capRef * UMBRAL_CD_CLIENTE) { tonVentaCliente += g.ton; det.cliente.push(...g.items); }
+      else { tonVentaCons += g.ton; det.ventaCons.push(...g.items); }
     });
-    camionesCliente.forEach((c, i) => { c.n = i + 1; c.items.forEach(d => { d._camion = i + 1; }); tonVentaCliente += c.ton; det.cliente.push(...c.items); });
 
     // 6. Retiros proveedor CONSOLIDAR CD (tipo_retiro=FAB-CD) → parte del CD.
     // (AJUSTE 22-sep-2026) Corte de fecha por centro: usa el horizonte de `ce`
@@ -1992,12 +1925,8 @@ async function renderPlanCarga(stage) {
     });
     const capFab = getCapacidadCamion(ce);
     let tonFabCli = 0, tonFabSuc = 0;
-    // (AJUSTE 28-sep-2026) Umbral 85% y reparto en N camiones por grupo (X2/X3).
-    const camionesFabCli = [], camionesFabSuc = [];
-    Object.entries(ocCli).forEach(([k, b]) => { if (b.ton > capFab * UMBRAL_FABRICA) armarCamiones(b.items, capFab, d => d.oc).forEach(c => camionesFabCli.push({ ...c, grupo: k, cap: capFab })); });
-    Object.entries(provSuc).forEach(([k, b]) => { if (b.ton > capFab * UMBRAL_FABRICA) armarCamiones(b.items, capFab, d => d.oc).forEach(c => camionesFabSuc.push({ ...c, grupo: (b.items[0] && b.items[0].prov) || k, cap: capFab })); });
-    camionesFabCli.forEach((c, i) => { c.n = i + 1; c.items.forEach(d => { d._camion = i + 1; }); tonFabCli += c.ton; det.fabCli.push(...c.items); });
-    camionesFabSuc.forEach((c, i) => { c.n = i + 1; c.items.forEach(d => { d._camion = i + 1; }); tonFabSuc += c.ton; det.fabSuc.push(...c.items); });
+    Object.values(ocCli).forEach(b => { if (b.ton > capFab * UMBRAL_FABRICA) { tonFabCli += b.ton; det.fabCli.push(...b.items); } });
+    Object.values(provSuc).forEach(b => { if (b.ton > capFab * UMBRAL_FABRICA) { tonFabSuc += b.ton; det.fabSuc.push(...b.items); } });
 
     // (AJUSTE 24-sep-2026, pedido Jordan) Promoción automática 48h → 24h: un
     // centro configurado a 48h despacha MAÑANA (24h) en vez de esperar el plan
@@ -2016,8 +1945,8 @@ async function renderPlanCarga(stage) {
     const horizonteConfig = getHorizonte(ce);
     // (AJUSTE 24-sep-2026, pedido Jordan) El umbral para promover NO es llenar
     // el camión al 100%: basta con superar el 90% de la capacidad (mismo
-    // umbral UMBRAL_PROMOCION_24H; no cambia con el 85% de camiones directos).
-    const promovido24 = horizonteConfig === 48 && total24 > cap24 * UMBRAL_PROMOCION_24H;
+    // umbral que ya se usa para los camiones directos de fábrica, UMBRAL_FABRICA).
+    const promovido24 = horizonteConfig === 48 && total24 > cap24 * UMBRAL_FABRICA;
     const horizonteEfectivo = promovido24 ? 24 : horizonteConfig;
     const { sum: tonRetiro, items: retiroItems } = horizonteEfectivo === 24 ? retiro24 : retiro48;
     det.retiro.push(...retiroItems);
@@ -2050,7 +1979,6 @@ async function renderPlanCarga(stage) {
     if (enCalendario && pct < 70) obs = 'EN CALENDARIO - CARGA BAJA';
     if (sobrecarga > 0) obs = (obs ? obs + ' · ' : '') + '2º CAMIÓN (~' + fmtNum(sobrecarga, 1) + ' T)';
     if (promovido24) obs = (obs ? obs + ' · ' : '') + 'ADELANTADO A 24H (carga completa)';
-    if (tonClienteDiferido > 0) obs = (obs ? obs + ' · ' : '') + 'CD-CLIENTE PRÓXIMO (' + fmtNum(tonClienteDiferido, 1) + ' T, fecha entrega posterior)';
 
     return {
       ce, nombre: getNombreCentro(ce), cap,
@@ -2058,7 +1986,6 @@ async function renderPlanCarga(stage) {
       total, faltan, sobrecarga, pct, status, statusCls, obs, enCalendario,
       horizonte: horizonteEfectivo, horizonteConfig, promovido24,
       camionCliente: tonVentaCliente > 0, camionFabSuc: tonFabSuc > 0, camionFabCli: tonFabCli > 0,
-      camionesCliente, camionesFabSuc, camionesFabCli, tonClienteDiferido,
       det,
     };
   }).sort((a, b) => {
@@ -2115,7 +2042,7 @@ async function renderPlanCarga(stage) {
       <div class="text-[12px] font-bold text-primary mb-xs">${escapeHtml(lbl)} <span class="text-secondary font-normal">(${fmtNum(sub, 4)} Ton)</span></div>
       ${tableHtml}</div>`;
   }
-  const camMark = d => d._camion ? 'CAMIÓN ' + d._camion : (d._enCamion === undefined ? '' : (d._enCamion ? '✓ SÍ' : '✗ EXCEDE'));
+  const camMark = d => d._enCamion === undefined ? '' : (d._enCamion ? '✓ SÍ' : '✗ EXCEDE');
   const shiftSet = (s) => new Set([...s].map(i => i + 1));
   // Bloque Traslados (Quiebre / Abastecimiento / REVEX / Crossdocking)
   function blkTraslado(lbl, items, marcar, conPrioridad) {
@@ -2175,27 +2102,11 @@ async function renderPlanCarga(stage) {
     return { cargado: acc, excede: Math.max(0, (r.total || 0) - acc) };
   }
 
-  // (AJUSTE 28-sep-2026) Detalle de camiones directos separado por camión.
-  function blkCamiones(lista, lblGrupo, blkFn) {
-    if (!lista || !lista.length) return '';
-    const tot = lista.length;
-    const resumen = tot > 1 ? `<div class="mb-sm px-md py-sm rounded-lg bg-amber-50 border border-amber-300 text-[12px] text-amber-900 font-bold">Se requieren ${tot} camiones para esta fecha (X${tot})</div>` : '';
-    return resumen + lista.map(c => {
-      const pct = c.cap > 0 ? Math.round(c.ton / c.cap * 100) : 0;
-      const lbl = `Camión ${c.n} de ${tot} · ${lblGrupo}: ${c.grupo} · ${fmtNum(c.ton, 1)} t de ${fmtNum(c.cap, 0)} t (${pct}%)`;
-      return `<div class="mb-md pl-sm" style="border-left:4px solid #94a3b8">${blkFn(lbl, c.items)}</div>`;
-    }).join('');
-  }
-  // Ícono de camión con marca X2 / X3 cuando se requiere más de un camión.
-  const iconCamionN = (cls, n) => n > 1
-    ? `<span style="position:relative;display:inline-block">${iconCamion(cls)}<span title="Se requieren ${n} camiones" style="position:absolute;top:-6px;right:-16px;background:#dc2626;color:#fff;font-size:10px;font-weight:800;line-height:14px;padding:0 3px;border-radius:4px">X${n}</span></span>`
-    : iconCamion(cls);
-
   const TRUCK_TITULOS = {
     cd: 'Camión CD (consolidado)',
-    cliente: 'Camión CD-Cliente (pedidos del mismo cliente >85%)',
-    fabSuc: 'Camión Fábrica-Sucursal (OC coordinadas, mismo proveedor, >85%)',
-    fabCli: 'Camión Fábrica-Cliente (OC coordinadas, mismo cliente, >85%)',
+    cliente: 'Camión CD-Cliente (pedidos del mismo cliente >80%)',
+    fabSuc: 'Camión Fábrica-Sucursal (OC coordinadas, mismo proveedor, >90%)',
+    fabCli: 'Camión Fábrica-Cliente (OC coordinadas, mismo cliente, >90%)',
   };
 
   function detalleRow(r, tipo) {
@@ -2219,10 +2130,9 @@ async function renderPlanCarga(stage) {
         blkTraslado('6º Abastecimiento', inC.stock, false, true);
       // No se muestra sección de excedentes: el detalle incluye solo lo que entra en el camión.
     }
-    // (AJUSTE 28-sep-2026) Un bloque por camión: "Camión 1 de 2 · Cliente · % de carga".
-    else if (tipo === 'cliente') blocks = blkCamiones(r.camionesCliente, 'Cliente', blkVenta);
-    else if (tipo === 'fabSuc') blocks = blkCamiones(r.camionesFabSuc, 'Proveedor', blkRetiro);
-    else if (tipo === 'fabCli') blocks = blkCamiones(r.camionesFabCli, 'Cliente', blkRetiro);
+    else if (tipo === 'cliente') blocks = blkVenta('Pedidos de Venta directos al cliente', r.det.cliente);
+    else if (tipo === 'fabSuc') blocks = blkRetiro('Órdenes de Compra Fábrica-Sucursal', r.det.fabSuc);
+    else if (tipo === 'fabCli') blocks = blkRetiro('Órdenes de Compra Fábrica-Cliente', r.det.fabCli);
     return `<tr class="bg-surface-container-low"><td colspan="${NCOLS}" class="p-md">
       <div class="border border-outline-variant rounded-lg p-md bg-surface-container-lowest">
         <div class="flex items-center justify-between mb-sm">
@@ -2375,9 +2285,9 @@ async function renderPlanCarga(stage) {
                 <td class="py-sm pr-md text-right num-clear font-bold">${r.pct}%</td>
                 ${truckCell(r, 'cd', r.total > 0, camCD)}
                 <td class="py-sm pr-md text-center"><span class="px-sm py-xs rounded text-[11px] font-bold ${r.statusCls}">${escapeHtml(r.status)}</span></td>
-                ${truckCell(r, 'cliente', r.camionCliente, iconCamionN('text-green-700', (r.camionesCliente || []).length) + '<div class="text-[9px] font-bold text-green-700">' + fmtNum(r.tonVentaCliente,1) + ' t</div>')}
-                ${truckCell(r, 'fabSuc', r.camionFabSuc, iconCamionN('text-blue-700', (r.camionesFabSuc || []).length) + '<div class="text-[9px] font-bold text-blue-700">' + fmtNum(r.tonFabSuc,1) + ' t</div>')}
-                ${truckCell(r, 'fabCli', r.camionFabCli, iconCamionN('text-purple-700', (r.camionesFabCli || []).length) + '<div class="text-[9px] font-bold text-purple-700">' + fmtNum(r.tonFabCli,1) + ' t</div>')}
+                ${truckCell(r, 'cliente', r.camionCliente, iconCamion('text-green-700') + '<div class="text-[9px] font-bold text-green-700">' + fmtNum(r.tonVentaCliente,1) + ' t</div>')}
+                ${truckCell(r, 'fabSuc', r.camionFabSuc, iconCamion('text-blue-700') + '<div class="text-[9px] font-bold text-blue-700">' + fmtNum(r.tonFabSuc,1) + ' t</div>')}
+                ${truckCell(r, 'fabCli', r.camionFabCli, iconCamion('text-purple-700') + '<div class="text-[9px] font-bold text-purple-700">' + fmtNum(r.tonFabCli,1) + ' t</div>')}
                 <td class="py-sm pr-md text-[12px] ${r.obs.includes('EXTRA') ? 'text-blue-700 font-bold' : r.obs.includes('BAJA') ? 'text-orange-600 font-bold' : 'text-secondary'}">${escapeHtml(r.obs)}</td>
               </tr>
               ${abiertos.map(tp => detalleRow(r, tp)).join('')}`; }).join('')}
@@ -2387,10 +2297,10 @@ async function renderPlanCarga(stage) {
 
       <div class="mt-md pt-sm border-t border-outline-variant flex flex-wrap gap-lg text-[12px] text-secondary items-center">
         <span class="inline-flex items-center gap-xs"><span class="material-symbols-outlined text-[14px] align-middle text-primary">calendar_today</span> PRIORITARIO = Centro en calendario del día objetivo (según su horizonte 24h/48h, ver debajo del nombre)</span>
-        <span class="inline-flex items-center gap-xs">${iconCamion('text-green-700 text-[16px]')} Camión CD-Cliente (mismo cliente >85%, se planifica 1 día hábil antes de la entrega)</span>
-        <span class="inline-flex items-center gap-xs">${iconCamion('text-blue-700 text-[16px]')} Camión Fábrica-Sucursal (OC coordinadas >85%)</span>
-        <span class="inline-flex items-center gap-xs">${iconCamion('text-purple-700 text-[16px]')} Camión Fábrica-Cliente (OC coordinadas >85%)</span>
-        <span>Pincha cualquier camión para ver su contenido · X2/X3 = camiones requeridos · Camión CD 1 por sucursal · Capacidad 28 T (15 T Calera/San Bernardo) · FALTA en rojo, SOBRA en verde</span>
+        <span class="inline-flex items-center gap-xs">${iconCamion('text-green-700 text-[16px]')} Camión CD-Cliente (mismo cliente >80%)</span>
+        <span class="inline-flex items-center gap-xs">${iconCamion('text-blue-700 text-[16px]')} Camión Fábrica-Sucursal (OC coordinadas >90%)</span>
+        <span class="inline-flex items-center gap-xs">${iconCamion('text-purple-700 text-[16px]')} Camión Fábrica-Cliente (OC coordinadas >90%)</span>
+        <span>Pincha cualquier camión para ver su contenido · Camión CD 1 por sucursal · Capacidad 28 T (15 T Calera/San Bernardo) · FALTA en rojo, SOBRA en verde</span>
       </div>
     </div>`;
 
