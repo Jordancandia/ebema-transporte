@@ -10,9 +10,9 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202609271948';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202609271948';
-import { getDatabase } from './data.js?v=202609271948';
+import { supabase } from './supabase-client.js?v=202609272111';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202609272111';
+import { getDatabase } from './data.js?v=202609272111';
 import { showAlert, escapeHtml } from './utils.js';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
@@ -1386,7 +1386,7 @@ const VISTAS_TRONCAL = {
       label: 'Consolidación de Carga',
     vista: 'v_ind_consolidacion_dt',
     chipFilter: { campo: 'centro_expedicion', label: 'Centro Expedición' },
-    extraChips: [{ campo: 'tipo_despacho', label: 'Tipo Despacho' }],
+    extraChips: [{ campo: 'tipo_despacho', label: 'Tipo Despacho' }, { campo: 'usuario_dt', label: 'Usuario' }],
     searchLabel: 'BUSCADOR GENERAL',
     filtros: [],
     dateRange: { campo: 'fecha_creacion', label: 'Fecha Creación DT' },
@@ -1402,12 +1402,13 @@ const VISTAS_TRONCAL = {
     columnas: [
       { key: 'transporte', label: 'Doc. Transporte' },
       { key: 'fecha_creacion', label: 'Fecha', cls: 'num-clear' },
+      { key: 'usuario_dt', label: 'Usuario' },
       { key: 'tipo_despacho', label: 'Tipo Despacho' },
       { key: 'centro_expedicion', label: 'Centro Exp.' },
       { key: 'transportista', label: 'Transportista' },
       { key: 'sucursal_destino', label: 'Destino' },
       { key: 'n_entregas', label: 'Entregas', cls: 'text-center' },
-      { key: 'capacidad_ton', label: 'Capacidad (t)', cls: 'text-right' },
+      { key: 'capacidad_efectiva', label: 'Capacidad (t)', cls: 'text-right', valueFn: r => r.capacidad_efectiva == null ? '' : r.capacidad_efectiva + (r.capacidad_estimada ? '*' : '') },
       { key: 'ton_cargadas', label: 'Ton Cargadas', cls: 'text-right' },
       { key: 'pct_consolidacion', label: '% Consolidación', cls: 'text-right font-bold',
         valueFn: r => r.pct_consolidacion == null ? '' : (Number(r.pct_consolidacion) * 100).toFixed(1) + '%' },
@@ -1445,6 +1446,7 @@ const VISTAS_TRONCAL = {
       { key: 'entregas', label: 'Entregas' },
       { key: 'cant_entregada', label: 'Cant. Entregas', cls: 'text-right' },
       { key: 'cant_dt', label: 'Cant. DT', cls: 'text-right' },
+      { key: 'usuarios', label: 'Usuario(s)' },
       { key: 'estado', label: 'Estado', badge: r => ({
           CUMPLE: 'bg-green-100 text-green-800', PARCIAL: 'bg-amber-100 text-amber-800',
           'CON ENTREGA SIN DT': 'bg-blue-100 text-blue-800', 'EN PLAZO': 'bg-surface-container-high text-secondary', 'NO CARGADO': 'bg-red-100 text-red-800' }[r.estado] || '') },
@@ -1469,6 +1471,10 @@ export async function renderAbastecimientoView(container) {
   const stage = container.querySelector('#ab-stage');
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
+  else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
+    const m = await import('./ind-plan-carga.js?v=202609272111');
+    await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
+  }
   else if (VISTAS_TRONCAL[currentSub])       await renderVistaTabla(stage, VISTAS_TRONCAL[currentSub]);
   else                                       await renderProveedores(stage);
 }
