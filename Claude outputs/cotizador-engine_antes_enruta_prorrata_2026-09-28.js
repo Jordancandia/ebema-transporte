@@ -14,8 +14,8 @@
 // ZFMP = ZCAP ÷ kilos a consolidar, ZFMI = ZCAP camión mínimo ÷ pedidos promedio
 // del cluster, Tarifa Express = ZCAP × (1 + recargo exclusividad del centro).
 // ---------------------------------------------------------------------------
-import { getOrigenGroups, truckCapKg } from './data.js?v=202609281802';
-import { buildZcapMap } from './zcap.js?v=202609281802';
+import { getOrigenGroups, truckCapKg } from './data.js?v=202609281737';
+import { buildZcapMap } from './zcap.js?v=202609281737';
 
 export const TRUCK_ORDER = ['Camión 5 Ton', 'Camión 10 Ton', 'Camión 15 Ton', 'Camión 28 Ton'];
 export const TRUCK_TRONCAL = 'Camión 28 Ton';
@@ -501,13 +501,8 @@ export function cotizar(ctx, input) {
         if (!eOD || !eDC || !(eOD.km > 0)) return;
         const desvio = Math.round(eOC.km + eDC.km - eOD.km);
         if (desvio > DESVIO_MAX_KM) return;
-        // Tarifa del troncal que realmente viaja (centro origen → centro destino),
-        // prorrateada por los km hasta la comuna: el camión no llega al centro destino.
-        const trOD = precioTroncal(eOD, kilos);
-        if (!trOD) return;
-        const fr = Math.min(1, eOC.km / eOD.km);
-        const tr = { ...trOD, precio: Math.round(trOD.precio * fr),
-          regla: `${trOD.regla} [${trOD.ruta}] × ${eOC.km}/${eOD.km} km hasta ${input.comunaDespacho} = ${(fr * 100).toFixed(1).replace('.', ',')}%` };
+        const tr = precioTroncal(eOC, kilos);
+        if (!tr) return;
         let ret = null;
         if (calzada) {
           if (exclusivo) {
