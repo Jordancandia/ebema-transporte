@@ -5,8 +5,8 @@
 //  Lee en vivo las vistas v_ind_* de Supabase (RLS: usuario @ebema.cl con rol).
 //  Paleta alineada a las presentaciones (PPT) del Comité de Transporte.
 // ============================================================================
-import { supabase } from './supabase-client.js?v=202609282213';
-import { centrosAlcance } from './permisos.js?v=202609282213';
+import { supabase } from './supabase-client.js?v=202609282220';
+import { centrosAlcance } from './permisos.js?v=202609282220';
 
 // --- Paleta PPT -------------------------------------------------------------
 const C = {
@@ -825,7 +825,7 @@ export async function renderIndicadoresHome(container){
     const mesAnt = (D.ns[D.ns.length-2]||{}).mes_label;
     // --- Bloques secundarios: si alguno falla, el HOME igual se muestra ------
     const opt = await Promise.allSettled([
-      homeDatosGrupo(mesAnt),
+      homeDatosGrupo((D.ns[D.ns.length-3]||D.ns[D.ns.length-2]||{}).mes_label, mesAct === hoyISO().slice(0,7)),
       homeOperacion(alc),
       homeFrescura()
     ]);
@@ -847,26 +847,26 @@ export async function renderIndicadoresHome(container){
 let _homeVista = (()=>{ try { return localStorage.getItem('sit_home_vista') || 'gerencial'; } catch(e){ return 'gerencial'; } })();
 function homePaint(container, x){
   const {D,G,OP,FR,enCurso,tituloPer,subPer,alc}=x;
-  const tog=(k,l)=>`<button type="button" data-vista="${k}" style="border:none;cursor:pointer;padding:6px 14px;font-size:12px;font-weight:700;border-radius:999px;background:${_homeVista===k?HM.ink:'transparent'};color:${_homeVista===k?'#fff':HM.muted}">${l}</button>`;
+  const tog=(k,l)=>`<button type="button" data-vista="${k}" style="border:none;cursor:pointer;padding:8px 18px;font-size:14px;font-weight:700;border-radius:999px;background:${_homeVista===k?HM.ink:'transparent'};color:${_homeVista===k?'#fff':HM.muted}">${l}</button>`;
   const cuerpo = _homeVista==='gerencial'
     ? homeGerencial(D,G,enCurso,tituloPer)
     : `<div class="grid grid-cols-2 lg:grid-cols-4 gap-md" id="home_kpis">${homeKpis(D, enCurso)}</div>
       <section class="bg-surface-container-lowest border border-surface-variant rounded-xl" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));min-width:0">
-        <div style="padding:16px 18px;min-width:0">${homeFoco(G, D)}</div>
-        <div style="padding:16px 18px;min-width:0;border-left:1px solid ${HM.border}">${homeHoy(OP, FR)}</div>
+        <div style="padding:20px 24px;min-width:0">${homeFoco(G, D)}</div>
+        <div style="padding:20px 24px;min-width:0;border-left:1px solid ${HM.border}">${homeHoy(OP, FR)}</div>
       </section>`;
-  container.innerHTML = `<div class="max-w-[1180px] mx-auto" id="home_root" style="display:flex;flex-direction:column;gap:16px">
+  container.innerHTML = `<div class="w-full mx-auto" id="home_root" style="max-width:1760px;display:flex;flex-direction:column;gap:20px">
       <div style="display:flex;justify-content:space-between;align-items:flex-end;gap:12px;flex-wrap:wrap">
         <div>
-          <div class="text-headline-sm font-bold">Indicadores de Transporte</div>
-          <div class="text-secondary text-body-md"><b>${tituloPer}</b> · ${subPer}${alc!==null?' · <b>tus centros</b>':''}</div>
+          <div style="font-size:28px;font-weight:800;line-height:1.2">Indicadores de Transporte</div>
+          <div class="text-secondary" style="font-size:16px"><b>${tituloPer}</b> · ${subPer}${alc!==null?' · <b>tus centros</b>':''}</div>
         </div>
         <div role="group" aria-label="Vista" style="display:inline-flex;gap:2px;background:#fff;border:1px solid ${HM.border};border-radius:999px;padding:3px">${tog('gerencial','Gerencial')}${tog('operativa','Operativa')}</div>
       </div>
       ${cuerpo}
       ${G && G.rows.length ? `<section class="bg-surface-container-lowest border border-surface-variant rounded-xl" style="min-width:0">
         <button id="home_mx_btn" type="button" style="width:100%;display:flex;justify-content:space-between;align-items:center;gap:8px;padding:12px 16px;background:transparent;border:none;cursor:pointer;text-align:left">
-          <span><span class="font-bold">Ver por centro</span> <span class="text-secondary text-[12px]">· ${G.rows.length} centro${G.rows.length>1?'s':''} · ${esc(tituloPer.toLowerCase())} con Δ vs mes anterior</span></span>
+          <span><span class="font-bold">Ver por centro</span> <span class="text-secondary text-[14px]">· ${G.rows.length} centro${G.rows.length>1?'s':''} · ${esc(tituloPer.toLowerCase())} con Δ vs mes anterior</span></span>
           <span class="material-symbols-outlined" id="home_mx_ic" style="transition:transform .15s">expand_more</span>
         </button>
         <div id="home_mx" style="display:none;padding:0 16px 16px"></div>
@@ -887,6 +887,9 @@ function homePaint(container, x){
 function homeGerencial(D,G,enCurso,tituloPer){
   const last=a=>a[a.length-1]||{}, prev=a=>a[a.length-2]||{};
   const mesL=(tituloPer.split(' ')[0]||'Mes'), antL=mesCorto(prev(D.ns).mes_label||'');
+  const cerr=a=>enCurso&&a.length>1?a.slice(0,-1):a;
+  const parc=(a,get)=>enCurso&&a.length>1?{v:get(a[a.length-1]),l:mesCorto(a[a.length-1].mes_label||'')}:null;
+  const tarC=cerr(D.tar), marC=cerr(D.mar);
   const acc={
     otif: wavg(D.ns.map(r=>[r.otif_pct,r.lineas_evaluadas])),
     tk:   wavg(D.tar.map(r=>[r.tarifa_kg,r.toneladas])),
@@ -897,33 +900,33 @@ function homeGerencial(D,G,enCurso,tituloPer){
   const pp=d=>nf1.format(Math.abs(d))+' pp';
   const R=[
     {k:'Nivel de servicio',s:'OTIF',rows:D.ns,get:r=>r.otif_pct,fmt:pct,dfmt:pp,acc:acc.otif,meta:META.otif,metaTxt:META.otif+'%',st:v=>stKey(v,META.otif,5),go:'indicadores|nivel'},
-    {k:'Costo de transporte',s:'Tarifa $/kg',rows:D.tar,get:r=>r.tarifa_kg,fmt:money,dfmt:d=>money1(Math.abs(d)),better:'down',acc:acc.tk,metaTxt:'≤ prom. año',
+    {k:'Costo de transporte',s:'Tarifa $/kg',rows:tarC,partial:parc(D.tar,r=>r.tarifa_kg),get:r=>r.tarifa_kg,fmt:money,dfmt:d=>money1(Math.abs(d)),better:'down',acc:acc.tk,metaTxt:'≤ prom. año',
       st:v=>v==null||acc.tk==null?null:(v<=acc.tk?'good':(v<=acc.tk*1.05?'warn':'bad')),stTxt:v=>v<=acc.tk?'Bajo promedio':'Sobre promedio',go:'indicadores|tarifa'},
-    {k:'Resultado de flete',s:'Margen cobrado − pagado',rows:D.mar,get:r=>r.margen==null?null:r.margen/1e6,fmt:mm,dfmt:d=>money1(Math.abs(d))+' MM',acc:acc.mar,metaTxt:'≥ $0',
+    {k:'Resultado de flete',monto:true,s:'Margen cobrado − pagado',rows:marC,partial:parc(D.mar,r=>r.margen==null?null:r.margen/1e6),get:r=>r.margen==null?null:r.margen/1e6,fmt:mm,dfmt:d=>money1(Math.abs(d))+' MM',acc:acc.mar,metaTxt:'≥ $0',
       st:v=>v==null?null:(v>=0?'good':'bad'),stTxt:v=>v>=0?'Positivo':'Negativo',go:'indicadores|margen'},
-    {k:'Cobro del flete',s:'Cobertura cobrado / pagado',rows:D.mar,get:r=>r.cobertura_pct,fmt:pct,dfmt:pp,acc:acc.cob,meta:META.cobertura,metaTxt:META.cobertura+'%',st:v=>stKey(v,META.cobertura,10),go:'indicadores|margen'},
+    {k:'Cobro del flete',s:'Cobertura cobrado / pagado',rows:marC,partial:parc(D.mar,r=>r.cobertura_pct),get:r=>r.cobertura_pct,fmt:pct,dfmt:pp,acc:acc.cob,meta:META.cobertura,metaTxt:META.cobertura+'%',st:v=>stKey(v,META.cobertura,10),go:'indicadores|margen'},
     {k:'Eficiencia de carga',s:'Consolidación camión',rows:D.con||[],get:r=>r.consol_pct,fmt:pct,dfmt:pp,acc:acc.con,meta:META.consol,metaTxt:META.consol+'%',st:v=>stKey(v,META.consol,10),go:'indicadores|consolidado'}
   ].map(o=>{ const vals=o.rows.map(o.get); const v=vals[vals.length-1], p=vals.length>1?vals[vals.length-2]:null; return Object.assign(o,{vals,v,p,stv:o.st(v),sta:o.better==='down'?null:o.st(o.acc)}); });
 
   // Veredicto
   const cnt={good:0,warn:0,bad:0}; R.forEach(o=>{ if(o.stv) cnt[o.stv]++; });
-  const pill=(st,t)=>`<span style="display:inline-flex;align-items:center;gap:6px;background:${HM[st+'Bg']};color:${HM[st]};border-radius:999px;padding:3px 10px;font-size:12px;font-weight:700;white-space:nowrap">● ${t}</span>`;
-  const verd = `<section style="display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;background:#fff;border:1px solid ${HM.border};border-radius:12px;padding:16px 20px">
+  const pill=(st,t)=>`<span style="display:inline-flex;align-items:center;gap:6px;background:${HM[st+'Bg']};color:${HM[st]};border-radius:999px;padding:3px 10px;font-size:14px;font-weight:700;white-space:nowrap">● ${t}</span>`;
+  const verd = `<section style="display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;background:#fff;border:1px solid ${HM.border};border-radius:12px;padding:20px 24px">
     <div style="min-width:0">
-      <div style="font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:${HM.muted}">Situación ${esc(mesL.toLowerCase())}${enCurso?' (parcial)':''}</div>
-      <div style="font-size:22px;font-weight:800;line-height:1.25;margin-top:2px">${cnt.good} de ${R.length} indicadores en meta</div>
+      <div style="font-size:13px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:${HM.muted}">Situación ${esc(mesL.toLowerCase())}${enCurso?' (parcial)':''}</div>
+      <div style="font-size:30px;font-weight:800;line-height:1.25;margin-top:2px">${cnt.good} de ${R.length} indicadores en meta</div>
     </div>
     <div style="display:flex;gap:6px;flex-wrap:wrap">${cnt.good?pill('good',cnt.good+' en meta'):''}${cnt.warn?pill('warn',cnt.warn+' cerca'):''}${cnt.bad?pill('bad',cnt.bad+' bajo meta'):''}</div>
     <div style="text-align:right">
-      <div style="font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:${HM.muted}">Resultado de flete 2026</div>
-      <div style="font-size:22px;font-weight:800;color:${acc.mar<0?HM.bad:HM.good};font-variant-numeric:tabular-nums">${sgn(acc.mar)}$${nf0.format(Math.abs(acc.mar))} MM</div>
+      <div style="font-size:13px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:${HM.muted}">Resultado de flete 2026</div>
+      <div style="font-size:30px;font-weight:800;color:${acc.mar<0?HM.bad:HM.good};font-variant-numeric:tabular-nums">${sgn(acc.mar)}$${nf0.format(Math.abs(acc.mar))} MM</div>
     </div></section>`;
 
   // Scorecard
-  const th=t=>`<th style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:${HM.muted};font-weight:700;padding:10px 12px;text-align:right;white-space:nowrap;border-bottom:1px solid ${HM.border}">${t}</th>`;
-  const stCell=(o,st)=>st?`<span style="display:inline-block;background:${HM[st+'Bg']};color:${HM[st]};border-radius:999px;padding:2px 10px;font-size:12px;font-weight:700;white-space:nowrap">${o.stTxt?o.stTxt(o.v):ST_TXT[st]}</span>`:'–';
+  const th=t=>`<th style="font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:${HM.muted};font-weight:700;padding:12px 16px;text-align:right;white-space:nowrap;border-bottom:1px solid ${HM.border}">${t}</th>`;
+  const stCell=(o,st)=>st?`<span style="display:inline-block;background:${HM[st+'Bg']};color:${HM[st]};border-radius:999px;padding:2px 10px;font-size:14px;font-weight:700;white-space:nowrap">${o.stTxt?o.stTxt(o.v):ST_TXT[st]}</span>`:'–';
   let t=`<section style="background:#fff;border:1px solid ${HM.border};border-radius:12px;overflow:hidden"><div style="overflow-x:auto"><table style="width:100%;min-width:760px;border-collapse:collapse;font-variant-numeric:tabular-nums">
-    <thead><tr>${th('Indicador').replace('text-align:right','text-align:left')}${th(esc(mesL))}${th('vs '+esc(antL))}${th('Acum. 2026')}${th('Meta')}${th('Estado').replace('text-align:right','text-align:center')}${th('Tendencia 2026').replace('text-align:right','text-align:left')}</tr></thead><tbody>`;
+    <thead><tr>${th('Indicador').replace('text-align:right','text-align:left')}${th('Mes')}${th('vs mes ant.')}${th('Acum. 2026')}${th('Meta')}${th('Estado').replace('text-align:right','text-align:center')}${th('Tendencia 2026').replace('text-align:right','text-align:left')}</tr></thead><tbody>`;
   R.forEach((o,i)=>{
     let dTxt='–', dCol=HM.muted;
     if(o.v!=null&&o.p!=null){ const d=o.v-o.p, z=Math.abs(d)<0.05, bueno=z?null:(o.better==='down'?d<0:d>0);
@@ -931,39 +934,40 @@ function homeGerencial(D,G,enCurso,tituloPer){
     const bd=i<R.length-1?`border-bottom:1px solid ${HM.border};`:'';
     const col=o.stv?HM[o.stv]:HM.faint;
     t+=`<tr data-go="${o.go}" style="cursor:pointer" title="Ver detalle">
-      <td style="${bd}padding:12px;text-align:left;border-left:4px solid ${col}"><div style="font-weight:700;font-size:14px">${o.k}</div><div style="font-size:11px;color:${HM.muted}">${o.s}</div></td>
-      <td style="${bd}padding:12px;text-align:right;font-size:20px;font-weight:800;white-space:nowrap">${o.v==null?'–':o.fmt(o.v)}</td>
-      <td style="${bd}padding:12px;text-align:right;font-size:13px;color:${dCol};white-space:nowrap">${dTxt}</td>
-      <td style="${bd}padding:12px;text-align:right;font-size:14px;font-weight:600;white-space:nowrap;color:${o.sta?HM[o.sta]:HM.ink}">${o.acc==null?'–':o.fmt(o.acc)}</td>
-      <td style="${bd}padding:12px;text-align:right;font-size:13px;color:${HM.muted};white-space:nowrap">${o.metaTxt}</td>
-      <td style="${bd}padding:12px;text-align:center">${stCell(o,o.stv)}</td>
-      <td style="${bd}padding:8px 12px;width:170px">${homeSpark(o.vals,o.rows.map(r=>mesCorto(r.mes_label||'')),o.fmt,o.meta!=null?o.meta:null,col)}</td></tr>`;
+      <td style="${bd}padding:16px;text-align:left;border-left:4px solid ${col}"><div style="font-weight:700;font-size:16px">${o.k}</div><div style="font-size:13px;color:${HM.muted}">${o.s}</div></td>
+      <td style="${bd}padding:16px;text-align:right;white-space:nowrap"><div style="font-size:26px;font-weight:800">${o.v==null?'–':o.fmt(o.v)}</div><div style="font-size:13px;color:${HM.muted}">${esc(mesCorto(o.rows.length?o.rows[o.rows.length-1].mes_label:''))}${o.partial?' cerrado · '+esc(o.partial.l)+' parcial '+o.fmt(o.partial.v):(enCurso?' (parcial)':'')}</div></td>
+      <td style="${bd}padding:16px;text-align:right;font-size:15px;color:${dCol};white-space:nowrap">${dTxt}</td>
+      <td style="${bd}padding:16px;text-align:right;font-size:16px;font-weight:600;white-space:nowrap;color:${o.sta?HM[o.sta]:HM.ink}">${o.acc==null?'–':o.fmt(o.acc)}</td>
+      <td style="${bd}padding:16px;text-align:right;font-size:15px;color:${HM.muted};white-space:nowrap">${o.metaTxt}</td>
+      <td style="${bd}padding:16px;text-align:center">${stCell(o,o.stv)}</td>
+      <td style="${bd}padding:10px 16px;width:260px">${homeSpark(o.vals,o.rows.map(r=>mesCorto(r.mes_label||'')),o.fmt,o.meta!=null?o.meta:null,col,o.monto?null:o.partial)}</td></tr>`;
   });
   t+=`</tbody></table></div></section>`;
 
   // Mensajes clave + centros vs meta
   const o0=R[0], o1=R[1], o2=R[2], o3=R[3];
-  const msg=(k,txt)=>`<li style="display:grid;grid-template-columns:92px minmax(0,1fr);gap:10px;font-size:14px;line-height:1.45"><span style="font-weight:700;color:${HM.muted};font-size:12px;text-transform:uppercase;letter-spacing:.04em;padding-top:2px">${k}</span><span>${txt}</span></li>`;
+  const msg=(k,txt)=>`<li style="display:grid;grid-template-columns:110px minmax(0,1fr);gap:12px;font-size:16px;line-height:1.45"><span style="font-weight:700;color:${HM.muted};font-size:14px;text-transform:uppercase;letter-spacing:.04em;padding-top:2px">${k}</span><span>${txt}</span></li>`;
   const dif=(a,b)=>a!=null&&b!=null?a-b:null;
   const m1= o0.v!=null ? `OTIF <b>${pct(o0.v)}</b>${o0.p!=null?` (${o0.v-o0.p>=0?'+':'−'}${pp(o0.v-o0.p)} vs ${esc(antL)})`:''}; acumulado ${pct(acc.otif)}, <b>${nf1.format(Math.abs(META.otif-acc.otif))} pp ${acc.otif<META.otif?'bajo':'sobre'}</b> la meta.` : '–';
   const dtk=dif(o1.v,acc.tk);
-  const m2= o1.v!=null ? `Tarifa <b>${money(o1.v)}/kg</b>, ${dtk<=0?'bajo':'sobre'} el promedio del año (${money(acc.tk)}/kg) en ${money1(Math.abs(dtk))}.` : '–';
-  const m3= `Margen ${esc(mesL.toLowerCase())} <b>${mm(o2.v)}</b>; acumulado <b>${sgn(acc.mar)}$${nf0.format(Math.abs(acc.mar))} MM</b>. Se cobra el ${pct(acc.cob)} de lo que se paga en flete.`;
+  const mc=o1.rows.length?mesCorto(o1.rows[o1.rows.length-1].mes_label):'';
+  const m2= o1.v!=null ? `Tarifa ${esc(mc)} <b>${money(o1.v)}/kg</b>, ${dtk<=0?'bajo':'sobre'} el promedio del año (${money(acc.tk)}/kg) en ${money1(Math.abs(dtk))}.` : '–';
+  const m3= `Margen ${esc(mc)} <b>${mm(o2.v)}</b>${o2.partial?` (${esc(o2.partial.l)} a la fecha ${mm(o2.partial.v)}, aún sin facturar completo)`:''}; acumulado <b>${sgn(acc.mar)}$${nf0.format(Math.abs(acc.mar))} MM</b>. Se cobra el ${pct(acc.cob)} de lo que se paga en flete.`;
   let cen='';
   if(G&&G.rows.length){
     const c={good:[],warn:[],bad:[]}; G.rows.forEach(r=>{ const k=stKey(r.otif,META.otif,5); if(k) c[k].push(r); });
-    const n=G.rows.length, seg=(k)=>c[k].length?`<div data-t="${ST_TXT[k]}: ${c[k].map(r=>tc(r.grupo)).join(', ')}" style="flex:${c[k].length};background:${HM[k]};height:12px"></div>`:'';
+    const n=G.rows.length, seg=(k)=>c[k].length?`<div data-t="${ST_TXT[k]}: ${c[k].map(r=>tc(r.grupo)).join(', ')}" style="flex:${c[k].length};background:${HM[k]};height:16px"></div>`:'';
     const peor=G.rows.slice().sort((a,b)=>a.otif-b.otif).slice(0,3);
     cen=`<div style="min-width:0">
-      <div style="font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:${HM.muted};margin-bottom:8px">Centros vs meta OTIF</div>
+      <div style="font-size:13px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:${HM.muted};margin-bottom:8px">Centros vs meta OTIF</div>
       <div style="display:flex;gap:2px;border-radius:6px;overflow:hidden">${seg('good')}${seg('warn')}${seg('bad')}</div>
-      <div style="display:flex;gap:14px;flex-wrap:wrap;font-size:12px;margin-top:8px">
+      <div style="display:flex;gap:14px;flex-wrap:wrap;font-size:14px;margin-top:8px">
         <span><b style="color:${HM.good}">${c.good.length}</b> en meta</span><span><b style="color:${HM.warn}">${c.warn.length}</b> cerca</span><span><b style="color:${HM.bad}">${c.bad.length}</b> bajo meta</span><span style="color:${HM.muted}">de ${n}</span></div>
-      <div style="font-size:12px;color:${HM.muted};margin-top:10px">Más bajos: ${peor.map(r=>`<b style="color:${HM.ink}">${esc(tc(r.grupo))}</b> ${pct(r.otif)}`).join(' · ')}</div>
+      <div style="font-size:14px;color:${HM.muted};margin-top:10px">Más bajos: ${peor.map(r=>`<b style="color:${HM.ink}">${esc(tc(r.grupo))}</b> ${pct(r.otif)}`).join(' · ')}</div>
     </div>`;
   }
-  const bottom=`<section style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:24px;background:#fff;border:1px solid ${HM.border};border-radius:12px;padding:16px 20px">
-    <div style="min-width:0"><div style="font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:${HM.muted};margin-bottom:8px">Mensajes clave</div>
+  const bottom=`<section style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:24px;background:#fff;border:1px solid ${HM.border};border-radius:12px;padding:20px 24px">
+    <div style="min-width:0"><div style="font-size:13px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:${HM.muted};margin-bottom:8px">Mensajes clave</div>
       <ul style="list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px">${msg('Servicio',m1)}${msg('Costo',m2)}${msg('Resultado',m3)}</ul></div>
     ${cen}</section>`;
   return verd+t+bottom;
@@ -988,7 +992,7 @@ async function homeDatosAlcance(y){
 }
 
 // Datos por grupo (mes actual + anterior) para "Requiere atención" y la matriz
-async function homeDatosGrupo(desde){
+async function homeDatosGrupo(desde, enCurso){
   if(!desde) return null;
   const [ns,tar,mar,con] = await Promise.all([
     supabase.from('v_ind_ns_grupo_mes').select('*').gte('mes_label',desde),
@@ -998,7 +1002,8 @@ async function homeDatosGrupo(desde){
   ]);
   const e=ns.error||tar.error||mar.error||con.error; if(e) throw e;
   const meses=[...new Set((ns.data||[]).map(r=>r.mes_label))].sort();
-  const act=meses[meses.length-1], ant=meses.length>1?meses[meses.length-2]:null;
+  const act=meses[meses.length-1], ant=meses.length>1?meses[meses.length-2]:null, ant2=meses.length>2?meses[meses.length-3]:null;
+  const fc = enCurso && ant ? ant : act, fc0 = enCurso && ant ? ant2 : ant;   // mes cerrado para datos de flete
   const idx=(rows)=>{ const m={}; (rows||[]).forEach(r=>{ m[r.grupo+'|'+r.mes_label]=r; }); return m; };
   const iN=idx(ns.data), iT=idx(tar.data), iM=idx(mar.data), iC=idx(con.data);
   const grupos=[...new Set((ns.data||[]).map(r=>r.grupo))].filter(g=>g&&g!=='OTROS');
@@ -1009,10 +1014,10 @@ async function homeDatosGrupo(desde){
     fill:v(iN,g,act,'fillrate_pct'), fill0:v(iN,g,ant,'fillrate_pct'),
     lineas:v(iN,g,act,'lineas'),
     consol:v(iC,g,act,'consol_pct'), consol0:v(iC,g,ant,'consol_pct'),
-    tk:v(iT,g,act,'tarifa_kg'), tk0:v(iT,g,ant,'tarifa_kg'), ton:v(iT,g,act,'toneladas'),
-    margen:v(iM,g,act,'margen'), cob:v(iM,g,act,'cobertura_pct')
+    tk:v(iT,g,fc,'tarifa_kg'), tk0:v(iT,g,fc0,'tarifa_kg'), ton:v(iT,g,fc,'toneladas'),
+    margen:v(iM,g,fc,'margen'), cob:v(iM,g,fc,'cobertura_pct')
   })).filter(r=>r.otif!=null);
-  return { act, ant, rows };
+  return { act, ant, fc, rows };
 }
 
 // Operación del día: Plan de Carga (último snapshot) + Flete Tercero (vencidos / en curso)
@@ -1062,19 +1067,25 @@ async function homeFrescura(){
 }
 
 // --- Piezas de UI -------------------------------------------------------------
-function homeSpark(vals,labels,fmt,meta,endColor){
+function homeSpark(vals,labels,fmt,meta,endColor,partial){
   const pts=vals.map((v,i)=>({v:v==null?null:Number(v),l:labels[i]})).filter(p=>p.v!=null);
   if(pts.length<2) return '<div style="height:36px"></div>';
-  const Wd=200,Ht=36,p=4, arr=pts.map(p=>p.v).concat(meta!=null?[meta]:[]);
+  const par = partial && partial.v!=null ? {v:Number(partial.v), l:partial.l} : null;
+  const nx = pts.length + (par?1:0);
+  const Wd=200,Ht=36,p=4, arr=pts.map(p=>p.v).concat(meta!=null?[meta]:[]).concat(par?[par.v]:[]);
   const mn=Math.min.apply(null,arr), mx=Math.max.apply(null,arr), r=(mx-mn)||1;
-  const x=i=>p+i*(Wd-2*p)/(pts.length-1), y=v=>Ht-p-(v-mn)/r*(Ht-2*p);
+  const x=i=>p+i*(Wd-2*p)/(nx-1), y=v=>Ht-p-(v-mn)/r*(Ht-2*p);
   const d=pts.map((q,i)=>(i?'L':'M')+x(i).toFixed(1)+' '+y(q.v).toFixed(1)).join(' ');
+  const li=pts.length-1;
   let s=`<svg viewBox="0 0 ${Wd} ${Ht}" style="width:100%;height:auto;display:block;margin-top:6px" aria-hidden="true">`;
-  s+=`<path d="${d} L${x(pts.length-1).toFixed(1)} ${Ht} L${x(0)} ${Ht} Z" fill="${HM.line}" opacity=".08"/>`;
+  s+=`<path d="${d} L${x(li).toFixed(1)} ${Ht} L${x(0)} ${Ht} Z" fill="${HM.line}" opacity=".08"/>`;
   if(meta!=null) s+=`<line x1="0" x2="${Wd}" y1="${y(meta).toFixed(1)}" y2="${y(meta).toFixed(1)}" stroke="${HM.good}" stroke-dasharray="3 3" stroke-width="1"/>`;
   s+=`<path d="${d}" fill="none" stroke="${HM.line}" stroke-width="1.8" stroke-linejoin="round"/>`;
+  if(par) s+=`<line x1="${x(li).toFixed(1)}" y1="${y(pts[li].v).toFixed(1)}" x2="${x(li+1).toFixed(1)}" y2="${y(par.v).toFixed(1)}" stroke="${HM.faint}" stroke-width="1.5" stroke-dasharray="3 3"/>`+
+    `<circle cx="${x(li+1).toFixed(1)}" cy="${y(par.v).toFixed(1)}" r="3" fill="#fff" stroke="${HM.faint}" stroke-width="1.5"/>`+
+    `<rect x="${(x(li+1)-9).toFixed(1)}" y="0" width="18" height="${Ht}" fill="transparent" data-t="${esc(par.l)} (parcial, aún sin facturar completo): ${esc(fmt(par.v))}"/>`;
   pts.forEach((q,i)=>{ s+=`<rect x="${(x(i)-9).toFixed(1)}" y="0" width="18" height="${Ht}" fill="transparent" data-t="${esc(q.l)}: ${esc(fmt(q.v))}"/>`; });
-  s+=`<circle cx="${x(pts.length-1).toFixed(1)}" cy="${y(pts[pts.length-1].v).toFixed(1)}" r="3.5" fill="${endColor}" stroke="#fff" stroke-width="1.5"/></svg>`;
+  s+=`<circle cx="${x(li).toFixed(1)}" cy="${y(pts[li].v).toFixed(1)}" r="3.5" fill="${endColor}" stroke="#fff" stroke-width="1.5"/></svg>`;
   return s;
 }
 
@@ -1089,27 +1100,33 @@ function homeKpi(o){
     dTxt = z ? '= vs '+labs[labs.length-2] : (d>0?'▲ +':'▼ ')+o.dfmt(d)+' vs '+labs[labs.length-2];
     dCol = bueno==null?HM.muted:(bueno?HM.good:HM.bad); }
   const stTxt = st ? (o.stTxt ? o.stTxt(v) : ST_TXT[st]) : (o.nota||'&nbsp;');
-  return `<a href="#" data-go="${o.go}" title="Ver detalle" style="display:flex;flex-direction:column;text-decoration:none;color:inherit;background:#fff;border:1px solid ${HM.border};border-top:4px solid ${col};border-radius:12px;padding:14px 16px 12px;min-width:0">
-    <div style="font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:${HM.muted}">${o.k}</div>
-    <div style="font-size:clamp(22px,2.6vw,30px);font-weight:800;line-height:1.1;color:${HM.ink};font-variant-numeric:tabular-nums;white-space:nowrap">${v==null?'–':o.fmt(v)}</div>
-    <div style="font-size:12px;font-weight:700;color:${st?col:HM.muted}">${st?'● ':''}${stTxt}${st&&o.meta!=null?`<span style="font-weight:500;color:${HM.muted}"> · meta ${o.meta}</span>`:''}</div>
-    <div style="font-size:12px;color:${dCol};font-variant-numeric:tabular-nums">${dTxt}</div>
-    <div style="margin-top:auto"></div>${homeSpark(vals,labs,o.fmt,o.meta!=null?o.metaV:null,col)}
-    <div style="font-size:12px;margin-top:8px;padding-top:8px;border-top:1px solid ${HM.border}">${o.sec||'&nbsp;'}</div>
+  return `<a href="#" data-go="${o.go}" title="Ver detalle" style="display:flex;flex-direction:column;text-decoration:none;color:inherit;background:#fff;border:1px solid ${HM.border};border-top:4px solid ${col};border-radius:12px;padding:18px 20px 16px;min-width:0">
+    <div style="font-size:13px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:${HM.muted}">${o.k}${o.partial?` <span style="font-weight:600;letter-spacing:0;text-transform:none">· ${esc(labs[labs.length-1])} cerrado</span>`:''}</div>
+    <div style="font-size:clamp(28px,2.4vw,42px);font-weight:800;line-height:1.1;color:${HM.ink};font-variant-numeric:tabular-nums;white-space:nowrap">${v==null?'–':o.fmt(v)}</div>
+    <div style="font-size:14px;font-weight:700;color:${st?col:HM.muted}">${st?'● ':''}${stTxt}${st&&o.meta!=null?`<span style="font-weight:500;color:${HM.muted}"> · meta ${o.meta}</span>`:''}</div>
+    <div style="font-size:14px;color:${dCol};font-variant-numeric:tabular-nums">${dTxt}</div>
+    ${o.partial?`<div style="font-size:13px;color:${HM.muted};font-variant-numeric:tabular-nums">${esc(o.partial.l)} a la fecha: ${o.fmt(o.partial.v)} (parcial)</div>`:''}
+    <div style="margin-top:auto"></div>${homeSpark(vals,labs,o.fmt,o.meta!=null?o.metaV:null,col,o.monto?null:o.partial)}
+    <div style="font-size:14px;margin-top:8px;padding-top:8px;border-top:1px solid ${HM.border}">${o.sec||'&nbsp;'}</div>
 </a>`;
 }
 
 function homeKpis(D,enCurso){
   const pp=d=>nf1.format(Math.abs(d))+' pp';
   const last=a=>a[a.length-1]||{};
-  const n=last(D.ns), m=last(D.mar);
+  const n=last(D.ns);
+  // Tarifa, Margen y Cobertura dependen del flete pagado/cobrado, que se factura con desfase:
+  // con el mes en curso se muestra el último mes CERRADO y el parcial va aparte (punto hueco).
+  const cerr=a=>enCurso&&a.length>1?a.slice(0,-1):a;
+  const parc=(a,get)=>enCurso&&a.length>1?{v:get(a[a.length-1]),l:mesCorto(a[a.length-1].mes_label||'')}:null;
+  const tarC=cerr(D.tar), marC=cerr(D.mar), m=last(marC);
   const sec=(k,v,st)=>`<span style="color:${HM.muted}">${k}</span> <b style="color:${st?HM[st]:HM.ink}">${v}</b>`;
   return [
     homeKpi({k:'OTIF',rows:D.ns,get:r=>r.otif_pct,fmt:pct,dfmt:pp,meta:META.otif+'%',metaV:META.otif,st:v=>stKey(v,META.otif,5),go:'indicadores|nivel',
       sec:sec('Fill Rate',pct(n.fillrate_pct),stKey(n.fillrate_pct,META.fill,5))}),
-    homeKpi({k:'Tarifa $/kg',rows:D.tar,get:r=>r.tarifa_kg,fmt:money,nota:'menor es mejor',dfmt:d=>money1(Math.abs(d)),better:'down',go:'indicadores|tarifa',
-      sec:sec('Toneladas',nf0.format(last(D.tar).toneladas||0)+(enCurso?' (parcial)':''))}),
-    homeKpi({k:'Margen de flete',rows:D.mar,get:r=>r.margen==null?null:r.margen/1e6,fmt:mm,dfmt:d=>money1(Math.abs(d))+' MM',st:v=>v==null?null:(v>=0?'good':'bad'),stTxt:v=>v>=0?'Positivo':'Negativo',go:'indicadores|margen',
+    homeKpi({k:'Tarifa $/kg',rows:tarC,partial:parc(D.tar,r=>r.tarifa_kg),get:r=>r.tarifa_kg,fmt:money,nota:'menor es mejor',dfmt:d=>money1(Math.abs(d)),better:'down',go:'indicadores|tarifa',
+      sec:sec('Toneladas',nf0.format(last(tarC).toneladas||0))}),
+    homeKpi({k:'Margen de flete',monto:true,rows:marC,partial:parc(D.mar,r=>r.margen==null?null:r.margen/1e6),get:r=>r.margen==null?null:r.margen/1e6,fmt:mm,dfmt:d=>money1(Math.abs(d))+' MM',st:v=>v==null?null:(v>=0?'good':'bad'),stTxt:v=>v>=0?'Positivo':'Negativo',go:'indicadores|margen',
       sec:sec('Cobertura',pct(m.cobertura_pct),stKey(m.cobertura_pct,META.cobertura,10))+` <span style="color:${HM.muted}">· acum.</span> <b>${(()=>{const t=sum(D.mar.map(r=>r.margen))/1e6;return sgn(t)+'$'+nf0.format(Math.abs(t))+' MM';})()}</b>`}),
     homeKpi({k:'Consolidación',rows:D.con||[],get:r=>r.consol_pct,fmt:pct,dfmt:pp,meta:META.consol+'%',metaV:META.consol,st:v=>stKey(v,META.consol,10),go:'indicadores|consolidado',
       sec:sec('Viajes',nf0.format(last(D.con||[]).viajes||0)+(enCurso?' (parcial)':''))})
@@ -1127,10 +1144,10 @@ function homeFoco(G,D){
   let frase=`OTIF <b>${pct(n.otif_pct)}</b>`+(d!=null?` (${d>=0?'+':'−'}${nf1.format(Math.abs(d))} pp)`:'')+`: `+
     (bajo.length?`<b>${bajo.length} de ${G.rows.length}</b> centros bajo meta`:'todos los centros sobre meta')+
     (caida&&caida.d<0?`. Mayor caída: <b>${esc(tc(caida.g))}</b> (${nf1.format(caida.d)} pp).`:'.');
-  h+=`<div style="font-size:15px;line-height:1.45;margin-bottom:10px">${frase}</div>`;
+  h+=`<div style="font-size:18px;line-height:1.45;margin-bottom:10px">${frase}</div>`;
   const crit=G.rows.slice().sort((a,b)=>a.otif-b.otif).slice(0,3);
   h+=`<div style="display:flex;gap:8px;flex-wrap:wrap">`+crit.map(r=>{ const s=stKey(r.otif,META.otif,5);
-    return `<a href="#" data-go="indicadores|nivel" data-t="${esc(tc(r.grupo))}: OTIF ${pct(r.otif)} · Fill ${pct(r.fill)}" style="text-decoration:none;display:inline-flex;gap:8px;align-items:center;background:${HM[s+'Bg']};border-radius:999px;padding:5px 12px;font-size:13px;color:${HM.ink}">
+    return `<a href="#" data-go="indicadores|nivel" data-t="${esc(tc(r.grupo))}: OTIF ${pct(r.otif)} · Fill ${pct(r.fill)}" style="text-decoration:none;display:inline-flex;gap:8px;align-items:center;background:${HM[s+'Bg']};border-radius:999px;padding:5px 12px;font-size:15px;color:${HM.ink}">
       ${esc(tc(r.grupo))} <b style="color:${HM[s]};font-variant-numeric:tabular-nums">${pct(r.otif)}</b></a>`; }).join('')+`</div>`;
   return h;
 }
@@ -1138,9 +1155,9 @@ function homeFoco(G,D){
 // Hoy: 3 cifras (Plan de Carga, Flete Tercero vencidos, estado de datos)
 function homeHoy(OP,FR){
   const stat=(k,v,sub,c,go)=>`<a href="#" ${go?`data-go="${go}"`:''} style="text-decoration:none;color:inherit;display:flex;flex-direction:column;gap:2px;min-width:0;${go?'':'cursor:default'}">
-    <span style="font-size:11px;color:${HM.muted};font-weight:600">${k}</span>
-    <span style="font-size:22px;font-weight:800;line-height:1.1;font-variant-numeric:tabular-nums;${c?'color:'+c:''}">${v}</span>
-    <span style="font-size:11px;color:${HM.muted};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${sub||'&nbsp;'}</span></a>`;
+    <span style="font-size:13px;color:${HM.muted};font-weight:600">${k}</span>
+    <span style="font-size:30px;font-weight:800;line-height:1.1;font-variant-numeric:tabular-nums;${c?'color:'+c:''}">${v}</span>
+    <span style="font-size:13px;color:${HM.muted};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${sub||'&nbsp;'}</span></a>`;
   let cells=[];
   if(OP&&OP.plan){ const p=OP.plan, esHoy=p.fecha===hoyISO();
     cells.push(stat('Plan de Carga',nf0.format(p.total)+' t',(esHoy?'hoy':p.fecha.slice(8,10)+'-'+p.fecha.slice(5,7))+' · '+p.cds.map(c=>c.cd).join(' / '),null,'abastecimiento|plan_carga')); }
@@ -1174,27 +1191,27 @@ function homePaintMx(){
     if(k==='grupo') return String(x).localeCompare(String(y))*_homeMx.dir;
     return ((x==null?-1e18:x)-(y==null?-1e18:y))*_homeMx.dir; });
   const cell=(v,st,delta)=>{ const bg=st?HM[st+'Bg']:'transparent';
-    return `<td style="padding:7px 8px;text-align:right;border-radius:5px;white-space:nowrap;background:${bg}">${v}${delta||''}</td>`; };
-  const dl=(a,b,up,f)=>{ if(a==null||b==null) return ''; const d=a-b; if(Math.abs(d)<0.05) return `<span style="font-size:11px;margin-left:4px;color:${HM.muted}">=</span>`;
-    const g=up?d>0:d<0; return `<span style="font-size:11px;margin-left:4px;color:${g?HM.good:HM.bad}">${d>0?'+':'−'}${f(Math.abs(d))}</span>`; };
+    return `<td style="padding:10px 10px;text-align:right;border-radius:5px;white-space:nowrap;background:${bg}">${v}${delta||''}</td>`; };
+  const dl=(a,b,up,f)=>{ if(a==null||b==null) return ''; const d=a-b; if(Math.abs(d)<0.05) return `<span style="font-size:13px;margin-left:4px;color:${HM.muted}">=</span>`;
+    const g=up?d>0:d<0; return `<span style="font-size:13px;margin-left:4px;color:${g?HM.good:HM.bad}">${d>0?'+':'−'}${f(Math.abs(d))}</span>`; };
   const maxT=Math.max.apply(null,rows.map(r=>r.tk||0).concat([1]));
-  let h=`<div style="overflow-x:auto"><table style="border-collapse:separate;border-spacing:2px;width:100%;min-width:760px;font-size:13px;font-variant-numeric:tabular-nums"><thead><tr>`+
-    cols.map(c=>`<th data-sort="${c.k}" style="cursor:pointer;user-select:none;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:${HM.muted};font-weight:700;padding:6px 8px;white-space:nowrap;text-align:${c.left?'left':'right'}">${c.t}${_homeMx.sort===c.k?(_homeMx.dir>0?' ▲':' ▼'):''}</th>`).join('')+`</tr></thead><tbody>`;
+  let h=`<div style="overflow-x:auto"><table style="border-collapse:separate;border-spacing:2px;width:100%;min-width:760px;font-size:15px;font-variant-numeric:tabular-nums"><thead><tr>`+
+    cols.map(c=>`<th data-sort="${c.k}" style="cursor:pointer;user-select:none;font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:${HM.muted};font-weight:700;padding:6px 8px;white-space:nowrap;text-align:${c.left?'left':'right'}">${c.t}${_homeMx.sort===c.k?(_homeMx.dir>0?' ▲':' ▼'):''}</th>`).join('')+`</tr></thead><tbody>`;
   rows.forEach(r=>{
-    h+=`<tr><td style="padding:7px 8px;font-weight:700;white-space:nowrap">${esc(tc(r.grupo))}</td>`+
+    h+=`<tr><td style="padding:10px 10px;font-weight:700;white-space:nowrap">${esc(tc(r.grupo))}</td>`+
       cell(pct(r.otif),stKey(r.otif,META.otif,5),dl(r.otif,r.otif0,true,nf1.format))+
       cell(pct(r.fill),stKey(r.fill,META.fill,5),dl(r.fill,r.fill0,true,nf1.format))+
       cell(pct(r.consol),stKey(r.consol,META.consol,10),dl(r.consol,r.consol0,true,nf1.format))+
       cell((r.tk!=null?`<span style="display:inline-block;height:6px;border-radius:3px;background:${HM.line};vertical-align:middle;margin-right:6px;width:${(r.tk/maxT*44).toFixed(0)}px"></span>`:'')+money(r.tk),null,dl(r.tk,r.tk0,false,v=>money1(v)))+
-      `<td style="padding:7px 8px;text-align:right;white-space:nowrap;font-weight:600;color:${r.margen==null?HM.muted:(r.margen<0?HM.bad:HM.good)}">${r.margen==null?'–':mm(r.margen/1e6)}</td>`+
+      `<td style="padding:10px 10px;text-align:right;white-space:nowrap;font-weight:600;color:${r.margen==null?HM.muted:(r.margen<0?HM.bad:HM.good)}">${r.margen==null?'–':mm(r.margen/1e6)}</td>`+
       cell(pct(r.cob),stKey(r.cob,META.cobertura,10))+
-      `<td style="padding:7px 8px;text-align:right">${r.ton==null?'–':nf0.format(r.ton)}</td><td style="padding:7px 8px;text-align:right;color:${HM.muted}">${r.lineas==null?'–':nf0.format(r.lineas)}</td></tr>`;
+      `<td style="padding:10px 10px;text-align:right">${r.ton==null?'–':nf0.format(r.ton)}</td><td style="padding:10px 10px;text-align:right;color:${HM.muted}">${r.lineas==null?'–':nf0.format(r.lineas)}</td></tr>`;
   });
-  h+=`</tbody></table></div><div style="display:flex;gap:14px;flex-wrap:wrap;font-size:11px;color:${HM.muted};margin-top:8px">
+  h+=`</tbody></table></div><div style="display:flex;gap:14px;flex-wrap:wrap;font-size:13px;color:${HM.muted};margin-top:8px">
     <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${HM.goodBg};border:1px solid ${HM.good};vertical-align:middle"></span> Sobre meta</span>
     <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${HM.warnBg};border:1px solid ${HM.warn};vertical-align:middle"></span> Cerca de meta</span>
     <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${HM.badBg};border:1px solid ${HM.bad};vertical-align:middle"></span> Bajo meta</span>
-    <span>Δ vs mes anterior · clic en el encabezado para ordenar</span></div>`;
+    <span>Δ vs mes anterior · Tarifa, Margen, Cobertura y Toneladas: último mes cerrado · clic en el encabezado para ordenar</span></div>`;
   box.innerHTML=h;
   box.querySelectorAll('th[data-sort]').forEach(th=>th.addEventListener('click',()=>{ const k=th.getAttribute('data-sort');
     if(_homeMx.sort===k) _homeMx.dir*=-1; else { _homeMx.sort=k; _homeMx.dir=(k==='grupo'||k==='tk')?1:1; } homePaintMx(); }));
