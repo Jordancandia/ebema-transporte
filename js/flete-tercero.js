@@ -24,8 +24,8 @@
 //     Destino → Entregado a Cliente. Si condición=CLI-RET (EBE) y el pedido
 //     está en Bodega Destino, se muestra como "Listo para Entrega Cliente".
 // ============================================================================
-import { supabase } from './supabase-client.js?v=202609282220';
-import { getDatabase, loadRoutesData } from './data.js?v=202609282220';
+import { supabase } from './supabase-client.js?v=202609282224';
+import { getDatabase, loadRoutesData } from './data.js?v=202609282224';
 
 // --- Paleta (alineada a Indicadores) ----------------------------------------
 const R = { red:'#C0000C', red2:'#EE1B22', redL:'#E88A8F', grey:'#6B6E70', greyL:'#A9ACAE', ink:'#333333', grid:'#D9D5CF', amber:'#B5730B' };
@@ -211,10 +211,10 @@ export async function renderFleteTerceroView(container) {
 
 function paintShell() {
   _container.innerHTML = `
-  <div class="max-w-[1120px] mx-auto">
+  <div class="w-full mx-auto" style="max-width:1760px">
     <div class="flex items-center justify-between gap-md flex-wrap mb-md">
       <div class="text-headline-sm font-bold">Flete Tercero · ${({ seguimiento: 'Seguimiento de Pedidos', vencidos: 'Pedidos Vencidos', en_curso: 'Pedidos en Curso' })[_view] || 'Nivel de Servicio'}</div>
-      <span class="text-[11px] text-secondary border border-surface-variant rounded-full px-md py-[3px]">Actualización diaria automática · Supabase</span>
+      <span class="text-[13px] text-secondary border border-surface-variant rounded-full px-md py-[3px]">Actualización diaria automática · Supabase</span>
     </div>
     <div class="flex gap-sm mb-lg border-b border-surface-variant">
       ${tabBtn('dashboard', 'monitoring', 'Nivel de Servicio')}
@@ -293,7 +293,7 @@ function renderDashboard() {
   });
 
   body().innerHTML = `
-    <div class="text-[11px] text-secondary mb-md">${lastLoad ? `Última carga de datos: ${new Date(lastLoad).toLocaleString('es-CL')}` : ''} · ${rows.length} pedidos en total</div>
+    <div class="text-[13px] text-secondary mb-md">${lastLoad ? `Última carga de datos: ${new Date(lastLoad).toLocaleString('es-CL')}` : ''} · ${rows.length} pedidos en total</div>
 
     <!-- 1. Nivel de servicio general -->
     <div class="grid grid-cols-2 md:grid-cols-4 gap-md mb-lg">
@@ -305,19 +305,19 @@ function renderDashboard() {
 
     <!-- 2. Por tipo de servicio -->
     ${sectionTitle('Nivel de Servicio por Tipo de Servicio')}
-    <div class="text-[11px] text-secondary mb-sm">Retira (CLI-RET): se considera cumplido cuando el material está disponible en sucursal (Recepción Sucursal). Despacho: entrega al cliente.</div>
+    <div class="text-[13px] text-secondary mb-sm">Retira (CLI-RET): se considera cumplido cuando el material está disponible en sucursal (Recepción Sucursal). Despacho: entrega al cliente.</div>
     ${barTable(porTipo.map(t => ({ label: escAttr(t.tipo || '–'), n: t.n, otif: t.otif, fill: t.fill })), 'Condición expedición')}
 
     <!-- 3. Por centro destino -->
     ${sectionTitle('Nivel de Servicio por Centro Destino')}
-    <div class="text-[11px] text-secondary mb-sm">Ordenado por cantidad de pedidos evaluables. La marca negra es la meta.</div>
+    <div class="text-[13px] text-secondary mb-sm">Ordenado por cantidad de pedidos evaluables. La marca negra es la meta.</div>
     ${barTable(porCentro.map(c => ({ label: escAttr(centroLabel(c.centro)), n: c.n, otif: c.otif, fill: c.fill })), 'Centro destino')}
 
     <!-- 4. Evolutivo mensual -->
     <div class="flex items-center justify-between flex-wrap gap-sm mt-lg mb-sm">
       <div class="text-body-lg font-bold text-on-surface">Evolutivo Nivel de Servicio General (mes de creación)</div>
-      <label class="flex items-center gap-2 text-[12px] text-secondary">Centro Destino:
-        <select id="fter_centro_filtro" class="border border-surface-variant rounded-lg px-2 py-1 text-[12px]">
+      <label class="flex items-center gap-2 text-[14px] text-secondary">Centro Destino:
+        <select id="fter_centro_filtro" class="border border-surface-variant rounded-lg px-2 py-1 text-[14px]">
           <option value="Todos">Todos</option>
           ${centros.map(c => `<option value="${c}">${escAttr(centroLabel(c))}</option>`).join('')}
         </select>
@@ -335,8 +335,8 @@ function renderDashboard() {
     <!-- 6. Cuello de botella -->
     <div class="flex items-center justify-between flex-wrap gap-sm mt-lg mb-sm">
       <div class="text-body-lg font-bold text-on-surface">Cuello de Botella — Días Promedio por Etapa (hábiles)</div>
-      <label class="flex items-center gap-2 text-[12px] text-secondary">Centro Destino:
-        <select id="fter_centro_cuello" class="border border-surface-variant rounded-lg px-2 py-1 text-[12px]">
+      <label class="flex items-center gap-2 text-[14px] text-secondary">Centro Destino:
+        <select id="fter_centro_cuello" class="border border-surface-variant rounded-lg px-2 py-1 text-[14px]">
           <option value="Todos">Todos</option>
           ${centros.map(c => `<option value="${c}">${escAttr(centroLabel(c))}</option>`).join('')}
         </select>
@@ -352,7 +352,7 @@ function renderDashboard() {
       [{ n: 'OTIF %', values: ev.map(e => e.otif), color: R.red }, { n: 'Fill Rate %', values: ev.map(e => e.fill), color: R.grey }],
       ev.map(e => mesCorto(e.mes)),
       { v: META_FT.otif, short: 'Meta ' + META_FT.otif + '%' }
-    ) + `<details class="mb-lg -mt-md"><summary class="cursor-pointer text-[12px] font-semibold text-secondary py-1">Ver tabla mensual</summary>` + simpleTable(
+    ) + `<details class="mb-lg -mt-md"><summary class="cursor-pointer text-[14px] font-semibold text-secondary py-1">Ver tabla mensual</summary>` + simpleTable(
       ['Mes', 'Pedidos Evaluables', 'OTIF %', 'Fill Rate %'],
       ev.map(e => [mesCorto(e.mes), numFmt(e.n), pctCell(e.otif, META_FT.otif), pctCell(e.fill, META_FT.fill)])
     ) + `</details>`;
@@ -367,7 +367,7 @@ function renderDashboard() {
     const baseRows = centroSel === 'Todos' ? rows : rows.filter(r => r.punto_expedicion === centroSel);
     const cb = cuelloBotellaCalc(baseRows);
     document.getElementById('fter_cuello').innerHTML = `
-      <div class="text-[11px] text-secondary mb-sm">${numFmt(cb.n)} pedidos considerados${centroSel !== 'Todos' ? ' en ' + escAttr(centroLabel(centroSel)) : ''}</div>
+      <div class="text-[13px] text-secondary mb-sm">${numFmt(cb.n)} pedidos considerados${centroSel !== 'Todos' ? ' en ' + escAttr(centroLabel(centroSel)) : ''}</div>
       <div class="grid grid-cols-1 md:grid-cols-3 gap-md mb-md">
         ${tile('Lead Time Total', diasFmt(cb.leadTotal), 'Creación → Entrega, real')}
         ${tile('SLA Ofrecido', diasFmt(cb.slaProm), 'Creación +1 hábil → Promesa')}
@@ -402,27 +402,27 @@ function renderSeguimiento() {
     <div id="fter_detalle"></div>
     ${sectionTitle('Todos los Pedidos')}
     <div class="flex items-center gap-md flex-wrap mb-sm">
-      <select id="fter_f_estado" class="border border-surface-variant rounded-lg px-2 py-1 text-[12px]">
+      <select id="fter_f_estado" class="border border-surface-variant rounded-lg px-2 py-1 text-[14px]">
         <option value="">Etapa: Todas</option>
         ${ESTADOS_BASE.map(e => `<option value="${e}">${e}</option>`).join('')}
         <option value="Listo para Entrega Cliente">Listo para Entrega Cliente</option>
       </select>
-      <select id="fter_f_abierto" class="border border-surface-variant rounded-lg px-2 py-1 text-[12px]">
+      <select id="fter_f_abierto" class="border border-surface-variant rounded-lg px-2 py-1 text-[14px]">
         <option value="">Pedido: Abiertos y cerrados</option>
         <option value="abierto">Abiertos (sin entrega a cliente)</option>
         <option value="cerrado">Cerrados (entregados a cliente)</option>
       </select>
-      <select id="fter_f_centro" class="border border-surface-variant rounded-lg px-2 py-1 text-[12px]">
+      <select id="fter_f_centro" class="border border-surface-variant rounded-lg px-2 py-1 text-[14px]">
         <option value="">Centro destino: Todos</option>
         ${uniq(rows.map(r => r.punto_expedicion)).sort().map(c => `<option value="${escAttr(c)}">${escAttr(centroLabel(c))}</option>`).join('')}
       </select>
-      <button id="fter_f_reset" type="button" class="border border-surface-variant rounded-lg px-2 py-1 text-[12px] text-secondary hover:bg-surface-container-high">Limpiar filtros</button>
-      <span id="fter_count" class="text-[12px] text-secondary ml-auto"></span>
-      <select id="fter_f_condicion" class="border border-surface-variant rounded-lg px-2 py-1 text-[12px]">
+      <button id="fter_f_reset" type="button" class="border border-surface-variant rounded-lg px-2 py-1 text-[14px] text-secondary hover:bg-surface-container-high">Limpiar filtros</button>
+      <span id="fter_count" class="text-[14px] text-secondary ml-auto"></span>
+      <select id="fter_f_condicion" class="border border-surface-variant rounded-lg px-2 py-1 text-[14px]">
         <option value="">Condición: Todas</option>
         ${uniq(rows.map(r => r.condicion_expedicion)).map(c => `<option value="${escAttr(c)}">${c}</option>`).join('')}
       </select>
-      <select id="fter_f_venc" class="border border-surface-variant rounded-lg px-2 py-1 text-[12px]">
+      <select id="fter_f_venc" class="border border-surface-variant rounded-lg px-2 py-1 text-[14px]">
         <option value="">Vencidos: Todos</option>
         <option value="si">Solo vencidos sin entregar</option>
         <option value="no">Solo no vencidos</option>
@@ -492,11 +492,11 @@ function detalleHTML(r) {
     <div class="flex items-start justify-between flex-wrap gap-sm mb-md">
       <div>
         <div class="text-headline-sm font-bold">Pedido ${escAttr(r.id_pedido)}</div>
-        <div class="text-[12px] text-secondary mt-1">${escAttr(r.condicion_expedicion)} · ${escAttr(centroLabel(r.punto_expedicion))} · Ruta: ${escAttr(r.ruta_flete || '–')}</div>
+        <div class="text-[14px] text-secondary mt-1">${escAttr(r.condicion_expedicion)} · ${escAttr(centroLabel(r.punto_expedicion))} · Ruta: ${escAttr(r.ruta_flete || '–')}</div>
       </div>
       ${badge}
     </div>
-    <div class="grid grid-cols-2 md:grid-cols-4 gap-md mb-lg text-[13px]">
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-md mb-lg text-[15px]">
       ${miniField('Fecha Creación', fmtFecha(r.fecha_creacion))}
       ${miniField('Fecha Promesa (Disponible Material)', fmtFecha(r.fecha_disponible_material))}
       ${miniField('Material', r.material || '–')}
@@ -524,15 +524,15 @@ function timelineHTML(r) {
           </div>
           <div class="flex-1 h-[2px] ${i === pasos.length - 1 ? 'invisible' : (pasos[i + 1].activo ? 'bg-primary' : 'bg-surface-variant')}"></div>
         </div>
-        <div class="text-[11px] text-center mt-1 font-semibold ${p.activo ? 'text-on-surface' : 'text-secondary'}">${p.label}</div>
-        <div class="text-[10px] text-secondary">${p.fecha ? fmtFecha(p.fecha) : '—'}</div>
+        <div class="text-[13px] text-center mt-1 font-semibold ${p.activo ? 'text-on-surface' : 'text-secondary'}">${p.label}</div>
+        <div class="text-[12px] text-secondary">${p.fecha ? fmtFecha(p.fecha) : '—'}</div>
       </div>`).join('')}
   </div>`;
 }
 
 function pedidosTable(list) {
-  if (!list.length) return `<div class="text-secondary text-[13px] py-md">Sin resultados.</div>`;
-  return `<div class="overflow-x-auto"><table class="w-full text-[12px] border-collapse mb-xl">
+  if (!list.length) return `<div class="text-secondary text-[15px] py-md">Sin resultados.</div>`;
+  return `<div class="overflow-x-auto"><table class="w-full text-[14px] border-collapse mb-xl">
     <thead><tr class="text-left text-secondary border-b border-surface-variant">
       <th class="py-2 pr-3">N° Pedido</th><th class="py-2 pr-3">Condición</th><th class="py-2 pr-3">Centro</th>
       <th class="py-2 pr-3">F. Creación</th><th class="py-2 pr-3">F. Promesa</th><th class="py-2 pr-3">Estado</th><th class="py-2 pr-3"></th>
@@ -557,10 +557,10 @@ function estadoBadge(r) {
   if (r.estadoLabel === 'Entregado a Cliente') color = '#1E8449';
   else if (r.vencido) color = '#C0000C';
   else if (r.estadoIdx >= 3) color = R.amber;
-  return `<span class="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-[2px] rounded-full" style="background:${color}22;color:${color}">${r.estadoLabel}${r.vencido ? ' · Vencido' : ''}</span>`;
+  return `<span class="inline-flex items-center gap-1 text-[13px] font-semibold px-2 py-[2px] rounded-full" style="background:${color}22;color:${color}">${r.estadoLabel}${r.vencido ? ' · Vencido' : ''}</span>`;
 }
-function badgeHTML(text, color) { return `<span class="inline-flex items-center gap-1 text-[12px] font-semibold px-3 py-1 rounded-full" style="background:${color}22;color:${color}">${text}</span>`; }
-function miniField(label, value) { return `<div><div class="text-[10px] uppercase tracking-wide text-secondary mb-[2px]">${label}</div><div class="font-semibold text-on-surface">${escAttr(String(value))}</div></div>`; }
+function badgeHTML(text, color) { return `<span class="inline-flex items-center gap-1 text-[14px] font-semibold px-3 py-1 rounded-full" style="background:${color}22;color:${color}">${text}</span>`; }
+function miniField(label, value) { return `<div><div class="text-[12px] uppercase tracking-wide text-secondary mb-[2px]">${label}</div><div class="font-semibold text-on-surface">${escAttr(String(value))}</div></div>`; }
 
 // ============================================================================
 //  PEDIDOS VENCIDOS (no regularizados) y PEDIDOS EN CURSO
@@ -576,7 +576,7 @@ function agingKey(d) { return AGING_BUCKETS.find(b => d <= b.max).k; }
 const ETAPA_COLOR = { 'Recepción CD': '#6B6E70', 'Traslado': '#8A6D3B', 'Recepción Sucursal': '#2E75B6', 'Entrega Cliente': '#C0000C' };
 function chipsEtapas(txt) {
   if (!txt) return '–';
-  return `<div style="display:flex;flex-wrap:wrap;gap:4px">${String(txt).split(' + ').map(e => `<span style="font-size:11px;font-weight:600;white-space:nowrap;padding:2px 8px;border-radius:999px;background:${(ETAPA_COLOR[e] || '#6B6E70')}18;color:${ETAPA_COLOR[e] || '#6B6E70'};border:1px solid ${(ETAPA_COLOR[e] || '#6B6E70')}40">${escAttr(e)}</span>`).join('')}</div>`;
+  return `<div style="display:flex;flex-wrap:wrap;gap:4px">${String(txt).split(' + ').map(e => `<span style="font-size:13px;font-weight:600;white-space:nowrap;padding:2px 8px;border-radius:999px;background:${(ETAPA_COLOR[e] || '#6B6E70')}18;color:${ETAPA_COLOR[e] || '#6B6E70'};border:1px solid ${(ETAPA_COLOR[e] || '#6B6E70')}40">${escAttr(e)}</span>`).join('')}</div>`;
 }
 // Severidad del atraso: 0-5 · 6-20 · 21-60 · >60 días hábiles
 const AGING_C = { '0-5': '#E0B252', '6-20': '#D98A00', '21-60': '#D9636B', '>60': '#C0000C' };
@@ -593,7 +593,7 @@ function agingBar(b, n) {
   return `<div style="display:flex;height:12px;border-radius:6px;overflow:hidden;min-width:140px;background:#EFECE8">${AGING_BUCKETS.map(x => b[x.k] ? `<div title="${x.k} d: ${b[x.k]}" style="width:${b[x.k] / n * 100}%;background:${AGING_C[x.k]};border-right:2px solid #fff"></div>` : '').join('')}</div>`;
 }
 function agingLegend() {
-  return `<div class="flex items-center gap-md flex-wrap mb-sm text-[11px] text-secondary">Atraso (días hábiles): ${AGING_BUCKETS.map(x => `<span class="flex items-center gap-1"><span class="inline-block w-2.5 h-2.5 rounded-sm" style="background:${AGING_C[x.k]}"></span>${x.k}</span>`).join('')}</div>`;
+  return `<div class="flex items-center gap-md flex-wrap mb-sm text-[13px] text-secondary">Atraso (días hábiles): ${AGING_BUCKETS.map(x => `<span class="flex items-center gap-1"><span class="inline-block w-2.5 h-2.5 rounded-sm" style="background:${AGING_C[x.k]}"></span>${x.k}</span>`).join('')}</div>`;
 }
 
 function descargarCSV(nombre, headers, filas) {
@@ -606,7 +606,7 @@ function descargarCSV(nombre, headers, filas) {
 }
 function hoyISO() { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
 function csvBtn(id) {
-  return `<button id="${id}" class="flex items-center gap-1 border border-surface-variant rounded-lg px-3 py-1 text-[12px] font-semibold text-primary hover:bg-surface-container-high"><span class="material-symbols-outlined text-[16px]">download</span>Descargar CSV</button>`;
+  return `<button id="${id}" class="flex items-center gap-1 border border-surface-variant rounded-lg px-3 py-1 text-[14px] font-semibold text-primary hover:bg-surface-container-high"><span class="material-symbols-outlined text-[16px]">download</span>Descargar CSV</button>`;
 }
 
 function renderVencidos() {
@@ -625,7 +625,7 @@ function renderVencidos() {
   const totB = Object.fromEntries(AGING_BUCKETS.map(x => [x.k, v.filter(r => agingKey(r.diasAtraso) === x.k).length]));
 
   body().innerHTML = `
-    <div class="text-[11px] text-secondary mb-md">Pedidos con fecha promesa vencida y alguna etapa física pendiente (Recepción CD, Traslado, Recepción Sucursal y Entrega Cliente). Un pedido Retira ya en sucursal sigue pendiente hasta la entrega al cliente (el OTIF cierra en sucursal). Días de atraso en días hábiles.</div>
+    <div class="text-[13px] text-secondary mb-md">Pedidos con fecha promesa vencida y alguna etapa física pendiente (Recepción CD, Traslado, Recepción Sucursal y Entrega Cliente). Un pedido Retira ya en sucursal sigue pendiente hasta la entrega al cliente (el OTIF cierra en sucursal). Días de atraso en días hábiles.</div>
     <div class="grid grid-cols-2 md:grid-cols-4 gap-md mb-lg">
       ${tile('Vencidos por Regularizar', numFmt(total), 'con etapas pendientes', '', total ? { c: '#C0000C', t: 'Requieren gestión' } : { c: '#1E8449', t: 'Sin vencidos' })}
       ${tile('Responsable CD 1003', numFmt(en1003), total ? pct(en1003 / total * 100) + ' del total (falta Recepción CD/Traslado)' : '–')}
@@ -640,8 +640,8 @@ function renderVencidos() {
     <div class="flex items-center justify-between flex-wrap gap-sm mt-lg mb-sm">
       <div class="text-body-lg font-bold text-on-surface">2. Detalle de Pedidos a Gestionar</div>
       <div class="flex items-center gap-sm">
-        <label class="flex items-center gap-2 text-[12px] text-secondary">Centro Responsable:
-          <select id="fter_venc_centro" class="border border-surface-variant rounded-lg px-2 py-1 text-[12px]">
+        <label class="flex items-center gap-2 text-[14px] text-secondary">Centro Responsable:
+          <select id="fter_venc_centro" class="border border-surface-variant rounded-lg px-2 py-1 text-[14px]">
             <option value="Todos">Todos</option>
             ${porResp.map(p => `<option value="${escAttr(p.centro)}">${escAttr(centroLabel(p.centro))}</option>`).join('')}
           </select>
@@ -662,7 +662,7 @@ function renderVencidos() {
       ? simpleTable(['Centro Resp.', 'N° Pedido', 'Centro Destino', 'Condición', 'F. Creación', 'F. Promesa', 'Atraso (d háb.)', 'Estado Actual', 'Etapas Pendientes'],
         list.map(r => [escAttr(r.centroResp), `<b>${escAttr(r.id_pedido)}</b>`, escAttr(r.punto_expedicion), escAttr(r.condicion_expedicion), fmtFecha(r.fecha_creacion), fmtFecha(r.fecha_disponible_material),
           atrasoPill(r.diasAtraso), escAttr(r.estadoOp), chipsEtapas(r.etapasPend)]))
-      : `<div class="text-secondary text-[13px] py-md">Sin pedidos vencidos pendientes.</div>`;
+      : `<div class="text-secondary text-[15px] py-md">Sin pedidos vencidos pendientes.</div>`;
   };
   sel.addEventListener('change', draw);
   document.getElementById('fter_venc_csv').addEventListener('click', () => descargarCSV(
@@ -687,7 +687,7 @@ function renderEnCurso() {
   const totE = estados.map(e => c.filter(r => r.estadoOp === e).length);
 
   body().innerHTML = `
-    <div class="text-[11px] text-secondary mb-md">Pedidos dentro de plazo (fecha promesa vigente) que aún tienen etapas físicas pendientes. Días para vencer en días hábiles; 0-1 = vence hoy o mañana.</div>
+    <div class="text-[13px] text-secondary mb-md">Pedidos dentro de plazo (fecha promesa vigente) que aún tienen etapas físicas pendientes. Días para vencer en días hábiles; 0-1 = vence hoy o mañana.</div>
     <div class="grid grid-cols-2 md:grid-cols-4 gap-md mb-lg">
       ${tile('Pedidos en Curso', numFmt(total), 'no cerrados, dentro de plazo')}
       ${tile('Vencen en ≤ 1 día háb.', numFmt(urgentes), 'hoy o mañana', urgentes ? 'text-[#C0000C]' : '')}
@@ -709,7 +709,7 @@ function renderEnCurso() {
     ? simpleTable(['Para Vencer (d háb.)', 'N° Pedido', 'Centro Destino', 'Condición', 'F. Creación', 'F. Promesa', 'Estado Actual', 'Centro Resp.', 'Etapas Pendientes'],
       list.map(r => [venceePill(r.diasParaVencer), `<b>${escAttr(r.id_pedido)}</b>`, escAttr(r.punto_expedicion), escAttr(r.condicion_expedicion),
         fmtFecha(r.fecha_creacion), fmtFecha(r.fecha_disponible_material), escAttr(r.estadoOp), escAttr(r.centroResp), chipsEtapas(r.etapasPend)]))
-    : `<div class="text-secondary text-[13px] py-md">Sin pedidos en curso.</div>`;
+    : `<div class="text-secondary text-[15px] py-md">Sin pedidos en curso.</div>`;
   document.getElementById('fter_curso_csv').addEventListener('click', () => descargarCSV(
     `Pedidos_en_Curso_${hoyISO()}.csv`,
     ['Centro Responsable', 'ID Pedido', 'Centro Destino', 'Condicion Expedicion', 'Ruta Flete', 'Cantidad Bultos', 'Fecha Creacion', 'Fecha Promesa', 'Dias Habiles para Vencer', 'Estado Actual', 'Etapas Pendientes'],
@@ -722,10 +722,10 @@ function renderEnCurso() {
 function sectionTitle(t) { return `<div class="text-body-lg font-bold text-on-surface mt-lg mb-sm">${t}</div>`; }
 function tile(label, value, sub, extraCls = '', st = null) {
   return `<div class="bg-surface-container-lowest border border-surface-variant rounded-xl p-md" style="${st ? 'border-top:4px solid ' + st.c : ''}">
-    <div class="text-[11px] uppercase tracking-wide text-secondary mb-1">${label}</div>
+    <div class="text-[13px] uppercase tracking-wide text-secondary mb-1">${label}</div>
     <div class="text-headline-sm font-bold ${extraCls}">${value}</div>
-    ${st ? `<div class="text-[12px] font-semibold" style="color:${st.c}">● ${st.t}</div>` : ''}
-    <div class="text-[11px] text-secondary mt-1">${sub}</div>
+    ${st ? `<div class="text-[14px] font-semibold" style="color:${st.c}">● ${st.t}</div>` : ''}
+    <div class="text-[13px] text-secondary mt-1">${sub}</div>
   </div>`;
 }
 // Semáforo vs meta: verde ≥ meta · ámbar hasta 5 pp bajo · rojo más abajo
@@ -745,8 +745,8 @@ function barTable(filas, colLabel) {
       <div style="width:52px;text-align:right;font-weight:700;font-variant-numeric:tabular-nums;color:${st ? st.c : '#6B6E70'}">${pct(v)}</div></div>`;
   };
   return `<div class="bg-surface-container-lowest border border-surface-variant rounded-xl p-md mb-lg overflow-x-auto">
-    <table class="w-full text-[13px] border-collapse" style="min-width:560px">
-      <thead><tr class="text-left text-secondary text-[11px] uppercase tracking-wide">
+    <table class="w-full text-[15px] border-collapse" style="min-width:560px">
+      <thead><tr class="text-left text-secondary text-[13px] uppercase tracking-wide">
         <th class="py-2 pr-3">${colLabel}</th><th class="py-2 pr-3 text-right">Pedidos</th>
         <th class="py-2 pr-3" style="width:36%">OTIF <span class="normal-case">(meta ${META_FT.otif}%)</span></th>
         <th class="py-2" style="width:36%">Fill Rate <span class="normal-case">(meta ${META_FT.fill}%)</span></th></tr></thead>
@@ -765,20 +765,20 @@ function pctCell(v, meta) {
   return `<span style="color:${color};font-weight:600">${pct(v)}</span>`;
 }
 function simpleTable(headers, rows) {
-  return `<div class="overflow-x-auto"><table class="w-full text-[13px] border-collapse mb-md">
+  return `<div class="overflow-x-auto"><table class="w-full text-[15px] border-collapse mb-md">
     <thead><tr class="text-left text-secondary border-b border-surface-variant">${headers.map(h => `<th class="py-2 pr-3">${h}</th>`).join('')}</tr></thead>
     <tbody>${rows.map(row => `<tr class="border-b border-surface-variant hover:bg-surface-container-low">${row.map(c => `<td class="py-2 pr-3 align-middle" style="${/^\d{2}-\d{2}-\d{4}$/.test(String(c)) ? 'white-space:nowrap' : ''}">${c}</td>`).join('')}</tr>`).join('')}</tbody>
   </table></div>`;
 }
 function legend(items) {
-  return `<div class="flex items-center gap-md flex-wrap mb-sm text-[11px] text-secondary">
+  return `<div class="flex items-center gap-md flex-wrap mb-sm text-[13px] text-secondary">
     ${items.map(i => `<span class="flex items-center gap-1"><span class="inline-block w-2.5 h-2.5 rounded-full" style="background:${i.c}"></span>${i.n}</span>`).join('')}
   </div>`;
 }
 const MIX_COLORS = [R.red, R.grey, R.amber, R.redL, R.greyL, '#0B2B4A', '#2E75B6'];
 function mixColor(i) { return MIX_COLORS[i % MIX_COLORS.length]; }
 function stackedBars(labels, mixRows, tipos) {
-  if (!labels.length) return `<div class="text-secondary text-[13px]">Sin datos.</div>`;
+  if (!labels.length) return `<div class="text-secondary text-[15px]">Sin datos.</div>`;
   const w = Math.max(100 / labels.length, 4);
   return `<div class="flex items-end gap-1" style="height:140px">
     ${mixRows.map((m, idx) => {
@@ -786,13 +786,13 @@ function stackedBars(labels, mixRows, tipos) {
       const segs = tipos.map((t, i) => {
         const v = m.pct[t] || 0;
         // Etiqueta de dato dentro del segmento: solo si hay espacio suficiente (>= 10%)
-        const label = v >= 12 ? `<span style="font-size:11px;font-weight:700;color:#fff;line-height:1">${Math.round(v)}%</span>` : '';
+        const label = v >= 12 ? `<span style="font-size:13px;font-weight:700;color:#fff;line-height:1">${Math.round(v)}%</span>` : '';
         return `<div style="height:${v}%;background:${mixColor(i)};display:flex;align-items:center;justify-content:center" title="${t}: ${nf1.format(v)}% (${m.porT[t] || 0} pedidos)">${label}</div>`;
       }).join('');
       return `<div class="flex flex-col items-center gap-1" style="width:${w}%">
-        <div class="text-[11px] font-semibold text-secondary">${m.total}</div>
+        <div class="text-[13px] font-semibold text-secondary">${m.total}</div>
         <div class="w-full flex flex-col-reverse rounded overflow-hidden bg-surface-container-high" style="height:90px">${segs}</div>
-        <div class="text-[11px] text-secondary whitespace-nowrap">${labels[idx]}</div>
+        <div class="text-[13px] text-secondary whitespace-nowrap">${labels[idx]}</div>
       </div>`;
     }).join('')}
   </div>`;
@@ -805,7 +805,7 @@ function hbarChart(items) {
       const wpct = i.value != null ? Math.max((i.value / maxV) * 100, 3) : 0;
       const color = i.isMax ? R.red : R.grey;
       return `<div>
-        <div class="flex justify-between items-baseline text-[12px] text-secondary mb-[2px]">
+        <div class="flex justify-between items-baseline text-[14px] text-secondary mb-[2px]">
           <span>${i.label}${i.isMax ? ' <span style="color:' + R.red + ';font-weight:700">◀ MÁXIMO</span>' : ''}</span>
           <span class="font-semibold" style="color:${color}">${diasFmt(i.value)}${i.share != null ? ` <span class="text-secondary font-normal">· ${nf1.format(i.share)}% del lead time</span>` : ''}</span>
         </div>
@@ -819,7 +819,7 @@ function hbarChart(items) {
 function lineChartSVG(seriesArr, labels, meta) {
   // v2 (27-sep-2026): se dibuja al ancho real del contenedor → texto 11 px fijo (antes viewBox 900 escalado, 7-9 px)
   const cont = document.getElementById('fter_body');
-  const W = Math.max(320, Math.round(((cont && cont.clientWidth) || 900) - 34)), H = 230, padL = 40, padR = meta ? 66 : 14, padT = 20, padB = 26, FS = 11;
+  const W = Math.max(320, Math.round(((cont && cont.clientWidth) || 900) - 34)), H = 260, padL = 46, padR = meta ? 74 : 14, padT = 22, padB = 30, FS = 13;
   const w = W - padL - padR, h = H - padT - padB;
   const max = 100, min0 = 0;
   const n = labels.length, band = w / Math.max(n, 1);

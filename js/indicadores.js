@@ -5,8 +5,8 @@
 //  Lee en vivo las vistas v_ind_* de Supabase (RLS: usuario @ebema.cl con rol).
 //  Paleta alineada a las presentaciones (PPT) del Comité de Transporte.
 // ============================================================================
-import { supabase } from './supabase-client.js?v=202609282220';
-import { centrosAlcance } from './permisos.js?v=202609282220';
+import { supabase } from './supabase-client.js?v=202609282224';
+import { centrosAlcance } from './permisos.js?v=202609282224';
 
 // --- Paleta PPT -------------------------------------------------------------
 const C = {
@@ -63,23 +63,23 @@ export async function renderIndicadoresView(container){
 }
 
 function renderStub(container, titulo){
-  container.innerHTML = `<div class="max-w-[1120px] mx-auto">
+  container.innerHTML = `<div class="w-full mx-auto" style="max-width:1760px">
     <div class="bg-surface-container-lowest border border-surface-variant rounded-xl p-lg text-center text-secondary">
       <div class="text-headline-sm font-bold text-on-surface mb-1">${titulo} — vista de detalle</div>
       <div class="text-body-md">En desarrollo. El detalle de Nivel de Servicio ya está disponible; Tarifa y Margen se construyen en la próxima iteración.</div>
-      <div class="text-[12px] mt-sm">Mientras tanto, revisa el <b>Consolidado</b> y el <b>HOME</b>.</div>
+      <div class="text-[14px] mt-sm">Mientras tanto, revisa el <b>Consolidado</b> y el <b>HOME</b>.</div>
     </div></div>`;
 }
 
 function paintShell(){
   _container.innerHTML = `
-  <div class="max-w-[1120px] mx-auto">
+  <div class="w-full mx-auto" style="max-width:1760px">
     <div class="flex items-center justify-between gap-md flex-wrap mb-md">
       <div class="text-headline-sm font-bold" id="ind_gen_tit">Consolidado General</div>
       <div class="flex items-center gap-sm flex-wrap ml-auto">
         <label class="text-secondary text-body-md" for="ind_selg">Centro:</label>
         <select id="ind_selg" class="border border-surface-variant rounded-lg px-md py-sm bg-surface-container-lowest text-on-surface" disabled><option>Cargando…</option></select>
-        <span class="text-[11px] text-secondary border border-surface-variant rounded-full px-md py-[3px]">Actualización diaria 08:00 · Supabase</span>
+        <span class="text-[13px] text-secondary border border-surface-variant rounded-full px-md py-[3px]">Actualización diaria 08:00 · Supabase</span>
       </div>
     </div>
     <div id="ind_body"></div>
@@ -239,7 +239,7 @@ function generalHTML(d){
   const conC=d.con.filter(r=>r.mes_label<_curM), k1=_l(conC,0), k0=_l(conC,1);
   const pp=v=>nf1.format(v)+' pp';
   const resumen=`<div class="flex items-baseline gap-sm flex-wrap mb-sm"><div class="text-body-lg font-bold">Resumen ejecutivo</div>
-      <div class="text-[12px] text-secondary">último mes cerrado de cada indicador vs el mes anterior · clic para ir al detalle</div></div>
+      <div class="text-[14px] text-secondary">último mes cerrado de cada indicador vs el mes anterior · clic para ir al detalle</div></div>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(165px,1fr));gap:12px;margin-bottom:20px">
       ${kpiExec({k:'OTIF',v:pct(n1.otif_pct),st:semaforo(n1.otif_pct,META.otif,5),meta:META.otif+'%',delta:_dif(n1.otif_pct,n0.otif_pct),dfmt:pp,prevLbl:mesCorto(n0.mes_label||''),per:mesCorto(n1.mes_label||''),ancla:'sec-ns'})}
       ${kpiExec({k:'Fill Rate',v:pct(n1.fillrate_pct),st:semaforo(n1.fillrate_pct,META.fill,5),meta:META.fill+'%',delta:_dif(n1.fillrate_pct,n0.fillrate_pct),dfmt:pp,prevLbl:mesCorto(n0.mes_label||''),per:mesCorto(n1.mes_label||''),ancla:'sec-ns'})}
@@ -282,9 +282,9 @@ function generalHTML(d){
       (d._filtro?'':tile('Documentos sin HES',nf0.format(d.shes.docs_sin_hes||0),'sin costo final')+
       tile('Toneladas sin reconocer costo',(d.shes.ton_sin_hes!=null?nf1.format(d.shes.ton_sin_hes)+' t':'–'),'sin HES')),
       `<div class="grid grid-cols-1 md:grid-cols-2 gap-md">`+
-      `<div><div class="text-[12px] text-secondary mb-1 font-medium">Nivel de consolidación % — más rojo = menor consolidación</div>`+
+      `<div><div class="text-[14px] text-secondary mb-1 font-medium">Nivel de consolidación % — más rojo = menor consolidación</div>`+
       heatmapHTML(d.tq,'consol_pct',heatConsolRG,v=>nf1.format(v))+`</div>`+
-      `<div><div class="text-[12px] text-secondary mb-1 font-medium">Pesos por kilo $/kg — más rojo = más caro</div>`+
+      `<div><div class="text-[14px] text-secondary mb-1 font-medium">Pesos por kilo $/kg — más rojo = más caro</div>`+
       heatmapHTML(d.tq,'tarifa_kg',heatTarRG,money1)+`</div></div>`)}
 
     ${card('3.3 · Impacto EbemaClick','Costo, despachos y toneladas',
@@ -303,7 +303,7 @@ function generalHTML(d){
       `<div>`+legend([{n:'Consolidación %',c:R.red2}])+`<div id="g_consol"></div></div>`+
       `<div>`+legend([{n:'Días entrega→transporte',c:R.grey}])+`<div id="g_tiempo"></div></div></div>`,'sec-op')}
 
-    <div class="text-[11px] text-secondary mt-lg leading-relaxed">Todos los indicadores son de <b>última milla</b> (entregas a cliente); se excluye reposición troncal. El <b>3.2</b> es específicamente troncal Quilicura (solo documentos con HES). Con un <b>centro</b> seleccionado, todo se calcula con las vistas por centro de origen (última milla) y el 3.2 muestra sólo la fila de ese centro. Flete Tercero (REVEX) se revisa en su propio menú. OTIF/Fill incluyen el mes en curso cuando el archivo de notas de venta lo trae (hoy la fuente llega a julio). Tarifa, margen y operación incluyen el mes en curso parcial.</div>`;
+    <div class="text-[13px] text-secondary mt-lg leading-relaxed">Todos los indicadores son de <b>última milla</b> (entregas a cliente); se excluye reposición troncal. El <b>3.2</b> es específicamente troncal Quilicura (solo documentos con HES). Con un <b>centro</b> seleccionado, todo se calcula con las vistas por centro de origen (última milla) y el 3.2 muestra sólo la fila de ese centro. Flete Tercero (REVEX) se revisa en su propio menú. OTIF/Fill incluyen el mes en curso cuando el archivo de notas de venta lo trae (hoy la fuente llega a julio). Tarifa, margen y operación incluyen el mes en curso parcial.</div>`;
 }
 
 // ============================================================================
@@ -321,7 +321,7 @@ function centroHTML(d, grupos, grupo){
     <div class="flex items-center gap-md mb-md flex-wrap">
       <label class="text-secondary text-body-md">Centro:</label>
       <select id="ind_sel" class="border border-surface-variant rounded-lg px-md py-sm bg-surface-container-lowest text-on-surface">${opciones}</select>
-      <span class="text-[12px] text-secondary">Ventana: últimas semanas cerradas (semana móvil)</span>
+      <span class="text-[14px] text-secondary">Ventana: últimas semanas cerradas (semana móvil)</span>
     </div>
 
     ${card('1 · Nivel de Servicio','OTIF y Fill Rate — '+nice(grupo),
@@ -385,18 +385,18 @@ function centroHTML(d, grupos, grupo){
           tile('Peor mes',mm((w.monto||0)/1e6),mesCorto(w.mes_label||''),'text-[#EE1B22]'); })(),
       legend([{n:'No cobrado $MM',c:C.red}])+`<div id="c_scm"></div>`)}
 
-    <div class="text-[11px] text-secondary mt-lg leading-relaxed">Centro = grupo de origen (Centro Origen). OTIF por semana ISO llega al último mes cerrado; tarifa, margen y operación a la fecha más reciente. Comuna = 2º tramo de la ruta. Consolidación = Σpeso ÷ (capacidad×1000) por viaje. Planta C&D y Electrosoldado se agrupan en Santiago.</div>`;
+    <div class="text-[13px] text-secondary mt-lg leading-relaxed">Centro = grupo de origen (Centro Origen). OTIF por semana ISO llega al último mes cerrado; tarifa, margen y operación a la fecha más reciente. Comuna = 2º tramo de la ruta. Consolidación = Σpeso ÷ (capacidad×1000) por viaje. Planta C&D y Electrosoldado se agrupan en Santiago.</div>`;
 }
 
 function vendTablaHTML(rows, grupo){
   const v = (rows||[]).filter(r=>r.grupo===grupo).slice().sort((a,b)=> (a.brecha||0)-(b.brecha||0)).slice(0,6);
-  if (!v.length) return legend([{n:'Cumplimiento de cobro por vendedor',c:C.navy}])+`<div class="text-secondary text-[12px] py-md">Sin datos en la ventana.</div>`;
+  if (!v.length) return legend([{n:'Cumplimiento de cobro por vendedor',c:C.navy}])+`<div class="text-secondary text-[14px] py-md">Sin datos en la ventana.</div>`;
   const filas = v.map(r=>`<tr class="border-t border-surface-variant">
     <td class="py-[4px] pr-sm">${r.vendedor||'—'}</td>
     <td class="py-[4px] pr-sm text-right tabular-nums ${(r.brecha||0)<0?'text-[#EE1B22]':''}">${mm((r.brecha||0)/1e6)}</td>
     <td class="py-[4px] text-right tabular-nums">${pct(r.cumplimiento_pct)}</td></tr>`).join('');
   return legend([{n:'Cumplimiento de cobro por vendedor (los que más subcobran)',c:C.navy}])+
-    `<table class="w-full text-[12px]"><thead><tr class="text-secondary text-left">
+    `<table class="w-full text-[14px]"><thead><tr class="text-secondary text-left">
       <th class="font-medium pb-[4px]">Vendedor</th><th class="font-medium text-right pb-[4px]">Brecha</th><th class="font-medium text-right pb-[4px]">Cumpl.</th></tr></thead>
       <tbody>${filas}</tbody></table>`;
 }
@@ -407,7 +407,7 @@ function vendTablaHTML(rows, grupo){
 function heatOtif(v){ return v>=90?'#C6E0B4':v>=85?'#E2EFDA':v>=80?'#FFF2CC':v>=75?'#FCE4D6':v>=70?'#F8CBAD':'#F4B7B4'; }
 function heatTarifa(v){ return v<18?'#C6E0B4':v<24?'#E2EFDA':v<30?'#FFF2CC':v<40?'#FCE4D6':v<55?'#F8CBAD':'#F4B7B4'; }
 function heatmapHTML(rows, key, colorFn, fmt){
-  if(!rows||!rows.length) return `<div class="text-secondary text-[12px] py-sm">Sin datos.</div>`;
+  if(!rows||!rows.length) return `<div class="text-secondary text-[14px] py-sm">Sin datos.</div>`;
   const months=[...new Set(rows.map(r=>r.mes_label))].sort();
   const grupos=[...new Set(rows.map(r=>r.grupo))].filter(g=>g&&g!=='OTROS').sort();
   const map={}; rows.forEach(r=>{ (map[r.grupo]=map[r.grupo]||{})[r.mes_label]=r[key]; });
@@ -415,9 +415,9 @@ function heatmapHTML(rows, key, colorFn, fmt){
   const bodyr=grupos.map(g=>{
     const cells=months.map(m=>{ const v=(map[g]||{})[m];
       return `<td class="text-center px-[6px] py-[3px] tabular-nums" style="background:${v==null?'transparent':colorFn(v)};color:#333">${v==null?'':fmt(v)}</td>`; }).join('');
-    return `<tr><td class="pr-sm py-[3px] text-[12px] whitespace-nowrap">${nice(g)}</td>${cells}</tr>`;
+    return `<tr><td class="pr-sm py-[3px] text-[14px] whitespace-nowrap">${nice(g)}</td>${cells}</tr>`;
   }).join('');
-  return `<div class="ind-heat overflow-x-auto"><table class="text-[11px] border-separate" style="border-spacing:2px"><thead><tr>${head}</tr></thead><tbody>${bodyr}</tbody></table></div>`;
+  return `<div class="ind-heat overflow-x-auto"><table class="text-[13px] border-separate" style="border-spacing:2px"><thead><tr>${head}</tr></thead><tbody>${bodyr}</tbody></table></div>`;
 }
 
 // ============================================================================
@@ -427,14 +427,18 @@ function heatmapHTML(rows, key, colorFn, fmt){
 // Dibuja al ANCHO REAL del contenedor (texto siempre ~11 px, antes escalaba con
 // el viewBox fijo 560 → 5-16 px), escala de ejes "redonda", etiquetas que no se
 // pisan, línea de meta opcional y redibujo al cambiar el tamaño de la ventana.
-let W=560, PR=18; const H=220,PL=46,PT=18,PB=28;   // PR crece a 66 cuando hay etiqueta de meta
-const FS=11, META_C='#1E8449';
+let W=560, PR=18; const H=260,PL=52,PT=20,PB=30;   // PR crece a 66 cuando hay etiqueta de meta
+const FS=13, META_C='#1E8449';
 const META={ otif:90, fill:95, consol:85, cobertura:100 };   // metas (editar aquí)
 const _charts=new Map(); let _rsT=null;
 window.addEventListener('resize',function(){ clearTimeout(_rsT); _rsT=setTimeout(function(){
   _charts.forEach(function(fn,id){ var el=document.getElementById(id); if(el&&el.isConnected&&el.clientWidth) fn(); else _charts.delete(id); });
 },200); });
-function _prep(elId,fn){ var el=document.getElementById(elId); if(!el) return null; _charts.set(elId,fn); W=Math.max(300,Math.round(el.clientWidth||560)); return el; }
+// Si el layout termina de asentarse después del primer dibujo (grid/CSS tardío), se redibuja al ancho real
+const _cw=new Map(); let _chkT=null;
+function _chkWidths(){ _charts.forEach(function(fn,id){ var el=document.getElementById(id); if(el&&el.isConnected&&el.clientWidth&&Math.abs(el.clientWidth-(_cw.get(id)||0))>20) fn(); }); }
+function _prep(elId,fn){ var el=document.getElementById(elId); if(!el) return null; _charts.set(elId,fn); W=Math.max(300,Math.round(el.clientWidth||560)); _cw.set(elId,el.clientWidth||0);
+  clearTimeout(_chkT); _chkT=setTimeout(_chkWidths,350); return el; }
 function niceScale(mn,mx,n){ n=n||4; if(!(mx>mn)) mx=mn+1; var raw=(mx-mn)/n, p=Math.pow(10,Math.floor(Math.log10(raw))), f=raw/p;
   var st=(f<=1?1:f<=2?2:f<=2.5?2.5:f<=5?5:10)*p; return {mn:Math.floor(mn/st+1e-9)*st, mx:Math.ceil(mx/st-1e-9)*st, st:st}; }
 function bx(i,n){var w=(W-PL-PR)/n;return PL+w*i+w/2;}
@@ -454,7 +458,7 @@ function valLbl(v){ return Math.abs(v)>=1000? nf0.format(v) : nf1.format(v); }
 function tickDefault(sc){ return sc.st<1? function(v){return nf1.format(v);} : function(v){return nf0.format(v);}; }
 
 function lineChart(elId,series,labels,mn,mx,unit,softFrom,meta){
-  var el=_prep(elId,function(){lineChart(elId,series,labels,mn,mx,unit,softFrom,meta);}); if(!el) return; PR=meta?66:18;
+  var el=_prep(elId,function(){lineChart(elId,series,labels,mn,mx,unit,softFrom,meta);}); if(!el) return; PR=meta?76:18;
   if(softFrom==null) softFrom=labels.length;
   var sc=niceScale(mn,mx), lo=sc.mn, hi=sc.mx, n=labels.length;
   var out=[svgOpen()]; gridY(out,sc,tickDefault(sc)); metaLine(out,meta,sc);
@@ -492,7 +496,7 @@ function last4(rows,grupo){ var cur=isoWeekKey(new Date()); return (rows||[]).fi
 function last4Sem(rows){ var cur=isoWeekKey(new Date()); var s=[...new Set((rows||[]).filter(function(r){return semKey(r.semana)<cur;}).map(function(r){return r.semana;}))].sort(function(a,b){return semKey(a)-semKey(b);}); return s.slice(-4); }
 function semLbl(s){ return (s||'').replace(/^\d{4}-/,''); }
 function semTable(rows,cols){
-  if(!rows.length) return `<div class="text-secondary text-[12px] py-md">Sin semanas cerradas.</div>`;
+  if(!rows.length) return `<div class="text-secondary text-[14px] py-md">Sin semanas cerradas.</div>`;
   var head='<tr class="text-secondary text-left"><th class="font-medium pb-[4px] pr-sm">Semana</th>'+cols.map(function(c){return `<th class="font-medium text-right pb-[4px] pr-sm">${c.label}</th><th class="font-medium text-right pb-[4px] pr-sm">Δ</th>`;}).join('')+'</tr>';
   var body=rows.map(function(r,i){
     var tds=cols.map(function(c){
@@ -507,7 +511,7 @@ function semTable(rows,cols){
     }).join('');
     return `<tr class="border-t border-surface-variant"><td class="py-[3px] pr-sm whitespace-nowrap">${semLbl(r.semana)}</td>${tds}</tr>`;
   }).join('');
-  return `<table class="w-full text-[12px]"><thead>${head}</thead><tbody>${body}</tbody></table>`;
+  return `<table class="w-full text-[14px]"><thead>${head}</thead><tbody>${body}</tbody></table>`;
 }
 // Agrega el mes en curso (si falta) a las filas ns; marca _curso=true en el slot añadido
 function nsConCurso(ns){
@@ -519,7 +523,7 @@ function nsConCurso(ns){
   return rows;
 }
 function barChart(elId,vals,labels,mn,mx,color,unit,part,tickFmt,meta){
-  var el=_prep(elId,function(){barChart(elId,vals,labels,mn,mx,color,unit,part,tickFmt,meta);}); if(!el) return; PR=meta?66:18;
+  var el=_prep(elId,function(){barChart(elId,vals,labels,mn,mx,color,unit,part,tickFmt,meta);}); if(!el) return; PR=meta?76:18;
   var sc=niceScale(Math.min(mn,0),mx), lo=sc.mn, hi=sc.mx, n=vals.length;
   var out=[svgOpen()]; gridY(out,sc,tickFmt||tickDefault(sc));
   var zeroY=py(0,lo,hi);
@@ -616,9 +620,9 @@ function card(title,lead,tiles,chartsHTML,ancla){
 }
 function tile(k,v,d,cls=''){
   return `<div class="bg-surface-container-low border border-surface-variant rounded-lg px-md py-sm">
-    <div class="text-[11px] text-secondary">${k}</div>
+    <div class="text-[13px] text-secondary">${k}</div>
     <div class="text-2xl font-bold leading-tight ${cls}">${v}</div>
-    <div class="text-[11px] text-secondary mt-[2px]">${d||''}</div></div>`;
+    <div class="text-[13px] text-secondary mt-[2px]">${d||''}</div></div>`;
 }
 // --- Semáforo vs meta (27-sep-2026) -------------------------------------------
 // better='up' (más es mejor) | 'down' (menos es mejor). tol = margen "cerca de meta".
@@ -628,12 +632,12 @@ function semaforo(v,meta,tol,better){
   var cerca = better==='down' ? v<=meta+tol : v>=meta-tol;
   return ok ? {c:'#1E8449',t:'Sobre meta'} : cerca ? {c:'#B5730B',t:'Cerca de meta'} : {c:'#C0000C',t:'Bajo meta'};
 }
-function stChip(st){ return st?`<div class="text-[11px] font-semibold mt-[2px]" style="color:${st.c}">● ${st.t}</div>`:''; }
+function stChip(st){ return st?`<div class="text-[13px] font-semibold mt-[2px]" style="color:${st.c}">● ${st.t}</div>`:''; }
 function tileS(k,v,d,st,cls=''){
   return `<div class="bg-surface-container-low border border-surface-variant rounded-lg px-md py-sm" style="${st?'border-left:4px solid '+st.c:''}">
-    <div class="text-[11px] text-secondary">${k}</div>
+    <div class="text-[13px] text-secondary">${k}</div>
     <div class="text-2xl font-bold leading-tight ${cls}">${v}</div>${stChip(st)}
-    <div class="text-[11px] text-secondary mt-[2px]">${d||''}</div></div>`;
+    <div class="text-[13px] text-secondary mt-[2px]">${d||''}</div></div>`;
 }
 // Tarjeta del resumen ejecutivo: valor + variación vs período anterior + semáforo
 function kpiExec(o){
@@ -643,14 +647,14 @@ function kpiExec(o){
     dTxt=z?'= vs '+o.prevLbl:((d>0?'▲ +':'▼ ')+o.dfmt(d)+' vs '+o.prevLbl);
     dSty=bueno==null?'color:#808285':(bueno?'color:#1E8449':'color:#C0000C'); }
   return `<a href="#${o.ancla}" style="display:block;text-decoration:none;color:inherit;background:#fff;border:1px solid #e3e0dc;border-radius:12px;padding:12px 14px;${o.st?'border-top:4px solid '+o.st.c:'border-top:4px solid #A9ACAE'}">
-    <div style="font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:#6B6E70">${o.k}</div>
+    <div style="font-size:13px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:#6B6E70">${o.k}</div>
     <div style="font-size:28px;font-weight:800;line-height:1.15;color:#1c1b1a;font-variant-numeric:tabular-nums">${o.v}</div>
-    ${o.st?`<div style="font-size:12px;font-weight:700;color:${o.st.c}">● ${o.st.t}${o.meta!=null?' · meta '+o.meta:''}</div>`:`<div style="font-size:12px;color:#808285">${o.sub||'&nbsp;'}</div>`}
-    <div style="font-size:12px;margin-top:2px;${dSty}">${dTxt||'&nbsp;'}</div>
-    <div style="font-size:11px;color:#808285;margin-top:2px">${o.per||''}</div></a>`;
+    ${o.st?`<div style="font-size:14px;font-weight:700;color:${o.st.c}">● ${o.st.t}${o.meta!=null?' · meta '+o.meta:''}</div>`:`<div style="font-size:14px;color:#808285">${o.sub||'&nbsp;'}</div>`}
+    <div style="font-size:14px;margin-top:2px;${dSty}">${dTxt||'&nbsp;'}</div>
+    <div style="font-size:13px;color:#808285;margin-top:2px">${o.per||''}</div></a>`;
 }
 function legend(items){
-  return `<div class="flex flex-wrap gap-md text-[12px] text-secondary mb-sm">`+
+  return `<div class="flex flex-wrap gap-md text-[14px] text-secondary mb-sm">`+
     items.map(i=>`<span class="inline-flex items-center gap-[6px]"><span style="width:10px;height:10px;border-radius:2px;background:${i.c};display:inline-block"></span>${i.n}</span>`).join('')+`</div>`;
 }
 
@@ -695,8 +699,8 @@ function attachCardExpand(sec){
   sec.style.position='relative';
   var btn=document.createElement('button');
   btn.className='ind-cardexp'; btn.textContent='⤢'; btn.title='Ampliar cuadro completo';
-  btn.style.cssText='position:absolute;top:8px;right:8px;border:1px solid rgba(11,11,11,.14);background:rgba(255,255,255,.92);border-radius:6px;height:26px;padding:0 8px;font-size:13px;line-height:1;cursor:pointer;color:#333;z-index:4;display:inline-flex;align-items:center;gap:5px';
-  btn.innerHTML='⤢ <span style="font-size:11px">Ampliar</span>';
+  btn.style.cssText='position:absolute;top:8px;right:8px;border:1px solid rgba(11,11,11,.14);background:rgba(255,255,255,.92);border-radius:6px;height:26px;padding:0 8px;font-size:15px;line-height:1;cursor:pointer;color:#333;z-index:4;display:inline-flex;align-items:center;gap:5px';
+  btn.innerHTML='⤢ <span style="font-size:13px">Ampliar</span>';
   btn.addEventListener('click',function(ev){ ev.stopPropagation();
     var tmp=sec.cloneNode(true);
     tmp.querySelectorAll('button.ind-exp,button.ind-cardexp').forEach(function(b){b.remove();});
@@ -774,7 +778,7 @@ function errorHTML(e){
   return `<div class="max-w-[720px] mx-auto bg-error-container text-on-error-container rounded-xl p-lg">
     <div class="font-bold mb-1">No se pudieron cargar los indicadores</div>
     <div class="text-body-md">${(e&&e.message)||e}</div>
-    <div class="text-[12px] mt-sm">Verifica tu sesión (rol reconocido) o la carga 08:00 (tabla <code>ind_log</code>).</div></div>`;
+    <div class="text-[14px] mt-sm">Verifica tu sesión (rol reconocido) o la carga 08:00 (tabla <code>ind_log</code>).</div></div>`;
 }
 
 // ============================================================================
@@ -1262,7 +1266,7 @@ function nivelHTML(d,grupos,grupo){
   const stock=tp.find(r=>r.tipo==='STOCK')||{}, calz=tp.find(r=>r.tipo==='CALZADA')||{};
   const hayClase=tp.some(r=>r.tipo==='STOCK'||r.tipo==='CALZADA');
   const opciones=grupos.map(g=>`<option value="${g}" ${g===grupo?'selected':''}>${nice(g)}</option>`).join('');
-  return `<div class="max-w-[1120px] mx-auto">
+  return `<div class="w-full mx-auto" style="max-width:1760px">
     <div class="flex items-center gap-md mb-md flex-wrap">
       <div class="text-headline-sm font-bold">Nivel de Servicio — detalle</div>
       <label class="text-secondary text-body-md ml-auto">Centro:</label>
@@ -1283,7 +1287,7 @@ function nivelHTML(d,grupos,grupo){
       `<div class="grid grid-cols-1 md:grid-cols-2 gap-md">`+
       `<div>`+legend([{n:'OTIF % por tipo',c:R.red}])+`<div id="n_tipo_otif"></div></div>`+
       `<div>`+legend([{n:'Días a entrega por tipo',c:R.grey}])+`<div id="n_tipo_dias"></div></div></div>`+
-      (hayClase?'':`<div class="text-[11px] text-secondary mt-sm">Stock=ZV01/03/04 · Calzada=ZV08/09. Vacío = falta correr la carga con el Code.gs actualizado (nueva columna Clase Documento).</div>`))}
+      (hayClase?'':`<div class="text-[13px] text-secondary mt-sm">Stock=ZV01/03/04 · Calzada=ZV08/09. Vacío = falta correr la carga con el Code.gs actualizado (nueva columna Clase Documento).</div>`))}
 
     ${card('Nivel de Servicio por Comuna','Mejores y Peores Comunas','',
       `<div class="grid grid-cols-1 md:grid-cols-2 gap-md">`+
@@ -1295,11 +1299,11 @@ function nivelHTML(d,grupos,grupo){
       `<div>`+legend([{n:'OTIF % Planificado',c:R.red},{n:'OTIF % Spot',c:R.grey}])+`<div id="n_spot"></div></div>`+
       `<div>`+legend([{n:'Entregas Planificado',c:R.red},{n:'Entregas Spot',c:R.grey}])+`<div id="n_spot_ent"></div></div></div>`)}
 
-    <div class="text-[11px] text-secondary mt-lg leading-relaxed">Comuna = comuna destino (routes.comuna); todas las rutas que llegan a una misma comuna se agrupan juntas. Solo rutas de clasificación Regional. Días venta→entrega = fecha guía − fecha creación.</div>
+    <div class="text-[13px] text-secondary mt-lg leading-relaxed">Comuna = comuna destino (routes.comuna); todas las rutas que llegan a una misma comuna se agrupan juntas. Solo rutas de clasificación Regional. Días venta→entrega = fecha guía − fecha creación.</div>
   </div>`;
 }
 function heatComunaHTML(rows){
-  if(!rows.length) return `<div class="text-secondary text-[12px] py-sm">Sin datos.</div>`;
+  if(!rows.length) return `<div class="text-secondary text-[14px] py-sm">Sin datos.</div>`;
   const months=[...new Set(rows.map(r=>r.mes_label))].sort();
   const tot={}; rows.forEach(r=>{tot[r.comuna]=(tot[r.comuna]||0)+(r.lineas||0);});
   const comunas=Object.keys(tot).sort((a,b)=>tot[b]-tot[a]).slice(0,12);
@@ -1307,9 +1311,9 @@ function heatComunaHTML(rows){
   const head=`<th class="text-left font-medium text-secondary pr-sm">Comuna</th>`+months.map(m=>`<th class="font-medium text-secondary px-[6px] text-center">${mesCorto(m)}</th>`).join('');
   const bodyr=comunas.map(c=>{
     const cells=months.map(m=>{const v=(map[c]||{})[m];return `<td class="text-center px-[6px] py-[3px] tabular-nums" style="background:${v==null?'transparent':heatOtif(v)};color:#333">${v==null?'':nf1.format(v)}</td>`;}).join('');
-    return `<tr><td class="pr-sm py-[3px] text-[12px] whitespace-nowrap">${c}</td>${cells}</tr>`;
+    return `<tr><td class="pr-sm py-[3px] text-[14px] whitespace-nowrap">${c}</td>${cells}</tr>`;
   }).join('');
-  return `<div class="ind-heat overflow-x-auto"><table class="text-[11px] border-separate" style="border-spacing:2px"><thead><tr>${head}</tr></thead><tbody>${bodyr}</tbody></table></div>`;
+  return `<div class="ind-heat overflow-x-auto"><table class="text-[13px] border-separate" style="border-spacing:2px"><thead><tr>${head}</tr></thead><tbody>${bodyr}</tbody></table></div>`;
 }
 function drawNivel(d,grupo){
   const s4=last4(d.sem,grupo);
@@ -1375,7 +1379,7 @@ function tarifaHTML(d,grupos,grupo){
   const opciones=grupos.map(g=>`<option value="${g}" ${g===grupo?'selected':''}>${nice(g)}</option>`).join('');
   const ebcG=d.ebc.filter(r=>r.grupo===grupo), showEbc=ebcG.length>0;
   const ebcTot={docs:sum(ebcG.map(r=>r.docs)),ton:sum(ebcG.map(r=>r.toneladas)),pag:sum(ebcG.map(r=>r.pagado))/1e6,cob:sum(ebcG.map(r=>r.cobrado))/1e6};
-  return `<div class="max-w-[1120px] mx-auto">
+  return `<div class="w-full mx-auto" style="max-width:1760px">
     <div class="flex items-center gap-md mb-md flex-wrap">
       <div class="text-headline-sm font-bold">Pesos por Kilo — detalle</div>
       <label class="text-secondary text-body-md ml-auto">Centro:</label>
@@ -1386,7 +1390,7 @@ function tarifaHTML(d,grupos,grupo){
       `<div class="grid grid-cols-1 md:grid-cols-2 gap-md items-center">`+
       `<div>`+legend([{n:'Tarifa $/kg',c:R.red2}])+`<div id="t_sem"></div></div>`+
       `<div id="t_semtab"></div></div>`)}
-    <div class="text-[11px] text-secondary -mt-sm mb-md">Solo <b>última milla</b> (entregas a cliente). Excluye traslados troncales de reposición.</div>
+    <div class="text-[13px] text-secondary -mt-sm mb-md">Solo <b>última milla</b> (entregas a cliente). Excluye traslados troncales de reposición.</div>
     ${card('Evolutivo Mensual Tarifa $/kg y Toneladas','Mensual por centro (mes en curso en tono suave)','',
       `<div class="grid grid-cols-1 md:grid-cols-2 gap-md">`+
       `<div>`+legend([{n:'Tarifa $/kg',c:R.red2}])+`<div id="t_tar"></div></div>`+
@@ -1407,7 +1411,7 @@ function tarifaHTML(d,grupos,grupo){
       `<div class="grid grid-cols-1 md:grid-cols-2 gap-md">`+
       `<div>`+legend([{n:'Flete pagado $MM',c:R.red2},{n:'Cobrado $MM',c:R.red}])+`<div id="t_ebc"></div></div>`+
       `<div>`+legend([{n:'Financiamiento neto $MM',c:R.grey}])+`<div id="t_ebc_neto"></div></div></div>`):''}
-    <div class="text-[11px] text-secondary mt-lg leading-relaxed">Solo última milla (entregas a cliente ZE01/ZE06/ZE20/ZE05/ZE04); se excluyen los traslados troncales de reposición (NL/EL). Comuna = comuna destino (routes.comuna); rutas de una misma comuna se agrupan. EbemaClick = documentos de transporte con al menos una entrega de V Garrido T; se imputa el flete de sus entregas más el de las líneas 400141 (sobrecosto flete) del mismo DT. El cuadro solo aparece en centros con operación EbemaClick.</div>
+    <div class="text-[13px] text-secondary mt-lg leading-relaxed">Solo última milla (entregas a cliente ZE01/ZE06/ZE20/ZE05/ZE04); se excluyen los traslados troncales de reposición (NL/EL). Comuna = comuna destino (routes.comuna); rutas de una misma comuna se agrupan. EbemaClick = documentos de transporte con al menos una entrega de V Garrido T; se imputa el flete de sus entregas más el de las líneas 400141 (sobrecosto flete) del mismo DT. El cuadro solo aparece en centros con operación EbemaClick.</div>
   </div>`;
 }
 function drawTarifa(d,grupo){
@@ -1468,13 +1472,13 @@ function margenHTML(d,grupos,grupo){
   const opciones=grupos.map(g=>`<option value="${g}" ${g===grupo?'selected':''}>${nice(g)}</option>`).join('');
   const sc=d.sc.filter(r=>r.grupo===grupo && r.segmento===_segM);
   const scMonto=sum(sc.map(r=>r.monto_sugerido))/1e6, scEnt=sum(sc.map(r=>r.entregas));
-  return `<div class="max-w-[1120px] mx-auto">
+  return `<div class="w-full mx-auto" style="max-width:1760px">
     <div class="flex items-center gap-md mb-md flex-wrap">
       <div class="text-headline-sm font-bold">Margen de Flete — detalle</div>
       <label class="text-secondary text-body-md ml-auto">Centro:</label>
       <select id="ind_selm" class="border border-surface-variant rounded-lg px-md py-sm bg-surface-container-lowest text-on-surface">${opciones}</select>
     </div>
-    <div class="text-[11px] text-secondary -mt-sm mb-md">Solo <b>última milla</b> (entregas a cliente). Excluye traslados troncales de reposición.</div>
+    <div class="text-[13px] text-secondary -mt-sm mb-md">Solo <b>última milla</b> (entregas a cliente). Excluye traslados troncales de reposición.</div>
     ${card('Semana Móvil Margen de Flete — '+nice(grupo),'Margen $MM y Cobertura Semanal',
       (function(){ var s4=last4(d.sem,grupo), w=s4[s4.length-1]||{};
         return tileS('Margen — '+semLbl(w.semana||''),mm((w.margen||0)/1e6),'última semana cerrada',w.margen==null?null:(w.margen>=0?{c:'#1E8449',t:'Positivo'}:{c:'#C0000C',t:'Negativo'}))+
@@ -1496,14 +1500,14 @@ function margenHTML(d,grupos,grupo){
       legend([{n:'No cobrado $MM (sugerido)',c:R.red2}])+`<div id="m_scm"></div>`)}
     ${card('3 · Ranking Vendedor — Flete Cobrado','Brecha = pagado − cobrado (mayor brecha = más subcobra)','',
       vendMargenTablaHTML(d.vn,grupo))}
-    <div class="text-[11px] text-secondary mt-lg leading-relaxed">Flete no cobrado = entregas con flete cobrado = 0; monto = flete sugerido (lo que no se cobró). Ranking excluye EbemaClick.</div>
+    <div class="text-[13px] text-secondary mt-lg leading-relaxed">Flete no cobrado = entregas con flete cobrado = 0; monto = flete sugerido (lo que no se cobró). Ranking excluye EbemaClick.</div>
   </div>`;
 }
 function vendMargenTablaHTML(rows,grupo){
   const v=(rows||[]).filter(r=>r.grupo===grupo && r.segmento===_segM)
     .map(r=>({...r,brechaPC:(r.pagado||0)-(r.cobrado||0)}))
     .sort((a,b)=>b.brechaPC-a.brechaPC).slice(0,10);
-  if(!v.length) return `<div class="text-secondary text-[12px] py-md">Sin datos.</div>`;
+  if(!v.length) return `<div class="text-secondary text-[14px] py-md">Sin datos.</div>`;
   const filas=v.map(r=>`<tr class="border-t border-surface-variant">
     <td class="py-[4px] pr-sm">${r.vendedor||'—'}</td>
     <td class="py-[4px] pr-sm text-right tabular-nums">${mm((r.sugerido||0)/1e6)}</td>
@@ -1511,7 +1515,7 @@ function vendMargenTablaHTML(rows,grupo){
     <td class="py-[4px] pr-sm text-right tabular-nums">${mm((r.pagado||0)/1e6)}</td>
     <td class="py-[4px] pr-sm text-right tabular-nums ${r.brechaPC>0?'text-[#C0000C]':''}">${mm(r.brechaPC/1e6)}</td>
     <td class="py-[4px] text-right tabular-nums">${pct(r.cumplimiento_pct)}</td></tr>`).join('');
-  return `<table class="w-full text-[12px]"><thead><tr class="text-secondary text-left">
+  return `<table class="w-full text-[14px]"><thead><tr class="text-secondary text-left">
     <th class="font-medium pb-[4px]">Vendedor</th><th class="font-medium text-right pb-[4px]">Sugerido</th><th class="font-medium text-right pb-[4px]">Cobrado</th><th class="font-medium text-right pb-[4px]">Pagado</th><th class="font-medium text-right pb-[4px]">Brecha</th><th class="font-medium text-right pb-[4px]">Cumpl.</th></tr></thead><tbody>${filas}</tbody></table>`;
 }
 function drawMargen(d,grupo){
