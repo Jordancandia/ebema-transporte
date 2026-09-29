@@ -10,11 +10,10 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202609292044';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202609292044';
-import { getDatabase } from './data.js?v=202609292044';
+import { supabase } from './supabase-client.js?v=202609282310';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202609282310';
+import { getDatabase } from './data.js?v=202609282310';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, esc as escV2 } from './troncales-ui.js?v=202609292044';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -301,9 +300,9 @@ function tipoQuiebre(sd) {
 
 // ── Estado de coordinación de retiros (persistente) ─────────────────────────
 async function loadEstadosRetiro() {
-  const { data, error } = await supabase.from('abast_retiro_estado').select('doc_compr, estado, tipo_retiro, entrega_entrante, tipo_local_rm, fab_direccion, fab_comuna, fab_contacto, fab_telefono, fecha_retiro, updated_at, updated_by');
+  const { data, error } = await supabase.from('abast_retiro_estado').select('doc_compr, estado, tipo_retiro, entrega_entrante, tipo_local_rm, fab_direccion, fab_comuna, fab_contacto, fab_telefono, fecha_retiro');
   const m = {};
-  if (!error) (data || []).forEach(r => { m[String(r.doc_compr)] = { estado: r.estado, tipo_retiro: r.tipo_retiro, entrega_entrante: r.entrega_entrante, tipo_local_rm: r.tipo_local_rm, fab_direccion: r.fab_direccion, fab_comuna: r.fab_comuna, fab_contacto: r.fab_contacto, fab_telefono: r.fab_telefono, fecha_retiro: r.fecha_retiro, updated_at: r.updated_at, updated_by: r.updated_by }; });
+  if (!error) (data || []).forEach(r => { m[String(r.doc_compr)] = { estado: r.estado, tipo_retiro: r.tipo_retiro, entrega_entrante: r.entrega_entrante, tipo_local_rm: r.tipo_local_rm, fab_direccion: r.fab_direccion, fab_comuna: r.fab_comuna, fab_contacto: r.fab_contacto, fab_telefono: r.fab_telefono, fecha_retiro: r.fecha_retiro }; });
   return m;
 }
 
@@ -803,7 +802,6 @@ const VISTAS_TRONCAL = {
           _fab_contacto:   estObj.fab_contacto   || '',
           _fab_telefono:   estObj.fab_telefono   || '',
           _fecha_retiro:   estObj.fecha_retiro    || '',
-          _upd_at: estObj.updated_at || '', _upd_by: estObj.updated_by || '',
           _detalle: detalle,
           // Datos cruzados de Pedidos de Ventas
           _pv_denominacion: pv.denominacion || '',
@@ -970,7 +968,7 @@ const VISTAS_TRONCAL = {
 
   // ── PEDIDOS TRASLADOS (Step 4) ────────────────────────────────────────────
   pedidos_traslados: {
-    titulo: 'GESTIÓN TRONCALES – PEDIDOS DE TRASLADOS',
+    titulo: 'GESTIÓN TRONCALES – PEDIDOS TRASLADOS',
     vista: 'v_trc_sqvi_pedidos_traslados',
     // Excluye la línea (doc_compr + material), sólo perfil OWNER.
     excluir: { tipo: 'traslados_1003', doc: r => r.doc_compr, material: r => r.material },
@@ -978,7 +976,7 @@ const VISTAS_TRONCAL = {
     extraChips: [{ campo: 'cesu', label: 'Centro Origen' }],
     noBuscar: true,
     filtros: [{ campo: 'doc_compr', label: 'Buscar Pedido de Traslado', tipo: 'buscar' }],
-    dateRange: { campo: 'fecha_confirmada', label: 'Rango Fecha de Entrega' },
+    dateRange: { campo: 'fecha_confirmada', label: 'Rango Fecha Confirmada' },
     async preload() {
       const stockRows = await fetchAllRows('v_trc_slim_stock');
       // Mapa SLIM: "centro|codigo_articulo" → { sd, abc } (se conserva el de
@@ -1035,8 +1033,7 @@ const VISTAS_TRONCAL = {
         const prio = prioridadTraslado(usuario, abc, quebrado);
         return {
           doc_compr: String(r.doc_compr ?? '').trim(),
-          cesu: r.cesu, ce: r.ce, alm: r.alm, pos: r.pos, creado_el: r.creado_el,
-          _sd: info ? info.sd : null, _ton_num: t, _motivo_prio: prio.motivo,
+          cesu: r.cesu, ce: r.ce, alm: r.alm,
           material: r.material, texto_breve: r.texto_breve,
           fecha_confirmada: r.fecha_confirmada,
           ctd_pedido: r.ctd_pedido,
@@ -1078,7 +1075,7 @@ const VISTAS_TRONCAL = {
       { key: 'texto_breve', label: 'Nombre Material' },
       { key: '_clasificacion_abc', label: 'Clasificación ABC', cls: 'text-center' },
       { key: '_usuario', label: 'Usuario' },
-      { key: 'fecha_confirmada', label: 'Fecha de Entrega', cls: 'num-clear' },
+      { key: 'fecha_confirmada', label: 'Fecha Confirmada', cls: 'num-clear' },
       { key: 'ctd_pedido', label: 'Cantidad Pedido', cls: 'text-right num-clear' },
       { key: '_ton_sku', label: 'Total SKU', cls: 'text-right num-clear font-bold' },
       { key: 'documento', label: 'Pedido de Ventas' },
@@ -1251,7 +1248,6 @@ const VISTAS_TRONCAL = {
           _ruta: pv.ruta || '',
           _comuna: lookupRuta(pv.ruta).comuna || '',
           _vendedor: pv.nombre || '',
-          _cliente: pv.nombre_1 || '',
         };
       });
       return out.sort((a, b) => {
@@ -1461,487 +1457,6 @@ const VISTAS_TRONCAL = {
   },
 };
 
-// ============================================================================
-// REDISEÑO v2 (29-sep-2026) — presentación de las vistas de datos
-// ----------------------------------------------------------------------------
-// Cada bloque describe cómo se ve la vista en el motor v2 (troncales-ui.js):
-// título, descripción, tarjetas que filtran, chips, buscadores, columnas,
-// franja de color y panel lateral. La carga y las reglas de negocio siguen
-// siendo las de VISTAS_TRONCAL (vista, preload, transform, postFilter).
-// ============================================================================
-const V2_DEPS = {
-  fetchAllRows, filtrarPorCentro, can, parseDateSAP, exportarCSV, showAlert,
-  clearRawCache: () => clearRawCache(),
-  loadExclusionesPlan, excluirDelPlan, reactivarEnPlan,
-};
-const ORIGENES_CD = [['1003', 'CD Quilicura · 1003'], ['1081', 'CD Concepción · 1081']];
-const C_INK = '#191c1d', C_RED = '#b5000b', C_ORANGE = '#ea580c', C_YELLOW = '#ca8a04', C_GREEN = '#15803d', C_GREY = '#9ca3af', C_BLUE = '#1d4ed8', C_SEC = '#5c5f61';
-
-const nombreCentro = ce => { const n = getNombreCentro(String(ce ?? '').trim()); return n && n !== ce ? n : ''; };
-function sucHtml(ce) {
-  const c = String(ce ?? '').trim();
-  if (!c) return '<span class="sv-muted">—</span>';
-  const n = nombreCentro(c);
-  return n ? txt(n, c, true) : mono(c);
-}
-const matHtml = (m, nombre) => mono(m, nombre);
-const tonNum = v => typeof v === 'number' ? v : parseNum(v);
-// Alerta por fecha SAP (mismas reglas de alertaFecha) → etiqueta y tono de píldora
-function alertaV2(fe, dias = 5) {
-  const a = alertaFecha(fe, dias);
-  if (a.txt === 'PEDIDO ATRASADO') return { k: 'Atrasado', tone: 'bad' };
-  if (a.txt === 'PRONTO A VENCER') return { k: 'Pronto a vencer', tone: 'orange' };
-  return parseDateSAP(fe) ? { k: 'Vigente', tone: 'ok' } : { k: '', tone: 'mute' };
-}
-function diasVencida(fe) {
-  const d = parseDateSAP(fe);
-  return d ? Math.floor((hoy00() - d) / 86400000) : null;
-}
-// Días de stock (SLIM) → grupo de quiebre, mismos cortes que tipoQuiebre()
-function grupoQuiebre(sd) {
-  if (sd == null) return { g: 'n', lbl: 'Sin dato', tone: 'mute' };
-  if (sd <= 3) return { g: 'q', lbl: 'Quebrado', tone: 'bad' };
-  if (sd <= 5) return { g: 'c', lbl: 'Crítico', tone: 'orange' };
-  if (sd <= 7) return { g: 'r', lbl: 'En revisión', tone: 'warn' };
-  return { g: 'ok', lbl: 'OK', tone: 'ok' };
-}
-async function slimSkuMap() {
-  const rows = await fetchAllRows('v_trc_slim_stock');
-  const m = {};
-  rows.forEach(r => {
-    const k = `${String(r.centro ?? '').trim()}|${String(r.codigo_articulo ?? '').trim()}`;
-    const sd = parseNum(r.stock_days);
-    if (!m[k] || sd < m[k].sd) m[k] = { sd, abc: String(r.clase_abc ?? '').trim().toUpperCase() };
-  });
-  return m;
-}
-async function pvRefMap() {
-  const rows = await fetchAllRows('v_trc_pedidos_ventas_ref');
-  const m = {};
-  rows.forEach(r => { const k = String(r.doc_ventas ?? '').trim(); if (k && !m[k]) m[k] = r; });
-  return m;
-}
-// Condición de expedición del pedido de venta (v_trc_pedidos_ventas_ref.denominacion):
-// manda el último tramo ("EBE-RET / CLI-RET" → retira el cliente).
-function condExpedicion(den) {
-  const d = String(den ?? '').trim();
-  if (!d) return null;
-  const fin = d.toUpperCase().split('/').pop().trim();
-  if (fin.startsWith('CLI-RET')) return { lbl: 'Retira cliente', tone: 'mute', raw: d };
-  if (fin.startsWith('EBE-DESP')) return { lbl: 'Despacho EBEMA', tone: 'info', raw: d };
-  if (fin.startsWith('FAB-DESP')) return { lbl: 'Despacho fábrica', tone: 'purple', raw: d };
-  return { lbl: d, tone: 'mute', raw: d };
-}
-const PRIO_V2 = {
-  B: { lbl: 'Usuario', tone: 'bad' }, C: { lbl: 'ABC AA', tone: 'orange' },
-  D: { lbl: 'Quiebre', tone: 'warn' }, E: { lbl: 'Abastecimiento', tone: 'mute' },
-};
-const TIPO_RETIRO_TONE = { 'FAB-CLTE': 'purple', 'FAB-SUC': 'info', 'FAB-CD': 'mute' };
-const ESTADO_PLAN_V2 = { CUADRA: ['Cuadra', 'ok'], PARCIAL: ['Parcial', 'warn'], EXCEDE: ['Excede', 'bad'], 'SIN PLAN': ['Sin plan', 'mute'] };
-const orderAbc = (a, b) => abcRank(a) - abcRank(b) || a.localeCompare(b);
-const fechaUpd = ts => ts ? horaChile(ts) : '';
-// Retiro atrasado (regla 29-sep-2026): fecha SAP vencida hace MÁS de 5 días y sin coordinar.
-const retiroAtrasado = r => !esEstadoCoordinado(r._estado) && (diasVencida(r.fe_entrega) ?? -1) > 5;
-
-const V2 = {
-  // ── STOCK ALMACÉN 4000 ────────────────────────────────────────────────────
-  stock_almacen: {
-    titulo: 'Stock Almacén 4000',
-    desc: 'Stock disponible en el almacén 4000 (físicamente en 1003) y días de stock de la sucursal destino por SKU.',
-    async preload() { return { skuMap: await slimSkuMap() }; },
-    enrich(rows, ctx) {
-      rows.forEach(r => {
-        const info = ctx.skuMap[`${String(r.ce ?? '').trim()}|${String(r.material ?? '').trim()}`] || null;
-        r._sd = info ? info.sd : null;
-        r._abc = info && info.abc ? info.abc : 'Sin clase';
-        r._q = grupoQuiebre(r._sd);
-      });
-    },
-    chip: { label: 'Clase ABC', of: r => r._abc, orden: orderAbc },
-    search: { ph: 'Buscar material', of: r => `${r.material} ${r.texto_breve_de_material || r.denominacion_de_posicion || ''} ${r.documento || ''}` },
-    kpis: [
-      { key: 'all', label: 'SKU', color: C_INK, sub: 'con stock en 4000' },
-      { key: 'q', label: 'Quebrados', color: C_RED, sub: '0 a 3 días', fn: r => r._q.g === 'q' },
-      { key: 'c', label: 'Críticos', color: C_ORANGE, sub: '4 a 5 días', fn: r => r._q.g === 'c' },
-      { key: 'r', label: 'En revisión', color: C_YELLOW, sub: '6 a 7 días', fn: r => r._q.g === 'r' },
-    ],
-    edge: r => r._q.g === 'q' ? C_RED : null,
-    note: 'Días de stock según SLIM del centro destino',
-    minW: '1000px',
-    modos: {
-      stock: {
-        v2label: 'Stock', icon: 'inventory',
-        cols: [
-          { label: 'Material', html: r => matHtml(r.material, r.texto_breve_de_material) },
-          { label: 'Destino', html: r => sucHtml(r.ce) },
-          { label: 'Clase ABC', html: r => mono(r._abc) },
-          { label: 'Stock (un)', al: 'r', html: r => escV2(r.libre_utiliz || '0') + (r.umb ? ` <span class="sv-muted">${escV2(r.umb)}</span>` : '') },
-          { label: 'Ton', al: 'r', html: r => `<span class="sv-ton">${tonHtml(tonNum(r._ton_totales))}</span>` },
-          { label: 'Días de stock', al: 'r', html: r => r._sd == null ? '<span class="sv-muted">—</span>' : `<span class="sv-b" style="color:${r._sd <= 3 ? C_RED : C_INK}">${r._sd}</span>` },
-          { label: 'Estado', html: r => pill(r._q.lbl, r._q.tone) },
-        ],
-      },
-      pedidos: {
-        v2label: 'Pedido de ventas', icon: 'sell',
-        cols: [
-          { label: 'Pedido de venta', html: r => mono(r.documento, r.creado ? 'entrega ' + r.creado : '') },
-          { label: 'Destino', html: r => sucHtml(r.ce) },
-          { label: 'Material', html: r => matHtml(r.material, r.denominacion_de_posicion) },
-          { label: 'Cantidad', al: 'r', html: r => escV2(r.libre_utiliz || '0') + (r.umb ? ` <span class="sv-muted">${escV2(r.umb)}</span>` : '') },
-          { label: 'Ruta', html: r => mono(r.ruta, r._comuna) },
-          { label: 'Ton', al: 'r', html: r => `<span class="sv-ton">${tonHtml(tonNum(r._ton_totales))}</span>` },
-          { label: 'Días de stock', al: 'r', html: r => r._sd == null ? '<span class="sv-muted">—</span>' : `<span class="sv-b" style="color:${r._sd <= 3 ? C_RED : C_INK}">${r._sd}</span>` },
-          { label: 'Estado', html: r => pill(r._q.lbl, r._q.tone) },
-        ],
-      },
-    },
-    detalle: r => ({
-      kind: 'Material · almacén 4000', title: r.material, sub: (r.texto_breve_de_material || r.denominacion_de_posicion || '') + (nombreCentro(r.ce) ? ' → ' + nombreCentro(r.ce) : ''),
-      kv: [
-        ['Centro destino', `${r.ce}${nombreCentro(r.ce) ? ' · ' + nombreCentro(r.ce) : ''}`],
-        ['Clase ABC', r._abc],
-        ['Cantidad disponible', `${r.libre_utiliz || 0} ${r.umb || ''}`.trim()],
-        ['Peso mayor (kg/un)', r._peso_mayor],
-        ['Toneladas', tonHtml(tonNum(r._ton_totales)), true],
-        ['Días de stock', r._sd == null ? 'Sin dato en SLIM' : `${r._sd} · ${r._q.lbl}`],
-        r.documento ? ['Pedido de venta', r.documento] : null,
-        r.ruta ? ['Ruta', `${r.ruta}${r._comuna ? ' · ' + r._comuna : ''}`] : null,
-        r.creado ? ['Fecha de entrega', r.creado] : null,
-        r.deudor ? ['ID vendedor', r.deudor] : null,
-      ],
-      nota: 'Almacén 4000 · centro físico 1003',
-    }),
-  },
-
-  // ── REVEX ─────────────────────────────────────────────────────────────────
-  pedidos_traslados_revex: {
-    titulo: 'REVEX',
-    desc: 'Pedidos de traslado de retornables (material 900000). Van primero en el orden de llenado del camión.',
-    enrich(rows) { rows.forEach(r => { r._al = alertaV2(r.fecha_confirmada, 7); r._t = tonNum(r._ton_totales); }); },
-    chip: { label: 'Destino', of: r => String(r.ce ?? '').trim(), name: v => nombreCentro(v) || v },
-    docSearch: { ph: 'N° pedido de traslado', of: r => r.doc_compr },
-    fecha: { label: 'Entrega', of: r => r.fecha_confirmada },
-    kpis: [
-      { key: 'all', label: 'Pedidos', color: C_INK, sub: 'pendientes' },
-      { key: 'at', label: 'Atrasados', color: C_RED, sub: 'fecha de entrega vencida', fn: r => r._al.k === 'Atrasado' },
-      { key: 'pv', label: 'Pronto a vencer', color: C_ORANGE, sub: '7 días o menos', fn: r => r._al.k === 'Pronto a vencer' },
-      { key: 'vi', label: 'Vigentes', color: C_GREEN, sub: 'en plazo', fn: r => r._al.k === 'Vigente' },
-    ],
-    cols: [
-      { label: 'Pedido', html: r => mono(r.doc_compr, r.creado_el ? 'creado ' + r.creado_el : '') },
-      { label: 'Destino', html: r => sucHtml(r.ce) },
-      { label: 'Material', html: r => matHtml(r.material, r.texto_breve) },
-      { label: 'Cant. pend.', al: 'r', html: r => escV2(r.ctd_pedido) + (r.ump ? ` <span class="sv-muted">${escV2(r.ump)}</span>` : '') },
-      { label: 'Ton', al: 'r', html: r => `<span class="sv-ton">${tonHtml(r._t)}</span>` },
-      { label: 'Fecha entrega', html: r => mono(r.fecha_confirmada) },
-      { label: 'Alerta', html: r => pill(r._al.k, r._al.tone) },
-    ],
-    edge: r => r._al.k === 'Atrasado' ? C_RED : null,
-    detalle: r => ({
-      kind: 'Traslado REVEX', title: r.doc_compr, sub: `${nombreCentro(r.cesu) || r.cesu} → ${nombreCentro(r.ce) || r.ce} · ${r.texto_breve || ''}`,
-      kv: [
-        ['Centro origen', r.cesu], ['Centro destino', `${r.ce}${nombreCentro(r.ce) ? ' · ' + nombreCentro(r.ce) : ''}`],
-        ['Almacén destino', r.alm], ['Material', r.material],
-        ['Cantidad pedido', `${r.ctd_pedido || 0} ${r.ump || ''}`.trim()], ['Toneladas', tonHtml(r._t), true],
-        ['Fecha entrega', r.fecha_confirmada], ['Alerta', pill(r._al.k, r._al.tone), true],
-        ['Fecha creación', r.creado_el], ['Tipo documento', r.cl],
-      ],
-      nota: '1º en el orden de llenado',
-    }),
-  },
-
-  // ── VENTAS CD (1003) ──────────────────────────────────────────────────────
-  pedidos_venta: {
-    titulo: 'Ventas CD (1003)',
-    desc: 'Pedidos de ventas con centro expedición CDRM',
-    async preload() { return { pvMap: await pvRefMap() }; },
-    enrich(rows, ctx) {
-      rows.forEach(r => {
-        const pv = ctx.pvMap[String(r.doc_ventas ?? '').trim()] || {};
-        r._cliente = pv.nombre_1 || '';
-        r._vendedor = pv.nombre || '';
-        r._cond = condExpedicion(pv.denominacion);
-        r._al = alertaV2(r.fe_entrega, 5);
-        r._ruta = (r._detalle && r._detalle[0] && r._detalle[0].ruta) || '';
-        r._comuna = (r._detalle && r._detalle[0] && r._detalle[0].comuna) || '';
-      });
-    },
-    chip: { label: 'Destino', of: r => String(r.ofvta ?? '').trim(), name: v => nombreCentro(v) || v },
-    search: { ph: 'Buscar pedido o cliente', of: r => `${r.doc_ventas} ${r._cliente} ${r._vendedor}` },
-    docSearch: null,
-    fecha: { label: 'Entrega', of: r => r.fe_entrega },
-    kpis: [
-      { key: 'all', label: 'Pedidos', color: C_INK, sub: 'pendientes con ruta' },
-      { key: 'at', label: 'Atrasados', color: C_RED, sub: 'fecha de entrega vencida', fn: r => r._al.k === 'Atrasado' },
-      { key: 'pv', label: 'Pronto a vencer', color: C_ORANGE, sub: '5 días o menos', fn: r => r._al.k === 'Pronto a vencer' },
-      { key: 'vi', label: 'Vigentes', color: C_GREEN, sub: 'en plazo', fn: r => r._al.k === 'Vigente' },
-      { key: 'cd', label: 'Camión directo', color: '#7e22ce', sub: '≥85% de la capacidad', fn: r => !!r._directo },
-    ],
-    cols: [
-      { label: 'Pedido', html: r => mono(r.doc_ventas, r.creado_el ? 'creado ' + r.creado_el : '') },
-      { label: 'Cliente', html: r => txt(r._cliente || '—', r._vendedor, true) },
-      { label: 'Destino', html: r => sucHtml(r.ofvta) },
-      { label: 'Tipo entrega', html: r => (r._cond ? `<span title="${escV2(r._cond.raw)}">${pill(r._cond.lbl, r._cond.tone)}</span>` : '<span class="sv-muted">—</span>') + (r._directo ? ` ${pill('CD-Cliente', 'purple')}` : '') },
-      { label: 'Líneas', al: 'r', html: r => escV2((r._detalle || []).length) },
-      { label: 'Ton', al: 'r', html: r => `<span class="sv-ton">${tonHtml(r._ton_num)}</span>` },
-      { label: 'Fecha entrega', html: r => mono(r.fe_entrega) },
-      { label: 'Alerta', html: r => pill(r._al.k, r._al.tone) + (r._estado ? ` ${pill('Parcial', 'warn')}` : '') },
-    ],
-    edge: r => r._al.k === 'Atrasado' ? C_RED : null,
-    note: 'CD-Cliente: pedido ≥85% de la capacidad del camión (camión directo)',
-    minW: '1100px',
-    detalle: r => ({
-      kind: 'Pedido de venta · CE CDRM', title: r.doc_ventas, sub: `${r._cliente || 'Cliente sin nombre'} → ${nombreCentro(r.ofvta) || r.ofvta}`,
-      kv: [
-        ['Tipo entrega', r._cond ? `${r._cond.lbl} (${r._cond.raw})` : '—'],
-        ['Camión', r._directo ? 'CD-Cliente (camión directo)' : 'CD-Sucursal (consolida)'],
-        ['Fecha entrega', r.fe_entrega], ['Fecha creación', r.creado_el],
-        ['Ruta', r._ruta], ['Comuna', r._comuna],
-        ['Oficina ventas', `${r.ofvta}${nombreCentro(r.ofvta) ? ' · ' + nombreCentro(r.ofvta) : ''}`], ['Toneladas', tonHtml(r._ton_num), true],
-        ['Vendedor', r._vendedor || r.deudor], ['Alerta', pill(r._al.k, r._al.tone), true],
-        r._camino_lbl ? ['Descarga en camino', r._camino_lbl.replace('DESCARGA EN CAMINO ', '').replace(/[()]/g, '')] : null,
-        r._estado ? ['Estado', 'Entrega parcial pendiente'] : null,
-      ],
-      tabla: {
-        titulo: `${(r._detalle || []).length} ${(r._detalle || []).length === 1 ? 'material pendiente' : 'materiales pendientes'}`,
-        head: [['Material'], ['Descripción'], ['Cantidad', 'r'], ['Ton', 'r']],
-        rows: (r._detalle || []).map(d => [mono(d.material), escV2(d.nombre), escV2(fmtNum(d.pendiente, 0)), `<span class="sv-ton">${tonHtml(d.ton)}</span>`]),
-      },
-      nota: '2º en el orden de llenado',
-    }),
-  },
-
-  // ── RETIROS DE FÁBRICA ────────────────────────────────────────────────────
-  retiros: {
-    titulo: 'Retiros de Fábrica',
-    desc: 'Órdenes de compra con retiro a proveedor',
-    enrich(rows) { rows.forEach(r => { r._al = alertaV2(r.fe_entrega, 5); }); },
-    chip: { label: 'Tipo retiro', of: r => r._tipo_retiro },
-    search: { ph: 'Buscar OC o proveedor', of: r => `${r.doc_compr} ${r.nombre_1} ${r.proveedor} ${r.documento || ''}` },
-    fecha: { label: 'Entrega SAP', of: r => r.fe_entrega },
-    kpis: [
-      { key: 'all', label: 'OC por retirar', color: C_INK, sub: 'todas las sucursales' },
-      { key: 'no', label: 'Sin coordinar', color: C_RED, sub: 'no entran al plan', fn: r => !esEstadoCoordinado(r._estado) },
-      { key: 'si', label: 'Coordinadas', color: C_GREEN, sub: 'con proveedor', fn: r => esEstadoCoordinado(r._estado) },
-      { key: 'at', label: 'Atrasadas', color: C_ORANGE, sub: 'vencidas hace más de 5 días, sin coordinar', fn: retiroAtrasado },
-    ],
-    cols: [
-      { label: 'Orden de compra', html: r => mono(r.doc_compr, r.contr ? 'contrato ' + r.contr : '') },
-      { label: 'Proveedor', html: r => txt(r.nombre_1, r.proveedor, true) },
-      { label: 'Destino', html: r => sucHtml(r.ce) },
-      { label: 'Tipo retiro', html: r => pill(r._tipo_retiro, TIPO_RETIRO_TONE[r._tipo_retiro] || 'mute') },
-      { label: 'Fecha SAP', html: r => mono(r.fe_entrega) },
-      { label: 'Fecha retiro', html: r => r._fecha_retiro ? mono(fmtFechaISO(r._fecha_retiro))
-          : (esEstadoCoordinado(r._estado) && r._tipo_local_rm !== 'LOCAL' ? `<span class="sv-b" style="color:${C_RED}">Falta fecha</span>` : '<span class="sv-muted">—</span>') },
-      { label: 'Ton', al: 'r', html: r => `<span class="sv-ton">${tonHtml(r._ton_num)}</span>` },
-      { label: 'Alerta', html: r => retiroAtrasado(r) ? pill('Atrasada', 'bad') : (r._al.k === 'Atrasado' ? pill('Vencida', 'orange') : pill(r._al.k, r._al.k === 'Pronto a vencer' ? 'warn' : r._al.tone)) },
-      { label: 'Coordinación', html: r => esEstadoCoordinado(r._estado) ? pill(r._tipo_local_rm === 'LOCAL' ? 'Coordinado · local' : 'Coordinado', 'ok') : pill('Sin coordinar', 'mute') },
-    ],
-    edge: r => retiroAtrasado(r) ? C_RED : (r._cliente ? C_GREEN : null),
-    note: 'FAB-CLTE: OC ≥85% de la capacidad del camión y con pedido de venta · Atrasada: vencida hace más de 5 días y sin coordinar',
-    minW: '1100px',
-    detalle: r => {
-      const coord = esEstadoCoordinado(r._estado);
-      const puede = can('coordinar_retiro');
-      const cambiarEstado = async (row, val, ctx) => {
-        const prev = row._estado, prevLbl = row._estado_lbl;
-        row._estado = val;
-        row._estado_lbl = (ESTADO_OPTS.find(o => o.v === val) || {}).l || 'No coordinado';
-        const ok = await VISTAS_TRONCAL.retiros.editable.onChange(row, val, ctx);
-        if (ok === false) { row._estado = prev; row._estado_lbl = prevLbl; return null; }
-        const est = (ctx.estados || {})[String(row.doc_compr)] || {};
-        row._upd_at = new Date().toISOString();
-        row._upd_by = await getUserEmail();
-        est.updated_at = row._upd_at; est.updated_by = row._upd_by;
-        return { redibujar: true };
-      };
-      const acciones = !puede ? [] : coord ? [
-        { label: 'Anular coordinación', icon: 'undo', run: async (row, ctx) => {
-          if (!confirm(`¿Anular la coordinación de la OC ${row.doc_compr}?\n\nVuelve a «Sin coordinar» y se limpian fecha, dirección y contacto.`)) return null;
-          return cambiarEstado(row, 'no_coordinado', ctx);
-        } },
-        { label: 'Editar coordinación', icon: 'edit_calendar', primary: true, run: (row, ctx) => cambiarEstado(row, 'coordinado', ctx) },
-      ] : [
-        { label: 'Coordinar retiro', icon: 'event_available', primary: true, run: (row, ctx) => cambiarEstado(row, 'coordinado', ctx) },
-      ];
-      const diasV = diasVencida(r.fe_entrega);
-      return {
-        kind: 'Orden de compra', title: r.doc_compr, sub: `${r.nombre_1 || ''} → ${nombreCentro(r.ce) || r.ce} · ${fmtNum(r._ton_num, 2)} t`,
-        aviso: retiroAtrasado(r) ? `<b>Atrasada:</b> la fecha SAP venció hace ${diasV} días y la OC sigue sin coordinar.` : '',
-        kv: [
-          ['Tipo retiro', pill(r._tipo_retiro, TIPO_RETIRO_TONE[r._tipo_retiro] || 'mute'), true],
-          ['Coordinación', coord ? (r._tipo_local_rm === 'LOCAL' ? 'Retiro local' : 'Retiro RM') : 'Sin coordinar'],
-          ['Almacén destino', r.alm], ['Fecha SAP', r.fe_entrega],
-          ['Fecha retiro', r._fecha_retiro ? fmtFechaISO(r._fecha_retiro) : ''], ['Toneladas', tonHtml(r._ton_num), true],
-          ['Entrega entrante', r._entrega_entrante], ['Contrato de compra', r.contr],
-          coord ? ['Dirección fábrica', r._fab_direccion] : null, coord ? ['Comuna fábrica', r._fab_comuna] : null,
-          coord ? ['Contacto', r._fab_contacto] : null, coord ? ['Teléfono', r._fab_telefono] : null,
-          r.documento ? ['Pedido de venta', r.documento] : null,
-          r.documento ? ['Tipo expedición', r._pv_denominacion] : null,
-          r.documento ? ['Cliente', r._pv_nombre_cliente] : null,
-          r.documento ? ['Vendedor', r._pv_nombre_vendedor] : null,
-          r.documento ? ['Ruta · comuna', [r._pv_ruta, r._pv_comuna].filter(Boolean).join(' · ')] : null,
-          r._revision_saldo ? ['Vigencia OC', 'Revisión saldo pedido (entrega parcial)'] : null,
-          r._upd_at ? ['Última edición', `${fechaUpd(r._upd_at)}${r._upd_by ? ' · ' + r._upd_by : ''}`] : null,
-        ],
-        tabla: {
-          titulo: `${(r._detalle || []).length} ${(r._detalle || []).length === 1 ? 'material pendiente' : 'materiales pendientes'}`,
-          head: [['Material'], ['Descripción'], ['Pendiente', 'r'], ['Ton', 'r']],
-          rows: (r._detalle || []).map(d => [mono(d.material), escV2(d.texto_breve), escV2(fmtNum(d.pendiente, 0)), `<span class="sv-ton">${tonHtml(d.ton)}</span>`]),
-        },
-        nota: '3º en el orden de llenado · sólo entran al plan las OC coordinadas',
-        acciones,
-      };
-    },
-  },
-
-  // ── CROSSDOCKING ──────────────────────────────────────────────────────────
-  pedidos_traslados_4000: {
-    titulo: 'Crossdocking',
-    desc: 'Traslados desde Almacén 4000 (CD Quilicura) a sucursales',
-    enrich(rows) { rows.forEach(r => { r._al = alertaV2(r.fe_entrega, 5); r._pv = r._origen === 'PEDIDO DE VENTAS'; }); },
-    chip: { label: 'Destino', of: r => String(r.ce ?? '').trim(), name: v => nombreCentro(v) || v },
-    docSearch: { ph: 'N° pedido de traslado', of: r => r.doc_compr },
-    fecha: { label: 'Entrega', of: r => r.fe_entrega },
-    search: { ph: 'Buscar material', of: r => `${r.material} ${r.texto_breve} ${r.documento || ''} ${r._cliente || ''}` },
-    kpis: [
-      { key: 'all', label: 'Líneas', color: C_INK, sub: 'pendientes' },
-      { key: 'st', label: 'Stock', color: C_SEC, sub: 'reposición de sucursal', fn: r => !r._pv },
-      { key: 'pv', label: 'Pedido de venta', color: C_BLUE, sub: 'asociadas a un cliente', fn: r => r._pv },
-      { key: 'at', label: 'Atrasadas', color: C_RED, sub: 'fecha de entrega vencida', fn: r => r._al.k === 'Atrasado' },
-      { key: 'pr', label: 'Pronto a vencer', color: C_ORANGE, sub: '5 días o menos', fn: r => r._al.k === 'Pronto a vencer' },
-    ],
-    cols: [
-      { label: 'Pedido traslado', html: r => mono(r.doc_compr) },
-      { label: 'Destino', html: r => sucHtml(r.ce) },
-      { label: 'Tipo', html: r => r._pv ? pill('Pedido de venta', 'info') : pill('Stock', 'mute') },
-      { label: 'Material', html: r => matHtml(r.material, r.texto_breve) },
-      { label: 'Ton', al: 'r', html: r => `<span class="sv-ton">${tonHtml(r._ton_num)}</span>` },
-      { label: 'Fecha entrega', html: r => mono(r.fe_entrega) },
-      { label: 'Alerta', html: r => pill(r._al.k, r._al.tone) },
-    ],
-    edge: r => r._al.k === 'Atrasado' ? C_RED : null,
-    minW: '1040px',
-    detalle: r => ({
-      kind: 'Traslado desde almacén 4000 · ' + (r._pv ? 'Pedido de venta' : 'Stock'), title: r.doc_compr,
-      sub: `CD Quilicura → ${nombreCentro(r.ce) || r.ce} · ${r.texto_breve || ''}`,
-      kv: [
-        ['Tipo', r._pv ? 'Pedido de venta' : 'Stock'], ['Fecha entrega', r.fe_entrega],
-        ['Material', r.material], ['Cantidad pendiente', r._ctd_pend],
-        ['Toneladas', tonHtml(r._ton_num), true], ['Almacén destino', r.alm],
-      ].concat(r._pv ? [
-        ['N° pedido de venta', r.documento], ['Tipo de expedición', r._tipo_exp],
-        ['Ruta', r._ruta], ['Comuna', r._comuna], ['Vendedor', r._vendedor], ['Cliente', r._cliente],
-      ] : []),
-      nota: '4º en el orden de llenado',
-    }),
-  },
-
-  // ── PEDIDOS DE TRASLADOS ──────────────────────────────────────────────────
-  pedidos_traslados: {
-    titulo: 'Pedidos de Traslados',
-    desc: 'Pedidos de traslados desde centros de distribución a sucursales',
-    origen: { of: r => r.cesu, opciones: ORIGENES_CD },
-    enrich(rows) { rows.forEach(r => { r._al = alertaV2(r.fecha_confirmada, 7); r._pr = PRIO_V2[r._prioridad_grupo] || PRIO_V2.E; r._q = grupoQuiebre(r._sd); }); },
-    chip: { label: 'Destino', of: r => String(r.ce ?? '').trim(), name: v => nombreCentro(v) || v },
-    docSearch: { ph: 'N° pedido de traslado', of: r => r.doc_compr },
-    fecha: { label: 'Entrega', of: r => r.fecha_confirmada },
-    search: { ph: 'Buscar material', of: r => `${r.material} ${r.texto_breve}` },
-    kpis: [
-      { key: 'all', label: 'Líneas', color: C_INK, sub: 'pendientes' },
-      { key: 'B', label: 'Usuario', color: C_RED, sub: 'pedido manual', fn: r => r._prioridad_grupo === 'B' },
-      { key: 'C', label: 'ABC AA', color: C_ORANGE, sub: 'clasificación AA', fn: r => r._prioridad_grupo === 'C' },
-      { key: 'D', label: 'Quiebre', color: C_YELLOW, sub: '≤7 días de stock', fn: r => r._prioridad_grupo === 'D' },
-      { key: 'E', label: 'Abastecimiento', color: C_GREY, sub: 'reposición normal', fn: r => r._prioridad_grupo === 'E' },
-      { key: 'at', label: 'Atrasadas', color: C_RED, sub: 'fecha de entrega vencida', fn: r => r._al.k === 'Atrasado' },
-    ],
-    cols: [
-      { label: 'Pedido', html: r => mono(r.doc_compr) },
-      { label: 'Destino', html: r => sucHtml(r.ce) },
-      { label: 'Material', html: r => matHtml(r.material, r.texto_breve) },
-      { label: 'ABC', html: r => mono(r._clasificacion_abc === 'SIN CLASIFICACIÓN' ? '' : r._clasificacion_abc) },
-      { label: 'Ton', al: 'r', html: r => `<span class="sv-ton">${tonHtml(r._ton_num)}</span>` },
-      { label: 'Fecha entrega', html: r => mono(r.fecha_confirmada) },
-      { label: 'Prioridad', html: r => pill(r._pr.lbl, r._pr.tone) },
-      { label: 'Alerta', html: r => pill(r._al.k, r._al.tone) },
-    ],
-    edge: r => r._al.k === 'Atrasado' ? C_RED : null,
-    note: 'Usuario, AA y Quiebre van en «Quiebre y priorizado» (5º); el resto en «Abastecimiento» (6º)',
-    minW: '1080px',
-    detalle: r => ({
-      kind: 'Pedido de traslado · origen ' + r.cesu, title: r.doc_compr,
-      sub: `${nombreCentro(r.cesu) || r.cesu} → ${nombreCentro(r.ce) || r.ce} · ${r.texto_breve || ''}`,
-      kv: [
-        ['Prioridad', pill(r._pr.lbl, r._pr.tone), true], ['Motivo prioridad', r._motivo_prio],
-        ['Clase ABC', r._clasificacion_abc], ['Días de stock', r._sd == null ? 'Sin dato en SLIM' : `${r._sd} · ${r._q.lbl}`],
-        ['Creado por', r._usuario], ['Fecha creación', r.creado_el],
-        ['Material', r.material], ['Cantidad', r.ctd_pedido],
-        ['Toneladas', tonHtml(r._ton_num), true], ['Fecha entrega', r.fecha_confirmada],
-        ['Almacén destino', r.alm], ['Alerta', pill(r._al.k, r._al.tone), true],
-        r.documento ? ['Pedido de venta', r.documento] : null,
-      ],
-      nota: r._prioridad_bucket === 'prioridad' ? '5º en el orden de llenado (quiebre y priorizado)' : '6º en el orden de llenado (abastecimiento)',
-    }),
-  },
-
-  // ── ENTREGAS CREADAS ──────────────────────────────────────────────────────
-  entregas_creadas: {
-    titulo: 'Entregas Creadas',
-    desc: 'Entregas creadas en SAP y su comparación con la foto del Plan de Carga (15:30 del día hábil anterior).',
-    enrich(rows) {
-      rows.forEach(r => {
-        r._est = ESTADO_PLAN_V2[r.estado_plan] || [r.estado_plan || '—', 'mute'];
-        r._comuna = lookupRuta(r.ruta).comuna || '';
-      });
-    },
-    chip: { label: 'Centro exp.', of: r => String(r.centro_fisico ?? '').trim(), name: v => nombreCentro(v) ? `${nombreCentro(v)}` : v },
-    search: { ph: 'Buscar entrega, material o documento', of: r => `${r.entrega} ${r.material} ${r.descripcion} ${r.doc_modelo}` },
-    fecha: { label: 'Creación', of: r => r.fecha_creacion },
-    kpis: [
-      { key: 'all', label: 'Todas', color: C_INK, sub: 'entregas en el rango' },
-      { key: 'CUADRA', label: 'Cuadra', color: C_GREEN, sub: 'igual a lo planificado', fn: r => r.estado_plan === 'CUADRA' },
-      { key: 'PARCIAL', label: 'Parcial', color: C_YELLOW, sub: 'menos que el plan', fn: r => r.estado_plan === 'PARCIAL' },
-      { key: 'EXCEDE', label: 'Excede', color: C_RED, sub: 'más que el plan', fn: r => r.estado_plan === 'EXCEDE' },
-      { key: 'SIN PLAN', label: 'Sin plan', color: C_GREY, sub: 'no estaba en la foto 15:30', fn: r => r.estado_plan === 'SIN PLAN' },
-    ],
-    cols: [
-      { label: 'N° entrega', html: r => mono(r.entrega, r.fecha_creacion ? fmtFechaISO(r.fecha_creacion) : '') },
-      { label: 'Ruta', html: r => mono(r.ruta, r._comuna) },
-      { label: 'Tipo', html: r => mono(r.clent) },
-      { label: 'Almacén · exp.', html: r => mono(`${r.almacen || ''}${r.almacen_inferido ? '*' : ''}`, r.centro_fisico ? 'desde ' + r.centro_fisico : '') },
-      { label: 'Material', html: r => matHtml(r.material, r.descripcion) },
-      { label: 'Cant. entrega', al: 'r', html: r => `<span class="sv-b">${escV2(fmtNum(Number(r.cantidad) || 0, 0))}</span>` },
-      { label: 'Doc. precedente', html: r => mono(r.doc_modelo) },
-      { label: 'Plan vs Σ entregas', al: 'r', html: r => r.cant_plan == null ? '<span class="sv-muted">—</span>'
-          : `${escV2(fmtNum(Number(r.cant_entregas_doc) || 0, 0))} / ${escV2(fmtNum(Number(r.cant_plan) || 0, 0))}<div class="sv-sub" style="text-align:right">${Number(r.cant_plan) ? Math.round((Number(r.cant_entregas_doc) || 0) / Number(r.cant_plan) * 100) + '% del plan' : ''}</div>` },
-      { label: 'Estado plan', html: r => pill(r._est[0], r._est[1]) },
-    ],
-    edge: r => r.estado_plan === 'EXCEDE' ? C_RED : null,
-    note: '* almacén inferido (EL→4000, ZV01/03/04→2000, resto→3000)',
-    minW: '1150px',
-    detalle: r => ({
-      kind: 'Entrega', title: r.entrega, sub: `${r.descripcion || ''}${r._comuna ? ' · ' + r._comuna : ''}`,
-      kv: [
-        ['Tipo entrega', r.clent], ['Tipo expedición', r.ce],
-        ['Almacén', `${r.almacen || ''}${r.almacen_inferido ? ' (inferido)' : ''}`], ['Centro expedición', r.centro_fisico],
-        ['Ruta', `${r.ruta || ''}${r._comuna ? ' · ' + r._comuna : ''}`], ['Fecha creación', fmtFechaISO(r.fecha_creacion)],
-        ['Material', r.material], ['Cantidad', `${fmtNum(Number(r.cantidad) || 0, 0)} ${r.um || ''}`.trim()],
-        ['Doc. precedente', r.doc_modelo], ['Estado plan', pill(r._est[0], r._est[1]), true],
-        ['Cant. plan', r.cant_plan == null ? '—' : fmtNum(Number(r.cant_plan), 0)], ['Σ entregas del doc.', fmtNum(Number(r.cant_entregas_doc) || 0, 0)],
-        ['Foto del plan', r.fecha_plan ? fmtFechaISO(r.fecha_plan) + ' · 15:30' : '—'], ['Creado por', r.creado_por],
-      ],
-      nota: 'Plan vs Σ entregas: suma de entregas del documento + material',
-    }),
-  },
-};
-// Enganchar la presentación v2 a cada vista (los modos de Stock 4000 llevan sus columnas)
-Object.entries(V2).forEach(([k, v]) => {
-  const cfg = VISTAS_TRONCAL[k];
-  if (!cfg) return;
-  cfg.v2 = v;
-  if (cfg.modes && v.modos) cfg.modes.forEach(m => { const mv = v.modos[m.id]; if (mv) { m.v2mode = { cols: mv.cols }; m.v2label = mv.v2label; m.icon = mv.icon; } });
-});
-
 // Etiqueta contadora (badge)
 function badgePill(label, count, cls) {
   return `<span class="inline-flex items-center gap-xs px-sm py-xs rounded-full text-[12px] font-bold ${cls}">
@@ -1958,10 +1473,9 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202609292044');
+    const m = await import('./ind-plan-carga.js?v=202609282310');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
-  else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
   else if (VISTAS_TRONCAL[currentSub])       await renderVistaTabla(stage, VISTAS_TRONCAL[currentSub]);
   else                                       await renderProveedores(stage);
 }
@@ -2922,7 +2436,6 @@ async function renderVistaTabla(stage, cfg, modeIdx = 0) {
   stage.innerHTML = `<div class="text-secondary text-body-md p-md">Cargando ${escapeHtml(cfg.titulo)}…</div>`;
   const ctx = active.preload ? await active.preload() : {};
   const rawRows = await fetchAllRows(active.vista);
-  setUltimaActualizacion(maxCargadoEn(rawRows));
   // Perfiles con centros asignados sólo ven filas de sus centros (campo de centro de la vista)
   const _campoCentro = active.centroCampo || active.chipFilter?.campo;
   const _rowsAll = active.transform ? active.transform(rawRows, ctx) : rawRows;

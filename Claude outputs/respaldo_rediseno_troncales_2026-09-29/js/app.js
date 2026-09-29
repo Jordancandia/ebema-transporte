@@ -1,6 +1,6 @@
-import { getDatabase, saveDatabase, initDatabase, loadRoutesData, loadHistoricoFlete360 } from './data.js?v=202609292044';
-import { supabase } from './supabase-client.js?v=202609292044';
-import { setSesionPermisos, puedeVerMenu, can, esSoloLectura, PERFILES } from './permisos.js?v=202609292044';
+import { getDatabase, saveDatabase, initDatabase, loadRoutesData, loadHistoricoFlete360 } from './data.js?v=202609282310';
+import { supabase } from './supabase-client.js?v=202609282310';
+import { setSesionPermisos, puedeVerMenu, can, esSoloLectura, PERFILES } from './permisos.js?v=202609282310';
 // ── Módulos cargados bajo demanda (lazy) — se cachean tras la primera carga ──
 const _mod = {};
 async function loadMod(key, modPath) {
@@ -9,9 +9,9 @@ async function loadMod(key, modPath) {
 }
 // Pre-warm: carga indicadores y abastecimiento en background tras login
 function prewarmMods() {
-  setTimeout(() => loadMod('ind',   './indicadores.js?v=202609292044'), 600);
+  setTimeout(() => loadMod('ind',   './indicadores.js?v=202609282310'), 600);
   setTimeout(() => loadRoutesData(), 800);  // pre-fetch tablas pesadas en background
-  setTimeout(() => loadMod('abast', './abastecimiento.js?v=202609292044'), 2000);
+  setTimeout(() => loadMod('abast', './abastecimiento.js?v=202609282310'), 2000);
 }
 import { showAlert, formatRut, validateRut, formatPhone } from './utils.js';
 
@@ -235,7 +235,7 @@ function renderApp() {
   if (!currentSession) {
     renderAuthView();
   } else if (currentSession.tipo === 'proveedor') {
-    import('./provider-portal.js?v=202609292044').then(m => m.renderProviderShell(currentSession, handleLogout));
+    import('./provider-portal.js?v=202609282310').then(m => m.renderProviderShell(currentSession, handleLogout));
   } else {
     renderDashboardShell();
   }
@@ -1157,7 +1157,7 @@ const ROLE_DISPLAY = Object.fromEntries(Object.entries(PERFILES).map(([k, v]) =>
 // MENU LATERAL - estructura declarativa con grupos desplegables
 // ==========================================================================
 const SIDEBAR_MENU = [
-  { tab: 'home', icon: 'home', label: 'Home' },
+  { tab: 'home', icon: 'home', label: 'HOME' },
   { tab: 'rates', icon: 'payments', label: 'Cotizador Despacho' },
   {
     group: 'proveedores', icon: 'groups', label: 'Proveedores', children: [
@@ -1202,11 +1202,11 @@ const SIDEBAR_MENU = [
       { tab: 'abastecimiento', sub: 'calendario',              icon: 'calendar_month',            label: 'Calendario Sucursales' },
       // { tab: 'abastecimiento', sub: 'quiebres', icon: 'production_quantity_limits', label: 'Quiebres Sucursales' }, // OCULTO: integrado en Pedidos Traslados
       { tab: 'abastecimiento', sub: 'stock_almacen',          icon: 'inventory',                  label: 'Stock Almacén 4000' },
-      { tab: 'abastecimiento', sub: 'pedidos_traslados_revex', icon: 'recycling',                 label: 'REVEX' },
-      { tab: 'abastecimiento', sub: 'pedidos_venta',          icon: 'sell',                       label: 'Ventas CD (1003)' },
+      { tab: 'abastecimiento', sub: 'pedidos_traslados_revex', icon: 'recycling',                 label: 'Pedidos de Traslado REVEX' },
+      { tab: 'abastecimiento', sub: 'pedidos_venta',          icon: 'sell',                       label: 'Pedidos de Ventas CD (1003)' },
       { tab: 'abastecimiento', sub: 'retiros',                icon: 'factory',                    label: 'Retiros de Fábrica' },
       { tab: 'abastecimiento', sub: 'pedidos_traslados_4000', icon: 'local_shipping',             label: 'Crossdocking' },
-      { tab: 'abastecimiento', sub: 'pedidos_traslados',      icon: 'swap_horiz',                 label: 'Pedidos de Traslados' },
+      { tab: 'abastecimiento', sub: 'pedidos_traslados',      icon: 'swap_horiz',                 label: 'Pedidos de Traslados 1003' },
       { tab: 'abastecimiento', sub: 'plan_carga',             icon: 'local_shipping',             label: 'Plan de Carga' },
       { tab: 'abastecimiento', sub: 'entregas_creadas',       icon: 'assignment_turned_in',       label: 'Entregas Creadas' },
       { tab: 'abastecimiento', sub: 'documentos_transporte',  icon: 'description',                label: 'Documentos de Transporte' },
@@ -1240,260 +1240,34 @@ const SUB_ALIAS = {
   'tarifas-clientes':   { zfmp: 'resultados', zfmi: 'zfmi' },
 };
 
-// ==========================================================================
-// MENÚ LATERAL v2 (rediseño 29-sep-2026)
-// La estructura de PERMISOS sigue siendo SIDEBAR_MENU (grupos/hojas que usa
-// permisos.js). NAV_LAYOUT sólo define CÓMO se agrupan en pantalla: módulos
-// con secciones (p. ej. «Tarifas» junta Tarifas Transporte y Tarifas Clientes).
-// ==========================================================================
-const NAV_LAYOUT = [
-  { tab: 'home' },
-  { tab: 'rates' },
-  { key: 'troncales', icon: 'inventory_2', label: 'Gestión Troncales', sections: [
-    { label: 'Planificación', group: 'abastecimiento', subs: ['calendario', 'plan_carga', 'entregas_creadas', 'documentos_transporte', 'ind_plan_carga'] },
-    { label: 'Datos SAP', group: 'abastecimiento', collapsible: true, subs: ['stock_almacen', 'pedidos_traslados_revex', 'pedidos_venta', 'retiros', 'pedidos_traslados_4000', 'pedidos_traslados'] },
-  ] },
-  { key: 'flete', icon: 'local_shipping', label: 'Flete Tercero', sections: [{ label: 'Seguimiento', group: 'flete-tercero' }] },
-  { key: 'ind', icon: 'monitoring', label: 'Indicadores', sections: [{ label: 'Reportes', group: 'indicadores' }] },
-  { key: 'tarifas', icon: 'calculate', label: 'Tarifas', sections: [
-    { label: 'Transporte', group: 'tarifas-transporte' },
-    { label: 'Clientes', group: 'tarifas-clientes' },
-  ] },
-  { key: 'maestros', icon: 'groups', label: 'Maestros', sections: [
-    { label: 'Proveedores', group: 'proveedores' },
-    { label: 'Rutas', group: 'rutas' },
-  ] },
-  { tab: 'roles' },
-];
-const FAV_DEFAULT = ['abastecimiento:plan_carga', 'abastecimiento:calendario', 'abastecimiento:documentos_transporte'];
-const LS_FAVS = 'sit_nav_favs';
-const LS_COLL = 'sit_nav_collapsed';
-const LS_SECT = 'sit_nav_sect_closed';
-
-function _lsGet(k, def) { try { const v = localStorage.getItem(k); return v == null ? def : JSON.parse(v); } catch (_e) { return def; } }
-function _lsSet(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (_e) { /* sin almacenamiento */ } }
-const _escN = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
-
-// Hojas visibles del menú para el perfil actual: [{ key, tab, sub, label, icon, modulo, seccion }]
-function navLeaves() {
-  const out = [];
-  NAV_LAYOUT.forEach(m => {
-    if (m.tab) {
-      const e = SIDEBAR_MENU.find(x => !x.group && x.tab === m.tab);
-      if (e && roleCanSeeEntry(e)) out.push({ key: e.tab, tab: e.tab, sub: null, label: e.label, icon: e.icon, modulo: e.label, seccion: '' });
-      return;
-    }
-    m.sections.forEach(sec => {
-      const g = SIDEBAR_MENU.find(x => x.group === sec.group);
-      if (!g || !roleCanSeeEntry(g)) return;
-      const kids = sec.subs ? sec.subs.map(s => g.children.find(c => c.sub === s)).filter(Boolean) : g.children;
-      kids.filter(c => childVisible(g, c)).forEach(c => out.push({
-        key: `${c.tab}:${c.sub}`, tab: c.tab, sub: c.sub, label: c.label, icon: c.icon, modulo: m.label, seccion: sec.label, modKey: m.key, secLabel: sec.label,
-      }));
-    });
-  });
-  return out;
-}
-function navFavs() {
-  const leaves = navLeaves();
-  const favs = _lsGet(LS_FAVS, FAV_DEFAULT);
-  return (Array.isArray(favs) ? favs : FAV_DEFAULT).map(k => leaves.find(l => l.key === k)).filter(Boolean);
-}
-function navCrumbs(tab, sub) {
-  const leaves = navLeaves();
-  const l = leaves.find(x => x.tab === tab && (sub ? x.sub === sub : !x.sub));
-  if (!l) { const m = leaves.find(x => x.tab === tab); return { path: [], last: m ? m.modulo : '' }; }
-  if (!l.sub) return { path: [], last: l.label };
-  return { path: [l.modulo, l.seccion].filter(Boolean), last: l.label };
-}
+const NAV_BASE_ITEM  = 'sidebar-item flex items-center gap-md px-md py-sm text-secondary hover:text-primary hover:bg-surface-container-high transition-colors rounded-lg cursor-pointer';
+const NAV_BASE_CHILD = 'sidebar-item flex items-center gap-sm pl-xl pr-md py-xs text-secondary hover:text-primary hover:bg-surface-container-high transition-colors rounded-lg cursor-pointer text-[13px]';
 
 function sidebarNavHTML() {
-  const leaves = navLeaves();
-  const favs = navFavs();
-  const favKeys = new Set(favs.map(f => f.key));
-  const closed = new Set(_lsGet(LS_SECT, []));
-  const favHTML = favs.length ? `
-    <div class="sv-navsec" id="sv-favs">
-      <div class="sv-navlbl sv-hide-c">Favoritos</div>
-      ${favs.map(f => `<a class="sv-item sv-fav" data-fav-tab="${f.tab}" ${f.sub ? `data-fav-sub="${f.sub}"` : ''} title="${_escN(f.label)}">
-        <span class="material-symbols-outlined">${f.icon}</span><span class="sv-hide-c">${_escN(f.label)}</span></a>`).join('')}
-    </div>` : '';
-  const mods = NAV_LAYOUT.map(m => {
-    if (m.tab) {
-      const l = leaves.find(x => x.tab === m.tab && !x.sub);
-      if (!l) return '';
-      return `<a class="sv-item sidebar-item" data-tab="${l.tab}" id="nav-${l.tab}" title="${_escN(l.label)}">
-        <span class="material-symbols-outlined">${l.icon}</span><span class="sv-hide-c">${_escN(l.label)}</span></a>`;
+  return SIDEBAR_MENU.filter(roleCanSeeEntry).map(entry => {
+    if (entry.group) {
+      return `
+        <div class="sidebar-group" data-group="${entry.group}">
+          <a class="sidebar-group-toggle flex items-center gap-md px-md py-sm text-secondary hover:text-primary hover:bg-surface-container-high transition-colors rounded-lg cursor-pointer select-none">
+            <span class="material-symbols-outlined">${entry.icon}</span>
+            <span class="font-body-md text-body-md flex-1 font-bold">${entry.label}</span>
+            <span class="material-symbols-outlined text-[18px] transition-transform sidebar-chevron">expand_more</span>
+          </a>
+          <div class="sidebar-group-children hidden mt-xs space-y-[2px]">
+            ${entry.children.filter(c => childVisible(entry, c)).map(c => `
+              <a class="${NAV_BASE_CHILD}" data-tab="${c.tab}" data-sub="${c.sub}">
+                <span class="material-symbols-outlined text-[16px]">${c.icon}</span>
+                <span>${c.label}</span>
+              </a>`).join('')}
+          </div>
+        </div>`;
     }
-    const secs = m.sections.map(sec => {
-      const items = leaves.filter(l => l.modKey === m.key && l.secLabel === sec.label);
-      if (!items.length) return '';
-      const sk = `${m.key}|${sec.label}`;
-      const isClosed = sec.collapsible && closed.has(sk);
-      return `<div class="sv-sectwrap">
-        <div class="sv-sect ${sec.collapsible ? 'is-coll' : ''} ${isClosed ? 'is-closed' : ''}" ${sec.collapsible ? `data-sect="${_escN(sk)}"` : ''}>
-          <span>${_escN(sec.label)}${sec.collapsible ? ` · ${items.length}` : ''}</span>${sec.collapsible ? '<span class="material-symbols-outlined">expand_more</span>' : ''}</div>
-        <div class="sv-sectbody ${isClosed ? 'hidden' : ''}">
-          ${items.map(c => `<a class="sv-child sidebar-item" data-tab="${c.tab}" data-sub="${c.sub}" title="${_escN(c.label)}">
-            <span class="sv-lbl">${_escN(c.label)}</span>
-            <button class="sv-star ${favKeys.has(c.key) ? 'is-on' : ''}" data-star="${c.key}" data-ro-ok title="${favKeys.has(c.key) ? 'Quitar de favoritos' : 'Agregar a favoritos'}"><span class="material-symbols-outlined">star</span></button>
-          </a>`).join('')}
-        </div></div>`;
-    }).join('');
-    if (!secs.trim()) return '';
-    return `<div class="sv-group" data-mod="${m.key}">
-      <a class="sv-item sv-group-toggle" title="${_escN(m.label)}">
-        <span class="material-symbols-outlined">${m.icon}</span><span class="sv-hide-c" style="flex:1">${_escN(m.label)}</span>
-        <span class="material-symbols-outlined sv-chev sv-hide-c">expand_more</span></a>
-      <div class="sv-kids hidden">${secs}</div></div>`;
+    return `
+      <a class="${NAV_BASE_ITEM}" data-tab="${entry.tab}" id="nav-${entry.tab}">
+        <span class="material-symbols-outlined">${entry.icon}</span>
+        <span class="font-body-md text-body-md font-bold">${entry.label}</span>
+      </a>`;
   }).join('');
-  return `${favHTML}
-    <div class="sv-navsec"><div class="sv-navlbl sv-hide-c">Módulos</div>${mods}</div>`;
-}
-
-// Paleta «Ir a una vista» (Ctrl K)
-function openGotoPalette() {
-  if (document.querySelector('.sv-pal-bg')) return;
-  const leaves = navLeaves();
-  const norm = s => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
-  const bg = document.createElement('div');
-  bg.className = 'sv-pal-bg';
-  bg.innerHTML = `<div class="sv-pal" role="dialog" aria-label="Ir a una vista">
-    <div class="sv-pal-in"><span class="material-symbols-outlined">search</span><input placeholder="Ir a una vista…" aria-label="Buscar vista"/><span class="sv-kbd">Esc</span></div>
-    <div class="sv-pal-list"></div></div>`;
-  document.body.appendChild(bg);
-  const inp = bg.querySelector('input'), list = bg.querySelector('.sv-pal-list');
-  let sel = 0, cur = leaves;
-  const close = () => bg.remove();
-  const go = l => { close(); if (l) switchTab(l.tab, l.sub); };
-  const draw = () => {
-    const q = norm(inp.value.trim());
-    cur = q ? leaves.filter(l => norm(`${l.label} ${l.modulo} ${l.seccion}`).includes(q)) : leaves;
-    if (sel >= cur.length) sel = Math.max(0, cur.length - 1);
-    list.innerHTML = cur.length ? cur.map((l, i) => `<div class="sv-pal-it ${i === sel ? 'is-sel' : ''}" data-i="${i}">
-      <span class="material-symbols-outlined">${l.icon}</span><span>${_escN(l.label)}</span>
-      <span class="sv-pal-g">${_escN([l.sub ? l.modulo : '', l.seccion].filter(Boolean).join(' › '))}</span></div>`).join('')
-      : '<div class="sv-pal-empty">Sin coincidencias.</div>';
-    list.querySelectorAll('[data-i]').forEach(el => el.addEventListener('click', () => go(cur[+el.dataset.i])));
-    list.querySelector('.is-sel')?.scrollIntoView({ block: 'nearest' });
-  };
-  inp.addEventListener('input', () => { sel = 0; draw(); });
-  inp.addEventListener('keydown', e => {
-    if (e.key === 'ArrowDown') { sel = Math.min(sel + 1, cur.length - 1); draw(); e.preventDefault(); }
-    else if (e.key === 'ArrowUp') { sel = Math.max(sel - 1, 0); draw(); e.preventDefault(); }
-    else if (e.key === 'Enter') { go(cur[sel]); }
-    else if (e.key === 'Escape') { close(); }
-  });
-  bg.addEventListener('mousedown', e => { if (e.target === bg) close(); });
-  draw();
-  inp.focus();
-}
-let _paletteKeyBound = false;
-function bindPaletteKey() {
-  if (_paletteKeyBound) return;
-  _paletteKeyBound = true;
-  document.addEventListener('keydown', e => {
-    if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K')) {
-      if (!document.getElementById('sv-nav')) return;
-      e.preventDefault();
-      openGotoPalette();
-    }
-  });
-}
-
-function wireSidebar() {
-  const nav = document.getElementById('sv-nav');
-  // Hojas del menú (módulos simples y vistas dentro de secciones)
-  nav.querySelectorAll('.sidebar-item').forEach(item => {
-    item.addEventListener('click', e => {
-      if (e.target.closest('[data-star]')) return;
-      switchTab(item.getAttribute('data-tab'), item.getAttribute('data-sub') || null);
-    });
-  });
-  // Favoritos
-  nav.querySelectorAll('.sv-fav').forEach(item => item.addEventListener('click', () =>
-    switchTab(item.dataset.favTab, item.dataset.favSub || null)));
-  // Estrella: agregar/quitar favorito
-  nav.querySelectorAll('[data-star]').forEach(btn => btn.addEventListener('click', e => {
-    e.preventDefault(); e.stopPropagation();
-    const k = btn.dataset.star;
-    const cur = navFavs().map(f => f.key);
-    const next = cur.includes(k) ? cur.filter(x => x !== k) : cur.concat([k]);
-    _lsSet(LS_FAVS, next);
-    rerenderSidebar();
-  }));
-  // Módulos con secciones
-  nav.querySelectorAll('.sv-group-toggle').forEach(t => t.addEventListener('click', () => {
-    const grp = t.closest('.sv-group');
-    if (document.body.classList.contains('sv-side-collapsed')) {
-      setSideCollapsed(false);
-      grp.querySelector('.sv-kids').classList.remove('hidden');
-      t.classList.add('is-expanded');
-      return;
-    }
-    const kids = grp.querySelector('.sv-kids');
-    const abrir = kids.classList.contains('hidden');
-    kids.classList.toggle('hidden', !abrir);
-    t.classList.toggle('is-expanded', abrir);
-  }));
-  // Secciones colapsables (p. ej. «Datos SAP»)
-  nav.querySelectorAll('[data-sect]').forEach(h => h.addEventListener('click', () => {
-    const body = h.nextElementSibling;
-    const cerrar = !body.classList.contains('hidden');
-    body.classList.toggle('hidden', cerrar);
-    h.classList.toggle('is-closed', cerrar);
-    const set = new Set(_lsGet(LS_SECT, []));
-    if (cerrar) set.add(h.dataset.sect); else set.delete(h.dataset.sect);
-    _lsSet(LS_SECT, [...set]);
-  }));
-}
-function rerenderSidebar() {
-  const cont = document.getElementById('sidebar-nav-container');
-  if (!cont) return;
-  const openMods = [...document.querySelectorAll('.sv-group')].filter(g => !g.querySelector('.sv-kids').classList.contains('hidden')).map(g => g.dataset.mod);
-  cont.innerHTML = sidebarNavHTML();
-  openMods.forEach(k => {
-    const g = document.querySelector(`.sv-group[data-mod="${k}"]`);
-    if (g) { g.querySelector('.sv-kids').classList.remove('hidden'); g.querySelector('.sv-group-toggle').classList.add('is-expanded'); }
-  });
-  wireSidebar();
-  marcarNavActivo(currentTab, currentSub);
-}
-function setSideCollapsed(v) {
-  document.body.classList.toggle('sv-side-collapsed', !!v);
-  _lsSet(LS_COLL, !!v);
-  const ic = document.querySelector('#sv-side-toggle .material-symbols-outlined');
-  if (ic) ic.textContent = v ? 'left_panel_open' : 'left_panel_close';
-}
-function marcarNavActivo(tabName, subName) {
-  document.querySelectorAll('.sidebar-item.is-active, .sv-fav.is-active').forEach(i => i.classList.remove('is-active'));
-  document.querySelectorAll('.sv-group-toggle.is-open-group').forEach(t => t.classList.remove('is-open-group'));
-  const selector = subName
-    ? `.sidebar-item[data-tab="${tabName}"][data-sub="${subName}"]`
-    : `.sidebar-item[data-tab="${tabName}"]:not([data-sub])`;
-  const activeNav = document.querySelector(selector);
-  if (activeNav) {
-    activeNav.classList.add('is-active');
-    const grp = activeNav.closest('.sv-group');
-    if (grp) {
-      grp.querySelector('.sv-kids').classList.remove('hidden');
-      const tg = grp.querySelector('.sv-group-toggle');
-      tg.classList.add('is-open-group', 'is-expanded');
-      const body = activeNav.closest('.sv-sectbody');
-      if (body && body.classList.contains('hidden')) { body.classList.remove('hidden'); body.previousElementSibling?.classList.remove('is-closed'); }
-    }
-  }
-  const favSel = subName ? `.sv-fav[data-fav-tab="${tabName}"][data-fav-sub="${subName}"]` : `.sv-fav[data-fav-tab="${tabName}"]:not([data-fav-sub])`;
-  document.querySelector(favSel)?.classList.add('is-active');
-  return activeNav;
-}
-function setBreadcrumb(tabName, subName) {
-  const c = navCrumbs(tabName, subName);
-  const el = document.getElementById('sv-crumbs');
-  if (!el) return;
-  el.innerHTML = c.path.map(p => `<span>${_escN(p)}</span><span class="material-symbols-outlined">chevron_right</span>`).join('')
-    + `<span class="sv-crumb-last" id="current-page-title">${_escN(c.last)}</span>`;
-  document.title = (c.last ? c.last + ' · ' : '') + 'SIT EBEMA';
 }
 
 
@@ -1575,54 +1349,99 @@ function applyReadOnlyMode(stage) {
 // ==========================================================================
 function renderDashboardShell() {
   setSesionPermisos(currentSession?.role, currentSession?.centros);
-  const nombre = String(currentSession?.name || currentSession?.email || '');
-  const iniciales = nombre.split(/[\s._@-]+/).filter(Boolean).slice(0, 2).map(p => p[0].toUpperCase()).join('') || 'U';
-  document.body.classList.toggle('sv-side-collapsed', !!_lsGet(LS_COLL, false));
-  const coll = document.body.classList.contains('sv-side-collapsed');
   appRoot.innerHTML = `
-    <nav class="sv-nav" id="sv-nav" aria-label="Menú principal">
-      <div class="sv-brand">
-        <div class="sv-hide-c" style="display:flex;flex-direction:column">
-          <span class="sv-brand-t">SIT EBEMA</span><span class="sv-brand-s">Logistics Admin</span>
-        </div>
-        <button class="sv-iconbtn" id="sv-side-toggle" data-ro-ok title="Contraer / expandir menú">
-          <span class="material-symbols-outlined">${coll ? 'left_panel_open' : 'left_panel_close'}</span></button>
+    <!-- SideNavBar Anchor -->
+    <nav class="flex flex-col h-full py-lg px-md h-full w-64 fixed left-0 top-0 border-r border-surface-variant bg-surface z-50">
+      <div class="mb-xl px-sm flex flex-col gap-xs">
+        <h1 class="text-headline-sm font-headline-sm font-bold text-primary">SIT EBEMA</h1>
+        <p class="text-label-caps font-label-caps text-secondary uppercase tracking-wider">Logistics Admin</p>
       </div>
-      <button class="sv-goto" id="sv-goto" data-ro-ok title="Ir a una vista (Ctrl K)">
-        <span class="material-symbols-outlined">search</span>
-        <span class="sv-hide-c" style="flex:1">Ir a una vista…</span><span class="sv-kbd sv-hide-c">Ctrl K</span>
-      </button>
-      <div class="sv-navscroll" id="sidebar-nav-container">${sidebarNavHTML()}</div>
-      <div class="sv-foot">
-        <div class="sv-avatar" title="${_escN(nombre)}">${_escN(iniciales)}</div>
-        <div class="sv-user sv-hide-c">
-          <div class="sv-user-n" id="topbar-user-name">${_escN(nombre)}</div>
-          <div class="sv-user-r">${_escN(ROLE_DISPLAY[currentSession.role] || currentSession.role)}</div>
-        </div>
-        <button class="sv-iconbtn sv-hide-c" id="btn-logout" data-ro-ok title="Cerrar sesión"><span class="material-symbols-outlined">logout</span></button>
+      
+      <div class="space-y-base flex-1 overflow-y-auto pr-xs" id="sidebar-nav-container">
+        ${sidebarNavHTML()}
+      </div>
+
+      <div class="mt-auto space-y-base border-t border-surface-variant pt-lg">
+
+        <a class="flex items-center gap-md px-md py-sm text-secondary hover:text-primary hover:bg-surface-container-high transition-colors rounded-lg cursor-pointer" id="btn-logout">
+          <span class="material-symbols-outlined">logout</span>
+          <span class="font-body-md text-body-md">Logout</span>
+        </a>
       </div>
     </nav>
 
-    <header class="sv-header">
-      <div class="sv-crumbs" id="sv-crumbs"><span class="sv-crumb-last" id="current-page-title"></span></div>
-      <div class="sv-upd hidden" id="sv-upd" title="Última actualización de los datos SAP de esta vista"></div>
+    <!-- TopAppBar Anchor -->
+    <header class="flex justify-between items-center h-16 w-full pl-72 pr-margin-desktop bg-surface/80 backdrop-blur-md sticky top-0 z-40 border-b border-surface-variant">
+      <div class="flex items-center gap-md">
+        <span class="text-headline-sm font-headline-sm font-black text-primary hidden md:block">SIT EBEMA</span>
+        <div class="h-8 w-px bg-surface-variant mx-md"></div>
+        <h2 class="text-headline-sm font-headline-sm text-on-surface" id="current-page-title">Cotizador de Tarifas</h2>
+      </div>
+      
+      <div class="flex items-center gap-lg">
+        <div class="relative hidden lg:block">
+          <span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-secondary">search</span>
+          <input class="pl-10 pr-md py-2 bg-surface-container rounded-lg border-none text-body-md w-64 focus:ring-2 focus:ring-primary/20" placeholder="Buscar..." type="text"/>
+        </div>
+        
+        <div class="flex items-center gap-sm">
+          <button class="p-2 text-secondary hover:text-primary transition-colors hover:bg-surface-container rounded-full cursor-pointer">
+            <span class="material-symbols-outlined">notifications</span>
+          </button>
+          <button class="p-2 text-secondary hover:text-primary transition-colors hover:bg-surface-container rounded-full cursor-pointer">
+            <span class="material-symbols-outlined">help_outline</span>
+          </button>
+          
+          <div class="ml-md flex items-center gap-sm border-l border-outline-variant pl-md">
+            <img alt="Administrator Profile" class="w-8 h-8 rounded-full border border-surface-variant object-cover" src="https://lh3.googleusercontent.com/aida-public/AB6AXuAAiTCyOhKKpto4TzfW6NIN1sv2OnD_9ISi9_9_tuiAbSovN5cnzTELz4Nql3oFKqQtKhma605ToY_Wn_NCRFbTTLlPwqO5mUsoaSuanYh8zDr7tuqBfaVDdqELWJ7hsYGQl0_xbHsbnSyfAJtiMUt8QMjibQpBCKP4HVz8EUYAGiIrmOly9grHxAaCVCvEcLusH9iewFzjlCHudJnFoLRiF6UTfElTfE36J3YYH5nQBtZlQWKZWewp0HE3B2ymMPHWw9X9ic394nY"/>
+            <div class="hidden sm:block text-left">
+              <p class="text-label-caps font-label-caps leading-none font-bold" id="topbar-user-name">${currentSession.name}</p>
+              <p class="text-[10px] text-secondary">${ROLE_DISPLAY[currentSession.role] || currentSession.role}</p>
+            </div>
+          </div>
+        </div>
+      </div>
     </header>
 
-    <main class="sv-main">
-      <div id="stage-area"></div>
+    <!-- Main Content Canvas -->
+    <main class="ml-64 p-margin-desktop min-h-[calc(100vh-64px)] bg-background">
+      <div id="stage-area">
+        <!-- Inyectado dinámicamente -->
+      </div>
     </main>
   `;
 
+  // Cerrar Sesión (también en el servidor)
   document.getElementById('btn-logout').addEventListener('click', handleLogout);
-  document.getElementById('sv-side-toggle').addEventListener('click', () =>
-    setSideCollapsed(!document.body.classList.contains('sv-side-collapsed')));
-  document.getElementById('sv-goto').addEventListener('click', openGotoPalette);
-  bindPaletteKey();
-  wireSidebar();
+
+
+  // Enrutamiento de pestañas del Sidebar (hojas con data-tab)
+  document.querySelectorAll('.sidebar-item').forEach(item => {
+    item.addEventListener('click', (e) => {
+      const tabName = e.currentTarget.getAttribute('data-tab');
+      const subName = e.currentTarget.getAttribute('data-sub') || null;
+      switchTab(tabName, subName);
+    });
+  });
+
+  // Toggle de grupos desplegables
+  document.querySelectorAll('.sidebar-group-toggle').forEach(toggle => {
+    toggle.addEventListener('click', (e) => {
+      const grp = e.currentTarget.closest('.sidebar-group');
+      const children = grp.querySelector('.sidebar-group-children');
+      const chevron  = grp.querySelector('.sidebar-chevron');
+      const abrir = children.classList.contains('hidden');
+      children.classList.toggle('hidden', !abrir);
+      chevron.style.transform = abrir ? 'rotate(180deg)' : '';
+    });
+  });
 
   // Cargar pestaña inicial
   switchTab(currentTab, currentSub);
 }
+
+const NAV_ACTIVE_ADD    = ['bg-primary-container', 'text-on-primary-container', 'font-semibold'];
+const NAV_ACTIVE_REMOVE = ['text-secondary', 'hover:text-primary', 'hover:bg-surface-container-high'];
 
 function _stageSpinner(stage) {
   stage.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;height:200px;gap:12px;color:#b5000b">
@@ -1670,52 +1489,79 @@ async function switchTab(tabName, subName = null) {
   currentTab = tabName;
   currentSub = subName;
 
-  // Estado activo en el menú lateral y breadcrumb del encabezado
-  marcarNavActivo(tabName, subName);
-  setBreadcrumb(tabName, subName);
-  const upd = document.getElementById('sv-upd');
-  if (upd) { upd.classList.add('hidden'); upd.innerHTML = ''; }
+  // Restaurar estado inactivo en todos los items (sin perder indentacion)
+  document.querySelectorAll('.sidebar-item').forEach(item => {
+    item.classList.remove(...NAV_ACTIVE_ADD);
+    item.classList.add(...NAV_ACTIVE_REMOVE);
+  });
+  document.querySelectorAll('.sidebar-group-toggle').forEach(t => t.classList.remove('text-primary', 'font-semibold'));
+
+  // Activar el item correspondiente (hoja simple o submenu)
+  const selector = subName
+    ? `.sidebar-item[data-tab="${tabName}"][data-sub="${subName}"]`
+    : `.sidebar-item[data-tab="${tabName}"]:not([data-sub])`;
+  const activeNav = document.querySelector(selector);
+  if (activeNav) {
+    activeNav.classList.remove(...NAV_ACTIVE_REMOVE);
+    activeNav.classList.add(...NAV_ACTIVE_ADD);
+    // Expandir y destacar el grupo padre si corresponde
+    const grp = activeNav.closest('.sidebar-group');
+    if (grp) {
+      grp.querySelector('.sidebar-group-children').classList.remove('hidden');
+      const chev = grp.querySelector('.sidebar-chevron');
+      if (chev) chev.style.transform = 'rotate(180deg)';
+      grp.querySelector('.sidebar-group-toggle').classList.add('text-primary', 'font-semibold');
+    }
+  }
 
   // Resolver alias de subtab (submenus que apuntan a vistas existentes)
   const aliasMap = SUB_ALIAS[tabName] || {};
   const alias = subName != null ? (aliasMap[subName] !== undefined ? aliasMap[subName] : subName) : null;
 
+  const pageTitle = document.getElementById('current-page-title');
   const stage = document.getElementById('stage-area');
+  const subLabel = activeNav && subName ? ` — ${activeNav.textContent.trim()}` : '';
 
   _stageSpinner(stage);
   switch (tabName) {
     case 'home': {
-      const m = await loadMod('ind', './indicadores.js?v=202609292044');
+      pageTitle.textContent = 'Indicadores';
+      const m = await loadMod('ind', './indicadores.js?v=202609282310');
       m.renderIndicadoresHome(stage);
       break;
     }
     case 'rates': {
       await loadRoutesData();
-      const m = await loadMod('rates', './rates.js?v=202609292044');
+      pageTitle.textContent = 'Cotizador Despacho';
+      const m = await loadMod('rates', './rates.js?v=202609282310');
       m.renderRatesView(stage);
       break;
     }
     case 'transports': {
-      const m = await loadMod('trans', './transports.js?v=202609292044');
+      pageTitle.textContent = 'Proveedores' + subLabel;
+      const m = await loadMod('trans', './transports.js?v=202609282310');
       m.renderTransportsView(stage);
       break;
     }
     case 'routes': {
       await loadRoutesData();
-      const m = await loadMod('routes', './routes.js?v=202609292044');
+      pageTitle.textContent = 'Rutas de Transporte' + subLabel;
+      const m = await loadMod('routes', './routes.js?v=202609282310');
       if (alias) m.setRoutesSubTab(alias);
       m.renderRoutesView(stage);
       break;
     }
     case 'roles': {
-      const m = await loadMod('roles', './roles.js?v=202609292044');
+      pageTitle.textContent = 'Roles y Perfiles';
+      const m = await loadMod('roles', './roles.js?v=202609282310');
       m.renderRolesView(stage);
       break;
     }
     case 'tarifas-transporte': {
       await loadRoutesData();
       await loadHistoricoFlete360();
-      const m = await loadMod('tt', './tarifas-transporte.js?v=202609292044');
+      pageTitle.textContent = 'Tarifas Transporte' + subLabel;
+      const m = await loadMod('tt', './tarifas-transporte.js?v=202609282310');
       if (alias) m.setActiveSub(alias);
       m.renderTariffTransportView(stage);
       break;
@@ -1723,27 +1569,31 @@ async function switchTab(tabName, subName = null) {
     case 'tarifas-clientes': {
       await loadRoutesData();
       await loadHistoricoFlete360();
-      const m = await loadMod('tc', './tarifas-clientes.js?v=202609292044');
+      pageTitle.textContent = 'Tarifas Clientes' + subLabel;
+      const m = await loadMod('tc', './tarifas-clientes.js?v=202609282310');
       if (alias) m.setActiveSubC(alias);
       m.renderClientTariffView(stage);
       break;
     }
     case 'abastecimiento': {
       await loadRoutesData();
-      const m = await loadMod('abast', './abastecimiento.js?v=202609292044');
+      pageTitle.textContent = 'Gestión Troncales' + subLabel;
+      const m = await loadMod('abast', './abastecimiento.js?v=202609282310');
       if (subName) m.setAbastSubTab(subName);
       m.renderAbastecimientoView(stage);
       break;
     }
     case 'indicadores': {
-      const m = await loadMod('ind', './indicadores.js?v=202609292044');
+      pageTitle.textContent = 'Indicadores';
+      const m = await loadMod('ind', './indicadores.js?v=202609282310');
       if (subName) m.setIndicadoresSubTab(subName);
       m.renderIndicadoresView(stage);
       break;
     }
     case 'flete-tercero': {
       await loadRoutesData();
-      const m = await loadMod('fter', './flete-tercero.js?v=202609292044');
+      pageTitle.textContent = 'Flete Tercero' + subLabel;
+      const m = await loadMod('fter', './flete-tercero.js?v=202609282310');
       if (subName) m.setFleteTerceroSubTab(subName);
       m.renderFleteTerceroView(stage);
       break;

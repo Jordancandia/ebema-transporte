@@ -2,3 +2,7 @@ deploy_log.txt
 ebema-transporte-qa/
 Exportacion_BD_CSV/
 node_modules/
+
+# Material de diseño y respaldos locales (no publicar)
+Mejora de experiencia en transporte.zip
+Claude outputs/web_snapshot.tgz
