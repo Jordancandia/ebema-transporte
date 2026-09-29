@@ -320,28 +320,3 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
 
   draw();
 }
-
-// ── Gráfico «camión que se llena» ───────────────────────────────────────────
-// segs: [{ ton, color, label }] en orden de llenado; cap: capacidad (t).
-// El relleno ocupa el % de la capacidad (tope 100 %); si la carga supera la
-// capacidad se dibuja un 2º camión punteado verde con el excedente.
-// opts: { w, h, color } — color único (DT / indicadores) cuando no hay segs.
-export function truckGauge(segs, cap, opts = {}) {
-  const w = opts.w || 150, h = opts.h || 30;
-  const total = segs.reduce((s, x) => s + (x.ton || 0), 0);
-  let restante = cap;
-  const partes = segs.filter(s => s.ton > 0).map(s => {
-    const t = Math.max(0, Math.min(s.ton, restante));
-    restante -= t;
-    return t > 0 ? `<i title="${esc(s.label || '')}: ${Number(s.ton).toLocaleString('es-CL', { maximumFractionDigits: 1 })} t" style="width:${cap > 0 ? (t / cap * 100) : 0}%;background:${s.color}"></i>` : '';
-  }).join('');
-  const excede = Math.max(0, total - cap);
-  const segundo = excede > 0 ? `<div class="sv-trk2" title="2º camión: ${excede.toLocaleString('es-CL', { maximumFractionDigits: 1 })} t">
-      <span>2º camión</span><div class="sv-trk2-box" style="width:${Math.round(w * 0.46)}px;height:${Math.round(h * 0.7)}px"><i style="width:${Math.min(100, excede / cap * 100)}%"></i></div></div>` : '';
-  return `<div class="sv-trk-wrap"><div class="sv-trk" style="--tw:${w}px;--th:${h}px">
-      <div class="sv-trk-box"><div class="sv-trk-fill">${partes}</div></div><div class="sv-trk-cab"></div>
-      <span class="sv-trk-wh" style="left:10px"></span><span class="sv-trk-wh" style="left:${w - 22}px"></span><span class="sv-trk-wh" style="left:${w + 14}px"></span>
-    </div>${segundo}</div>`;
-}
-// Color por umbral de consolidación (DT / indicadores): ≥80 verde, 70–80 amarillo, <70 gris
-export function colorUmbral(pct) { return pct >= 80 ? '#15803d' : pct >= 70 ? '#ca8a04' : '#9ca3af'; }
