@@ -1,7 +1,7 @@
 // Capa de datos de SIT EBEMA
 // Fuente principal: Supabase (PostgreSQL compartido, protegido con RLS).
 // localStorage se mantiene como copia local de respaldo (modo sin conexión).
-import { supabase } from './supabase-client.js?v=202609282224';
+import { supabase } from './supabase-client.js?v=202609282310';
 
 const STORAGE_KEY = 'ebema_transporte_db';
 
@@ -40,7 +40,10 @@ export async function loadRoutesData() {
   if (_routesLoading) return _routesLoading;
   _routesLoading = (async () => {
     try {
-      const results = await Promise.all(LAZY_TABLE_MAP.map(t => fetchAllRows(t.table)));
+      // Caché versionado (IndexedDB): solo descarga si la tabla cambió en Supabase
+      const [versions, uid] = await Promise.all([_getRemoteVersions(), _cacheUid()]);
+      const results = await Promise.all(LAZY_TABLE_MAP.map(t =>
+        fetchCached(t.table, () => fetchAllRows(t.table), versions, uid)));
       if (!memoryDb) return; // sesión no iniciada aún
       LAZY_TABLE_MAP.forEach((t, i) => { memoryDb[t.local] = results[i] || []; });
       // Las rutas llegan de Supabase con origen_grupo = null: se deriva desde el
@@ -295,6 +298,7 @@ export async function loadHistoricoFlete360(force = false) {
   if (_histF360Loading && !force) return _histF360Loading;
   _histF360Loading = (async () => {
     try {
+      const _fetchHist = async () => {
       let from = 0, all = [];
       while (true) {
         const { data, error } = await supabase
@@ -309,6 +313,11 @@ export async function loadHistoricoFlete360(force = false) {
         if (!data || data.length < PAGE_SIZE) break;
         from += PAGE_SIZE;
       }
+      return all;
+      };
+      const [versions, uid] = await Promise.all([_getRemoteVersions(), _cacheUid()]);
+      // force=true (botón recargar) ignora la caché y la reescribe con datos frescos
+      const all = await fetchCached('v_hist_tarifas', _fetchHist, versions, uid, force);
       const rows = all.map(r => ({
         fecha:           r.fecha || '',
         oficina:         String(r.centro_expedicion || ''),
@@ -347,6 +356,90 @@ export async function loadHistoricoFlete360(force = false) {
     }
   })();
   return _histF360Loading;
+}
+
+// ─── Caché versionado en IndexedDB para tablas pesadas (routes, route_tolls,
+// transport_zones, v_hist_tarifas) ───────────────────────────────────────────
+// public.data_version guarda la fecha del último cambio de cada tabla (triggers en BD;
+// v_hist_tarifas se marca al refrescarse en fn_ind_refresh_all). Si la versión remota
+// coincide con la guardada en el navegador, se usan las filas locales y no se descarga
+// nada. La clave incluye el user_id porque RLS entrega filas distintas según el rol.
+const CACHE_DB    = 'sit_ebema_cache';
+const CACHE_STORE = 'tablas';
+
+function _openCacheDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(CACHE_DB, 1);
+    req.onupgradeneeded = (e) => {
+      const db = e.target.result;
+      if (!db.objectStoreNames.contains(CACHE_STORE)) db.createObjectStore(CACHE_STORE);
+    };
+    req.onsuccess = (e) => resolve(e.target.result);
+    req.onerror   = (e) => reject(e.target.error);
+  });
+}
+
+async function _cacheGet(key) {
+  try {
+    const db = await _openCacheDB();
+    return await new Promise((resolve, reject) => {
+      const req = db.transaction(CACHE_STORE, 'readonly').objectStore(CACHE_STORE).get(key);
+      req.onsuccess = (e) => resolve(e.target.result || null);
+      req.onerror   = (e) => reject(e.target.error);
+    });
+  } catch (_e) { return null; }
+}
+
+async function _cachePut(key, value) {
+  try {
+    const db = await _openCacheDB();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(CACHE_STORE, 'readwrite');
+      tx.objectStore(CACHE_STORE).put(value, key);
+      tx.oncomplete = () => resolve();
+      tx.onerror    = (e) => reject(e.target.error);
+    });
+  } catch (e) { console.warn('Caché IDB no disponible:', e.message || e); }
+}
+
+async function _getRemoteVersions() {
+  try {
+    const { data, error } = await supabase.from('data_version').select('tabla,version');
+    if (error) throw error;
+    const m = {};
+    (data || []).forEach(r => { m[r.tabla] = r.version; });
+    return m;
+  } catch (e) {
+    console.warn('data_version no disponible, se descarga sin caché:', e.message || e);
+    return null;
+  }
+}
+
+async function _cacheUid() {
+  try { return (await supabase.auth.getSession()).data?.session?.user?.id || null; }
+  catch (_e) { return null; }
+}
+
+// Devuelve las filas de la caché si la versión coincide; si no, descarga con fetcher()
+// y guarda una copia (clonada ANTES de que la app mute las filas en memoria).
+async function fetchCached(table, fetcher, versions, uid, force = false) {
+  const remoteV = versions && versions[table];
+  const key = uid ? `${uid}:${table}` : null;
+  if (!force && remoteV && key) {
+    const c = await _cacheGet(key);
+    if (c && c.version === remoteV && Array.isArray(c.rows)) {
+      console.info(`[cache] ${table}: ${c.rows.length} filas desde caché local (sin descarga)`);
+      return c.rows;
+    }
+  }
+  const rows = await fetcher();
+  if (remoteV && key) {
+    let copy = null;
+    try { copy = structuredClone(rows); } catch (_e) { copy = null; }
+    if (copy) _cachePut(key, { version: remoteV, rows: copy, savedAt: Date.now() });
+  }
+  console.info(`[cache] ${table}: ${rows.length} filas descargadas de Supabase`);
+  return rows;
 }
 
 async function fetchAllRows(table) {
