@@ -1,7 +1,7 @@
 // Motor Actuarial — Administrador de Tarifas Transporte (SIT EBEMA)
 // Implementa, ruta por ruta y tipo de camión por tipo de camión, el cálculo
 // de costos definido en "PANTALLA 1: ADMINISTRADOR DE TARIFAS TRANSPORTE".
-import { truckCapKg, getGroupRepId } from './data.js?v=202609300005';
+import { truckCapKg, getGroupRepId } from './data.js?v=202609292339';
 
 // Capacidades nominales soportadas (kg)
 export const CAP_LIST = [5000, 10000, 15000, 28000];
@@ -78,15 +78,9 @@ export function calcularCostoRuta(db, cfg, ruta, capKg, opciones = {}) {
   const kmMensual = Number(cfg.kmOfrecidos[kmKey]) || 0;
   const kmAnual = kmMensual * 12;
 
-  // --- 3. SOAP + Permiso de circulación por KM (30-sep-2026) ---
-  // SOAP anual por tipo de camión (cfg.soapTransversal, igual para todos los
-  // centros; respaldo: permisosSoap[centro|cap].soap) + permiso de circulación
-  // anual por centro y camión (permisosSoap[centro|cap].permiso), prorrateados
-  // por los km anuales ofrecidos.
-  const permisoSoap = (cfg.permisosSoap || {})[kmKey] || {};
-  const soapAnual = Number((cfg.soapTransversal || {})[capKey]) || Number(permisoSoap.soap) || 0;
-  const permisoAnual = Number(permisoSoap.permiso) || 0;
-  const item3_soapKm = kmAnual > 0 ? ((soapAnual + permisoAnual) / kmAnual) * km : 0;
+  // --- 3. SOAP por KM ---
+  const permisoSoap = cfg.permisosSoap[kmKey] || { permiso: 0, soap: 0 };
+  const item3_soapKm = kmAnual > 0 ? (Number(permisoSoap.soap || 0) / kmAnual) * km : 0;
 
   // --- 4. Seguro de carga por KM ---
   const ufVal = Number(cfg.variables.valorUF) || 0;
@@ -141,7 +135,7 @@ export function calcularCostoRuta(db, cfg, ruta, capKg, opciones = {}) {
     peajeIda, peajeVuelta, item1_peajes,
     extraCostsRuta, itemExtraIda, itemExtraVuelta, item1b_costosExtra,
     combIda, combVuelta, item2_combustible,
-    item3_soapKm, soapAnual, permisoAnual, item4_seguroKm, item5_mantKm, item6_neumKm, item7_gpsKm,
+    item3_soapKm, item4_seguroKm, item5_mantKm, item6_neumKm, item7_gpsKm,
     item8_choferBaseDiario, item9_varChofer,
     factorRuta, costoVuelta, item10_costoRutaTotal, item11_costoKmFinal,
     zcap: item12_zcap,

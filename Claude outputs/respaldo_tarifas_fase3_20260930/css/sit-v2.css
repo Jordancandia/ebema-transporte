@@ -404,12 +404,3 @@ body.sv-side-collapsed .sv-foot { justify-content: center; }
 @media (max-width: 760px) { .tf-step { grid-template-columns: 36px 1fr 110px; } .tf-step .tf-barw, .tf-step .tf-go { display: none; } }
 tr.tf-sel td { background: #fff5f3 !important; }
 tr.tf-sel td:first-child { box-shadow: inset 3px 0 0 var(--sv-primary); }
-/* ── Tarifas fase 3: clientes (30-sep-2026) ─────────────────────────────── */
-.tf-pbar { display: flex; align-items: center; gap: 8px; }
-.tf-pbar > span { font-size: 12px; font-variant-numeric: tabular-nums; min-width: 42px; }
-.tf-pbar-t { position: relative; flex: 1; min-width: 90px; height: 8px; background: var(--sv-s2); border-radius: 4px; }
-.tf-pbar-t > i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 4px; }
-.tf-pbar-t > b { position: absolute; top: -4px; bottom: -4px; width: 2px; margin-left: -1px; background: #191c1d; border-radius: 1px; }
-.tf-stack { display: flex; height: 10px; border-radius: 5px; overflow: hidden; background: var(--sv-s2); min-width: 140px; }
-.tf-stack > i { display: block; height: 100%; }
-.tf-color { width: 34px; height: 26px; padding: 0; border: 1px solid var(--sv-line); border-radius: 4px; background: #fff; cursor: pointer; }

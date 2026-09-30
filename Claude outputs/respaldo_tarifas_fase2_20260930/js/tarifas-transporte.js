@@ -1,15 +1,14 @@
 // PANTALLA 1: Administrador de Tarifas Transporte — SIT EBEMA
 // Sub-módulos: Peajes, Combustibles y Rendimientos, Seguros y Permisos,
 // Variables Generales y Motor de Costo (ZCAP) con exportación CSV.
-import { getDatabase, saveDatabase, getCentreName, getTariffConfig, getClientTariffConfig, truckCapKg, getOrigenGroups, getGroupRepId, buildTruckTypes, TRUCK_BASE_TYPES, loadHistorico, loadHistoricoFlete360, deleteRow } from './data.js?v=202609300005';
-import { CAP_LIST, truckTypesWithCap, calcularMatrizCostos, calcularCostoRuta } from './tarifas-engine.js?v=202609300005';
+import { getDatabase, saveDatabase, getCentreName, getTariffConfig, getClientTariffConfig, truckCapKg, getOrigenGroups, getGroupRepId, buildTruckTypes, TRUCK_BASE_TYPES, loadHistorico, loadHistoricoFlete360, deleteRow } from './data.js?v=202609292339';
+import { CAP_LIST, truckTypesWithCap, calcularMatrizCostos, calcularCostoRuta } from './tarifas-engine.js?v=202609292339';
 import { formatCLP, parseCSV, showAlert, toCSV, downloadFile, escapeHtml } from './utils.js';
-import { supabase } from './supabase-client.js?v=202609300005';
-import { getField } from './zonas-transporte.js?v=202609300005';
-import { renderZcapView, calcZcapRow } from './zcap.js?v=202609300005';
-import { can } from './permisos.js?v=202609300005';
-import { renderPeajesV2, setPeajesTab, renderCombustiblesV2, renderSegurosV2, renderCostosExtrasV2, renderVariablesV2, renderMotorV2 } from './tarifas-insumos.js?v=202609300005';
-import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, textoImpacto, setParamPill, usuarioSesion } from './tarifas-ui.js?v=202609300005';
+import { supabase } from './supabase-client.js?v=202609292339';
+import { getField } from './zonas-transporte.js?v=202609292339';
+import { renderZcapView, calcZcapRow } from './zcap.js?v=202609292339';
+import { can } from './permisos.js?v=202609292339';
+import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, textoImpacto, setParamPill, usuarioSesion } from './tarifas-ui.js?v=202609292339';
 
 // FIX: Escuchar errores de sincronización con Supabase y notificar al usuario
 window.addEventListener('db_sync_error', (e) => {
@@ -164,22 +163,12 @@ export function renderTariffTransportView(container) {
 
   const inPeajes = PEAJES_SUBS.includes(activeSub);
   // Vistas rediseñadas (v2, 29-sep-2026) dibujan su propio encabezado
-  const V2_SUBS = ['camiones', 'zcap', 'peajes', 'peajes-inter', 'concesiones', 'combustibles', 'seguros', 'costos-extras', 'variables', 'resultados', 'resultados-inter'];
+  const V2_SUBS = ['camiones', 'zcap'];
   if (V2_SUBS.includes(activeSub)) {
     container.innerHTML = '<div id="tt-content"></div>';
     const content = document.getElementById('tt-content');
-    switch (activeSub) {
-      case 'camiones':      renderTarifasCamion(content, db, cfg); break;
-      case 'zcap':          renderZcapView(content); break;
-      case 'peajes':        renderPeajesV2(content, db, cfg); break;
-      case 'peajes-inter':  setPeajesTab('inter'); renderPeajesV2(content, db, cfg); break;
-      case 'concesiones':   setPeajesTab('conc'); renderPeajesV2(content, db, cfg); break;
-      case 'combustibles':  renderCombustiblesV2(content, db, cfg); break;
-      case 'seguros':       renderSegurosV2(content, db, cfg); break;
-      case 'costos-extras': renderCostosExtrasV2(content, db, cfg); break;
-      case 'variables':     renderVariablesV2(content, db, cfg); break;
-      default:              renderMotorV2(content, db, cfg, { mergeStgoSb: mergeStgoSbMatriz, onActualizarPonderados: () => actualizarPonderados(db, cfg) });
-    }
+    if (activeSub === 'camiones') renderTarifasCamion(content, db, cfg);
+    else renderZcapView(content);
     return;
   }
 
@@ -2162,23 +2151,6 @@ function computeParticipacionFresh(db) {
 // solo recalcula ese Centro Origen; en caso contrario recalcula todos.
 // Devuelve un Set con los ids de tipos de camión que sí tienen rutas activas
 // (y por tanto valor ZCAP vigente).
-// «Actualizar ponderados» del Motor de Costos (misma lógica que el antiguo
-// botón «Actualizar Tarifas»): recalcula el peso de cada ruta desde el
-// histórico y los ponderados por camión. Guarda sólo tariff_config y truck_types.
-async function actualizarPonderados(db, cfg) {
-  if (!getClientTariffConfig(db).historico?.length) {
-    const fresh = await loadHistoricoFlete360();
-    if (fresh?.length) getClientTariffConfig(db).historico = fresh;
-  }
-  const partFresh = computeParticipacionFresh(db);
-  if (partFresh && Object.keys(partFresh).length > 0) {
-    cfg.participacionRutas = partFresh;
-    saveDatabase(db, { syncOnly: ['tariffConfig'] });
-  }
-  const conZcap = syncTarifasZcap(db, cfg, '');
-  showAlert(`Ponderados actualizados — ${conZcap.size} tipo(s) de camión`);
-}
-
 function syncTarifasZcap(db, cfg, grupoFiltro = '') {
   const allGroups  = getOrigenGroups(db);
   const grupos_filt = grupoFiltro ? allGroups.filter(g => g.grupo === grupoFiltro) : allGroups;

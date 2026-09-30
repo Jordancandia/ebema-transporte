@@ -1,11 +1,10 @@
 // MÓDULO: Administrador de Tarifas Clientes — SIT EBEMA v2.1
 // Vistas: Histórico (6M) | Consolidación | Densidad Logística | Frecuencia y Especiales | Cluster | Resultados
-import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig, saveHistorico, loadHistorico, saveHistoricoGlobal, getOrigenGroups, loadHistoricoFlete360 } from './data.js?v=202609300005';
-import { CAP_LIST, truckTypesWithCap, calcularCostoRuta } from './tarifas-engine.js?v=202609300005';
-import { buildZcapMap } from './zcap.js?v=202609300005';
+import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig, saveHistorico, loadHistorico, saveHistoricoGlobal, getOrigenGroups, loadHistoricoFlete360 } from './data.js?v=202609292339';
+import { CAP_LIST, truckTypesWithCap, calcularCostoRuta } from './tarifas-engine.js?v=202609292339';
+import { buildZcapMap } from './zcap.js?v=202609292339';
 import { formatCLP, showAlert, toCSV, downloadFile, formatDateDDMMYYYY, escapeHtml } from './utils.js';
-import { supabase } from './supabase-client.js?v=202609300005';
-import { renderClientesV2 } from './tarifas-clientes-v2.js?v=202609300005';
+import { supabase } from './supabase-client.js?v=202609292339';
 
 // ─────────────────────────────────────────────────────────────
 // ESTADO DE MÓDULO
@@ -262,51 +261,15 @@ export function renderClientTariffView(container) {
         oficinaToGrupo = computeOficinaGrupos(db, rows);
         // Re-renderizar la subvista activa si ya está montada
         const ctContent = document.getElementById('ct-content');
-        if (ctContent) renderClientesV2(ctContent, activeSubC, ctx);
+        if (ctContent) renderSub();
       }
     });
   }
 
   container.innerHTML = `<div id="ct-content"></div>`;
 
-  // Rediseño v2 (30-sep-2026): todas las subvistas usan tarifas-clientes-v2.js
-  const ctx = {
-    db, cfg, ccfg,
-    hist: () => histData,
-    grupoDe: getCentroGroup, getCapBucket, computeConsolidacionStats, objetivoConsol, computeOpClusterMap,
-    clusterOpDe, anchorsOpFor, persistClusterOpDB, asignarClustersCentro, clOpAzimut, ejeOpDe, EJES_OP, EJES_OP_DEFAULT,
-    async recargarFlete360() {
-      const rows = await loadHistoricoFlete360(true);
-      if (!rows.length) { showAlert('No se pudo leer FLETE 360 (sin datos o sin permisos).', 'error'); return false; }
-      histData = rows;
-      oficinaToGrupo = computeOficinaGrupos(db, rows);
-      saveDatabase(db, { syncOnly: ['clientTariffConfig'] }); // persiste histMeta (el detalle no va en la config)
-      showAlert(`${rows.length.toLocaleString('es-CL')} filas leídas desde FLETE 360 (6 meses móviles).`);
-      return true;
-    },
-    cargarCsvManual(file, done) {
-      const reader = new FileReader();
-      reader.onload = async (ev) => {
-        const parsed = parseHistCSV(ev.target.result);
-        if (!parsed.length) { showAlert('No se encontraron filas válidas en el CSV.', 'error'); return; }
-        histData = parsed;
-        oficinaToGrupo = computeOficinaGrupos(db, parsed);
-        ccfg.histMeta = { uploadDate: formatDateDDMMYYYY(new Date()), rowCount: parsed.length, fileName: file.name };
-        ccfg.historico = parsed;
-        saveDatabase(db, { syncOnly: ['clientTariffConfig'] });
-        saveHistorico(parsed);
-        done();
-        const okSync = await saveHistoricoGlobal(parsed, { fileName: file.name });
-        showAlert(okSync ? 'Histórico cargado y sincronizado — visible para todos los usuarios.' : 'El histórico se guardó localmente, pero falló la sincronización con la base de datos.', okSync ? 'success' : 'error');
-      };
-      reader.readAsText(file, 'windows-1252');
-    },
-  };
-  const renderV2 = () => renderClientesV2(document.getElementById('ct-content'), activeSubC, ctx);
-  renderV2();
-  return;
+  renderSub();
 
-  // eslint-disable-next-line no-unreachable
   function renderSub() {
     const content = document.getElementById('ct-content');
     switch (activeSubC) {
