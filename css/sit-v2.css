@@ -521,7 +521,7 @@ tr.tf-sel td:first-child { box-shadow: inset 3px 0 0 var(--sv-primary); }
 .pc-legend .pc-sep { width: 1px; height: 16px; background: var(--sv-line); margin: 0 4px; }
 .pc-legend .material-symbols-outlined { vertical-align: middle; margin-right: 2px; }
 .pc-list { display: flex; flex-direction: column; gap: 8px; }
-.pc-row { cursor: pointer; background: #fff; border: 1px solid var(--sv-line); border-radius: 8px; padding: 14px 16px; display: flex; flex-wrap: wrap; gap: 14px 20px; align-items: center; text-align: left; font-family: inherit; color: var(--sv-ink); }
+.pc-row { cursor: pointer; background: #fff; border: 1px solid var(--sv-line); border-radius: 8px; padding: 14px 16px; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 14px 20px; align-items: center; text-align: left; font-family: inherit; color: var(--sv-ink); }
 .pc-row:hover { border-color: var(--sv-line-h); }
 .pc-row:focus-visible { outline: 2px solid var(--sv-primary); outline-offset: 1px; }
 .pc-row.is-agenda { box-shadow: inset 3px 0 0 #15803d; }
@@ -538,7 +538,7 @@ tr.tf-sel td:first-child { box-shadow: inset 3px 0 0 var(--sv-primary); }
 .pc-tag.baja { background: #ffedd5; color: #7c2d12; }
 .pc-tag.promo { background: #e1e3e4; color: #191c1d; }
 .pc-tag.h48 { background: #edeeef; color: #444749; }
-.pc-carga { flex: 1 1 380px; display: flex; align-items: center; gap: 14px; min-width: 0; }
+.pc-carga { flex: 1 1 300px; max-width: 540px; display: flex; align-items: center; gap: 14px; min-width: 0; }
 .pc-truckw { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 .pc-truck { display: flex; align-items: flex-end; }
 .pc-box { flex: 1; min-width: 0; height: 46px; border: 1.5px solid #444749; border-radius: 4px; background: #fff; display: flex; padding: 2px; gap: 2px; }
@@ -551,10 +551,11 @@ tr.tf-sel td:first-child { box-shadow: inset 3px 0 0 var(--sv-primary); }
 .pc-small > span { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
 .pc-small i { width: 8px; height: 8px; border-radius: 2px; }
 .pc-small b { color: var(--sv-ink); }
-.pc-pct { flex-shrink: 0; width: 92px; display: flex; flex-direction: column; align-items: flex-end; white-space: nowrap; }
-.pc-pct b { font-size: 24px; line-height: 28px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.pc-pct { flex-shrink: 0; width: 104px; display: flex; flex-direction: column; align-items: flex-end; white-space: nowrap; }
+.pc-pct b { font-size: 36px; line-height: 40px; font-weight: 800; font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
 .pc-pct small { font-size: 12px; color: var(--sv-ink2); }
-.pc-estado { flex: 0 0 150px; display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 600; }
+.pc-estado { flex: 0 0 auto; display: flex; align-items: center; gap: 16px; font-size: 12px; font-weight: 600; min-width: 0; }
+.pc-est-r { display: flex; flex-direction: column; gap: 5px; min-width: 0; align-items: flex-start; }
 .pc-st { display: inline-flex; align-items: center; gap: 6px; align-self: flex-start; padding: 3px 10px; border-radius: 12px; font-size: 12px; font-weight: 700; white-space: nowrap; }
 .pc-st i { width: 7px; height: 7px; border-radius: 50%; }
 .pc-dirs { flex: 0 0 190px; display: flex; flex-direction: column; gap: 4px; }
@@ -595,3 +596,12 @@ tr.tf-sel td:first-child { box-shadow: inset 3px 0 0 var(--sv-primary); }
 .pc-extra.pc-seg2 .sv-btn, .pc-extra.pc-seg2 .sv-btn-p { flex-shrink: 0; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 .pc-tbl tr.is-seg td { background: #f0fdf4; }
 .pc-tbl tr.is-seg td:first-child { box-shadow: inset 3px 0 0 #15803d; }
+.pc-segchip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 4px 2px 8px; border-radius: 12px; border: 1px dashed #15803d; background: #fff; color: #14532d; font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; white-space: nowrap; }
+.pc-segchip .material-symbols-outlined { font-size: 16px; }
+.pc-segchip:hover { background: #f0fdf4; }
+.pc-segchip.is-ok { border-style: solid; background: #15803d; color: #fff; }
+/* Fila del plan en grilla: columnas alineadas entre sucursales, camión acotado y % junto al estado (30-sep-2026) */
+@media (min-width: 1180px) {
+  .pc-row { display: grid; grid-template-columns: minmax(150px, 200px) minmax(300px, 520px) minmax(270px, 1fr) 190px; justify-content: stretch; gap: 14px 24px; }
+  .pc-suc, .pc-carga, .pc-estado, .pc-dirs { min-width: 0; max-width: none; }
+}
