@@ -602,6 +602,22 @@ tr.tf-sel td:first-child { box-shadow: inset 3px 0 0 var(--sv-primary); }
 .pc-segchip.is-ok { border-style: solid; background: #15803d; color: #fff; }
 /* Fila del plan en grilla: columnas alineadas entre sucursales, camión acotado y % junto al estado (30-sep-2026) */
 @media (min-width: 1180px) {
-  .pc-row { display: grid; grid-template-columns: minmax(150px, 200px) minmax(300px, 520px) minmax(270px, 1fr) 190px; justify-content: stretch; gap: 14px 24px; }
+  .pc-row { display: grid; grid-template-columns: minmax(170px, 1fr) minmax(320px, 2.2fr) minmax(280px, 1.15fr) minmax(190px, 1fr); justify-content: stretch; gap: 14px 28px; }
   .pc-suc, .pc-carga, .pc-estado, .pc-dirs { min-width: 0; max-width: none; }
+  .pc-carga { justify-content: center; }
+  .pc-carga .pc-truckw { max-width: 600px; }
+  .pc-estado { justify-content: flex-start; padding-left: 8px; }
 }
+/* Tipografía más grande en la fila (30-sep-2026) */
+.pc-suc b { font-size: 19px; }
+.pc-suc .sv-mono { font-size: 13px; }
+.pc-tag { font-size: 12px; padding: 2px 7px; }
+.pc-lbl { font-size: 12px; }
+.pc-dir { font-size: 14px; font-weight: 700; }
+.pc-dir .material-symbols-outlined { font-size: 21px; }
+.pc-dir em { font-size: 12px; }
+.pc-nodir { font-size: 14px; }
+.pc-dirs { gap: 6px; }
+.pc-st { font-size: 13px; padding: 4px 12px; }
+.pc-est-r { font-size: 13px; }
+.pc-pct small { font-size: 13px; }
