@@ -71,7 +71,7 @@ function hoyISO() {
 export async function renderTablaV2(stage, cfg, deps, viewKey) {
   const V = cfg.v2;
   const st = _estado.get(viewKey) || {
-    kpi: 'all', chip: 'all', chip2: 'all', q: '', qDoc: '', dFrom: '', dTo: '',
+    kpi: 'all', chip: 'all', q: '', qDoc: '', dFrom: '', dTo: '',
     orig: V.origen ? V.origen.opciones[0][0] : null, mode: 0, drawer: null,
   };
   if (!_estado.has(viewKey) && cfg.dateDefaultHoy) { st.dFrom = st.dTo = hoyISO(); }
@@ -123,12 +123,7 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
       return true;
     });
   }
-  // chip2 (opcional): 2º filtro por chips, p. ej. Centro Destino en Retiros (30-sep-2026).
-  function aplicaChip2(pre) {
-    return AV.chip2 && st.chip2 !== 'all' ? pre.filter(r => String(AV.chip2.of(r) ?? '') === st.chip2) : pre;
-  }
-  function aplica(pre0) {
-    const pre = aplicaChip2(pre0);
+  function aplica(pre) {
     const byChip = AV.chip && st.chip !== 'all' ? pre.filter(r => String(AV.chip.of(r) ?? '') === st.chip) : pre;
     const q = st.q.trim().toLowerCase();
     const f = kpiFn(st.kpi);
@@ -152,7 +147,7 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
   function draw() {
     const pre = base();
     const { byChip, filt } = aplica(pre);
-    const hasFilter = st.kpi !== 'all' || st.chip !== 'all' || st.chip2 !== 'all' || !!st.q.trim() || !!st.qDoc.trim() || !!st.dFrom || !!st.dTo;
+    const hasFilter = st.kpi !== 'all' || st.chip !== 'all' || !!st.q.trim() || !!st.qDoc.trim() || !!st.dFrom || !!st.dTo;
 
     const kpis = kpisDef.length ? `<div class="sv-kpis">${kpisDef.map(k => {
       const n = k.fn ? byChip.filter(k.fn).length : byChip.length;
@@ -164,21 +159,12 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
     }).join('')}</div>` : '';
 
     let chips = '';
-    if (AV.chip2) {
-      const vals2 = [...new Set(pre.map(r => String(AV.chip2.of(r) ?? '')).filter(Boolean))].sort((a, b) => (AV.chip2.orden ? AV.chip2.orden(a, b) : a.localeCompare(b)));
-      const nm2 = AV.chip2.name || (v => v);
-      chips += `<div class="sv-frow"><span class="sv-flbl">${esc(AV.chip2.label)}</span>
-        <button class="sv-chip ${st.chip2 === 'all' ? 'is-on' : ''}" data-chip data-chip2v="all">Todos <small>${pre.length}</small></button>
-        ${vals2.map(v => `<button class="sv-chip ${st.chip2 === v ? 'is-on' : ''}" data-chip data-chip2v="${esc(v)}">${esc(nm2(v))} <small>${pre.filter(r => String(AV.chip2.of(r) ?? '') === v).length}</small></button>`).join('')}
-      </div>`;
-    }
     if (AV.chip) {
-      const pre2 = aplicaChip2(pre);
-      const vals = [...new Set(pre2.map(r => String(AV.chip.of(r) ?? '')).filter(Boolean))].sort((a, b) => (AV.chip.orden ? AV.chip.orden(a, b) : a.localeCompare(b)));
+      const vals = [...new Set(pre.map(r => String(AV.chip.of(r) ?? '')).filter(Boolean))].sort((a, b) => (AV.chip.orden ? AV.chip.orden(a, b) : a.localeCompare(b)));
       const nm = AV.chip.name || (v => v);
-      chips += `<div class="sv-frow"><span class="sv-flbl">${esc(AV.chip.label)}</span>
-        <button class="sv-chip ${st.chip === 'all' ? 'is-on' : ''}" data-chip data-chipv="all">Todos <small>${pre2.length}</small></button>
-        ${vals.map(v => `<button class="sv-chip ${st.chip === v ? 'is-on' : ''}" data-chip data-chipv="${esc(v)}">${esc(nm(v))} <small>${pre2.filter(r => String(AV.chip.of(r) ?? '') === v).length}</small></button>`).join('')}
+      chips = `<div class="sv-frow"><span class="sv-flbl">${esc(AV.chip.label)}</span>
+        <button class="sv-chip ${st.chip === 'all' ? 'is-on' : ''}" data-chip data-chipv="all">Todos <small>${pre.length}</small></button>
+        ${vals.map(v => `<button class="sv-chip ${st.chip === v ? 'is-on' : ''}" data-chip data-chipv="${esc(v)}">${esc(nm(v))} <small>${pre.filter(r => String(AV.chip.of(r) ?? '') === v).length}</small></button>`).join('')}
       </div>`;
     }
     const inputs = [];
@@ -232,16 +218,13 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
     stage.querySelectorAll('[data-chipv]').forEach(b => b.addEventListener('click', () => {
       const v = b.dataset.chipv; st.chip = (st.chip === v && v !== 'all') ? 'all' : v; draw();
     }));
-    stage.querySelectorAll('[data-chip2v]').forEach(b => b.addEventListener('click', () => {
-      const v = b.dataset.chip2v; st.chip2 = (st.chip2 === v && v !== 'all') ? 'all' : v; draw();
-    }));
-    stage.querySelectorAll('[data-orig]').forEach(b => b.addEventListener('click', () => { st.orig = b.dataset.orig; st.chip = 'all'; st.chip2 = 'all'; draw(); }));
+    stage.querySelectorAll('[data-orig]').forEach(b => b.addEventListener('click', () => { st.orig = b.dataset.orig; st.chip = 'all'; draw(); }));
     stage.querySelectorAll('[data-mode]').forEach(b => b.addEventListener('click', () => {
       const m = +b.dataset.mode; if (m === st.mode) return;
-      st.mode = m; st.kpi = 'all'; st.chip = 'all'; st.chip2 = 'all'; renderTablaV2(stage, cfg, deps, viewKey);
+      st.mode = m; st.kpi = 'all'; st.chip = 'all'; renderTablaV2(stage, cfg, deps, viewKey);
     }));
     stage.querySelector('[data-clear]')?.addEventListener('click', () => {
-      Object.assign(st, { kpi: 'all', chip: 'all', chip2: 'all', q: '', qDoc: '', dFrom: '', dTo: '' }); draw();
+      Object.assign(st, { kpi: 'all', chip: 'all', q: '', qDoc: '', dFrom: '', dTo: '' }); draw();
     });
     stage.querySelector('[data-q]')?.addEventListener('input', e => { st.q = e.target.value; draw(); refocus('[data-q]'); });
     stage.querySelector('[data-qdoc]')?.addEventListener('input', e => {
@@ -319,15 +302,13 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
         if (!confirm(`¿Excluir del Plan de Carga ${etiqueta}?\n\nLa exclusión vale sólo para el plan de hoy.`)) return;
         if (await deps.excluirDelPlan(ex.tipo, doc, mat || null, 'Excluido desde ' + AV.titulo)) {
           deps.showAlert('Excluido del Plan de Carga', 'success');
-          exclusiones = await deps.loadExclusionesPlan();
-          if (AV.onPlanChange) { await AV.onPlanChange(rowsAll, ctx); st.drawer = id; draw(); } else openDrawer(id);
+          exclusiones = await deps.loadExclusionesPlan(); openDrawer(id);
         }
       } else if (a.id === 'reactivar') {
         const ex = exclusionDe(r);
         if (ex && await deps.reactivarEnPlan(Number(ex.id))) {
           deps.showAlert('Reactivado en el Plan de Carga', 'success');
-          exclusiones = await deps.loadExclusionesPlan();
-          if (AV.onPlanChange) { await AV.onPlanChange(rowsAll, ctx); st.drawer = id; draw(); } else openDrawer(id);
+          exclusiones = await deps.loadExclusionesPlan(); openDrawer(id);
         }
       } else if (a.run) {
         const res = await a.run(r, ctx);

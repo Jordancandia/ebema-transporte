@@ -10,11 +10,11 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202609301447';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202609301447';
-import { getDatabase } from './data.js?v=202609301447';
+import { supabase } from './supabase-client.js?v=202609301249';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202609301249';
+import { getDatabase } from './data.js?v=202609301249';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202609301447';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202609301249';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -330,42 +330,19 @@ async function excluirDelPlan(tipo, doc, material, motivo) {
 // ── NV 1003 marcadas manualmente como CD-CLIENTE (AJUSTE 30-sep-2026) ───────
 // Saca de la consolidación un despacho que por regla (<85%) se consolidaba.
 // Persistente hasta que se quite la marca. Sólo perfil OWNER (can('forzar_cd_cliente')).
-// (30-sep-2026) Ambos sentidos: 'CD-CLIENTE' (camión directo) o 'CONSOLIDABLE' (sube con carga a sucursal).
-// Map doc_ventas → tipo. tipo null en setVentaDirectoManual = volver a regla automática.
 async function loadVentasDirectoManual() {
-  const { data, error } = await supabase.from('abast_venta_directo_manual').select('doc_ventas,tipo');
-  if (error) { console.error(error); return new Map(); }
-  return new Map((data || []).map(r => [String(r.doc_ventas ?? '').trim(), r.tipo]));
+  const { data, error } = await supabase.from('abast_venta_directo_manual').select('doc_ventas');
+  if (error) { console.error(error); return new Set(); }
+  return new Set((data || []).map(r => String(r.doc_ventas ?? '').trim()));
 }
-async function setVentaDirectoManual(doc, tipo) {
+async function setVentaDirectoManual(doc, activo) {
   const d = String(doc ?? '').trim();
-  const { error } = tipo
-    ? await supabase.from('abast_venta_directo_manual').upsert({ doc_ventas: d, tipo, motivo: 'Tipo de entrega manual desde Ventas CD (1003)', created_by: await getUserEmail() }, { onConflict: 'doc_ventas' })
+  const { error } = activo
+    ? await supabase.from('abast_venta_directo_manual').upsert({ doc_ventas: d, tipo: 'CD-CLIENTE', motivo: 'Marcado manual desde Ventas CD (1003)', created_by: await getUserEmail() }, { onConflict: 'doc_ventas' })
     : await supabase.from('abast_venta_directo_manual').delete().eq('doc_ventas', d);
   if (error) { showAlert('Error al guardar tipo de entrega: ' + error.message, 'error'); return false; }
   return true;
 }
-// ── Inclusiones manuales del Plan de Carga (Pedidos de Traslado, 30-sep-2026) ──
-// OWNER fuerza una línea (doc_compr + material) dentro del camión CD: entra antes
-// que el resto de traslados, aun fuera de la ventana -10/+7. Vigente sólo hoy.
-async function loadInclusionesPlan() {
-  const { data, error } = await supabase.from('abast_plan_inclusiones').select('*').order('created_at', { ascending: false });
-  if (error) { console.error(error); return []; }
-  return (data || []).filter(e => esExclusionVigenteHoy(e.created_at));
-}
-async function incluirEnPlan(doc, material) {
-  const payload = { tipo: 'traslados_1003', doc: String(doc).trim(), material: String(material).trim(), motivo: 'Incluido manual desde Pedidos de Traslado', created_by: await getUserEmail(), created_at: new Date().toISOString() };
-  const { error } = await supabase.from('abast_plan_inclusiones').upsert(payload, { onConflict: 'tipo,doc,material' });
-  if (error) { showAlert('Error al incluir: ' + error.message, 'error'); return false; }
-  return true;
-}
-async function quitarInclusionPlan(doc, material) {
-  const { error } = await supabase.from('abast_plan_inclusiones').delete().eq('tipo', 'traslados_1003').eq('doc', String(doc).trim()).eq('material', String(material).trim());
-  if (error) { showAlert('Error al quitar inclusión: ' + error.message, 'error'); return false; }
-  return true;
-}
-const _keyInc = (doc, mat) => `${String(doc ?? '').trim()}|${String(mat ?? '').trim()}`;
-
 // Clave de cliente para agrupar NV (misma regla que el Plan de Carga y la vista SQL).
 // (30-sep-2026, Jordan) El cliente es la columna SOLICITANTE del SQVI; DEUDOR (func Z0)
 // NO es el cliente. Sin solicitante: nombre de cliente de la ref. NV; si no, el propio pedido.
@@ -944,7 +921,7 @@ const VISTAS_TRONCAL = {
     // NV marcadas manualmente (abast_venta_directo_manual) son siempre CD-CLIENTE.
     postFilter(filas, _chip, ctx) {
       const c = ctx || {};
-      const forz = c.ventasDirectoManual || new Map();
+      const forz = c.ventasDirectoManual || new Set();
       const pvMap = c.pvMap || {};
       const lim = c.diaHabil2 || addBusinessDays(hoy00(), 2, c.feriadosSet || new Set());
       const grupos = {};
@@ -955,19 +932,16 @@ const VISTAS_TRONCAL = {
         r._cliente_key = clienteKeyNV(doc, r.solicitante, pvMap[doc]);
         const gk = `${String(r.ofvta ?? '').trim()}|${r._cliente_key}|${vig ? 'VIGENTE' : isoLocal(fe)}`;
         (grupos[gk] = grupos[gk] || []).push(r);
-        r._manual = forz.get(doc) || '';
-        r._forzado = r._manual === 'CD-CLIENTE';
+        r._forzado = forz.has(doc);
       });
       Object.values(grupos).forEach(g => {
-        // NV marcadas CONSOLIDABLE no suman al grupo del cliente.
-        const ev = g.filter(r => r._manual !== 'CONSOLIDABLE');
-        const tonG = ev.reduce((s, r) => s + (r._ton_num || 0), 0);
+        const tonG = g.reduce((s, r) => s + (r._ton_num || 0), 0);
         const cap = getCapacidadCamion(g[0].ofvta);
         const porCliente = tonG > cap * UMBRAL_CD_CLIENTE;
         g.forEach(r => {
-          r._ton_cliente = tonG; r._n_pedidos_cliente = ev.length;
-          r._directo = r._manual === 'CD-CLIENTE' || (r._manual !== 'CONSOLIDABLE' && porCliente);
-          r._directo_motivo = r._manual ? 'MANUAL' : (porCliente ? (ev.length > 1 ? 'CLIENTE' : 'PEDIDO') : '');
+          r._ton_cliente = tonG; r._n_pedidos_cliente = g.length;
+          r._directo = porCliente || r._forzado;
+          r._directo_motivo = r._forzado ? 'MANUAL' : (porCliente ? (g.length > 1 ? 'CLIENTE' : 'PEDIDO') : '');
           r._tipo_entrega = r._directo ? 'CD-CLIENTE' : 'CD-SUCURSAL';
         });
       });
@@ -1705,7 +1679,7 @@ const V2 = {
       { label: 'Pedido', html: r => mono(r.doc_ventas, r.creado_el ? 'creado ' + r.creado_el : '') },
       { label: 'Cliente', html: r => txt(r._cliente || '—', r._vendedor, true) },
       { label: 'Destino', html: r => sucHtml(r.ofvta) },
-      { label: 'Tipo entrega', html: r => (r._cond ? `<span title="${escV2(r._cond.raw)}">${pill(r._cond.lbl, r._cond.tone)}</span>` : '<span class="sv-muted">—</span>') + (r._directo ? ` ${pill(r._manual ? 'CD-Cliente · manual' : 'CD-Cliente', 'purple')}` : (r._manual === 'CONSOLIDABLE' ? ` ${pill('Consolidable · manual', 'mute')}` : '')) },
+      { label: 'Tipo entrega', html: r => (r._cond ? `<span title="${escV2(r._cond.raw)}">${pill(r._cond.lbl, r._cond.tone)}</span>` : '<span class="sv-muted">—</span>') + (r._directo ? ` ${pill(r._forzado ? 'CD-Cliente · manual' : 'CD-Cliente', 'purple')}` : '') },
       { label: 'Líneas', al: 'r', html: r => escV2((r._detalle || []).length) },
       { label: 'Ton', al: 'r', html: r => `<span class="sv-ton">${tonHtml(r._ton_num)}</span>` },
       { label: 'Fecha entrega', html: r => mono(r.fe_entrega) },
@@ -1716,23 +1690,20 @@ const V2 = {
     minW: '1100px',
     detalle: r => {
       const puedeForzar = can('forzar_cd_cliente');
-      const motivoLbl = r._manual === 'CONSOLIDABLE' ? 'Consolidable (marcado manual · sube con carga a sucursal)'
-        : r._directo_motivo === 'MANUAL' ? 'CD-Cliente (marcado manual)'
+      const motivoLbl = r._directo_motivo === 'MANUAL' ? 'CD-Cliente (marcado manual)'
         : r._directo_motivo === 'CLIENTE' ? `CD-Cliente (${r._n_pedidos_cliente} pedidos del cliente suman ${fmtNum(r._ton_cliente, 1)} t)`
         : r._directo ? 'CD-Cliente (camión directo)' : `CD-Sucursal (consolida · cliente suma ${fmtNum(r._ton_cliente || r._ton_num, 1)} t)`;
-      const marcar = (tipo, lbl, icon, primary) => ({ label: lbl, icon, primary, run: async row => {
-        const txtT = tipo === 'CD-CLIENTE' ? 'camión directo CD-Cliente' : 'CONSOLIDABLE (sube con carga a sucursal)';
-        if (!confirm(`¿Marcar el pedido ${row.doc_ventas} como ${txtT}?\n\nAjusta el Plan de Carga hasta que se vuelva a la regla automática.`)) return null;
-        return (await setVentaDirectoManual(row.doc_ventas, tipo)) ? (showAlert(`Pedido marcado como ${tipo === 'CD-CLIENTE' ? 'CD-Cliente' : 'Consolidable'}`, 'success'), { recargar: true }) : null;
-      } });
-      const acciones = !puedeForzar ? [] : [
-        r._manual ? { label: 'Volver a regla automática', icon: 'undo', run: async row => {
-          if (!confirm(`¿Quitar el tipo de entrega manual del pedido ${row.doc_ventas}?\n\nVuelve a evaluarse con la regla del 85% por cliente.`)) return null;
-          return (await setVentaDirectoManual(row.doc_ventas, null)) ? (showAlert('Pedido vuelve a la regla automática', 'success'), { recargar: true }) : null;
-        } } : null,
-        r._directo ? marcar('CONSOLIDABLE', 'Marcar como Consolidable', 'move_down', true)
-                   : marcar('CD-CLIENTE', 'Marcar como CD-Cliente', 'local_shipping', true),
-      ].filter(Boolean);
+      const acciones = !puedeForzar ? [] : r._forzado ? [
+        { label: 'Volver a regla automática', icon: 'undo', run: async row => {
+          if (!confirm(`¿Quitar la marca manual CD-Cliente del pedido ${row.doc_ventas}?\n\nVuelve a evaluarse con la regla del 85% por cliente.`)) return null;
+          return (await setVentaDirectoManual(row.doc_ventas, false)) ? (showAlert('Pedido vuelve a la regla automática', 'success'), { recargar: true }) : null;
+        } },
+      ] : r._directo ? [] : [
+        { label: 'Marcar como CD-Cliente', icon: 'local_shipping', primary: true, run: async row => {
+          if (!confirm(`¿Marcar el pedido ${row.doc_ventas} como camión directo CD-Cliente?\n\nSale de la consolidación del Plan de Carga hasta que se quite la marca.`)) return null;
+          return (await setVentaDirectoManual(row.doc_ventas, true)) ? (showAlert('Pedido marcado como CD-Cliente', 'success'), { recargar: true }) : null;
+        } },
+      ];
       return {
       kind: 'Pedido de venta · CE CDRM', title: r.doc_ventas, sub: `${r._cliente || 'Cliente sin nombre'} → ${nombreCentro(r.ofvta) || r.ofvta}`,
       kv: [
@@ -1761,7 +1732,6 @@ const V2 = {
     titulo: 'Retiros de Fábrica',
     desc: 'Órdenes de compra con retiro a proveedor',
     enrich(rows) { rows.forEach(r => { r._al = alertaV2(r.fe_entrega, 5); }); },
-    chip2: { label: 'Destino', of: r => String(r.ce ?? '').trim(), name: v => nombreCentro(v) || v },
     chip: { label: 'Tipo retiro', of: r => r._tipo_retiro },
     search: { ph: 'Buscar OC o proveedor', of: r => `${r.doc_compr} ${r.nombre_1} ${r.proveedor} ${r.documento || ''}` },
     fecha: { label: 'Entrega SAP', of: r => r.fe_entrega },
@@ -1889,21 +1859,13 @@ const V2 = {
     titulo: 'Pedidos de Traslados',
     desc: 'Pedidos de traslados desde centros de distribución a sucursales',
     origen: { of: r => r.cesu, opciones: ORIGENES_CD },
-    async preload() { return { estadoPlan: await estadoPlanTraslados() }; },
-    enrich(rows, ctx) {
-      rows.forEach(r => { r._al = alertaV2(r.fecha_confirmada, 7); r._pr = PRIO_V2[r._prioridad_grupo] || PRIO_V2.E; r._q = grupoQuiebre(r._sd); });
-      ctx._rows = rows;
-      aplicarEstadoPlanTraslados(rows, ctx.estadoPlan);
-    },
-    // Tras excluir/reactivar/incluir: recalcula el plan y el estado de cada línea.
-    async onPlanChange(rows, ctx) { ctx.estadoPlan = await estadoPlanTraslados(); aplicarEstadoPlanTraslados(rows, ctx.estadoPlan); },
+    enrich(rows) { rows.forEach(r => { r._al = alertaV2(r.fecha_confirmada, 7); r._pr = PRIO_V2[r._prioridad_grupo] || PRIO_V2.E; r._q = grupoQuiebre(r._sd); }); },
     chip: { label: 'Destino', of: r => String(r.ce ?? '').trim(), name: v => nombreCentro(v) || v },
     docSearch: { ph: 'N° pedido de traslado', of: r => r.doc_compr },
     fecha: { label: 'Entrega', of: r => r.fecha_confirmada },
     search: { ph: 'Buscar material', of: r => `${r.material} ${r.texto_breve}` },
     kpis: [
       { key: 'all', label: 'Líneas', color: C_INK, sub: 'pendientes' },
-      { key: 'plan', label: 'En plan de carga', color: C_GREEN, sub: 'van en el camión CD hoy', fn: r => !!r._en_plan },
       { key: 'B', label: 'Usuario', color: C_RED, sub: 'pedido manual', fn: r => r._prioridad_grupo === 'B' },
       { key: 'C', label: 'ABC AA', color: C_ORANGE, sub: 'clasificación AA', fn: r => r._prioridad_grupo === 'C' },
       { key: 'D', label: 'Quiebre', color: C_YELLOW, sub: '≤7 días de stock', fn: r => r._prioridad_grupo === 'D' },
@@ -1918,41 +1880,13 @@ const V2 = {
       { label: 'Ton', al: 'r', html: r => `<span class="sv-ton">${tonHtml(r._ton_num)}</span>` },
       { label: 'Fecha entrega', html: r => mono(r.fecha_confirmada) },
       { label: 'Prioridad', html: r => pill(r._pr.lbl, r._pr.tone) },
-      { label: 'Plan de carga', html: r => { const p = PLAN_LINEA_V2[r._plan] || PLAN_LINEA_V2.FUERA; return pill(p[0], p[1]) + (r._plan_inc ? ` ${pill('Manual', 'purple')}` : ''); } },
       { label: 'Alerta', html: r => pill(r._al.k, r._al.tone) },
     ],
-    edge: r => r._en_plan ? C_GREEN : (r._al.k === 'Atrasado' ? C_RED : null),
-    note: 'Borde verde: línea que va en el camión CD del plan de hoy · Usuario, AA y Quiebre van en «Quiebre y priorizado» (5º); el resto en «Abastecimiento» (6º)',
+    edge: r => r._al.k === 'Atrasado' ? C_RED : null,
+    note: 'Usuario, AA y Quiebre van en «Quiebre y priorizado» (5º); el resto en «Abastecimiento» (6º)',
     minW: '1080px',
-    detalle: r => {
-      const p = PLAN_LINEA_V2[r._plan] || PLAN_LINEA_V2.FUERA;
-      const c = r._plan_centro;
-      const expl = {
-        EN_CAMION: 'Va en el camión CD del plan de hoy.',
-        CAMION2: 'Va en el 2º camión (aceptado).',
-        CAMION2_PROP: 'No cabe en el camión CD; iría en el 2º camión propuesto (falta aceptarlo en el Plan de Carga).',
-        NO_CABE: 'Está en la ventana del plan pero no cabe en el camión: queda para el próximo plan.',
-        EXCLUIDO: 'Excluida hoy del Plan de Carga.',
-        FUERA: 'No entra al plan: fuera de la ventana de fechas (−10/+7 días hábiles) o sin cantidad confirmada.',
-      }[r._plan] || '';
-      const puede = can('incluir_plan');
-      const recalcular = async (row, ctx) => { await V2.pedidos_traslados.onPlanChange(ctx._rows, ctx); return { redibujar: true }; };
-      const acciones = !puede ? [] : r._plan_inc ? [
-        { label: 'Quitar inclusión manual', icon: 'undo', run: async (row, ctx) => {
-          if (!confirm(`¿Quitar la inclusión manual del material ${row.material} (pedido ${row.doc_compr})?\n\nVuelve a la prioridad automática.`)) return null;
-          if (!(await quitarInclusionPlan(row.doc_compr, row.material))) return null;
-          showAlert('Inclusión manual quitada', 'success'); return recalcular(row, ctx);
-        } },
-      ] : (!r._en_plan && r._plan !== 'EXCLUIDO') ? [
-        { label: 'Incluir en plan de carga', icon: 'playlist_add', primary: true, run: async (row, ctx) => {
-          if (!confirm(`¿Incluir hoy en el Plan de Carga el material ${row.material} del pedido ${row.doc_compr}?\n\nEntra al camión CD antes que el resto de los traslados y puede dejar fuera otras líneas. Vale sólo para el plan de hoy.`)) return null;
-          if (!(await incluirEnPlan(row.doc_compr, row.material))) return null;
-          showAlert('Línea incluida en el Plan de Carga', 'success'); return recalcular(row, ctx);
-        } },
-      ] : [];
-      return {
+    detalle: r => ({
       kind: 'Pedido de traslado · origen ' + r.cesu, title: r.doc_compr,
-      aviso: `<b>Plan de carga:</b> ${escV2(p[0])}${r._plan_inc ? ' (incluida manual)' : ''}. ${escV2(expl)}${c ? ` Camión CD ${escV2(nombreCentro(r.ce) || r.ce)}: ${escV2(fmtNum(c.total, 1))} t · ${escV2(c.pct)}% · ${escV2(c.status)}.` : ''}`,
       sub: `${nombreCentro(r.cesu) || r.cesu} → ${nombreCentro(r.ce) || r.ce} · ${r.texto_breve || ''}`,
       kv: [
         ['Prioridad', pill(r._pr.lbl, r._pr.tone), true], ['Motivo prioridad', r._motivo_prio],
@@ -1963,10 +1897,8 @@ const V2 = {
         ['Almacén destino', r.alm], ['Alerta', pill(r._al.k, r._al.tone), true],
         r.documento ? ['Pedido de venta', r.documento] : null,
       ],
-      nota: r._plan_inc ? 'Incluida manual: entra antes que el resto de los traslados' : (r._prioridad_bucket === 'prioridad' ? '5º en el orden de llenado (quiebre y priorizado)' : '6º en el orden de llenado (abastecimiento)'),
-      acciones,
-      };
-    },
+      nota: r._prioridad_bucket === 'prioridad' ? '5º en el orden de llenado (quiebre y priorizado)' : '6º en el orden de llenado (abastecimiento)',
+    }),
   },
 
   // ── ENTREGAS CREADAS ──────────────────────────────────────────────────────
@@ -2103,7 +2035,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202609301447');
+    const m = await import('./ind-plan-carga.js?v=202609301249');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
@@ -2279,11 +2211,7 @@ function asignarCamionesCD(r) {
   const doc = d => String(d.pt ?? d.oc ?? d.pv ?? '').trim();
   const mat = d => String(d.material ?? '').trim();
   const orden = [];
-  // (30-sep-2026) Líneas de traslado incluidas manualmente entran antes que el resto de traslados.
-  const trs = [...(r.det.quiebre || []), ...(r.det.stock || [])];
-  const forz = trs.filter(d => d._forzadoPlan);
-  [r.det.revex, r.det.ventaCons, r.det.retiro, r.det.cross, forz,
-   (r.det.quiebre || []).filter(d => !d._forzadoPlan), (r.det.stock || []).filter(d => !d._forzadoPlan)].forEach(arr => {
+  [r.det.revex, r.det.ventaCons, r.det.retiro, r.det.cross, r.det.quiebre, r.det.stock].forEach(arr => {
     (arr || []).slice()
       .sort((a, b) => ((a._orden ?? 0) - (b._orden ?? 0)) || cmp(doc(a), doc(b)) || cmp(mat(a), mat(b)))
       .forEach(d => orden.push(d));
@@ -2302,66 +2230,12 @@ function asignarCamionesCD(r) {
   return { cargado: acc, excedente, segundoPropuesto, tonSegundo: acc2 };
 }
 
-// ── Estado de cada línea de Pedidos de Traslado en el Plan de Carga (30-sep-2026) ──
-// Calcula el plan de ambos CD (1003 y 1081) con la MISMA función del Plan de Carga
-// (modo sólo-cálculo) y devuelve, por origen|destino|doc|material, si la línea va
-// en el camión CD, en el 2º camión (propuesto/aceptado) o no cabe.
-async function estadoPlanTraslados() {
-  const lineas = new Map(), centros = {};
-  let exclusiones = [], inclusiones = [];
-  let seg = new Set();
-  try {
-    const { data } = await supabase.from('abast_plan_segundo_camion').select('cd_origen,ce').eq('fecha', isoLocal(hoy00()));
-    seg = new Set((data || []).map(x => `${String(x.cd_origen ?? '').trim()}|${String(x.ce ?? '').trim()}`));
-  } catch (_e) { /* sin 2º camión */ }
-  const prev = planOrigen;
-  try {
-    for (const [orig] of ORIGENES_CD) {
-      planOrigen = orig;
-      const res = await renderPlanCarga(document.createElement('div'), { soloCalculo: true });
-      if (!res) continue;
-      exclusiones = res.exclusionesPlan || []; inclusiones = res.inclusionesPlan || [];
-      res.resultadoTodos.forEach(r => {
-        const kc = `${orig}|${r.ce}`;
-        const acept = seg.has(kc);
-        centros[kc] = { pct: r.pct, status: r.status, cap: r.cap, total: r.total, enCalendario: r.enCalendario, acept };
-        [...(r.det.quiebre || []), ...(r.det.stock || [])].forEach(d => {
-          const est = d._enCamion ? 'EN_CAMION' : d._camion2 ? (acept ? 'CAMION2' : 'CAMION2_PROP') : 'NO_CABE';
-          lineas.set(`${kc}|${_keyInc(d.pt, d.material)}`, est);
-        });
-      });
-    }
-  } finally { planOrigen = prev; }
-  return { lineas, centros, exclusiones, inclusiones };
-}
-const PLAN_LINEA_V2 = {
-  EN_CAMION:    ['En camión', 'ok'],
-  CAMION2:      ['2º camión', 'ok'],
-  CAMION2_PROP: ['2º camión propuesto', 'warn'],
-  NO_CABE:      ['No cabe', 'mute'],
-  EXCLUIDO:     ['Excluida hoy', 'bad'],
-  FUERA:        ['No considerada', 'mute'],
-};
-function aplicarEstadoPlanTraslados(rows, ep) {
-  if (!ep) return;
-  const incSet = new Set((ep.inclusiones || []).map(e => _keyInc(e.doc, e.material)));
-  (rows || []).forEach(r => {
-    const orig = String(r.cesu ?? '').trim(), ce = String(r.ce ?? '').trim();
-    const kl = _keyInc(r.doc_compr, r.material);
-    r._plan_inc = incSet.has(kl);
-    r._plan_centro = ep.centros[`${orig}|${ce}`] || null;
-    r._plan = estaExcluido(ep.exclusiones || [], 'traslados_1003', r.doc_compr, r.material) ? 'EXCLUIDO'
-      : (ep.lineas.get(`${orig}|${ce}|${kl}`) || 'FUERA');
-    r._en_plan = r._plan === 'EN_CAMION' || r._plan === 'CAMION2';
-  });
-}
-
 let planDetalleAbierto = new Set();
 let planOrigen = '1003';   // centro origen del plan de carga (1003 / 1081)
 // Estado de la presentación v2 del Plan de Carga (filtros y panel lateral abiertos)
 const PLAN_V2_STATE = { kpi: 'all', drawer: null, tab: 'cd', origen: null };
 
-async function renderPlanCarga(stage, opts = {}) {
+async function renderPlanCarga(stage) {
   stage.innerHTML = '<div class="text-secondary text-body-md p-md">Cargando Plan de Carga…</div>';
 
   const [quiebresRaw, trasladosRaw, revexRaw, retirosRaw, ventasRaw, traslados4000Raw, calendarioRows, estadosRetiro, exclusionesPlan, pvRows, feriadosRows, horizonteRows] = await Promise.all([
@@ -2378,8 +2252,7 @@ async function renderPlanCarga(stage, opts = {}) {
     fetchAllRows('abast_feriados'),
     fetchAllRows('abast_horizonte_centro'),
   ]);
-  const [ventasDirectoManual, inclusionesPlan] = await Promise.all([loadVentasDirectoManual(), loadInclusionesPlan()]);
-  const incSet = new Set(inclusionesPlan.map(e => _keyInc(e.doc, e.material)));
+  const ventasDirectoManual = await loadVentasDirectoManual();
 
   // Feriados administrados manualmente + horizonte de planificación (24h/48h)
   // por centro destino (tabla auxiliar de la vista Calendario Sucursales).
@@ -2516,10 +2389,10 @@ async function renderPlanCarga(stage, opts = {}) {
     // criterio que Ventas 1003.
     const baseTraslados = traslados
       .filter(r => String(r.ce ?? '').trim() === ce)
-      .filter(r => fechaEnRangoHabil(r.fecha_confirmada, 10, 7, feriadosSet) || incSet.has(_keyInc(r.doc_compr, r.material)))
+      .filter(r => fechaEnRangoHabil(r.fecha_confirmada, 10, 7, feriadosSet))
       .filter(r => parseNum(r.ctd_confirmada) > 0)
       .filter(r => !estaExcluido(exclusionesPlan, 'traslados_1003', r.doc_compr, r.material))
-      .map(r => ({ r, prio: clasificaTraslado(r), forz: incSet.has(_keyInc(r.doc_compr, r.material)) }));
+      .map(r => ({ r, prio: clasificaTraslado(r) }));
 
     // (AJUSTE 30-sep-2026) Empates: documento y material (mismo orden que la foto del servidor).
     const _cmpTxt = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
@@ -2529,11 +2402,11 @@ async function renderPlanCarga(stage, opts = {}) {
     const itemsPrioridad = baseTraslados
       .filter(x => x.prio.bucket === 'prioridad')
       .sort(ordenPrioTraslado);
-    const tonQuiebre = itemsPrioridad.reduce((sum, { r, prio, forz }) => {
+    const tonQuiebre = itemsPrioridad.reduce((sum, { r, prio }) => {
       const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), r.ctd_confirmada);
       const tonBruto = calcTon(parseNum(r.peso_neto), r.ctd_confirmada);
       const tonVol = calcTon(parseNum(r.tamano_dimens), r.ctd_confirmada);
-      det.quiebre.push({ ...itemT(r, t), _motivo: prio.motivo, _orden: forz ? -100 : prio.orden, _forzadoPlan: !!forz, tonBruto, tonVol });
+      det.quiebre.push({ ...itemT(r, t), _motivo: prio.motivo, _orden: prio.orden, tonBruto, tonVol });
       return sum + t;
     }, 0);
 
@@ -2542,11 +2415,11 @@ async function renderPlanCarga(stage, opts = {}) {
     const itemsAbast = baseTraslados
       .filter(x => x.prio.bucket === 'abastecimiento')
       .sort(ordenPrioTraslado);
-    const tonStock = itemsAbast.reduce((sum, { r, prio, forz }) => {
+    const tonStock = itemsAbast.reduce((sum, { r, prio }) => {
       const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), r.ctd_confirmada);
       const tonBruto = calcTon(parseNum(r.peso_neto), r.ctd_confirmada);
       const tonVol = calcTon(parseNum(r.tamano_dimens), r.ctd_confirmada);
-      det.stock.push({ ...itemT(r, t), _motivo: prio.motivo, _orden: forz ? -100 : prio.orden, _forzadoPlan: !!forz, tonBruto, tonVol });
+      det.stock.push({ ...itemT(r, t), _motivo: prio.motivo, _orden: prio.orden, tonBruto, tonVol });
       return sum + t;
     }, 0);
 
@@ -2620,7 +2493,7 @@ async function renderPlanCarga(stage, opts = {}) {
     for (const [doc, items] of Object.entries(ventasPorDoc)) {
       const pv = pvMap[doc] || {};
       const clienteKey = clienteKeyNV(doc, items[0].solicitante, pv);
-      const manual = ventasDirectoManual.get(doc) || '';
+      const forzado = ventasDirectoManual.has(doc);
       items.forEach(r => {
         const pend = parseNum(r.ctd_confirmada) - parseNum(r.cantidad_entrg);
         if (pend <= 0) return;
@@ -2628,7 +2501,7 @@ async function renderPlanCarga(stage, opts = {}) {
         if (t <= 0) return;
         const tonBruto = calcTon(parseNum(r.peso_neto), pend), tonVol = calcTon(parseNum(r.tamano_dimens), pend);
         const rl = lookupRuta(r.ruta);
-        const item = { pv: doc, material: r.material, nombre: r.denominacion_de_posicion, cant: pend, ruta: r.ruta, comuna: rl.comuna, region: rl.region, fecha: r.fe_entrega, ton: t, tonBruto, tonVol, tipoExp: pv.denominacion || '', cliente: pv.nombre_1 || '', vendedor: pv.nombre || '', _manual: manual };
+        const item = { pv: doc, material: r.material, nombre: r.denominacion_de_posicion, cant: pend, ruta: r.ruta, comuna: rl.comuna, region: rl.region, fecha: r.fe_entrega, ton: t, tonBruto, tonVol, tipoExp: pv.denominacion || '', cliente: pv.nombre_1 || '', vendedor: pv.nombre || '', _forzado: forzado };
         const fe = parseDateSAP(r.fe_entrega);
         const vigente = !fe || fe.getTime() <= limiteDirectoCli.getTime();
         const gk = clienteKey + '|' + (vigente ? 'VIGENTE' : isoLocal(fe));
@@ -2641,12 +2514,10 @@ async function renderPlanCarga(stage, opts = {}) {
     // (AJUSTE 30-sep-2026) NV marcadas manualmente CD-CLIENTE salen siempre en camión
     // directo; las demás NV del cliente sólo se suman si el grupo supera el 85%.
     Object.values(ventasPorGrupo).forEach(g => {
+      const porCliente = g.ton > capRef * UMBRAL_CD_CLIENTE;
+      const itemsDir = porCliente ? g.items : g.items.filter(d => d._forzado);
+      const itemsCons = porCliente ? [] : g.items.filter(d => !d._forzado);
       const sum = arr => arr.reduce((s, d) => s + d.ton, 0);
-      // (30-sep-2026) Manual: CD-CLIENTE siempre directo; CONSOLIDABLE siempre consolida y no suma al cliente.
-      const porCliente = sum(g.items.filter(d => d._manual !== 'CONSOLIDABLE')) > capRef * UMBRAL_CD_CLIENTE;
-      const esDir = d => d._manual === 'CD-CLIENTE' || (porCliente && d._manual !== 'CONSOLIDABLE');
-      const itemsDir = g.items.filter(esDir);
-      const itemsCons = g.items.filter(d => !esDir(d));
       if (itemsDir.length) {
         if (!g.vigente) tonClienteDiferido += sum(itemsDir); // camión directo de otro día
         else armarCamiones(itemsDir, capRef, d => d.pv).forEach(c => camionesCliente.push({ ...c, grupo: g.nombre, cap: capRef }));
@@ -2819,9 +2690,6 @@ async function renderPlanCarga(stage, opts = {}) {
   });
   // Perfiles con centros asignados: sólo sus sucursales destino
   const resultado = resultadoTodos.filter(r => enAlcance(r.ce));
-  // (30-sep-2026) Modo sólo-cálculo: lo usa la vista Pedidos de Traslado para marcar
-  // qué líneas van en el camión, con exactamente la misma lógica del Plan de Carga.
-  if (opts.soloCalculo) return { resultadoTodos, exclusionesPlan, inclusionesPlan };
 
   const diasSemana = ['Domingo','Lunes','Martes','Miércoles','Jueves','Viernes','Sábado'];
   const fmtDiaHabil = d => `${diasSemana[d.getDay()]} ${d.toLocaleDateString('es-CL', { day: 'numeric', month: 'long' })}`;
