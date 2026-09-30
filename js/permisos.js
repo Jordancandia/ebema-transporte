@@ -49,8 +49,9 @@ export const PERFILES = {
       'abastecimiento:documentos_transporte',
       'abastecimiento:ind_plan_carga',
     ],
-    acciones: ['editar', 'descargar', 'descargar_plan', 'excluir', 'coordinar_retiro'],
-    alcance: 'CENTROS',
+    // 30-sep-2026: sin Excluir (sólo OWNER) y alcance a todos los centros por defecto.
+    acciones: ['editar', 'descargar', 'descargar_plan', 'coordinar_retiro'],
+    alcance: 'TODOS',
   },
   ADMINISTRADOR_DEPOSITO: {
     label: 'Admin. Depósito',

@@ -10,11 +10,11 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202609300800';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202609300800';
-import { getDatabase } from './data.js?v=202609300800';
+import { supabase } from './supabase-client.js?v=202609301128';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202609301128';
+import { getDatabase } from './data.js?v=202609301128';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202609300800';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202609301128';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -604,7 +604,7 @@ const VISTAS_TRONCAL = {
   retiros: {
     titulo: 'GESTIÓN TRONCALES – RETIROS DE FÁBRICA',
     vista: 'v_trc_sqvi_retiros_fabrica',
-    // Excluye la Orden de Compra completa del Plan de Carga (OWNER / Planner Abastecimiento).
+    // Excluye la Orden de Compra completa del Plan de Carga (sólo OWNER).
     excluir: { tipo: 'retiro_fabrica', doc: r => r.doc_compr, material: null },
     chipFilter: { campo: 'ce', label: 'Centro' },
     extraChips: [
@@ -1967,7 +1967,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202609300800');
+    const m = await import('./ind-plan-carga.js?v=202609301128');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);

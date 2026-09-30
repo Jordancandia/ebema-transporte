@@ -1,7 +1,7 @@
-import { getDatabase, saveDatabase, getCentreName } from './data.js?v=202609300800';
+import { getDatabase, saveDatabase, getCentreName } from './data.js?v=202609301128';
 import { showAlert, escapeHtml } from './utils.js';
-import { supabase } from './supabase-client.js?v=202609300800';
-import { ROLES_CON_CENTROS } from './permisos.js?v=202609300800';
+import { supabase } from './supabase-client.js?v=202609301128';
+import { ROLES_CON_CENTROS } from './permisos.js?v=202609301128';
 
 // --- Perfiles de Acceso (Roles y Perfiles + Row Level Security) ---
 // 5 perfiles canónicos. Cada uno determina qué puede ver/editar el usuario
@@ -22,7 +22,7 @@ const ROLE_CONFIG = {
 const ROLE_DESCRIPTIONS = {
   'OWNER': 'Administrador del sistema: ve todas las vistas y centros, edita, elimina, descarga bases de datos e invita usuarios asignando perfiles.',
   'PLANNER_OPERACIONES': 'Solo visualización de todas las vistas y centros, excepto Cotizador Despacho, Tarifas Transporte, Tarifas Clientes y Roles.',
-  'PLANNER_ABASTECIMIENTO': 'Proveedores y Gestión Troncales de sus centros asignados, con edición, descarga y exclusión de líneas del Plan de Carga.',
+  'PLANNER_ABASTECIMIENTO': 'Proveedores y Gestión Troncales de todos los centros, con edición y descarga (sin exclusión de líneas del Plan de Carga).',
   'ADMINISTRADOR_DEPOSITO': 'Solo visualización de sus centros asignados: Home, Cotizador, Proveedores, Rutas, Gestión Troncales (con descarga del Plan de Carga), Indicadores y Flete Tercero.',
   'AGENTE_COMERCIAL': 'Perfil comercial. Solo visualización de sus centros asignados: Cotizador Despacho, Rutas de Transporte y Gestión Troncales (con descarga del Plan de Carga).',
   'TRANSPORTISTA': 'Ve el estado de sus camiones, cuenta bancaria asociada, transportes y choferes. Edita solo lo que está en su perfil.',
