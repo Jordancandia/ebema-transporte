@@ -1,6 +1,6 @@
-import { getDatabase, saveDatabase, initDatabase, loadRoutesData, loadHistoricoFlete360 } from './data.js?v=202609301643';
-import { supabase } from './supabase-client.js?v=202609301643';
-import { setSesionPermisos, puedeVerMenu, can, esSoloLectura, PERFILES } from './permisos.js?v=202609301643';
+import { getDatabase, saveDatabase, initDatabase, loadRoutesData, loadHistoricoFlete360 } from './data.js?v=202609301836';
+import { supabase } from './supabase-client.js?v=202609301836';
+import { setSesionPermisos, puedeVerMenu, can, esSoloLectura, PERFILES } from './permisos.js?v=202609301836';
 // ── Módulos cargados bajo demanda (lazy) — se cachean tras la primera carga ──
 const _mod = {};
 async function loadMod(key, modPath) {
@@ -9,9 +9,9 @@ async function loadMod(key, modPath) {
 }
 // Pre-warm: carga indicadores y abastecimiento en background tras login
 function prewarmMods() {
-  setTimeout(() => loadMod('ind',   './indicadores.js?v=202609301643'), 600);
+  setTimeout(() => loadMod('ind',   './indicadores.js?v=202609301836'), 600);
   setTimeout(() => loadRoutesData(), 800);  // pre-fetch tablas pesadas en background
-  setTimeout(() => loadMod('abast', './abastecimiento.js?v=202609301643'), 2000);
+  setTimeout(() => loadMod('abast', './abastecimiento.js?v=202609301836'), 2000);
 }
 import { showAlert, formatRut, validateRut, formatPhone } from './utils.js';
 
@@ -235,7 +235,7 @@ function renderApp() {
   if (!currentSession) {
     renderAuthView();
   } else if (currentSession.tipo === 'proveedor') {
-    import('./provider-portal.js?v=202609301643').then(m => m.renderProviderShell(currentSession, handleLogout));
+    import('./provider-portal.js?v=202609301836').then(m => m.renderProviderShell(currentSession, handleLogout));
   } else {
     renderDashboardShell();
   }
@@ -1331,10 +1331,12 @@ function sidebarNavHTML() {
       const items = leaves.filter(l => l.modKey === m.key && l.secLabel === sec.label);
       if (!items.length) return '';
       const sk = `${m.key}|${sec.label}`;
-      const isClosed = sec.collapsible && closed.has(sk);
+      // (30-sep-2026) Todas las secciones se pueden expandir/contraer (salvo collapsible:false).
+      const coll = sec.collapsible !== false;
+      const isClosed = coll && closed.has(sk);
       return `<div class="sv-sectwrap">
-        <div class="sv-sect ${sec.collapsible ? 'is-coll' : ''} ${isClosed ? 'is-closed' : ''}" ${sec.collapsible ? `data-sect="${_escN(sk)}"` : ''}>
-          <span>${_escN(sec.label)}${sec.collapsible ? ` · ${items.length}` : ''}</span>${sec.collapsible ? '<span class="material-symbols-outlined">expand_more</span>' : ''}</div>
+        <div class="sv-sect ${coll ? 'is-coll' : ''} ${isClosed ? 'is-closed' : ''}" ${coll ? `data-sect="${_escN(sk)}"` : ''}>
+          <span>${_escN(sec.label)}${coll ? ` · ${items.length}` : ''}</span>${coll ? '<span class="material-symbols-outlined">expand_more</span>' : ''}</div>
         <div class="sv-sectbody ${isClosed ? 'hidden' : ''}">
           ${items.map(c => `<a class="sv-child sidebar-item" data-tab="${c.tab}" data-sub="${c.sub}" title="${_escN(c.label)}">
             <span class="sv-lbl">${_escN(c.label)}</span>
@@ -1687,37 +1689,37 @@ async function switchTab(tabName, subName = null) {
   _stageSpinner(stage);
   switch (tabName) {
     case 'home': {
-      const m = await loadMod('ind', './indicadores.js?v=202609301643');
+      const m = await loadMod('ind', './indicadores.js?v=202609301836');
       m.renderIndicadoresHome(stage);
       break;
     }
     case 'rates': {
       await loadRoutesData();
-      const m = await loadMod('rates', './rates.js?v=202609301643');
+      const m = await loadMod('rates', './rates.js?v=202609301836');
       m.renderRatesView(stage);
       break;
     }
     case 'transports': {
-      const m = await loadMod('trans', './transports.js?v=202609301643');
+      const m = await loadMod('trans', './transports.js?v=202609301836');
       m.renderTransportsView(stage);
       break;
     }
     case 'routes': {
       await loadRoutesData();
-      const m = await loadMod('routes', './routes.js?v=202609301643');
+      const m = await loadMod('routes', './routes.js?v=202609301836');
       if (alias) m.setRoutesSubTab(alias);
       m.renderRoutesView(stage);
       break;
     }
     case 'roles': {
-      const m = await loadMod('roles', './roles.js?v=202609301643');
+      const m = await loadMod('roles', './roles.js?v=202609301836');
       m.renderRolesView(stage);
       break;
     }
     case 'tarifas-transporte': {
       await loadRoutesData();
       await loadHistoricoFlete360();
-      const m = await loadMod('tt', './tarifas-transporte.js?v=202609301643');
+      const m = await loadMod('tt', './tarifas-transporte.js?v=202609301836');
       if (alias) m.setActiveSub(alias);
       m.renderTariffTransportView(stage);
       break;
@@ -1725,27 +1727,27 @@ async function switchTab(tabName, subName = null) {
     case 'tarifas-clientes': {
       await loadRoutesData();
       await loadHistoricoFlete360();
-      const m = await loadMod('tc', './tarifas-clientes.js?v=202609301643');
+      const m = await loadMod('tc', './tarifas-clientes.js?v=202609301836');
       if (alias) m.setActiveSubC(alias);
       m.renderClientTariffView(stage);
       break;
     }
     case 'abastecimiento': {
       await loadRoutesData();
-      const m = await loadMod('abast', './abastecimiento.js?v=202609301643');
+      const m = await loadMod('abast', './abastecimiento.js?v=202609301836');
       if (subName) m.setAbastSubTab(subName);
       m.renderAbastecimientoView(stage);
       break;
     }
     case 'indicadores': {
-      const m = await loadMod('ind', './indicadores.js?v=202609301643');
+      const m = await loadMod('ind', './indicadores.js?v=202609301836');
       if (subName) m.setIndicadoresSubTab(subName);
       m.renderIndicadoresView(stage);
       break;
     }
     case 'flete-tercero': {
       await loadRoutesData();
-      const m = await loadMod('fter', './flete-tercero.js?v=202609301643');
+      const m = await loadMod('fter', './flete-tercero.js?v=202609301836');
       if (subName) m.setFleteTerceroSubTab(subName);
       m.renderFleteTerceroView(stage);
       break;
