@@ -10,11 +10,11 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202609301500';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202609301500';
-import { getDatabase } from './data.js?v=202609301500';
+import { supabase } from './supabase-client.js?v=202609301519';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202609301519';
+import { getDatabase } from './data.js?v=202609301519';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202609301500';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202609301519';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -2106,7 +2106,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202609301500');
+    const m = await import('./ind-plan-carga.js?v=202609301519');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
@@ -2635,15 +2635,20 @@ async function renderPlanCarga(stage, opts = {}) {
     }
     const camionesCliente = [];
     let tonClienteDiferido = 0;
+    // (30-sep-2026) Umbral CD-CLIENTE con la capacidad del camión del centro (La Calera /
+    // San Bernardo = 15 t), igual que la vista Ventas CD (1003). El camión exclusivo se
+    // arma con 15 t si la carga cabe; si no, con camión de 28 t.
+    const capCli = getCapacidadCamion(ce);
     Object.values(ventasPorGrupo).forEach(g => {
       // Manual: CD-CLIENTE siempre directo; CONSOLIDABLE siempre consolida y no suma al cliente.
-      const porCliente = g.nvs.filter(n => n.manual !== 'CONSOLIDABLE').reduce((s, n) => s + n.ton, 0) > capRef * UMBRAL_CD_CLIENTE;
+      const porCliente = g.nvs.filter(n => n.manual !== 'CONSOLIDABLE').reduce((s, n) => s + n.ton, 0) > capCli * UMBRAL_CD_CLIENTE;
       const esDir = n => n.manual === 'CD-CLIENTE' || (porCliente && n.manual !== 'CONSOLIDABLE');
       const itemsDir = g.nvs.filter(esDir).flatMap(n => n.items);
       const itemsCons = g.nvs.filter(n => !esDir(n)).flatMap(n => n.items).filter(d => d._enVentana);
       if (itemsDir.length) {
         if (!g.vigente) tonClienteDiferido += sumTon(itemsDir); // camión exclusivo de otro día (no se consolida)
-        else armarCamiones(itemsDir, capRef, d => d.pv).forEach(c => camionesCliente.push({ ...c, grupo: g.nombre, cap: capRef }));
+        else { const capDir = sumTon(itemsDir) > capCli + 1e-9 ? CAP_CAMION_DEFAULT : capCli;
+          armarCamiones(itemsDir, capDir, d => d.pv).forEach(c => camionesCliente.push({ ...c, grupo: g.nombre, cap: capDir })); }
       }
       if (itemsCons.length) { tonVentaCons += sumTon(itemsCons); det.ventaCons.push(...itemsCons); }
     });
