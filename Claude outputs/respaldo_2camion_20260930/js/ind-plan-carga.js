@@ -2,8 +2,7 @@
 // INDICADORES – PLAN DE CARGA  (dashboard ejecutivo, 27-sep-2026)
 // ----------------------------------------------------------------------------
 // Fuente: v_ind_consolidacion_dt (1 fila por DT) y v_ind_efectividad_plan
-// (1 fila por línea documento+SKU de la foto 15:35; sólo camiones programados:
-// camión CD en PROGRAMAR, 2º camión aceptado y camiones directos — columna medido).
+// (1 fila por línea documento+SKU de la foto 15:30).
 // Alcance: DT cuyo usuario responsable está en abast_ind_usuarios_plan (activo).
 //   Usuario del DT = "Creado por" del reporte DT > "Modif. por" > creador de
 //   sus entregas (v_abast_dt_usuario). La lista es editable (OWNER / ADMIN).
@@ -13,11 +12,11 @@
 // Tailwind del sitio está compilado y no incluye clases nuevas.
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202609300749';
-import { filtrarPorCentro, getRol } from './permisos.js?v=202609300749';
+import { supabase } from './supabase-client.js?v=202609300011';
+import { filtrarPorCentro, getRol } from './permisos.js?v=202609300011';
 import { showAlert, escapeHtml } from './utils.js';
-import { getDatabase } from './data.js?v=202609300749';
-import { truckGauge } from './troncales-ui.js?v=202609300749';
+import { getDatabase } from './data.js?v=202609300011';
+import { truckGauge } from './troncales-ui.js?v=202609300011';
 
 const META_CONS = 85;   // % consolidación objetivo por viaje
 const META_EFEC = 90;   // % efectividad objetivo del Plan de Carga
@@ -190,7 +189,7 @@ function pintar() {
   <section class="sv-card ipc-card"><h3>Viajes bajo meta <small>DT con menor consolidación en el período</small></h3><div data-ch="bajo"></div></section>
   <p class="ipc-note">Capacidad = GeEs del DT; si viene vacía en un traslado se usa 28 t (15 t a 1050/1005) y el DT se marca <i>estimada</i>.
   Ton por línea = máx(peso bruto, peso volumétrico) × cantidad; tope 100% por DT.</p>` : `
-  <section class="sv-card ipc-card"><h3>Efectividad diaria del plan <small>foto 15:35 · sólo camiones programados · meta ${META_EFEC}%</small></h3><div class="ipc-chart" data-ch="diariaEfec"></div></section>
+  <section class="sv-card ipc-card"><h3>Efectividad diaria del plan <small>foto 15:30 · meta ${META_EFEC}%</small></h3><div class="ipc-chart" data-ch="diariaEfec"></div></section>
   <section class="sv-card ipc-card"><h3>Resultado de las líneas del plan</h3><div data-ch="efec"></div></section>
   <section class="sv-card ipc-card"><h3>Por sucursal destino <small>líneas medidas por estado</small></h3><div data-ch="sucEfec"></div></section>
   <p class="ipc-note">Efectividad = líneas del plan (documento + SKU) cargadas completas en un DT dentro de 48 h hábiles. Las líneas que aún siguen “en plazo” no se miden.</p>`}

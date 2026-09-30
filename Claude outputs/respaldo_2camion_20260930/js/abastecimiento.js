@@ -10,11 +10,11 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202609300749';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202609300749';
-import { getDatabase } from './data.js?v=202609300749';
+import { supabase } from './supabase-client.js?v=202609300011';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202609300011';
+import { getDatabase } from './data.js?v=202609300011';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202609300749';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202609300011';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -1375,7 +1375,7 @@ const VISTAS_TRONCAL = {
     extraChips: [{ campo: 'cd_origen', label: 'CD Origen' }, { campo: 'categoria', label: 'Categoría' }, { campo: 'estado', label: 'Estado' }],
     searchLabel: 'BUSCADOR GENERAL',
     filtros: [],
-    dateRange: { campo: 'fecha', label: 'Fecha Plan (foto 15:35)' },
+    dateRange: { campo: 'fecha', label: 'Fecha Plan (foto 15:30)' },
     badges(filt) {
       // Líneas EN PLAZO (aún dentro de las 48h hábiles) no entran al cálculo.
       const medibles = filt.filter(r => r.estado !== 'EN PLAZO');
@@ -1836,7 +1836,7 @@ const V2 = {
   // ── ENTREGAS CREADAS ──────────────────────────────────────────────────────
   entregas_creadas: {
     titulo: 'Entregas Creadas',
-    desc: 'Entregas creadas en SAP y su comparación con la foto del Plan de Carga (15:35 del día hábil anterior).',
+    desc: 'Entregas creadas en SAP y su comparación con la foto del Plan de Carga (15:30 del día hábil anterior).',
     enrich(rows) {
       rows.forEach(r => {
         r._est = ESTADO_PLAN_V2[r.estado_plan] || [r.estado_plan || '—', 'mute'];
@@ -1851,7 +1851,7 @@ const V2 = {
       { key: 'CUADRA', label: 'Cuadra', color: C_GREEN, sub: 'igual a lo planificado', fn: r => r.estado_plan === 'CUADRA' },
       { key: 'PARCIAL', label: 'Parcial', color: C_YELLOW, sub: 'menos que el plan', fn: r => r.estado_plan === 'PARCIAL' },
       { key: 'EXCEDE', label: 'Excede', color: C_RED, sub: 'más que el plan', fn: r => r.estado_plan === 'EXCEDE' },
-      { key: 'SIN PLAN', label: 'Sin plan', color: C_GREY, sub: 'no estaba en la foto 15:35', fn: r => r.estado_plan === 'SIN PLAN' },
+      { key: 'SIN PLAN', label: 'Sin plan', color: C_GREY, sub: 'no estaba en la foto 15:30', fn: r => r.estado_plan === 'SIN PLAN' },
     ],
     cols: [
       { label: 'N° entrega', html: r => mono(r.entrega, r.fecha_creacion ? fmtFechaISO(r.fecha_creacion) : '') },
@@ -1877,7 +1877,7 @@ const V2 = {
         ['Material', r.material], ['Cantidad', `${fmtNum(Number(r.cantidad) || 0, 0)} ${r.um || ''}`.trim()],
         ['Doc. precedente', r.doc_modelo], ['Estado plan', pill(r._est[0], r._est[1]), true],
         ['Cant. plan', r.cant_plan == null ? '—' : fmtNum(Number(r.cant_plan), 0)], ['Σ entregas del doc.', fmtNum(Number(r.cant_entregas_doc) || 0, 0)],
-        ['Foto del plan', r.fecha_plan ? fmtFechaISO(r.fecha_plan) + ' · 15:35' : '—'], ['Creado por', r.creado_por],
+        ['Foto del plan', r.fecha_plan ? fmtFechaISO(r.fecha_plan) + ' · 15:30' : '—'], ['Creado por', r.creado_por],
       ],
       nota: 'Plan vs Σ entregas: suma de entregas del documento + material',
     }),
@@ -1967,7 +1967,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202609300749');
+    const m = await import('./ind-plan-carga.js?v=202609300011');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
@@ -2130,37 +2130,6 @@ function fechaEnRango(fechaStr, diasAntes, diasDespues) {
 // COORDINADO_RM = COORDINADO_SANTIAGO (estado legado): el retiro llega a Santiago/RM, así que cuenta
 // en el Plan de Carga (regla Jordan 21-sep-2026). 'coordinado_local' NO cuenta.
 function esEstadoCoordinado(estado) { return estado === 'coordinado' || estado === 'coordinado_santiago'; }
-
-// (AJUSTE 30-sep-2026, pedido Jordan) Llenado del camión CD = foto del servidor
-// (fn_abast_snapshot_plan_carga): orden REVEX → Venta → Retiro → Cross → Quiebre →
-// Abastecimiento (dentro de cada categoría: prioridad ABC, documento, material); una
-// línea que no cabe se salta y se sigue con las siguientes. El 2º camión sólo se
-// PROPONE si lo que no cabe llega al 85% de la capacidad; es opcional y sólo entra al
-// plan (y a los indicadores) si se acepta antes del cierre de las 15:35.
-const UMBRAL_SEGUNDO_CAMION = 0.85;
-function asignarCamionesCD(r) {
-  const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
-  const doc = d => String(d.pt ?? d.oc ?? d.pv ?? '').trim();
-  const mat = d => String(d.material ?? '').trim();
-  const orden = [];
-  [r.det.revex, r.det.ventaCons, r.det.retiro, r.det.cross, r.det.quiebre, r.det.stock].forEach(arr => {
-    (arr || []).slice()
-      .sort((a, b) => ((a._orden ?? 0) - (b._orden ?? 0)) || cmp(doc(a), doc(b)) || cmp(mat(a), mat(b)))
-      .forEach(d => orden.push(d));
-  });
-  let acc = 0;
-  orden.forEach(d => {
-    d._camion2 = false;
-    if (acc + (d.ton || 0) <= r.cap + 1e-9) { d._enCamion = true; acc += d.ton || 0; } else d._enCamion = false;
-  });
-  const excedente = orden.filter(d => !d._enCamion).reduce((s, d) => s + (d.ton || 0), 0);
-  const segundoPropuesto = excedente > 0 && excedente >= r.cap * UMBRAL_SEGUNDO_CAMION;
-  let acc2 = 0;
-  if (segundoPropuesto) orden.forEach(d => {
-    if (!d._enCamion && acc2 + (d.ton || 0) <= r.cap + 1e-9) { d._camion2 = true; acc2 += d.ton || 0; }
-  });
-  return { cargado: acc, excedente, segundoPropuesto, tonSegundo: acc2 };
-}
 
 let planDetalleAbierto = new Set();
 let planOrigen = '1003';   // centro origen del plan de carga (1003 / 1081)
@@ -2325,19 +2294,14 @@ async function renderPlanCarga(stage) {
       .filter(r => !estaExcluido(exclusionesPlan, 'traslados_1003', r.doc_compr, r.material))
       .map(r => ({ r, prio: clasificaTraslado(r) }));
 
-    // (AJUSTE 30-sep-2026) Empates: documento y material (mismo orden que la foto del servidor).
-    const _cmpTxt = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
-    const ordenPrioTraslado = (a, b) => (a.prio.orden - b.prio.orden)
-      || _cmpTxt(String(a.r.doc_compr ?? '').trim(), String(b.r.doc_compr ?? '').trim())
-      || _cmpTxt(String(a.r.material ?? '').trim(), String(b.r.material ?? '').trim());
     const itemsPrioridad = baseTraslados
       .filter(x => x.prio.bucket === 'prioridad')
-      .sort(ordenPrioTraslado);
+      .sort((a, b) => a.prio.orden - b.prio.orden);
     const tonQuiebre = itemsPrioridad.reduce((sum, { r, prio }) => {
       const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), r.ctd_confirmada);
       const tonBruto = calcTon(parseNum(r.peso_neto), r.ctd_confirmada);
       const tonVol = calcTon(parseNum(r.tamano_dimens), r.ctd_confirmada);
-      det.quiebre.push({ ...itemT(r, t), _motivo: prio.motivo, _orden: prio.orden, tonBruto, tonVol });
+      det.quiebre.push({ ...itemT(r, t), _motivo: prio.motivo, tonBruto, tonVol });
       return sum + t;
     }, 0);
 
@@ -2345,12 +2309,12 @@ async function renderPlanCarga(stage) {
     //    clasificación ABC que el punto D.
     const itemsAbast = baseTraslados
       .filter(x => x.prio.bucket === 'abastecimiento')
-      .sort(ordenPrioTraslado);
+      .sort((a, b) => a.prio.orden - b.prio.orden);
     const tonStock = itemsAbast.reduce((sum, { r, prio }) => {
       const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), r.ctd_confirmada);
       const tonBruto = calcTon(parseNum(r.peso_neto), r.ctd_confirmada);
       const tonVol = calcTon(parseNum(r.tamano_dimens), r.ctd_confirmada);
-      det.stock.push({ ...itemT(r, t), _motivo: prio.motivo, _orden: prio.orden, tonBruto, tonVol });
+      det.stock.push({ ...itemT(r, t), _motivo: prio.motivo, tonBruto, tonVol });
       return sum + t;
     }, 0);
 
@@ -2581,10 +2545,11 @@ async function renderPlanCarga(stage) {
     let obs = '';
     if (!enCalendario && pct >= 70) obs = 'CUPO EXTRA';
     if (enCalendario && pct < 70) obs = 'EN CALENDARIO - CARGA BAJA';
+    if (sobrecarga > 0) obs = (obs ? obs + ' · ' : '') + '2º CAMIÓN (~' + fmtNum(sobrecarga, 1) + ' T)';
     if (promovido24) obs = (obs ? obs + ' · ' : '') + 'ADELANTADO A 24H (carga completa)';
     if (tonClienteDiferido > 0) obs = (obs ? obs + ' · ' : '') + 'CD-CLIENTE PRÓXIMO (' + fmtNum(tonClienteDiferido, 1) + ' T, fecha entrega posterior)';
 
-    const out = {
+    return {
       ce, nombre: getNombreCentro(ce), cap,
       tonQuiebre, tonStock, tonRevex, tonCross, tonVentaCons, tonVentaCliente, tonRetiro, tonFabSuc, tonFabCli,
       total, faltan, sobrecarga, pct, status, statusCls, obs, enCalendario,
@@ -2593,11 +2558,6 @@ async function renderPlanCarga(stage) {
       camionesCliente, camionesFabSuc, camionesFabCli, tonClienteDiferido,
       det,
     };
-    // (AJUSTE 30-sep-2026) Llenado del camión CD y propuesta de 2º camión (≥85% de la capacidad).
-    const fill = asignarCamionesCD(out);
-    Object.assign(out, { cargadoCD: fill.cargado, excedente: fill.excedente, segundoPropuesto: fill.segundoPropuesto, tonSegundo: fill.tonSegundo });
-    if (out.segundoPropuesto) out.obs = (out.obs ? out.obs + ' · ' : '') + '2º CAMIÓN OPCIONAL (~' + fmtNum(fill.tonSegundo, 1) + ' T)';
-    return out;
   }).sort((a, b) => {
     // (AJUSTE 24-sep-2026, pedido Jordan) Prioridad real de despacho:
     // 1) Centros en agenda que SÍ alcanzan carga suficiente (pct >= 70) van
@@ -2702,10 +2662,14 @@ async function renderPlanCarga(stage) {
 
   // Marca, en orden de prioridad, qué ítems entran en el camión CD según su
   // capacidad efectiva (r.cap). Devuelve totales cargado/excede.
-  // (AJUSTE 30-sep-2026) Misma asignación que la foto del servidor (asignarCamionesCD).
   function marcarCapacidadCD(r) {
-    const f = asignarCamionesCD(r);
-    return { cargado: f.cargado, excede: f.excedente, segundoPropuesto: f.segundoPropuesto, tonSegundo: f.tonSegundo };
+    const orden = [r.det.revex, r.det.ventaCons, r.det.retiro, r.det.cross, r.det.quiebre, r.det.stock];
+    let acc = 0;
+    orden.forEach(arr => (arr || []).forEach(d => {
+      if (acc + d.ton <= r.cap + 1e-9) { d._enCamion = true; acc += d.ton; }
+      else { d._enCamion = false; }
+    }));
+    return { cargado: acc, excede: Math.max(0, (r.total || 0) - acc) };
   }
 
   // (AJUSTE 28-sep-2026) Detalle de camiones directos separado por camión.
@@ -2741,7 +2705,7 @@ async function renderPlanCarga(stage) {
       banner = `<div class="mb-sm px-md py-sm rounded-lg bg-blue-50 border border-blue-200 text-[12px] text-blue-900 inline-flex flex-wrap items-center gap-md">
         <span><strong>Capacidad camión:</strong> ${fmtNum(r.cap, 0)} t</span>
         <span><strong>Cargado:</strong> ${fmtNum(fill.cargado, 1)} t</span>
-        ${fill.excede > 0 ? `<span class="text-green-700 font-bold"><strong>Sobra:</strong> +${fmtNum(fill.excede, 1)} t ${fill.segundoPropuesto ? '(2º camión opcional)' : '(no alcanza el 85% para un 2º camión)'}</span>` : '<span class="text-green-700 font-bold">✓ Todo cabe en el camión</span>'}
+        ${fill.excede > 0 ? `<span class="text-green-700 font-bold"><strong>Sobra:</strong> +${fmtNum(fill.excede, 1)} t (requiere 2º camión)</span>` : '<span class="text-green-700 font-bold">✓ Todo cabe en el camión</span>'}
       </div>`;
       blocks =
         blkTraslado('1º Pedidos de Traslados REVEX', inC.revex) +
@@ -2874,46 +2838,7 @@ async function renderPlanCarga(stage) {
       fotoCierre = data && data[0] ? new Date(data[0].tomado_en) : null;
     } catch (_e) { fotoCierre = null; }
   }
-  // (AJUSTE 30-sep-2026) 2º camión aceptado hoy (abast_plan_segundo_camion): opcional,
-  // sólo entra a la foto de cierre y a los indicadores si se acepta antes de las 15:35.
-  let segAcept = new Set();
-  async function leerSegundos() {
-    try {
-      const { data } = await supabase.from('abast_plan_segundo_camion').select('ce')
-        .eq('fecha', isoLocal(hoy00())).eq('cd_origen', planOrigen);
-      segAcept = new Set((data || []).map(x => String(x.ce ?? '').trim()));
-    } catch (_e) { segAcept = new Set(); }
-  }
-  await Promise.all([leerFotoCierre(), leerSegundos()]);
-  async function accionSegundo(ce, accion) {
-    const r = resultado.find(x => x.ce === ce);
-    if (!r) return;
-    if (estadoCierre().cerrado) { showAlert(`El plan ya cerró (${HHMM_CIERRE}): no se puede cambiar el 2º camión.`, 'error'); return; }
-    const hoyIso = isoLocal(hoy00());
-    const { error } = accion === 'aceptar'
-      ? await supabase.from('abast_plan_segundo_camion').upsert({ fecha: hoyIso, cd_origen: planOrigen, ce, ton_propuesta: Math.round(r.tonSegundo * 10000) / 10000, aceptado_por: await getUserEmail(), aceptado_en: new Date().toISOString() })
-      : await supabase.from('abast_plan_segundo_camion').delete().eq('fecha', hoyIso).eq('cd_origen', planOrigen).eq('ce', ce);
-    if (error) { showAlert('No se pudo guardar el 2º camión: ' + error.message, 'error'); return; }
-    await leerSegundos();
-    showAlert(accion === 'aceptar' ? `2º camión programado para ${r.nombre}.` : `2º camión quitado de ${r.nombre}.`, 'success');
-    draw();
-  }
-  function segundoHtml(r, fill) {
-    if (!(fill.excede > 0.05)) return '';
-    if (!r.segundoPropuesto) {
-      return `<div class="pc-extra is-mute"><span class="material-symbols-outlined">info</span><div>No caben ${t1(fill.excede)} t, pero no llegan al 85% de un camión (${t1(r.cap * UMBRAL_SEGUNDO_CAMION)} t): no se propone 2º camión. Las líneas atenuadas quedan para el próximo plan.</div></div>`;
-    }
-    const acept = segAcept.has(r.ce), cerrado = estadoCierre().cerrado;
-    const pct2 = r.cap > 0 ? Math.round(r.tonSegundo / r.cap * 100) : 0;
-    const btn = PUEDE_EXCLUIR && !cerrado
-      ? `<button class="${acept ? 'sv-btn' : 'sv-btn-p'}" data-seg-accion="${acept ? 'quitar' : 'aceptar'}" data-seg-ce="${escapeHtml(r.ce)}"><span class="material-symbols-outlined">${acept ? 'remove_circle' : 'local_shipping'}</span>${acept ? 'Quitar 2º camión' : 'Programar 2º camión'}</button>` : '';
-    const txt = acept
-      ? `Entra a la foto de las ${HHMM_CIERRE} y a los indicadores.`
-      : `Lo que no cabe llega al 85% de un camión. Es opcional: sólo entra al plan y a los indicadores si se programa antes de las ${HHMM_CIERRE}.${cerrado ? ' Plan cerrado: ya no se puede programar.' : ''}`;
-    return `<div class="pc-extra pc-seg2 ${acept ? 'is-ok' : ''}"><span class="material-symbols-outlined">${acept ? 'check_circle' : 'add_circle'}</span>
-      <div style="flex:1;min-width:0"><b>${acept ? '2º camión programado' : '2º camión opcional'}</b> · ${t1(r.tonSegundo)} t de ${fmtNum(r.cap, 0)} t (${pct2}%). ${escapeHtml(txt)}
-      <small>Líneas en verde: van en el 2º camión${fill.excede - r.tonSegundo > 0.05 ? ` · atenuadas: no caben (${t1(fill.excede - r.tonSegundo)} t)` : ''}.</small></div>${btn}</div>`;
-  }
+  await leerFotoCierre();
   function estadoCierre() {
     const now = new Date(), c = new Date(now); c.setHours(CIERRE_H, CIERRE_M, 0, 0);
     if (now >= c) {
@@ -2932,9 +2857,7 @@ async function renderPlanCarga(stage) {
     if (r.enCalendario && r.pct < 70) t.push(TAG('warning', 'Carga baja', 'En calendario con carga <70%', 'baja'));
     if (r.promovido24) t.push(TAG('fast_forward', '48h→24h', 'Adelantado: la carga de mañana supera el 90%', 'promo'));
     else if (r.horizonte === 48) t.push(TAG('schedule', '48h', 'Horizonte 48h · ' + diaCorto(diaHabil2), 'h48'));
-    if (r.segundoPropuesto) t.push(segAcept.has(r.ce)
-      ? TAG('local_shipping', '2º camión programado', `2º camión aceptado (${t1(r.tonSegundo)} t): entra a la foto de las ${HHMM_CIERRE} y a los indicadores`, 'seg-ok')
-      : TAG('local_shipping', '2º camión opcional', `Lo que no cabe (${t1(r.excedente)} t) llega al 85% de un camión: se puede programar un 2º camión de ${t1(r.tonSegundo)} t`, 'extra'));
+    if (r.sobrecarga > 0) t.push(TAG('local_shipping', '2º camión opcional', `Sobran ${t1(r.sobrecarga)} t: puede salir un 2º camión`, 'extra'));
     if (r.tonClienteDiferido > 0) t.push(TAG('event_upcoming', 'CD-Cliente próximo', `CD-Cliente con fecha de entrega posterior: ${t1(r.tonClienteDiferido)} t`, 'h48'));
     return t.join('');
   }
@@ -2983,7 +2906,7 @@ async function renderPlanCarga(stage) {
     const doc = d => tipo === 'V' ? d.pv : tipo === 'R' ? d.oc : d.pt;
     const cant = d => tipo === 'X' ? fmtNum(d.ctdPend, 0) : tipo === 'T' ? escapeHtml(d.ctd ?? '') : fmtNum(parseNum(d.cant), 0);
     return `<div class="pc-tbl"><table class="sv-table"><thead><tr>${head.map((h, i) => `<th class="${i >= 3 ? 'r' : ''}">${escapeHtml(h)}</th>`).join('')}</tr></thead>
-      <tbody>${items.map(d => `<tr class="${d._enCamion === false ? (d._camion2 ? 'is-seg' : 'is-fuera') : ''}" title="${d._enCamion === false ? (d._camion2 ? 'Va en el 2º camión (opcional)' : 'No cabe: queda para el próximo plan') : ''}">
+      <tbody>${items.map(d => `<tr class="${d._enCamion === false ? 'is-fuera' : ''}" title="${d._enCamion === false ? 'No cabe en el camión CD: iría en el 2º camión' : ''}">
         <td><span class="sv-mono">${escapeHtml(String(doc(d) ?? ''))}</span></td>
         <td><div class="pc-mat"><b>${escapeHtml(d.nombre || '')}</b><small>${escapeHtml(sub(d))}</small></div></td>
         <td class="sv-mono">${escapeHtml(d.fecha || '')}</td><td class="r">${cant(d)}</td><td class="r"><b>${fmtNum(d.ton, 2)}</b></td></tr>`).join('')}</tbody></table></div>`;
@@ -3005,7 +2928,7 @@ async function renderPlanCarga(stage) {
           ['Agenda', r.enCalendario ? 'En calendario del día' : 'Fuera de agenda'],
           r.tonClienteDiferido > 0 ? ['CD-Cliente próximo', `${t1(r.tonClienteDiferido)} t`] : null,
         ])
-        + segundoHtml(r, fill)
+        + (r.sobrecarga > 0 ? `<div class="pc-extra"><span class="material-symbols-outlined">add_circle</span>Sobran ${t1(r.sobrecarga)} t. 2º camión opcional: las líneas atenuadas son las que irían en él.</div>` : '')
         + (CAT_V2.map((c, i) => (r.det[c.k] || []).length ? grupoHtml(c.color, CAT_LARGO[i], r.det[c.k], c.tipo) : '').join('') || '<div class="sv-note-box">El camión CD no tiene carga para esta sucursal.</div>');
     }
     const [tk, n] = tab.split(':');
@@ -3038,7 +2961,7 @@ async function renderPlanCarga(stage) {
 
   // ── Descarga CSV (formato 4.8 + columnas de referencia) ─────────────────
   const CSV_V21 = ['Origen', 'Centro destino', 'Sucursal', 'Estado plan', 'Horizonte', 'Día objetivo', 'Camión', 'Categoría', 'Documento', 'Material', 'Detalle', 'Fecha', 'Cantidad', 'Toneladas', 'En camión', '% carga camión', 'Estado sucursal',
-    'Id Material', 'Pedido de Venta', 'Proveedor', 'Entrega Entrante', 'Ruta', 'Comuna', 'Tipo Expedición', 'Ton Bruto', 'Ton Vol', 'Usuario', 'Motivo Prioridad', 'Entra a indicador'];
+    'Id Material', 'Pedido de Venta', 'Proveedor', 'Entrega Entrante', 'Ruta', 'Comuna', 'Tipo Expedición', 'Ton Bruto', 'Ton Vol', 'Usuario', 'Motivo Prioridad'];
   const CAT_CSV = ['REVEX', 'Venta directa', 'Retiro proveedor', 'Crossdocking', 'Quiebre y priorizado', 'Abastecimiento'];
   function filasCsvV21(r, cerrado) {
     marcarCapacidadCD(r);
@@ -3055,11 +2978,8 @@ async function renderPlanCarga(stage) {
     };
     const out = [];
     const e = estadoV2(r).lbl, pctCd = Math.min(r.pct, 100) + '%';
-    const acept = segAcept.has(r.ce);
-    const enCamTxt = d => d._enCamion !== false ? 'Sí' : d._camion2 ? (acept ? '2º camión (programado)' : '2º camión (propuesto, sin aceptar)') : 'No cabe';
-    const mide = d => (d._enCamion !== false ? e === 'Programar' : (d._camion2 && acept)) ? 'Sí' : 'No';
-    CAT_V2.forEach((c, i) => (r.det[c.k] || []).forEach(d => out.push(linea(d._camion2 ? 'CD 2' : 'CD', CAT_CSV[i], c.tipo, d, enCamTxt(d), d._camion2 ? (r.cap > 0 ? Math.round(r.tonSegundo / r.cap * 100) : 0) + '%' : pctCd, e).concat([mide(d)]))));
-    DIR_V2.forEach(t => (r[t.lista] || []).forEach(cm => cm.items.forEach(d => out.push(linea(`${t.csv} ${cm.n}`, t.csv, t.tipo, d, 'Sí', (cm.cap > 0 ? Math.round(cm.ton / cm.cap * 100) : 0) + '%', '').concat(['Sí'])))));
+    CAT_V2.forEach((c, i) => (r.det[c.k] || []).forEach(d => out.push(linea('CD', CAT_CSV[i], c.tipo, d, d._enCamion === false ? 'No (2º camión)' : 'Sí', pctCd, e))));
+    DIR_V2.forEach(t => (r[t.lista] || []).forEach(cm => cm.items.forEach(d => out.push(linea(`${t.csv} ${cm.n}`, t.csv, t.tipo, d, 'Sí', (cm.cap > 0 ? Math.round(cm.ton / cm.cap * 100) : 0) + '%', '')))));
     return out;
   }
   function descargarCsvV21(lista, nombre) {
@@ -3074,8 +2994,7 @@ async function renderPlanCarga(stage) {
       { key: 'prog', label: 'Programar', color: '#15803d', sub: 'sucursales ≥80%', fn: r => estadoV2(r).k === 'prog' },
       { key: 'rev', label: 'Revisar', color: '#ca8a04', sub: 'sucursales 70–80%', fn: r => estadoV2(r).k === 'rev' },
       { key: 'ins', label: 'Insuficiente', color: '#b5000b', sub: 'bajo 70%', fn: r => estadoV2(r).k === 'ins' },
-      { key: 'seg', label: '2º camión', color: '#15803d', sub: 'propuestos (≥85%) · aceptados', fn: r => r.segundoPropuesto,
-        valor: l => { const p = l.filter(r => r.segundoPropuesto); return `${p.length} · ${p.filter(r => segAcept.has(r.ce)).length}`; } },
+      { key: 'seg', label: '2º camión', color: '#15803d', sub: 'opcional por sobrecarga', valor: l => l.filter(r => r.sobrecarga > 0).length },
       { key: 'dir', label: 'Directos', color: '#1d4ed8', sub: 'camiones cliente / fábrica', valor: l => l.reduce((s, r) => s + nDirectos(r), 0) },
       { key: 'ton', label: 'Toneladas CD', color: '#191c1d', sub: 'en camiones consolidados', valor: l => fmtNum(l.reduce((s, r) => s + r.total, 0), 0) },
     ];
@@ -3123,10 +3042,6 @@ async function renderPlanCarga(stage) {
     });
     stage.querySelectorAll('[data-close]').forEach(b => b.addEventListener('click', () => { st.drawer = null; draw(); }));
     stage.querySelectorAll('[data-tab-plan]').forEach(b => b.addEventListener('click', () => { st.tab = b.dataset.tabPlan; draw(); }));
-    stage.querySelectorAll('[data-seg-accion]').forEach(b => b.addEventListener('click', async e => {
-      e.stopPropagation(); b.disabled = true;
-      await accionSegundo(b.dataset.segCe, b.dataset.segAccion);
-    }));
     stage.querySelectorAll('[data-descarga]').forEach(btn => btn.addEventListener('click', (e) => {
       e.stopPropagation();
       const ce = btn.dataset.descarga;

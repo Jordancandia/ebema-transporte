@@ -5,8 +5,8 @@
 //  Lee en vivo las vistas v_ind_* de Supabase (RLS: usuario @ebema.cl con rol).
 //  Paleta alineada a las presentaciones (PPT) del Comité de Transporte.
 // ============================================================================
-import { supabase } from './supabase-client.js?v=202609300749';
-import { centrosAlcance } from './permisos.js?v=202609300749';
+import { supabase } from './supabase-client.js?v=202609300011';
+import { centrosAlcance } from './permisos.js?v=202609300011';
 
 // --- Paleta PPT -------------------------------------------------------------
 const C = {
@@ -1038,9 +1038,8 @@ async function homeOperacion(alc){
   let plan=null;
   const fecha = ult.data && ult.data[0] ? ult.data[0].fecha : null;
   if (fecha) {
-    const sn = await supabase.from('abast_plan_carga_snapshot').select('cd_origen,ce,ton,tomado_en,medido').eq('fecha',fecha);
-    // (30-sep-2026) Sólo camiones programados (camión CD en PROGRAMAR, 2º camión aceptado, directos)
-    const rows=(sn.data||[]).filter(r=>r.medido!==false).filter(r=>enAlc(r.ce)||enAlc(r.cd_origen));
+    const sn = await supabase.from('abast_plan_carga_snapshot').select('cd_origen,ce,ton,tomado_en').eq('fecha',fecha);
+    const rows=(sn.data||[]).filter(r=>enAlc(r.ce)||enAlc(r.cd_origen));
     const porCd={}; let tomado=null;
     rows.forEach(r=>{ const k=String(r.cd_origen||''); porCd[k]=porCd[k]||{ton:0,ces:new Set()}; porCd[k].ton+=Number(r.ton)||0; porCd[k].ces.add(String(r.ce||'')); if(!tomado||r.tomado_en>tomado) tomado=r.tomado_en; });
     plan={ fecha, tomado, total:sum(Object.values(porCd).map(x=>x.ton)), cds:Object.keys(porCd).sort().map(k=>({cd:k, ton:porCd[k].ton, ces:porCd[k].ces.size})) };

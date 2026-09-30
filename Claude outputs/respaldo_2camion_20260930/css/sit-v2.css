@@ -586,12 +586,3 @@ tr.tf-sel td:first-child { box-shadow: inset 3px 0 0 var(--sv-primary); }
 .pc-mat b { font-weight: 600; font-size: 12px; }
 .pc-mat small { font-size: 11px; color: var(--sv-ink2); }
 .sv-kpis.pc-kpis { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
-/* Plan de Carga · 2º camión opcional (30-sep-2026) */
-.pc-tag.seg-ok { background: #15803d; color: #fff; }
-.pc-extra.is-mute { background: #edeeef; color: #444749; }
-.pc-extra.pc-seg2 { align-items: center; }
-.pc-extra.pc-seg2.is-ok { background: #15803d; color: #fff; }
-.pc-extra.pc-seg2 small { display: block; margin-top: 2px; opacity: .85; font-size: 12px; }
-.pc-extra.pc-seg2 .sv-btn, .pc-extra.pc-seg2 .sv-btn-p { flex-shrink: 0; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
-.pc-tbl tr.is-seg td { background: #f0fdf4; }
-.pc-tbl tr.is-seg td:first-child { box-shadow: inset 3px 0 0 #15803d; }
