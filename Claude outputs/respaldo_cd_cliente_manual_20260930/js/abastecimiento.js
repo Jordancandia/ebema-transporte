@@ -10,11 +10,11 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202609301234';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202609301234';
-import { getDatabase } from './data.js?v=202609301234';
+import { supabase } from './supabase-client.js?v=202609301128';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202609301128';
+import { getDatabase } from './data.js?v=202609301128';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202609301234';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202609301128';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -327,27 +327,6 @@ async function excluirDelPlan(tipo, doc, material, motivo) {
   if (error) { showAlert('Error al excluir: ' + error.message, 'error'); return false; }
   return true;
 }
-// ── NV 1003 marcadas manualmente como CD-CLIENTE (AJUSTE 30-sep-2026) ───────
-// Saca de la consolidación un despacho que por regla (<85%) se consolidaba.
-// Persistente hasta que se quite la marca. Sólo perfil OWNER (can('forzar_cd_cliente')).
-async function loadVentasDirectoManual() {
-  const { data, error } = await supabase.from('abast_venta_directo_manual').select('doc_ventas');
-  if (error) { console.error(error); return new Set(); }
-  return new Set((data || []).map(r => String(r.doc_ventas ?? '').trim()));
-}
-async function setVentaDirectoManual(doc, activo) {
-  const d = String(doc ?? '').trim();
-  const { error } = activo
-    ? await supabase.from('abast_venta_directo_manual').upsert({ doc_ventas: d, tipo: 'CD-CLIENTE', motivo: 'Marcado manual desde Ventas CD (1003)', created_by: await getUserEmail() }, { onConflict: 'doc_ventas' })
-    : await supabase.from('abast_venta_directo_manual').delete().eq('doc_ventas', d);
-  if (error) { showAlert('Error al guardar tipo de entrega: ' + error.message, 'error'); return false; }
-  return true;
-}
-// Clave de cliente para agrupar NV (misma regla que el Plan de Carga y la vista SQL).
-function clienteKeyNV(doc, deudor, pv) {
-  return String(deudor ?? '').trim() || String((pv || {}).nombre_1 ?? '').trim() || String(doc ?? '').trim();
-}
-
 async function reactivarEnPlan(id) {
   const { error } = await supabase.from('abast_plan_exclusiones').delete().eq('id', id);
   if (error) { showAlert('Error al reactivar: ' + error.message, 'error'); return false; }
@@ -914,34 +893,11 @@ const VISTAS_TRONCAL = {
     },
     // Tipo de entrega: ≥85% cap camión (UMBRAL_CD_CLIENTE, AJUSTE 28-sep-2026) ⇒ CD-CLIENTE (camión directo al cliente);
     // menos ⇒ CD-SUCURSAL (se consolida con carga).
-    // (AJUSTE 30-sep-2026) Se evalúa por CLIENTE (varias NV del mismo cliente suman),
-    // igual que el Plan de Carga: grupo = oficina + cliente + (vigente ≤ 2º día hábil | fecha).
-    // NV marcadas manualmente (abast_venta_directo_manual) son siempre CD-CLIENTE.
-    postFilter(filas, _chip, ctx) {
-      const c = ctx || {};
-      const forz = c.ventasDirectoManual || new Set();
-      const pvMap = c.pvMap || {};
-      const lim = c.diaHabil2 || addBusinessDays(hoy00(), 2, c.feriadosSet || new Set());
-      const grupos = {};
+    postFilter(filas) {
       filas.forEach(r => {
-        const doc = String(r.doc_ventas ?? '').trim();
-        const fe = parseDateSAP(r.fe_entrega);
-        const vig = !fe || fe.getTime() <= lim.getTime();
-        r._cliente_key = clienteKeyNV(doc, r.deudor, pvMap[doc]);
-        const gk = `${String(r.ofvta ?? '').trim()}|${r._cliente_key}|${vig ? 'VIGENTE' : isoLocal(fe)}`;
-        (grupos[gk] = grupos[gk] || []).push(r);
-        r._forzado = forz.has(doc);
-      });
-      Object.values(grupos).forEach(g => {
-        const tonG = g.reduce((s, r) => s + (r._ton_num || 0), 0);
-        const cap = getCapacidadCamion(g[0].ofvta);
-        const porCliente = tonG > cap * UMBRAL_CD_CLIENTE;
-        g.forEach(r => {
-          r._ton_cliente = tonG; r._n_pedidos_cliente = g.length;
-          r._directo = porCliente || r._forzado;
-          r._directo_motivo = r._forzado ? 'MANUAL' : (porCliente ? (g.length > 1 ? 'CLIENTE' : 'PEDIDO') : '');
-          r._tipo_entrega = r._directo ? 'CD-CLIENTE' : 'CD-SUCURSAL';
-        });
+        const cap = getCapacidadCamion(r.ofvta);
+        r._directo = r._ton_num >= cap * UMBRAL_CD_CLIENTE;
+        r._tipo_entrega = r._directo ? 'CD-CLIENTE' : 'CD-SUCURSAL';
       });
       return filas;
     },
@@ -1646,11 +1602,7 @@ const V2 = {
   pedidos_venta: {
     titulo: 'Ventas CD (1003)',
     desc: 'Pedidos de ventas con centro expedición CDRM',
-    async preload() {
-      const [pvMap, ventasDirectoManual, feriadosRows] = await Promise.all([pvRefMap(), loadVentasDirectoManual(), fetchAllRows('abast_feriados')]);
-      const feriadosSet = new Set((feriadosRows || []).map(r => String(r.fecha ?? '').trim()).filter(Boolean));
-      return { pvMap, ventasDirectoManual, feriadosSet, diaHabil2: addBusinessDays(hoy00(), 2, feriadosSet) };
-    },
+    async preload() { return { pvMap: await pvRefMap() }; },
     enrich(rows, ctx) {
       rows.forEach(r => {
         const pv = ctx.pvMap[String(r.doc_ventas ?? '').trim()] || {};
@@ -1671,42 +1623,26 @@ const V2 = {
       { key: 'at', label: 'Atrasados', color: C_RED, sub: 'fecha de entrega vencida', fn: r => r._al.k === 'Atrasado' },
       { key: 'pv', label: 'Pronto a vencer', color: C_ORANGE, sub: '5 días o menos', fn: r => r._al.k === 'Pronto a vencer' },
       { key: 'vi', label: 'Vigentes', color: C_GREEN, sub: 'en plazo', fn: r => r._al.k === 'Vigente' },
-      { key: 'cd', label: 'Camión directo', color: '#7e22ce', sub: 'cliente ≥85% o marcado manual', fn: r => !!r._directo },
+      { key: 'cd', label: 'Camión directo', color: '#7e22ce', sub: '≥85% de la capacidad', fn: r => !!r._directo },
     ],
     cols: [
       { label: 'Pedido', html: r => mono(r.doc_ventas, r.creado_el ? 'creado ' + r.creado_el : '') },
       { label: 'Cliente', html: r => txt(r._cliente || '—', r._vendedor, true) },
       { label: 'Destino', html: r => sucHtml(r.ofvta) },
-      { label: 'Tipo entrega', html: r => (r._cond ? `<span title="${escV2(r._cond.raw)}">${pill(r._cond.lbl, r._cond.tone)}</span>` : '<span class="sv-muted">—</span>') + (r._directo ? ` ${pill(r._forzado ? 'CD-Cliente · manual' : 'CD-Cliente', 'purple')}` : '') },
+      { label: 'Tipo entrega', html: r => (r._cond ? `<span title="${escV2(r._cond.raw)}">${pill(r._cond.lbl, r._cond.tone)}</span>` : '<span class="sv-muted">—</span>') + (r._directo ? ` ${pill('CD-Cliente', 'purple')}` : '') },
       { label: 'Líneas', al: 'r', html: r => escV2((r._detalle || []).length) },
       { label: 'Ton', al: 'r', html: r => `<span class="sv-ton">${tonHtml(r._ton_num)}</span>` },
       { label: 'Fecha entrega', html: r => mono(r.fe_entrega) },
       { label: 'Alerta', html: r => pill(r._al.k, r._al.tone) + (r._estado ? ` ${pill('Parcial', 'warn')}` : '') },
     ],
     edge: r => r._al.k === 'Atrasado' ? C_RED : null,
-    note: 'CD-Cliente: pedidos del mismo cliente que suman ≥85% de la capacidad del camión, o marcados manualmente (camión directo)',
+    note: 'CD-Cliente: pedido ≥85% de la capacidad del camión (camión directo)',
     minW: '1100px',
-    detalle: r => {
-      const puedeForzar = can('forzar_cd_cliente');
-      const motivoLbl = r._directo_motivo === 'MANUAL' ? 'CD-Cliente (marcado manual)'
-        : r._directo_motivo === 'CLIENTE' ? `CD-Cliente (${r._n_pedidos_cliente} pedidos del cliente suman ${fmtNum(r._ton_cliente, 1)} t)`
-        : r._directo ? 'CD-Cliente (camión directo)' : `CD-Sucursal (consolida · cliente suma ${fmtNum(r._ton_cliente || r._ton_num, 1)} t)`;
-      const acciones = !puedeForzar ? [] : r._forzado ? [
-        { label: 'Volver a regla automática', icon: 'undo', run: async row => {
-          if (!confirm(`¿Quitar la marca manual CD-Cliente del pedido ${row.doc_ventas}?\n\nVuelve a evaluarse con la regla del 85% por cliente.`)) return null;
-          return (await setVentaDirectoManual(row.doc_ventas, false)) ? (showAlert('Pedido vuelve a la regla automática', 'success'), { recargar: true }) : null;
-        } },
-      ] : r._directo ? [] : [
-        { label: 'Marcar como CD-Cliente', icon: 'local_shipping', primary: true, run: async row => {
-          if (!confirm(`¿Marcar el pedido ${row.doc_ventas} como camión directo CD-Cliente?\n\nSale de la consolidación del Plan de Carga hasta que se quite la marca.`)) return null;
-          return (await setVentaDirectoManual(row.doc_ventas, true)) ? (showAlert('Pedido marcado como CD-Cliente', 'success'), { recargar: true }) : null;
-        } },
-      ];
-      return {
+    detalle: r => ({
       kind: 'Pedido de venta · CE CDRM', title: r.doc_ventas, sub: `${r._cliente || 'Cliente sin nombre'} → ${nombreCentro(r.ofvta) || r.ofvta}`,
       kv: [
         ['Tipo entrega', r._cond ? `${r._cond.lbl} (${r._cond.raw})` : '—'],
-        ['Camión', motivoLbl],
+        ['Camión', r._directo ? 'CD-Cliente (camión directo)' : 'CD-Sucursal (consolida)'],
         ['Fecha entrega', r.fe_entrega], ['Fecha creación', r.creado_el],
         ['Ruta', r._ruta], ['Comuna', r._comuna],
         ['Oficina ventas', `${r.ofvta}${nombreCentro(r.ofvta) ? ' · ' + nombreCentro(r.ofvta) : ''}`], ['Toneladas', tonHtml(r._ton_num), true],
@@ -1720,9 +1656,7 @@ const V2 = {
         rows: (r._detalle || []).map(d => [mono(d.material), escV2(d.nombre), escV2(fmtNum(d.pendiente, 0)), `<span class="sv-ton">${tonHtml(d.ton)}</span>`]),
       },
       nota: '2º en el orden de llenado',
-      acciones,
-      };
-    },
+    }),
   },
 
   // ── RETIROS DE FÁBRICA ────────────────────────────────────────────────────
@@ -2033,7 +1967,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202609301234');
+    const m = await import('./ind-plan-carga.js?v=202609301128');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
@@ -2250,7 +2184,6 @@ async function renderPlanCarga(stage) {
     fetchAllRows('abast_feriados'),
     fetchAllRows('abast_horizonte_centro'),
   ]);
-  const ventasDirectoManual = await loadVentasDirectoManual();
 
   // Feriados administrados manualmente + horizonte de planificación (24h/48h)
   // por centro destino (tabla auxiliar de la vista Calendario Sucursales).
@@ -2490,8 +2423,7 @@ async function renderPlanCarga(stage) {
     const ventasPorGrupo = {};
     for (const [doc, items] of Object.entries(ventasPorDoc)) {
       const pv = pvMap[doc] || {};
-      const clienteKey = clienteKeyNV(doc, items[0].deudor, pv);
-      const forzado = ventasDirectoManual.has(doc);
+      const clienteKey = String(items[0].deudor ?? '').trim() || String(pv.nombre_1 ?? '').trim() || doc;
       items.forEach(r => {
         const pend = parseNum(r.ctd_confirmada) - parseNum(r.cantidad_entrg);
         if (pend <= 0) return;
@@ -2499,7 +2431,7 @@ async function renderPlanCarga(stage) {
         if (t <= 0) return;
         const tonBruto = calcTon(parseNum(r.peso_neto), pend), tonVol = calcTon(parseNum(r.tamano_dimens), pend);
         const rl = lookupRuta(r.ruta);
-        const item = { pv: doc, material: r.material, nombre: r.denominacion_de_posicion, cant: pend, ruta: r.ruta, comuna: rl.comuna, region: rl.region, fecha: r.fe_entrega, ton: t, tonBruto, tonVol, tipoExp: pv.denominacion || '', cliente: pv.nombre_1 || '', vendedor: pv.nombre || '', _forzado: forzado };
+        const item = { pv: doc, material: r.material, nombre: r.denominacion_de_posicion, cant: pend, ruta: r.ruta, comuna: rl.comuna, region: rl.region, fecha: r.fe_entrega, ton: t, tonBruto, tonVol, tipoExp: pv.denominacion || '', cliente: pv.nombre_1 || '', vendedor: pv.nombre || '' };
         const fe = parseDateSAP(r.fe_entrega);
         const vigente = !fe || fe.getTime() <= limiteDirectoCli.getTime();
         const gk = clienteKey + '|' + (vigente ? 'VIGENTE' : isoLocal(fe));
@@ -2509,18 +2441,11 @@ async function renderPlanCarga(stage) {
     }
     const camionesCliente = [];
     let tonClienteDiferido = 0;
-    // (AJUSTE 30-sep-2026) NV marcadas manualmente CD-CLIENTE salen siempre en camión
-    // directo; las demás NV del cliente sólo se suman si el grupo supera el 85%.
     Object.values(ventasPorGrupo).forEach(g => {
-      const porCliente = g.ton > capRef * UMBRAL_CD_CLIENTE;
-      const itemsDir = porCliente ? g.items : g.items.filter(d => d._forzado);
-      const itemsCons = porCliente ? [] : g.items.filter(d => !d._forzado);
-      const sum = arr => arr.reduce((s, d) => s + d.ton, 0);
-      if (itemsDir.length) {
-        if (!g.vigente) tonClienteDiferido += sum(itemsDir); // camión directo de otro día
-        else armarCamiones(itemsDir, capRef, d => d.pv).forEach(c => camionesCliente.push({ ...c, grupo: g.nombre, cap: capRef }));
-      }
-      if (itemsCons.length) { tonVentaCons += sum(itemsCons); det.ventaCons.push(...itemsCons); }
+      if (g.ton > capRef * UMBRAL_CD_CLIENTE) {
+        if (!g.vigente) { tonClienteDiferido += g.ton; return; } // camión directo de otro día
+        armarCamiones(g.items, capRef, d => d.pv).forEach(c => camionesCliente.push({ ...c, grupo: g.nombre, cap: capRef }));
+      } else { tonVentaCons += g.ton; det.ventaCons.push(...g.items); }
     });
     camionesCliente.forEach((c, i) => { c.n = i + 1; c.items.forEach(d => { d._camion = i + 1; }); tonVentaCliente += c.ton; det.cliente.push(...c.items); });
 
