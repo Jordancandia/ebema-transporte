@@ -12,20 +12,18 @@
 // Tailwind del sitio está compilado y no incluye clases nuevas.
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202609292319';
-import { filtrarPorCentro, getRol } from './permisos.js?v=202609292319';
+import { supabase } from './supabase-client.js?v=202609292058';
+import { filtrarPorCentro, getRol } from './permisos.js?v=202609292058';
 import { showAlert, escapeHtml } from './utils.js';
-import { getDatabase } from './data.js?v=202609292319';
-import { truckGauge } from './troncales-ui.js?v=202609292319';
 
 const META_CONS = 85;   // % consolidación objetivo por viaje
 const META_EFEC = 90;   // % efectividad objetivo del Plan de Carga
 
 const C = {
-  series: '#191c1d', good: '#15803d', warn: '#ca8a04', bad: '#b5000b', info: '#1d4ed8', neutral: '#9ca3af',
-  grid: '#edeeef', axis: '#5c5f61', ink: '#191c1d', ink2: '#5c5f61',
+  series: '#2a78d6', good: '#0f8a4b', warn: '#d98a00', bad: '#c62828', info: '#2a78d6', neutral: '#9aa0a6',
+  grid: '#e6e3df', axis: '#8a8680', ink: '#1c1b1a', ink2: '#5b5955',
 };
-const CAT = ['#191c1d', '#b5000b', '#1d4ed8', '#ca8a04', '#7e22ce', '#15803d', '#ea580c', '#936e69'];
+const CAT = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#4a3aa7', '#e34948'];
 const ESTADOS = [
   { k: 'CUMPLE', lbl: 'Cumple', color: C.good },
   { k: 'PARCIAL', lbl: 'Parcial', color: C.warn },
@@ -36,7 +34,7 @@ const ESTADOS = [
 // ── estado ─────────────────────────────────────────────────────────────────
 const S = {
   desde: '', hasta: '', usuario: 'all', centro: 'all', tipo: 'all', cd: 'all', soloAlcance: true,
-  cons: [], efec: [], usuarios: [], canEdit: false, vista: 'dash', detalleModo: 0, modo: 'cons',
+  cons: [], efec: [], usuarios: [], canEdit: false, vista: 'dash', detalleModo: 0,
 };
 let root = null, opts = {}, resizeT = null, onResize = null;
 
@@ -111,6 +109,62 @@ function efecFiltrado() {
 }
 const pctRow = r => r.pct_consolidacion == null ? null : Number(r.pct_consolidacion) * 100;
 
+// ── pintado general ────────────────────────────────────────────────────────
+function pintar() {
+  const box = root.querySelector('.ipc');
+  const act = usuariosActivos();
+  const universoUsr = S.soloAlcance ? act : [...new Set(S.cons.map(r => r.usuario_dt).filter(Boolean))].sort();
+  const centros = [...new Set(S.cons.map(r => String(r.centro_expedicion || '')).filter(Boolean))].sort();
+  const tipos = [...new Set(S.cons.map(r => r.tipo_despacho).filter(Boolean))].sort();
+  const cds = [...new Set(S.efec.map(r => String(r.cd_origen || '')).filter(Boolean))].sort();
+  const chip = (v, lbl, sel, attr) => `<button class="ipc-chip ${sel ? 'on' : ''}" data-${attr}="${esc(v)}">${esc(lbl)}</button>`;
+
+  box.innerHTML = `
+  <div class="ipc-head">
+    <div>
+      <h2>Indicadores – Plan de Carga</h2>
+      <p class="ipc-sub">${S.soloAlcance
+        ? `DT de: <b>${act.length ? act.map(esc).join(' · ') : 'sin usuarios configurados'}</b>`
+        : 'Todos los DT (todos los usuarios)'} · ${ddmmyy(S.desde)} a ${ddmmyy(S.hasta)}</p>
+    </div>
+    <div class="ipc-actions">
+      ${S.canEdit ? '<button class="ipc-btn" data-act="usuarios"><span class="material-symbols-outlined">group</span>Usuarios</button>' : ''}
+      <button class="ipc-btn ${S.vista === 'detalle' ? 'on' : ''}" data-act="vista"><span class="material-symbols-outlined">${S.vista === 'dash' ? 'table_view' : 'insights'}</span>${S.vista === 'dash' ? 'Ver detalle' : 'Ver dashboard'}</button>
+    </div>
+  </div>
+  ${S.vista === 'detalle' ? '<div class="ipc-detalle"></div>' : `
+  <div class="ipc-filters">
+    <label>Desde <input type="date" data-f="desde" value="${S.desde}"></label>
+    <label>Hasta <input type="date" data-f="hasta" value="${S.hasta}"></label>
+    <span class="ipc-quick">${[7, 30, 90].map(n => `<button class="ipc-chip" data-dias="${n}">${n} días</button>`).join('')}</span>
+    <label class="ipc-check"><input type="checkbox" data-f="solo" ${S.soloAlcance ? 'checked' : ''}> Solo usuarios configurados</label>
+  </div>
+  <div class="ipc-filters">
+    <span class="ipc-flbl">Usuario</span>${chip('all', 'Todos', S.usuario === 'all', 'usr')}${universoUsr.map(u => chip(u, u, S.usuario === u, 'usr')).join('')}
+    <span class="ipc-flbl">Centro exp.</span>${chip('all', 'Todos', S.centro === 'all', 'cen')}${centros.map(c => chip(c, c, S.centro === c, 'cen')).join('')}
+    ${tipos.length > 1 ? `<span class="ipc-flbl">Tipo</span>${chip('all', 'Todos', S.tipo === 'all', 'tip')}${tipos.map(t => chip(t, t, S.tipo === t, 'tip')).join('')}` : ''}
+  </div>
+  <div class="ipc-kpis"></div>
+  <div class="ipc-grid">
+    <section class="ipc-card ipc-span2"><h3>Consolidación diaria <small>promedio simple por DT · meta ${META_CONS}%</small></h3><div class="ipc-chart" data-ch="diaria"></div></section>
+    <section class="ipc-card"><h3>Por usuario <small>% consolidación · DT · t</small></h3><div class="ipc-chart" data-ch="usuario"></div></section>
+    <section class="ipc-card"><h3>Distribución de viajes <small>DT por rango de consolidación</small></h3><div class="ipc-chart" data-ch="dist"></div></section>
+    <section class="ipc-card"><h3>Por sucursal destino <small>% consolidación · DT</small></h3><div class="ipc-chart" data-ch="destino"></div></section>
+    <section class="ipc-card"><h3>Efectividad Plan de Carga <small>líneas foto 15:30 · meta ${META_EFEC}%</small>
+      <span class="ipc-inline">${cds.length > 1 ? chip('all', 'Todos CD', S.cd === 'all', 'cd') + cds.map(c => chip(c, 'CD ' + c, S.cd === c, 'cd')).join('') : ''}</span></h3>
+      <div class="ipc-chart" data-ch="efec"></div></section>
+    <section class="ipc-card ipc-span2"><h3>Viajes bajo meta <small>DT con menor consolidación en el período</small></h3><div data-ch="bajo"></div></section>
+  </div>
+  <p class="ipc-note">Capacidad = GeEs del DT; si viene vacía en un traslado se usa 28 t (15 t a 1050/1005) y el DT se marca <i>estimada</i>.
+  Ton por línea = máx(peso bruto, peso volumétrico) × cantidad; tope 100% por DT. Efectividad excluye líneas aún “En plazo” (48 h hábiles).</p>
+  `}
+  <div class="ipc-tip" hidden></div>`;
+
+  enlazar(box);
+  if (S.vista === 'dash') { pintarKpis(); pintarGraficos(); }
+  else if (opts.renderDetalle) opts.renderDetalle(box.querySelector('.ipc-detalle'), S.detalleModo);
+}
+
 function enlazar(box) {
   box.querySelectorAll('[data-usr]').forEach(b => b.onclick = () => { S.usuario = b.dataset.usr; pintar(); });
   box.querySelectorAll('[data-cen]').forEach(b => b.onclick = () => { S.centro = b.dataset.cen; pintar(); });
@@ -137,213 +191,90 @@ async function recargar() {
   await cargar(); pintar();
 }
 
-// ── pintado general (rediseño v2 29-sep-2026: selector de modo Consolidación /
-//    Efectividad, tarjetas, barras diarias con línea de meta y tabla por sucursal)
-function pintar() {
-  const box = root.querySelector('.ipc');
-  const act = usuariosActivos();
-  const universoUsr = S.soloAlcance ? act : [...new Set(S.cons.map(r => r.usuario_dt).filter(Boolean))].sort();
-  const centros = [...new Set(S.cons.map(r => String(r.centro_expedicion || '')).filter(Boolean))].sort();
-  const tipos = [...new Set(S.cons.map(r => r.tipo_despacho).filter(Boolean))].sort();
-  const cds = [...new Set(S.efec.map(r => String(r.cd_origen || '')).filter(Boolean))].sort();
-  const chip = (v, lbl, sel, attr) => `<button class="sv-chip ${sel ? 'is-on' : ''}" data-chip data-${attr}="${esc(v)}">${esc(lbl)}</button>`;
-  const cons = S.modo === 'cons';
-
-  box.innerHTML = `
-  <div class="sv-vhead">
-    <div style="min-width:0">
-      <h1 class="sv-h1">Indicadores Plan de Carga</h1>
-      <div class="sv-desc">${S.soloAlcance
-        ? `DT de: <b>${act.length ? act.map(esc).join(' · ') : 'sin usuarios configurados'}</b>`
-        : 'Todos los DT (todos los usuarios)'} · ${ddmmyy(S.desde)} a ${ddmmyy(S.hasta)}</div>
-    </div>
-    <div class="sv-actions">
-      ${S.vista === 'dash' ? `<div class="sv-seg" role="group" aria-label="Indicador">
-        <button data-chip data-modo-ipc="cons" class="${cons ? 'is-on' : ''}"><span class="material-symbols-outlined">local_shipping</span>Consolidación</button>
-        <button data-chip data-modo-ipc="efec" class="${!cons ? 'is-on' : ''}"><span class="material-symbols-outlined">task_alt</span>Efectividad del plan</button></div>` : ''}
-      ${S.canEdit ? '<button class="sv-btn" data-chip data-act="usuarios"><span class="material-symbols-outlined">group</span>Usuarios</button>' : ''}
-      <button class="sv-btn" data-chip data-act="vista"><span class="material-symbols-outlined">${S.vista === 'dash' ? 'table_view' : 'insights'}</span>${S.vista === 'dash' ? 'Ver detalle' : 'Ver dashboard'}</button>
-    </div>
-  </div>
-  ${S.vista === 'detalle' ? '<div class="ipc-detalle"></div>' : `
-  <div class="sv-filters">
-    <div class="sv-frow">
-      <div class="sv-inp"><span class="material-symbols-outlined">date_range</span><span class="sv-sep">Período</span>
-        <input type="date" data-f="desde" value="${S.desde}" aria-label="Desde"><span class="sv-sep">–</span><input type="date" data-f="hasta" value="${S.hasta}" aria-label="Hasta"></div>
-      ${[7, 30, 90].map(n => `<button class="sv-chip" data-chip data-dias="${n}">${n} días</button>`).join('')}
-      <label class="ipc-check"><input type="checkbox" data-f="solo" ${S.soloAlcance ? 'checked' : ''}> Solo usuarios configurados</label>
-    </div>
-    <div class="sv-frow"><span class="sv-flbl">Usuario</span>${chip('all', 'Todos', S.usuario === 'all', 'usr')}${universoUsr.map(u => chip(u, u, S.usuario === u, 'usr')).join('')}</div>
-    ${cons ? `<div class="sv-frow"><span class="sv-flbl">Centro exp.</span>${chip('all', 'Todos', S.centro === 'all', 'cen')}${centros.map(c => chip(c, c, S.centro === c, 'cen')).join('')}
-      ${tipos.length > 1 ? `<span class="sv-flbl" style="margin-left:12px">Tipo</span>${chip('all', 'Todos', S.tipo === 'all', 'tip')}${tipos.map(t => chip(t, t, S.tipo === t, 'tip')).join('')}` : ''}</div>`
-    : (cds.length > 1 ? `<div class="sv-frow"><span class="sv-flbl">CD origen</span>${chip('all', 'Todos', S.cd === 'all', 'cd')}${cds.map(c => chip(c, 'CD ' + c, S.cd === c, 'cd')).join('')}</div>` : '')}
-  </div>
-  <div class="sv-kpis ipc-kpis"></div>
-  ${cons ? `
-  <section class="sv-card ipc-card"><h3>Consolidación diaria de camiones <small>promedio simple por DT · meta ${META_CONS}%</small></h3><div class="ipc-chart" data-ch="diaria"></div></section>
-  <section class="sv-card ipc-card"><h3>Por sucursal destino <small>consolidación promedio · Δ segunda mitad del período vs primera</small></h3><div data-ch="suc"></div></section>
-  <div class="ipc-grid">
-    <section class="sv-card ipc-card"><h3>Por usuario <small>% consolidación · DT · t</small></h3><div class="ipc-chart" data-ch="usuario"></div></section>
-    <section class="sv-card ipc-card"><h3>Distribución de viajes <small>DT por rango de consolidación</small></h3><div class="ipc-chart" data-ch="dist"></div></section>
-  </div>
-  <section class="sv-card ipc-card"><h3>Viajes bajo meta <small>DT con menor consolidación en el período</small></h3><div data-ch="bajo"></div></section>
-  <p class="ipc-note">Capacidad = GeEs del DT; si viene vacía en un traslado se usa 28 t (15 t a 1050/1005) y el DT se marca <i>estimada</i>.
-  Ton por línea = máx(peso bruto, peso volumétrico) × cantidad; tope 100% por DT.</p>` : `
-  <section class="sv-card ipc-card"><h3>Efectividad diaria del plan <small>foto 15:30 · meta ${META_EFEC}%</small></h3><div class="ipc-chart" data-ch="diariaEfec"></div></section>
-  <section class="sv-card ipc-card"><h3>Resultado de las líneas del plan</h3><div data-ch="efec"></div></section>
-  <section class="sv-card ipc-card"><h3>Por sucursal destino <small>líneas medidas por estado</small></h3><div data-ch="sucEfec"></div></section>
-  <p class="ipc-note">Efectividad = líneas del plan (documento + SKU) cargadas completas en un DT dentro de 48 h hábiles. Las líneas que aún siguen “en plazo” no se miden.</p>`}
-  `}
-  <div class="ipc-tip" hidden></div>`;
-
-  enlazar(box);
-  box.querySelectorAll('[data-modo-ipc]').forEach(b => b.onclick = () => { if (S.modo === b.dataset.modoIpc) return; S.modo = b.dataset.modoIpc; pintar(); });
-  if (S.vista === 'dash') { pintarKpis(); pintarGraficos(); }
-  else if (opts.renderDetalle) opts.renderDetalle(box.querySelector('.ipc-detalle'), S.modo === 'efec' ? 1 : S.detalleModo);
-}
-
 // ── KPIs ───────────────────────────────────────────────────────────────────
 function pintarKpis() {
-  const tile = (lbl, val, sub, dot, extra = '') => `<div class="sv-kpi" style="cursor:default">
-      <div class="sv-kpi-l"><i style="background:${dot}"></i>${lbl}</div>
-      <div class="sv-kpi-v">${val}</div><div class="sv-kpi-s">${sub}</div>${extra}</div>`;
-  const meter = (v, meta, color) => v == null ? '' : `<div class="ipc-meter"><i style="width:${Math.min(100, v)}%;background:${color}"></i><b style="left:${meta}%"></b></div>`;
-  if (S.modo === 'cons') {
-    const rows = consFiltrado();
-    const vals = rows.map(pctRow).filter(v => v != null);
-    const cons = avg(vals);
-    const ton = rows.reduce((s, r) => s + (Number(r.ton_cargadas) || 0), 0);
-    const sobre = vals.filter(v => v >= META_CONS).length;
-    const dias = diasCons(rows).filter(d => d.v != null);
-    const bajo = dias.filter(d => d.v < META_CONS);
-    const ult = bajo.length ? bajo[bajo.length - 1] : null;
-    const nLin = rows.reduce((s, r) => s + (Number(r.n_lineas) || 0), 0);
-    const sinPeso = rows.reduce((s, r) => s + (Number(r.lineas_sin_peso) || 0), 0);
-    const sinCap = rows.filter(r => pctRow(r) == null).length;
-    const col = semaforo(cons, META_CONS, 70);
-    root.querySelector('.ipc-kpis').innerHTML =
-      tile('Consolidación promedio', pct(cons), `<span style="color:${col};font-weight:700">${semaforoTxt(cons, META_CONS, 70)}</span> · ${sobre} de ${vals.length} viajes ≥ ${META_CONS}%`, C.ink, meter(cons, META_CONS, col))
-      + tile('Viajes (DT)', fmt(rows.length, 0), `${fmt(ton, 0)} t transportadas · ${fmt(rows.length ? ton / rows.length : null, 1)} t/viaje`, C.ink2)
-      + tile('Días bajo meta', `${bajo.length} de ${dias.length}`, ult ? `último: ${ddmmyy(ult.f)} (${pct(ult.v, 0)})` : 'todos los días sobre meta', C.warn)
-      + tile('Calidad del dato', pct(nLin ? (nLin - sinPeso) / nLin * 100 : null, 0), `líneas con peso maestro · ${sinCap} DT sin capacidad`, C.neutral);
-  } else {
-    const rows = efecFiltrado();
-    const med = rows.filter(r => r.estado !== 'EN PLAZO');
-    const ok = med.filter(r => r.linea_cumple).length;
-    const efec = med.length ? ok / med.length * 100 : null;
-    const nc = med.filter(r => r.estado === 'NO CARGADO').length;
-    const col = semaforo(efec, META_EFEC, 75);
-    root.querySelector('.ipc-kpis').innerHTML =
-      tile('Efectividad del plan', pct(efec), `<span style="color:${col};font-weight:700">${semaforoTxt(efec, META_EFEC, 75)}</span> · líneas cargadas en 48 h hábiles`, C.ink, meter(efec, META_EFEC, col))
-      + tile('Líneas medidas', fmt(med.length, 0), `excluye ${fmt(rows.length - med.length, 0)} que siguen en plazo`, C.ink2)
-      + tile('Cumplen', fmt(ok, 0), 'cant. en DT ≥ cant. del plan', C.good)
-      + tile('No cargadas', fmt(nc, 0), 'sin entrega ni DT', C.bad);
-  }
+  const rows = consFiltrado();
+  const vals = rows.map(pctRow).filter(v => v != null);
+  const cons = avg(vals);
+  const ton = rows.reduce((s, r) => s + (Number(r.ton_cargadas) || 0), 0);
+  const cap = rows.reduce((s, r) => s + (Number(r.capacidad_efectiva) || 0), 0);
+  const sobre = vals.filter(v => v >= META_CONS).length;
+  const nLin = rows.reduce((s, r) => s + (Number(r.n_lineas) || 0), 0);
+  const sinPeso = rows.reduce((s, r) => s + (Number(r.lineas_sin_peso) || 0), 0);
+  const capReal = rows.filter(r => r.capacidad_ton != null && Number(r.capacidad_ton) > 0).length;
+  const ef = efecFiltrado().filter(r => r.estado !== 'EN PLAZO');
+  const efOk = ef.filter(r => r.linea_cumple).length;
+  const efec = ef.length ? efOk / ef.length * 100 : null;
+
+  const tile = (lbl, val, sub, color, ico, estado, hero) => `
+    <div class="ipc-kpi ${hero ? 'hero' : ''}">
+      <div class="ipc-kpi-lbl">${lbl}</div>
+      <div class="ipc-kpi-val">${val}</div>
+      ${estado ? `<div class="ipc-kpi-st" style="--st:${color}"><span class="material-symbols-outlined">${ico}</span>${estado}</div>` : ''}
+      <div class="ipc-kpi-sub">${sub}</div>
+      ${hero && cons != null ? `<div class="ipc-meter"><i style="width:${Math.min(100, cons)}%;background:${color}"></i><b style="left:${META_CONS}%"></b></div>` : ''}
+    </div>`;
+  root.querySelector('.ipc-kpis').innerHTML =
+    tile('Consolidación promedio', pct(cons), `${sobre} de ${vals.length} viajes sobre meta (${META_CONS}%)`,
+      semaforo(cons, META_CONS, 70), semaforoIco(cons, META_CONS, 70), semaforoTxt(cons, META_CONS, 70), true)
+    + tile('Viajes (DT)', fmt(rows.length, 0), `${fmt(rows.reduce((s, r) => s + (Number(r.n_entregas) || 0), 0), 0)} entregas despachadas`)
+    + tile('Toneladas cargadas', fmt(ton, 1) + ' t', `${fmt(rows.length ? ton / rows.length : null, 1)} t por viaje · ${pct(cap ? ton / cap * 100 : null)} de la capacidad total`)
+    + tile('Efectividad Plan de Carga', pct(efec), `${fmt(efOk, 0)} de ${fmt(ef.length, 0)} líneas cargadas completas${S.usuario !== 'all' ? ' (líneas de ' + esc(S.usuario) + ')' : ''}`,
+      semaforo(efec, META_EFEC, 75), semaforoIco(efec, META_EFEC, 75), semaforoTxt(efec, META_EFEC, 75))
+    + tile('Calidad del dato', pct(nLin ? (nLin - sinPeso) / nLin * 100 : null, 0), `líneas con peso maestro · ${capReal} de ${rows.length} DT con GeEs real`);
 }
 
 // ── gráficos ───────────────────────────────────────────────────────────────
 function pintarGraficos() {
+  const rows = consFiltrado();
   const q = k => root.querySelector(`[data-ch="${k}"]`);
-  if (S.modo === 'cons') {
-    const rows = consFiltrado();
-    chDiaria(q('diaria'), rows);
-    tablaSucCons(q('suc'), rows);
-    chUsuario(q('usuario'), rows);
-    chDist(q('dist'), rows);
-    tablaBajo(q('bajo'), rows);
-  } else {
-    const rows = efecFiltrado();
-    chDiariaEfec(q('diariaEfec'), rows);
-    chEfec(q('efec'), rows);
-    tablaSucEfec(q('sucEfec'), rows);
-  }
+  chDiaria(q('diaria'), rows);
+  chUsuario(q('usuario'), rows);
+  chDist(q('dist'), rows);
+  chDestino(q('destino'), rows);
+  chEfec(q('efec'), efecFiltrado());
+  tablaBajo(q('bajo'), rows);
   tooltips();
 }
 const vacio = el => { el.innerHTML = '<div class="ipc-empty">Sin datos para los filtros seleccionados</div>'; };
 
-function diasCons(rows) {
+function chDiaria(el, rows) {
   const by = new Map();
   rows.forEach(r => { const f = String(r.fecha_creacion).slice(0, 10); (by.get(f) || by.set(f, []).get(f)).push(r); });
-  return [...by.keys()].sort().map(f => {
+  const dias = [...by.keys()].sort();
+  if (!dias.length) return vacio(el);
+  const pts = dias.map(f => {
     const rs = by.get(f); const v = rs.map(pctRow).filter(x => x != null);
     return { f, v: avg(v), n: rs.length, t: rs.reduce((s, r) => s + (Number(r.ton_cargadas) || 0), 0) };
   });
-}
-// Barras diarias con línea de meta punteada: verde sobre la meta, amarillo bajo la meta.
-function barrasDiarias(el, pts, meta, ttFn) {
-  if (!pts.length) return vacio(el);
-  const W = Math.max(300, el.clientWidth), H = 200, m = { l: 40, r: 14, t: 14, b: 24 };
+  const W = Math.max(300, el.clientWidth), H = 250, H2 = 70, m = { l: 40, r: 14, t: 14, b: 22 };
   const iw = W - m.l - m.r, ih = H - m.t - m.b;
-  const step = iw / pts.length, x = i => m.l + step * (i + .5), bw = Math.max(4, Math.min(34, step * .62));
-  const y = v => m.t + ih - (Math.max(0, Math.min(100, v)) / 100) * ih;
-  let s = `<svg width="${W}" height="${H}" role="img">`;
-  [0, 50, 100].forEach(g => { s += `<line x1="${m.l}" x2="${W - m.r}" y1="${y(g)}" y2="${y(g)}" stroke="${C.grid}"/><text x="${m.l - 6}" y="${y(g) + 4}" text-anchor="end" class="ipc-ax">${g}%</text>`; });
-  const every = Math.ceil(pts.length / Math.max(1, Math.floor(iw / 44)));
+  const step = iw / pts.length, x = i => m.l + step * (i + .5);
+  const y = v => m.t + ih - (v / 100) * ih;
+  const maxN = Math.max(...pts.map(p => p.n));
+  let s = `<svg width="${W}" height="${H + H2}" role="img" aria-label="Consolidación diaria">`;
+  [0, 25, 50, 75, 100].forEach(g => { s += `<line x1="${m.l}" x2="${W - m.r}" y1="${y(g)}" y2="${y(g)}" stroke="${C.grid}"/><text x="${m.l - 6}" y="${y(g) + 4}" text-anchor="end" class="ipc-ax">${g}%</text>`; });
+  s += `<line x1="${m.l}" x2="${W - m.r}" y1="${y(META_CONS)}" y2="${y(META_CONS)}" stroke="${C.good}" stroke-dasharray="5 4" stroke-width="1.5"/>
+        <text x="${W - m.r}" y="${y(META_CONS) - 5}" text-anchor="end" class="ipc-ax" fill="${C.good}">Meta ${META_CONS}%</text>`;
+  const linea = pts.map((p, i) => p.v == null ? null : `${x(i)},${y(p.v)}`).filter(Boolean);
+  if (linea.length > 1) s += `<polyline points="${linea.join(' ')}" fill="none" stroke="${C.series}" stroke-width="2" stroke-linejoin="round"/>`;
+  const every = Math.ceil(pts.length / Math.max(1, Math.floor(iw / 46)));
   pts.forEach((p, i) => {
-    if (p.v != null) {
-      const top = y(p.v), h = m.t + ih - top;
-      s += `<path d="M${x(i) - bw / 2},${m.t + ih} v${-Math.max(0, h - 3)} q0,-3 3,-3 h${bw - 6} q3,0 3,3 v${Math.max(0, h - 3)} z" fill="${p.v >= meta ? C.good : C.warn}"/>`;
-      if (step > 30) s += `<text x="${x(i)}" y="${top - 5}" text-anchor="middle" class="ipc-val">${fmt(p.v, 0)}</text>`;
-    } else if (p.plazo) {
-      s += `<rect x="${x(i) - bw / 2}" y="${m.t + ih - 14}" width="${bw}" height="14" rx="3" fill="#e7e8e9"/>`;
-      if (step > 30) s += `<text x="${x(i)}" y="${m.t + ih - 20}" text-anchor="middle" class="ipc-ax">en plazo</text>`;
-    }
-    if (i % every === 0) s += `<text x="${x(i)}" y="${H - 6}" text-anchor="middle" class="ipc-ax">${ddmm(p.f)}</text>`;
-    s += `<rect x="${x(i) - step / 2}" y="${m.t}" width="${step}" height="${ih}" fill="transparent" data-tt="${esc(ttFn(p))}"/>`;
+    if (p.v != null) s += `<circle cx="${x(i)}" cy="${y(p.v)}" r="4.5" fill="${semaforo(p.v, META_CONS, 70)}" stroke="#fff" stroke-width="2"/>`;
+    if (i % every === 0) s += `<text x="${x(i)}" y="${H + H2 - 4}" text-anchor="middle" class="ipc-ax">${ddmm(p.f)}</text>`;
   });
-  s += `<line x1="${m.l}" x2="${W - m.r}" y1="${y(meta)}" y2="${y(meta)}" stroke="${C.ink}" stroke-dasharray="5 4" stroke-width="1.2"/>
-        <text x="${W - m.r}" y="${y(meta) - 5}" text-anchor="end" class="ipc-ax" style="fill:${C.ink};font-weight:700">Meta ${meta}%</text>`;
+  // mini-columnas: viajes por día (eje propio, mismo X)
+  const by0 = H + 4, bh = H2 - 26;
+  s += `<text x="${m.l - 6}" y="${by0 + 10}" text-anchor="end" class="ipc-ax">DT</text>`;
+  pts.forEach((p, i) => {
+    const h = Math.max(2, p.n / maxN * bh), bw = Math.min(28, step * .6);
+    s += `<rect x="${x(i) - bw / 2}" y="${by0 + bh - h}" width="${bw}" height="${h}" rx="3" fill="${C.neutral}" opacity=".55"/>`;
+    if (step > 22) s += `<text x="${x(i)}" y="${by0 + bh - h - 3}" text-anchor="middle" class="ipc-ax">${p.n}</text>`;
+  });
+  pts.forEach((p, i) => {
+    s += `<rect x="${x(i) - step / 2}" y="${m.t}" width="${step}" height="${H + H2 - m.t - 14}" fill="transparent" data-tt="${esc(`<b>${ddmmyy(p.f)}</b><br>Consolidación: <b>${pct(p.v)}</b><br>Viajes: ${p.n}<br>Toneladas: ${fmt(p.t, 1)} t`)}"/>`;
+  });
   el.innerHTML = s + '</svg>';
-}
-function chDiaria(el, rows) {
-  barrasDiarias(el, diasCons(rows), META_CONS, p => `<b>${ddmmyy(p.f)}</b><br>Consolidación: <b>${pct(p.v)}</b><br>Viajes: ${p.n}<br>Toneladas: ${fmt(p.t, 1)} t`);
-}
-function chDiariaEfec(el, rows) {
-  const g = new Map();
-  rows.forEach(r => { const f = String(r.fecha).slice(0, 10); (g.get(f) || g.set(f, []).get(f)).push(r); });
-  const pts = [...g.keys()].sort().map(f => {
-    const rs = g.get(f), med = rs.filter(r => r.estado !== 'EN PLAZO'), ok = med.filter(r => r.linea_cumple).length;
-    return { f, v: med.length ? ok / med.length * 100 : null, plazo: rs.length - med.length > 0 && !med.length, n: rs.length, med: med.length, ok };
-  });
-  barrasDiarias(el, pts, META_EFEC, p => `<b>Plan ${ddmmyy(p.f)}</b><br>${p.v == null ? 'Sigue en plazo (48 h hábiles)' : `Efectividad: <b>${pct(p.v)}</b>`}<br>Líneas: ${p.n} · medidas ${p.med} · cumplen ${p.ok}`);
-}
-
-function nombreCentro(id) {
-  const c = (getDatabase().logisticsCentres || []).find(x => String(x.id) === String(id));
-  return c && c.nombre ? c.nombre : String(id);
-}
-function tablaSucCons(el, rows) {
-  if (!rows.length) return vacio(el);
-  const mid = (() => { const d0 = new Date(S.desde + 'T12:00:00'), d1 = new Date(S.hasta + 'T12:00:00'); return iso(new Date((d0.getTime() + d1.getTime()) / 2)); })();
-  const g = new Map();
-  rows.forEach(r => { const k = String(r.sucursal_destino || '(sin dato)'); (g.get(k) || g.set(k, []).get(k)).push(r); });
-  const items = [...g.entries()].map(([k, rs]) => {
-    const v = avg(rs.map(pctRow).filter(x => x != null));
-    const a = avg(rs.filter(r => String(r.fecha_creacion).slice(0, 10) < mid).map(pctRow).filter(x => x != null));
-    const b = avg(rs.filter(r => String(r.fecha_creacion).slice(0, 10) >= mid).map(pctRow).filter(x => x != null));
-    return { k, v, n: rs.length, t: rs.reduce((s, r) => s + (Number(r.ton_cargadas) || 0), 0), d: a != null && b != null ? b - a : null };
-  }).sort((a, b) => (b.v ?? -1) - (a.v ?? -1));
-  const col = v => v == null ? C.neutral : v >= META_CONS ? C.good : v >= 70 ? C.warn : C.neutral;
-  el.innerHTML = `<div style="overflow:auto"><table class="sv-table" style="min-width:640px"><thead><tr><th>Sucursal</th><th class="r">Viajes</th><th class="r">Toneladas</th><th>Consolidación</th><th class="r">Δ</th></tr></thead><tbody>
-    ${items.map(it => `<tr style="cursor:default"><td><span class="sv-b">${esc(nombreCentro(it.k))}</span>${nombreCentro(it.k) !== it.k ? `<div class="sv-sub">${esc(it.k)}</div>` : ''}</td>
-      <td class="r">${it.n}</td><td class="r"><span class="sv-ton">${fmt(it.t, 1)} t</span></td>
-      <td><div style="display:flex;align-items:center;gap:12px">${it.v != null ? truckGauge([{ ton: it.v, color: col(it.v), label: 'Consolidación' }], 100, { w: 110, h: 22 }) : ''}<b>${pct(it.v, 0)}</b></div></td>
-      <td class="r">${it.d == null ? '<span class="sv-muted">—</span>' : `<b style="color:${it.d >= 0 ? C.good : C.bad}">${it.d >= 0 ? '▲' : '▼'} ${fmt(Math.abs(it.d), 1)}</b> <span class="sv-muted">pts</span>`}</td></tr>`).join('')}
-  </tbody></table></div>`;
-}
-function tablaSucEfec(el, rows) {
-  const med = rows.filter(r => r.estado !== 'EN PLAZO');
-  if (!med.length) return vacio(el);
-  const g = new Map();
-  med.forEach(r => { const k = String(r.ce || '(sin dato)'); (g.get(k) || g.set(k, []).get(k)).push(r); });
-  const items = [...g.entries()].map(([k, rs]) => ({ k, n: rs.length, ok: rs.filter(r => r.linea_cumple).length, cnt: ESTADOS.map(e => rs.filter(r => r.estado === e.k).length) }))
-    .map(it => ({ ...it, v: it.ok / it.n * 100 })).sort((a, b) => b.v - a.v);
-  el.innerHTML = `<div class="ipc-legend">${ESTADOS.map(e => `<span class="ipc-leg"><i style="background:${e.color}"></i>${e.lbl}</span>`).join('')}</div>
-  <div style="overflow:auto"><table class="sv-table" style="min-width:640px"><thead><tr><th>Sucursal</th><th class="r">Líneas</th><th style="width:45%">Estado de las líneas</th><th class="r">Efectividad</th></tr></thead><tbody>
-    ${items.map(it => `<tr style="cursor:default"><td><span class="sv-b">${esc(nombreCentro(it.k))}</span><div class="sv-sub">${esc(it.k)}</div></td><td class="r">${it.n}</td>
-      <td><div class="ipc-stack">${ESTADOS.map((e, i) => it.cnt[i] ? `<i style="width:${it.cnt[i] / it.n * 100}%;background:${e.color}" data-tt="${esc(`<b>${e.lbl}</b><br>${it.cnt[i]} líneas (${pct(it.cnt[i] / it.n * 100, 0)})`)}"></i>` : '').join('')}</div></td>
-      <td class="r"><b style="color:${semaforo(it.v, META_EFEC, 75)}">${pct(it.v, 0)}</b></td></tr>`).join('')}
-  </tbody></table></div>`;
 }
 
 function barrasH(el, items, { meta, valFmt, sub, colorFn }) {
@@ -447,8 +378,8 @@ function chEfec(el, rows) {
     return `<tr><td>${ddmmyy(f)}</td><td class="r">${rs.length}</td><td class="r">${m.length}</td><td class="r">${ok}</td>
       <td class="r"><span class="ipc-dot" style="background:${semaforo(v, META_EFEC, 75)}"></span><b>${pct(v)}</b></td></tr>`;
   }).join('');
-  void fil;
-  el.innerHTML = `${med.length ? s : '<div class="ipc-empty">Todas las líneas siguen en plazo (48 h hábiles)</div>'}<div class="ipc-legend">${leg}</div>`;
+  el.innerHTML = `${med.length ? s : '<div class="ipc-empty">Todas las líneas siguen en plazo (48 h hábiles)</div>'}<div class="ipc-legend">${leg}</div>
+    <table class="ipc-tbl"><thead><tr><th>Fecha plan</th><th class="r">Líneas</th><th class="r">Medibles</th><th class="r">Cumplen</th><th class="r">Efectividad</th></tr></thead><tbody>${fil}</tbody></table>`;
 }
 
 function tablaBajo(el, rows) {
@@ -514,54 +445,74 @@ let cambiosPend = false;
 
 // ── estilos encapsulados ───────────────────────────────────────────────────
 function css() {
-  // Estilos propios del dashboard (.ipc-*). Tarjetas, chips, botones y tablas
-  // usan el sistema visual v2 compartido (css/sit-v2.css, clases .sv-*).
   return `<style>
-  .ipc{position:relative;display:flex;flex-direction:column;gap:20px;color:${C.ink}}
+  .ipc{position:relative;font-family:'Hanken Grotesk',system-ui,sans-serif;color:${C.ink};padding:4px 2px 24px}
   .ipc-load,.ipc-empty{padding:24px;color:${C.ink2};font-size:13px;text-align:center}
   .ipc-empty.ok{display:flex;gap:8px;justify-content:center;align-items:center;color:${C.good};font-weight:600}
-  .ipc-check{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:${C.ink2};margin-left:auto;cursor:pointer}
-  .ipc-meter{position:relative;height:6px;background:#edeeef;border-radius:3px;margin-top:10px}
-  .ipc-meter i{position:absolute;left:0;top:0;bottom:0;border-radius:3px}
-  .ipc-meter b{position:absolute;top:-4px;bottom:-4px;width:2px;background:${C.ink}}
-  .ipc-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:20px}
-  @media (max-width:900px){.ipc-grid{grid-template-columns:minmax(0,1fr)}}
-  .ipc-card{padding:16px 20px;min-width:0}
-  .ipc-card h3{font-size:15px;font-weight:700;margin:0 0 12px;display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 10px}
+  .ipc-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;margin-bottom:12px}
+  .ipc-head h2{font-size:20px;font-weight:800;letter-spacing:.02em;text-transform:uppercase;margin:0}
+  .ipc-sub{font-size:13px;color:${C.ink2};margin:4px 0 0}
+  .ipc-actions{display:flex;gap:8px}
+  .ipc-btn{display:inline-flex;align-items:center;gap:6px;border:1px solid #d6d2cc;background:#fff;border-radius:8px;padding:7px 12px;font-size:12px;font-weight:700;cursor:pointer;text-transform:uppercase;color:${C.ink}}
+  .ipc-btn:hover{background:#f4f2ef}.ipc-btn.on{background:#b5000b;border-color:#b5000b;color:#fff}
+  .ipc-btn .material-symbols-outlined{font-size:18px}
+  .ipc-filters{display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px;margin-bottom:8px;font-size:12px}
+  .ipc-filters label{display:inline-flex;align-items:center;gap:6px;font-weight:600;color:${C.ink2}}
+  .ipc-filters input[type=date]{border:1px solid #d6d2cc;border-radius:6px;padding:4px 6px;font:inherit;color:${C.ink}}
+  .ipc-flbl{font-weight:700;color:${C.ink2};text-transform:uppercase;font-size:11px;margin-left:6px}
+  .ipc-flbl:first-child{margin-left:0}
+  .ipc-chip{border:1px solid #d6d2cc;background:#fff;border-radius:999px;padding:3px 10px;font-size:12px;font-weight:600;cursor:pointer;color:${C.ink}}
+  .ipc-chip:hover{background:#f4f2ef}.ipc-chip.on{background:${C.ink};border-color:${C.ink};color:#fff}
+  .ipc-check{margin-left:auto}
+  .ipc-quick{display:inline-flex;gap:4px}
+  .ipc-kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin:12px 0 16px}
+  .ipc-kpi{background:#fff;border:1px solid #e6e3df;border-radius:12px;padding:14px 16px;display:flex;flex-direction:column;gap:4px}
+  .ipc-kpi.hero{grid-column:span 2;border-top:4px solid #b5000b}
+  @media (max-width:640px){.ipc-kpi.hero{grid-column:span 1}}
+  .ipc-kpi-lbl{font-size:12px;font-weight:700;color:${C.ink2};text-transform:uppercase;letter-spacing:.03em}
+  .ipc-kpi-val{font-size:30px;font-weight:800;line-height:1.1;font-variant-numeric:tabular-nums}
+  .ipc-kpi.hero .ipc-kpi-val{font-size:48px}
+  .ipc-kpi-st{display:inline-flex;align-items:center;gap:4px;font-size:12px;font-weight:700;color:var(--st)}
+  .ipc-kpi-st .material-symbols-outlined{font-size:16px}
+  .ipc-kpi-sub{font-size:12px;color:${C.ink2}}
+  .ipc-meter{position:relative;height:8px;background:#efece8;border-radius:4px;margin-top:6px}
+  .ipc-meter i{position:absolute;left:0;top:0;bottom:0;border-radius:4px}
+  .ipc-meter b{position:absolute;top:-3px;bottom:-3px;width:2px;background:${C.ink}}
+  .ipc-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+  @media (max-width:900px){.ipc-grid{grid-template-columns:minmax(0,1fr)}.ipc-span2{grid-column:auto!important}}
+  .ipc-span2{grid-column:span 2}
+  .ipc-card{background:#fff;border:1px solid #e6e3df;border-radius:12px;padding:14px 16px;min-width:0}
+  .ipc-card h3{font-size:14px;font-weight:800;margin:0 0 10px;display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 10px}
   .ipc-card h3 small{font-size:12px;font-weight:500;color:${C.ink2}}
+  .ipc-inline{margin-left:auto;display:inline-flex;gap:4px}
   .ipc-chart{width:100%;min-height:60px}
   .ipc-chart svg{display:block;overflow:visible}
   .ipc-ax{font-size:11px;fill:${C.axis}}
   .ipc-lbl{font-size:12px;fill:${C.ink};font-weight:600}
-  .ipc-val{font-size:11px;fill:${C.ink2};font-variant-numeric:tabular-nums;font-weight:600}
+  .ipc-val{font-size:12px;fill:${C.ink2};font-variant-numeric:tabular-nums}
   .ipc-inbar{font-size:11px;fill:#fff;font-weight:700}
-  .ipc-legend{display:flex;flex-wrap:wrap;gap:6px 16px;margin:8px 0 10px;font-size:12px;color:${C.ink2}}
-  .ipc-leg{display:inline-flex;align-items:center;gap:6px}.ipc-leg i{width:10px;height:10px;border-radius:2px;display:inline-block}
+  .ipc-legend{display:flex;flex-wrap:wrap;gap:6px 14px;margin:8px 0 10px;font-size:12px;color:${C.ink2}}
+  .ipc-leg{display:inline-flex;align-items:center;gap:6px}.ipc-leg i{width:10px;height:10px;border-radius:3px;display:inline-block}
   .ipc-leg b{color:${C.ink}}
-  .ipc-stack{display:flex;height:14px;border-radius:3px;overflow:hidden;background:#edeeef;gap:1px}
-  .ipc-stack i{display:block;height:100%}
-  .ipc-tbl{width:100%;border-collapse:collapse;font-size:13px}
-  .ipc-tbl th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:${C.ink2};font-weight:700;border-bottom:1px solid #e1e3e4;padding:8px 10px;white-space:nowrap;background:#f8f9fa}
-  .ipc-tbl td{padding:8px 10px;border-bottom:1px solid #edeeef;white-space:nowrap;font-variant-numeric:tabular-nums}
+  .ipc-tbl{width:100%;border-collapse:collapse;font-size:12px}
+  .ipc-tbl th{text-align:left;font-size:11px;text-transform:uppercase;color:${C.ink2};font-weight:700;border-bottom:1px solid #e6e3df;padding:6px 8px;white-space:nowrap}
+  .ipc-tbl td{padding:6px 8px;border-bottom:1px solid #f1eeea;white-space:nowrap;font-variant-numeric:tabular-nums}
   .ipc-tbl .r{text-align:right}
   .ipc-scroll{overflow-x:auto}
   .ipc-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px}
-  .ipc-mini{display:inline-block;width:70px;height:6px;background:#edeeef;border-radius:3px;margin-right:8px;vertical-align:middle;position:relative;overflow:hidden}
+  .ipc-mini{display:inline-block;width:70px;height:6px;background:#efece8;border-radius:3px;margin-right:8px;vertical-align:middle;position:relative;overflow:hidden}
   .ipc-mini i{position:absolute;left:0;top:0;bottom:0;border-radius:3px}
-  .ipc-tag{font-size:11px;font-weight:700;background:#dbeafe;color:#1e3a8a;border-radius:2px;padding:1px 5px;margin-left:4px}
-  .ipc-tag.warn{background:#fef3c7;color:#713f12}
-  .ipc-note{font-size:12px;color:${C.ink2};margin:0;line-height:1.5}
-  .ipc-tip{position:absolute;z-index:30;pointer-events:none;background:${C.ink};color:#fff;font-size:12px;line-height:1.45;padding:8px 10px;border-radius:4px;box-shadow:0 4px 14px rgba(0,0,0,.2);max-width:260px}
-  .ipc-ov{position:fixed;inset:0;background:rgba(25,28,29,.28);z-index:1000;display:flex;align-items:center;justify-content:center;padding:16px}
-  .ipc-modal{background:#fff;border-radius:8px;padding:20px 24px;width:min(560px,100%);max-height:90vh;overflow:auto;box-shadow:0 16px 48px rgba(0,0,0,.2)}
-  .ipc-mhead{display:flex;justify-content:space-between;align-items:center}.ipc-mhead h3{margin:0;font-size:16px;font-weight:700}
-  .ipc-sub{font-size:13px;color:${C.ink2};margin:6px 0 10px}
+  .ipc-tag{font-size:10px;font-weight:700;background:#eef3fb;color:#1f5fae;border-radius:4px;padding:1px 5px;margin-left:4px}
+  .ipc-tag.warn{background:#fdf3e1;color:#8a5a00}
+  .ipc-note{font-size:11px;color:${C.ink2};margin-top:14px;line-height:1.5}
+  .ipc-tip{position:absolute;z-index:30;pointer-events:none;background:#1c1b1a;color:#fff;font-size:12px;line-height:1.45;padding:8px 10px;border-radius:8px;box-shadow:0 4px 14px rgba(0,0,0,.2);max-width:260px}
+  .ipc-ov{position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:1000;display:flex;align-items:center;justify-content:center;padding:16px}
+  .ipc-modal{background:#fff;border-radius:14px;padding:18px 20px;width:min(560px,100%);max-height:90vh;overflow:auto;font-family:'Hanken Grotesk',system-ui,sans-serif}
+  .ipc-mhead{display:flex;justify-content:space-between;align-items:center}.ipc-mhead h3{margin:0;font-size:16px;font-weight:800}
   .ipc-x{border:0;background:none;cursor:pointer;color:${C.ink2}}
-  .ipc-in{border:1px solid #e1e3e4;border-radius:4px;padding:6px 8px;font:inherit;font-size:13px;width:100%}
+  .ipc-in{border:1px solid #d6d2cc;border-radius:6px;padding:5px 8px;font:inherit;font-size:12px;width:100%}
   .ipc-add{display:flex;gap:8px;margin:12px 0 4px}.ipc-add .ipc-in{flex:1;text-transform:uppercase}
-  .ipc-btn{display:inline-flex;align-items:center;gap:6px;border:1px solid #b5000b;background:#b5000b;color:#fff;border-radius:4px;padding:7px 12px;font-size:13px;font-weight:700;cursor:pointer}
-  .ipc-chip{border:1px solid #e1e3e4;background:#fff;border-radius:999px;padding:3px 10px;font-size:12px;font-weight:600;cursor:pointer;margin:2px}
   .ipc-link{border:0;background:none;cursor:pointer;font-weight:700;font-size:12px}.ipc-link.bad{color:${C.bad}}
-  .ipc-detalle{margin-top:4px}
+  .ipc-detalle{margin-top:8px}
   </style>`;
 }

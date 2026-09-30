@@ -10,11 +10,11 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202609292319';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202609292319';
-import { getDatabase } from './data.js?v=202609292319';
+import { supabase } from './supabase-client.js?v=202609292058';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202609292058';
+import { getDatabase } from './data.js?v=202609292058';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202609292319';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202609292058';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -395,18 +395,12 @@ async function saveEstadoRetiro(docCompr, estado, tipoRetiro = null, entregaEntr
   if (error) { showAlert('Error al guardar estado: ' + error.message, 'error'); return false; }
   return true;
 }
-// ── FORMULARIO COORDINAR / EDITAR RETIRO v2 (rediseño 29-sep-2026) ─────────
-// Capa sobre el panel lateral de Retiros de Fábrica. Devuelve (Promise) el
-// mismo objeto de siempre — { tipoRetiro, entregaEntrante, tipoLocalRM,
-// fabDir, fabCom, fabCont, fabTel, fechaRetiro } — o null si se cancela.
-//  · Retiro RM: obligatorios Fecha de retiro, Dirección de fábrica y
-//    Clasificación fábrica (FAB-CD / FAB-SUC / FAB-CLTE).
-//  · Retiro local: fecha, dirección y contacto quedan opcionales (plegados).
-//  · «Otra dirección» + «Guardar esta dirección en el proveedor» inserta en
-//    abast_proveedor_direcciones (igual que antes).
 function showCoordModal(row) {
   return new Promise(async resolve => {
-    const editando = esEstadoCoordinado(row._estado_prev);
+    const preselect = row._tipo_retiro || 'FAB-CD';
+    const preselectLR = row._tipo_local_rm || 'RM';
+    const opts = ['FAB-CD', 'FAB-SUC', 'FAB-CLTE'];
+    // Pre-cargar direcciones del proveedor
     let dirs = [];
     try {
       const { data } = await supabase
@@ -415,136 +409,194 @@ function showCoordModal(row) {
         .eq('proveedor_id', row.proveedor ?? '')
         .eq('activo', true);
       dirs = data || [];
-    } catch (_) { /* sin direcciones guardadas */ }
+    } catch(_) {}
 
-    const st = {
-      lr: row._tipo_local_rm === 'LOCAL' ? 'LOCAL' : 'RM',
-      fecha: row._fecha_retiro || '',
-      dirSel: null, dirTxt: '', comuna: row._fab_comuna || '', contacto: row._fab_contacto || '', tel: row._fab_telefono || '',
-      entrega: row._entrega_entrante || '', clasif: row._tipo_retiro || '',
-      guardar: true, masLocal: !!(row._tipo_local_rm === 'LOCAL' && (row._fecha_retiro || row._fab_direccion || row._fab_contacto)),
-      err: false,
-    };
-    if (row._fab_direccion) {
-      const m = dirs.find(d => d.direccion === row._fab_direccion);
-      if (m) st.dirSel = String(m.id); else { st.dirSel = 'new'; st.dirTxt = row._fab_direccion; }
-    } else if (dirs.length === 1) { st.dirSel = String(dirs[0].id); st.comuna = st.comuna || dirs[0].comuna || ''; }
-    else if (!dirs.length) st.dirSel = 'new';
+    const dirOpts = dirs.map(d =>
+      `<option value="${d.id}" data-dir="${d.direccion || ''}" data-com="${d.comuna || ''}">${d.nombre_fabrica || d.direccion}</option>`
+    ).join('');
 
-    const wrap = document.createElement('div');
-    wrap.id = 'coord-modal-bg';
-    wrap.innerHTML = '<div class="sv-dr-bg" style="z-index:120"></div><aside class="sv-dr" style="z-index:121;width:min(560px,100vw)" role="dialog" aria-label="Coordinar retiro"></aside>';
-    document.body.appendChild(wrap);
-    const panel = wrap.querySelector('aside');
-    const fin = v => { wrap.remove(); document.removeEventListener('keydown', onKey, true); resolve(v); };
-    const onKey = e => { if (e.key === 'Escape') { e.stopPropagation(); fin(null); } };
-    document.addEventListener('keydown', onKey, true);
-    wrap.querySelector('.sv-dr-bg').addEventListener('click', () => fin(null));
+    const radios = opts.map(o =>
+      `<label class="flex items-center gap-2 cursor-pointer">
+        <input type="radio" name="coord-tipo" value="${o}" ${o === preselect ? 'checked' : ''} class="accent-primary">
+        <span class="font-semibold text-xs">${o}</span>
+      </label>`
+    ).join('');
 
-    const faltantes = () => {
-      const f = [];
-      if (st.lr === 'RM') {
-        if (!st.fecha) f.push('fecha');
-        const dir = st.dirSel === 'new' ? st.dirTxt.trim() : (dirs.find(d => String(d.id) === st.dirSel)?.direccion || '');
-        if (!dir) f.push('dir');
-        if (!st.clasif) f.push('clasif');
-      }
-      return f;
-    };
-    const lbl = (txt, key, req) => `<label class="sv-flbl" style="display:block;margin-bottom:6px;${st.err && faltantes().includes(key) ? 'color:#b5000b' : ''}">${txt}${req ? ' *' : ''}</label>`;
-    const inpStyle = key => st.err && faltantes().includes(key) ? 'border-color:#b5000b' : '';
+    const html = `
+      <div id="coord-modal-bg" class="fixed inset-0 bg-black/40 flex items-center justify-center z-[9999]">
+        <div class="bg-white rounded-xl shadow-2xl p-6 w-[440px] flex flex-col gap-4 max-h-[90vh] overflow-y-auto">
+          <h3 class="text-base font-bold text-gray-800">Confirmar Coordinación</h3>
 
-    function draw() {
-      const rm = st.lr === 'RM';
-      const verCampos = rm || st.masLocal;
-      const req = rm;
-      const falt = st.err ? faltantes() : [];
-      panel.innerHTML = `
-        <div class="sv-dr-h"><div style="flex:1;min-width:0">
-          <div class="sv-dr-k">${editando ? 'Editar coordinación' : 'Coordinar retiro'}</div>
-          <div class="sv-dr-t">${escapeHtml(row.doc_compr)}</div>
-          <div class="sv-dr-s">${escapeHtml(row.nombre_1 || '')} → ${escapeHtml(getNombreCentro(row.ce))} · ${fmtNum(row._ton_num, 2)} t</div></div>
-          <button class="sv-iconbtn" data-cx title="Cerrar (Esc)"><span class="material-symbols-outlined">close</span></button></div>
-        <div class="sv-dr-b" style="gap:18px">
-          ${falt.length ? '<div class="sv-note-box" style="background:#ffdad6;color:#93000a;font-weight:700">Completa los campos obligatorios marcados en rojo.</div>' : ''}
-          <div>${lbl('Tipo de retiro', 'lr', true)}
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
-              ${[['RM', 'Retiro RM', 'Nuestro camión retira en fábrica'], ['LOCAL', 'Retiro local', 'Lo gestiona la sucursal']].map(([v, t, d]) =>
-                `<button class="sv-opt ${st.lr === v ? 'is-on' : ''}" data-chip data-lr="${v}" style="flex-direction:column;align-items:flex-start;gap:2px"><b style="font-size:14px">${t}</b><span class="sv-sub" style="margin:0">${d}</span></button>`).join('')}
-            </div></div>
-          ${!rm ? `<button class="sv-btn-g" data-chip data-mas style="align-self:flex-start;padding-left:0"><span class="material-symbols-outlined" style="font-size:16px;vertical-align:-3px">${st.masLocal ? 'expand_less' : 'expand_more'}</span>${st.masLocal ? 'Ocultar' : 'Agregar'} fecha, dirección y contacto (opcional)</button>` : ''}
-          ${verCampos ? `
-          <div>${lbl('Fecha de retiro', 'fecha', req)}
-            <label class="sv-inp" style="width:220px;${inpStyle('fecha')}"><span class="material-symbols-outlined">calendar_today</span><input type="date" data-k="fecha" value="${escapeHtml(st.fecha)}" style="width:150px"></label>
-            <div class="sv-sub" style="margin-top:6px;max-width:none">El retiro entra al Plan de Carga desde esta fecha.</div></div>
-          <div class="sv-card" style="padding:14px 16px;display:flex;flex-direction:column;gap:10px">
-            <div class="sv-b" style="font-size:14px">Dirección de fábrica</div>
-            ${lbl('Dirección', 'dir', req)}
-            <div style="display:flex;flex-direction:column;gap:6px;${inpStyle('dir') ? 'outline:1px solid #b5000b;border-radius:4px' : ''}">
-              ${dirs.map(d => `<button class="sv-opt ${st.dirSel === String(d.id) ? 'is-on' : ''}" data-chip data-dir="${d.id}">
-                <span class="material-symbols-outlined" style="color:${st.dirSel === String(d.id) ? '#b5000b' : '#5c5f61'}">${st.dirSel === String(d.id) ? 'radio_button_checked' : 'radio_button_unchecked'}</span>
-                <span><b>${escapeHtml(d.nombre_fabrica || d.direccion)}</b><div class="sv-sub" style="margin:0">${escapeHtml([d.direccion, d.comuna].filter(Boolean).join(', '))}</div></span></button>`).join('')}
-              <button class="sv-opt ${st.dirSel === 'new' ? 'is-on' : ''}" data-chip data-dir="new">
-                <span class="material-symbols-outlined" style="color:${st.dirSel === 'new' ? '#b5000b' : '#5c5f61'}">${st.dirSel === 'new' ? 'radio_button_checked' : 'radio_button_unchecked'}</span>
-                <span><b>Otra dirección</b><div class="sv-sub" style="margin:0">Ingresar una nueva</div></span></button>
+          <div class="flex flex-col gap-1">
+            <span class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Tipo de Retiro</span>
+            <div class="flex gap-3 mt-1">
+              <button id="btn-local" class="flex-1 py-2 rounded-lg border-2 text-sm font-bold transition-all ${preselectLR === 'LOCAL' ? 'border-primary bg-primary/10 text-primary' : 'border-outline-variant text-secondary'}">RETIRO LOCAL</button>
+              <button id="btn-rm"    class="flex-1 py-2 rounded-lg border-2 text-sm font-bold transition-all ${preselectLR === 'RM'    ? 'border-primary bg-primary/10 text-primary' : 'border-outline-variant text-secondary'}">RETIRO RM</button>
             </div>
-            ${st.dirSel === 'new' ? `<label class="sv-inp" style="${inpStyle('dir')}"><input data-k="dirTxt" value="${escapeHtml(st.dirTxt)}" placeholder="Calle, número" style="width:100%"></label>
-              ${row.proveedor ? `<label style="display:flex;align-items:center;gap:8px;font-size:13px;color:#5c5f61;cursor:pointer"><input type="checkbox" data-k="guardar" ${st.guardar ? 'checked' : ''}> Guardar esta dirección en el proveedor</label>` : ''}` : ''}
-            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
-              <div>${lbl('Comuna', 'comuna', false)}<label class="sv-inp"><input data-k="comuna" value="${escapeHtml(st.comuna)}" style="width:100%"></label></div>
-              <div>${lbl('Contacto', 'contacto', false)}<label class="sv-inp"><input data-k="contacto" value="${escapeHtml(st.contacto)}" style="width:100%"></label></div>
-              <div>${lbl('Teléfono', 'tel', false)}<label class="sv-inp"><input data-k="tel" value="${escapeHtml(st.tel)}" placeholder="+56 9…" style="width:100%"></label></div>
-            </div></div>` : ''}
-          ${rm ? `
-          <div>${lbl('Clasificación fábrica', 'clasif', true)}
-            <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;${inpStyle('clasif') ? 'outline:1px solid #b5000b;border-radius:4px' : ''}">
-              ${[['FAB-CD', 'Consolida en CD'], ['FAB-SUC', 'Directo a sucursal'], ['FAB-CLTE', 'Directo a cliente']].map(([v, d]) =>
-                `<button class="sv-opt ${st.clasif === v ? 'is-on' : ''}" data-chip data-cl="${v}" style="flex-direction:column;align-items:flex-start;gap:2px"><b>${v}</b><span class="sv-sub" style="margin:0">${d}</span></button>`).join('')}
-            </div></div>
-          <div>${lbl('Entrega entrante SAP', 'entrega', false)}<label class="sv-inp" style="width:260px"><span class="material-symbols-outlined">tag</span><input class="is-mono" data-k="entrega" value="${escapeHtml(st.entrega)}" placeholder="N° de entrega" style="width:180px"></label></div>` : ''}
-        </div>
-        <div class="sv-dr-f"><span class="sv-dr-note">* Obligatorio</span>
-          <div style="display:flex;gap:8px"><button class="sv-btn" data-cx>Cancelar</button>
-          <button class="sv-btn-p" data-ok><span class="material-symbols-outlined">${editando ? 'save' : 'event_available'}</span>${editando ? 'Guardar cambios' : 'Confirmar coordinación'}</button></div></div>`;
+            <input type="hidden" id="coord-local-rm" value="${preselectLR}">
+          </div>
 
-      panel.querySelectorAll('[data-cx]').forEach(b => b.addEventListener('click', () => fin(null)));
-      panel.querySelectorAll('[data-lr]').forEach(b => b.addEventListener('click', () => { st.lr = b.dataset.lr; draw(); }));
-      panel.querySelector('[data-mas]')?.addEventListener('click', () => { st.masLocal = !st.masLocal; draw(); });
-      panel.querySelectorAll('[data-dir]').forEach(b => b.addEventListener('click', () => {
-        st.dirSel = b.dataset.dir;
-        const d = dirs.find(x => String(x.id) === st.dirSel);
-        if (d && d.comuna) st.comuna = d.comuna;
-        draw();
-      }));
-      panel.querySelectorAll('[data-cl]').forEach(b => b.addEventListener('click', () => { st.clasif = b.dataset.cl; draw(); }));
-      panel.querySelectorAll('[data-k]').forEach(i => i.addEventListener(i.type === 'checkbox' ? 'change' : 'input', () => {
-        st[i.dataset.k] = i.type === 'checkbox' ? i.checked : i.value;
-        if (st.err && (i.type === 'date' || i.dataset.k === 'dirTxt')) { const pos = i.selectionStart; const k = i.dataset.k; draw(); const n = panel.querySelector(`[data-k="${k}"]`); if (n) { n.focus(); try { n.setSelectionRange(pos, pos); } catch (_) { /* date */ } } }
-      }));
-      panel.querySelector('[data-ok]').addEventListener('click', async () => {
-        if (faltantes().length) { st.err = true; draw(); return; }
-        const rm2 = st.lr === 'RM';
-        const conCampos = rm2 || st.masLocal;
-        const dirGuardada = dirs.find(d => String(d.id) === st.dirSel);
-        const fabDir = !conCampos ? '' : (st.dirSel === 'new' ? st.dirTxt.trim() : (dirGuardada?.direccion || ''));
-        const fabCom = conCampos ? st.comuna.trim() : '';
-        if (conCampos && st.dirSel === 'new' && st.guardar && fabDir && row.proveedor) {
-          await supabase.from('abast_proveedor_direcciones').insert({
-            proveedor_id: row.proveedor, nombre_fabrica: fabDir, direccion: fabDir, comuna: fabCom, activo: true,
-          });
-        }
-        fin({
-          tipoRetiro: rm2 ? st.clasif : null,
-          entregaEntrante: rm2 ? st.entrega.trim() : '',
-          tipoLocalRM: st.lr,
-          fabDir, fabCom,
-          fabCont: conCampos ? st.contacto.trim() : '',
-          fabTel: conCampos ? st.tel.trim() : '',
-          fechaRetiro: conCampos ? (st.fecha || '').trim() : '',
-        });
-      });
+          <button type="button" id="toggle-info-btn" class="flex items-center gap-1 text-xs font-semibold text-primary self-start ${preselectLR === 'RM' ? 'hidden' : ''}">
+            <span id="toggle-info-arrow">\u25B8</span> Agregar Información
+          </button>
+
+          <div id="info-wrap" class="flex flex-col gap-4 ${preselectLR === 'LOCAL' ? 'hidden' : ''}">
+            <div class="flex flex-col gap-1">
+              <label for="coord-fecha-retiro" class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Fecha de Retiro</label>
+              <input id="coord-fecha-retiro" type="date" value="${row._fecha_retiro || ''}"
+                class="border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary">
+              <span class="text-[11px] text-secondary">Día en que el camión pasa a retirar. El retiro se contabiliza en el Plan de Carga a partir de esta fecha.</span>
+            </div>
+
+            <div id="fab-form" class="flex flex-col gap-3">
+              <div class="flex flex-col gap-1">
+                <label class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Dirección de Fábrica</label>
+                ${dirs.length > 0 ? `<select id="coord-dir-sel" class="border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary">
+                  <option value="">— Seleccionar dirección guardada —</option>
+                  ${dirOpts}
+                  <option value="__manual__">+ Ingresar nueva dirección</option>
+                </select>` : ''}
+                <input id="coord-direccion" type="text" placeholder="Dirección" value="${row._fab_direccion || ''}"
+                  class="border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary ${dirs.length > 0 ? 'hidden' : ''}">
+              </div>
+              <div class="flex gap-2">
+                <div class="flex flex-col gap-1 flex-1">
+                  <label class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Comuna</label>
+                  <input id="coord-comuna" type="text" placeholder="Comuna" value="${row._fab_comuna || ''}"
+                    class="border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary">
+                </div>
+              </div>
+              <div class="flex gap-2">
+                <div class="flex flex-col gap-1 flex-1">
+                  <label class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Persona de Contacto</label>
+                  <input id="coord-contacto" type="text" placeholder="Nombre contacto" value="${row._fab_contacto || ''}"
+                    class="border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary">
+                </div>
+                <div class="flex flex-col gap-1 flex-1">
+                  <label class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Teléfono</label>
+                  <input id="coord-telefono" type="text" placeholder="+56 9..." value="${row._fab_telefono || ''}"
+                    class="border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary">
+                </div>
+              </div>
+              <label id="coord-guardar-prov-wrap" class="flex items-center gap-2 text-xs text-secondary cursor-pointer ${dirs.length > 0 ? 'hidden' : ''}">
+                <input type="checkbox" id="coord-guardar-prov" checked class="accent-primary"> Guardar esta dirección en el proveedor
+              </label>
+            </div>
+
+            <div id="entrega-wrap" class="flex flex-col gap-1 ${preselectLR !== 'RM' ? 'hidden' : ''}">
+              <label for="coord-entrega" class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Entrega Entrante SAP</label>
+              <input id="coord-entrega" type="text" placeholder="Número SAP de entrega" value="${row._entrega_entrante || ''}"
+                class="border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary">
+            </div>
+
+            <div id="tipo-fab-wrap" class="flex flex-col gap-1 ${preselectLR !== 'RM' ? 'hidden' : ''}">
+              <span class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Clasificación Fábrica</span>
+              <div class="flex gap-3 mt-1">${radios}</div>
+            </div>
+          </div>
+
+          <div class="flex gap-2 justify-end pt-1">
+            <button id="coord-cancel" class="px-4 py-2 rounded-lg border text-sm hover:bg-gray-50">Cancelar</button>
+            <button id="coord-confirm" class="px-4 py-2 rounded-lg bg-primary text-white text-sm font-semibold hover:opacity-90">Confirmar</button>
+          </div>
+        </div>
+      </div>`;
+    document.body.insertAdjacentHTML('beforeend', html);
+    const bg = document.getElementById('coord-modal-bg');
+    const cleanup = () => bg.remove();
+
+    // Toggle LOCAL / RM
+    const btnLocal = document.getElementById('btn-local');
+    const btnRm    = document.getElementById('btn-rm');
+    const inputLR  = document.getElementById('coord-local-rm');
+    const entregaWrap = document.getElementById('entrega-wrap');
+    const tipoFabWrap = document.getElementById('tipo-fab-wrap');
+    const infoWrap = document.getElementById('info-wrap');
+    const toggleInfoBtn = document.getElementById('toggle-info-btn');
+    const toggleInfoArrow = document.getElementById('toggle-info-arrow');
+    function setLR(v) {
+      inputLR.value = v;
+      [btnLocal, btnRm].forEach(b => b.classList.remove('border-primary','bg-primary/10','text-primary'));
+      [btnLocal, btnRm].forEach(b => b.classList.add('border-outline-variant','text-secondary'));
+      const active = v === 'LOCAL' ? btnLocal : btnRm;
+      active.classList.add('border-primary','bg-primary/10','text-primary');
+      active.classList.remove('border-outline-variant','text-secondary');
+      if (v === 'RM') {
+        entregaWrap.classList.remove('hidden'); tipoFabWrap.classList.remove('hidden');
+        infoWrap.classList.remove('hidden'); toggleInfoBtn.classList.add('hidden');
+      } else {
+        entregaWrap.classList.add('hidden');    tipoFabWrap.classList.add('hidden');
+        infoWrap.classList.add('hidden'); toggleInfoBtn.classList.remove('hidden');
+        toggleInfoArrow.textContent = '\u25B8';
+      }
     }
-    draw();
+    btnLocal.addEventListener('click', () => setLR('LOCAL'));
+    btnRm.addEventListener('click',    () => setLR('RM'));
+    toggleInfoBtn.addEventListener('click', () => {
+      const isHidden = infoWrap.classList.toggle('hidden');
+      toggleInfoArrow.textContent = isHidden ? '\u25B8' : '\u25BE';
+    });
+
+    // Selector de direcciones guardadas
+    const dirSel = document.getElementById('coord-dir-sel');
+    const inputDir = document.getElementById('coord-direccion');
+    const inputCom = document.getElementById('coord-comuna');
+    const inputCont = document.getElementById('coord-contacto');
+    const inputTel  = document.getElementById('coord-telefono');
+    const guardarWrap = document.getElementById('coord-guardar-prov-wrap');
+    if (dirSel) {
+      dirSel.addEventListener('change', () => {
+        if (dirSel.value === '__manual__') {
+          inputDir.classList.remove('hidden'); guardarWrap.classList.remove('hidden');
+          inputDir.value = ''; inputCom.value = '';
+        } else if (dirSel.value) {
+          const opt = dirSel.options[dirSel.selectedIndex];
+          inputDir.value = opt.dataset.dir || ''; inputCom.value = opt.dataset.com || '';
+          inputDir.classList.add('hidden'); guardarWrap.classList.add('hidden');
+        } else {
+          inputDir.classList.add('hidden'); guardarWrap.classList.add('hidden');
+        }
+      });
+      // Pre-seleccionar si ya había dirección guardada
+      if (row._fab_direccion) {
+        const match = dirs.find(d => d.direccion === row._fab_direccion);
+        if (match) { dirSel.value = match.id; }
+        else { dirSel.value = '__manual__'; inputDir.classList.remove('hidden'); guardarWrap.classList.remove('hidden'); }
+      }
+    }
+
+    document.getElementById('coord-cancel').addEventListener('click', () => { cleanup(); resolve(null); });
+    document.getElementById('coord-confirm').addEventListener('click', async () => {
+      const tipoLocalRM    = inputLR.value;
+      const inputFecha = document.getElementById('coord-fecha-retiro');
+      const fechaRetiro = (inputFecha?.value || '').trim();
+      if (tipoLocalRM !== 'LOCAL' && !fechaRetiro) {
+        inputFecha.classList.add('ring-2', 'ring-red-500');
+        showAlert('Debe indicar la Fecha de Retiro', 'error');
+        return;
+      }
+      const tipoRetiro     = tipoLocalRM === 'RM' ? (bg.querySelector('input[name="coord-tipo"]:checked')?.value || preselect) : null;
+      const entregaEntrante = tipoLocalRM === 'RM' ? (document.getElementById('coord-entrega')?.value || '').trim() : '';
+      const fabDir  = inputDir  ? inputDir.value.trim()  : '';
+      const fabCom  = inputCom  ? inputCom.value.trim()  : '';
+      const fabCont = inputCont ? inputCont.value.trim() : '';
+      const fabTel  = inputTel  ? inputTel.value.trim()  : '';
+
+      // Guardar nueva dirección en proveedor si corresponde
+      const guardarProv = document.getElementById('coord-guardar-prov');
+      if (guardarProv && guardarProv.checked && fabDir && row.proveedor) {
+        await supabase.from('abast_proveedor_direcciones').insert({
+          proveedor_id: row.proveedor,
+          nombre_fabrica: fabDir,
+          direccion: fabDir,
+          comuna: fabCom,
+          activo: true,
+        });
+      }
+
+      cleanup();
+      resolve({ tipoRetiro, entregaEntrante, tipoLocalRM, fabDir, fabCom, fabCont, fabTel, fechaRetiro });
+    });
   });
 }
 const ESTADO_OPTS = [
@@ -1693,7 +1745,6 @@ const V2 = {
       const puede = can('coordinar_retiro');
       const cambiarEstado = async (row, val, ctx) => {
         const prev = row._estado, prevLbl = row._estado_lbl;
-        row._estado_prev = prev;
         row._estado = val;
         row._estado_lbl = (ESTADO_OPTS.find(o => o.v === val) || {}).l || 'No coordinado';
         const ok = await VISTAS_TRONCAL.retiros.editable.onChange(row, val, ctx);
@@ -1967,7 +2018,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202609292319');
+    const m = await import('./ind-plan-carga.js?v=202609292058');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
