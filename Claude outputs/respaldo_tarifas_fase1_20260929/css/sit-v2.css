@@ -9,7 +9,7 @@
   --sv-bg: #f8f9fa; --sv-s1: #f3f4f5; --sv-s2: #edeeef; --sv-s3: #e7e8e9;
   --sv-line: #e1e3e4; --sv-line2: #edeeef; --sv-line-h: #936e69;
   --sv-mono: 'JetBrains Mono', ui-monospace, Consolas, monospace;
-  --sv-side-w: 288px;
+  --sv-side-w: 256px;
 }
 body.sv-side-collapsed { --sv-side-w: 68px; }
 
@@ -304,39 +304,3 @@ body.sv-side-collapsed .sv-foot { justify-content: center; }
 .sv-dirty i { width: 8px; height: 8px; border-radius: 50%; background: #ea580c; }
 .sv-okmsg { font-size: 13px; color: #14532d; font-weight: 700; display: inline-flex; align-items: center; gap: 6px; }
 .sv-btn-p[disabled] { background: var(--sv-s3); border-color: var(--sv-s3); color: var(--sv-ink2); cursor: default; }
-
-
-/* ── Tarifas (rediseño 29-sep-2026) ────────────────────────────────────── */
-.tf-chain { display: flex; align-items: stretch; gap: 8px; flex-wrap: wrap; }
-.tf-arrow { display: flex; align-items: center; color: #9ca3af; font-size: 20px; }
-.tf-stage { min-width: 180px; display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--sv-line); background: #fff; }
-.tf-stage.is-on { border-color: #ffb4aa; background: var(--sv-sel2); }
-.tf-stage-l { font-size: 10px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--sv-ink2); }
-.tf-stage-i { display: flex; gap: 4px; flex-wrap: wrap; }
-.tf-stage-i button { border: 1px solid var(--sv-line); background: #fff; color: var(--sv-ink); padding: 3px 8px; border-radius: 12px; font-size: 12px; cursor: pointer; white-space: nowrap; font-family: inherit; }
-.tf-stage-i button:hover { border-color: var(--sv-line-h); }
-.tf-stage-i button.is-on { background: var(--sv-primary); border-color: var(--sv-primary); color: #fff; font-weight: 700; }
-.tf-bar { position: sticky; top: 64px; z-index: 30; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 10px 16px; background: #fffbeb; border: 1px solid #fde68a; border-radius: 8px; color: #713f12; font-size: 13px; box-shadow: 0 4px 12px rgba(0,0,0,.06); }
-.tf-bar > .material-symbols-outlined { font-size: 20px; color: #ca8a04; }
-.tf-bar-t { flex: 1; min-width: 240px; }
-.tf-in { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--sv-line); border-radius: 4px; background: #fff; padding: 0 8px; height: 30px; width: var(--w, 110px); max-width: 100%; box-sizing: border-box; }
-.tf-in:focus-within { border-color: var(--sv-ink2); }
-.tf-in input { border: none !important; outline: none; box-shadow: none !important; padding: 0; background: transparent; font: inherit; font-size: 13px; text-align: right; width: 100%; min-width: 0; color: var(--sv-ink); font-variant-numeric: tabular-nums; }
-.tf-in .tf-unit, .tf-in .tf-pre { font-size: 11px; color: var(--sv-ink2); white-space: nowrap; }
-.tf-in.is-ch { border-color: #ca8a04; background: #fffbeb; }
-.tf-in.is-ch input { background: transparent; }
-.tf-in.is-dis { background: var(--sv-s1); }
-.tf-man td { background: #faf5ff; }
-.tf-man:hover td { background: #f3e8ff !important; }
-.tf-vig-man { color: #7e22ce; }
-.tf-tabletitle { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; padding: 14px 16px 10px; }
-.tf-tabletitle h3 { margin: 0; font-size: 15px; font-weight: 700; }
-.tf-tabletitle small { font-size: 12px; color: var(--sv-ink2); }
-.tf-actbtn { border: none; background: none; cursor: pointer; color: var(--sv-ink2); padding: 4px; border-radius: 4px; display: inline-flex; }
-.tf-actbtn:hover { background: var(--sv-s2); color: var(--sv-primary); }
-.tf-actbtn .material-symbols-outlined { font-size: 18px; }
-.tf-toggle { border: 1px solid var(--sv-line); background: #fff; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 700; cursor: pointer; font-family: inherit; }
-.tf-toggle.is-on { background: #1d4ed8; border-color: #1d4ed8; color: #fff; }
-.tf-pager { display: flex; align-items: center; gap: 6px; }
-.tf-pager button { border: 1px solid var(--sv-line); background: #fff; border-radius: 4px; padding: 2px 6px; cursor: pointer; display: inline-flex; }
-.tf-pager button[disabled] { opacity: .4; cursor: default; }

@@ -1,14 +1,12 @@
 // PANTALLA 1: Administrador de Tarifas Transporte — SIT EBEMA
 // Sub-módulos: Peajes, Combustibles y Rendimientos, Seguros y Permisos,
 // Variables Generales y Motor de Costo (ZCAP) con exportación CSV.
-import { getDatabase, saveDatabase, getCentreName, getTariffConfig, getClientTariffConfig, truckCapKg, getOrigenGroups, getGroupRepId, buildTruckTypes, TRUCK_BASE_TYPES, loadHistorico, loadHistoricoFlete360, deleteRow } from './data.js?v=202609292339';
-import { CAP_LIST, truckTypesWithCap, calcularMatrizCostos, calcularCostoRuta } from './tarifas-engine.js?v=202609292339';
+import { getDatabase, saveDatabase, getCentreName, getTariffConfig, getClientTariffConfig, truckCapKg, getOrigenGroups, getGroupRepId, buildTruckTypes, TRUCK_BASE_TYPES, loadHistorico, loadHistoricoFlete360, deleteRow } from './data.js?v=202609292319';
+import { CAP_LIST, truckTypesWithCap, calcularMatrizCostos } from './tarifas-engine.js?v=202609292319';
 import { formatCLP, parseCSV, showAlert, toCSV, downloadFile, escapeHtml } from './utils.js';
-import { supabase } from './supabase-client.js?v=202609292339';
-import { getField } from './zonas-transporte.js?v=202609292339';
-import { renderZcapView, calcZcapRow } from './zcap.js?v=202609292339';
-import { can } from './permisos.js?v=202609292339';
-import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, textoImpacto, setParamPill, usuarioSesion } from './tarifas-ui.js?v=202609292339';
+import { supabase } from './supabase-client.js?v=202609292319';
+import { getField } from './zonas-transporte.js?v=202609292319';
+import { renderZcapView } from './zcap.js?v=202609292319';
 
 // FIX: Escuchar errores de sincronización con Supabase y notificar al usuario
 window.addEventListener('db_sync_error', (e) => {
@@ -162,15 +160,6 @@ export function renderTariffTransportView(container) {
   const cfg = getTariffConfig(db);
 
   const inPeajes = PEAJES_SUBS.includes(activeSub);
-  // Vistas rediseñadas (v2, 29-sep-2026) dibujan su propio encabezado
-  const V2_SUBS = ['camiones', 'zcap'];
-  if (V2_SUBS.includes(activeSub)) {
-    container.innerHTML = '<div id="tt-content"></div>';
-    const content = document.getElementById('tt-content');
-    if (activeSub === 'camiones') renderTarifasCamion(content, db, cfg);
-    else renderZcapView(content);
-    return;
-  }
 
   container.innerHTML = `
     <div class="mb-xl">
@@ -2243,245 +2232,185 @@ function syncTarifasZcap(db, cfg, grupoFiltro = '') {
     });
   });
 
-  // Sólo sincroniza truck_types (antes sincronizaba TODAS las tablas al abrir la vista)
-  if (cambios) saveDatabase(db, { syncOnly: ['truckTypes'] });
+  if (cambios) saveDatabase(db);
   return conZcap;
 }
 
-// ── TARIFAS POR CAMIÓN v2 (rediseño 29-sep-2026) ───────────────────────────
-// Una tabla por centro con una fila por tipo de camión. Se editan a, b, c, f y g
-// en un BORRADOR: la barra amarilla muestra cuántos ZCAP regionales cambian y
-// cuánto sube o baja el promedio; nada se guarda hasta «Guardar y recalcular».
-// ZCAP tarifa = b + c + máx(0, KM − a) × tarifa ajustada (normal o especial).
-//   a = Kmbase · b = baseKM ("Costo base") · c = baseRate ("T. base KM")
-//   f = rateAjustNorm · g = rateAjustEsp
-// «Refrescar tarifas» propone b, f y g ajustándolos al Motor de Costos por
-// mínimos cuadrados sobre base + (KM − a) × tarifa; si el costo base da
-// negativo queda en 0 y se ajusta la tarifa. La propuesta queda en el borrador.
-const TC = { centro: 'all', draft: {}, guardando: false, refrescado: false };
-const TC_CAMPOS = ['Kmbase', 'baseKM', 'baseRate', 'rateAjustNorm', 'rateAjustEsp'];
-const esEspecial = r => ['ISLA', 'EXTREMA'].includes(String(r.caracteristica || '').toUpperCase());
-
-function tcValor(t, campo) {
-  const d = TC.draft[t.id];
-  if (d && campo in d) return d[campo];
-  if (campo === 'rateAjustNorm') return t.rateAjustNorm ?? t.ratePerKmPond ?? 0;
-  if (campo === 'rateAjustEsp') return t.rateAjustEsp ?? t.ratePerKmExtrPond ?? 0;
-  return Number(t[campo]) || 0;
-}
-function tcGuardado(t, campo) {
-  if (campo === 'rateAjustNorm') return t.rateAjustNorm ?? t.ratePerKmPond ?? 0;
-  if (campo === 'rateAjustEsp') return t.rateAjustEsp ?? t.ratePerKmExtrPond ?? 0;
-  return Number(t[campo]) || 0;
-}
-function tcCambios(db) {
-  const out = [];
-  Object.entries(TC.draft).forEach(([id, campos]) => {
-    const t = (db.truckTypes || []).find(x => x.id === id);
-    if (!t) return;
-    Object.entries(campos).forEach(([c, v]) => { if (Number(v) !== Number(tcGuardado(t, c))) out.push({ t, c, v }); });
-  });
-  return out;
-}
-
-// Grupos que se muestran: SANTIAGO y SAN BERNARDO comparten tabla (rutas de ambos)
-function tcGrupos(db) {
-  const all = getOrigenGroups(db);
-  const stgo = all.find(g => g.grupo === 'SANTIAGO'), sb = all.find(g => g.grupo === 'SAN BERNARDO');
-  return all.filter(g => !(stgo && sb && g.grupo === 'SAN BERNARDO')).map(g => ({
-    ...g,
-    gruposCalc: g.grupo === 'SANTIAGO' && sb ? ['SANTIAGO', 'SAN BERNARDO'] : [g.grupo],
-    nombreTabla: g.grupo === 'SANTIAGO' && sb ? 'Santiago + San Bernardo' : g.nombre,
-    ids: g.grupo === 'SANTIAGO' && sb ? [...g.centroIds, ...sb.centroIds] : g.centroIds,
-  }));
-}
-function tcRutasRegionales(db, cfg, gruposCalc) {
-  const troncales = new Set(cfg.variables?.troncalesRoutes || []);
-  return (db.routes || []).filter(r => r.activo && r.clasificRuta === 'Regional' && !troncales.has(r.codigo) && gruposCalc.includes(r.origen_grupo));
-}
-
-// ZCAP regional de todas las rutas del grupo con los valores guardados vs. el borrador
-function tcImpacto(db, cfg) {
-  const ch = tcCambios(db);
-  if (!ch.length) return '';
-  const troncales = new Set(cfg.variables?.troncalesRoutes || []);
-  const antes = {}, despues = {};
-  tcGrupos(db).forEach(g => {
-    const trucks = (db.truckTypes || []).filter(t => t.Id_centro === g.repId);
-    if (!trucks.some(t => TC.draft[t.id])) return;
-    const rutas = tcRutasRegionales(db, cfg, g.gruposCalc);
-    trucks.forEach(t => {
-      const tDraft = { ...t };
-      TC_CAMPOS.forEach(c => { if (TC.draft[t.id] && c in TC.draft[t.id]) tDraft[c] = TC.draft[t.id][c]; });
-      rutas.forEach(r => {
-        const k = r.codigo + '||' + t.type;
-        antes[k] = calcZcapRow(db, cfg, r, t, troncales);
-        despues[k] = calcZcapRow(db, cfg, r, tDraft, troncales);
-      });
-    });
-  });
-  return textoImpacto(antes, despues, 'ZCAP regionales');
-}
-
-// Propuesta de b, f y g por mínimos cuadrados contra el Motor de Costos
-function tcAjusteMotor(db, cfg) {
-  let nProp = 0;
-  tcGrupos(db).forEach(g => {
-    if (TC.centro !== 'all' && TC.centro !== g.grupo) return;
-    const rutas = tcRutasRegionales(db, cfg, g.gruposCalc).filter(r => (r.tipo || '').toUpperCase() === 'COMUNA' && Number(r.km) > 0);
-    if (!rutas.length) return;
-    (db.truckTypes || []).filter(t => t.Id_centro === g.repId).forEach(t => {
-      const cap = truckCapKg(t.type);
-      if (!cap) return;
-      const a = tcValor(t, 'Kmbase'), c = tcValor(t, 'baseRate');
-      const pts = rutas.map(r => ({ x: Math.max(0, Number(r.km) - a), y: calcularCostoRuta(db, cfg, r, cap).zcap || 0, e: esEspecial(r) })).filter(p => p.y > 0);
-      const nor = pts.filter(p => !p.e), esp = pts.filter(p => p.e);
-      if (!nor.length) return;
-      const mean = arr => arr.reduce((s, v) => s + v, 0) / (arr.length || 1);
-      const pond = Number(t.ratePerKmPond) || 0;
-      let rate, inter;
-      const mx = mean(nor.map(p => p.x)), my = mean(nor.map(p => p.y));
-      const sxx = nor.reduce((s, p) => s + (p.x - mx) ** 2, 0);
-      if (nor.length >= 2 && sxx > 0) {
-        rate = nor.reduce((s, p) => s + (p.x - mx) * (p.y - my), 0) / sxx;
-        inter = my - rate * mx;
-      } else { rate = pond; inter = mean(nor.map(p => p.y - p.x * rate)); }
-      // Costo base (b = intercepto − c) no puede ser negativo: se fija en 0 y se ajusta la tarifa
-      if (inter < c || rate < 0) {
-        inter = c;
-        const s2 = nor.reduce((s, p) => s + p.x * p.x, 0);
-        rate = s2 > 0 ? nor.reduce((s, p) => s + p.x * (p.y - c), 0) / s2 : pond;
-      }
-      let rateE = 0;
-      if (esp.length) {
-        const s2 = esp.reduce((s, p) => s + p.x * p.x, 0);
-        rateE = s2 > 0 ? esp.reduce((s, p) => s + p.x * (p.y - inter), 0) / s2 : rate;
-        if (rateE <= 0) rateE = rate;
-      }
-      // Corrección de nivel: el promedio ajustado debe igualar al del motor
-      const pred = p => inter + p.x * (p.e && rateE ? rateE : rate);
-      const D = mean(pts.map(p => p.y)) - mean(pts.map(pred));
-      if (inter + D >= c) inter += D;
-      else { const mp = mean(pts.map(pred)); const f = mp - inter ? (mean(pts.map(p => p.y)) - inter) / (mp - inter) : 1; rate *= f; rateE *= f; }
-      // Resguardo: si el ajuste no entrega una tarifa por km positiva (pocos puntos,
-      // o rutas casi todas bajo el KM base) no se propone nada para este camión.
-      if (!(rate > 0) || !isFinite(rate) || !isFinite(inter)) return;
-      if (!(rateE > 0)) rateE = rate;
-      const prop = { baseKM: Math.max(0, Math.round((inter - c) / 100) * 100), rateAjustNorm: Math.round(rate) };
-      if (esp.length) prop.rateAjustEsp = Math.round(rateE);
-      Object.entries(prop).forEach(([campo, v]) => {
-        if (Number(v) !== Number(tcGuardado(t, campo))) { (TC.draft[t.id] = TC.draft[t.id] || {})[campo] = v; nProp++; }
-        else if (TC.draft[t.id]) delete TC.draft[t.id][campo];
-      });
-    });
-  });
-  return nProp;
-}
-
 function renderTarifasCamion(content, db, cfg) {
-  const conZcap = syncTarifasZcap(db, cfg);
-  const editar = can('editar');
-  const grupos = tcGrupos(db);
-  setParamPill(cfg);
+  const allGroups = getOrigenGroups(db);
+  const conZcap   = syncTarifasZcap(db, cfg);
 
-  function render() {
-    const ch = tcCambios(db);
-    const lista = TC.centro === 'all' ? grupos : grupos.filter(g => g.grupo === TC.centro);
-    content.innerHTML = `<div class="sv-view">
-      ${changesBarHtml(ch.length, tcImpacto(db, cfg), TC.guardando)}
-      <div class="sv-vhead">
-        <div style="min-width:0"><h1 class="sv-h1">Tarifas por Camión</h1>
-          <div class="sv-desc">Tarifas km por centro. Definen el ZCAP de las rutas regionales.</div></div>
-        <div class="sv-actions">${editar ? `<button class="sv-btn-p" data-chip id="tt-refresh" title="Propone b, f y g ajustados al Motor de Costos (queda como cambio sin guardar)">
-          <span class="material-symbols-outlined">${TC.refrescado ? 'check' : 'refresh'}</span>${TC.refrescado ? 'Tarifas refrescadas' : 'Refrescar tarifas'}</button>` : ''}</div>
+  // SANTIAGO + SAN BERNARDO → grupo combinado
+  const STGO_SB = ['SANTIAGO', 'SAN BERNARDO'];
+  const stgoG   = allGroups.find(g => g.grupo === 'SANTIAGO');
+  const sbG     = allGroups.find(g => g.grupo === 'SAN BERNARDO');
+  const tieneStgoSb = !!(stgoG && sbG);
+
+  // Lista de grupos para dropdown (sin SAN BERNARDO si va combinado)
+  const gruposDropdown = tieneStgoSb
+    ? allGroups.filter(g => g.grupo !== 'SAN BERNARDO')
+    : allGroups;
+
+  // Lista de grupos a renderizar
+  let gruposRender = tarifaCentroFiltro
+    ? allGroups.filter(g => g.grupo === tarifaCentroFiltro || (tarifaCentroFiltro === '__STGO_SB__' && STGO_SB.includes(g.grupo)))
+    : allGroups;
+  // Excluir SAN BERNARDO individual si va combinado
+  if (tieneStgoSb) gruposRender = gruposRender.filter(g => g.grupo !== 'SAN BERNARDO');
+
+  const routes = (db.routes || []).filter(r => r.activo);
+
+  // ¿Tiene rutas especiales el centro (o combinado)?
+  function tieneEspeciales(gruposCalc) {
+    return routes.some(r => gruposCalc.includes(r.origen_grupo) && r.caracteristica && r.caracteristica !== 'NORMAL');
+  }
+
+  content.innerHTML = `
+    <div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm">
+      <div class="flex items-center justify-between mb-md border-b border-outline-variant pb-sm flex-wrap gap-sm">
+        <div class="flex items-center gap-sm">
+          <span class="material-symbols-outlined text-primary">local_shipping</span>
+          <h2 class="font-headline-sm text-headline-sm font-bold text-on-surface">Tarifas de Transporte por Centro y Tipo de Camión</h2>
+        </div>
+        <button id="tt-refresh" class="flex items-center gap-xs border border-secondary text-secondary hover:bg-surface-container-high font-bold px-md py-sm rounded text-[11px] uppercase tracking-wider" title="Recalcular ZCAP Ponderada/Promedio desde el Motor de Costo tras ajustar parámetros (combustible, peajes, variables, etc.)">
+          <span class="material-symbols-outlined text-[16px]">refresh</span> Refrescar Tarifas
+        </button>
       </div>
-      ${chainHtml('transporte', 'camiones')}
-      <div class="sv-filters"><div class="sv-frow"><span class="sv-flbl">Centro origen</span>
-        <button class="sv-chip ${TC.centro === 'all' ? 'is-on' : ''}" data-chip data-tccentro="all">Todos</button>
-        ${grupos.map(g => `<button class="sv-chip ${TC.centro === g.grupo ? 'is-on' : ''}" data-chip data-tccentro="${esc(g.grupo)}">${esc(g.nombreTabla)}</button>`).join('')}
-      </div></div>
-      ${lista.map(g => tabla(g)).join('')}
-    </div>`;
-    wire();
-  }
+      <p class="text-[12px] text-secondary mb-md">
+        KM Base, Costo Base y Tarifa Base KM son editables. Las columnas ZCAP (Ponderada, Promedio) se calculan
+        automáticamente desde el Motor de Costo. Las Tarifas Ajustadas se inicializan con ZCAP y pueden editarse manualmente.
+        Use <b>Refrescar Tarifas</b> tras modificar combustible, peajes, variables u otros parámetros del Motor de Costo.
+      </p>
 
-  function tabla(g) {
-    const rutas = tcRutasRegionales(db, cfg, g.gruposCalc);
-    const hasEsp = rutas.some(esEspecial);
-    const kms = rutas.map(r => Number(r.km) || 0).filter(k => k > 0);
-    const trucks = (db.truckTypes || []).filter(t => t.Id_centro === g.repId).sort((a, b) => truckCapKg(a.type) - truckCapKg(b.type));
-    const inp = (t, campo, unit, w) => numIn(`${t.id}|${campo}`, tcValor(t, campo), { changed: Number(tcValor(t, campo)) !== Number(tcGuardado(t, campo)), unit, w, disabled: !editar, label: `${t.type} ${campo}` });
-    const cols = ['Tipo camión', 'Cap.', 'a. KM base', 'b. Costo base', 'c. T. base KM', 'd. Normal pond.'].concat(hasEsp ? ['e. Esp. pond.'] : []).concat([`${hasEsp ? 'f' : 'e'}. Ajust. normal`]).concat(hasEsp ? ['g. Ajust. especial'] : []);
-    return `<div class="sv-card">
-      <div class="tf-tabletitle"><h3>${esc(g.nombreTabla)} <span class="sv-mono" style="color:#5c5f61;font-size:12px">${esc(g.ids.join(', '))}</span></h3>
-        <small>${fmt(rutas.length)} rutas regionales${kms.length ? ` · KM entre ${fmt(Math.min(...kms))} y ${fmt(Math.max(...kms))}` : ''}${hasEsp ? ' · con rutas especiales (isla / extrema)' : ''}</small></div>
-      <div style="overflow:auto"><table class="sv-table" style="min-width:${hasEsp ? 1060 : 860}px">
-        <thead><tr>${cols.map((c, i) => `<th class="${i ? 'r' : ''}">${esc(c)}</th>`).join('')}</tr></thead>
-        <tbody>${trucks.length ? trucks.map(t => {
-          const pn = t.ratePerKmPond || 0, pe = t.ratePerKmExtrPond || 0;
-          return `<tr style="cursor:default"><td class="sv-b" style="white-space:nowrap">${esc(t.type)}</td>
-            <td class="r">${fmt(truckCapKg(t.type))} kg</td>
-            <td class="r">${inp(t, 'Kmbase', 'km', '96px')}</td>
-            <td class="r">${inp(t, 'baseKM', 'CLP', '130px')}</td>
-            <td class="r">${inp(t, 'baseRate', 'CLP', '120px')}</td>
-            <td class="r" style="color:#1e3a8a">${conZcap.has(t.id) ? clp(pn) + '/km' : '<span class="sv-muted">Sin rutas</span>'}</td>
-            ${hasEsp ? `<td class="r" style="color:#713f12">${pe > 0 ? clp(pe) + '/km' : '—'}</td>` : ''}
-            <td class="r">${inp(t, 'rateAjustNorm', '$/km', '116px')}</td>
-            ${hasEsp ? `<td class="r">${inp(t, 'rateAjustEsp', '$/km', '116px')}</td>` : ''}</tr>`;
-        }).join('') : `<tr class="sv-empty"><td colspan="${cols.length}">Sin tipos de camión para este centro.
-          ${editar ? `<button class="sv-btn" data-chip data-tcadd="${esc(g.grupo)}" style="margin-left:8px"><span class="material-symbols-outlined">add</span>Agregar tipos</button>` : ''}</td></tr>`}</tbody>
-      </table></div>
-      <div class="sv-tfoot"><span>ZCAP tarifa = b + c + máx(0, KM − a) × tarifa ajustada</span><span>Ponderado por las toneladas de cada ruta</span></div>
-    </div>`;
-  }
+      <div class="flex items-end gap-sm mb-md">
+        <div class="space-y-xs">
+          <label class="font-label-caps text-label-caps text-secondary block">CENTRO ORIGEN</label>
+          <select id="tt-f-centro" class="border border-[#CED4DA] p-sm font-body-md text-body-md bg-white w-56">
+            <option value="">Todos</option>
+            ${tieneStgoSb ? `<option value="__STGO_SB__" ${tarifaCentroFiltro === '__STGO_SB__' ? 'selected' : ''}>Santiago + San Bernardo</option>` : ''}
+            ${gruposDropdown.filter(g => !STGO_SB.includes(g.grupo) || !tieneStgoSb).map(g =>
+              `<option value="${escapeHtml(g.grupo)}" ${g.grupo === tarifaCentroFiltro ? 'selected' : ''}>${escapeHtml(g.nombre)}</option>`).join('')}
+          </select>
+        </div>
+      </div>
 
-  const recalc = debounce(() => rerenderKeepFocus(content, render), 250);
+      ${gruposRender.map(g => {
+        // Para SANTIAGO combinado, incluir ambos grupos en cálculo
+        const gruposCalc = (g.grupo === 'SANTIAGO' && tieneStgoSb) ? STGO_SB : [g.grupo];
+        const rows = (db.truckTypes || []).filter(t => t.Id_centro === g.repId).sort((a, b) => truckCapKg(a.type) - truckCapKg(b.type));
+        const tieneEsp = tieneEspeciales(gruposCalc);
 
-  function wire() {
-    wireChain(content);
-    content.querySelectorAll('[data-tccentro]').forEach(b => b.addEventListener('click', () => { TC.centro = b.dataset.tccentro; render(); }));
-    wireNumIns(content, (key, val) => {
-      const [id, campo] = key.split('|');
-      const t = (db.truckTypes || []).find(x => x.id === id);
-      if (!t) return;
-      TC.draft[id] = TC.draft[id] || {};
-      if (Number(val) === Number(tcGuardado(t, campo))) delete TC.draft[id][campo]; else TC.draft[id][campo] = val;
-      if (!Object.keys(TC.draft[id]).length) delete TC.draft[id];
-      TC.refrescado = false;
-      recalc();
+        // Nombre del grupo
+        let nombreGrupo = g.nombre;
+        let subtituloGrupo = `(${g.centroIds.join(', ')})`;
+        if (g.grupo === 'SANTIAGO' && tieneStgoSb) {
+          nombreGrupo    = 'Santiago + San Bernardo';
+          const sbIds = sbG ? sbG.centroIds : [];
+          subtituloGrupo = `(${[...g.centroIds, ...sbIds].join(', ')})`;
+        }
+
+        const colCount = tieneEsp ? 9 : 7;
+        return `
+        <div class="mb-xl">
+          <div class="flex items-center justify-between mb-xs">
+            <h3 class="font-body-lg font-bold text-on-surface">${escapeHtml(nombreGrupo)} <span class="text-secondary font-data-mono text-[12px]">${subtituloGrupo}</span></h3>
+            ${rows.length === 0 ? `
+            <button class="tt-add-types bg-primary hover:bg-[#930007] text-white font-bold px-md py-xs rounded flex items-center gap-xs text-[11px] uppercase" data-grupo="${escapeHtml(g.grupo)}">
+              <span class="material-symbols-outlined text-[16px]">add</span> Agregar tipos
+            </button>` : ''}
+          </div>
+          <div class="bg-surface border border-outline-variant overflow-x-auto rounded">
+            <table class="w-full border-collapse text-[12px]">
+              <thead>
+                <tr class="bg-surface-container-high text-left border-b border-outline-variant">
+                  <th class="p-md font-label-caps text-label-caps text-secondary uppercase whitespace-nowrap">Tipo Camión</th>
+                  <th class="p-md font-label-caps text-label-caps text-secondary uppercase whitespace-nowrap text-right">Cap.</th>
+                  <th class="p-md font-label-caps text-label-caps text-secondary uppercase whitespace-nowrap text-right">a. KM Base</th>
+                  <th class="p-md font-label-caps text-label-caps text-secondary uppercase whitespace-nowrap text-right">b. Costo Base</th>
+                  <th class="p-md font-label-caps text-label-caps text-secondary uppercase whitespace-nowrap text-right">c. T. Base KM</th>
+                  <th class="p-md font-label-caps text-label-caps text-secondary uppercase whitespace-nowrap text-right bg-blue-50">d. Normal Pond.</th>
+                  ${tieneEsp ? `
+                  <th class="p-md font-label-caps text-label-caps text-secondary uppercase whitespace-nowrap text-right bg-amber-50">e. Esp. Pond.</th>` : ''}
+                  <th class="p-md font-label-caps text-label-caps text-secondary uppercase whitespace-nowrap text-right bg-green-50">${tieneEsp ? 'f' : 'e'}. Ajust. Normal</th>
+                  ${tieneEsp ? `<th class="p-md font-label-caps text-label-caps text-secondary uppercase whitespace-nowrap text-right bg-green-50">g. Ajust. Especial</th>` : ''}
+                </tr>
+              </thead>
+              <tbody class="font-body-md text-body-md">
+                ${rows.length === 0
+                  ? `<tr><td colspan="${colCount}" class="p-md text-center text-secondary">Sin tipos de camión. Use "Agregar tipos" para crear los 4 estándar (5/10/15/28 Ton).</td></tr>`
+                  : rows.map(t => {
+                    const hasZcap = conZcap.has(t.id);
+                    const pondN   = t.ratePerKmPond    || 0;
+                    const pondE   = t.ratePerKmExtrPond || 0;
+                    const ajN     = t.rateAjustNorm    ?? pondN;
+                    const ajE     = t.rateAjustEsp     ?? pondE;
+                    const noData  = !hasZcap ? '<div class="text-[10px] text-secondary">Sin rutas</div>' : '';
+                    return `
+                    <tr class="border-b border-outline-variant">
+                      <td class="p-md font-bold whitespace-nowrap">${t.type}</td>
+                      <td class="p-md text-right text-secondary">${t.capacityTons}</td>
+                      <td class="p-md w-24">${truckNumInput(t.id, 'Kmbase',   t.Kmbase)}</td>
+                      <td class="p-md w-28">${truckNumInput(t.id, 'baseKM',   t.baseKM)}</td>
+                      <td class="p-md w-28">${truckNumInput(t.id, 'baseRate', t.baseRate)}</td>
+                      <td class="p-md text-right font-data-mono bg-blue-50">${hasZcap ? formatCLP(pondN) : '—'}${noData}</td>
+                      ${tieneEsp ? `
+                      <td class="p-md text-right font-data-mono bg-amber-50">${pondE > 0 ? formatCLP(pondE) : '—'}</td>` : ''}
+                      <td class="p-md w-28 bg-green-50">${truckNumInput(t.id, 'rateAjustNorm', ajN)}</td>
+                      ${tieneEsp ? `<td class="p-md w-28 bg-green-50">${truckNumInput(t.id, 'rateAjustEsp', ajE)}</td>` : ''}
+                    </tr>`;
+                  }).join('')}
+              </tbody>
+            </table>
+          </div>
+
+          <div class="flex gap-sm mt-xs text-[11px] text-secondary">
+            <span class="inline-flex items-center gap-1"><span class="w-3 h-3 bg-blue-50 border border-blue-200 inline-block rounded"></span> ZCAP calculado (solo lectura)</span>
+            <span class="inline-flex items-center gap-1"><span class="w-3 h-3 bg-amber-50 border border-amber-200 inline-block rounded"></span> Rutas extremas/isla</span>
+            <span class="inline-flex items-center gap-1"><span class="w-3 h-3 bg-green-50 border border-green-200 inline-block rounded"></span> Editable — tarifa oficial</span>
+          </div>
+        </div>`;
+      }).join('')}
+    </div>
+  `;
+
+  content.querySelectorAll('[data-truck-id]').forEach(inp => {
+    inp.addEventListener('change', (e) => {
+      const id    = e.target.dataset.truckId;
+      const field = e.target.dataset.truckField;
+      const val   = e.target.value === '' ? 0 : Number(e.target.value);
+      const row   = (db.truckTypes || []).find(t => t.id === id);
+      if (row) row[field] = val;
+      saveDatabase(db);
+      if (field === 'Kmbase') renderTarifasCamion(content, db, cfg);
     });
-    wireChangesBar(content, () => { TC.draft = {}; TC.refrescado = false; render(); }, guardar);
-    content.querySelector('#tt-refresh')?.addEventListener('click', () => {
-      const n = tcAjusteMotor(db, cfg);
-      TC.refrescado = true;
-      render();
-      showAlert(n ? `Propuesta ajustada al Motor de Costos: ${n} valor(es) cambian. Revisa el impacto y guarda para aplicarla.` : 'Las tarifas ya están ajustadas al Motor de Costos.', 'success');
-    });
-    content.querySelectorAll('[data-tcadd]').forEach(btn => btn.addEventListener('click', () => {
-      const grupo = getOrigenGroups(db).find(g => g.grupo === btn.dataset.tcadd);
-      const centro = grupo && (db.logisticsCentres || []).find(c => c.id === grupo.repId);
+  });
+
+  document.getElementById('tt-f-centro')?.addEventListener('change', (e) => {
+    tarifaCentroFiltro = e.target.value;
+    renderTarifasCamion(content, db, cfg);
+  });
+
+  document.getElementById('tt-refresh')?.addEventListener('click', () => {
+    // syncTarifasZcap se ejecuta al inicio de renderTarifasCamion: al re-renderizar
+    // se recalculan ZCAP Ponderada/Promedio con los parámetros actuales del Motor de Costo.
+    renderTarifasCamion(content, db, cfg);
+    showAlert('Tarifas recalculadas desde el Motor de Costo.');
+  });
+
+  content.querySelectorAll('.tt-add-types').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const grupo  = getOrigenGroups(db).find(g => g.grupo === btn.dataset.grupo);
+      if (!grupo) return;
+      const centro = (db.logisticsCentres || []).find(c => c.id === grupo.repId);
       if (!centro) return;
       const nuevos = buildTruckTypes([centro], TRUCK_BASE_TYPES);
       db.truckTypes = db.truckTypes || [];
       db.truckTypes.push(...nuevos);
-      saveDatabase(db, { syncOnly: ['truckTypes'] });
+      saveDatabase(db);
       showAlert(`${nuevos.length} tipo(s) de camión agregados para ${grupo.nombre}`);
-      render();
-    }));
-  }
-
-  function guardar() {
-    const ch = tcCambios(db);
-    if (!ch.length) return;
-    const by = usuarioSesion(), at = new Date().toISOString();
-    ch.forEach(({ t, c, v }) => { t[c] = Number(v) || 0; t.updated_by = by; t.updated_at = at; });
-    TC.draft = {}; TC.refrescado = false;
-    saveDatabase(db, { syncOnly: ['truckTypes'] });
-    showAlert(`Tarifas por camión guardadas (${ch.length} ${ch.length === 1 ? 'valor' : 'valores'}). Los ZCAP regionales ya usan los nuevos valores.`, 'success');
-    render();
-  }
-
-  render();
+      renderTarifasCamion(content, db, cfg);
+    });
+  });
 }
 
 // ============================================================
