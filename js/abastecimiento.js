@@ -10,11 +10,11 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202609301234';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202609301234';
-import { getDatabase } from './data.js?v=202609301234';
+import { supabase } from './supabase-client.js?v=202609301249';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202609301249';
+import { getDatabase } from './data.js?v=202609301249';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202609301234';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202609301249';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -344,8 +344,10 @@ async function setVentaDirectoManual(doc, activo) {
   return true;
 }
 // Clave de cliente para agrupar NV (misma regla que el Plan de Carga y la vista SQL).
-function clienteKeyNV(doc, deudor, pv) {
-  return String(deudor ?? '').trim() || String((pv || {}).nombre_1 ?? '').trim() || String(doc ?? '').trim();
+// (30-sep-2026, Jordan) El cliente es la columna SOLICITANTE del SQVI; DEUDOR (func Z0)
+// NO es el cliente. Sin solicitante: nombre de cliente de la ref. NV; si no, el propio pedido.
+function clienteKeyNV(doc, solicitante, pv) {
+  return String(solicitante ?? '').trim() || String((pv || {}).nombre_1 ?? '').trim() || String(doc ?? '').trim();
 }
 
 async function reactivarEnPlan(id) {
@@ -899,7 +901,7 @@ const VISTAS_TRONCAL = {
           if (comunasList.has(normTxt(it._comuna))) { enCamino = true; comunaCamino = it._comuna; break; }
         }
         out.push({
-          doc_ventas: doc, ofvta: f.ofvta, creado_el: f.creado_el, deudor: f.deudor,
+          doc_ventas: doc, ofvta: f.ofvta, creado_el: f.creado_el, deudor: f.deudor, solicitante: f.solicitante,
           fe_entrega: feLbl, _ton_num: ton, _ton_totales: fmtNum(ton, 3),
           _estado: parcial ? 'ENTREGA PARCIAL PENDIENTE' : '',
           _alerta: al.txt, _alerta_cls: al.cls, _detalle: detalle,
@@ -927,7 +929,7 @@ const VISTAS_TRONCAL = {
         const doc = String(r.doc_ventas ?? '').trim();
         const fe = parseDateSAP(r.fe_entrega);
         const vig = !fe || fe.getTime() <= lim.getTime();
-        r._cliente_key = clienteKeyNV(doc, r.deudor, pvMap[doc]);
+        r._cliente_key = clienteKeyNV(doc, r.solicitante, pvMap[doc]);
         const gk = `${String(r.ofvta ?? '').trim()}|${r._cliente_key}|${vig ? 'VIGENTE' : isoLocal(fe)}`;
         (grupos[gk] = grupos[gk] || []).push(r);
         r._forzado = forz.has(doc);
@@ -2033,7 +2035,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202609301234');
+    const m = await import('./ind-plan-carga.js?v=202609301249');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
@@ -2490,7 +2492,7 @@ async function renderPlanCarga(stage) {
     const ventasPorGrupo = {};
     for (const [doc, items] of Object.entries(ventasPorDoc)) {
       const pv = pvMap[doc] || {};
-      const clienteKey = clienteKeyNV(doc, items[0].deudor, pv);
+      const clienteKey = clienteKeyNV(doc, items[0].solicitante, pv);
       const forzado = ventasDirectoManual.has(doc);
       items.forEach(r => {
         const pend = parseNum(r.ctd_confirmada) - parseNum(r.cantidad_entrg);
