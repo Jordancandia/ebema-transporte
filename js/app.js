@@ -1,6 +1,6 @@
-import { getDatabase, saveDatabase, initDatabase, loadRoutesData, loadHistoricoFlete360 } from './data.js?v=202609302252';
-import { supabase } from './supabase-client.js?v=202609302252';
-import { setSesionPermisos, puedeVerMenu, can, esSoloLectura, PERFILES } from './permisos.js?v=202609302252';
+import { getDatabase, saveDatabase, initDatabase, loadRoutesData, loadHistoricoFlete360 } from './data.js?v=202609302307';
+import { supabase } from './supabase-client.js?v=202609302307';
+import { setSesionPermisos, puedeVerMenu, can, esSoloLectura, PERFILES } from './permisos.js?v=202609302307';
 // ── Módulos cargados bajo demanda (lazy) — se cachean tras la primera carga ──
 const _mod = {};
 async function loadMod(key, modPath) {
@@ -9,9 +9,9 @@ async function loadMod(key, modPath) {
 }
 // Pre-warm: carga indicadores y abastecimiento en background tras login
 function prewarmMods() {
-  setTimeout(() => loadMod('ind',   './indicadores.js?v=202609302252'), 600);
+  setTimeout(() => loadMod('ind',   './indicadores.js?v=202609302307'), 600);
   setTimeout(() => loadRoutesData(), 800);  // pre-fetch tablas pesadas en background
-  setTimeout(() => loadMod('abast', './abastecimiento.js?v=202609302252'), 2000);
+  setTimeout(() => loadMod('abast', './abastecimiento.js?v=202609302307'), 2000);
 }
 import { showAlert, formatRut, validateRut, formatPhone } from './utils.js';
 
@@ -235,7 +235,7 @@ function renderApp() {
   if (!currentSession) {
     renderAuthView();
   } else if (currentSession.tipo === 'proveedor') {
-    import('./provider-portal.js?v=202609302252').then(m => m.renderProviderShell(currentSession, handleLogout));
+    import('./provider-portal.js?v=202609302307').then(m => m.renderProviderShell(currentSession, handleLogout));
   } else {
     renderDashboardShell();
   }
@@ -1208,8 +1208,10 @@ const SIDEBAR_MENU = [
       { tab: 'abastecimiento', sub: 'pedidos_traslados_4000', icon: 'local_shipping',             label: 'Crossdocking' },
       { tab: 'abastecimiento', sub: 'pedidos_traslados',      icon: 'swap_horiz',                 label: 'Pedidos de Traslados' },
       { tab: 'abastecimiento', sub: 'plan_carga',             icon: 'local_shipping',             label: 'Plan de Carga' },
-      { tab: 'abastecimiento', sub: 'entregas_creadas',       icon: 'assignment_turned_in',       label: 'Entregas Creadas' },
-      { tab: 'abastecimiento', sub: 'documentos_transporte',  icon: 'description',                label: 'Documentos de Transporte' },
+      // (30-sep-2026, Jordan) Entregas Creadas y Documentos de Transporte quedan OCULTAS: son sólo cruce interno
+      // del Plan de Carga (abast_plan_foto_entrega / abast_plan_foto_dt), no se muestran en la plataforma.
+      // { tab: 'abastecimiento', sub: 'entregas_creadas',       icon: 'assignment_turned_in',       label: 'Entregas Creadas' },
+      // { tab: 'abastecimiento', sub: 'documentos_transporte',  icon: 'description',                label: 'Documentos de Transporte' },
       { tab: 'abastecimiento', sub: 'ind_plan_carga',         icon: 'insights',                   label: 'Indicadores Plan de Carga' },
     ]
   },
@@ -1253,7 +1255,7 @@ const NAV_LAYOUT = [
     // (30-sep-2026, Jordan) Orden: Configuraciones · Orden de Carga · Planificación
     { label: 'Configuraciones', group: 'abastecimiento', collapsible: true, subs: ['calendario', 'stock_almacen'] },
     { label: 'Orden de Carga', group: 'abastecimiento', subs: ['pedidos_traslados_revex', 'pedidos_venta', 'retiros', 'pedidos_traslados_4000', 'pedidos_traslados'] },
-    { label: 'Planificación', group: 'abastecimiento', subs: ['plan_carga', 'entregas_creadas', 'documentos_transporte', 'ind_plan_carga'] },
+    { label: 'Planificación', group: 'abastecimiento', subs: ['plan_carga', 'ind_plan_carga'] },
   ] },
   { key: 'flete', icon: 'local_shipping', label: 'Flete Tercero', sections: [{ label: 'Seguimiento', group: 'flete-tercero' }] },
   { key: 'ind', icon: 'monitoring', label: 'Indicadores', sections: [{ label: 'Reportes', group: 'indicadores' }] },
@@ -1267,7 +1269,7 @@ const NAV_LAYOUT = [
   ] },
   { tab: 'roles' },
 ];
-const FAV_DEFAULT = ['abastecimiento:plan_carga', 'abastecimiento:calendario', 'abastecimiento:documentos_transporte'];
+const FAV_DEFAULT = ['abastecimiento:plan_carga', 'abastecimiento:calendario', 'abastecimiento:ind_plan_carga'];
 const LS_FAVS = 'sit_nav_favs';
 const LS_COLL = 'sit_nav_collapsed';
 const LS_SECT = 'sit_nav_sect_closed';
@@ -1689,37 +1691,37 @@ async function switchTab(tabName, subName = null) {
   _stageSpinner(stage);
   switch (tabName) {
     case 'home': {
-      const m = await loadMod('ind', './indicadores.js?v=202609302252');
+      const m = await loadMod('ind', './indicadores.js?v=202609302307');
       m.renderIndicadoresHome(stage);
       break;
     }
     case 'rates': {
       await loadRoutesData();
-      const m = await loadMod('rates', './rates.js?v=202609302252');
+      const m = await loadMod('rates', './rates.js?v=202609302307');
       m.renderRatesView(stage);
       break;
     }
     case 'transports': {
-      const m = await loadMod('trans', './transports.js?v=202609302252');
+      const m = await loadMod('trans', './transports.js?v=202609302307');
       m.renderTransportsView(stage);
       break;
     }
     case 'routes': {
       await loadRoutesData();
-      const m = await loadMod('routes', './routes.js?v=202609302252');
+      const m = await loadMod('routes', './routes.js?v=202609302307');
       if (alias) m.setRoutesSubTab(alias);
       m.renderRoutesView(stage);
       break;
     }
     case 'roles': {
-      const m = await loadMod('roles', './roles.js?v=202609302252');
+      const m = await loadMod('roles', './roles.js?v=202609302307');
       m.renderRolesView(stage);
       break;
     }
     case 'tarifas-transporte': {
       await loadRoutesData();
       await loadHistoricoFlete360();
-      const m = await loadMod('tt', './tarifas-transporte.js?v=202609302252');
+      const m = await loadMod('tt', './tarifas-transporte.js?v=202609302307');
       if (alias) m.setActiveSub(alias);
       m.renderTariffTransportView(stage);
       break;
@@ -1727,27 +1729,27 @@ async function switchTab(tabName, subName = null) {
     case 'tarifas-clientes': {
       await loadRoutesData();
       await loadHistoricoFlete360();
-      const m = await loadMod('tc', './tarifas-clientes.js?v=202609302252');
+      const m = await loadMod('tc', './tarifas-clientes.js?v=202609302307');
       if (alias) m.setActiveSubC(alias);
       m.renderClientTariffView(stage);
       break;
     }
     case 'abastecimiento': {
       await loadRoutesData();
-      const m = await loadMod('abast', './abastecimiento.js?v=202609302252');
+      const m = await loadMod('abast', './abastecimiento.js?v=202609302307');
       if (subName) m.setAbastSubTab(subName);
       m.renderAbastecimientoView(stage);
       break;
     }
     case 'indicadores': {
-      const m = await loadMod('ind', './indicadores.js?v=202609302252');
+      const m = await loadMod('ind', './indicadores.js?v=202609302307');
       if (subName) m.setIndicadoresSubTab(subName);
       m.renderIndicadoresView(stage);
       break;
     }
     case 'flete-tercero': {
       await loadRoutesData();
-      const m = await loadMod('fter', './flete-tercero.js?v=202609302252');
+      const m = await loadMod('fter', './flete-tercero.js?v=202609302307');
       if (subName) m.setFleteTerceroSubTab(subName);
       m.renderFleteTerceroView(stage);
       break;

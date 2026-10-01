@@ -45,8 +45,7 @@ export const PERFILES = {
       'proveedores',
       'abastecimiento:calendario',
       ...ABAST_OPERATIVAS,
-      'abastecimiento:entregas_creadas',
-      'abastecimiento:documentos_transporte',
+      // Entregas Creadas / Documentos de Transporte: ocultas (cruce interno, 30-sep-2026)
       'abastecimiento:ind_plan_carga',
     ],
     // 30-sep-2026: sin Excluir (sólo OWNER) y alcance a todos los centros por defecto.
