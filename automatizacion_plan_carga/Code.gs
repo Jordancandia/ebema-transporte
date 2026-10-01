@@ -3,7 +3,8 @@
  *  CORREO PLAN DE CARGA (tabla completa + CSV por centro)  ->  Gmail
  * ----------------------------------------------------------------------------
  *  Envía 3 correos diarios (días hábiles lunes-viernes) a los usuarios OWNER /
- *  ADMINISTRADOR_DEPOSITO. Por corrida y por destinatario se envía UN SOLO
+ *  PLANNER_OPERACIONES / PLANNER_ABASTECIMIENTO / ADMINISTRADOR_DEPOSITO (todos
+ *  ven todos los centros). Por corrida y por destinatario se envía UN SOLO
  *  correo, asunto siempre "PLAN DE CARGA – [FECHA]" (sin centro/cantidad en
  *  el asunto — aplica igual para todos). El cuerpo trae una tabla con TODOS
  *  los centros que le correspondan (tengan o no carga), separados por Centro
@@ -19,7 +20,7 @@
  *     la plataforma) -> TODOS los centros de ambos CDs, en la misma tabla.
  *
  *    08:30  INICIAL
- *    12:00  ACTUALIZACION
+ *    13:45  ACTUALIZACION   (AJUSTE 30-sep-2026, antes 12:00)
  *    15:30  CIERRE
  *
  *  Fuente de datos: vistas server-side v_trc_plan_carga_1003(_detalle) y
@@ -68,7 +69,10 @@ var CDS = [
 
 // Roles que reciben este correo (deben tener el campo Centro de Preferencia
 // disponible en "Roles y Perfiles" — ver js/roles.js CENTRO_ROLES).
-var ROLES_DESTINATARIOS = ['OWNER', 'ADMINISTRADOR_DEPOSITO'];
+// (AJUSTE 30-sep-2026, Jordan) Reciben el correo: OWNER, Planner Operaciones,
+// Planner Abastecimiento y Administrativo de Depósito — TODOS ven todos los centros
+// (ya no se filtra por centrosPreferencia).
+var ROLES_DESTINATARIOS = ['OWNER', 'PLANNER_OPERACIONES', 'PLANNER_ABASTECIMIENTO', 'ADMINISTRADOR_DEPOSITO'];
 
 // Columnas de tonelaje. Orden: REVEX, Venta Directa, Retiro Fábrica,
 // Crossdocking, Quiebre, Abastecimiento — y al final, marcadas como
@@ -167,7 +171,9 @@ var RUN_CONFIG = {
 
 // --------------------------- ENTRYPOINTS ------------------------------------
 function ejecutar_0830() { procesarCorreoPlanCarga('INICIAL'); }
-function ejecutar_1200() { procesarCorreoPlanCarga('ACTUALIZACION'); }
+function ejecutar_1345() { procesarCorreoPlanCarga('ACTUALIZACION'); }
+// Compatibilidad: si quedara un activador antiguo de las 12:00, ya no envía nada.
+function ejecutar_1200() { Logger.log('ejecutar_1200 obsoleto: correr crearTriggersCorreoPlanCarga() para pasar a 13:45'); }
 function ejecutar_1530() { snapshotPlanCarga(); procesarCorreoPlanCarga('CIERRE'); }
 
 // Foto oficial del Plan de Carga a las 15:30 (base del indicador de Efectividad).
@@ -188,14 +194,14 @@ function probar_cierre()         { procesarCorreoPlanCarga('CIERRE'); }
 
 // Crea los 3 triggers horarios (ejecutar manualmente 1 vez tras desplegar).
 function crearTriggersCorreoPlanCarga() {
-  var borrar = ['ejecutar_0830', 'ejecutar_1200', 'ejecutar_1530'];
+  var borrar = ['ejecutar_0830', 'ejecutar_1200', 'ejecutar_1345', 'ejecutar_1530'];
   ScriptApp.getProjectTriggers().forEach(function (t) {
     if (borrar.indexOf(t.getHandlerFunction()) !== -1) ScriptApp.deleteTrigger(t);
   });
   ScriptApp.newTrigger('ejecutar_0830').timeBased().atHour(8).nearMinute(30).everyDays(1).create();
-  ScriptApp.newTrigger('ejecutar_1200').timeBased().atHour(12).nearMinute(0).everyDays(1).create();
+  ScriptApp.newTrigger('ejecutar_1345').timeBased().atHour(13).nearMinute(45).everyDays(1).create();
   ScriptApp.newTrigger('ejecutar_1530').timeBased().atHour(15).nearMinute(30).everyDays(1).create();
-  Logger.log('Triggers creados: 08:30, 12:00, 15:30 (America/Santiago). El propio script se salta fines de semana.');
+  Logger.log('Triggers creados: 08:30, 13:45, 15:30 (America/Santiago). El propio script se salta fines de semana.');
 }
 
 // ----------------------------- CORE -----------------------------------------
@@ -304,10 +310,8 @@ function procesarCorreoPlanCarga(tipo) {
   //    SOLO por cada centro en PROGRAMAR, con la fecha objetivo de su
   //    horizonte y el Centro Origen como prefijo del nombre de archivo.
   destinatarios.forEach(function (u) {
-    var esTodos = !u.centrosPreferencia || !u.centrosPreferencia.length;
-    var misCentros = esTodos
-      ? todosCentros
-      : todosCentros.filter(function (row) { return u.centrosPreferencia.indexOf(row.ce) !== -1; });
+    // (AJUSTE 30-sep-2026) Todos los destinatarios ven TODOS los centros.
+    var misCentros = todosCentros;
 
     if (!misCentros.length) return; // este centro/estos centros no existen en el Plan de Carga
 
@@ -353,10 +357,7 @@ function procesarCorreoPlanCarga(tipo) {
   // 4) Centros en PROGRAMAR sin ningún destinatario (ni puntual ni "todos"):
   //    señal operativa, no es un error del script.
   centrosProgramados.forEach(function (row) {
-    var alguien = destinatarios.some(function (u) {
-      var esTodos = !u.centrosPreferencia || !u.centrosPreferencia.length;
-      return esTodos || u.centrosPreferencia.indexOf(row.ce) !== -1;
-    });
+    var alguien = destinatarios.length > 0;
     if (!alguien) {
       logCorreo(corrida, tipo, row.cdId, row.ce, row.fechaObjetivoISO, '', row.pct, row.status, 0,
         'sin_destinatarios', 'Ningún usuario activo con ese centro (ni con "todos los centros")');

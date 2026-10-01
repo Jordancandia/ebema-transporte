@@ -10,11 +10,11 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202609301836';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202609301836';
-import { getDatabase } from './data.js?v=202609301836';
+import { supabase } from './supabase-client.js?v=202609302252';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202609302252';
+import { getDatabase } from './data.js?v=202609302252';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202609301836';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202609302252';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -2105,7 +2105,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202609301836');
+    const m = await import('./ind-plan-carga.js?v=202609302252');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
@@ -2183,6 +2183,9 @@ async function fetchAllRows(vista, force = false) {
 const CAP_CAMION_DEFAULT = 28;
 const CAP_CAMION_REDUCIDO = 15;
 const CENTROS_CAMION_REDUCIDO = ['1050', '1005'];
+// (AJUSTE 30-sep-2026, Jordan) Camiones directos (CD-CLIENTE, FÁBRICA-CLIENTE, FÁBRICA-SUCURSAL):
+// el % de ocupación se calcula siempre sobre el camión de 28 t.
+const CAP_CAMION_DIRECTO = 28;
 // Umbrales de camión completo para los camiones directos (regla 21-sep-2026,
 // AJUSTE 28-sep-2026 pedido Jordan: los TRES tipos de camión directo pasan a 85%):
 //  · CD-CLIENTE: pedidos de venta 1003 del MISMO cliente que suman > 85% de la capacidad.
@@ -2654,7 +2657,8 @@ async function renderPlanCarga(stage, opts = {}) {
       const itemsCons = g.nvs.filter(n => !esDir(n)).flatMap(n => n.items).filter(d => d._enVentana);
       if (itemsDir.length) {
         if (!g.vigente) tonClienteDiferido += sumTon(itemsDir); // camión exclusivo de otro día (no se consolida)
-        else { const capDir = evalCdCliente(ce, sumTon(itemsDir)).cap;
+        else { // (AJUSTE 30-sep-2026, Jordan) % de ocupación de camiones directos siempre sobre camión de 28 t.
+          const capDir = CAP_CAMION_DIRECTO;
           armarCamiones(itemsDir, capDir, d => d.pv).forEach(c => camionesCliente.push({ ...c, grupo: g.nombre, cap: capDir })); }
       }
       if (itemsCons.length) { tonVentaCons += sumTon(itemsCons); det.ventaCons.push(...itemsCons); }
@@ -2739,8 +2743,10 @@ async function renderPlanCarga(stage, opts = {}) {
     let tonFabCli = 0, tonFabSuc = 0;
     // (AJUSTE 28-sep-2026) Umbral 85% y reparto en N camiones por grupo (X2/X3).
     const camionesFabCli = [], camionesFabSuc = [];
-    Object.entries(ocCli).forEach(([k, b]) => { if (b.ton > capFab * UMBRAL_FABRICA) armarCamiones(b.items, capFab, d => d.oc).forEach(c => camionesFabCli.push({ ...c, grupo: k, cap: capFab })); });
-    Object.entries(provSuc).forEach(([k, b]) => { if (b.ton > capFab * UMBRAL_FABRICA) armarCamiones(b.items, capFab, d => d.oc).forEach(c => camionesFabSuc.push({ ...c, grupo: (b.items[0] && b.items[0].prov) || k, cap: capFab })); });
+    // (AJUSTE 30-sep-2026, Jordan) El umbral sigue usando la capacidad del centro, pero el camión
+    // directo se arma y su % de ocupación se calcula sobre el camión de 28 t.
+    Object.entries(ocCli).forEach(([k, b]) => { if (b.ton > capFab * UMBRAL_FABRICA) armarCamiones(b.items, CAP_CAMION_DIRECTO, d => d.oc).forEach(c => camionesFabCli.push({ ...c, grupo: k, cap: CAP_CAMION_DIRECTO })); });
+    Object.entries(provSuc).forEach(([k, b]) => { if (b.ton > capFab * UMBRAL_FABRICA) armarCamiones(b.items, CAP_CAMION_DIRECTO, d => d.oc).forEach(c => camionesFabSuc.push({ ...c, grupo: (b.items[0] && b.items[0].prov) || k, cap: CAP_CAMION_DIRECTO })); });
     camionesFabCli.forEach((c, i) => { c.n = i + 1; c.items.forEach(d => { d._camion = i + 1; }); tonFabCli += c.ton; det.fabCli.push(...c.items); });
     camionesFabSuc.forEach((c, i) => { c.n = i + 1; c.items.forEach(d => { d._camion = i + 1; }); tonFabSuc += c.ton; det.fabSuc.push(...c.items); });
 
