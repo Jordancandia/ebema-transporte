@@ -27,7 +27,7 @@ export const PERFILES = {
   OWNER: {
     label: 'Owner',
     menu: null,
-    acciones: ['editar', 'eliminar', 'descargar', 'descargar_plan', 'excluir', 'incluir_plan', 'forzar_cd_cliente', 'coordinar_retiro', 'coordinar_venta', 'invitar', 'descargar_bd', 'ajustar_plan'],
+    acciones: ['editar', 'eliminar', 'descargar', 'descargar_plan', 'excluir', 'incluir_plan', 'forzar_cd_cliente', 'coordinar_retiro', 'invitar', 'descargar_bd', 'ajustar_plan'],
     alcance: 'TODOS',
   },
   PLANNER_OPERACIONES: {

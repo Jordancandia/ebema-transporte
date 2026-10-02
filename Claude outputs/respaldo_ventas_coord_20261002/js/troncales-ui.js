@@ -32,7 +32,7 @@ export function tonHtml(n) {
 }
 
 // Encabezado del shell: fecha y hora de la última actualización SAP de la vista
-import { confirmar } from './confirmar.js?v=202610021956';
+import { confirmar } from './confirmar.js?v=202610021918';
 export function setUltimaActualizacion(ts) {
   const el = document.getElementById('sv-upd');
   if (!el) return;
@@ -77,8 +77,7 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
   };
   if (!_estado.has(viewKey) && cfg.dateDefaultHoy) { st.dFrom = st.dTo = hoyISO(); }
   _estado.set(viewKey, st);
-  // Tras una acción con { recargar } se reabre el detalle de la misma fila con datos frescos.
-  st.drawer = st._reopen || null; st._reopen = null;
+  st.drawer = null;
 
   const active = cfg.modes ? Object.assign({}, cfg, cfg.modes[st.mode] || cfg.modes[0]) : cfg;
   const AV = Object.assign({}, V, (active.v2mode || {}));
@@ -227,8 +226,7 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
 
   function celdaPlan(r) {
     const ex = exclusionDe(r);
-    const pill = AV.planEstado ? AV.planEstado(r, !!ex)
-      : (ex ? '<span class="sv-pill bad"><i></i>Excluida hoy</span>' : '<span class="sv-pill ok"><i></i>En plan</span>');
+    const pill = ex ? '<span class="sv-pill bad"><i></i>Excluida hoy</span>' : '<span class="sv-pill ok"><i></i>En plan</span>';
     if (!puedeExcluir) return pill;
     const btn = ex
       ? `<button class="sv-btn" data-fila-reac="${esc(r.__rid)}" title="Reactivar en el Plan de Carga" style="padding:2px 8px;font-size:11px"><span class="material-symbols-outlined">visibility</span>Reactivar</button>`
@@ -372,7 +370,7 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
         }
       } else if (a.run) {
         const res = await a.run(r, ctx);
-        if (res && res.recargar) { closeDrawer(); st._reopen = id; deps.clearRawCache(); renderTablaV2(stage, cfg, deps, viewKey); }
+        if (res && res.recargar) { deps.clearRawCache(); renderTablaV2(stage, cfg, deps, viewKey).then(() => { st.drawer = id; openDrawer(id); }); }
         else if (res && res.redibujar) { draw(); st.drawer = id; openDrawer(id); }
       }
     }));
