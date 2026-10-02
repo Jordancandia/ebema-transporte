@@ -1,6 +1,5 @@
-import { getDatabase, saveDatabase, getOrigenGroups } from './data.js?v=202610021918';
+import { getDatabase, saveDatabase, getOrigenGroups } from './data.js?v=202610021913';
 import { showAlert, escapeHtml } from './utils.js';
-import { confirmar } from './confirmar.js?v=202610021918';
 
 const CAPACIDADES = ['5', '10', '15', '28'];
 
@@ -139,8 +138,8 @@ export function renderTroncalesView(container) {
     });
 
     container.querySelectorAll('.tr-eliminar').forEach(btn => {
-      btn.addEventListener('click', async () => {
-        if (!await confirmar('¿Eliminar este troncal?')) return;
+      btn.addEventListener('click', () => {
+        if (!confirm('¿Eliminar este troncal?')) return;
         db.troncales = (db.troncales || []).filter(x => x.id !== btn.dataset.id);
         saveDatabase(db);
         troncales = parseCamiones(db);

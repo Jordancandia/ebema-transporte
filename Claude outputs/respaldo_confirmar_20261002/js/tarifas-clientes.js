@@ -1,12 +1,11 @@
 // MÓDULO: Administrador de Tarifas Clientes — SIT EBEMA v2.1
 // Vistas: Histórico (6M) | Consolidación | Densidad Logística | Frecuencia y Especiales | Cluster | Resultados
-import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig, saveHistorico, loadHistorico, saveHistoricoGlobal, getOrigenGroups, loadHistoricoFlete360 } from './data.js?v=202610021918';
-import { CAP_LIST, truckTypesWithCap, calcularCostoRuta } from './tarifas-engine.js?v=202610021918';
-import { buildZcapMap } from './zcap.js?v=202610021918';
+import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig, saveHistorico, loadHistorico, saveHistoricoGlobal, getOrigenGroups, loadHistoricoFlete360 } from './data.js?v=202610021913';
+import { CAP_LIST, truckTypesWithCap, calcularCostoRuta } from './tarifas-engine.js?v=202610021913';
+import { buildZcapMap } from './zcap.js?v=202610021913';
 import { formatCLP, showAlert, toCSV, downloadFile, formatDateDDMMYYYY, escapeHtml } from './utils.js';
-import { supabase } from './supabase-client.js?v=202610021918';
-import { renderClientesV2 } from './tarifas-clientes-v2.js?v=202610021918';
-import { confirmar } from './confirmar.js?v=202610021918';
+import { supabase } from './supabase-client.js?v=202610021913';
+import { renderClientesV2 } from './tarifas-clientes-v2.js?v=202610021913';
 
 // ─────────────────────────────────────────────────────────────
 // ESTADO DE MÓDULO
@@ -529,8 +528,8 @@ function renderHistorico(content, db, ccfg) {
     reader.readAsText(file, 'windows-1252');
   });
 
-  document.getElementById('hist-clear')?.addEventListener('click', async () => {
-    if (!await confirmar('¿Vaciar datos en memoria?')) return;
+  document.getElementById('hist-clear')?.addEventListener('click', () => {
+    if (!confirm('¿Vaciar datos en memoria?')) return;
     histData = []; histPage = 0; oficinaToGrupo = {};
     ccfg.histMeta = { uploadDate: null, rowCount: 0, fileName: '' };
     ccfg.historico = [];
@@ -1084,11 +1083,11 @@ function renderEspeciales(content, db, ccfg) {
 
   // Eliminar cluster
   content.querySelectorAll('.del-cluster').forEach(btn => {
-    btn.addEventListener('click', async () => {
+    btn.addEventListener('click', () => {
       const idx = parseInt(btn.dataset.idx);
       const clKey = ccfg.clusters[idx]?.key;
       const nombre = ccfg.clusters[idx]?.nombre || '';
-      if (!await confirmar('Eliminar cluster "' + nombre + '"?\nLas rutas asignadas quedarán sin cluster.')) return;
+      if (!confirm('Eliminar cluster "' + nombre + '"?\nLas rutas asignadas quedarán sin cluster.')) return;
       ccfg.clusters.splice(idx, 1);
       if (clKey) {
         Object.keys(ccfg.comunaCluster).forEach(ruta => {
@@ -1599,11 +1598,11 @@ function renderCluster(content, db, ccfg) {
 
   // ── Evento: auto-asignar por centro ─────────────────────────────────────
   content.querySelectorAll('.cl-auto-centro').forEach(btn => {
-    btn.addEventListener('click', async () => {
+    btn.addEventListener('click', () => {
       const grupo = btn.dataset.grupo;
       const cd    = centrosData.find(c => c.grupo === grupo);
       if (!cd) return;
-      if (!await confirmar('¿Asignar clusters automáticamente para "' + grupo + '"?\n\nAlgoritmo: densidad logística + cercanía geográfica de comunas\n(Cluster 1 = mayor densidad, rutas cercanas heredan el mismo cluster)')) return;
+      if (!confirm('¿Asignar clusters automáticamente para "' + grupo + '"?\n\nAlgoritmo: densidad logística + cercanía geográfica de comunas\n(Cluster 1 = mayor densidad, rutas cercanas heredan el mismo cluster)')) return;
       asignarClustersCentro(cd.rows, ccfg);
       // Re-render solo esa tarjeta
       const uid  = grupo.replace(/[^a-z0-9]/gi, '_');
@@ -1669,7 +1668,7 @@ function renderCluster(content, db, ccfg) {
 
   // ── Evento: auto-asignar TODOS los centros ───────────────────────────────
   document.getElementById('btn-auto-todos')?.addEventListener('click', async () => {
-    if (!await confirmar('¿Asignar clusters automáticamente para TODOS los centros?\n\nAlgoritmo: densidad logística + cercanía geográfica de comunas\n\nEsto reemplazará todas las asignaciones existentes.')) return;
+    if (!confirm('¿Asignar clusters automáticamente para TODOS los centros?\n\nAlgoritmo: densidad logística + cercanía geográfica de comunas\n\nEsto reemplazará todas las asignaciones existentes.')) return;
     centrosData.forEach(cd => asignarClustersCentro(cd.rows, ccfg));
     saveDatabase(db);
     try {

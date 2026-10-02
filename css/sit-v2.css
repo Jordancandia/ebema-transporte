@@ -621,3 +621,22 @@ tr.tf-sel td:first-child { box-shadow: inset 3px 0 0 var(--sv-primary); }
 .pc-st { font-size: 13px; padding: 4px 12px; }
 .pc-est-r { font-size: 13px; }
 .pc-pct small { font-size: 13px; }
+
+/* ── Diálogo de confirmación (js/confirmar.js, 2-oct-2026) ─────────────── */
+.sv-cf-bg { position: fixed; inset: 0; z-index: 10000; background: rgba(25,28,29,.38); display: flex; align-items: center; justify-content: center;
+  padding: 16px; opacity: 0; transition: opacity .12s; }
+.sv-cf-bg.is-on { opacity: 1; }
+.sv-cf { width: 100%; max-width: 440px; background: #fff; border: 1px solid var(--sv-line); border-radius: 8px; color: var(--sv-ink);
+  box-shadow: 0 12px 32px rgba(25,28,29,.18); transform: translateY(6px); transition: transform .12s; overflow: hidden; }
+.sv-cf-bg.is-on .sv-cf { transform: none; }
+.sv-cf-b { display: flex; gap: 14px; padding: 20px 20px 16px; }
+.sv-cf-ic { width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0; display: flex; align-items: center; justify-content: center;
+  background: var(--sv-s2); color: var(--sv-ink3); }
+.sv-cf-ic.is-bad { background: var(--sv-sel); color: var(--sv-primary); }
+.sv-cf-ic .material-symbols-outlined { font-size: 20px; }
+.sv-cf-t { font-size: 15px; line-height: 22px; font-weight: 700; padding-top: 6px; overflow-wrap: anywhere; }
+.sv-cf-d { margin-top: 6px; font-size: 13px; line-height: 19px; color: var(--sv-ink2); overflow-wrap: anywhere; }
+.sv-cf-doc { font-family: var(--sv-mono); font-size: .92em; }
+.sv-cf-f { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 20px; background: var(--sv-s1); border-top: 1px solid var(--sv-line2); }
+.sv-cf button:focus { outline: none; }
+.sv-cf button:focus-visible { box-shadow: 0 0 0 3px var(--sv-sel); }

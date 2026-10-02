@@ -1,16 +1,15 @@
 // PANTALLA 1: Administrador de Tarifas Transporte — SIT EBEMA
 // Sub-módulos: Peajes, Combustibles y Rendimientos, Seguros y Permisos,
 // Variables Generales y Motor de Costo (ZCAP) con exportación CSV.
-import { getDatabase, saveDatabase, getCentreName, getTariffConfig, getClientTariffConfig, truckCapKg, getOrigenGroups, getGroupRepId, buildTruckTypes, TRUCK_BASE_TYPES, loadHistorico, loadHistoricoFlete360, deleteRow } from './data.js?v=202610021918';
-import { CAP_LIST, truckTypesWithCap, calcularMatrizCostos, calcularCostoRuta } from './tarifas-engine.js?v=202610021918';
+import { getDatabase, saveDatabase, getCentreName, getTariffConfig, getClientTariffConfig, truckCapKg, getOrigenGroups, getGroupRepId, buildTruckTypes, TRUCK_BASE_TYPES, loadHistorico, loadHistoricoFlete360, deleteRow } from './data.js?v=202610021913';
+import { CAP_LIST, truckTypesWithCap, calcularMatrizCostos, calcularCostoRuta } from './tarifas-engine.js?v=202610021913';
 import { formatCLP, parseCSV, showAlert, toCSV, downloadFile, escapeHtml } from './utils.js';
-import { supabase } from './supabase-client.js?v=202610021918';
-import { getField } from './zonas-transporte.js?v=202610021918';
-import { renderZcapView, calcZcapRow } from './zcap.js?v=202610021918';
-import { can } from './permisos.js?v=202610021918';
-import { renderPeajesV2, setPeajesTab, renderCombustiblesV2, renderSegurosV2, renderCostosExtrasV2, renderVariablesV2, renderMotorV2 } from './tarifas-insumos.js?v=202610021918';
-import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, textoImpacto, setParamPill, usuarioSesion } from './tarifas-ui.js?v=202610021918';
-import { confirmar } from './confirmar.js?v=202610021918';
+import { supabase } from './supabase-client.js?v=202610021913';
+import { getField } from './zonas-transporte.js?v=202610021913';
+import { renderZcapView, calcZcapRow } from './zcap.js?v=202610021913';
+import { can } from './permisos.js?v=202610021913';
+import { renderPeajesV2, setPeajesTab, renderCombustiblesV2, renderSegurosV2, renderCostosExtrasV2, renderVariablesV2, renderMotorV2 } from './tarifas-insumos.js?v=202610021913';
+import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, textoImpacto, setParamPill, usuarioSesion } from './tarifas-ui.js?v=202610021913';
 
 // FIX: Escuchar errores de sincronización con Supabase y notificar al usuario
 window.addEventListener('db_sync_error', (e) => {
@@ -460,8 +459,8 @@ function renderCostosExtras(content, db, cfg) {
     });
   });
   content.querySelectorAll('.ce-eliminar').forEach(btn => {
-    btn.addEventListener('click', async () => {
-      if (!await confirmar('¿Eliminar este ítem de costo extra?')) return;
+    btn.addEventListener('click', () => {
+      if (!confirm('¿Eliminar este ítem de costo extra?')) return;
       const ceId = btn.dataset.ceId;
       db.extraCosts = db.extraCosts.filter(c => c.id !== ceId);
       saveDatabase(db, { syncOnly: ['extraCosts'] });
@@ -1680,7 +1679,7 @@ async function calcularPeajes(content, db, cfg, rutas, { force = false, renderFn
     ? `\n${enCache} ruta(s) ya tienen caché válida y serán omitidas.\nUsa el botón ↺ por fila para forzar actualización de una ruta específica.`
     : '';
 
-  if (!await confirmar(`Se calcularán peajes via TollGuru para ${targets.length} ruta(s).${avisoCoords}${avisoCache}\n\n¿Continuar?`)) {
+  if (!confirm(`Se calcularán peajes via TollGuru para ${targets.length} ruta(s).${avisoCoords}${avisoCache}\n\n¿Continuar?`)) {
     return;
   }
 
@@ -1780,7 +1779,7 @@ async function calcularKm(content, db, cfg, rutas) {
 
   const avisoCache = yaConKm > 0 ? `\n${yaConKm} ruta(s) ya tienen KM y serán omitidas (cache).` : '';
   const avisoCoords = sinCoords > 0 ? `\n${sinCoords} ruta(s) sin coordenadas serán omitidas.` : '';
-  if (!await confirmar(`Se calcularán KMs (vía Google Distance Matrix) para ${targets.length} ruta(s).${avisoCache}${avisoCoords}\n\n¿Continuar?`)) return;
+  if (!confirm(`Se calcularán KMs (vía Google Distance Matrix) para ${targets.length} ruta(s).${avisoCache}${avisoCoords}\n\n¿Continuar?`)) return;
 
   const modal = createProgressModal(targets.length);
   let cancelado = false;

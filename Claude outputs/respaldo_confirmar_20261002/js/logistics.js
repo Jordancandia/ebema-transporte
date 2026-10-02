@@ -1,7 +1,6 @@
-import { getDatabase, saveDatabase, deleteRow } from './data.js?v=202610021918';
+import { getDatabase, saveDatabase, deleteRow } from './data.js?v=202610021913';
 import { showAlert, geocodeAddress, escapeHtml, toCSV, downloadFile } from './utils.js';
 import { GRUPOS_ORIGEN } from './chile-geo.js';
-import { confirmar } from './confirmar.js?v=202610021918';
 
 let currentCdSearchTerm = '';
 
@@ -425,7 +424,7 @@ function renderCdCards(list, parentContainer, resetGeoStep) {
 
   // --- Eliminar centro (con protección de integridad) ---
   container.querySelectorAll('.btn-delete-cd').forEach(btn => {
-    btn.addEventListener('click', async (e) => {
+    btn.addEventListener('click', (e) => {
       e.stopPropagation();
       const id = e.currentTarget.getAttribute('data-id');
       const db = getDatabase();
@@ -445,7 +444,7 @@ function renderCdCards(list, parentContainer, resetGeoStep) {
         return;
       }
 
-      if (!await confirmar(`¿Eliminar definitivamente el centro "${cd.nombre}" (${cd.id})?`)) return;
+      if (!confirm(`¿Eliminar definitivamente el centro "${cd.nombre}" (${cd.id})?`)) return;
 
       db.logisticsCentres = db.logisticsCentres.filter(c => c.id !== id);
       saveDatabase(db, { syncOnly: ['logisticsCentres'] });

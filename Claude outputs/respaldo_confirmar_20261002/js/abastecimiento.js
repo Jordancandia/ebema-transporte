@@ -10,12 +10,11 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610021918';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610021918';
-import { getDatabase } from './data.js?v=202610021918';
+import { supabase } from './supabase-client.js?v=202610021913';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610021913';
+import { getDatabase } from './data.js?v=202610021913';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610021918';
-import { confirmar } from './confirmar.js?v=202610021918';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610021913';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -1744,12 +1743,12 @@ const V2 = {
         : r._directo ? 'CD-Cliente (camión directo)' : `CD-Sucursal (consolida · cliente suma ${fmtNum(r._ton_cliente || r._ton_num, 1)} t)`;
       const marcar = (tipo, lbl, icon, primary) => ({ label: lbl, icon, primary, run: async row => {
         const txtT = tipo === 'CD-CLIENTE' ? 'camión directo CD-Cliente' : 'CONSOLIDABLE (sube con carga a sucursal)';
-        if (!await confirmar(`¿Marcar el pedido ${row.doc_ventas} como ${txtT}?\n\nAjusta el Plan de Carga hasta que se vuelva a la regla automática.`)) return null;
+        if (!confirm(`¿Marcar el pedido ${row.doc_ventas} como ${txtT}?\n\nAjusta el Plan de Carga hasta que se vuelva a la regla automática.`)) return null;
         return (await setVentaDirectoManual(row.doc_ventas, tipo)) ? (showAlert(`Pedido marcado como ${tipo === 'CD-CLIENTE' ? 'CD-Cliente' : 'Consolidable'}`, 'success'), { recargar: true }) : null;
       } });
       const acciones = !puedeForzar ? [] : [
         r._manual ? { label: 'Volver a regla automática', icon: 'undo', run: async row => {
-          if (!await confirmar(`¿Quitar el tipo de entrega manual del pedido ${row.doc_ventas}?\n\nVuelve a evaluarse con la regla del 85% por cliente.`)) return null;
+          if (!confirm(`¿Quitar el tipo de entrega manual del pedido ${row.doc_ventas}?\n\nVuelve a evaluarse con la regla del 85% por cliente.`)) return null;
           return (await setVentaDirectoManual(row.doc_ventas, null)) ? (showAlert('Pedido vuelve a la regla automática', 'success'), { recargar: true }) : null;
         } } : null,
         r._directo ? marcar('CONSOLIDABLE', 'Marcar como Consolidable', 'move_down', true)
@@ -1827,7 +1826,7 @@ const V2 = {
       };
       const acciones = !puede ? [] : coord ? [
         { label: 'Anular coordinación', icon: 'undo', run: async (row, ctx) => {
-          if (!await confirmar(`¿Anular la coordinación de la OC ${row.doc_compr}?\n\nVuelve a «Sin coordinar» y se limpian fecha, dirección y contacto.`)) return null;
+          if (!confirm(`¿Anular la coordinación de la OC ${row.doc_compr}?\n\nVuelve a «Sin coordinar» y se limpian fecha, dirección y contacto.`)) return null;
           return cambiarEstado(row, 'no_coordinado', ctx);
         } },
         { label: 'Editar coordinación', icon: 'edit_calendar', primary: true, run: (row, ctx) => cambiarEstado(row, 'coordinado', ctx) },
@@ -1962,13 +1961,13 @@ const V2 = {
       const recalcular = async (row, ctx) => { await V2.pedidos_traslados.onPlanChange(ctx._rows, ctx); return { redibujar: true }; };
       const acciones = !puede ? [] : r._plan_inc ? [
         { label: 'Quitar inclusión manual', icon: 'undo', run: async (row, ctx) => {
-          if (!await confirmar(`¿Quitar la inclusión manual del material ${row.material} (pedido ${row.doc_compr})?\n\nVuelve a la prioridad automática.`)) return null;
+          if (!confirm(`¿Quitar la inclusión manual del material ${row.material} (pedido ${row.doc_compr})?\n\nVuelve a la prioridad automática.`)) return null;
           if (!(await quitarInclusionPlan(row.doc_compr, row.material))) return null;
           showAlert('Inclusión manual quitada', 'success'); return recalcular(row, ctx);
         } },
       ] : (!r._en_plan && r._plan !== 'EXCLUIDO') ? [
         { label: 'Incluir en plan de carga', icon: 'playlist_add', primary: true, run: async (row, ctx) => {
-          if (!await confirmar(`¿Incluir hoy en el Plan de Carga el material ${row.material} del pedido ${row.doc_compr}?\n\nEntra al camión CD antes que el resto de los traslados y puede dejar fuera otras líneas. Vale sólo para el plan de hoy.`)) return null;
+          if (!confirm(`¿Incluir hoy en el Plan de Carga el material ${row.material} del pedido ${row.doc_compr}?\n\nEntra al camión CD antes que el resto de los traslados y puede dejar fuera otras líneas. Vale sólo para el plan de hoy.`)) return null;
           if (!(await incluirEnPlan(row.doc_compr, row.material))) return null;
           showAlert('Línea incluida en el Plan de Carga', 'success'); return recalcular(row, ctx);
         } },
@@ -2126,7 +2125,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610021918');
+    const m = await import('./ind-plan-carga.js?v=202610021913');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
@@ -3919,7 +3918,7 @@ async function renderVistaTabla(stage, cfg, modeIdx = 0) {
         e.stopPropagation();
         const [tipo, doc, material] = btn.dataset.exclExcluir.split('|');
         const etiqueta = material ? `el material ${material} de la posición ${doc}` : `la posición ${doc} completa`;
-        if (!await confirmar(`¿Excluir del Plan de Carga ${etiqueta}?\n\nSe mantiene disponible para futuros planes hasta que la reactives.`)) return;
+        if (!confirm(`¿Excluir del Plan de Carga ${etiqueta}?\n\nSe mantiene disponible para futuros planes hasta que la reactives.`)) return;
         const ok = await excluirDelPlan(tipo, doc, material || null, 'Excluido desde ' + cfg.titulo);
         if (ok) { showAlert('Excluido del Plan de Carga', 'success'); exclusionesPlan = await loadExclusionesPlan(); draw(); }
       }));
@@ -4174,7 +4173,7 @@ function openProveedorModal(prov, redraw) {
 }
 
 async function deleteProveedor(id, redraw) {
-  if (!await confirmar('¿Eliminar el proveedor y todas sus direcciones de fabrica?')) return;
+  if (!confirm('¿Eliminar el proveedor y todas sus direcciones de fabrica?')) return;
   const { error } = await supabase.from('abast_proveedores').delete().eq('id', id);
   if (error) { showAlert('Error al eliminar: ' + error.message, 'error'); return; }
   if (selectedProveedorId === id) selectedProveedorId = null;
@@ -4220,7 +4219,7 @@ function openDireccionModal(proveedorId, dir, redraw) {
 }
 
 async function deleteDireccion(id, redraw) {
-  if (!await confirmar('¿Eliminar esta direccion de fabrica?')) return;
+  if (!confirm('¿Eliminar esta direccion de fabrica?')) return;
   const { error } = await supabase.from('abast_proveedor_direcciones').delete().eq('id', id);
   if (error) { showAlert('Error al eliminar: ' + error.message, 'error'); return; }
   showAlert('Direccion eliminada', 'success');
@@ -4405,7 +4404,7 @@ function wireCalendarioV2(stage) {
   const redraw = () => drawCalendarioV2(stage);
   stage.querySelectorAll('[data-origen]').forEach(btn => btn.addEventListener('click', async () => {
     if (btn.dataset.origen === calOrigen) return;
-    if (CAL_V2.dirty && !await confirmar('Hay cambios sin guardar en el calendario. ¿Descartarlos y cambiar de centro?')) return;
+    if (CAL_V2.dirty && !confirm('Hay cambios sin guardar en el calendario. ¿Descartarlos y cambiar de centro?')) return;
     calOrigen = btn.dataset.origen;
     await renderCalendario(stage);
   }));
@@ -4449,7 +4448,7 @@ function wireCalendarioV2(stage) {
     CAL_V2.feriados = await loadFeriados(); redraw();
   });
   stage.querySelectorAll('[data-fer-del]').forEach(btn => btn.addEventListener('click', async () => {
-    if (!await confirmar('¿Eliminar este feriado?')) return;
+    if (!confirm('¿Eliminar este feriado?')) return;
     const { error } = await supabase.from('abast_feriados').delete().eq('id', btn.dataset.ferDel);
     if (error) { showAlert('Error al eliminar feriado: ' + error.message, 'error'); return; }
     CAL_V2.feriados = await loadFeriados(); redraw();

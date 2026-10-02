@@ -32,7 +32,6 @@ export function tonHtml(n) {
 }
 
 // Encabezado del shell: fecha y hora de la última actualización SAP de la vista
-import { confirmar } from './confirmar.js?v=202610021918';
 export function setUltimaActualizacion(ts) {
   const el = document.getElementById('sv-upd');
   if (!el) return;
@@ -237,7 +236,7 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
     const ex = active.excluir;
     const doc = ex.doc(r), mat = typeof ex.material === 'function' ? ex.material(r) : null;
     const etiqueta = mat ? `el material ${mat} del documento ${doc}` : `el documento ${doc} completo`;
-    if (!await confirmar(`¿Excluir del Plan de Carga ${etiqueta}?\n\nLa exclusión vale sólo para el plan de hoy.`)) return false;
+    if (!confirm(`¿Excluir del Plan de Carga ${etiqueta}?\n\nLa exclusión vale sólo para el plan de hoy.`)) return false;
     if (!(await deps.excluirDelPlan(ex.tipo, doc, mat || null, 'Excluido desde ' + AV.titulo))) return false;
     deps.showAlert('Excluido del Plan de Carga', 'success');
     return true;
@@ -355,7 +354,7 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
         const ex = active.excluir;
         const doc = ex.doc(r), mat = typeof ex.material === 'function' ? ex.material(r) : null;
         const etiqueta = mat ? `el material ${mat} del documento ${doc}` : `el documento ${doc} completo`;
-        if (!await confirmar(`¿Excluir del Plan de Carga ${etiqueta}?\n\nLa exclusión vale sólo para el plan de hoy.`)) return;
+        if (!confirm(`¿Excluir del Plan de Carga ${etiqueta}?\n\nLa exclusión vale sólo para el plan de hoy.`)) return;
         if (await deps.excluirDelPlan(ex.tipo, doc, mat || null, 'Excluido desde ' + AV.titulo)) {
           deps.showAlert('Excluido del Plan de Carga', 'success');
           exclusiones = await deps.loadExclusionesPlan();

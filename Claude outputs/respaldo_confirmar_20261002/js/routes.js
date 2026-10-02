@@ -1,9 +1,8 @@
-import { getDatabase, saveDatabase, getCentreName, deleteRow } from './data.js?v=202610021918';
+import { getDatabase, saveDatabase, getCentreName, deleteRow } from './data.js?v=202610021913';
 import { generateSapCode, parseCSV, showAlert, geocodeAddress, escapeHtml, toCSV, downloadFile } from './utils.js';
-import { renderLogisticsView } from './logistics.js?v=202610021918';
-import { renderZonasView, getField, normalizeRegionName, standardizeComuna } from './zonas-transporte.js?v=202610021918';
+import { renderLogisticsView } from './logistics.js?v=202610021913';
+import { renderZonasView, getField, normalizeRegionName, standardizeComuna } from './zonas-transporte.js?v=202610021913';
 import { REGIONES, COMUNAS_POR_REGION, TIPOS_ZONA, GRUPOS_ORIGEN, findRegionByComuna } from './chile-geo.js';
-import { confirmar } from './confirmar.js?v=202610021918';
 
 // Estilos de la característica especial de la ruta (usada por el motor de tarifas)
 const CARACT_STYLES = {
@@ -1081,7 +1080,7 @@ function renderRutasSubview(container) {
     const activeDb = getDatabase();
     const pending = activeDb.routes.filter(r => !r.georef_estado);
     if (pending.length === 0) { showAlert('No hay rutas pendientes de georreferenciación.', 'error'); return; }
-    if (!await confirmar(`¿Georreferenciar ${pending.length} rutas pendientes? Las comunas conocidas se resuelven al instante desde tabla local.`)) return;
+    if (!confirm(`¿Georreferenciar ${pending.length} rutas pendientes? Las comunas conocidas se resuelven al instante desde tabla local.`)) return;
 
     let done = 0, ok = 0, manual = 0;
     showAlert(`Procesando ${pending.length} rutas...`, 'info');
@@ -1401,14 +1400,14 @@ function renderRoutesTable(routesList) {
   });
 
   tbody.querySelectorAll('.btn-delete-route').forEach(btn => {
-    btn.addEventListener('click', async (e) => {
+    btn.addEventListener('click', (e) => {
       const id = e.currentTarget.getAttribute('data-id');
       const db = getDatabase();
       const idx = db.routes.findIndex(item => item.id === id);
 
       if (idx !== -1) {
         const r = db.routes[idx];
-        if (!await confirmar(`¿Eliminar la ruta ${r.codigo} (${r.denominacion || r.destino})? Esta acción no se puede deshacer.`)) return;
+        if (!confirm(`¿Eliminar la ruta ${r.codigo} (${r.denominacion || r.destino})? Esta acción no se puede deshacer.`)) return;
         db.routes.splice(idx, 1);
         saveDatabase(db, { syncOnly: ['routes'] });
         deleteRow('routes', r.id).catch(err => console.error('Error al borrar ruta en Supabase:', err.message || err));

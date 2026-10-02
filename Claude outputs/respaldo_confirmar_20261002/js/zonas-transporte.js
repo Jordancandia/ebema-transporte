@@ -1,7 +1,6 @@
-import { getDatabase, saveDatabase, deleteRow } from './data.js?v=202610021918';
+import { getDatabase, saveDatabase, deleteRow } from './data.js?v=202610021913';
 import { parseCSV, showAlert, escapeHtml, toCSV, downloadFile } from './utils.js';
 import { REGIONES, COMUNAS_POR_REGION, TIPOS_ZONA, findRegionByComuna } from './chile-geo.js';
-import { confirmar } from './confirmar.js?v=202610021918';
 
 let editingZonaId = null;
 let currentFiltroRegionZona = '';
@@ -760,12 +759,12 @@ function renderZonasTable(zonasList) {
   });
 
   tbody.querySelectorAll('.btn-delete-zona').forEach(btn => {
-    btn.addEventListener('click', async (e) => {
+    btn.addEventListener('click', (e) => {
       const id = e.currentTarget.getAttribute('data-id');
       const db = getDatabase();
       const idx = (db.transportZones || []).findIndex(item => item.zona === id);
       if (idx !== -1) {
-        if (!await confirmar(`¿Eliminar la zona ${id}? Esta acción no se puede deshacer.`)) return;
+        if (!confirm(`¿Eliminar la zona ${id}? Esta acción no se puede deshacer.`)) return;
         db.transportZones.splice(idx, 1);
         saveDatabase(db, { syncOnly: ['transportZones'] });
         deleteRow('transportZones', id).catch(err => console.error('Error al borrar zona en Supabase:', err.message || err));

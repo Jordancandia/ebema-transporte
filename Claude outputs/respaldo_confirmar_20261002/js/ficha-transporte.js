@@ -1,6 +1,5 @@
-import { getDatabase, saveDatabase, getCentreName, getOrigenGroups, calcEjes, deleteRow, deleteRows } from './data.js?v=202610021918';
+import { getDatabase, saveDatabase, getCentreName, getOrigenGroups, calcEjes, deleteRow, deleteRows } from './data.js?v=202610021913';
 import { formatRut, showAlert, escapeHtml } from './utils.js';
-import { confirmar } from './confirmar.js?v=202610021918';
 
 // Ficha del Transportista — SIT EBEMA
 // Estructura: EMPRESA → CAMIONES (patentes con documentación y valores) → CHOFERES.
@@ -231,10 +230,10 @@ export function renderFichaTransporte(container, transportId) {
     try { sesion = JSON.parse(localStorage.getItem('ebema_user_session')); } catch (e) { /* ignorar */ }
     if (sesion && sesion.tipo === 'proveedor') {
       if (title) title.textContent = 'Portal de Proveedores';
-      import('./provider-portal.js?v=202610021918').then(m => m.renderPortalHome(stage));
+      import('./provider-portal.js?v=202610021913').then(m => m.renderPortalHome(stage));
     } else {
       if (title) title.textContent = 'Gestión de Transportes';
-      import('./transports.js?v=202610021918').then(m => m.renderTransportsView(stage));
+      import('./transports.js?v=202610021913').then(m => m.renderTransportsView(stage));
     }
   });
 
@@ -373,7 +372,7 @@ export function renderFichaTransporte(container, transportId) {
   });
 
   // Guardar / eliminar / subir archivo por camión (delegado)
-  document.getElementById('camiones-cards').addEventListener('click', async e => {
+  document.getElementById('camiones-cards').addEventListener('click', e => {
     const saveBtn = e.target.closest('.btn-save-camion');
     const delBtn = e.target.closest('.btn-del-camion');
     const upBtn = e.target.closest('.btn-upload-doc');
@@ -386,7 +385,7 @@ export function renderFichaTransporte(container, transportId) {
 
     if (delBtn) {
       const camionId = delBtn.getAttribute('data-camion');
-      if (!await confirmar('¿Eliminar este camión y su documentación?')) return;
+      if (!confirm('¿Eliminar este camión y su documentación?')) return;
       const database = getDatabase();
       const obj = getT(database);
       const camionBorrado = (obj.camiones || []).find(c => c.id === camionId);
