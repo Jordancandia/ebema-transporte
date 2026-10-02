@@ -96,10 +96,7 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
 
   // Exclusiones del Plan de Carga (acción del panel lateral, sólo perfiles con permiso)
   const puedeExcluir = !!(active.excluir && deps.can('excluir'));
-  // excluirEnFila (2-oct-2026): estado + botón Excluir/Reactivar en la fila principal
-  // (columna «Plan de carga») en vez del panel lateral de detalle.
-  const enFila = !!(active.excluir && AV.excluirEnFila);
-  let exclusiones = (puedeExcluir || enFila) ? await deps.loadExclusionesPlan() : [];
+  let exclusiones = puedeExcluir ? await deps.loadExclusionesPlan() : [];
   function exclusionDe(r) {
     const ex = active.excluir; if (!ex) return null;
     const doc = String(ex.doc(r) ?? '').trim();
@@ -198,7 +195,7 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
     const MAX = 1500;
     const shown = filt.slice(0, MAX);
     const selId = st.drawer;
-    const cols = enFila ? AV.cols.concat([{ label: 'Plan de carga', html: r => celdaPlan(r) }]) : AV.cols;
+    const cols = AV.cols;
     const body = shown.length ? shown.map(r => {
       const id = rowId(r);
       const edge = AV.edge ? AV.edge(r) : null;
@@ -221,31 +218,6 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
     </div>`;
     wire(filt);
     if (st.drawer) openDrawer(st.drawer);
-  }
-
-  function celdaPlan(r) {
-    const ex = exclusionDe(r);
-    const pill = ex ? '<span class="sv-pill bad"><i></i>Excluida hoy</span>' : '<span class="sv-pill ok"><i></i>En plan</span>';
-    if (!puedeExcluir) return pill;
-    const btn = ex
-      ? `<button class="sv-btn" data-fila-reac="${esc(r.__rid)}" title="Reactivar en el Plan de Carga" style="padding:2px 8px;font-size:11px"><span class="material-symbols-outlined">visibility</span>Reactivar</button>`
-      : `<button class="sv-btn" data-fila-excl="${esc(r.__rid)}" title="Excluir del Plan de Carga" style="padding:2px 8px;font-size:11px;color:#b91c1c"><span class="material-symbols-outlined">visibility_off</span>Excluir</button>`;
-    return `<div style="display:flex;align-items:center;gap:6px;white-space:nowrap">${pill}${btn}</div>`;
-  }
-  async function excluirFila(r) {
-    const ex = active.excluir;
-    const doc = ex.doc(r), mat = typeof ex.material === 'function' ? ex.material(r) : null;
-    const etiqueta = mat ? `el material ${mat} del documento ${doc}` : `el documento ${doc} completo`;
-    if (!confirm(`¿Excluir del Plan de Carga ${etiqueta}?\n\nLa exclusión vale sólo para el plan de hoy.`)) return false;
-    if (!(await deps.excluirDelPlan(ex.tipo, doc, mat || null, 'Excluido desde ' + AV.titulo))) return false;
-    deps.showAlert('Excluido del Plan de Carga', 'success');
-    return true;
-  }
-  async function reactivarFila(r) {
-    const ex = exclusionDe(r);
-    if (!ex || !(await deps.reactivarEnPlan(Number(ex.id)))) return false;
-    deps.showAlert('Reactivado en el Plan de Carga', 'success');
-    return true;
   }
 
   function refocus(sel) {
@@ -279,16 +251,6 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
     stage.querySelector('[data-dto]')?.addEventListener('change', e => { st.dTo = e.target.value; draw(); });
     stage.querySelector('[data-refrescar]')?.addEventListener('click', () => { deps.clearRawCache(); renderTablaV2(stage, cfg, deps, viewKey); });
     stage.querySelector('[data-csv]')?.addEventListener('click', () => deps.exportarCSV(active, filt));
-    const accFila = (sel, fn) => stage.querySelectorAll(sel).forEach(b => b.addEventListener('click', async e => {
-      e.stopPropagation();
-      const r = rowsAll.find(x => rowId(x) === (b.dataset.filaExcl || b.dataset.filaReac));
-      if (!r || !(await fn(r))) return;
-      exclusiones = await deps.loadExclusionesPlan();
-      if (AV.onPlanChange) await AV.onPlanChange(rowsAll, ctx);
-      draw();
-    }));
-    accFila('[data-fila-excl]', excluirFila);
-    accFila('[data-fila-reac]', reactivarFila);
     stage.querySelectorAll('tbody tr[data-row]').forEach(tr => tr.addEventListener('click', () => {
       st.drawer = tr.dataset.row;
       stage.querySelectorAll('tbody tr.is-sel').forEach(x => x.classList.remove('is-sel'));
@@ -323,7 +285,7 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
 
     // Acciones: propias de la vista + excluir/reactivar del Plan de Carga
     const acciones = (d.acciones || []).slice();
-    if (puedeExcluir && !enFila) {
+    if (puedeExcluir) {
       const ex = exclusionDe(r);
       acciones.push(ex
         ? { id: 'reactivar', label: 'Reactivar en el plan', icon: 'visibility', primary: false }

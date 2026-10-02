@@ -27,7 +27,7 @@ export const PERFILES = {
   OWNER: {
     label: 'Owner',
     menu: null,
-    acciones: ['editar', 'eliminar', 'descargar', 'descargar_plan', 'excluir', 'incluir_plan', 'forzar_cd_cliente', 'coordinar_retiro', 'invitar', 'descargar_bd'],
+    acciones: ['editar', 'eliminar', 'descargar', 'descargar_plan', 'excluir', 'incluir_plan', 'forzar_cd_cliente', 'coordinar_retiro', 'invitar', 'descargar_bd', 'ajustar_plan'],
     alcance: 'TODOS',
   },
   PLANNER_OPERACIONES: {
@@ -49,7 +49,7 @@ export const PERFILES = {
       'abastecimiento:ind_plan_carga',
     ],
     // 30-sep-2026: sin Excluir (sólo OWNER) y alcance a todos los centros por defecto.
-    acciones: ['editar', 'descargar', 'descargar_plan', 'coordinar_retiro'],
+    acciones: ['editar', 'descargar', 'descargar_plan', 'coordinar_retiro', 'ajustar_plan'],
     alcance: 'TODOS',
   },
   ADMINISTRADOR_DEPOSITO: {

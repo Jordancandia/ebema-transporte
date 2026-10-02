@@ -1,10 +1,6 @@
-import { getDatabase, saveDatabase, initDatabase, loadRoutesData } from './data.js?v=202610021913';
-import { supabase } from './supabase-client.js?v=202610021913';
-// Cache-busting automatico: cada carga de pagina pide los modulos con un
-// timestamp nuevo, para que nunca quede una version vieja pegada en cache
-// del navegador tras un despliegue (bug: 'se recargo y se perdieron los
-// datos' porque el ?v= quedaba fijo y el navegador servia el JS antiguo).
-const BUILD_V = Date.now();
+import { getDatabase, saveDatabase, initDatabase, loadRoutesData, loadHistoricoFlete360 } from './data.js?v=202609302307';
+import { supabase } from './supabase-client.js?v=202609302307';
+import { setSesionPermisos, puedeVerMenu, can, esSoloLectura, PERFILES } from './permisos.js?v=202609302307';
 // ── Módulos cargados bajo demanda (lazy) — se cachean tras la primera carga ──
 const _mod = {};
 async function loadMod(key, modPath) {
@@ -13,9 +9,9 @@ async function loadMod(key, modPath) {
 }
 // Pre-warm: carga indicadores y abastecimiento en background tras login
 function prewarmMods() {
-  setTimeout(() => loadMod('ind',   `./indicadores.js?v=${BUILD_V}`), 600);
+  setTimeout(() => loadMod('ind',   './indicadores.js?v=202609302307'), 600);
   setTimeout(() => loadRoutesData(), 800);  // pre-fetch tablas pesadas en background
-  setTimeout(() => loadMod('abast', `./abastecimiento.js?v=${BUILD_V}`), 2000);
+  setTimeout(() => loadMod('abast', './abastecimiento.js?v=202609302307'), 2000);
 }
 import { showAlert, formatRut, validateRut, formatPhone } from './utils.js';
 
@@ -220,7 +216,8 @@ async function checkSession() {
       return;
     }
 
-    currentSession = { email, name: u.name, role: u.role, tipo: 'funcionario' };
+    currentSession = { email, name: u.name, role: u.role, tipo: 'funcionario', centros: Array.isArray(u.centrosAsignados) ? u.centrosAsignados : [] };
+    setSesionPermisos(currentSession.role, currentSession.centros);
     localStorage.setItem(SESSION_KEY, JSON.stringify(currentSession));
   } catch (err) {
     console.error('Error verificando sesión:', err);
@@ -238,7 +235,7 @@ function renderApp() {
   if (!currentSession) {
     renderAuthView();
   } else if (currentSession.tipo === 'proveedor') {
-    import(`./provider-portal.js?v=${BUILD_V}`).then(m => m.renderProviderShell(currentSession, handleLogout));
+    import('./provider-portal.js?v=202609302307').then(m => m.renderProviderShell(currentSession, handleLogout));
   } else {
     renderDashboardShell();
   }
@@ -413,28 +410,6 @@ function renderLoginView() {
             </button>
           </form>
 
-          <div id="google-section">
-          <!-- Separador -->
-          <div style="display:flex;align-items:center;gap:12px;margin-top:22px">
-            <div style="flex:1;height:1px;background:#e1e3e4"></div>
-            <span style="font-size:12px;color:#5c5f61">o</span>
-            <div style="flex:1;height:1px;background:#e1e3e4"></div>
-          </div>
-
-          <!-- Botón Google -->
-          <button
-            type="button"
-            id="btn-login-google"
-            style="width:100%;margin-top:18px;padding:12px;background:white;color:#191c1d;border:1.5px solid #e1e3e4;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;transition:border-color 0.2s,background 0.2s;display:flex;align-items:center;justify-content:center;gap:10px"
-            onmouseover="this.style.borderColor='#c5c7c9';this.style.background='#f8f9fa'"
-            onmouseout="this.style.borderColor='#e1e3e4';this.style.background='white'"
-          >
-            <svg width="18" height="18" viewBox="0 0 48 48"><path fill="#FFC107" d="M43.611 20.083H42V20H24v8h11.303c-1.649 4.657-6.08 8-11.303 8-6.627 0-12-5.373-12-12s5.373-12 12-12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4 12.955 4 4 12.955 4 24s8.955 20 20 20 20-8.955 20-20c0-1.341-.138-2.65-.389-3.917z"/><path fill="#FF3D00" d="m6.306 14.691 6.571 4.819C14.655 15.108 18.961 12 24 12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4 16.318 4 9.656 8.337 6.306 14.691z"/><path fill="#4CAF50" d="M24 44c5.166 0 9.86-1.977 13.409-5.192l-6.19-5.238A11.91 11.91 0 0 1 24 36c-5.202 0-9.619-3.317-11.283-7.946l-6.522 5.025C9.505 39.556 16.227 44 24 44z"/><path fill="#1976D2" d="M43.611 20.083H42V20H24v8h11.303a12.04 12.04 0 0 1-4.087 5.571l.003-.002 6.19 5.238C36.971 39.205 44 34 44 24c0-1.341-.138-2.65-.389-3.917z"/></svg>
-            Continuar con Google
-          </button>
-          <p style="font-size:11px;color:#5c5f61;text-align:center;margin-top:8px">Solo cuentas corporativas @ebema.cl</p>
-          </div>
-
           <!-- Footer -->
           <div style="margin-top:24px;padding-top:20px;border-top:1px solid #e9bcb6;text-align:center">
             <p style="font-size:13px;color:#5c5f61">¿Es proveedor y no tiene cuenta? <button id="link-go-register" style="color:#b5000b;background:none;border:none;cursor:pointer;font-weight:700;font-size:13px" onmouseover="this.style.textDecoration='underline'" onmouseout="this.style.textDecoration='none'">Regístrese como Proveedor de Servicio</button></p>
@@ -455,7 +430,6 @@ function renderLoginView() {
   let loginType = 'funcionario';
   const tabFunc = document.getElementById('tab-funcionario');
   const tabProv = document.getElementById('tab-proveedor');
-  const googleSection = document.getElementById('google-section');
   const emailLabel = document.getElementById('login-email-label');
   const emailInput = document.getElementById('login-email');
 
@@ -473,12 +447,10 @@ function renderLoginView() {
     };
     if (tipo === 'funcionario') {
       activeStyle(tabFunc); inactiveStyle(tabProv);
-      googleSection.style.display = 'block';
       emailLabel.textContent = 'Correo Corporativo';
       emailInput.placeholder = 'usuario@ebema.cl';
     } else {
       activeStyle(tabProv); inactiveStyle(tabFunc);
-      googleSection.style.display = 'none';
       emailLabel.textContent = 'Correo del Proveedor';
       emailInput.placeholder = 'contacto@suempresa.cl';
     }
@@ -497,24 +469,6 @@ function renderLoginView() {
       input.type = 'password';
       icon.textContent = 'visibility';
     }
-  });
-
-  // Login con Google (Workspace de EBEMA)
-  document.getElementById('btn-login-google').addEventListener('click', async () => {
-    const { error } = await supabase.auth.signInWithOAuth({
-      provider: 'google',
-      options: {
-        redirectTo: window.location.origin + window.location.pathname,
-        queryParams: {
-          hd: 'ebema.cl',           // Sugerir solo cuentas del dominio EBEMA
-          prompt: 'select_account'  // Permitir elegir la cuenta
-        }
-      }
-    });
-    if (error) {
-      showAlert('No se pudo iniciar con Google: ' + error.message, 'error');
-    }
-    // Si no hay error, el navegador redirige a Google y vuelve con sesión
   });
 
   document.getElementById('link-go-register').addEventListener('click', () => {
@@ -982,7 +936,7 @@ function renderRegisterView() {
       btn.disabled = false;
     };
 
-    if (email.endsWith('@ebema.cl')) return showErr('Este registro es solo para proveedores externos. Los funcionarios EBEMA ingresan con Google.');
+    if (email.endsWith('@ebema.cl')) return showErr('Este registro es solo para proveedores externos. Los funcionarios EBEMA ingresan con su correo corporativo en la pestaña Funcionarios EBEMA.');
     if (!validateRut(rut)) return showErr('El RUT de la empresa no es válido');
     if (pass.length < 6) return showErr('La contraseña debe tener mínimo 6 caracteres');
     if (pass !== confirmPass) return showErr('Las contraseñas no coinciden');
@@ -1186,42 +1140,24 @@ function renderRecoverView() {
 }
 
 // ==========================================================================
-// PERMISOS POR ROL
-// null = acceso total; array = grupos/tabs permitidos (por tab o group key)
+// PERMISOS POR PERFIL — matriz central en js/permisos.js (25-sep-2026)
+// Lo que un perfil no puede ver/hacer se oculta, sin mensajes.
 // ==========================================================================
-const READ_ONLY_ROLES = ['AGENTE_COMERCIAL', 'ADMINISTRADOR_DEPOSITO'];
-
-const ROLE_ALLOWED_GROUPS = {
-  'OWNER':                  null,
-  'ADMINISTRADOR_DEPOSITO': ['home', 'rates', 'proveedores', 'rutas', 'abastecimiento', 'indicadores', 'flete-tercero'],
-  'AGENTE_COMERCIAL':       ['rates', 'proveedores', 'rutas', 'abastecimiento'],
-  'TRANSPORTISTA':          null,
-  'CHOFER':                 null,
-};
-
-// Devuelve true si el rol tiene acceso al item del menú
 function roleCanSeeEntry(entry) {
-  const role = currentSession?.role || 'AGENTE_COMERCIAL';
-  const allowed = ROLE_ALLOWED_GROUPS[role];
-  if (!allowed) return true; // OWNER / TRANSPORTISTA / CHOFER ven todo
-  const key = entry.group || entry.tab;
-  return allowed.includes(key);
+  return puedeVerMenu(entry.group || entry.tab);
+}
+function childVisible(entry, c) {
+  return puedeVerMenu(entry.group, c.sub);
 }
 
 // Display name para el topbar (sin guiones bajos ni mayúsculas crudas)
-const ROLE_DISPLAY = {
-  'OWNER': 'Owner',
-  'ADMINISTRADOR_DEPOSITO': 'Admin. Depósito',
-  'AGENTE_COMERCIAL': 'Agente',
-  'TRANSPORTISTA': 'Transportista',
-  'CHOFER': 'Chofer',
-};
+const ROLE_DISPLAY = Object.fromEntries(Object.entries(PERFILES).map(([k, v]) => [k, v.label]));
 
 // ==========================================================================
 // MENU LATERAL - estructura declarativa con grupos desplegables
 // ==========================================================================
 const SIDEBAR_MENU = [
-  { tab: 'home', icon: 'home', label: 'HOME' },
+  { tab: 'home', icon: 'home', label: 'Home' },
   { tab: 'rates', icon: 'payments', label: 'Cotizador Despacho' },
   {
     group: 'proveedores', icon: 'groups', label: 'Proveedores', children: [
@@ -1266,14 +1202,16 @@ const SIDEBAR_MENU = [
       { tab: 'abastecimiento', sub: 'calendario',              icon: 'calendar_month',            label: 'Calendario Sucursales' },
       // { tab: 'abastecimiento', sub: 'quiebres', icon: 'production_quantity_limits', label: 'Quiebres Sucursales' }, // OCULTO: integrado en Pedidos Traslados
       { tab: 'abastecimiento', sub: 'stock_almacen',          icon: 'inventory',                  label: 'Stock Almacén 4000' },
-      { tab: 'abastecimiento', sub: 'pedidos_traslados_revex', icon: 'recycling',                 label: 'Pedidos de Traslado REVEX' },
-      { tab: 'abastecimiento', sub: 'pedidos_venta',          icon: 'sell',                       label: 'Pedidos de Ventas CD (1003)' },
+      { tab: 'abastecimiento', sub: 'pedidos_traslados_revex', icon: 'recycling',                 label: 'REVEX' },
+      { tab: 'abastecimiento', sub: 'pedidos_venta',          icon: 'sell',                       label: 'Ventas CD (1003)' },
       { tab: 'abastecimiento', sub: 'retiros',                icon: 'factory',                    label: 'Retiros de Fábrica' },
       { tab: 'abastecimiento', sub: 'pedidos_traslados_4000', icon: 'local_shipping',             label: 'Crossdocking' },
-      { tab: 'abastecimiento', sub: 'pedidos_traslados',      icon: 'swap_horiz',                 label: 'Pedidos de Traslados 1003' },
+      { tab: 'abastecimiento', sub: 'pedidos_traslados',      icon: 'swap_horiz',                 label: 'Pedidos de Traslados' },
       { tab: 'abastecimiento', sub: 'plan_carga',             icon: 'local_shipping',             label: 'Plan de Carga' },
-      { tab: 'abastecimiento', sub: 'entregas_creadas',       icon: 'assignment_turned_in',       label: 'Entregas Creadas' },
-      { tab: 'abastecimiento', sub: 'documentos_transporte',  icon: 'description',                label: 'Documentos de Transporte' },
+      // (30-sep-2026, Jordan) Entregas Creadas y Documentos de Transporte quedan OCULTAS: son sólo cruce interno
+      // del Plan de Carga (abast_plan_foto_entrega / abast_plan_foto_dt), no se muestran en la plataforma.
+      // { tab: 'abastecimiento', sub: 'entregas_creadas',       icon: 'assignment_turned_in',       label: 'Entregas Creadas' },
+      // { tab: 'abastecimiento', sub: 'documentos_transporte',  icon: 'description',                label: 'Documentos de Transporte' },
       { tab: 'abastecimiento', sub: 'ind_plan_carga',         icon: 'insights',                   label: 'Indicadores Plan de Carga' },
     ]
   },
@@ -1289,6 +1227,8 @@ const SIDEBAR_MENU = [
     group: 'flete-tercero', icon: 'local_shipping', label: 'Flete Tercero', children: [
       { tab: 'flete-tercero', sub: 'dashboard',    icon: 'monitoring', label: 'Nivel de Servicio' },
       { tab: 'flete-tercero', sub: 'seguimiento',  icon: 'search',     label: 'Seguimiento por Pedido' },
+      { tab: 'flete-tercero', sub: 'vencidos',     icon: 'event_busy',      label: 'Pedidos Vencidos' },
+      { tab: 'flete-tercero', sub: 'en_curso',     icon: 'pending_actions', label: 'Pedidos en Curso' },
     ]
   },
   { tab: 'roles', icon: 'admin_panel_settings', label: 'Roles y Perfiles' },
@@ -1302,192 +1242,393 @@ const SUB_ALIAS = {
   'tarifas-clientes':   { zfmp: 'resultados', zfmi: 'zfmi' },
 };
 
-const NAV_BASE_ITEM  = 'sidebar-item flex items-center gap-md px-md py-sm text-secondary hover:text-primary hover:bg-surface-container-high transition-colors rounded-lg cursor-pointer';
-const NAV_BASE_CHILD = 'sidebar-item flex items-center gap-sm pl-xl pr-md py-xs text-secondary hover:text-primary hover:bg-surface-container-high transition-colors rounded-lg cursor-pointer text-[13px]';
+// ==========================================================================
+// MENÚ LATERAL v2 (rediseño 29-sep-2026)
+// La estructura de PERMISOS sigue siendo SIDEBAR_MENU (grupos/hojas que usa
+// permisos.js). NAV_LAYOUT sólo define CÓMO se agrupan en pantalla: módulos
+// con secciones (p. ej. «Tarifas» junta Tarifas Transporte y Tarifas Clientes).
+// ==========================================================================
+const NAV_LAYOUT = [
+  { tab: 'home' },
+  { tab: 'rates' },
+  { key: 'troncales', icon: 'inventory_2', label: 'Gestión Troncales', sections: [
+    // (30-sep-2026, Jordan) Orden: Configuraciones · Orden de Carga · Planificación
+    { label: 'Configuraciones', group: 'abastecimiento', collapsible: true, subs: ['calendario', 'stock_almacen'] },
+    { label: 'Orden de Carga', group: 'abastecimiento', subs: ['pedidos_traslados_revex', 'pedidos_venta', 'retiros', 'pedidos_traslados_4000', 'pedidos_traslados'] },
+    { label: 'Planificación', group: 'abastecimiento', subs: ['plan_carga', 'ind_plan_carga'] },
+  ] },
+  { key: 'flete', icon: 'local_shipping', label: 'Flete Tercero', sections: [{ label: 'Seguimiento', group: 'flete-tercero' }] },
+  { key: 'ind', icon: 'monitoring', label: 'Indicadores', sections: [{ label: 'Reportes', group: 'indicadores' }] },
+  { key: 'tarifas', icon: 'calculate', label: 'Tarifas', sections: [
+    { label: 'Transporte', group: 'tarifas-transporte' },
+    { label: 'Clientes', group: 'tarifas-clientes' },
+  ] },
+  { key: 'maestros', icon: 'groups', label: 'Maestros', sections: [
+    { label: 'Proveedores', group: 'proveedores' },
+    { label: 'Rutas', group: 'rutas' },
+  ] },
+  { tab: 'roles' },
+];
+const FAV_DEFAULT = ['abastecimiento:plan_carga', 'abastecimiento:calendario', 'abastecimiento:ind_plan_carga'];
+const LS_FAVS = 'sit_nav_favs';
+const LS_COLL = 'sit_nav_collapsed';
+const LS_SECT = 'sit_nav_sect_closed';
+
+function _lsGet(k, def) { try { const v = localStorage.getItem(k); return v == null ? def : JSON.parse(v); } catch (_e) { return def; } }
+function _lsSet(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (_e) { /* sin almacenamiento */ } }
+const _escN = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+
+// Hojas visibles del menú para el perfil actual: [{ key, tab, sub, label, icon, modulo, seccion }]
+function navLeaves() {
+  const out = [];
+  NAV_LAYOUT.forEach(m => {
+    if (m.tab) {
+      const e = SIDEBAR_MENU.find(x => !x.group && x.tab === m.tab);
+      if (e && roleCanSeeEntry(e)) out.push({ key: e.tab, tab: e.tab, sub: null, label: e.label, icon: e.icon, modulo: e.label, seccion: '' });
+      return;
+    }
+    m.sections.forEach(sec => {
+      const g = SIDEBAR_MENU.find(x => x.group === sec.group);
+      if (!g || !roleCanSeeEntry(g)) return;
+      const kids = sec.subs ? sec.subs.map(s => g.children.find(c => c.sub === s)).filter(Boolean) : g.children;
+      kids.filter(c => childVisible(g, c)).forEach(c => out.push({
+        key: `${c.tab}:${c.sub}`, tab: c.tab, sub: c.sub, label: c.label, icon: c.icon, modulo: m.label, seccion: sec.label, modKey: m.key, secLabel: sec.label,
+      }));
+    });
+  });
+  return out;
+}
+function navFavs() {
+  const leaves = navLeaves();
+  const favs = _lsGet(LS_FAVS, FAV_DEFAULT);
+  return (Array.isArray(favs) ? favs : FAV_DEFAULT).map(k => leaves.find(l => l.key === k)).filter(Boolean);
+}
+function navCrumbs(tab, sub) {
+  const leaves = navLeaves();
+  const l = leaves.find(x => x.tab === tab && (sub ? x.sub === sub : !x.sub));
+  if (!l) { const m = leaves.find(x => x.tab === tab); return { path: [], last: m ? m.modulo : '' }; }
+  if (!l.sub) return { path: [], last: l.label };
+  return { path: [l.modulo, l.seccion].filter(Boolean), last: l.label };
+}
 
 function sidebarNavHTML() {
-  return SIDEBAR_MENU.filter(roleCanSeeEntry).map(entry => {
-    if (entry.group) {
-      return `
-        <div class="sidebar-group" data-group="${entry.group}">
-          <a class="sidebar-group-toggle flex items-center gap-md px-md py-sm text-secondary hover:text-primary hover:bg-surface-container-high transition-colors rounded-lg cursor-pointer select-none">
-            <span class="material-symbols-outlined">${entry.icon}</span>
-            <span class="font-body-md text-body-md flex-1 font-bold">${entry.label}</span>
-            <span class="material-symbols-outlined text-[18px] transition-transform sidebar-chevron">expand_more</span>
-          </a>
-          <div class="sidebar-group-children hidden mt-xs space-y-[2px]">
-            ${entry.children.map(c => `
-              <a class="${NAV_BASE_CHILD}" data-tab="${c.tab}" data-sub="${c.sub}">
-                <span class="material-symbols-outlined text-[16px]">${c.icon}</span>
-                <span>${c.label}</span>
-              </a>`).join('')}
-          </div>
-        </div>`;
+  const leaves = navLeaves();
+  const favs = navFavs();
+  const favKeys = new Set(favs.map(f => f.key));
+  const closed = new Set(_lsGet(LS_SECT, []));
+  const favHTML = favs.length ? `
+    <div class="sv-navsec" id="sv-favs">
+      <div class="sv-navlbl sv-hide-c">Favoritos</div>
+      ${favs.map(f => `<a class="sv-item sv-fav" data-fav-tab="${f.tab}" ${f.sub ? `data-fav-sub="${f.sub}"` : ''} title="${_escN(f.label)}">
+        <span class="material-symbols-outlined">${f.icon}</span><span class="sv-hide-c">${_escN(f.label)}</span></a>`).join('')}
+    </div>` : '';
+  const mods = NAV_LAYOUT.map(m => {
+    if (m.tab) {
+      const l = leaves.find(x => x.tab === m.tab && !x.sub);
+      if (!l) return '';
+      return `<a class="sv-item sidebar-item" data-tab="${l.tab}" id="nav-${l.tab}" title="${_escN(l.label)}">
+        <span class="material-symbols-outlined">${l.icon}</span><span class="sv-hide-c">${_escN(l.label)}</span></a>`;
     }
-    return `
-      <a class="${NAV_BASE_ITEM}" data-tab="${entry.tab}" id="nav-${entry.tab}">
-        <span class="material-symbols-outlined">${entry.icon}</span>
-        <span class="font-body-md text-body-md font-bold">${entry.label}</span>
-      </a>`;
+    const secs = m.sections.map(sec => {
+      const items = leaves.filter(l => l.modKey === m.key && l.secLabel === sec.label);
+      if (!items.length) return '';
+      const sk = `${m.key}|${sec.label}`;
+      // (30-sep-2026) Todas las secciones se pueden expandir/contraer (salvo collapsible:false).
+      const coll = sec.collapsible !== false;
+      const isClosed = coll && closed.has(sk);
+      return `<div class="sv-sectwrap">
+        <div class="sv-sect ${coll ? 'is-coll' : ''} ${isClosed ? 'is-closed' : ''}" ${coll ? `data-sect="${_escN(sk)}"` : ''}>
+          <span>${_escN(sec.label)}${coll ? ` · ${items.length}` : ''}</span>${coll ? '<span class="material-symbols-outlined">expand_more</span>' : ''}</div>
+        <div class="sv-sectbody ${isClosed ? 'hidden' : ''}">
+          ${items.map(c => `<a class="sv-child sidebar-item" data-tab="${c.tab}" data-sub="${c.sub}" title="${_escN(c.label)}">
+            <span class="sv-lbl">${_escN(c.label)}</span>
+            <button class="sv-star ${favKeys.has(c.key) ? 'is-on' : ''}" data-star="${c.key}" data-ro-ok title="${favKeys.has(c.key) ? 'Quitar de favoritos' : 'Agregar a favoritos'}"><span class="material-symbols-outlined">star</span></button>
+          </a>`).join('')}
+        </div></div>`;
+    }).join('');
+    if (!secs.trim()) return '';
+    return `<div class="sv-group" data-mod="${m.key}">
+      <a class="sv-item sv-group-toggle" title="${_escN(m.label)}">
+        <span class="material-symbols-outlined">${m.icon}</span><span class="sv-hide-c" style="flex:1">${_escN(m.label)}</span>
+        <span class="material-symbols-outlined sv-chev sv-hide-c">expand_more</span></a>
+      <div class="sv-kids hidden">${secs}</div></div>`;
   }).join('');
+  return `${favHTML}
+    <div class="sv-navsec"><div class="sv-navlbl sv-hide-c">Módulos</div>${mods}</div>`;
+}
+
+// Paleta «Ir a una vista» (Ctrl K)
+function openGotoPalette() {
+  if (document.querySelector('.sv-pal-bg')) return;
+  const leaves = navLeaves();
+  const norm = s => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+  const bg = document.createElement('div');
+  bg.className = 'sv-pal-bg';
+  bg.innerHTML = `<div class="sv-pal" role="dialog" aria-label="Ir a una vista">
+    <div class="sv-pal-in"><span class="material-symbols-outlined">search</span><input placeholder="Ir a una vista…" aria-label="Buscar vista"/><span class="sv-kbd">Esc</span></div>
+    <div class="sv-pal-list"></div></div>`;
+  document.body.appendChild(bg);
+  const inp = bg.querySelector('input'), list = bg.querySelector('.sv-pal-list');
+  let sel = 0, cur = leaves;
+  const close = () => bg.remove();
+  const go = l => { close(); if (l) switchTab(l.tab, l.sub); };
+  const draw = () => {
+    const q = norm(inp.value.trim());
+    cur = q ? leaves.filter(l => norm(`${l.label} ${l.modulo} ${l.seccion}`).includes(q)) : leaves;
+    if (sel >= cur.length) sel = Math.max(0, cur.length - 1);
+    list.innerHTML = cur.length ? cur.map((l, i) => `<div class="sv-pal-it ${i === sel ? 'is-sel' : ''}" data-i="${i}">
+      <span class="material-symbols-outlined">${l.icon}</span><span>${_escN(l.label)}</span>
+      <span class="sv-pal-g">${_escN([l.sub ? l.modulo : '', l.seccion].filter(Boolean).join(' › '))}</span></div>`).join('')
+      : '<div class="sv-pal-empty">Sin coincidencias.</div>';
+    list.querySelectorAll('[data-i]').forEach(el => el.addEventListener('click', () => go(cur[+el.dataset.i])));
+    list.querySelector('.is-sel')?.scrollIntoView({ block: 'nearest' });
+  };
+  inp.addEventListener('input', () => { sel = 0; draw(); });
+  inp.addEventListener('keydown', e => {
+    if (e.key === 'ArrowDown') { sel = Math.min(sel + 1, cur.length - 1); draw(); e.preventDefault(); }
+    else if (e.key === 'ArrowUp') { sel = Math.max(sel - 1, 0); draw(); e.preventDefault(); }
+    else if (e.key === 'Enter') { go(cur[sel]); }
+    else if (e.key === 'Escape') { close(); }
+  });
+  bg.addEventListener('mousedown', e => { if (e.target === bg) close(); });
+  draw();
+  inp.focus();
+}
+let _paletteKeyBound = false;
+function bindPaletteKey() {
+  if (_paletteKeyBound) return;
+  _paletteKeyBound = true;
+  document.addEventListener('keydown', e => {
+    if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K')) {
+      if (!document.getElementById('sv-nav')) return;
+      e.preventDefault();
+      openGotoPalette();
+    }
+  });
+}
+
+function wireSidebar() {
+  const nav = document.getElementById('sv-nav');
+  // Hojas del menú (módulos simples y vistas dentro de secciones)
+  nav.querySelectorAll('.sidebar-item').forEach(item => {
+    item.addEventListener('click', e => {
+      if (e.target.closest('[data-star]')) return;
+      switchTab(item.getAttribute('data-tab'), item.getAttribute('data-sub') || null);
+    });
+  });
+  // Favoritos
+  nav.querySelectorAll('.sv-fav').forEach(item => item.addEventListener('click', () =>
+    switchTab(item.dataset.favTab, item.dataset.favSub || null)));
+  // Estrella: agregar/quitar favorito
+  nav.querySelectorAll('[data-star]').forEach(btn => btn.addEventListener('click', e => {
+    e.preventDefault(); e.stopPropagation();
+    const k = btn.dataset.star;
+    const cur = navFavs().map(f => f.key);
+    const next = cur.includes(k) ? cur.filter(x => x !== k) : cur.concat([k]);
+    _lsSet(LS_FAVS, next);
+    rerenderSidebar();
+  }));
+  // Módulos con secciones
+  nav.querySelectorAll('.sv-group-toggle').forEach(t => t.addEventListener('click', () => {
+    const grp = t.closest('.sv-group');
+    if (document.body.classList.contains('sv-side-collapsed')) {
+      setSideCollapsed(false);
+      grp.querySelector('.sv-kids').classList.remove('hidden');
+      t.classList.add('is-expanded');
+      return;
+    }
+    const kids = grp.querySelector('.sv-kids');
+    const abrir = kids.classList.contains('hidden');
+    kids.classList.toggle('hidden', !abrir);
+    t.classList.toggle('is-expanded', abrir);
+  }));
+  // Secciones colapsables (p. ej. «Datos SAP»)
+  nav.querySelectorAll('[data-sect]').forEach(h => h.addEventListener('click', () => {
+    const body = h.nextElementSibling;
+    const cerrar = !body.classList.contains('hidden');
+    body.classList.toggle('hidden', cerrar);
+    h.classList.toggle('is-closed', cerrar);
+    const set = new Set(_lsGet(LS_SECT, []));
+    if (cerrar) set.add(h.dataset.sect); else set.delete(h.dataset.sect);
+    _lsSet(LS_SECT, [...set]);
+  }));
+}
+function rerenderSidebar() {
+  const cont = document.getElementById('sidebar-nav-container');
+  if (!cont) return;
+  const openMods = [...document.querySelectorAll('.sv-group')].filter(g => !g.querySelector('.sv-kids').classList.contains('hidden')).map(g => g.dataset.mod);
+  cont.innerHTML = sidebarNavHTML();
+  openMods.forEach(k => {
+    const g = document.querySelector(`.sv-group[data-mod="${k}"]`);
+    if (g) { g.querySelector('.sv-kids').classList.remove('hidden'); g.querySelector('.sv-group-toggle').classList.add('is-expanded'); }
+  });
+  wireSidebar();
+  marcarNavActivo(currentTab, currentSub);
+}
+function setSideCollapsed(v) {
+  document.body.classList.toggle('sv-side-collapsed', !!v);
+  _lsSet(LS_COLL, !!v);
+  const ic = document.querySelector('#sv-side-toggle .material-symbols-outlined');
+  if (ic) ic.textContent = v ? 'left_panel_open' : 'left_panel_close';
+}
+function marcarNavActivo(tabName, subName) {
+  document.querySelectorAll('.sidebar-item.is-active, .sv-fav.is-active').forEach(i => i.classList.remove('is-active'));
+  document.querySelectorAll('.sv-group-toggle.is-open-group').forEach(t => t.classList.remove('is-open-group'));
+  const selector = subName
+    ? `.sidebar-item[data-tab="${tabName}"][data-sub="${subName}"]`
+    : `.sidebar-item[data-tab="${tabName}"]:not([data-sub])`;
+  const activeNav = document.querySelector(selector);
+  if (activeNav) {
+    activeNav.classList.add('is-active');
+    const grp = activeNav.closest('.sv-group');
+    if (grp) {
+      grp.querySelector('.sv-kids').classList.remove('hidden');
+      const tg = grp.querySelector('.sv-group-toggle');
+      tg.classList.add('is-open-group', 'is-expanded');
+      const body = activeNav.closest('.sv-sectbody');
+      if (body && body.classList.contains('hidden')) { body.classList.remove('hidden'); body.previousElementSibling?.classList.remove('is-closed'); }
+    }
+  }
+  const favSel = subName ? `.sv-fav[data-fav-tab="${tabName}"][data-fav-sub="${subName}"]` : `.sv-fav[data-fav-tab="${tabName}"]:not([data-fav-sub])`;
+  document.querySelector(favSel)?.classList.add('is-active');
+  return activeNav;
+}
+function setBreadcrumb(tabName, subName) {
+  const c = navCrumbs(tabName, subName);
+  const el = document.getElementById('sv-crumbs');
+  if (!el) return;
+  el.innerHTML = c.path.map(p => `<span>${_escN(p)}</span><span class="material-symbols-outlined">chevron_right</span>`).join('')
+    + `<span class="sv-crumb-last" id="current-page-title">${_escN(c.last)}</span>`;
+  document.title = (c.last ? c.last + ' · ' : '') + 'SIT EBEMA';
 }
 
 
 // ==========================================================================
-// MODO SOLO LECTURA – bloquea escritura para AGENTE y ADMIN_DEPOSITO
+// MODO SOLO LECTURA (perfiles sin acción 'editar' en permisos.js)
+// Oculta en silencio las acciones de escritura. Sin avisos ni campos atenuados.
+// Un MutationObserver re-aplica el ocultamiento a lo que las vistas pintan
+// de forma asíncrona (tablas que cargan después, detalles expandibles, etc.).
 // ==========================================================================
 const WRITE_ICONS = new Set([
   'save','add','delete','edit','upload','add_circle','person_add','person_off',
   'how_to_reg','remove','cloud_upload','create','mode_edit','delete_forever',
-  'send','publish','check_circle','done_all','download','import_export',
+  'send','publish','check_circle','done_all','download','import_export','file_download',
 ]);
 const WRITE_WORDS = ['guardar','agregar','crear','eliminar','actualizar','nuevo',
-  'nueva','cargar','importar','subir','enviar','calcular','aplicar','confirmar',
-  'descargar','exportar','publicar','guardar cambios'];
+  'nueva','importar','subir','enviar','confirmar','descargar','exportar','publicar',
+  'csv','excluir','reactivar','coordinar','invitar','editar'];
+// Botones de navegación/filtro que nunca se ocultan
+const NAV_ATTRS = ['data-chip','data-echip','data-exp','data-truck','data-origen','data-refrescar',
+  'data-modo','data-rango-clear','data-close','data-cancel','data-tab','data-sub'];
+// Vistas sin restricciones de escritura en la interfaz (calculadoras)
+const TABS_SIN_READONLY = ['rates', 'home', 'indicadores'];
+
+let _roObserver = null;
+
+function botonDescargaPermitido(btn) {
+  if (can('descargar')) return true;
+  const esPlan = currentTab === 'abastecimiento' && currentSub === 'plan_carga';
+  if (!can('descargar_plan') || !esPlan) return false;
+  return btn.hasAttribute('data-descarga') || btn.hasAttribute('data-csv');
+}
+
+function ocultarEscritura(stage) {
+  stage.querySelectorAll('button:not([data-ro-ok])').forEach(btn => {
+    if (NAV_ATTRS.some(a => btn.hasAttribute(a))) { btn.setAttribute('data-ro-ok', ''); return; }
+    const esDescarga = btn.hasAttribute('data-descarga') || btn.hasAttribute('data-csv');
+    if (esDescarga) {
+      if (botonDescargaPermitido(btn)) btn.setAttribute('data-ro-ok', '');
+      else btn.style.display = 'none';
+      return;
+    }
+    const iconTxt = btn.querySelector('.material-symbols-outlined')?.textContent?.trim() ?? '';
+    const btnTxt  = btn.textContent?.trim().toLowerCase() ?? '';
+    const isWrite = WRITE_ICONS.has(iconTxt) || WRITE_WORDS.some(w => btnTxt.includes(w));
+    const isNav   = btnTxt.includes('buscar') || btn.id?.includes('search') || iconTxt === 'close' || iconTxt === 'search';
+    if (isWrite && !isNav) btn.style.display = 'none';
+  });
+  // Campos editables dentro de tablas (celdas editables en línea)
+  stage.querySelectorAll('tbody input:not([type=radio]):not([type=checkbox]), tbody select, tbody textarea').forEach(el => {
+    el.disabled = true;
+  });
+}
 
 function applyReadOnlyMode(stage) {
-  const role = currentSession?.role;
-  if (!READ_ONLY_ROLES.includes(role)) return;
+  if (_roObserver) { _roObserver.disconnect(); _roObserver = null; }
+  if (!esSoloLectura() || TABS_SIN_READONLY.includes(currentTab)) return;
 
-  // Banner
-  const banner = document.createElement('div');
-  banner.style.cssText = 'display:flex;align-items:center;gap:8px;padding:10px 16px;background:#fff8e1;border:1px solid #ffe082;border-radius:8px;margin-bottom:16px;font-size:13px;color:#5c3a00;font-weight:600';
-  banner.innerHTML = '<span class="material-symbols-outlined" style="font-size:18px;color:#f59e0b">visibility</span> Modo solo lectura — su perfil no tiene permisos de modificación.';
-  if (stage.firstChild) stage.insertBefore(banner, stage.firstChild);
-
-  // Deshabilitar inputs y selects (excepto de búsqueda)
-  stage.querySelectorAll('input:not([type=radio]):not([type=checkbox]), select, textarea').forEach(el => {
-    const isSearch = el.id?.includes('search') || el.placeholder?.toLowerCase().includes('buscar');
-    if (!isSearch) {
-      el.disabled = true;
-      el.style.opacity = '0.55';
-      el.style.cursor = 'not-allowed';
-    }
+  ocultarEscritura(stage);
+  let pend = false;
+  _roObserver = new MutationObserver(() => {
+    if (pend) return;
+    pend = true;
+    requestAnimationFrame(() => { pend = false; ocultarEscritura(stage); });
   });
+  _roObserver.observe(stage, { childList: true, subtree: true });
 
-  // Ocultar botones de escritura
-  stage.querySelectorAll('button').forEach(btn => {
-    // Excluir botones de búsqueda/navegación/logout/cerrar
-    const iconEl = btn.querySelector('.material-symbols-outlined');
-    const iconTxt = iconEl?.textContent?.trim() ?? '';
-    const btnTxt = btn.textContent?.trim().toLowerCase() ?? '';
-
-    const isWriteIcon = WRITE_ICONS.has(iconTxt);
-    const isWriteText = WRITE_WORDS.some(w => btnTxt.includes(w));
-    const isSearch    = btnTxt.includes('buscar') || btn.id?.includes('search');
-    const isClose     = iconTxt === 'close' || iconTxt === 'search';
-
-    if ((isWriteIcon || isWriteText) && !isSearch && !isClose) {
-      btn.style.display = 'none';
-    }
-  });
-
-  // Interceptar envíos de formulario
-  stage.querySelectorAll('form').forEach(form => {
-    form.addEventListener('submit', e => {
-      e.preventDefault();
-      e.stopImmediatePropagation();
-    }, true);
-  });
+  // Interceptar envíos de formulario dentro de la vista (un solo listener por stage)
+  if (stage._roSubmit) return;
+  stage._roSubmit = true;
+  stage.addEventListener('submit', e => {
+    if (!esSoloLectura() || TABS_SIN_READONLY.includes(currentTab)) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+  }, true);
 }
 
 // ==========================================================================
 // SHELL DEL DASHBOARD DE SIT EBEMA
 // ==========================================================================
 function renderDashboardShell() {
+  setSesionPermisos(currentSession?.role, currentSession?.centros);
+  const nombre = String(currentSession?.name || currentSession?.email || '');
+  const iniciales = nombre.split(/[\s._@-]+/).filter(Boolean).slice(0, 2).map(p => p[0].toUpperCase()).join('') || 'U';
+  document.body.classList.toggle('sv-side-collapsed', !!_lsGet(LS_COLL, false));
+  const coll = document.body.classList.contains('sv-side-collapsed');
   appRoot.innerHTML = `
-    <!-- SideNavBar Anchor -->
-    <nav class="flex flex-col h-full py-lg px-md h-full w-64 fixed left-0 top-0 border-r border-surface-variant bg-surface z-50">
-      <div class="mb-xl px-sm flex flex-col gap-xs">
-        <h1 class="text-headline-sm font-headline-sm font-bold text-primary">SIT EBEMA</h1>
-        <p class="text-label-caps font-label-caps text-secondary uppercase tracking-wider">Logistics Admin</p>
+    <nav class="sv-nav" id="sv-nav" aria-label="Menú principal">
+      <div class="sv-brand">
+        <div class="sv-hide-c" style="display:flex;flex-direction:column">
+          <span class="sv-brand-t">SIT EBEMA</span><span class="sv-brand-s">Logistics Admin</span>
+        </div>
+        <button class="sv-iconbtn" id="sv-side-toggle" data-ro-ok title="Contraer / expandir menú">
+          <span class="material-symbols-outlined">${coll ? 'left_panel_open' : 'left_panel_close'}</span></button>
       </div>
-      
-      <div class="space-y-base flex-1 overflow-y-auto pr-xs" id="sidebar-nav-container">
-        ${sidebarNavHTML()}
-      </div>
-
-      <div class="mt-auto space-y-base border-t border-surface-variant pt-lg">
-
-        <a class="flex items-center gap-md px-md py-sm text-secondary hover:text-primary hover:bg-surface-container-high transition-colors rounded-lg cursor-pointer" id="btn-logout">
-          <span class="material-symbols-outlined">logout</span>
-          <span class="font-body-md text-body-md">Logout</span>
-        </a>
+      <button class="sv-goto" id="sv-goto" data-ro-ok title="Ir a una vista (Ctrl K)">
+        <span class="material-symbols-outlined">search</span>
+        <span class="sv-hide-c" style="flex:1">Ir a una vista…</span><span class="sv-kbd sv-hide-c">Ctrl K</span>
+      </button>
+      <div class="sv-navscroll" id="sidebar-nav-container">${sidebarNavHTML()}</div>
+      <div class="sv-foot">
+        <div class="sv-avatar" title="${_escN(nombre)}">${_escN(iniciales)}</div>
+        <div class="sv-user sv-hide-c">
+          <div class="sv-user-n" id="topbar-user-name">${_escN(nombre)}</div>
+          <div class="sv-user-r">${_escN(ROLE_DISPLAY[currentSession.role] || currentSession.role)}</div>
+        </div>
+        <button class="sv-iconbtn sv-hide-c" id="btn-logout" data-ro-ok title="Cerrar sesión"><span class="material-symbols-outlined">logout</span></button>
       </div>
     </nav>
 
-    <!-- TopAppBar Anchor -->
-    <header class="flex justify-between items-center h-16 w-full pl-72 pr-margin-desktop bg-surface/80 backdrop-blur-md sticky top-0 z-40 border-b border-surface-variant">
-      <div class="flex items-center gap-md">
-        <span class="text-headline-sm font-headline-sm font-black text-primary hidden md:block">SIT EBEMA</span>
-        <div class="h-8 w-px bg-surface-variant mx-md"></div>
-        <h2 class="text-headline-sm font-headline-sm text-on-surface" id="current-page-title">Cotizador de Tarifas</h2>
-      </div>
-      
-      <div class="flex items-center gap-lg">
-        <div class="relative hidden lg:block">
-          <span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-secondary">search</span>
-          <input class="pl-10 pr-md py-2 bg-surface-container rounded-lg border-none text-body-md w-64 focus:ring-2 focus:ring-primary/20" placeholder="Buscar..." type="text"/>
-        </div>
-        
-        <div class="flex items-center gap-sm">
-          <button class="p-2 text-secondary hover:text-primary transition-colors hover:bg-surface-container rounded-full cursor-pointer">
-            <span class="material-symbols-outlined">notifications</span>
-          </button>
-          <button class="p-2 text-secondary hover:text-primary transition-colors hover:bg-surface-container rounded-full cursor-pointer">
-            <span class="material-symbols-outlined">help_outline</span>
-          </button>
-          
-          <div class="ml-md flex items-center gap-sm border-l border-outline-variant pl-md">
-            <img alt="Administrator Profile" class="w-8 h-8 rounded-full border border-surface-variant object-cover" src="https://lh3.googleusercontent.com/aida-public/AB6AXuAAiTCyOhKKpto4TzfW6NIN1sv2OnD_9ISi9_9_tuiAbSovN5cnzTELz4Nql3oFKqQtKhma605ToY_Wn_NCRFbTTLlPwqO5mUsoaSuanYh8zDr7tuqBfaVDdqELWJ7hsYGQl0_xbHsbnSyfAJtiMUt8QMjibQpBCKP4HVz8EUYAGiIrmOly9grHxAaCVCvEcLusH9iewFzjlCHudJnFoLRiF6UTfElTfE36J3YYH5nQBtZlQWKZWewp0HE3B2ymMPHWw9X9ic394nY"/>
-            <div class="hidden sm:block text-left">
-              <p class="text-label-caps font-label-caps leading-none font-bold" id="topbar-user-name">${currentSession.name}</p>
-              <p class="text-[10px] text-secondary">${ROLE_DISPLAY[currentSession.role] || currentSession.role}</p>
-            </div>
-          </div>
-        </div>
-      </div>
+    <header class="sv-header">
+      <div class="sv-crumbs" id="sv-crumbs"><span class="sv-crumb-last" id="current-page-title"></span></div>
+      <div class="sv-upd hidden" id="sv-upd" title="Última actualización de los datos SAP de esta vista"></div>
     </header>
 
-    <!-- Main Content Canvas -->
-    <main class="ml-64 p-margin-desktop min-h-[calc(100vh-64px)] bg-background">
-      <div id="stage-area">
-        <!-- Inyectado dinámicamente -->
-      </div>
+    <main class="sv-main">
+      <div id="stage-area"></div>
     </main>
   `;
 
-  // Cerrar Sesión (también en el servidor)
   document.getElementById('btn-logout').addEventListener('click', handleLogout);
-
-
-  // Enrutamiento de pestañas del Sidebar (hojas con data-tab)
-  document.querySelectorAll('.sidebar-item').forEach(item => {
-    item.addEventListener('click', (e) => {
-      const tabName = e.currentTarget.getAttribute('data-tab');
-      const subName = e.currentTarget.getAttribute('data-sub') || null;
-      switchTab(tabName, subName);
-    });
-  });
-
-  // Toggle de grupos desplegables
-  document.querySelectorAll('.sidebar-group-toggle').forEach(toggle => {
-    toggle.addEventListener('click', (e) => {
-      const grp = e.currentTarget.closest('.sidebar-group');
-      const children = grp.querySelector('.sidebar-group-children');
-      const chevron  = grp.querySelector('.sidebar-chevron');
-      const abrir = children.classList.contains('hidden');
-      children.classList.toggle('hidden', !abrir);
-      chevron.style.transform = abrir ? 'rotate(180deg)' : '';
-    });
-  });
+  document.getElementById('sv-side-toggle').addEventListener('click', () =>
+    setSideCollapsed(!document.body.classList.contains('sv-side-collapsed')));
+  document.getElementById('sv-goto').addEventListener('click', openGotoPalette);
+  bindPaletteKey();
+  wireSidebar();
 
   // Cargar pestaña inicial
   switchTab(currentTab, currentSub);
 }
-
-const NAV_ACTIVE_ADD    = ['bg-primary-container', 'text-on-primary-container', 'font-semibold'];
-const NAV_ACTIVE_REMOVE = ['text-secondary', 'hover:text-primary', 'hover:bg-surface-container-high'];
 
 function _stageSpinner(stage) {
   stage.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;height:200px;gap:12px;color:#b5000b">
@@ -1496,126 +1637,119 @@ function _stageSpinner(stage) {
   </div>`;
 }
 
+// Resuelve la clave de menú (grupo o ítem) de una vista y valida el acceso
+function vistaPermitida(tabName, subName) {
+  const simple = SIDEBAR_MENU.find(e => !e.group && e.tab === tabName);
+  if (simple) return puedeVerMenu(simple.tab);
+  const grupos = SIDEBAR_MENU.filter(e => e.group && e.children?.some(c => c.tab === tabName));
+  if (!grupos.length) return false;
+  // Coincidencia exacta tab+sub primero (p.ej. abastecimiento:proveedores vive en el grupo Proveedores)
+  const exacto = grupos.find(g => g.children.some(c => c.tab === tabName && c.sub === subName));
+  if (exacto) return puedeVerMenu(exacto.group, subName);
+  if (subName == null) return grupos.some(g => g.children.some(c => c.tab === tabName && puedeVerMenu(g.group, c.sub)));
+  return false;
+}
+function primeraVistaPermitida() {
+  for (const e of SIDEBAR_MENU) {
+    if (!e.group) { if (puedeVerMenu(e.tab)) return { tab: e.tab, sub: null }; continue; }
+    const c = e.children.find(ch => puedeVerMenu(e.group, ch.sub));
+    if (c) return { tab: c.tab, sub: c.sub };
+  }
+  return null;
+}
+
 async function switchTab(tabName, subName = null) {
-  // Verificar acceso al tab según rol
-  const _allowed = ROLE_ALLOWED_GROUPS[currentSession?.role];
-  if (_allowed) {
-    const _key = SIDEBAR_MENU.find(e => e.tab === tabName)?.tab
-              || SIDEBAR_MENU.find(e => e.group && e.children?.some(c => c.tab === tabName))?.group;
-    if (_key && !_allowed.includes(_key)) {
-      // Redirigir al primer tab permitido
-      const firstEntry = SIDEBAR_MENU.find(e => roleCanSeeEntry(e));
-      const fallbackTab = firstEntry?.tab || (firstEntry?.children?.[0]?.tab);
-      const fallbackSub = firstEntry?.children?.[0]?.sub || null;
-      if (fallbackTab && fallbackTab !== tabName) { switchTab(fallbackTab, fallbackSub); return; }
+  // Grupo sin pestaña explícita → primera pestaña permitida (sólo perfiles con menú restringido)
+  if (subName == null && !SIDEBAR_MENU.some(e => !e.group && e.tab === tabName) && !puedeVerMenu('__todo__')) {
+    for (const g of SIDEBAR_MENU.filter(e => e.group)) {
+      const c = g.children.find(ch => ch.tab === tabName && puedeVerMenu(g.group, ch.sub));
+      if (c) { subName = c.sub; break; }
     }
+  }
+  // Verificar acceso a la vista según perfil (permisos.js)
+  if (!vistaPermitida(tabName, subName)) {
+    const fb = primeraVistaPermitida();
+    if (fb && !(fb.tab === tabName && fb.sub === subName)) { switchTab(fb.tab, fb.sub); return; }
+    document.getElementById('stage-area').innerHTML = '';
+    return;
   }
   currentTab = tabName;
   currentSub = subName;
 
-  // Restaurar estado inactivo en todos los items (sin perder indentacion)
-  document.querySelectorAll('.sidebar-item').forEach(item => {
-    item.classList.remove(...NAV_ACTIVE_ADD);
-    item.classList.add(...NAV_ACTIVE_REMOVE);
-  });
-  document.querySelectorAll('.sidebar-group-toggle').forEach(t => t.classList.remove('text-primary', 'font-semibold'));
-
-  // Activar el item correspondiente (hoja simple o submenu)
-  const selector = subName
-    ? `.sidebar-item[data-tab="${tabName}"][data-sub="${subName}"]`
-    : `.sidebar-item[data-tab="${tabName}"]:not([data-sub])`;
-  const activeNav = document.querySelector(selector);
-  if (activeNav) {
-    activeNav.classList.remove(...NAV_ACTIVE_REMOVE);
-    activeNav.classList.add(...NAV_ACTIVE_ADD);
-    // Expandir y destacar el grupo padre si corresponde
-    const grp = activeNav.closest('.sidebar-group');
-    if (grp) {
-      grp.querySelector('.sidebar-group-children').classList.remove('hidden');
-      const chev = grp.querySelector('.sidebar-chevron');
-      if (chev) chev.style.transform = 'rotate(180deg)';
-      grp.querySelector('.sidebar-group-toggle').classList.add('text-primary', 'font-semibold');
-    }
-  }
+  // Estado activo en el menú lateral y breadcrumb del encabezado
+  marcarNavActivo(tabName, subName);
+  setBreadcrumb(tabName, subName);
+  const upd = document.getElementById('sv-upd');
+  if (upd) { upd.classList.add('hidden'); upd.innerHTML = ''; }
 
   // Resolver alias de subtab (submenus que apuntan a vistas existentes)
   const aliasMap = SUB_ALIAS[tabName] || {};
   const alias = subName != null ? (aliasMap[subName] !== undefined ? aliasMap[subName] : subName) : null;
 
-  const pageTitle = document.getElementById('current-page-title');
   const stage = document.getElementById('stage-area');
-  const subLabel = activeNav && subName ? ` — ${activeNav.textContent.trim()}` : '';
 
   _stageSpinner(stage);
   switch (tabName) {
     case 'home': {
-      pageTitle.textContent = 'Indicadores';
-      const m = await loadMod('ind', `./indicadores.js?v=${BUILD_V}`);
+      const m = await loadMod('ind', './indicadores.js?v=202609302307');
       m.renderIndicadoresHome(stage);
       break;
     }
     case 'rates': {
       await loadRoutesData();
-      pageTitle.textContent = 'Cotizador Despacho';
-      const m = await loadMod('rates', './rates.js');
+      const m = await loadMod('rates', './rates.js?v=202609302307');
       m.renderRatesView(stage);
       break;
     }
     case 'transports': {
-      pageTitle.textContent = 'Proveedores' + subLabel;
-      const m = await loadMod('trans', `./transports.js?v=${BUILD_V}`);
+      const m = await loadMod('trans', './transports.js?v=202609302307');
       m.renderTransportsView(stage);
       break;
     }
     case 'routes': {
       await loadRoutesData();
-      pageTitle.textContent = 'Rutas de Transporte' + subLabel;
-      const m = await loadMod('routes', `./routes.js?v=${BUILD_V}`);
+      const m = await loadMod('routes', './routes.js?v=202609302307');
       if (alias) m.setRoutesSubTab(alias);
       m.renderRoutesView(stage);
       break;
     }
     case 'roles': {
-      pageTitle.textContent = 'Roles y Perfiles';
-      const m = await loadMod('roles', `./roles.js?v=${BUILD_V}`);
+      const m = await loadMod('roles', './roles.js?v=202609302307');
       m.renderRolesView(stage);
       break;
     }
     case 'tarifas-transporte': {
       await loadRoutesData();
-      pageTitle.textContent = 'Tarifas Transporte' + subLabel;
-      const m = await loadMod('tt', `./tarifas-transporte.js?v=${BUILD_V}`);
+      await loadHistoricoFlete360();
+      const m = await loadMod('tt', './tarifas-transporte.js?v=202609302307');
       if (alias) m.setActiveSub(alias);
       m.renderTariffTransportView(stage);
       break;
     }
     case 'tarifas-clientes': {
       await loadRoutesData();
-      pageTitle.textContent = 'Tarifas Clientes' + subLabel;
-      const m = await loadMod('tc', `./tarifas-clientes.js?v=${BUILD_V}`);
+      await loadHistoricoFlete360();
+      const m = await loadMod('tc', './tarifas-clientes.js?v=202609302307');
       if (alias) m.setActiveSubC(alias);
       m.renderClientTariffView(stage);
       break;
     }
     case 'abastecimiento': {
       await loadRoutesData();
-      pageTitle.textContent = 'Gestión Troncales' + subLabel;
-      const m = await loadMod('abast', `./abastecimiento.js?v=${BUILD_V}`);
+      const m = await loadMod('abast', './abastecimiento.js?v=202609302307');
       if (subName) m.setAbastSubTab(subName);
       m.renderAbastecimientoView(stage);
       break;
     }
     case 'indicadores': {
-      pageTitle.textContent = 'Indicadores';
-      const m = await loadMod('ind', `./indicadores.js?v=${BUILD_V}`);
+      const m = await loadMod('ind', './indicadores.js?v=202609302307');
       if (subName) m.setIndicadoresSubTab(subName);
       m.renderIndicadoresView(stage);
       break;
     }
     case 'flete-tercero': {
       await loadRoutesData();
-      pageTitle.textContent = 'Flete Tercero' + subLabel;
-      const m = await loadMod('fter', `./flete-tercero.js?v=${BUILD_V}`);
+      const m = await loadMod('fter', './flete-tercero.js?v=202609302307');
       if (subName) m.setFleteTerceroSubTab(subName);
       m.renderFleteTerceroView(stage);
       break;

@@ -10,11 +10,11 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610021913';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610021913';
-import { getDatabase } from './data.js?v=202610021913';
+import { supabase } from './supabase-client.js?v=202609302307';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202609302307';
+import { getDatabase } from './data.js?v=202609302307';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610021913';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202609302307';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -1125,7 +1125,7 @@ const VISTAS_TRONCAL = {
 
   // ── PEDIDOS DE TRASLADO REVEX (material 900000) ───────────────────────────
   pedidos_traslados_revex: {
-    titulo: 'Revex',
+    titulo: 'GESTIÓN TRONCALES – PEDIDOS DE TRASLADO REVEX',
     vista: 'v_trc_sqvi_pedidos_traslados',
     // Excluye la línea (doc_compr + material), sólo perfil OWNER.
     excluir: { tipo: 'traslados_revex', doc: r => r.doc_compr, material: r => r.material },
@@ -1135,7 +1135,7 @@ const VISTAS_TRONCAL = {
     dateRange: { campo: 'fecha_confirmada', label: 'Rango Fecha Confirmada' },
     transform(rows) {
       return rows
-        .filter(r => String(r.material ?? '').trim().startsWith('900000'))
+        .filter(r => String(r.material ?? '').startsWith('900000'))
         .map(r => {
           const al = alertaFecha(r.fecha_confirmada, 7);
           // (AJUSTE) Ton = segunda columna de peso neto (peso_neto_2) × cantidad pedida.
@@ -1653,11 +1653,9 @@ const V2 = {
 
   // ── REVEX ─────────────────────────────────────────────────────────────────
   pedidos_traslados_revex: {
-    titulo: 'Revex',
-    desc: 'Todos los pedidos de traslado Revex del SQVI (material 900000). Sin ventana de fechas: por defecto quedan disponibles para el próximo camión y van primero en el orden de llenado.',
+    titulo: 'REVEX',
+    desc: 'Pedidos de traslado de retornables (material 900000). Van primero en el orden de llenado del camión.',
     enrich(rows) { rows.forEach(r => { r._al = alertaV2(r.fecha_confirmada, 7); r._t = tonNum(r._ton_totales); }); },
-    // (2-oct-2026, Jordan) Excluir/Reactivar en la fila principal del pedido; no en el panel de detalle.
-    excluirEnFila: true,
     chip: { label: 'Destino', of: r => String(r.ce ?? '').trim(), name: v => nombreCentro(v) || v },
     docSearch: { ph: 'N° pedido de traslado', of: r => r.doc_compr },
     fecha: { label: 'Entrega', of: r => r.fecha_confirmada },
@@ -1678,7 +1676,7 @@ const V2 = {
     ],
     edge: r => r._al.k === 'Atrasado' ? C_RED : null,
     detalle: r => ({
-      kind: 'Traslado Revex', title: r.doc_compr, sub: `${nombreCentro(r.cesu) || r.cesu} → ${nombreCentro(r.ce) || r.ce} · ${r.texto_breve || ''}`,
+      kind: 'Traslado REVEX', title: r.doc_compr, sub: `${nombreCentro(r.cesu) || r.cesu} → ${nombreCentro(r.ce) || r.ce} · ${r.texto_breve || ''}`,
       kv: [
         ['Centro origen', r.cesu], ['Centro destino', `${r.ce}${nombreCentro(r.ce) ? ' · ' + nombreCentro(r.ce) : ''}`],
         ['Almacén destino', r.alm], ['Material', r.material],
@@ -1686,7 +1684,7 @@ const V2 = {
         ['Fecha entrega', r.fecha_confirmada], ['Alerta', pill(r._al.k, r._al.tone), true],
         ['Fecha creación', r.creado_el], ['Tipo documento', r.cl],
       ],
-      nota: '1º en el orden de llenado · disponible por defecto para el próximo camión',
+      nota: '1º en el orden de llenado',
     }),
   },
 
@@ -2125,7 +2123,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610021913');
+    const m = await import('./ind-plan-carga.js?v=202609302307');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
@@ -2477,10 +2475,8 @@ async function renderPlanCarga(stage, opts = {}) {
     .filter(r => !String(r.cesu ?? '').startsWith('*') && String(r.material ?? '').trim() !== '')
     .filter(r => !String(r.material ?? '').startsWith('900000'))
     .filter(r => String(r.cesu ?? '').trim() === planOrigen);
-  // (2-oct-2026, Jordan) Revex: todos los pedidos del SQVI (sin ventana de fechas) quedan
-  // disponibles por defecto para el próximo camión; sólo salen si se excluyen.
   const revex = revexRaw
-    .filter(r => String(r.material ?? '').trim().startsWith('900000'))
+    .filter(r => String(r.material ?? '').startsWith('900000'))
     .filter(r => String(r.cesu ?? '').trim() === planOrigen);
   // REVEX: cesu = centro origen (1003 o 1081), ce = centro destino donde se contabiliza
   // Corte de fecha para el Plan de Carga: "mañana" (día que se está planificando).
@@ -3441,7 +3437,7 @@ async function renderPlanCarga(stage, opts = {}) {
           r.tonClienteDiferido > 0 ? ['CD-Cliente próximo', `${t1(r.tonClienteDiferido)} t`] : null,
         ])
         + segundoHtml(r, fill)
-        + ((() => { const accC = accMover(r, 'cd'); return CAT_V2.map((c, i) => { const it = (r.det[c.k] || []).filter(d => !d._camion2); return it.length ? grupoHtml(c.color, CAT_LARGO[i], it, c.tipo, accC) : ''; }).join(''); })() || '<div class="sv-note-box">El camión CD no tiene carga para esta sucursal.</div>');
+        + (() => { const accC = accMover(r, 'cd'); return CAT_V2.map((c, i) => { const it = (r.det[c.k] || []).filter(d => !d._camion2); return it.length ? grupoHtml(c.color, CAT_LARGO[i], it, c.tipo, accC) : ''; }).join(''); })() || '<div class="sv-note-box">El camión CD no tiene carga para esta sucursal.</div>');
     }
     if (tab === 'dirman') return dirManHtml(r);
     const [tk, n] = tab.split(':');

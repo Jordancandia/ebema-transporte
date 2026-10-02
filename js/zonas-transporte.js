@@ -1,4 +1,4 @@
-import { getDatabase, saveDatabase, deleteRow } from './data.js?v=202609302307';
+import { getDatabase, saveDatabase, deleteRow } from './data.js?v=202610021913';
 import { parseCSV, showAlert, escapeHtml, toCSV, downloadFile } from './utils.js';
 import { REGIONES, COMUNAS_POR_REGION, TIPOS_ZONA, findRegionByComuna } from './chile-geo.js';
 
