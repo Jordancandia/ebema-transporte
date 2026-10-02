@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610022010';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610022010';
-import { getDatabase } from './data.js?v=202610022010';
+import { supabase } from './supabase-client.js?v=202610021956';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610021956';
+import { getDatabase } from './data.js?v=202610021956';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610022010';
-import { confirmar } from './confirmar.js?v=202610022010';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610021956';
+import { confirmar } from './confirmar.js?v=202610021956';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -350,8 +350,6 @@ async function setVentaDirectoManual(doc, tipo) {
 // «Coordinar Despacho» en Ventas CD (1003): fecha de entrega confirmada, N° de entrega,
 // datos del cliente y (CD-CLIENTE) datos del transporte. Sólo las NV con estado
 // Coordinado entran al Plan de Carga (fecha coordinada ≤ día objetivo del centro).
-// Patente normalizada para comparar (sin guiones, puntos ni espacios, en mayúsculas).
-const normPatente = p => String(p ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
 async function loadCoordinacionesVenta() {
   const { data, error } = await supabase.from('abast_venta_coordinacion').select('*');
   if (error) { console.error(error); return new Map(); }
@@ -703,27 +701,6 @@ function showCoordModal(row) {
 // ── Modal «Coordinar despacho» de un pedido de venta 1003 (2-oct-2026) ──────
 // Tipo de entrega (sólo OWNER puede cambiarlo), fecha de entrega confirmada, N° de
 // entrega, datos del cliente y, si es CD-CLIENTE, datos del transporte.
-async function chequearChoquePatente(row, st, ctx) {
-  const doc = String(row.doc_ventas ?? '').trim();
-  const pat = normPatente(st.patCamion), rut = normPatente(st.choferRut);
-  const otros = [...(await loadCoordinacionesVenta()).values()].filter(c => String(c.doc_ventas ?? '').trim() !== doc && c.tipo_entrega === 'CD-CLIENTE');
-  const rowsByDoc = (ctx && ctx._rowsByDoc) || new Map();
-  const tonDoc = d => { const r = rowsByDoc.get(String(d ?? '').trim()); return r ? (r._ton_num || 0) : 0; };
-  const fF = d => fmtFechaISO(d);
-  const av = [];
-  const mismaPat = otros.filter(c => normPatente(c.patente_camion) === pat);
-  const mismoDia = mismaPat.filter(c => c.fecha_entrega === st.fecha);
-  mismoDia.forEach(c => {
-    if (String(c.id_transporte ?? '').trim() !== st.idTrans.trim()) av.push(`El pedido ${c.doc_ventas} usa esta patente el ${fF(c.fecha_entrega)} con otro transporte (${[c.id_transporte, c.transportista].filter(Boolean).join(' · ') || 'sin dato'}).`);
-    else if (normPatente(c.chofer_rut) !== rut) av.push(`El pedido ${c.doc_ventas} usa esta patente el ${fF(c.fecha_entrega)} con otro chofer (${[c.chofer_nombre, c.chofer_rut].filter(Boolean).join(' · ')}).`);
-  });
-  mismaPat.filter(c => c.fecha_entrega !== st.fecha).forEach(c => av.push(`La patente ya está coordinada el ${fF(c.fecha_entrega)} (pedido ${c.doc_ventas}); revisa si la fecha es correcta.`));
-  if (rut) otros.filter(c => c.fecha_entrega === st.fecha && normPatente(c.chofer_rut) === rut && normPatente(c.patente_camion) !== pat)
-    .forEach(c => av.push(`El chofer ${st.choferNombre.trim() || st.choferRut} ya está coordinado el ${fF(c.fecha_entrega)} en otra patente (${c.patente_camion || '—'}, pedido ${c.doc_ventas}).`));
-  const tonTot = (row._ton_num || 0) + mismoDia.reduce((s, c) => s + tonDoc(c.doc_ventas), 0);
-  if (mismoDia.length && tonTot > CAP_CAMION_DIRECTO + 1e-9) av.push(`Con los pedidos ${mismoDia.map(c => c.doc_ventas).join(', ')} el camión suma ${fmtNum(tonTot, 1)} t (supera ${CAP_CAMION_DIRECTO} t).`);
-  return av;
-}
 function showCoordVentaModal(row, ctx) {
   return new Promise(async resolve => {
     const c = row._coord || {};
@@ -870,12 +847,6 @@ function showCoordVentaModal(row, ctx) {
         if (faltantes().length) { st.err = true; draw(); return; }
         const btn = e.currentTarget; btn.disabled = true;
         const cli = esCli();
-        // Aviso de choque (2-oct-2026): misma patente con otro transportista/chofer el mismo día,
-        // misma patente en otra fecha, mismo chofer en otra patente el mismo día, o > 28 t por patente.
-        if (cli) {
-          const avisos = await chequearChoquePatente(row, st, ctx);
-          if (avisos.length && !(await confirmar(`Posible choque con el camión ${st.patCamion.trim().toUpperCase()}\n\n${avisos.map(a => '• ' + a).join('\n')}\n\n¿Guardar igual?`, { aceptar: 'Guardar igual', tono: 'peligro', icono: 'warning' }))) { btn.disabled = false; return; }
-        }
         const ok = await guardarCoordinacionVenta({
           doc_ventas: String(row.doc_ventas ?? '').trim(), tipo_entrega: st.tipo, fecha_entrega: st.fecha,
           n_entrega: st.entrega.trim(), id_cliente: row._id_cliente || null, nombre_cliente: row._cliente || null,
@@ -1957,7 +1928,6 @@ const V2 = {
       return { pvMap, ventasDirectoManual, feriadosSet, coordMap, maestro, diaHabil2: d2, diaObj: ce => (horiz[String(ce ?? '').trim()] === 48 ? d2 : d1) };
     },
     enrich(rows, ctx) {
-      ctx._rowsByDoc = new Map(rows.map(r => [String(r.doc_ventas ?? '').trim(), r]));
       rows.forEach(r => {
         const doc = String(r.doc_ventas ?? '').trim();
         const pv = ctx.pvMap[doc] || {};
@@ -2412,7 +2382,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610022010');
+    const m = await import('./ind-plan-carga.js?v=202610021956');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
@@ -2977,26 +2947,13 @@ async function renderPlanCarga(stage, opts = {}) {
       const enPlan = fc && fc.getTime() <= diaObjVentas.getTime();
       if (co.tipo_entrega === 'CD-CLIENTE') {
         if (!enPlan) { tonClienteDiferido += sumTon(items); continue; }   // camión exclusivo de otro día
-        // (2-oct-2026, Jordan) El camión lo define la PATENTE: NV CD-Cliente con la misma patente
-        // camión y la misma fecha forman un solo despacho (aunque sean de clientes distintos).
-        // Sin patente → agrupación automática por cliente.
-        const pat = normPatente(co.patente_camion);
-        const gk = pat ? `PAT|${pat}|${co.fecha_entrega}` : `CLI|${clienteKey}`;
-        const nomCli = pv.nombre_1 || co.nombre_cliente || (clienteKey !== doc ? 'Cliente ' + clienteKey : clienteKey);
-        const g = (ventasCliPorGrupo[gk] = ventasCliPorGrupo[gk] || { items: [], clientes: new Set(), pat: pat ? String(co.patente_camion).toUpperCase().trim() : '', co });
-        g.clientes.add(nomCli);
+        const g = (ventasCliPorGrupo[clienteKey] = ventasCliPorGrupo[clienteKey] || { items: [], nombre: pv.nombre_1 || co.nombre_cliente || (clienteKey !== doc ? 'Cliente ' + clienteKey : clienteKey) });
         g.items.push(...items);
       } else if (enPlan) { tonVentaCons += sumTon(items); det.ventaCons.push(...items); }
     }
     // (AJUSTE 30-sep-2026, Jordan) % de ocupación de camiones directos siempre sobre camión de 28 t.
     Object.values(ventasCliPorGrupo).forEach(g => {
-      const nombres = [...g.clientes].join(' + ');
-      if (g.pat) {   // un camión físico: no se reparte (si excede 28 t se ve sobre el 100%)
-        const ton = sumTon(g.items);
-        camionesCliente.push({ items: g.items, ton, grupo: `Patente ${g.pat} · ${nombres}`, cap: CAP_CAMION_DIRECTO,
-          patente: g.pat, patenteCarro: g.co.patente_carro || '', transportista: [g.co.id_transporte, g.co.transportista].filter(Boolean).join(' · '),
-          chofer: [g.co.chofer_nombre, g.co.chofer_rut, g.co.chofer_telefono].filter(Boolean).join(' · ') });
-      } else armarCamiones(g.items, CAP_CAMION_DIRECTO, d => d.pv).forEach(c => camionesCliente.push({ ...c, grupo: nombres, cap: CAP_CAMION_DIRECTO }));
+      armarCamiones(g.items, CAP_CAMION_DIRECTO, d => d.pv).forEach(c => camionesCliente.push({ ...c, grupo: g.nombre, cap: CAP_CAMION_DIRECTO }));
     });
     camionesCliente.forEach((c, i) => { c.n = i + 1; c.items.forEach(d => { d._camion = i + 1; }); tonVentaCliente += c.ton; det.cliente.push(...c.items); });
 
@@ -3422,7 +3379,7 @@ async function renderPlanCarga(stage, opts = {}) {
   // panel de sólo lectura (sin Excluir) con líneas que no caben atenuadas y
   // descarga CSV con el formato 4.8 del PRD (+ columnas de referencia).
   const DIR_V2 = [
-    { k: 'cliente', lista: 'camionesCliente', lbl: 'CD-Cliente',   csv: 'CD-Cliente',   grupo: 'Cliente',   tipo: 'V', color: '#15803d', tip: 'Camión CD-Cliente: misma patente coordinada = un despacho; sin patente, pedidos del mismo cliente' },
+    { k: 'cliente', lista: 'camionesCliente', lbl: 'CD-Cliente',   csv: 'CD-Cliente',   grupo: 'Cliente',   tipo: 'V', color: '#15803d', tip: 'Camión CD-Cliente (pedidos del mismo cliente >85%)' },
     { k: 'fabSuc',  lista: 'camionesFabSuc',  lbl: 'Fáb-Sucursal', csv: 'Fáb-Sucursal', grupo: 'Proveedor', tipo: 'R', color: '#1d4ed8', tip: 'Camión Fábrica-Sucursal (OC coordinadas, mismo proveedor)' },
     { k: 'fabCli',  lista: 'camionesFabCli',  lbl: 'Fáb-Cliente',  csv: 'Fáb-Cliente',  grupo: 'Cliente',   tipo: 'R', color: '#7e22ce', tip: 'Camión Fábrica-Cliente (OC coordinadas, mismo cliente)' },
   ];
@@ -3743,10 +3700,7 @@ async function renderPlanCarga(stage, opts = {}) {
     const c = lista.find(x => String(x.n) === n) || lista[0];
     if (!c) return '<div class="sv-note-box">Sin camiones.</div>';
     const pct = c.cap > 0 ? Math.round(c.ton / c.cap * 100) : 0;
-    return kv([['Carga', `${t1(c.ton)} t · ${pct}%`], ['Capacidad', `${fmtNum(c.cap, 0)} t`], [c.manualId ? 'Unión manual' : (c.patente ? 'Despacho' : t.grupo), escapeHtml(c.grupo || '')], ['Camión', `${c.n} de ${lista.length}`],
-        c.patente ? ['Patentes', escapeHtml(`Camión ${c.patente}${c.patenteCarro ? ' · Carro ' + String(c.patenteCarro).toUpperCase() : ''}`)] : null,
-        c.transportista ? ['Transporte', escapeHtml(c.transportista)] : null,
-        c.chofer ? ['Chofer', escapeHtml(c.chofer)] : null])
+    return kv([['Carga', `${t1(c.ton)} t · ${pct}%`], ['Capacidad', `${fmtNum(c.cap, 0)} t`], [c.manualId ? 'Unión manual' : t.grupo, escapeHtml(c.grupo || '')], ['Camión', `${c.n} de ${lista.length}`]])
       + grupoHtml(t.color, `Contenido del camión ${c.n} de ${lista.length}`, c.items, t.tipo);
   }
   function drawerHtml(r) {
