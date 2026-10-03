@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610022010';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610022010';
-import { getDatabase } from './data.js?v=202610022010';
+import { supabase } from './supabase-client.js?v=202610022103';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610022103';
+import { getDatabase } from './data.js?v=202610022103';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610022010';
-import { confirmar } from './confirmar.js?v=202610022010';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610022103';
+import { confirmar } from './confirmar.js?v=202610022103';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -1983,7 +1983,7 @@ const V2 = {
       { key: 'all', label: 'Pedidos', color: C_INK, sub: 'pendientes con ruta' },
       { key: 'sc', label: 'Sin coordinar', color: C_ORANGE, sub: 'no entran al plan', fn: r => !r._coord },
       { key: 'co', label: 'Coordinados', color: C_GREEN, sub: 'pedido coordinado', fn: r => !!r._coord },
-      { key: 'pl', label: 'En plan de carga', color: C_BLUE, sub: 'entrega ≤ día objetivo', fn: r => r._plan === 'EN_PLAN' },
+      { key: 'pl', label: 'En plan de carga', color: C_BLUE, sub: 'pedidos coordinados', fn: r => !!r._coord },
       { key: 'cd', label: 'CD-Cliente', color: '#7e22ce', sub: 'cliente ≥ 23,8 t o definido', fn: r => !!r._directo },
       { key: 'at', label: 'Atrasados', color: C_RED, sub: 'fecha de entrega vencida', fn: r => r._al.k === 'Atrasado' },
     ],
@@ -2002,11 +2002,13 @@ const V2 = {
     ],
     // Excluir / Reactivar en la fila principal (no en el detalle) + estado en el Plan de Carga.
     excluirEnFila: true,
+    // (2-oct-2026, Jordan) Pedido coordinado = «En plan» (igual que Revex); si su fecha es
+    // posterior al día objetivo de hoy, se indica para qué día entra.
     planEstado: (r, excluida) => excluida ? pill('Excluida hoy', 'bad')
-      : r._plan === 'EN_PLAN' ? pill('En plan', 'ok')
-      : r._plan === 'PROGRAMADO' ? `<span title="Entra al plan cuyo día objetivo sea ${escV2(r._fecha_plan)}">${pill('Programado', 'info')}</span>`
+      : r._coord ? `<span title="Plan de carga con día objetivo ${escV2(r._fecha_plan)}">${pill('En plan', 'ok')}</span>`
+        + (r._plan === 'PROGRAMADO' ? `<div class="sv-sub">día ${escV2(r._fecha_plan)}</div>` : '')
       : pill('No considerado', 'mute'),
-    edge: r => r._plan === 'EN_PLAN' ? C_GREEN : (r._al.k === 'Atrasado' ? C_RED : null),
+    edge: r => r._coord ? C_GREEN : (r._al.k === 'Atrasado' ? C_RED : null),
     note: 'Tipo de entrega por cliente: ≥ 23,8 t (85% de 28 t) → CD-Cliente; si no, Consolidable · Sólo los pedidos coordinados entran al Plan de Carga',
     minW: '1280px',
     detalle: r => {
@@ -2412,7 +2414,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610022010');
+    const m = await import('./ind-plan-carga.js?v=202610022103');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
