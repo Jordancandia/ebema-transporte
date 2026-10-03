@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610031444';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610031444';
-import { getDatabase } from './data.js?v=202610031444';
+import { supabase } from './supabase-client.js?v=202610031211';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610031211';
+import { getDatabase } from './data.js?v=202610031211';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610031444';
-import { confirmar } from './confirmar.js?v=202610031444';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610031211';
+import { confirmar } from './confirmar.js?v=202610031211';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -1185,102 +1185,6 @@ function showCoordRetiroModal(row, ctx) {
         if (error) { showAlert('Error al coordinar: ' + error.message, 'error'); btn.disabled = false; return; }
         showAlert(filas.length > 1 ? `${filas.length} OC coordinadas en el camión ${transp.patente_camion}` : `OC ${row.doc_compr} coordinada como ${rm() ? 'Retiro RM' : 'Retiro local'}`, 'success');
         fin(true);
-      });
-    }
-    draw();
-  });
-}
-// ── Datos de transporte para programar un camión del Plan de Carga (3-oct-2026) ──
-// ini: datos actuales; otros: [{ lbl, patente_camion, chofer_rut }] camiones ya programados hoy
-// (para el aviso de choque). Devuelve el objeto de transporte o null si se cancela.
-function showTransporteCamionModal({ titulo, sub, ini = {}, otros = [] }) {
-  return new Promise(async resolve => {
-    let tr = { trans: [], choferes: [], camiones: [] };
-    try { tr = await loadTransportistasCoord(); } catch (_) { /* sin maestro */ }
-    const st = {
-      idTrans: ini.id_transporte || '', transportista: ini.transportista || '',
-      choferNombre: ini.chofer_nombre || '', choferRut: ini.chofer_rut || '', choferTel: ini.chofer_telefono || '',
-      patCamion: ini.patente_camion || '', patCarro: ini.patente_carro || '', err: false,
-    };
-    const wrap = document.createElement('div');
-    wrap.id = 'coord-modal-bg';
-    wrap.innerHTML = '<div class="sv-dr-bg" style="z-index:120"></div><aside class="sv-dr" style="z-index:121;width:min(560px,100vw)" role="dialog" aria-label="Programar camión"></aside>';
-    document.body.appendChild(wrap);
-    const panel = wrap.querySelector('aside');
-    const fin = v => { wrap.remove(); document.removeEventListener('keydown', onKey, true); resolve(v); };
-    const onKey = e => { if (e.key === 'Escape' && !document.querySelector('.sv-cf-bg')) { e.stopPropagation(); fin(null); } };
-    document.addEventListener('keydown', onKey, true);
-    wrap.querySelector('.sv-dr-bg').addEventListener('click', () => fin(null));
-    const REQ = ['idTrans', 'transportista', 'choferNombre', 'choferRut', 'choferTel', 'patCamion'];
-    const faltantes = () => REQ.filter(k => !String(st[k]).trim());
-    const bad = k => st.err && faltantes().includes(k);
-    const lbl = (t, k, req) => `<label class="sv-flbl" style="display:block;margin-bottom:6px;${bad(k) ? 'color:#b5000b' : ''}">${t}${req ? ' *' : ''}</label>`;
-    const inp = (k, ph, extra = '') => `<label class="sv-inp" style="width:100%;box-sizing:border-box;min-width:0;${bad(k) ? 'border-color:#b5000b' : ''}"><input data-k="${k}" value="${escapeHtml(st[k])}" placeholder="${escapeHtml(ph || '')}" style="width:100%" ${extra}></label>`;
-    const transDe = id => tr.trans.find(x => String(x.id).trim().toUpperCase() === String(id).trim().toUpperCase());
-    const chofList = () => tr.choferes.filter(x => String(x.id_transporte ?? '').trim() === st.idTrans.trim());
-    const camList = () => tr.camiones.filter(x => String(x.id_transporte ?? '').trim() === st.idTrans.trim() && String(x.id_camion ?? '').trim());
-    function draw() {
-      const falt = st.err ? faltantes() : [];
-      panel.innerHTML = `
-        <div class="sv-dr-h"><div style="flex:1;min-width:0">
-          <div class="sv-dr-k">Programar camión</div>
-          <div class="sv-dr-t">${escapeHtml(titulo)}</div>
-          ${sub ? `<div class="sv-dr-s">${escapeHtml(sub)}</div>` : ''}</div>
-          <button class="sv-iconbtn" data-cx title="Cerrar (Esc)"><span class="material-symbols-outlined">close</span></button></div>
-        <div class="sv-dr-b" style="gap:16px">
-          ${falt.length ? '<div class="sv-note-box" style="background:#ffdad6;color:#93000a;font-weight:700">Completa los campos obligatorios marcados en rojo.</div>' : ''}
-          <div class="sv-sub" style="margin:0;max-width:none">Elige un transportista y chofer del maestro para autocompletar, o ingrésalos a mano. Al guardar, el camión queda programado para carga y entra a la foto de las 15:35.</div>
-          <div style="display:grid;grid-template-columns:1fr 2fr;gap:8px">
-            <div>${lbl('ID transporte', 'idTrans', true)}${inp('idTrans', 'ID / RUT', 'list="dl-trans-prog" autocomplete="off"')}</div>
-            <div>${lbl('Nombre transportista', 'transportista', true)}${inp('transportista', 'Razón social')}</div>
-          </div>
-          <datalist id="dl-trans-prog">${tr.trans.map(t => `<option value="${escapeHtml(t.id)}">${escapeHtml(t.razonSocial || '')}</option>`).join('')}</datalist>
-          ${chofList().length ? `<div>${lbl('Chofer del transportista', 'chof', false)}
-            <label class="sv-inp" style="width:100%;box-sizing:border-box"><span class="material-symbols-outlined">badge</span>
-              <select data-sel="chof" style="border:none;background:transparent;width:100%;font:inherit;outline:none">
-                <option value="">Elegir para autocompletar…</option>
-                ${chofList().map((x, i) => `<option value="${i}" ${x.rut === st.choferRut ? 'selected' : ''}>${escapeHtml([x.nombre, x.apellido].filter(Boolean).join(' '))} · ${escapeHtml(x.rut || '')}</option>`).join('')}
-              </select></label></div>` : ''}
-          <div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:8px">
-            <div>${lbl('Nombre chofer', 'choferNombre', true)}${inp('choferNombre', '')}</div>
-            <div>${lbl('RUT chofer', 'choferRut', true)}${inp('choferRut', '12.345.678-9')}</div>
-            <div>${lbl('Teléfono', 'choferTel', true)}${inp('choferTel', '+56 9…')}</div>
-          </div>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
-            <div>${lbl('Patente camión', 'patCamion', true)}${inp('patCamion', 'AB-CD-12', 'list="dl-pat-prog" autocomplete="off"')}</div>
-            <div>${lbl('Patente carro (opcional)', 'patCarro', false)}${inp('patCarro', 'Rampla / carro')}</div>
-          </div>
-          <datalist id="dl-pat-prog">${camList().map(x => `<option value="${escapeHtml(x.id_camion)}">${escapeHtml([x.modelo, x.capacidad_ton ? x.capacidad_ton + ' t' : ''].filter(Boolean).join(' · '))}</option>`).join('')}</datalist>
-        </div>
-        <div class="sv-dr-f"><span class="sv-dr-note">* Obligatorio</span>
-          <div style="display:flex;gap:8px"><button class="sv-btn" data-cx>Cancelar</button>
-          <button class="sv-btn-p" data-ok><span class="material-symbols-outlined">local_shipping</span>Programar camión</button></div></div>`;
-      panel.querySelectorAll('[data-cx]').forEach(b => b.addEventListener('click', () => fin(null)));
-      panel.querySelectorAll('[data-k]').forEach(i => i.addEventListener('input', () => { st[i.dataset.k] = i.value; }));
-      // Al elegir/escribir un ID del maestro se completa el nombre y se ofrecen sus choferes y camiones.
-      panel.querySelector('[data-k="idTrans"]').addEventListener('change', e => {
-        const t = transDe(e.target.value);
-        if (t) { st.idTrans = t.id; st.transportista = t.razonSocial || st.transportista; }
-        draw();
-      });
-      panel.querySelector('[data-sel="chof"]')?.addEventListener('change', e => {
-        const x = chofList()[+e.target.value];
-        if (x) { st.choferNombre = [x.nombre, x.apellido].filter(Boolean).join(' '); st.choferRut = x.rut || ''; st.choferTel = x.telefono || st.choferTel; if (x.id_camion) st.patCamion = x.id_camion; draw(); }
-      });
-      panel.querySelector('[data-ok]').addEventListener('click', async () => {
-        if (faltantes().length) { st.err = true; draw(); return; }
-        const pat = normPatente(st.patCamion), rut = normPatente(st.choferRut);
-        const av = [];
-        otros.forEach(o => {
-          if (normPatente(o.patente_camion) === pat) av.push(`La patente ya está programada hoy en ${o.lbl}.`);
-          else if (rut && normPatente(o.chofer_rut) === rut) av.push(`El chofer ya está programado hoy en ${o.lbl} (patente ${o.patente_camion}).`);
-        });
-        if (av.length && !(await confirmar(`Posible choque con el camión ${st.patCamion.trim().toUpperCase()}\n\n${av.map(a => '• ' + a).join('\n')}\n\n¿Programar igual?`, { aceptar: 'Programar igual', tono: 'peligro', icono: 'warning' }))) return;
-        fin({
-          id_transporte: st.idTrans.trim(), transportista: st.transportista.trim(),
-          chofer_nombre: st.choferNombre.trim(), chofer_rut: st.choferRut.trim(), chofer_telefono: st.choferTel.trim(),
-          patente_camion: st.patCamion.trim().toUpperCase(), patente_carro: st.patCarro.trim().toUpperCase() || null,
-        });
       });
     }
     draw();
@@ -2825,7 +2729,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610031444');
+    const m = await import('./ind-plan-carga.js?v=202610031211');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
@@ -3907,26 +3811,7 @@ async function renderPlanCarga(stage, opts = {}) {
       segAcept = new Set((data || []).map(x => String(x.ce ?? '').trim()));
     } catch (_e) { segAcept = new Set(); }
   }
-  // (3-oct-2026) Camiones programados con datos de transporte (1 = camión CD, 2 = 2º camión).
-  let progMap = new Map();
-  async function leerProgramados() {
-    try {
-      const { data } = await supabase.from('abast_plan_camion_programado').select('*')
-        .eq('fecha', isoLocal(hoy00())).eq('cd_origen', planOrigen);
-      progMap = new Map((data || []).map(x => [`${String(x.ce ?? '').trim()}|${x.camion}`, x]));
-    } catch (_e) { progMap = new Map(); }
-  }
-  await Promise.all([leerFotoCierre(), leerSegundos(), leerProgramados()]);
-  const otrosProgramados = (ce, cam) => [...progMap.values()]
-    .filter(x => !(String(x.ce).trim() === ce && Number(x.camion) === cam))
-    .map(x => ({ lbl: `${x.camion === 2 ? '2º camión' : 'camión CD'} ${getNombreCentro(x.ce)}`, patente_camion: x.patente_camion, chofer_rut: x.chofer_rut }));
-  async function guardarProgramado(ce, cam, t) {
-    const { error } = await supabase.from('abast_plan_camion_programado').upsert({ fecha: hoyIsoPlanP(), cd_origen: planOrigen, ce, camion: cam, ...t,
-      programado_por: await getUserEmail(), programado_en: new Date().toISOString() }, { onConflict: 'fecha,cd_origen,ce,camion' });
-    if (error) { showAlert('No se pudo programar el camión: ' + error.message, 'error'); return false; }
-    return true;
-  }
-  function hoyIsoPlanP() { return isoLocal(hoy00()); }
+  await Promise.all([leerFotoCierre(), leerSegundos()]);
   const hoyIsoPlan = isoLocal(hoy00());
   const docLinea = d => String(d.pt ?? d.oc ?? d.pv ?? '').trim();
   const matLinea = d => String(d.material ?? '').trim();
@@ -3946,11 +3831,7 @@ async function renderPlanCarga(stage, opts = {}) {
     const r = resultado.find(x => x.ce === ce);
     if (!r || bloqueadoPorCierre()) return;
     const f = refrescarFill(r);
-    let transp2 = null;
     if (accion === 'aceptar') {
-      transp2 = await showTransporteCamionModal({ titulo: `2º camión → ${r.nombre}`, sub: `${t1(r.tonSegundo)} t de ${fmtNum(r.cap, 0)} t`,
-        ini: progMap.get(`${ce}|2`) || {}, otros: otrosProgramados(ce, 2) });
-      if (!transp2) { draw(); return; }
       const quien = await getUserEmail();
       const filas = new Map();
       f.orden.forEach(d => {
@@ -3965,71 +3846,17 @@ async function renderPlanCarga(stage, opts = {}) {
       }
       const { error } = await supabase.from('abast_plan_segundo_camion').upsert({ fecha: hoyIsoPlan, cd_origen: planOrigen, ce, ton_propuesta: Math.round(r.tonSegundo * 10000) / 10000, aceptado_por: quien, aceptado_en: new Date().toISOString() }, { onConflict: 'fecha,cd_origen,ce' });
       if (error) { showAlert('No se pudo guardar el 2º camión: ' + error.message, 'error'); return; }
-      if (!(await guardarProgramado(ce, 2, transp2))) return;
     } else {
-      await supabase.from('abast_plan_camion_programado').delete().eq('fecha', hoyIsoPlan).eq('cd_origen', planOrigen).eq('ce', ce).eq('camion', 2);
       const { error } = await supabase.from('abast_plan_segundo_camion').delete().eq('fecha', hoyIsoPlan).eq('cd_origen', planOrigen).eq('ce', ce);
       if (error) { showAlert('No se pudo quitar el 2º camión: ' + error.message, 'error'); return; }
       // Al quitarlo, la carga vuelve al llenado automático (se borran asignaciones de la sucursal).
       await supabase.from('abast_plan_linea_camion').delete().eq('fecha', hoyIsoPlan).eq('cd_origen', planOrigen).eq('ce', ce);
       r.asig.clear();
     }
-    await Promise.all([leerSegundos(), leerProgramados()]);
+    await leerSegundos();
     refrescarFill(r);
     showAlert(accion === 'aceptar' ? `2º camión programado y carga confirmada para ${r.nombre}.` : `2º camión quitado de ${r.nombre}; la carga vuelve al llenado automático.`, 'success');
     draw();
-  }
-  // (3-oct-2026, Jordan) Programar el camión CD: pide los datos del transporte y congela su carga
-  // (origen 'confirmado'). Sólo los camiones programados entran a la foto 15:35 y a los indicadores.
-  async function programarCD(ce) {
-    const r = resultado.find(x => x.ce === ce);
-    if (!r || bloqueadoPorCierre()) return;
-    const f = refrescarFill(r);
-    const t = await showTransporteCamionModal({ titulo: `Camión CD → ${r.nombre}`, sub: `${t1(f.cargado)} t de ${fmtNum(r.cap, 0)} t · día objetivo ${diaCorto(diaObj(r))}`,
-      ini: progMap.get(`${ce}|1`) || {}, otros: otrosProgramados(ce, 1) });
-    if (!t) return;
-    const quien = await getUserEmail();
-    const filas = new Map();
-    f.orden.forEach(d => {
-      if (d._manual !== null || !d._enCamion) return;
-      const k = `${docLinea(d)}|${matLinea(d)}`;
-      if (!filas.has(k)) filas.set(k, { fecha: hoyIsoPlan, cd_origen: planOrigen, ce, documento: docLinea(d), material: matLinea(d), camion: 1, origen: 'confirmado', updated_by: quien, updated_at: new Date().toISOString() });
-    });
-    if (filas.size) {
-      const { error: e1 } = await supabase.from('abast_plan_linea_camion').upsert([...filas.values()], { onConflict: 'fecha,cd_origen,ce,documento,material' });
-      if (e1) { showAlert('No se pudo confirmar la carga: ' + e1.message, 'error'); return; }
-      filas.forEach((v, k) => r.asig.set(k, 1));
-    }
-    if (!(await guardarProgramado(ce, 1, t))) return;
-    await leerProgramados();
-    refrescarFill(r);
-    showAlert(`Camión CD de ${r.nombre} programado (${t.patente_camion}).`, 'success');
-    draw();
-  }
-  async function quitarProgramacionCD(ce) {
-    const r = resultado.find(x => x.ce === ce);
-    if (!r || bloqueadoPorCierre()) return;
-    if (!await confirmar(`¿Quitar la programación del camión CD de ${r.nombre}?\n\nSe borran los datos del transporte y el camión deja de medirse en la foto de las ${HHMM_CIERRE}.`)) return;
-    const { error } = await supabase.from('abast_plan_camion_programado').delete().eq('fecha', hoyIsoPlan).eq('cd_origen', planOrigen).eq('ce', ce).eq('camion', 1);
-    if (error) { showAlert('No se pudo quitar la programación: ' + error.message, 'error'); return; }
-    // Si no hay 2º camión aceptado, la carga confirmada vuelve al llenado automático.
-    if (!segAcept.has(ce)) await supabase.from('abast_plan_linea_camion').delete().eq('fecha', hoyIsoPlan).eq('cd_origen', planOrigen).eq('ce', ce).eq('origen', 'confirmado');
-    showAlert(`Programación del camión CD de ${r.nombre} quitada.`, 'success');
-    renderPlanCarga(stage);
-  }
-  function progHtml(r, cam) {
-    const p = progMap.get(`${r.ce}|${cam}`);
-    const cerrado = estadoCierre().cerrado;
-    const nom = cam === 1 ? 'Camión CD' : '2º camión';
-    if (p) {
-      const btns = cam === 1 && PUEDE_AJUSTAR && !cerrado
-        ? `<button class="sv-btn" data-prog-cd="${escapeHtml(r.ce)}"><span class="material-symbols-outlined">edit</span>Editar</button><button class="sv-btn" data-prog-quitar="${escapeHtml(r.ce)}"><span class="material-symbols-outlined">remove_circle</span>Quitar</button>` : '';
-      return `<div class="pc-extra pc-seg2 is-ok"><span class="material-symbols-outlined">task_alt</span><div style="flex:1;min-width:0"><b>${nom} programado</b> · Patente ${escapeHtml(p.patente_camion)}${p.patente_carro ? ' · carro ' + escapeHtml(p.patente_carro) : ''}<br>
-        ${escapeHtml([p.id_transporte, p.transportista].filter(Boolean).join(' · '))} · Chofer ${escapeHtml([p.chofer_nombre, p.chofer_rut, p.chofer_telefono].filter(Boolean).join(' · '))}</div>${btns ? `<div style="display:flex;gap:6px">${btns}</div>` : ''}</div>`;
-    }
-    if (cam !== 1 || !(r.cargadoCD > 0.05)) return '';
-    const btn = PUEDE_AJUSTAR && !cerrado ? `<button class="sv-btn-p" data-prog-cd="${escapeHtml(r.ce)}"><span class="material-symbols-outlined">local_shipping</span>Programar camión</button>` : '';
-    return `<div class="pc-extra is-mute pc-seg2"><span class="material-symbols-outlined">pending</span><div style="flex:1;min-width:0"><b>Camión CD sin programar</b> · completa los datos del transporte para programarlo. Sólo los camiones programados entran a la foto de las ${HHMM_CIERRE} y a los indicadores.${cerrado ? ' Plan cerrado.' : ''}</div>${btn}</div>`;
   }
   // Mueve una línea: cam = 1 (camión CD) | 2 (2º camión) | 0 (no carga) | 'auto' (vuelve a la regla).
   async function moverLinea(ce, docu, mat, cam) {
@@ -4086,13 +3913,13 @@ async function renderPlanCarga(stage, opts = {}) {
     const acept = segAcept.has(r.ce), cerrado = estadoCierre().cerrado;
     const pct2 = r.cap > 0 ? Math.round(r.tonSegundo / r.cap * 100) : 0;
     const btn = PUEDE_AJUSTAR && !cerrado
-      ? `<button class="${acept ? 'sv-btn' : 'sv-btn-p'}" data-seg-accion="${acept ? 'quitar' : 'aceptar'}" data-seg-ce="${escapeHtml(r.ce)}"><span class="material-symbols-outlined">${acept ? 'remove_circle' : 'task_alt'}</span>${acept ? 'Quitar 2º camión' : 'Programar 2º camión'}</button>` : '';
+      ? `<button class="${acept ? 'sv-btn' : 'sv-btn-p'}" data-seg-accion="${acept ? 'quitar' : 'aceptar'}" data-seg-ce="${escapeHtml(r.ce)}"><span class="material-symbols-outlined">${acept ? 'remove_circle' : 'task_alt'}</span>${acept ? 'Quitar 2º camión' : 'Aceptar y confirmar carga'}</button>` : '';
     const txt = acept
       ? `Carga confirmada: entra a la foto de las ${HHMM_CIERRE} y a los indicadores. Puedes seguir moviendo líneas hasta el cierre.`
-      : `${fill.manual2 ? 'Armado a mano.' : 'Lo que no cabe llega al 85% de un camión.'} Es opcional: al programarlo (con los datos del transporte) se congela la carga de ambos camiones y entra a la foto de las ${HHMM_CIERRE} y a los indicadores.${cerrado ? ' Plan cerrado: ya no se puede programar.' : ''}`;
+      : `${fill.manual2 ? 'Armado a mano.' : 'Lo que no cabe llega al 85% de un camión.'} Es opcional: al aceptarlo se congela la carga de ambos camiones y entra a la foto de las ${HHMM_CIERRE} y a los indicadores.${cerrado ? ' Plan cerrado: ya no se puede programar.' : ''}`;
     return `<div class="pc-extra pc-seg2 ${acept ? 'is-ok' : ''}"><span class="material-symbols-outlined">${acept ? 'check_circle' : 'add_circle'}</span>
       <div style="flex:1;min-width:0"><b>${acept ? '2º camión programado' : '2º camión opcional'}</b> · ${t1(r.tonSegundo)} t de ${fmtNum(r.cap, 0)} t (${pct2}%). ${escapeHtml(txt)}
-      ${st.tab === 'seg' ? '' : `<small>El detalle y los botones para mover líneas están en la pestaña «2º camión».</small>`}</div>${btn}</div>` + (acept ? progHtml(r, 2) : '') + ajustesHtml(r, fill);
+      ${st.tab === 'seg' ? '' : `<small>El detalle y los botones para mover líneas están en la pestaña «2º camión».</small>`}</div>${btn}</div>` + ajustesHtml(r, fill);
   }
   function estadoCierre() {
     const now = new Date(), c = new Date(now); c.setHours(CIERRE_H, CIERRE_M, 0, 0);
@@ -4107,8 +3934,6 @@ async function renderPlanCarga(stage, opts = {}) {
   const TAG = (icon, lbl, tip, cls) => `<span class="pc-tag ${cls}" title="${escapeHtml(tip)}"><span class="material-symbols-outlined">${icon}</span>${escapeHtml(lbl)}</span>`;
   function tagsV2(r, enPanel = false) {
     const t = [];
-    const pg = progMap.get(`${r.ce}|1`);
-    if (pg) t.push(TAG('task_alt', 'Programado', `Camión CD programado · patente ${pg.patente_camion} · ${pg.transportista || pg.id_transporte}`, 'seg-ok'));
     if (r.enCalendario) t.push(TAG('calendar_today', 'Agenda', 'En calendario de despacho', 'agenda'));
     if (!r.enCalendario && r.pct >= 70) t.push(TAG('add_circle', 'Cupo extra', 'Fuera de agenda con carga ≥70%', 'extra'));
     if (r.enCalendario && r.pct < 70) t.push(TAG('warning', 'Carga baja', 'En calendario con carga <70%', 'baja'));
@@ -4251,7 +4076,6 @@ async function renderPlanCarga(stage, opts = {}) {
           ['Agenda', r.enCalendario ? 'En calendario del día' : 'Fuera de agenda'],
           r.tonClienteDiferido > 0 ? ['CD-Cliente próximo', `${t1(r.tonClienteDiferido)} t`] : null,
         ])
-        + progHtml(r, 1)
         + segundoHtml(r, fill)
         + ((() => { const accC = accMover(r, 'cd'); return CAT_V2.map((c, i) => { const it = (r.det[c.k] || []).filter(d => !d._camion2); return it.length ? grupoHtml(c.color, CAT_LARGO[i], it, c.tipo, accC) : ''; }).join(''); })() || '<div class="sv-note-box">El camión CD no tiene carga para esta sucursal.</div>');
     }
@@ -4392,8 +4216,6 @@ async function renderPlanCarga(stage, opts = {}) {
       e.stopPropagation(); b.disabled = true;
       await moverLinea(b.dataset.mover, b.dataset.doc, b.dataset.mat, b.dataset.cam === 'auto' ? 'auto' : Number(b.dataset.cam));
     }));
-    stage.querySelectorAll('[data-prog-cd]').forEach(b => b.addEventListener('click', async e => { e.stopPropagation(); await programarCD(b.dataset.progCd); }));
-    stage.querySelectorAll('[data-prog-quitar]').forEach(b => b.addEventListener('click', async e => { e.stopPropagation(); await quitarProgramacionCD(b.dataset.progQuitar); }));
     stage.querySelectorAll('[data-restablecer]').forEach(b => b.addEventListener('click', async e => { e.stopPropagation(); b.disabled = true; await restablecerAuto(b.dataset.restablecer); }));
     stage.querySelectorAll('[data-dirman-open]').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); st.drawer = b.dataset.dirmanOpen; st.tab = 'dirman'; draw(); }));
     stage.querySelectorAll('[data-deshacer-man]').forEach(b => b.addEventListener('click', async e => { e.stopPropagation(); b.disabled = true; await deshacerManual(Number(b.dataset.deshacerMan)); }));
