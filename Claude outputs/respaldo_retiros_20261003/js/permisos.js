@@ -49,7 +49,7 @@ export const PERFILES = {
       'abastecimiento:ind_plan_carga',
     ],
     // 30-sep-2026: sin Excluir (sólo OWNER) y alcance a todos los centros por defecto.
-    acciones: ['editar', 'descargar', 'descargar_plan', 'ajustar_plan'],
+    acciones: ['editar', 'descargar', 'descargar_plan', 'coordinar_retiro', 'ajustar_plan'],
     alcance: 'TODOS',
   },
   ADMINISTRADOR_DEPOSITO: {

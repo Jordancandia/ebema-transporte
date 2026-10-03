@@ -32,7 +32,7 @@ export function tonHtml(n) {
 }
 
 // Encabezado del shell: fecha y hora de la última actualización SAP de la vista
-import { confirmar } from './confirmar.js?v=202610031211';
+import { confirmar } from './confirmar.js?v=202610022103';
 export function setUltimaActualizacion(ts) {
   const el = document.getElementById('sv-upd');
   if (!el) return;
@@ -129,14 +129,7 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
     });
   }
   // chip2 (opcional): 2º filtro por chips, p. ej. Centro Destino en Retiros (30-sep-2026).
-  // chips (opcional, 3-oct-2026): filtros extra por chips, p. ej. Tipo de pedido y Saldo en Retiros.
-  st.ex = st.ex || {};
-  const exOn = () => (AV.chips || []).some(c => st.ex[c.key] && st.ex[c.key] !== 'all');
-  function aplicaExtras(pre) {
-    return (AV.chips || []).reduce((acc, c) => (st.ex[c.key] && st.ex[c.key] !== 'all') ? acc.filter(r => String(c.of(r) ?? '') === st.ex[c.key]) : acc, pre);
-  }
-  function aplicaChip2(pre0) {
-    const pre = aplicaExtras(pre0);
+  function aplicaChip2(pre) {
     return AV.chip2 && st.chip2 !== 'all' ? pre.filter(r => String(AV.chip2.of(r) ?? '') === st.chip2) : pre;
   }
   function aplica(pre0) {
@@ -164,7 +157,7 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
   function draw() {
     const pre = base();
     const { byChip, filt } = aplica(pre);
-    const hasFilter = exOn() || st.kpi !== 'all' || st.chip !== 'all' || st.chip2 !== 'all' || !!st.q.trim() || !!st.qDoc.trim() || !!st.dFrom || !!st.dTo;
+    const hasFilter = st.kpi !== 'all' || st.chip !== 'all' || st.chip2 !== 'all' || !!st.q.trim() || !!st.qDoc.trim() || !!st.dFrom || !!st.dTo;
 
     const kpis = kpisDef.length ? `<div class="sv-kpis">${kpisDef.map(k => {
       const n = k.fn ? byChip.filter(k.fn).length : byChip.length;
@@ -176,23 +169,12 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
     }).join('')}</div>` : '';
 
     let chips = '';
-    (AV.chips || []).forEach(c => {
-      const base0 = pre;
-      const vals = [...new Set(base0.map(r => String(c.of(r) ?? '')).filter(Boolean))].sort((a, b) => (c.orden ? c.orden(a, b) : a.localeCompare(b)));
-      const nm = c.name || (v => v);
-      const cur = st.ex[c.key] || 'all';
-      chips += `<div class="sv-frow"><span class="sv-flbl">${esc(c.label)}</span>
-        <button class="sv-chip ${cur === 'all' ? 'is-on' : ''}" data-chip data-exk="${esc(c.key)}" data-exv="all">Todos <small>${base0.length}</small></button>
-        ${vals.map(v => `<button class="sv-chip ${cur === v ? 'is-on' : ''}" data-chip data-exk="${esc(c.key)}" data-exv="${esc(v)}">${esc(nm(v))} <small>${base0.filter(r => String(c.of(r) ?? '') === v).length}</small></button>`).join('')}
-      </div>`;
-    });
-    const preX = aplicaExtras(pre);
     if (AV.chip2) {
-      const vals2 = [...new Set(preX.map(r => String(AV.chip2.of(r) ?? '')).filter(Boolean))].sort((a, b) => (AV.chip2.orden ? AV.chip2.orden(a, b) : a.localeCompare(b)));
+      const vals2 = [...new Set(pre.map(r => String(AV.chip2.of(r) ?? '')).filter(Boolean))].sort((a, b) => (AV.chip2.orden ? AV.chip2.orden(a, b) : a.localeCompare(b)));
       const nm2 = AV.chip2.name || (v => v);
       chips += `<div class="sv-frow"><span class="sv-flbl">${esc(AV.chip2.label)}</span>
-        <button class="sv-chip ${st.chip2 === 'all' ? 'is-on' : ''}" data-chip data-chip2v="all">Todos <small>${preX.length}</small></button>
-        ${vals2.map(v => `<button class="sv-chip ${st.chip2 === v ? 'is-on' : ''}" data-chip data-chip2v="${esc(v)}">${esc(nm2(v))} <small>${preX.filter(r => String(AV.chip2.of(r) ?? '') === v).length}</small></button>`).join('')}
+        <button class="sv-chip ${st.chip2 === 'all' ? 'is-on' : ''}" data-chip data-chip2v="all">Todos <small>${pre.length}</small></button>
+        ${vals2.map(v => `<button class="sv-chip ${st.chip2 === v ? 'is-on' : ''}" data-chip data-chip2v="${esc(v)}">${esc(nm2(v))} <small>${pre.filter(r => String(AV.chip2.of(r) ?? '') === v).length}</small></button>`).join('')}
       </div>`;
     }
     if (AV.chip) {
@@ -281,9 +263,6 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
     stage.querySelectorAll('[data-chipv]').forEach(b => b.addEventListener('click', () => {
       const v = b.dataset.chipv; st.chip = (st.chip === v && v !== 'all') ? 'all' : v; draw();
     }));
-    stage.querySelectorAll('[data-exk]').forEach(b => b.addEventListener('click', () => {
-      const k = b.dataset.exk, v = b.dataset.exv; st.ex[k] = (st.ex[k] === v && v !== 'all') ? 'all' : v; draw();
-    }));
     stage.querySelectorAll('[data-chip2v]').forEach(b => b.addEventListener('click', () => {
       const v = b.dataset.chip2v; st.chip2 = (st.chip2 === v && v !== 'all') ? 'all' : v; draw();
     }));
@@ -293,7 +272,7 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
       st.mode = m; st.kpi = 'all'; st.chip = 'all'; st.chip2 = 'all'; renderTablaV2(stage, cfg, deps, viewKey);
     }));
     stage.querySelector('[data-clear]')?.addEventListener('click', () => {
-      Object.assign(st, { kpi: 'all', chip: 'all', chip2: 'all', q: '', qDoc: '', dFrom: '', dTo: '', ex: {} }); draw();
+      Object.assign(st, { kpi: 'all', chip: 'all', chip2: 'all', q: '', qDoc: '', dFrom: '', dTo: '' }); draw();
     });
     stage.querySelector('[data-q]')?.addEventListener('input', e => { st.q = e.target.value; draw(); refocus('[data-q]'); });
     stage.querySelector('[data-qdoc]')?.addEventListener('input', e => {

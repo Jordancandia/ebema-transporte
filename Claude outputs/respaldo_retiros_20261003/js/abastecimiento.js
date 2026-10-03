@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610031211';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610031211';
-import { getDatabase } from './data.js?v=202610031211';
+import { supabase } from './supabase-client.js?v=202610022103';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610022103';
+import { getDatabase } from './data.js?v=202610022103';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610031211';
-import { confirmar } from './confirmar.js?v=202610031211';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610022103';
+import { confirmar } from './confirmar.js?v=202610022103';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -302,10 +302,9 @@ function tipoQuiebre(sd) {
 
 // ── Estado de coordinación de retiros (persistente) ─────────────────────────
 async function loadEstadosRetiro() {
-  // (3-oct-2026) Incluye los datos de transporte de la coordinación (Retiro RM).
-  const { data, error } = await supabase.from('abast_retiro_estado').select('doc_compr, estado, tipo_retiro, entrega_entrante, tipo_local_rm, fab_direccion, fab_comuna, fab_contacto, fab_telefono, fecha_retiro, updated_at, updated_by, id_transporte, transportista, chofer_nombre, chofer_rut, chofer_telefono, patente_camion, patente_carro');
+  const { data, error } = await supabase.from('abast_retiro_estado').select('doc_compr, estado, tipo_retiro, entrega_entrante, tipo_local_rm, fab_direccion, fab_comuna, fab_contacto, fab_telefono, fecha_retiro, updated_at, updated_by');
   const m = {};
-  if (!error) (data || []).forEach(r => { const { doc_compr, ...rest } = r; m[String(doc_compr)] = rest; });
+  if (!error) (data || []).forEach(r => { m[String(r.doc_compr)] = { estado: r.estado, tipo_retiro: r.tipo_retiro, entrega_entrante: r.entrega_entrante, tipo_local_rm: r.tipo_local_rm, fab_direccion: r.fab_direccion, fab_comuna: r.fab_comuna, fab_contacto: r.fab_contacto, fab_telefono: r.fab_telefono, fecha_retiro: r.fecha_retiro, updated_at: r.updated_at, updated_by: r.updated_by }; });
   return m;
 }
 
@@ -893,303 +892,6 @@ function showCoordVentaModal(row, ctx) {
     draw();
   });
 }
-// ── Coordinar retiro v3 (3-oct-2026, Jordan) ────────────────────────────────
-// Retiro RM (entra al plan, todo obligatorio + transporte) o Retiro local (no entra al plan,
-// datos opcionales, tipo FAB-SUC/FAB-CLTE). En Retiro RM se pueden sumar otras OC (mismo u
-// otro proveedor) que van en el mismo camión: comparten fecha, tipo de retiro y transporte;
-// cada una lleva su entrega entrante (y su dirección si es de otro proveedor).
-const TRANSP_NULL = { id_transporte: null, transportista: null, chofer_nombre: null, chofer_rut: null, chofer_telefono: null, patente_camion: null, patente_carro: null };
-async function anularCoordRetiro(docs) {
-  const email = await getUserEmail(), now = new Date().toISOString();
-  const rows = docs.map(d => ({ doc_compr: String(d).trim(), estado: 'no_coordinado', tipo_local_rm: null, tipo_retiro: null, entrega_entrante: null,
-    fab_direccion: null, fab_comuna: null, fab_contacto: null, fab_telefono: null, fecha_retiro: null, ...TRANSP_NULL, updated_by: email, updated_at: now }));
-  const { error } = await supabase.from('abast_retiro_estado').upsert(rows, { onConflict: 'doc_compr' });
-  if (error) { showAlert('Error al anular: ' + error.message, 'error'); return false; }
-  return true;
-}
-async function chequearChoqueRetiro(docsSel, st, ctx) {
-  const pat = normPatente(st.patCamion), rut = normPatente(st.choferRut);
-  const sel = new Set(docsSel.map(d => String(d).trim()));
-  const av = [];
-  const estados = (ctx && ctx.estados) || {};
-  const rowsBy = new Map(((ctx && ctx._rows) || []).map(r => [String(r.doc_compr ?? '').trim(), r]));
-  const otrosRet = Object.entries(estados).filter(([oc, e]) => !sel.has(String(oc).trim()) && modoRetiro(e) === 'RM' && e.patente_camion);
-  let ventas = [];
-  try { ventas = [...(await loadCoordinacionesVenta()).values()].filter(c => c.patente_camion); } catch (_) { /* */ }
-  const otros = otrosRet.map(([oc, e]) => ({ doc: 'OC ' + oc, fecha: e.fecha_retiro, pat: e.patente_camion, idT: e.id_transporte, tr: e.transportista, chN: e.chofer_nombre, chR: e.chofer_rut, ton: (rowsBy.get(String(oc).trim()) || {})._ton_num || 0 }))
-    .concat(ventas.map(c => ({ doc: 'NV ' + c.doc_ventas, fecha: c.fecha_entrega, pat: c.patente_camion, idT: c.id_transporte, tr: c.transportista, chN: c.chofer_nombre, chR: c.chofer_rut, ton: 0 })));
-  const fF = d => fmtFechaISO(d);
-  const mismaPat = otros.filter(o => normPatente(o.pat) === pat);
-  const mismoDia = mismaPat.filter(o => o.fecha === st.fecha);
-  mismoDia.forEach(o => {
-    if (String(o.idT ?? '').trim() !== st.idTrans.trim()) av.push(`${o.doc} usa esta patente el ${fF(o.fecha)} con otro transporte (${[o.idT, o.tr].filter(Boolean).join(' · ') || 'sin dato'}).`);
-    else if (normPatente(o.chR) !== rut) av.push(`${o.doc} usa esta patente el ${fF(o.fecha)} con otro chofer (${[o.chN, o.chR].filter(Boolean).join(' · ')}).`);
-  });
-  mismaPat.filter(o => o.fecha !== st.fecha).forEach(o => av.push(`La patente ya está coordinada el ${fF(o.fecha)} (${o.doc}); revisa si la fecha es correcta.`));
-  if (rut) otros.filter(o => o.fecha === st.fecha && normPatente(o.chR) === rut && normPatente(o.pat) !== pat)
-    .forEach(o => av.push(`El chofer ya está coordinado el ${fF(o.fecha)} en otra patente (${o.pat || '—'}, ${o.doc}).`));
-  const tonSel = docsSel.reduce((s, d) => s + ((rowsBy.get(String(d).trim()) || {})._ton_num || 0), 0);
-  const tonTot = tonSel + mismoDia.reduce((s, o) => s + (o.ton || 0), 0);
-  if (tonTot > CAP_CAMION_DIRECTO + 1e-9) av.push(`El camión suma ${fmtNum(tonTot, 1)} t (supera ${CAP_CAMION_DIRECTO} t).`);
-  return av;
-}
-function showCoordRetiroModal(row, ctx) {
-  return new Promise(async resolve => {
-    const t0 = row._transp || {};
-    const editando = !!row._modo;
-    let dirs = [];
-    try {
-      const { data } = await supabase.from('abast_proveedor_direcciones').select('id, nombre_fabrica, direccion, comuna')
-        .eq('proveedor_id', row.proveedor ?? '').eq('activo', true);
-      dirs = data || [];
-    } catch (_) { /* sin direcciones guardadas */ }
-    let tr = { trans: [], choferes: [], camiones: [] };
-    try { tr = await loadTransportistasCoord(); } catch (_) { /* */ }
-    const allRows = ((ctx && ctx._rows) || []).filter(x => String(x.doc_compr) !== String(row.doc_compr));
-    const st = {
-      modo: row._modo || 'RM',
-      tipo: row._tipo_retiro || '',
-      fecha: row._fecha_retiro || '',
-      dirSel: null, dirTxt: '', comuna: row._fab_comuna || '', contacto: row._fab_contacto || '', tel: row._fab_telefono || '',
-      entrega: row._entrega_entrante || '', guardar: true,
-      idTrans: t0.id_transporte || '', transportista: t0.transportista || '',
-      choferNombre: t0.chofer_nombre || '', choferRut: t0.chofer_rut || '', choferTel: t0.chofer_telefono || '',
-      patCamion: t0.patente_camion || '', patCarro: t0.patente_carro || '',
-      extras: new Map(), q: '', err: false,
-    };
-    if (row._fab_direccion) {
-      const m = dirs.find(d => d.direccion === row._fab_direccion);
-      if (m) st.dirSel = String(m.id); else { st.dirSel = 'new'; st.dirTxt = row._fab_direccion; }
-    } else if (dirs.length === 1) { st.dirSel = String(dirs[0].id); st.comuna = st.comuna || dirs[0].comuna || ''; }
-    else if (!dirs.length) st.dirSel = 'new';
-    // OC ya coordinadas en el mismo camión (misma patente y fecha) se precargan como acompañantes.
-    if (editando && t0.patente_camion && row._fecha_retiro) {
-      allRows.filter(x => x._modo === 'RM' && x._fecha_retiro === row._fecha_retiro && normPatente((x._transp || {}).patente_camion) === normPatente(t0.patente_camion))
-        .forEach(x => st.extras.set(String(x.doc_compr), { entrega: x._entrega_entrante || '', dir: x._fab_direccion || '', comuna: x._fab_comuna || '', contacto: x._fab_contacto || '', tel: x._fab_telefono || '' }));
-    }
-
-    const wrap = document.createElement('div');
-    wrap.id = 'coord-modal-bg';
-    wrap.innerHTML = '<div class="sv-dr-bg" style="z-index:120"></div><aside class="sv-dr" style="z-index:121;width:min(640px,100vw)" role="dialog" aria-label="Coordinar retiro"></aside>';
-    document.body.appendChild(wrap);
-    const panel = wrap.querySelector('aside');
-    const fin = v => { wrap.remove(); document.removeEventListener('keydown', onKey, true); resolve(v); };
-    const onKey = e => { if (e.key === 'Escape' && !document.querySelector('.sv-cf-bg')) { e.stopPropagation(); fin(false); } };
-    document.addEventListener('keydown', onKey, true);
-    wrap.querySelector('.sv-dr-bg').addEventListener('click', () => fin(false));
-
-    const rm = () => st.modo === 'RM';
-    const dirMain = () => st.dirSel === 'new' ? st.dirTxt.trim() : (dirs.find(d => String(d.id) === st.dirSel)?.direccion || '');
-    const rowOf = oc => allRows.find(x => String(x.doc_compr) === String(oc));
-    const mismoProv = x => String(x.proveedor ?? '').trim() === String(row.proveedor ?? '').trim();
-    const faltantes = () => {
-      const f = [];
-      if (!rm()) return f;
-      if (!st.fecha) f.push('fecha');
-      if (!dirMain()) f.push('dir');
-      if (!st.comuna.trim()) f.push('comuna');
-      if (!st.contacto.trim()) f.push('contacto');
-      if (!st.tel.trim()) f.push('tel');
-      if (!st.entrega.trim()) f.push('entrega');
-      if (!st.tipo) f.push('tipo');
-      ['idTrans', 'choferNombre', 'choferRut', 'choferTel', 'patCamion'].forEach(k => { if (!String(st[k]).trim()) f.push(k); });
-      st.extras.forEach((e, oc) => {
-        if (!e.entrega.trim()) f.push('x_entrega_' + oc);
-        const x = rowOf(oc);
-        if (x && !mismoProv(x)) ['dir', 'comuna', 'contacto', 'tel'].forEach(k => { if (!String(e[k]).trim()) f.push(`x_${k}_${oc}`); });
-      });
-      return f;
-    };
-    const bad = k => st.err && faltantes().includes(k);
-    const lbl = (txt, k, req) => `<label class="sv-flbl" style="display:block;margin-bottom:6px;${bad(k) ? 'color:#b5000b' : ''}">${txt}${req ? ' *' : ''}</label>`;
-    const inpS = k => `width:100%;box-sizing:border-box;min-width:0;${bad(k) ? 'border-color:#b5000b' : ''}`;
-    const inp = (k, ph, extra = '') => `<label class="sv-inp" style="${inpS(k)}"><input data-k="${k}" value="${escapeHtml(st[k])}" placeholder="${escapeHtml(ph || '')}" style="width:100%" ${extra}></label>`;
-    const xinp = (oc, k, ph) => `<label class="sv-inp" style="${inpS(`x_${k}_${oc}`)}"><input data-x="${escapeHtml(oc)}" data-xk="${k}" value="${escapeHtml(st.extras.get(oc)[k])}" placeholder="${escapeHtml(ph || '')}" style="width:100%"></label>`;
-    const chofList = () => tr.choferes.filter(x => String(x.id_transporte ?? '').trim() === st.idTrans.trim());
-    const camList = () => tr.camiones.filter(x => String(x.id_transporte ?? '').trim() === st.idTrans.trim() && String(x.id_camion ?? '').trim());
-    const tonSel = () => (row._ton_num || 0) + [...st.extras.keys()].reduce((s, oc) => s + ((rowOf(oc) || {})._ton_num || 0), 0);
-    const candidatos = () => {
-      const q = st.q.trim().toLowerCase();
-      return allRows
-        .filter(x => !st.extras.has(String(x.doc_compr)))
-        .filter(x => !q || `${x.doc_compr} ${x.nombre_1} ${x.proveedor}`.toLowerCase().includes(q))
-        .sort((a, b) => (mismoProv(b) - mismoProv(a)) || ((String(b.ce) === String(row.ce)) - (String(a.ce) === String(row.ce))) || ((b._ton_num || 0) - (a._ton_num || 0)))
-        .slice(0, 12);
-    };
-    const tiposOpc = () => rm() ? [['FAB-SUC', 'Directo a sucursal'], ['FAB-CLTE', 'Directo a cliente'], ['FAB-CD', 'Consolida en CD']] : [['FAB-SUC', 'Directo a sucursal'], ['FAB-CLTE', 'Directo a cliente']];
-
-    function draw() {
-      const falt = st.err ? faltantes() : [];
-      if (!rm() && st.tipo === 'FAB-CD') st.tipo = '';
-      const ton = tonSel();
-      panel.innerHTML = `
-        <div class="sv-dr-h"><div style="flex:1;min-width:0">
-          <div class="sv-dr-k">${editando ? 'Editar coordinación' : 'Coordinar retiro'}</div>
-          <div class="sv-dr-t">${escapeHtml(row.doc_compr)}</div>
-          <div class="sv-dr-s">${escapeHtml(row.nombre_1 || '')} → ${escapeHtml(getNombreCentro(row.ce))} · ${fmtNum(row._ton_num, 2)} t · ${row._tipo_pedido === 'CALZADA' ? 'Calzada' : 'Stock'}</div></div>
-          <button class="sv-iconbtn" data-cx title="Cerrar (Esc)"><span class="material-symbols-outlined">close</span></button></div>
-        <div class="sv-dr-b" style="gap:18px">
-          ${falt.length ? '<div class="sv-note-box" style="background:#ffdad6;color:#93000a;font-weight:700">Completa los campos obligatorios marcados en rojo.</div>' : ''}
-          <div>${lbl('Tipo de coordinación', 'modo', true)}
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
-              ${[['RM', 'Retiro RM', 'Nuestro camión retira · entra al Plan de Carga', '#15803d'], ['LOCAL', 'Retiro local', 'Lo gestiona la sucursal · no entra al plan', '#ea580c']].map(([v, t, d, c]) =>
-                `<button class="sv-opt ${st.modo === v ? 'is-on' : ''}" data-modo="${v}" style="flex-direction:column;align-items:flex-start;gap:2px;${st.modo === v ? `border-color:${c};background:${v === 'RM' ? '#f0fdf4' : '#fff7ed'}` : ''}"><b style="font-size:14px;color:${c}">${t}</b><span class="sv-sub" style="margin:0">${d}</span></button>`).join('')}
-            </div></div>
-          <div>${lbl('Tipo de retiro', 'tipo', rm())}
-            <div style="display:grid;grid-template-columns:repeat(${tiposOpc().length},1fr);gap:8px;${bad('tipo') ? 'outline:1px solid #b5000b;border-radius:4px' : ''}">
-              ${tiposOpc().map(([v, d]) => `<button class="sv-opt ${st.tipo === v ? 'is-on' : ''}" data-tipo="${v}" style="flex-direction:column;align-items:flex-start;gap:2px"><b>${v}</b><span class="sv-sub" style="margin:0">${d}</span></button>`).join('')}
-            </div>
-            <div class="sv-sub" style="margin-top:6px;max-width:none">Regla automática: ${escapeHtml(row._tipo_auto || '')} (${fmtNum(row._ton_num, 1)} t; umbral 23,8 t)</div></div>
-          <div style="display:grid;grid-template-columns:220px 1fr;gap:12px">
-            <div>${lbl('Fecha de retiro (carga)', 'fecha', rm())}
-              <label class="sv-inp" style="${inpS('fecha')}"><span class="material-symbols-outlined">calendar_today</span><input type="date" data-k="fecha" value="${escapeHtml(st.fecha)}" style="width:140px"></label></div>
-            <div>${lbl('Entrega entrante', 'entrega', rm())}
-              <label class="sv-inp" style="${inpS('entrega')}"><span class="material-symbols-outlined">tag</span><input class="is-mono" data-k="entrega" value="${escapeHtml(st.entrega)}" placeholder="N° de entrega" style="width:100%"></label></div>
-          </div>
-          ${rm() ? '<div class="sv-sub" style="margin-top:-10px;max-width:none">La OC entra al Plan de Carga del día de su fecha de retiro (día en que se carga).</div>' : ''}
-          <div class="sv-card" style="padding:14px 16px;display:flex;flex-direction:column;gap:10px">
-            <div class="sv-b" style="font-size:14px">Fábrica y contacto</div>
-            ${lbl('Dirección de fábrica', 'dir', rm())}
-            <div style="display:flex;flex-direction:column;gap:6px;${bad('dir') ? 'outline:1px solid #b5000b;border-radius:4px' : ''}">
-              ${dirs.map(d => `<button class="sv-opt ${st.dirSel === String(d.id) ? 'is-on' : ''}" data-dir="${d.id}">
-                <span class="material-symbols-outlined" style="color:${st.dirSel === String(d.id) ? '#b5000b' : '#5c5f61'}">${st.dirSel === String(d.id) ? 'radio_button_checked' : 'radio_button_unchecked'}</span>
-                <span><b>${escapeHtml(d.nombre_fabrica || d.direccion)}</b><div class="sv-sub" style="margin:0">${escapeHtml([d.direccion, d.comuna].filter(Boolean).join(', '))}</div></span></button>`).join('')}
-              <button class="sv-opt ${st.dirSel === 'new' ? 'is-on' : ''}" data-dir="new">
-                <span class="material-symbols-outlined" style="color:${st.dirSel === 'new' ? '#b5000b' : '#5c5f61'}">${st.dirSel === 'new' ? 'radio_button_checked' : 'radio_button_unchecked'}</span>
-                <span><b>Otra dirección</b><div class="sv-sub" style="margin:0">Ingresar una nueva</div></span></button>
-            </div>
-            ${st.dirSel === 'new' ? `${inp('dirTxt', 'Calle, número')}
-              ${row.proveedor ? `<label style="display:flex;align-items:center;gap:8px;font-size:13px;color:#5c5f61;cursor:pointer"><input type="checkbox" data-k="guardar" ${st.guardar ? 'checked' : ''}> Guardar esta dirección en el proveedor</label>` : ''}` : ''}
-            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
-              <div>${lbl('Comuna', 'comuna', rm())}${inp('comuna', '')}</div>
-              <div>${lbl('Contacto', 'contacto', rm())}${inp('contacto', 'Nombre')}</div>
-              <div>${lbl('Teléfono', 'tel', rm())}${inp('tel', '+56 9…')}</div>
-            </div>
-          </div>
-          ${rm() ? `
-          <div class="sv-card" style="padding:14px 16px;display:flex;flex-direction:column;gap:10px">
-            <div class="sv-b" style="font-size:14px">Datos del transporte${st.tipo === 'FAB-CD' ? ' (fábrica → CD)' : ''}</div>
-            <div>${lbl('ID transporte', 'idTrans', true)}
-              <label class="sv-inp" style="${inpS('idTrans')}"><span class="material-symbols-outlined">local_shipping</span>
-                <select data-sel="trans" style="border:none;background:transparent;width:100%;font:inherit;outline:none">
-                  <option value="">Seleccionar transportista…</option>
-                  ${tr.trans.map(t => `<option value="${escapeHtml(t.id)}" ${String(t.id) === st.idTrans ? 'selected' : ''}>${escapeHtml(t.id)} · ${escapeHtml(t.razonSocial || '')}</option>`).join('')}
-                  ${st.idTrans && !tr.trans.some(t => String(t.id) === st.idTrans) ? `<option value="${escapeHtml(st.idTrans)}" selected>${escapeHtml(st.idTrans)} · ${escapeHtml(st.transportista)}</option>` : ''}
-                </select></label></div>
-            ${chofList().length ? `<div>${lbl('Chofer del transportista', 'chof', false)}
-              <label class="sv-inp" style="${inpS('chof')}"><span class="material-symbols-outlined">badge</span>
-                <select data-sel="chof" style="border:none;background:transparent;width:100%;font:inherit;outline:none">
-                  <option value="">Elegir para autocompletar…</option>
-                  ${chofList().map((x, i) => `<option value="${i}" ${x.rut === st.choferRut ? 'selected' : ''}>${escapeHtml([x.nombre, x.apellido].filter(Boolean).join(' '))} · ${escapeHtml(x.rut || '')}</option>`).join('')}
-                </select></label></div>` : ''}
-            <div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:8px">
-              <div>${lbl('Nombre chofer', 'choferNombre', true)}${inp('choferNombre', '')}</div>
-              <div>${lbl('RUT chofer', 'choferRut', true)}${inp('choferRut', '12.345.678-9')}</div>
-              <div>${lbl('Teléfono', 'choferTel', true)}${inp('choferTel', '+56 9…')}</div>
-            </div>
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
-              <div>${lbl('Patente camión', 'patCamion', true)}${inp('patCamion', 'AB-CD-12', 'list="dl-pat-ret" autocomplete="off"')}</div>
-              <div>${lbl('Patente carro (opcional)', 'patCarro', false)}${inp('patCarro', 'Rampla / carro')}</div>
-            </div>
-            <datalist id="dl-pat-ret">${camList().map(x => `<option value="${escapeHtml(x.id_camion)}">${escapeHtml([x.modelo, x.capacidad_ton ? x.capacidad_ton + ' t' : ''].filter(Boolean).join(' · '))}</option>`).join('')}</datalist>
-          </div>
-          <div class="sv-card" style="padding:14px 16px;display:flex;flex-direction:column;gap:10px">
-            <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
-              <div class="sv-b" style="font-size:14px">Otras OC en el mismo camión</div>
-              <span class="sv-pill ${ton > CAP_CAMION_DIRECTO + 1e-9 ? 'bad' : 'ok'}"><i></i>${fmtNum(ton, 1)} t de ${CAP_CAMION_DIRECTO} t</span>
-            </div>
-            ${[...st.extras.keys()].map(oc => { const x = rowOf(oc) || {}; const otro = !mismoProv(x); return `
-              <div style="border:1px solid var(--sv-line);border-radius:6px;padding:10px;display:flex;flex-direction:column;gap:8px">
-                <div style="display:flex;align-items:center;gap:8px"><b class="sv-mono">${escapeHtml(oc)}</b><span class="sv-sub" style="margin:0;flex:1">${escapeHtml(x.nombre_1 || '')} → ${escapeHtml(getNombreCentro(x.ce))} · ${fmtNum(x._ton_num || 0, 1)} t</span>
-                  <button class="sv-iconbtn" data-xdel="${escapeHtml(oc)}" title="Quitar del camión"><span class="material-symbols-outlined">close</span></button></div>
-                <div style="display:grid;grid-template-columns:1fr ${otro ? '2fr' : ''};gap:8px">
-                  <div>${lbl('Entrega entrante', 'x_entrega_' + oc, true)}${xinp(oc, 'entrega', 'N° de entrega')}</div>
-                  ${otro ? `<div>${lbl('Dirección fábrica', 'x_dir_' + oc, true)}${xinp(oc, 'dir', 'Calle, número')}</div>` : ''}
-                </div>
-                ${otro ? `<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
-                  <div>${lbl('Comuna', 'x_comuna_' + oc, true)}${xinp(oc, 'comuna', '')}</div>
-                  <div>${lbl('Contacto', 'x_contacto_' + oc, true)}${xinp(oc, 'contacto', 'Nombre')}</div>
-                  <div>${lbl('Teléfono', 'x_tel_' + oc, true)}${xinp(oc, 'tel', '+56 9…')}</div></div>` : '<div class="sv-sub" style="margin:0">Mismo proveedor: usa la dirección y el contacto de arriba.</div>'}
-              </div>`; }).join('')}
-            <label class="sv-inp" style="width:100%;box-sizing:border-box"><span class="material-symbols-outlined">search</span><input data-q value="${escapeHtml(st.q)}" placeholder="Buscar OC o proveedor para agregar" style="width:100%"></label>
-            <div data-cands style="display:flex;flex-direction:column;gap:4px">${candHtml()}</div>
-          </div>` : ''}
-        </div>
-        <div class="sv-dr-f"><span class="sv-dr-note">* Obligatorio</span>
-          <div style="display:flex;gap:8px"><button class="sv-btn" data-cx>Cancelar</button>
-          <button class="sv-btn-p" data-ok><span class="material-symbols-outlined">${editando ? 'save' : 'event_available'}</span>${editando ? 'Guardar cambios' : 'Confirmar coordinación'}${st.extras.size ? ` (${st.extras.size + 1} OC)` : ''}</button></div></div>`;
-      wire();
-    }
-    function candHtml() {
-      const c = candidatos();
-      if (!c.length) return '<div class="sv-sub" style="margin:0">Sin OC para agregar.</div>';
-      return c.map(x => `<button class="sv-opt" data-xadd="${escapeHtml(x.doc_compr)}" style="padding:6px 10px">
-        <span class="material-symbols-outlined" style="color:#5c5f61">add_circle</span>
-        <span style="flex:1;min-width:0"><b class="sv-mono">${escapeHtml(x.doc_compr)}</b> <span class="sv-sub" style="display:inline;margin:0">${escapeHtml(x.nombre_1 || '')} → ${escapeHtml(getNombreCentro(x.ce))}</span></span>
-        <span class="sv-sub" style="margin:0">${x._modo === 'RM' ? 'RM · ' : x._modo === 'LOCAL' ? 'Local · ' : ''}${fmtNum(x._ton_num || 0, 1)} t</span></button>`).join('');
-    }
-    function wireCands() {
-      panel.querySelectorAll('[data-xadd]').forEach(b => b.addEventListener('click', () => {
-        const x = rowOf(b.dataset.xadd); if (!x) return;
-        st.extras.set(String(x.doc_compr), { entrega: x._entrega_entrante || '', dir: x._fab_direccion || '', comuna: x._fab_comuna || '', contacto: x._fab_contacto || '', tel: x._fab_telefono || '' });
-        draw();
-      }));
-    }
-    function wire() {
-      panel.querySelectorAll('[data-cx]').forEach(b => b.addEventListener('click', () => fin(false)));
-      panel.querySelectorAll('[data-modo]').forEach(b => b.addEventListener('click', () => { st.modo = b.dataset.modo; draw(); }));
-      panel.querySelectorAll('[data-tipo]').forEach(b => b.addEventListener('click', () => { st.tipo = st.tipo === b.dataset.tipo && !rm() ? '' : b.dataset.tipo; draw(); }));
-      panel.querySelectorAll('[data-dir]').forEach(b => b.addEventListener('click', () => {
-        st.dirSel = b.dataset.dir; const d = dirs.find(x => String(x.id) === st.dirSel); if (d && d.comuna) st.comuna = d.comuna; draw();
-      }));
-      panel.querySelectorAll('[data-k]').forEach(i => i.addEventListener(i.type === 'checkbox' || i.type === 'date' ? 'change' : 'input', () => { st[i.dataset.k] = i.type === 'checkbox' ? i.checked : i.value; }));
-      panel.querySelectorAll('[data-x]').forEach(i => i.addEventListener('input', () => { const e = st.extras.get(i.dataset.x); if (e) e[i.dataset.xk] = i.value; }));
-      panel.querySelectorAll('[data-xdel]').forEach(b => b.addEventListener('click', () => { st.extras.delete(b.dataset.xdel); draw(); }));
-      panel.querySelector('[data-q]')?.addEventListener('input', e => { st.q = e.target.value; const c = panel.querySelector('[data-cands]'); if (c) { c.innerHTML = candHtml(); wireCands(); } });
-      wireCands();
-      panel.querySelector('[data-sel="trans"]')?.addEventListener('change', e => {
-        st.idTrans = e.target.value; const t = tr.trans.find(x => String(x.id) === st.idTrans); st.transportista = t ? (t.razonSocial || '') : ''; draw();
-      });
-      panel.querySelector('[data-sel="chof"]')?.addEventListener('change', e => {
-        const x = chofList()[+e.target.value];
-        if (x) { st.choferNombre = [x.nombre, x.apellido].filter(Boolean).join(' '); st.choferRut = x.rut || ''; st.choferTel = x.telefono || st.choferTel; if (x.id_camion) st.patCamion = x.id_camion; draw(); }
-      });
-      panel.querySelector('[data-ok]').addEventListener('click', async e => {
-        if (faltantes().length) { st.err = true; draw(); return; }
-        const btn = e.currentTarget; btn.disabled = true;
-        const docs = [String(row.doc_compr).trim(), ...(rm() ? [...st.extras.keys()] : [])];
-        if (rm()) {
-          const avisos = await chequearChoqueRetiro(docs, st, ctx);
-          if (avisos.length && !(await confirmar(`Posible choque con el camión ${st.patCamion.trim().toUpperCase()}\n\n${avisos.map(a => '• ' + a).join('\n')}\n\n¿Guardar igual?`, { aceptar: 'Guardar igual', tono: 'peligro', icono: 'warning' }))) { btn.disabled = false; return; }
-        }
-        const fabDir = dirMain();
-        if (st.dirSel === 'new' && st.guardar && fabDir && row.proveedor) {
-          await supabase.from('abast_proveedor_direcciones').insert({ proveedor_id: row.proveedor, nombre_fabrica: fabDir, direccion: fabDir, comuna: st.comuna.trim(), activo: true });
-        }
-        const email = await getUserEmail(), now = new Date().toISOString();
-        const transp = rm() ? {
-          id_transporte: st.idTrans.trim(), transportista: st.transportista || null,
-          chofer_nombre: st.choferNombre.trim(), chofer_rut: st.choferRut.trim(), chofer_telefono: st.choferTel.trim(),
-          patente_camion: st.patCamion.trim().toUpperCase(), patente_carro: st.patCarro.trim().toUpperCase() || null,
-        } : TRANSP_NULL;
-        const base = { estado: 'coordinado', tipo_local_rm: st.modo, tipo_retiro: st.tipo || null, fecha_retiro: st.fecha || null, ...transp, updated_by: email, updated_at: now };
-        const filas = [{ ...base, doc_compr: String(row.doc_compr).trim(), entrega_entrante: st.entrega.trim() || null,
-          fab_direccion: fabDir || null, fab_comuna: st.comuna.trim() || null, fab_contacto: st.contacto.trim() || null, fab_telefono: st.tel.trim() || null }];
-        if (rm()) st.extras.forEach((x, oc) => {
-          const xr = rowOf(oc) || {}; const mismo = mismoProv(xr);
-          filas.push({ ...base, doc_compr: String(oc).trim(), entrega_entrante: x.entrega.trim() || null,
-            fab_direccion: mismo ? (fabDir || null) : (x.dir.trim() || null), fab_comuna: mismo ? (st.comuna.trim() || null) : (x.comuna.trim() || null),
-            fab_contacto: mismo ? (st.contacto.trim() || null) : (x.contacto.trim() || null), fab_telefono: mismo ? (st.tel.trim() || null) : (x.tel.trim() || null) });
-        });
-        const { error } = await supabase.from('abast_retiro_estado').upsert(filas, { onConflict: 'doc_compr' });
-        if (error) { showAlert('Error al coordinar: ' + error.message, 'error'); btn.disabled = false; return; }
-        showAlert(filas.length > 1 ? `${filas.length} OC coordinadas en el camión ${transp.patente_camion}` : `OC ${row.doc_compr} coordinada como ${rm() ? 'Retiro RM' : 'Retiro local'}`, 'success');
-        fin(true);
-      });
-    }
-    draw();
-  });
-}
 const ESTADO_OPTS = [
   { v: 'no_coordinado', l: 'No coordinado' },
   { v: 'coordinado',    l: 'Coordinado con proveedor' },
@@ -1356,18 +1058,21 @@ const VISTAS_TRONCAL = {
           if (ctdE > 0 && ctdE < ctdP) revSaldo = true;
           return { doc_compr: oc, ce: r.ce, material: r.material, texto_breve: r.texto_breve, pedido: ctdP, pendiente: pend, ton: t };
         });
-        // (3-oct-2026, Jordan) Tipo de pedido: OC con pedido de venta = CALZADA, sin pedido = STOCK.
-        // Tipo de retiro automático: OC ≥ 85% de un camión de 28 t (23,8 t) → STOCK: FAB-SUC,
-        // CALZADA: FAB-CLTE; bajo 23,8 t → FAB-CD. El tipo definido al coordinar manda.
+        // Tipo de retiro (AJUSTE): 4000=FÁBRICA-CD (Consolidar CD), 2000=FÁBRICA-SUCURSAL
+        // (Fábrica Directo). Si OC >=85% cap camión (UMBRAL_FABRICA, AJUSTE 28-sep-2026)
+        // y tiene pedido de venta ⇒ FÁBRICA-CLIENTE.
         const tienePedidoVenta = String(f.documento ?? '').trim() !== '';
-        const tipoPedido = tienePedidoVenta ? 'CALZADA' : 'STOCK';
-        const tipoAuto = ton >= CAP_CAMION_DIRECTO * UMBRAL_FABRICA - 1e-9 ? (tienePedidoVenta ? 'FAB-CLTE' : 'FAB-SUC') : 'FAB-CD';
-        let tipoRetiro = tipoAuto;
+        const cap = getCapacidadCamion(f.ce);
+        let tipoRetiro;
+        if (ton >= cap * UMBRAL_FABRICA && tienePedidoVenta) tipoRetiro = 'FAB-CLTE';
+        else if (almVal === '4000') tipoRetiro = 'FAB-CD';
+        else if (almVal === '2000') tipoRetiro = 'FAB-SUC';
+        else tipoRetiro = 'FAB-SUC';
         const al = alertaFecha(f.fe_entrega, 5);
         const estObj = estados[oc] || {};
         const est = estObj.estado || 'no_coordinado';
-        const modo = modoRetiro(estObj);
-        if (modo && estObj.tipo_retiro) tipoRetiro = estObj.tipo_retiro;
+        // Usar tipo_retiro guardado si existe (persistencia entre recargas)
+        if (estObj.tipo_retiro) tipoRetiro = estObj.tipo_retiro;
         // Cross-reference con pedidos_ventas_dt
         const docPV = String(f.documento ?? '').trim();
         const pv = pvMap[docPV] || {};
@@ -1375,9 +1080,7 @@ const VISTAS_TRONCAL = {
           doc_compr: oc, contr: f.contr, proveedor: f.proveedor, nombre_1: f.nombre_1,
           ce: f.ce, _desc_centro: getNombreCentro(f.ce), alm: f.alm, documento: f.documento,
           fe_entrega: f.fe_entrega,
-          _tipo_retiro: tipoRetiro, _tipo_auto: tipoAuto, _tipo_pedido: tipoPedido, _modo: modo,
-          _tipo_origen: modo && estObj.tipo_retiro ? 'COORDINACION' : 'REGLA',
-          _transp: estObj,
+          _tipo_retiro: tipoRetiro,
           _cliente: tipoRetiro === 'FAB-CLTE',
           _consolidar: tipoRetiro === 'FAB-CD',
           _ton_num: ton, _ton_totales: fmtNum(ton, 4),
@@ -1403,9 +1106,6 @@ const VISTAS_TRONCAL = {
           _pv_ruta: pv.ruta || '',
           // Comuna asociada a la ruta del Pedido de Ventas, según maestro de rutas
           _pv_comuna: lookupRuta(pv.ruta).comuna || '',
-          // (3-oct-2026) Expedición errónea: OC calzada cuyo pedido de venta no es
-          // EBE-RET / EBE-DESP ni EBE-RET / CLI-RET.
-          _exp_error: tienePedidoVenta && !!pv.denominacion && !EXPEDICIONES_OK_RETIRO.has(normCond(pv.denominacion)),
         });
       }
       return out.sort((a, b) => {
@@ -2368,93 +2068,78 @@ const V2 = {
   },
 
   // ── RETIROS DE FÁBRICA ────────────────────────────────────────────────────
-  // (3-oct-2026, Jordan) Tipo de pedido STOCK/CALZADA, tipo de retiro automático por 23,8 t,
-  // coordinación Retiro RM (verde, entra al plan) / Retiro local (naranjo, no entra),
-  // datos de transporte y varias OC por camión, Excluir en la fila, sólo OWNER edita.
   retiros: {
     titulo: 'Retiros de Fábrica',
-    desc: 'Órdenes de compra con retiro a proveedor. Sólo los Retiro RM entran al Plan de Carga, el día de su fecha de retiro (día en que se carga).',
-    rowId: r => String(r.doc_compr ?? '').trim(),
-    enrich(rows, ctx) { ctx._rows = rows; rows.forEach(r => { r._al = alertaV2(r.fe_entrega, 5); }); },
-    chips: [
-      { key: 'tp', label: 'Tipo pedido', of: r => r._tipo_pedido },
-      { key: 'sd', label: 'Saldo', of: r => r._revision_saldo ? 'Con saldo pendiente' : 'Sin entregas parciales' },
-    ],
+    desc: 'Órdenes de compra con retiro a proveedor',
+    enrich(rows) { rows.forEach(r => { r._al = alertaV2(r.fe_entrega, 5); }); },
     chip2: { label: 'Destino', of: r => String(r.ce ?? '').trim(), name: v => nombreCentro(v) || v },
     chip: { label: 'Tipo retiro', of: r => r._tipo_retiro },
-    search: { ph: 'Buscar OC, proveedor o patente', of: r => `${r.doc_compr} ${r.nombre_1} ${r.proveedor} ${r.documento || ''} ${(r._transp && r._transp.patente_camion) || ''}` },
+    search: { ph: 'Buscar OC o proveedor', of: r => `${r.doc_compr} ${r.nombre_1} ${r.proveedor} ${r.documento || ''}` },
     fecha: { label: 'Entrega SAP', of: r => r.fe_entrega },
     kpis: [
       { key: 'all', label: 'OC por retirar', color: C_INK, sub: 'todas las sucursales' },
-      { key: 'no', label: 'Sin coordinar', color: C_GREY, sub: 'no entran al plan', fn: r => !r._modo },
-      { key: 'rm', label: 'Retiro RM', color: C_GREEN, sub: 'entran al plan de carga', fn: r => r._modo === 'RM' },
-      { key: 'lo', label: 'Retiro local', color: C_ORANGE, sub: 'gestiona la sucursal', fn: r => r._modo === 'LOCAL' },
-      { key: 'at', label: 'Atrasadas', color: C_RED, sub: 'vencidas > 5 días, sin coordinar', fn: retiroAtrasado },
-      { key: 'ee', label: 'Expedición errónea', color: '#7e22ce', sub: 'pedido de venta calzado', fn: r => !!r._exp_error },
+      { key: 'no', label: 'Sin coordinar', color: C_RED, sub: 'no entran al plan', fn: r => !esEstadoCoordinado(r._estado) },
+      { key: 'si', label: 'Coordinadas', color: C_GREEN, sub: 'con proveedor', fn: r => esEstadoCoordinado(r._estado) },
+      { key: 'at', label: 'Atrasadas', color: C_ORANGE, sub: 'vencidas hace más de 5 días, sin coordinar', fn: retiroAtrasado },
     ],
     cols: [
       { label: 'Orden de compra', html: r => mono(r.doc_compr, r.contr ? 'contrato ' + r.contr : '') },
       { label: 'Proveedor', html: r => txt(r.nombre_1, r.proveedor, true) },
       { label: 'Destino', html: r => sucHtml(r.ce) },
-      { label: 'Tipo pedido', html: r => pill(r._tipo_pedido === 'CALZADA' ? 'Calzada' : 'Stock', r._tipo_pedido === 'CALZADA' ? 'info' : 'mute') + (r.documento ? `<div class="sv-sub">PV ${escV2(r.documento)}</div>` : '') },
-      { label: 'Tipo retiro', html: r => pill(r._tipo_retiro, TIPO_RETIRO_TONE[r._tipo_retiro] || 'mute') + `<div class="sv-sub">${r._tipo_origen === 'COORDINACION' ? 'coordinado' : 'automático'}</div>` },
+      { label: 'Tipo retiro', html: r => pill(r._tipo_retiro, TIPO_RETIRO_TONE[r._tipo_retiro] || 'mute') },
       { label: 'Fecha SAP', html: r => mono(r.fe_entrega) },
       { label: 'Fecha retiro', html: r => r._fecha_retiro ? mono(fmtFechaISO(r._fecha_retiro))
-          : (r._modo === 'RM' ? `<span class="sv-b" style="color:${C_RED}">Falta fecha</span>` : '<span class="sv-muted">—</span>') },
-      { label: 'Ton', al: 'r', html: r => `<span class="sv-ton">${tonHtml(r._ton_num)}</span>` + (r._revision_saldo ? '<div class="sv-sub" style="color:#b5000b">saldo pendiente</div>' : '') },
-      { label: 'Alerta', html: r => (retiroAtrasado(r) ? pill('Atrasada', 'bad') : (r._al.k === 'Atrasado' ? pill('Vencida', 'orange') : pill(r._al.k, r._al.k === 'Pronto a vencer' ? 'warn' : r._al.tone)))
-          + (r._exp_error ? `<div style="margin-top:4px" title="${escV2(r._pv_denominacion)}">${pill('Expedición errónea', 'purple')}</div>` : '') },
-      { label: 'Coordinación', html: r => r._modo === 'RM' ? pill('Retiro RM', 'ok') + (r._transp && r._transp.patente_camion ? `<div class="sv-sub">${escV2(r._transp.patente_camion)}</div>` : '')
-          : r._modo === 'LOCAL' ? pill('Retiro local', 'orange') : pill('Sin coordinar', 'mute') },
+          : (esEstadoCoordinado(r._estado) && r._tipo_local_rm !== 'LOCAL' ? `<span class="sv-b" style="color:${C_RED}">Falta fecha</span>` : '<span class="sv-muted">—</span>') },
+      { label: 'Ton', al: 'r', html: r => `<span class="sv-ton">${tonHtml(r._ton_num)}</span>` },
+      { label: 'Alerta', html: r => retiroAtrasado(r) ? pill('Atrasada', 'bad') : (r._al.k === 'Atrasado' ? pill('Vencida', 'orange') : pill(r._al.k, r._al.k === 'Pronto a vencer' ? 'warn' : r._al.tone)) },
+      { label: 'Coordinación', html: r => esEstadoCoordinado(r._estado) ? pill(r._tipo_local_rm === 'LOCAL' ? 'Coordinado · local' : 'Coordinado', 'ok') : pill('Sin coordinar', 'mute') },
     ],
-    excluirEnFila: true,
-    planEstado: (r, excluida) => excluida ? pill('Excluida hoy', 'bad')
-      : r._modo === 'RM' ? pill('En plan', 'ok') + (r._fecha_retiro ? `<div class="sv-sub">carga ${escV2(fmtFechaISO(r._fecha_retiro))}</div>` : '')
-      : r._modo === 'LOCAL' ? pill('Retiro local', 'orange')
-      : pill('No considerado', 'mute'),
-    edge: r => r._modo === 'LOCAL' ? C_ORANGE : r._modo === 'RM' ? C_GREEN : (retiroAtrasado(r) ? C_RED : null),
-    note: 'Tipo retiro automático: ≥ 23,8 t (85% de 28 t) → Stock FAB-SUC / Calzada FAB-CLTE; bajo 23,8 t → FAB-CD · Retiro RM entra al plan el día de su fecha de retiro',
-    minW: '1320px',
+    edge: r => retiroAtrasado(r) ? C_RED : (r._cliente ? C_GREEN : null),
+    note: 'FAB-CLTE: OC ≥85% de la capacidad del camión y con pedido de venta · Atrasada: vencida hace más de 5 días y sin coordinar',
+    minW: '1100px',
     detalle: r => {
-      const t = r._transp || {};
+      const coord = esEstadoCoordinado(r._estado);
       const puede = can('coordinar_retiro');
-      const acciones = !puede ? [] : [
-        { label: r._modo ? 'Editar coordinación' : 'Coordinar retiro', icon: 'event_available', primary: true,
-          run: async (row, ctx) => ((await showCoordRetiroModal(row, ctx)) ? { recargar: true } : null) },
+      const cambiarEstado = async (row, val, ctx) => {
+        const prev = row._estado, prevLbl = row._estado_lbl;
+        row._estado_prev = prev;
+        row._estado = val;
+        row._estado_lbl = (ESTADO_OPTS.find(o => o.v === val) || {}).l || 'No coordinado';
+        const ok = await VISTAS_TRONCAL.retiros.editable.onChange(row, val, ctx);
+        if (ok === false) { row._estado = prev; row._estado_lbl = prevLbl; return null; }
+        const est = (ctx.estados || {})[String(row.doc_compr)] || {};
+        row._upd_at = new Date().toISOString();
+        row._upd_by = await getUserEmail();
+        est.updated_at = row._upd_at; est.updated_by = row._upd_by;
+        return { redibujar: true };
+      };
+      const acciones = !puede ? [] : coord ? [
+        { label: 'Anular coordinación', icon: 'undo', run: async (row, ctx) => {
+          if (!await confirmar(`¿Anular la coordinación de la OC ${row.doc_compr}?\n\nVuelve a «Sin coordinar» y se limpian fecha, dirección y contacto.`)) return null;
+          return cambiarEstado(row, 'no_coordinado', ctx);
+        } },
+        { label: 'Editar coordinación', icon: 'edit_calendar', primary: true, run: (row, ctx) => cambiarEstado(row, 'coordinado', ctx) },
+      ] : [
+        { label: 'Coordinar retiro', icon: 'event_available', primary: true, run: (row, ctx) => cambiarEstado(row, 'coordinado', ctx) },
       ];
-      if (puede && r._modo) acciones.push({ label: 'Anular coordinación', icon: 'event_busy', run: async row => {
-        if (!await confirmar(`¿Anular la coordinación de la OC ${row.doc_compr}?\n\nVuelve a «Sin coordinar»: se limpian fecha, dirección, contacto y transporte, y sale del Plan de Carga.`)) return null;
-        return (await anularCoordRetiro([row.doc_compr])) ? (showAlert('Coordinación anulada', 'success'), { recargar: true }) : null;
-      } });
       const diasV = diasVencida(r.fe_entrega);
-      const avisos = [];
-      if (retiroAtrasado(r)) avisos.push(`<b>Atrasada:</b> la fecha SAP venció hace ${diasV} días y la OC sigue sin coordinar.`);
-      if (r._exp_error) avisos.push(`<b>Expedición errónea:</b> el pedido de venta ${escV2(r.documento)} tiene expedición «${escV2(r._pv_denominacion)}»; debe ser EBE-RET / EBE-DESP o EBE-RET / CLI-RET.`);
-      avisos.push(r._modo === 'RM' ? '<b>Plan de carga:</b> Retiro RM — entra al plan el día de su fecha de retiro.'
-        : r._modo === 'LOCAL' ? '<b>Plan de carga:</b> Retiro local — no se considera en el plan.' : '<b>Plan de carga:</b> sin coordinar, no se considera.');
-      const rm = r._modo === 'RM';
       return {
-        kind: 'Orden de compra · ' + (r._tipo_pedido === 'CALZADA' ? 'Calzada' : 'Stock'), title: r.doc_compr, sub: `${r.nombre_1 || ''} → ${nombreCentro(r.ce) || r.ce} · ${fmtNum(r._ton_num, 2)} t`,
-        aviso: avisos.join('<br>'),
+        kind: 'Orden de compra', title: r.doc_compr, sub: `${r.nombre_1 || ''} → ${nombreCentro(r.ce) || r.ce} · ${fmtNum(r._ton_num, 2)} t`,
+        aviso: retiroAtrasado(r) ? `<b>Atrasada:</b> la fecha SAP venció hace ${diasV} días y la OC sigue sin coordinar.` : '',
         kv: [
-          ['Tipo retiro', pill(r._tipo_retiro, TIPO_RETIRO_TONE[r._tipo_retiro] || 'mute') + ` <span class="sv-muted">${r._tipo_origen === 'COORDINACION' ? 'coordinado' : 'automático'}</span>`, true],
-          ['Regla automática', `${r._tipo_auto} · ${fmtNum(r._ton_num, 1)} t (umbral 23,8 t)`],
-          ['Coordinación', r._modo === 'RM' ? pill('Retiro RM', 'ok') : r._modo === 'LOCAL' ? pill('Retiro local', 'orange') : pill('Sin coordinar', 'mute'), true],
-          ['Tipo pedido', r._tipo_pedido === 'CALZADA' ? 'Calzada (con pedido de venta)' : 'Stock'],
-          ['Fecha SAP', r.fe_entrega], ['Fecha retiro (carga)', r._fecha_retiro ? fmtFechaISO(r._fecha_retiro) : ''],
-          ['Toneladas', tonHtml(r._ton_num), true], ['Almacén destino', r.alm],
+          ['Tipo retiro', pill(r._tipo_retiro, TIPO_RETIRO_TONE[r._tipo_retiro] || 'mute'), true],
+          ['Coordinación', coord ? (r._tipo_local_rm === 'LOCAL' ? 'Retiro local' : 'Retiro RM') : 'Sin coordinar'],
+          ['Almacén destino', r.alm], ['Fecha SAP', r.fe_entrega],
+          ['Fecha retiro', r._fecha_retiro ? fmtFechaISO(r._fecha_retiro) : ''], ['Toneladas', tonHtml(r._ton_num), true],
           ['Entrega entrante', r._entrega_entrante], ['Contrato de compra', r.contr],
-          r._modo ? ['Dirección fábrica', [r._fab_direccion, r._fab_comuna].filter(Boolean).join(', ')] : null,
-          r._modo ? ['Contacto', [r._fab_contacto, r._fab_telefono].filter(Boolean).join(' · ')] : null,
-          rm && (t.id_transporte || t.transportista) ? ['Transporte', [t.id_transporte, t.transportista].filter(Boolean).join(' · ')] : null,
-          rm && t.chofer_nombre ? ['Chofer', [t.chofer_nombre, t.chofer_rut, t.chofer_telefono].filter(Boolean).join(' · ')] : null,
-          rm && t.patente_camion ? ['Patentes', `Camión ${t.patente_camion}${t.patente_carro ? ' · Carro ' + t.patente_carro : ''}`] : null,
+          coord ? ['Dirección fábrica', r._fab_direccion] : null, coord ? ['Comuna fábrica', r._fab_comuna] : null,
+          coord ? ['Contacto', r._fab_contacto] : null, coord ? ['Teléfono', r._fab_telefono] : null,
           r.documento ? ['Pedido de venta', r.documento] : null,
-          r.documento ? ['Tipo expedición', r._exp_error ? `${escV2(r._pv_denominacion)} ${pill('Errónea', 'purple')}` : escV2(r._pv_denominacion || '—'), true] : null,
+          r.documento ? ['Tipo expedición', r._pv_denominacion] : null,
           r.documento ? ['Cliente', r._pv_nombre_cliente] : null,
           r.documento ? ['Vendedor', r._pv_nombre_vendedor] : null,
           r.documento ? ['Ruta · comuna', [r._pv_ruta, r._pv_comuna].filter(Boolean).join(' · ')] : null,
-          r._revision_saldo ? ['Saldo', 'Saldo pendiente (entrega parcial)'] : null,
+          r._revision_saldo ? ['Vigencia OC', 'Revisión saldo pedido (entrega parcial)'] : null,
           r._upd_at ? ['Última edición', `${fechaUpd(r._upd_at)}${r._upd_by ? ' · ' + r._upd_by : ''}`] : null,
         ],
         tabla: {
@@ -2462,7 +2147,7 @@ const V2 = {
           head: [['Material'], ['Descripción'], ['Pendiente', 'r'], ['Ton', 'r']],
           rows: (r._detalle || []).map(d => [mono(d.material), escV2(d.texto_breve), escV2(fmtNum(d.pendiente, 0)), `<span class="sv-ton">${tonHtml(d.ton)}</span>`]),
         },
-        nota: r._tipo_retiro === 'FAB-CD' ? '3º en el orden de llenado del camión CD' : 'Camión directo de fábrica',
+        nota: '3º en el orden de llenado · sólo entran al plan las OC coordinadas',
         acciones,
       };
     },
@@ -2729,7 +2414,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610031211');
+    const m = await import('./ind-plan-carga.js?v=202610022103');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
@@ -2904,17 +2589,6 @@ function fechaEnRango(fechaStr, diasAntes, diasDespues) {
 
 // COORDINADO_RM = COORDINADO_SANTIAGO (estado legado): el retiro llega a Santiago/RM, así que cuenta
 // en el Plan de Carga (regla Jordan 21-sep-2026). 'coordinado_local' NO cuenta.
-// (3-oct-2026) Modo de coordinación de un retiro: 'RM' (entra al plan), 'LOCAL' (no entra) o ''.
-// coordinado_santiago (antiguo) = RM; coordinado_local (antiguo) = LOCAL.
-function modoRetiro(e) {
-  const est = (e || {}).estado;
-  if (est === 'coordinado_santiago') return 'RM';
-  if (est === 'coordinado_local') return 'LOCAL';
-  if (est === 'coordinado') return e.tipo_local_rm === 'LOCAL' ? 'LOCAL' : 'RM';
-  return '';
-}
-const normCond = d => String(d ?? '').toUpperCase().replace(/\s+/g, ' ').trim();
-const EXPEDICIONES_OK_RETIRO = new Set(['EBE-RET / EBE-DESP', 'EBE-RET / CLI-RET']);
 function esEstadoCoordinado(estado) { return estado === 'coordinado' || estado === 'coordinado_santiago'; }
 
 // (AJUSTE 30-sep-2026, pedido Jordan) Llenado del camión CD = foto del servidor
@@ -3128,7 +2802,7 @@ async function renderPlanCarga(stage, opts = {}) {
   const retirosDirectosBase = esCD1003 ? retirosRaw
     .filter(r => !String(r.proveedor ?? '').startsWith('*'))
     .filter(r => String(r.contr ?? '').trim() !== '')
-    .filter(r => { const _e = estadosRetiro[String(r.doc_compr ?? '').trim()] || {}; return esEstadoCoordinado(_e.estado) && _e.tipo_local_rm !== 'LOCAL' && ['FAB-SUC', 'FAB-CLTE'].includes(_e.tipo_retiro); }) : [];
+    .filter(r => { const _e = estadosRetiro[String(r.doc_compr ?? '').trim()] || {}; return esEstadoCoordinado(_e.estado) && _e.tipo_local_rm !== 'LOCAL' && _e.tipo_retiro !== 'FAB-CD'; }) : [];
   // sqvi_pedidos_traslados_4000: cesu==ce (destino), origen siempre es CD 1003.
   // Deduplicar por doc_compr|pos — clave sin fecha para fusionar la fila '00.00.0000'
   // (cabecera SAP) con la fila de fecha real (línea de planificación), conservando
@@ -3395,52 +3069,37 @@ async function renderPlanCarga(stage, opts = {}) {
     manualesCe.forEach(m => (m.docs || []).forEach(dc => ocManual.set(String(dc).trim(), m)));
     const manBuckets = new Map();     // id manual → { m, items }
     const ocCli = {}, provSuc = {};   // cliente/proveedor -> { ton, items:[] }
-    // (3-oct-2026, Jordan) El tipo de camión directo sale del tipo de retiro coordinado
-    // (FAB-SUC → Fábrica-Sucursal, FAB-CLTE → Fábrica-Cliente) y las OC con la misma patente
-    // camión forman un solo camión (aunque sean de proveedores distintos o no lleguen al 85%).
-    const patBuckets = new Map();     // patente → { e, tipo, items }
     retirosFab.forEach(r => {
       const cant = parseNum(r.ctd_pedido) - parseNum(r.ctd_entregada);
       const t = calcTon(maxPesoDim(r.peso_bruto, r.tamano_dimens), cant);
       const item = itemR(r, cant, t);
       const docPV = String(r.documento ?? '').trim();
       const pvR = pvMap[docPV] || {};
-      const eR = estadosRetiro[String(r.doc_compr ?? '').trim()] || {};
-      const tipoDir = eR.tipo_retiro === 'FAB-CLTE' ? 'fabCli' : 'fabSuc';
-      item._tipoDir = tipoDir; item.cliente = pvR.nombre_1 || '';
+      const cond = normTxt(pvR.denominacion).replace(/\s+/g, ' ');
       const m = ocManual.get(String(r.doc_compr ?? '').trim());
       if (m) {
         if (!manBuckets.has(m.id)) manBuckets.set(m.id, { m, items: [] });
+        item._tipoDir = docPV === '' || cond === COND_EBEMA_RETIRA_CLIENTE_RETIRA ? 'fabSuc' : 'fabCli';
+        item.cliente = pvR.nombre_1 || '';
         manBuckets.get(m.id).items.push(item);
         return;
       }
-      const pat = normPatente(eR.patente_camion);
-      if (pat) {
-        if (!patBuckets.has(pat)) patBuckets.set(pat, { e: eR, tipo: tipoDir, items: [] });
-        patBuckets.get(pat).items.push(item);
-        return;
-      }
-      if (tipoDir === 'fabSuc') {
+      if (docPV === '' || cond === COND_EBEMA_RETIRA_CLIENTE_RETIRA) {
         const p = String(r.proveedor ?? '').trim();
+        item._tipoDir = 'fabSuc';
         (provSuc[p] = provSuc[p] || { ton: 0, items: [] }); provSuc[p].ton += t; provSuc[p].items.push(item);
-      } else {
+      } else if (cond === COND_EBEMA_RETIRA_EBEMA_DESPACHA) {
         const c = String(pvR.nombre_1 ?? '').trim() || docPV;
+        item._tipoDir = 'fabCli'; item.cliente = pvR.nombre_1 || '';
         (ocCli[c] = ocCli[c] || { ton: 0, items: [] }); ocCli[c].ton += t; ocCli[c].items.push(item);
       }
+      // Otras condiciones de expedición (p. ej. despacho directo del proveedor) no forman camión propio.
     });
     const capFab = getCapacidadCamion(ce);
     let tonFabCli = 0, tonFabSuc = 0;
     // (AJUSTE 28-sep-2026) Umbral 85% y reparto en N camiones por grupo (X2/X3).
     const camionesFabCli = [], camionesFabSuc = [];
     const fabCandidatos = [];   // OC de retiro directo que hoy no forman camión (para unir a mano)
-    patBuckets.forEach(({ e, tipo, items }, pat) => {
-      const nombres = [...new Set(items.map(d => d.prov).filter(Boolean))].join(' + ');
-      (tipo === 'fabCli' ? camionesFabCli : camionesFabSuc).push({ items, ton: items.reduce((s2, d) => s2 + (d.ton || 0), 0),
-        grupo: `Patente ${String(e.patente_camion || pat).toUpperCase()} · ${nombres}`, cap: CAP_CAMION_DIRECTO,
-        patente: String(e.patente_camion || pat).toUpperCase(), patenteCarro: e.patente_carro || '',
-        transportista: [e.id_transporte, e.transportista].filter(Boolean).join(' · '),
-        chofer: [e.chofer_nombre, e.chofer_rut, e.chofer_telefono].filter(Boolean).join(' · ') });
-    });
     manBuckets.forEach(({ m, items }) => {
       const nombres = [...new Set(items.map(d => d.prov).filter(Boolean))].join(' + ');
       armarCamiones(items, CAP_CAMION_DIRECTO, d => d.oc).forEach(c => (m.tipo === 'fabCli' ? camionesFabCli : camionesFabSuc)
