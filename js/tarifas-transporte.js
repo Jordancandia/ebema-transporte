@@ -1,16 +1,16 @@
 // PANTALLA 1: Administrador de Tarifas Transporte — SIT EBEMA
 // Sub-módulos: Peajes, Combustibles y Rendimientos, Seguros y Permisos,
 // Variables Generales y Motor de Costo (ZCAP) con exportación CSV.
-import { getDatabase, saveDatabase, getCentreName, getTariffConfig, getClientTariffConfig, truckCapKg, getOrigenGroups, getGroupRepId, buildTruckTypes, TRUCK_BASE_TYPES, loadHistorico, loadHistoricoFlete360, deleteRow } from './data.js?v=202610042030';
-import { CAP_LIST, truckTypesWithCap, calcularMatrizCostos, calcularCostoRuta } from './tarifas-engine.js?v=202610042030';
+import { getDatabase, saveDatabase, getCentreName, getTariffConfig, getClientTariffConfig, truckCapKg, getOrigenGroups, getGroupRepId, buildTruckTypes, TRUCK_BASE_TYPES, loadHistorico, loadHistoricoFlete360, deleteRow } from './data.js?v=202610042042';
+import { CAP_LIST, truckTypesWithCap, calcularMatrizCostos, calcularCostoRuta } from './tarifas-engine.js?v=202610042042';
 import { formatCLP, parseCSV, showAlert, toCSV, downloadFile, escapeHtml } from './utils.js';
-import { supabase } from './supabase-client.js?v=202610042030';
-import { getField } from './zonas-transporte.js?v=202610042030';
-import { renderZcapView, calcZcapRow } from './zcap.js?v=202610042030';
-import { can } from './permisos.js?v=202610042030';
-import { renderPeajesV2, setPeajesTab, renderCombustiblesV2, renderSegurosV2, renderCostosExtrasV2, renderVariablesV2, renderMotorV2 } from './tarifas-insumos.js?v=202610042030';
-import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, textoImpacto, setParamPill, usuarioSesion } from './tarifas-ui.js?v=202610042030';
-import { confirmar } from './confirmar.js?v=202610042030';
+import { supabase } from './supabase-client.js?v=202610042042';
+import { getField } from './zonas-transporte.js?v=202610042042';
+import { renderZcapView, calcZcapRow } from './zcap.js?v=202610042042';
+import { can } from './permisos.js?v=202610042042';
+import { renderPeajesV2, setPeajesTab, renderCombustiblesV2, renderSegurosV2, renderCostosExtrasV2, renderVariablesV2, renderMotorV2 } from './tarifas-insumos.js?v=202610042042';
+import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, textoImpacto, setParamPill, usuarioSesion } from './tarifas-ui.js?v=202610042042';
+import { confirmar } from './confirmar.js?v=202610042042';
 
 // FIX: Escuchar errores de sincronización con Supabase y notificar al usuario
 window.addEventListener('db_sync_error', (e) => {
@@ -572,9 +572,7 @@ function subTabButton(key, icon, label) {
 // ============================================================
 const EJES_LABELS = { 2: '2 Ejes (5 y 10 Ton)', 3: '3 Ejes (15 y 28 Ton)' };
 const PJ_DISPLAY_LIMIT = 500;
-// Desactivado 2026-07-14 a pedido del usuario: la API de peajes (TollGuru) queda deshabilitada.
-// La carga de peajes pasa a ser 100% manual via los campos editables de la tabla.
-const PEAJES_API_DESACTIVADA = true;
+// Peajes: carga 100% manual (APIs GetAPI/TollGuru eliminadas del proyecto 2026-10-04).
 
 function pjGetTollRow(db, routeId, ejes) {
   return (db.routeTolls || []).find(rt => rt.route_id === routeId && Number(rt.ejes) === ejes);
@@ -666,7 +664,7 @@ function renderAdminConcesiones(content, db, cfg) {
         <div class="flex items-start gap-md mb-md">
           <div class="flex-1">
             <p class="text-[12px] text-secondary">
-              Concesionarias consultadas por <strong>TollGuru</strong>. La columna <b>Variación Anual %</b> registra
+              Concesionarias registradas manualmente. La columna <b>Variación Anual %</b> registra
               el aumento tarifario informado por cada concesión (Decreto MOP). Al guardar, el motor aplica
               el factor a los peajes manuales de las plazas asociadas.
             </p>
@@ -752,7 +750,6 @@ function renderAdminConcesiones(content, db, cfg) {
         </div>
         <p class="text-[11px] text-secondary mt-sm">
           La variación se aplica a los <b>peajes manuales</b> registrados en la pestaña Peajes Regionales que tengan asignada la concesionaria.
-          Los peajes calculados por TollGuru reflejan precios actuales de la API.
         </p>
       </div>
     `;
@@ -1276,68 +1273,6 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-/**
- * Construye el parámetro de ubicación para GetAPI Chile en formato
- * "NombreComuna, NombreRegion" a partir de objetos con propiedades
- * { comuna, region }. Esto elimina diccionarios hardcoded y usa
- * directamente los campos estructurados de la base de datos.
- *
- * Ejemplo:
- *   construirParametrosRuta(
- *     { comuna: 'Quilicura', region: 'Metropolitana' },
- *     { comuna: 'Loncoche',  region: 'La Araucanía'  }
- *   )
- *   → { origin: 'Quilicura, Metropolitana', destination: 'Loncoche, La Araucanía' }
- *
- * La codificación URL la maneja el Edge Function con URLSearchParams.
- */
-// Mapea nombres oficiales largos de regiones a la forma corta que reconoce GetAPI.
-const REGION_ALIAS = {
-  "Libertador General Bernardo O'Higgins": "O'Higgins",
-  'Metropolitana de Santiago':             'Metropolitana',
-  'Magallanes y de la Antártica Chilena':  'Magallanes',
-};
-function normalizarRegion(region) {
-  if (!region) return region;
-  const r = String(region).trim();
-  return REGION_ALIAS[r] ?? r;
-}
-
-function construirParametrosRuta(origenObj, destinoObj) {
-  const fmt = (obj) => {
-    const partes = [obj.comuna, normalizarRegion(obj.region)].filter(Boolean).map(s => String(s).trim());
-    return partes.join(', ');
-  };
-  return {
-    origin:      fmt(origenObj),
-    destination: fmt(destinoObj)
-  };
-}
-
-// Invoca la Edge Function 'tollguru-tolls' (proxy hacia TollGuru API v1).
-// Fallback para rutas donde GetAPI retornó 0 o needs_review.
-// Respuesta: { tollCLP, tagCLP, distanceMeters, hasToll, tollsCount, tolls[], source:'tollguru' }
-async function callTollGuruTolls(originCity, destCity, category, destLat, destLon) {
-  const { data, error } = await supabase.functions.invoke('tollguru-tolls', {
-    body: { originCity, destCity, category, destLat: destLat || null, destLon: destLon || null }
-  });
-  if (error) throw error;
-  if (data && data.error) throw new Error(data.error);
-  return data;
-}
-
-// Invoca la Edge Function 'getapi-tolls' (proxy hacia chile.getapi.cl).
-// category: 'CAMION_2_EJES' | 'CAMION_PESADO'
-// Respuesta: { tollCLP, mainlineCLP, rampCLP, electronicCLP, hasToll, tollsCount, tolls[], notFound? }
-async function callGetApiTolls(originCity, destCity, category) {
-  const { data, error } = await supabase.functions.invoke('getapi-tolls', {
-    body: { originCity, destCity, category }
-  });
-  if (error) throw error;
-  if (data && data.error) throw new Error(data.error);
-  return data;
-}
-
 async function callGoogleDistance(originLat, originLng, destLat, destLng) {
   const { data, error } = await supabase.functions.invoke('google-distance', {
     body: { originLat, originLng, destLat, destLng }
@@ -1345,68 +1280,6 @@ async function callGoogleDistance(originLat, originLng, destLat, destLng) {
   if (error) throw error;
   if (data && data.error) throw new Error(data.error);
   return data; // { distanceKm, durationMin, distanceText, durationText }
-}
-
-// Prefiltro Google Routes API v2: detecta si una ruta tiene peajes SIN llamar a TollGuru.
-// Retorna { hasTolls, distanceKm }. Si hasTolls=false → peaje=$0, no se llama TollGuru.
-async function callGoogleTollCheck(originCity, destCity) {
-  const { data, error } = await supabase.functions.invoke('google-toll-check', {
-    body: { origin: originCity, destination: destCity }
-  });
-  if (error) throw error;
-  if (data && data.error) throw new Error(data.error);
-  return data; // { hasTolls, distanceKm }
-}
-
-// Crea o actualiza la fila route_tolls para (routeId, ejes) con los resultados
-// de ida/vuelta. Si opts.error, marca la fila para revisión sin tocar valores.
-// Guarda además el desglose por tipo: mainline (Troncal), ramp (Lateral), electronic (TAG).
-function pjUpsertToll(db, routeId, ejes, ida, vuelta, opts = {}) {
-  db.routeTolls = db.routeTolls || [];
-  let row = db.routeTolls.find(rt => rt.route_id === routeId && Number(rt.ejes) === ejes);
-  if (!row) {
-    row = { id: `tj_${routeId}_${ejes}`, route_id: routeId, ejes, peaje_ida: 0, peaje_vuelta: 0, needs_review: false };
-    db.routeTolls.push(row);
-  }
-  const now = new Date().toISOString();
-  if (opts.error) {
-    row.needs_review = true;
-    row.calculado_en = now;
-    row.updated_at = now;
-    return row;
-  }
-  // Soporta formato TollGuru ({ tollCLP }) y formato legacy GetAPI ({ tollCLP })
-  row.peaje_ida    = ida    ? Math.round(ida.tollCLP    || 0) : 0;
-  row.peaje_vuelta = vuelta ? Math.round(vuelta.tollCLP || 0) : 0;
-  // KM: TollGuru retorna distanceMeters directo; también acepta distance_km * 1000
-  const idaM   = ida    ? (ida.distanceMeters    ?? (ida.distance_km    != null ? ida.distance_km    * 1000 : null)) : null;
-  const vueltaM = vuelta ? (vuelta.distanceMeters ?? (vuelta.distance_km != null ? vuelta.distance_km * 1000 : null)) : null;
-  row.km_ida    = idaM    != null ? Math.round(idaM    / 100) / 10 : null;
-  row.km_vuelta = vueltaM != null ? Math.round(vueltaM / 100) / 10 : null;
-
-  // Desglose por tipo de peaje (TollGuru no desglosa por tipo — se deja en 0)
-  row.mainline_ida       = ida    ? Math.round(ida.mainlineCLP    || 0) : 0;
-  row.ramp_ida           = ida    ? Math.round(ida.rampCLP        || 0) : 0;
-  row.electronic_ida     = ida    ? Math.round(ida.electronicCLP  || 0) : 0;
-  row.mainline_vuelta    = vuelta ? Math.round(vuelta.mainlineCLP    || 0) : 0;
-  row.ramp_vuelta        = vuelta ? Math.round(vuelta.rampCLP        || 0) : 0;
-  row.electronic_vuelta  = vuelta ? Math.round(vuelta.electronicCLP  || 0) : 0;
-
-  // needs_review si:
-  //   - Sin resultado de API (error de red)
-  //   - notFound: ciudad no encontrada (solo aplica a GetAPI legacy)
-  //   - hasToll=true pero tollCLP=0 → dato inconsistente
-  // TollGuru: hasToll=false + toll=0 → ruta sin peaje → $0 correcto, NO revisión
-  const idaHasToll   = ida    ? (ida.hasToll    ?? ida.hasTolls    ?? false) : false;
-  const vueltaHasToll = vuelta ? (vuelta.hasToll ?? vuelta.hasTolls ?? false) : false;
-  const idaReview    = !ida    || !!ida.notFound    || (idaHasToll    && !row.peaje_ida);
-  const vueltaReview = !vuelta || !!vuelta.notFound || (vueltaHasToll && !row.peaje_vuelta);
-  row.needs_review = !!(idaReview || vueltaReview);
-  row.not_found = !!((ida && ida.notFound) || (vuelta && vuelta.notFound));
-  row.source = (ida?.source === 'tollguru' || vuelta?.source === 'tollguru') ? 'tollguru' : 'getapi';
-  row.calculado_en = now;
-  row.updated_at   = now;
-  return row;
 }
 
 // Crea o actualiza la fila route_tolls para (routeId, ejes) con valores
@@ -1646,112 +1519,6 @@ function createProgressModal(total) {
     },
     close() { el.remove(); }
   };
-}
-
-// Orquesta el cálculo de peajes con TollGuru como única fuente.
-async function calcularPeajes(content, db, cfg, rutas, { force = false, renderFn = null } = {}) {
-  if (PEAJES_API_DESACTIVADA) {
-    showAlert('La API de peajes está desactivada. Ingresa los valores de peaje manualmente en la tabla.', 'error');
-    return;
-  }
-  if (!rutas || rutas.length === 0) {
-    showAlert('No hay rutas para calcular con los filtros actuales', 'error');
-    return;
-  }
-
-  // Filtrar rutas con ciudad de origen y destino disponibles
-  const targets = rutas.filter(r => {
-    if (!r.comuna) return false;
-    const cdG = r.origen_grupo
-      ? (db.logisticsCentres || []).find(c => c.origen_grupo === r.origen_grupo && c.comuna)
-      : null;
-    const cd = cdG || (db.logisticsCentres || []).find(c => c.id === r.origenId);
-    return !!(cd?.comuna);
-  });
-  const sinCiudad = rutas.length - targets.length;
-  const avisoCoords = sinCiudad > 0 ? `\n${sinCiudad} ruta(s) sin ciudad origen/destino quedarán en revisión.` : '';
-
-  const enCache = force ? 0 : targets.filter(r => {
-    const c2 = pjGetTollRow(db, r.id, 2);
-    const c3 = pjGetTollRow(db, r.id, 3);
-    return c2 && c3 && c2.calculado_en && c3.calculado_en && !c2.needs_review && !c3.needs_review;
-  }).length;
-  const avisoCache = !force && enCache > 0
-    ? `\n${enCache} ruta(s) ya tienen caché válida y serán omitidas.\nUsa el botón ↺ por fila para forzar actualización de una ruta específica.`
-    : '';
-
-  if (!await confirmar(`Se calcularán peajes via TollGuru para ${targets.length} ruta(s).${avisoCoords}${avisoCache}\n\n¿Continuar?`)) {
-    return;
-  }
-
-  // Rutas sin ciudad → revisión directa
-  rutas.filter(r => !targets.includes(r)).forEach(ruta => {
-    [2, 3].forEach(ejes => pjUpsertToll(db, ruta.id, ejes, null, null, { error: true }));
-  });
-
-  // Construir lista de targets con ciudades (sin llamada Google)
-  const tollTargets = [];
-  for (const ruta of targets) {
-    if (!force) {
-      const c2 = pjGetTollRow(db, ruta.id, 2);
-      const c3 = pjGetTollRow(db, ruta.id, 3);
-      if (c2 && c3 && c2.calculado_en && c3.calculado_en && !c2.needs_review && !c3.needs_review) {
-        continue;
-      }
-    }
-    const cdPorGrupo = ruta.origen_grupo
-      ? (db.logisticsCentres || []).find(c => c.origen_grupo === ruta.origen_grupo && c.comuna)
-      : null;
-    const cd = cdPorGrupo || (db.logisticsCentres || []).find(c => c.id === ruta.origenId);
-    if (!cd?.comuna || !ruta.comuna) {
-      [2, 3].forEach(ejes => pjUpsertToll(db, ruta.id, ejes, null, null, { error: true }));
-      continue;
-    }
-    tollTargets.push({ ruta, originCity: cd.comuna.trim() + ', Chile', destCity: ruta.comuna.trim() + ', Chile' });
-  }
-
-  const modal = createProgressModal(tollTargets.length);
-  let cancelado = false;
-  modal.cancelBtn.addEventListener('click', () => { cancelado = true; });
-
-
-  // ── FASE 2: TollGuru — única fuente de peajes ───────────────────────────────
-  const ejesToCategory = { 2: 'CAMION_2_EJES', 3: 'CAMION_PESADO' };
-  let tgUsados = 0;
-  modal.update(0, tollTargets.length, `TollGuru — ${tollTargets.length} ruta(s)…`);
-
-  for (let i = 0; i < tollTargets.length; i++) {
-    if (cancelado) break;
-    const { ruta, originCity, destCity } = tollTargets[i];
-
-    for (const ejes of [2, 3]) {
-      const category = ejesToCategory[ejes];
-      let ida = null, errored = false;
-      modal.update(i, tollTargets.length, `[TollGuru] ${ruta.codigo} ${ejes}ej — ${ruta.comuna || ruta.destino || ''}`);
-      try {
-        const tg = await callTollGuruTolls(originCity, destCity, category, Number(ruta.lat) || null, Number(ruta.lon) || null);
-        tgUsados++;
-        if (tg && !tg.notFound && !tg.error) { ida = tg; }
-      } catch (tgErr) {
-        console.error('[TollGuru] Error para', ruta.codigo, ejes, 'ejes:', tgErr.message);
-        errored = true;
-      }
-      await sleep(1000);
-
-      pjUpsertToll(db, ruta.id, ejes, ida, ida, { error: errored && !ida });
-      if (cancelado) break;
-    }
-
-    if ((i + 1) % 10 === 0) saveDatabase(db, { syncOnly: ['routeTolls'] });
-  }
-
-  modal.update(tollTargets.length, tollTargets.length, cancelado ? 'Cancelado' : 'Finalizado');
-  saveDatabase(db, { syncOnly: ['routeTolls'] });
-  modal.close();
-
-  const resumen = `Completado: ${tollTargets.length} ruta(s). TollGuru: ${tgUsados} llamadas (~${tgUsados * 5} tx de 5.000/mes).`;
-  showAlert(cancelado ? 'Cálculo cancelado (avance guardado)' : resumen);
-  (renderFn || renderPeajesAuto)(content, db, cfg);
 }
 
 // ---------- Calcular KM vía Google Distance Matrix ----------

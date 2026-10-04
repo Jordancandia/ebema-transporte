@@ -1,8 +1,8 @@
-import { getDatabase, saveDatabase, getCentreName } from './data.js?v=202610042030';
+import { getDatabase, saveDatabase, getCentreName } from './data.js?v=202610042042';
 import { showAlert, escapeHtml } from './utils.js';
-import { supabase } from './supabase-client.js?v=202610042030';
-import { ROLES_CON_CENTROS } from './permisos.js?v=202610042030';
-import { confirmar } from './confirmar.js?v=202610042030';
+import { supabase } from './supabase-client.js?v=202610042042';
+import { ROLES_CON_CENTROS } from './permisos.js?v=202610042042';
+import { confirmar } from './confirmar.js?v=202610042042';
 
 // --- Perfiles de Acceso (Roles y Perfiles + Row Level Security) ---
 // 5 perfiles canónicos. Cada uno determina qué puede ver/editar el usuario
