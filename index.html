@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8"/>
+  <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+  <meta name="description" content="SIT EBEMA - Sistema Integrado de Transporte. Cotización de tarifas y gestión logística.">
+  <title>SIT EBEMA - Sistema Integrado de Transporte</title>
+
+  <!-- Fuentes Premium de Google — preconnect evita latencia DNS -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=optional" rel="stylesheet"/>
+  
+  <!-- Iconos de Material Symbols -->
+  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=optional" rel="stylesheet"/>
+
+  <!-- Leaflet.js (carga diferida — ver js/utils.js loadLeaflet()) -->
+  <!-- Las líneas de Leaflet se movieron a carga dinámica para no bloquear el arranque -->
+
+  <!-- Estilos Customizados (incluye overrides de Leaflet y scrollbars) -->
+  <link rel="stylesheet" href="css/style.css">
+
+  <!-- Tailwind CSS compilado (antes: CDN que compilaba en el navegador). Regenerar con: npm run build:css -->
+  <!-- Sistema visual v2 (menú lateral, encabezado y vistas rediseñadas). Antes de tailwind para que .hidden gane -->
+  <link rel="stylesheet" href="css/sit-v2.css?v=202610041957">
+  <link rel="stylesheet" href="css/tailwind.css?v=202610041957">
+  <!-- Va DESPUÉS de style.css: mismo orden de cascada que tenía el CDN (inyectaba su <style> al final del head). Tema en tailwind.config.js -->
+</head>
+<body class="bg-background text-on-background font-body-md overflow-x-hidden h-screen">
+
+  <!-- Contenedor Principal de la App (Montado dinámicamente) -->
+  <div id="app-root">
+    <div class="flex justify-center items-center h-screen bg-[#f8f9fa] text-secondary">
+      <div class="text-center">
+        <div class="text-2xl font-bold text-primary mb-md animate-pulse">SIT EBEMA</div>
+        <div class="font-body-md">Iniciando cotizador operativo...</div>
+        <div class="w-8 h-8 border-2 border-outline-variant border-t-primary rounded-full animate-spin mx-auto mt-md"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Script Lógico Modular -->
+  <script type="module" src="js/app.js?v=202610041957"></script>
+</body>
+</html>

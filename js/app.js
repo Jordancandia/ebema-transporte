@@ -1,0 +1,1784 @@
+import { getDatabase, saveDatabase, initDatabase, loadRoutesData, loadHistoricoFlete360 } from './data.js?v=202610041957';
+import { supabase } from './supabase-client.js?v=202610041957';
+import { setSesionPermisos, puedeVerMenu, can, esSoloLectura, PERFILES } from './permisos.js?v=202610041957';
+// ── Módulos cargados bajo demanda (lazy) — se cachean tras la primera carga ──
+const _mod = {};
+async function loadMod(key, modPath) {
+  if (!_mod[key]) _mod[key] = await import(modPath);
+  return _mod[key];
+}
+// Pre-warm: carga indicadores y abastecimiento en background tras login
+function prewarmMods() {
+  setTimeout(() => loadMod('ind',   './indicadores.js?v=202610041957'), 600);
+  setTimeout(() => loadRoutesData(), 800);  // pre-fetch tablas pesadas en background
+  setTimeout(() => loadMod('abast', './abastecimiento.js?v=202610041957'), 2000);
+}
+import { showAlert, formatRut, validateRut, formatPhone } from './utils.js';
+
+const SESSION_KEY = 'ebema_user_session';
+let currentSession = null;
+let currentTab = 'home'; // HOME (indicadores) como pantalla principal
+let currentSub = null;    // Submenu activo del sidebar (null = item simple)
+
+// Estado de la pantalla de autenticación ('login', 'register', 'recover')
+let authState = 'login';
+
+const appRoot = document.getElementById('app-root');
+
+document.addEventListener('DOMContentLoaded', async () => {
+  // ── Detectar flujo especial por hash de URL ────────────────────────────────
+  // Supabase escribe #access_token=...&type=invite|recovery al redirigir
+  const hashParams = new URLSearchParams(window.location.hash.replace('#', ''));
+  const flowType   = hashParams.get('type'); // 'invite' | 'recovery' | null
+
+  if (flowType === 'invite' || flowType === 'recovery') {
+    // El SDK ya consumió el token del hash y creó la sesión
+    const { data: { session } } = await supabase.auth.getSession();
+    if (session) {
+      // Limpiar el hash de la URL sin recargar la página
+      history.replaceState(null, '', window.location.pathname + window.location.search);
+      renderSetPasswordView(session.user, flowType);
+      return;
+    }
+  }
+
+  await checkSession();
+  renderApp();
+});
+
+// ── Pantalla: definir contraseña (primer ingreso por invitación) ──────────────
+function renderSetPasswordView(user, flowType) {
+  const label = flowType === 'invite'
+    ? 'Bienvenido — Define tu contraseña corporativa'
+    : 'Restablecer contraseña';
+
+  appRoot.innerHTML = `
+    <div class="min-h-screen flex items-center justify-center bg-background">
+      <div class="bg-white rounded-xl shadow-lg p-8 w-full max-w-sm">
+        <div class="flex items-center gap-sm mb-md">
+          <div style="width:36px;height:36px;background:#b5000b;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:900;color:white">E</div>
+          <div>
+            <div class="font-bold text-primary text-lg leading-none">SIT EBEMA</div>
+            <div class="text-xs text-secondary">Sistema Integrado de Transporte</div>
+          </div>
+        </div>
+        <h2 class="font-bold text-headline-sm mb-xs">${label}</h2>
+        <p class="text-sm text-secondary mb-md">Cuenta: <strong>${user.email}</strong></p>
+
+        <form id="set-pass-form" class="flex flex-col gap-sm" autocomplete="off">
+          <div>
+            <label class="text-xs font-bold text-secondary uppercase tracking-wide block mb-[4px]">Nueva contraseña</label>
+            <input id="sp-pass" type="password" minlength="8" required placeholder="Mínimo 8 caracteres"
+              class="border border-outline-variant rounded px-sm py-xs text-sm w-full focus:outline-none focus:border-primary"/>
+          </div>
+          <div>
+            <label class="text-xs font-bold text-secondary uppercase tracking-wide block mb-[4px]">Confirmar contraseña</label>
+            <input id="sp-confirm" type="password" minlength="8" required placeholder="Repite la contraseña"
+              class="border border-outline-variant rounded px-sm py-xs text-sm w-full focus:outline-none focus:border-primary"/>
+          </div>
+
+          <div id="sp-error" class="hidden bg-error-container text-on-error-container text-xs p-sm rounded"></div>
+
+          <button type="submit" id="sp-btn"
+            class="bg-primary hover:bg-[#930007] text-white rounded px-md py-sm text-sm font-bold mt-xs flex items-center justify-center gap-xs transition-colors">
+            <span class="material-symbols-outlined text-[16px]">lock_reset</span>
+            Activar cuenta y entrar
+          </button>
+        </form>
+      </div>
+    </div>`;
+
+  document.getElementById('set-pass-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const pass    = document.getElementById('sp-pass').value;
+    const confirm = document.getElementById('sp-confirm').value;
+    const errDiv  = document.getElementById('sp-error');
+    const btn     = document.getElementById('sp-btn');
+
+    errDiv.classList.add('hidden');
+
+    if (pass.length < 8) {
+      errDiv.textContent = 'La contraseña debe tener al menos 8 caracteres.';
+      errDiv.classList.remove('hidden');
+      return;
+    }
+    if (pass !== confirm) {
+      errDiv.textContent = 'Las contraseñas no coinciden.';
+      errDiv.classList.remove('hidden');
+      return;
+    }
+
+    btn.disabled = true;
+    btn.innerHTML = '<div style="width:16px;height:16px;border:2px solid rgba(255,255,255,0.3);border-top-color:white;border-radius:50%;animation:spin 0.7s linear infinite"></div> Activando...';
+
+    const { error } = await supabase.auth.updateUser({ password: pass });
+    if (error) {
+      errDiv.textContent = error.message;
+      errDiv.classList.remove('hidden');
+      btn.disabled = false;
+      btn.innerHTML = '<span class="material-symbols-outlined text-[16px]">lock_reset</span> Activar cuenta y entrar';
+      return;
+    }
+
+    // Contraseña definida — continuar con flujo normal
+    showAlert('¡Contraseña definida! Bienvenido al sistema.');
+    await checkSession();
+    renderApp();
+  });
+}
+
+// Verificar sesión real en Supabase y cargar la base de datos compartida
+async function checkSession() {
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) {
+      currentSession = null;
+      localStorage.removeItem(SESSION_KEY);
+      return;
+    }
+    const email = session.user.email.toLowerCase();
+    const meta = session.user.user_metadata || {};
+
+    // ===== RAMA PROVEEDOR DE SERVICIO (correo externo) =====
+    if (!email.endsWith('@ebema.cl')) {
+      await initDatabase(); // RLS solo le entrega SUS datos
+      // Asegurar que existe su perfil de proveedor (creado desde los datos del registro)
+      let { data: provider } = await supabase.from('providers').select('*').eq('email', email).maybeSingle();
+      if (!provider) {
+        // Los datos vienen de user_metadata, 100% controlados por el usuario externo en signUp().
+        // Se validan y acotan ANTES de insertar en providers (el RUT/razonSocial quedan
+        // bloqueados para edición posterior por el trigger anti-tamper).
+        const rut = formatRut(meta.rut || '');
+        if (!validateRut(rut)) {
+          await supabase.auth.signOut();
+          currentSession = null;
+          localStorage.removeItem(SESSION_KEY);
+          showAlert('El RUT registrado no es válido. Contacte a EBEMA para activar su cuenta.', 'error');
+          return;
+        }
+        const newProvider = {
+          email,
+          razonSocial: (meta.razonSocial || meta.full_name || email.split('@')[0]).toString().slice(0, 120),
+          rut,
+          telefono: (meta.telefono || '').toString().slice(0, 30),
+          representante: (meta.representante || '').toString().slice(0, 80),
+          estado: 'pendiente'
+        };
+        const { error: insErr } = await supabase.from('providers').insert(newProvider);
+        if (insErr) {
+          console.error('No se pudo crear el perfil de proveedor:', insErr.message);
+          await supabase.auth.signOut();
+          currentSession = null;
+          localStorage.removeItem(SESSION_KEY);
+          showAlert('No se pudo activar su cuenta de proveedor. Contacte a EBEMA.', 'error');
+          return;
+        }
+        provider = newProvider;
+      }
+      currentSession = { email, name: provider.razonSocial, role: 'proveedor', tipo: 'proveedor' };
+      localStorage.setItem(SESSION_KEY, JSON.stringify(currentSession));
+      return;
+    }
+
+    // ===== RAMA FUNCIONARIO EBEMA =====
+    await initDatabase();
+    const db = getDatabase();
+    let u = (db.users || []).find(x => x.email === email);
+
+    // Primer ingreso (ej. vía Google): crear el perfil automáticamente
+    if (!u) {
+      const googleName = meta.full_name || meta.name;
+      u = {
+        email,
+        name: googleName || email.split('@')[0].toUpperCase(),
+        role: 'AGENTE_COMERCIAL', // rol canónico inicial (no privilegiado); un OWNER puede cambiarlo después
+        activo: true,
+        lastAccess: new Date().toLocaleDateString('es-CL')
+      };
+      db.users.push(u);
+      // Upsert directo: no usar saveDatabase() aquí porque sincroniza TODOS los usuarios,
+      // lo que genera errores RLS al intentar modificar filas de otros usuarios.
+      // La policy app_users_insert permite auto-registro de la propia fila @ebema.cl.
+      const { error: regErr } = await supabase.from('app_users').upsert(u);
+      if (regErr) console.warn('No se pudo registrar perfil en Supabase:', regErr.message);
+    } else {
+      // Actualizar lastAccess en cada inicio de sesión
+      u.lastAccess = new Date().toLocaleDateString('es-CL');
+      await supabase.from('app_users').update({ lastAccess: u.lastAccess }).eq('email', email);
+    }
+
+    // Cuenta inhabilitada por el administrador
+    if (u.activo === false) {
+      await supabase.auth.signOut();
+      currentSession = null;
+      localStorage.removeItem(SESSION_KEY);
+      showAlert('Su cuenta corporativa ha sido inhabilitada por el administrador.', 'error');
+      return;
+    }
+
+    currentSession = { email, name: u.name, role: u.role, tipo: 'funcionario', centros: Array.isArray(u.centrosAsignados) ? u.centrosAsignados : [] };
+    setSesionPermisos(currentSession.role, currentSession.centros);
+    localStorage.setItem(SESSION_KEY, JSON.stringify(currentSession));
+  } catch (err) {
+    console.error('Error verificando sesión:', err);
+    currentSession = null;
+  }
+}
+
+// Avisar si una sincronización con el servidor falla
+window.addEventListener('db_sync_error', (e) => {
+  const detalle = e && e.detail ? ` (${e.detail})` : '';
+  showAlert(`No se pudo sincronizar parte de los datos con el servidor. Cambios guardados solo localmente.${detalle}`, 'error');
+});
+
+function renderApp() {
+  if (!currentSession) {
+    renderAuthView();
+  } else if (currentSession.tipo === 'proveedor') {
+    import('./provider-portal.js?v=202610041957').then(m => m.renderProviderShell(currentSession, handleLogout));
+  } else {
+    renderDashboardShell();
+  }
+}
+
+// Cierre de sesión compartido (dashboard y portal de proveedores)
+async function handleLogout() {
+  await supabase.auth.signOut();
+
+  // Limpiar caché local de datos de negocio (tarifas, costos, RUTs, usuarios/roles)
+  // para que no queden expuestos en un equipo compartido tras cerrar sesión (auditoría A-04).
+  const sessionEmail = (() => {
+    try { return (JSON.parse(localStorage.getItem(SESSION_KEY) || '{}').email || 'anon'); }
+    catch (_e) { return 'anon'; }
+  })();
+  localStorage.removeItem(SESSION_KEY);
+  localStorage.removeItem('ebema_transporte_db');
+  localStorage.removeItem('sit_ebema_hist_v1');
+  localStorage.removeItem(`ebema_recent_quotes_${sessionEmail}`);
+  try {
+    const delReq = indexedDB.deleteDatabase('sit_ebema_idb');
+    delReq.onerror   = () => console.warn('No se pudo eliminar la caché IndexedDB local (sit_ebema_idb).');
+    delReq.onblocked = () => console.warn('Eliminación de caché IndexedDB (sit_ebema_idb) bloqueada por otra pestaña abierta.');
+  } catch (_e) {
+    console.warn('No se pudo iniciar la eliminación de la caché IndexedDB local (sit_ebema_idb).');
+  }
+
+  currentSession = null;
+  currentTab = 'home';
+  currentSub = null;
+  try { history.replaceState(null, '', window.location.pathname + window.location.search); } catch (_e) { /* */ }
+  authState = 'login';
+  showAlert('Sesión finalizada.');
+  renderApp();
+}
+
+// ==========================================================================
+// PANTALLAS DE AUTENTICACIÓN (LOGIN, REGISTRO, RECUPERACIÓN)
+// ==========================================================================
+function renderAuthView() {
+  if (authState === 'login') {
+    renderLoginView();
+  } else if (authState === 'register') {
+    renderRegisterView();
+  } else if (authState === 'recover') {
+    renderRecoverView();
+  }
+}
+
+// 1. Iniciar Sesión
+function renderLoginView() {
+  appRoot.innerHTML = `
+    <div class="auth-split-layout min-h-screen flex" style="background:#f8f9fa">
+
+      <!-- Panel Izquierdo: Branding EBEMA -->
+      <div class="auth-brand-panel hidden lg:flex flex-col justify-between w-2/5 p-12 relative overflow-hidden" style="background:linear-gradient(145deg,#8b0000 0%,#b5000b 45%,#d40010 80%,#ff1a24 100%)">
+        <!-- Patrón de fondo decorativo -->
+        <div style="position:absolute;inset:0;background-image:radial-gradient(circle at 20% 80%, rgba(255,255,255,0.06) 0%, transparent 50%),radial-gradient(circle at 80% 20%, rgba(255,255,255,0.04) 0%, transparent 50%);pointer-events:none"></div>
+        <div style="position:absolute;bottom:-80px;right:-80px;width:320px;height:320px;border-radius:50%;background:rgba(255,255,255,0.04);pointer-events:none"></div>
+        <div style="position:absolute;top:-40px;left:-60px;width:200px;height:200px;border-radius:50%;background:rgba(255,255,255,0.03);pointer-events:none"></div>
+
+        <!-- Logo Superior -->
+        <div style="position:relative;z-index:2">
+          <div style="display:inline-flex;align-items:center;gap:16px;margin-bottom:40px">
+            <div style="width:72px;height:72px;background:white;border-radius:16px;display:flex;align-items:center;justify-content:center;padding:8px;box-shadow:0 4px 14px rgba(0,0,0,0.25)">
+              <img src="https://www.ebema.cl/wp-content/uploads/2023/03/cropped-cropped-Ebema-Logo-Ebema-Removebg-1-270x270.png" alt="Logo EBEMA" style="width:100%;height:100%;object-fit:contain" />
+            </div>
+            <div>
+              <div style="color:white;font-weight:900;font-size:34px;letter-spacing:-0.01em;line-height:1.05">SIT EBEMA</div>
+              <div style="color:rgba(255,255,255,0.65);font-size:12px;letter-spacing:0.1em;text-transform:uppercase;margin-top:4px">Sistema Integrado de Transporte</div>
+            </div>
+          </div>
+
+          <h2 style="color:white;font-size:30px;font-weight:800;line-height:1.25;letter-spacing:-0.01em;margin-bottom:14px;text-transform:uppercase">Gestión Logística<br/>de Transporte</h2>
+          <p style="color:rgba(255,255,255,0.72);font-size:15px;line-height:1.6;max-width:320px">Plataforma centralizada para cotización de tarifas, administración de rutas y control de transportes.</p>
+        </div>
+
+        <!-- Foto camión con materiales de construcción -->
+        <div style="position:relative;z-index:2">
+          <div style="border-radius:14px;overflow:hidden;border:1px solid rgba(255,255,255,0.25);box-shadow:0 10px 30px rgba(0,0,0,0.3);margin-bottom:20px">
+            <img src="https://images.unsplash.com/photo-1601584115197-04ecc0da31d7?auto=format&fit=crop&w=900&q=70" alt="Camión de transporte de materiales de construcción" style="width:100%;height:200px;object-fit:cover;display:block" />
+            <div style="background:rgba(0,0,0,0.35);backdrop-filter:blur(6px);padding:10px 16px;display:flex;align-items:center;gap:8px;position:absolute;bottom:0;left:0;right:0">
+              <span class="material-symbols-outlined" style="font-size:16px;color:white">local_shipping</span>
+              <span style="color:white;font-size:12px;font-weight:600">Flota de transporte de materiales de construcción EBEMA</span>
+            </div>
+          </div>
+          <p style="color:rgba(255,255,255,0.4);font-size:11px">© 2026 EBEMA Chile — Acceso restringido</p>
+        </div>
+      </div>
+
+      <!-- Panel Derecho: Formulario -->
+      <div class="auth-form-panel flex-1 flex items-center justify-center p-8">
+        <div style="width:100%;max-width:420px;animation:slideUp 0.4s ease-out">
+
+          <!-- Header del formulario -->
+          <div style="margin-bottom:24px">
+            <div style="display:flex;align-items:center;gap:12px;margin-bottom:22px">
+              <img src="https://www.ebema.cl/wp-content/uploads/2023/03/cropped-cropped-Ebema-Logo-Ebema-Removebg-1-270x270.png" alt="Logo EBEMA" style="width:52px;height:52px;object-fit:contain" />
+              <span style="color:#b5000b;font-weight:900;font-size:26px;letter-spacing:-0.01em">SIT EBEMA</span>
+            </div>
+            <h1 style="font-size:28px;font-weight:800;color:#191c1d;letter-spacing:-0.02em;line-height:1.2;margin-bottom:6px">Iniciar Sesión</h1>
+            <p style="color:#5c5f61;font-size:14px">Seleccione su tipo de acceso a la plataforma</p>
+          </div>
+
+          <!-- Pestañas de tipo de acceso -->
+          <div style="display:flex;background:#edeeef;border-radius:10px;padding:4px;margin-bottom:24px">
+            <button type="button" id="tab-funcionario" style="flex:1;padding:10px 8px;border:none;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;background:white;color:#b5000b;box-shadow:0 1px 4px rgba(0,0,0,0.12);display:flex;align-items:center;justify-content:center;gap:6px;transition:all 0.2s">
+              <span class="material-symbols-outlined" style="font-size:17px">badge</span>
+              Funcionarios EBEMA
+            </button>
+            <button type="button" id="tab-proveedor" style="flex:1;padding:10px 8px;border:none;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;background:transparent;color:#5c5f61;display:flex;align-items:center;justify-content:center;gap:6px;transition:all 0.2s">
+              <span class="material-symbols-outlined" style="font-size:17px">local_shipping</span>
+              Proveedores de Servicio
+            </button>
+          </div>
+
+          <!-- Alerta de error -->
+          <div id="login-error-alert" class="hidden" style="display:none;align-items:center;gap:8px;padding:10px 14px;background:#ffdad6;border:1px solid rgba(186,26,26,0.2);border-radius:8px;margin-bottom:20px;font-size:13px;color:#93000a">
+            <span class="material-symbols-outlined" style="font-size:16px">error</span>
+            <span id="login-error-text"></span>
+          </div>
+
+          <!-- Formulario -->
+          <form id="login-form" style="display:flex;flex-direction:column;gap:18px">
+            <div>
+              <label for="login-email" id="login-email-label" style="display:block;font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#5c5f61;margin-bottom:6px">Correo Corporativo</label>
+              <div style="position:relative">
+                <span class="material-symbols-outlined" style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:#5c5f61;font-size:18px;pointer-events:none">mail</span>
+                <input
+                  type="email"
+                  id="login-email"
+                  placeholder="usuario@ebema.cl"
+                  required
+                  style="width:100%;padding:12px 12px 12px 40px;border:1.5px solid #e1e3e4;border-radius:8px;font-size:14px;background:white;color:#191c1d;outline:none;transition:border-color 0.2s;box-sizing:border-box"
+                  onfocus="this.style.borderColor='#b5000b'"
+                  onblur="this.style.borderColor='#e1e3e4'"
+                />
+              </div>
+            </div>
+
+            <div>
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+                <label for="login-password" style="font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#5c5f61">Contraseña</label>
+                <button type="button" id="link-go-recover" style="font-size:12px;color:#b5000b;background:none;border:none;cursor:pointer;font-weight:600;text-decoration:none" onmouseover="this.style.textDecoration='underline'" onmouseout="this.style.textDecoration='none'">¿Olvidó su clave?</button>
+              </div>
+              <div style="position:relative">
+                <span class="material-symbols-outlined" style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:#5c5f61;font-size:18px;pointer-events:none">lock</span>
+                <input
+                  type="password"
+                  id="login-password"
+                  placeholder="••••••••"
+                  required
+                  style="width:100%;padding:12px 40px 12px 40px;border:1.5px solid #e1e3e4;border-radius:8px;font-size:14px;background:white;color:#191c1d;outline:none;transition:border-color 0.2s;box-sizing:border-box"
+                  onfocus="this.style.borderColor='#b5000b'"
+                  onblur="this.style.borderColor='#e1e3e4'"
+                />
+                <button type="button" id="toggle-login-pass" style="position:absolute;right:12px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:#5c5f61;display:flex;align-items:center">
+                  <span class="material-symbols-outlined" style="font-size:18px">visibility</span>
+                </button>
+              </div>
+            </div>
+
+            <button
+              type="submit"
+              id="btn-login-submit"
+              style="width:100%;padding:13px;background:#b5000b;color:white;border:none;border-radius:8px;font-size:15px;font-weight:700;cursor:pointer;transition:background 0.2s,transform 0.1s;display:flex;align-items:center;justify-content:center;gap:8px;margin-top:4px"
+              onmouseover="this.style.background='#930007'"
+              onmouseout="this.style.background='#b5000b'"
+              onmousedown="this.style.transform='scale(0.98)'"
+              onmouseup="this.style.transform='scale(1)'"
+            >
+              <span class="material-symbols-outlined" style="font-size:18px">login</span>
+              Iniciar Sesión
+            </button>
+          </form>
+
+          <!-- Footer -->
+          <div style="margin-top:24px;padding-top:20px;border-top:1px solid #e9bcb6;text-align:center">
+            <p style="font-size:13px;color:#5c5f61">¿Es proveedor y no tiene cuenta? <button id="link-go-register" style="color:#b5000b;background:none;border:none;cursor:pointer;font-weight:700;font-size:13px" onmouseover="this.style.textDecoration='underline'" onmouseout="this.style.textDecoration='none'">Regístrese como Proveedor de Servicio</button></p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <style>
+      @keyframes slideUp {
+        from { opacity: 0; transform: translateY(24px); }
+        to { opacity: 1; transform: translateY(0); }
+      }
+    </style>
+  `;
+
+  // Pestañas: Funcionarios EBEMA / Proveedores de Servicio
+  let loginType = 'funcionario';
+  const tabFunc = document.getElementById('tab-funcionario');
+  const tabProv = document.getElementById('tab-proveedor');
+  const emailLabel = document.getElementById('login-email-label');
+  const emailInput = document.getElementById('login-email');
+
+  function setLoginTab(tipo) {
+    loginType = tipo;
+    const activeStyle = (btn) => {
+      btn.style.background = 'white';
+      btn.style.color = '#b5000b';
+      btn.style.boxShadow = '0 1px 4px rgba(0,0,0,0.12)';
+    };
+    const inactiveStyle = (btn) => {
+      btn.style.background = 'transparent';
+      btn.style.color = '#5c5f61';
+      btn.style.boxShadow = 'none';
+    };
+    if (tipo === 'funcionario') {
+      activeStyle(tabFunc); inactiveStyle(tabProv);
+      emailLabel.textContent = 'Correo Corporativo';
+      emailInput.placeholder = 'usuario@ebema.cl';
+    } else {
+      activeStyle(tabProv); inactiveStyle(tabFunc);
+      emailLabel.textContent = 'Correo del Proveedor';
+      emailInput.placeholder = 'contacto@suempresa.cl';
+    }
+  }
+  tabFunc.addEventListener('click', () => setLoginTab('funcionario'));
+  tabProv.addEventListener('click', () => setLoginTab('proveedor'));
+
+  // Toggle ver/ocultar contraseña
+  document.getElementById('toggle-login-pass').addEventListener('click', () => {
+    const input = document.getElementById('login-password');
+    const icon = document.querySelector('#toggle-login-pass .material-symbols-outlined');
+    if (input.type === 'password') {
+      input.type = 'text';
+      icon.textContent = 'visibility_off';
+    } else {
+      input.type = 'password';
+      icon.textContent = 'visibility';
+    }
+  });
+
+  document.getElementById('link-go-register').addEventListener('click', () => {
+    authState = 'register';
+    renderAuthView();
+  });
+
+  document.getElementById('link-go-recover').addEventListener('click', () => {
+    authState = 'recover';
+    renderAuthView();
+  });
+
+  const loginForm = document.getElementById('login-form');
+  const loginErrorAlert = document.getElementById('login-error-alert');
+  const loginErrorText = document.getElementById('login-error-text');
+
+  loginForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const email = document.getElementById('login-email').value.trim().toLowerCase();
+    const password = document.getElementById('login-password').value;
+    const btn = document.getElementById('btn-login-submit');
+    btn.innerHTML = '<div style="width:18px;height:18px;border:2px solid rgba(255,255,255,0.3);border-top-color:white;border-radius:50%;animation:spin 0.7s linear infinite"></div> Verificando...';
+    btn.disabled = true;
+
+    const showLoginError = (msg) => {
+      loginErrorText.innerText = msg;
+      loginErrorAlert.style.display = 'flex';
+      loginErrorAlert.classList.remove('hidden');
+      btn.innerHTML = '<span class="material-symbols-outlined" style="font-size:18px">login</span> Iniciar Sesión';
+      btn.disabled = false;
+    };
+
+    if (loginType === 'funcionario' && !email.endsWith('@ebema.cl')) {
+      return showLoginError('Acceso restringido. Utilice su correo corporativo @ebema.cl');
+    }
+    if (loginType === 'proveedor' && email.endsWith('@ebema.cl')) {
+      return showLoginError('Los funcionarios EBEMA deben usar la pestaña "Funcionarios EBEMA".');
+    }
+
+    // Autenticación real contra Supabase Auth
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error) {
+      const m = (error.message || '').toLowerCase();
+      if (m.includes('invalid login credentials')) return showLoginError('Correo o contraseña incorrectos.');
+      if (m.includes('email not confirmed')) return showLoginError('Debe confirmar su correo. Revise su bandeja de entrada.');
+      return showLoginError('No se pudo iniciar sesión: ' + error.message);
+    }
+
+    // MFA por correo retirado de la plataforma (14-sep-2026): dependía de que
+    // ebema.cl estuviera verificado en Resend, y no lo está — bloqueaba a los
+    // 11 usuarios sin ninguna forma de recibir el código. Login directo tanto
+    // para funcionarios como para proveedores, igual que el login con Google.
+    await checkSession();
+    if (!currentSession) {
+      return showLoginError('No se pudo cargar su perfil. Intente nuevamente.');
+    }
+    showAlert(`Bienvenido, ${currentSession.name}`);
+    renderApp();
+    prewarmMods();
+  });
+}
+
+// ── Pantalla MFA: verificación OTP por correo ────────────────────────────────
+function renderMfaView(session) {
+  appRoot.innerHTML = `
+    <div class="min-h-screen flex items-center justify-center bg-background">
+      <div class="bg-white rounded-xl shadow-lg p-8 w-full max-w-sm text-center">
+
+        <div class="flex items-center justify-center gap-sm mb-md">
+          <div style="width:36px;height:36px;background:#b5000b;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:900;color:white">E</div>
+          <div style="text-align:left">
+            <div class="font-bold text-primary text-lg leading-none">SIT EBEMA</div>
+            <div class="text-xs text-secondary">Verificación de seguridad</div>
+          </div>
+        </div>
+
+        <span class="material-symbols-outlined text-primary" style="font-size:48px">mark_email_read</span>
+        <h2 class="font-bold text-headline-sm mt-xs mb-xs">Doble verificación</h2>
+        <p class="text-sm text-secondary mb-md">
+          Ingresa el código de <strong>6 dígitos</strong> enviado a<br/>
+          <strong>${session.user.email}</strong>
+        </p>
+
+        <input id="otp-code" type="text" maxlength="6" inputmode="numeric" autocomplete="one-time-code"
+          placeholder="· · · · · ·"
+          class="border-2 border-outline-variant rounded-lg text-center text-3xl font-data-mono tracking-[0.4em] w-44 py-sm mx-auto block focus:outline-none focus:border-primary transition-colors"/>
+
+        <div id="otp-error" class="hidden mt-sm bg-error-container text-on-error-container text-xs p-sm rounded mx-auto w-44"></div>
+
+        <button id="btn-verify-otp"
+          class="bg-primary hover:bg-[#930007] text-white rounded px-md py-sm text-sm font-bold mt-md w-full flex items-center justify-center gap-xs transition-colors">
+          <span class="material-symbols-outlined text-[16px]">verified_user</span>
+          Verificar y entrar
+        </button>
+
+        <div class="mt-md border-t border-outline-variant pt-sm">
+          <p class="text-xs text-secondary">¿No recibiste el código?</p>
+          <button id="btn-resend-otp" class="text-primary text-xs font-bold underline mt-xs hover:text-[#930007]">
+            Reenviar código
+          </button>
+          <span id="resend-timer" class="text-secondary text-xs ml-xs hidden">(espera <span id="resend-sec">60</span>s)</span>
+        </div>
+
+        <button id="btn-mfa-back" class="text-secondary text-xs mt-sm underline block mx-auto hover:text-on-surface">
+          Volver al inicio de sesión
+        </button>
+      </div>
+    </div>`;
+
+  // ── Auto-foco y formato ──────────────────────────────────────────────────
+  const otpInput = document.getElementById('otp-code');
+  otpInput.focus();
+  otpInput.addEventListener('input', () => {
+    otpInput.value = otpInput.value.replace(/\D/g, '').slice(0, 6);
+  });
+  otpInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') document.getElementById('btn-verify-otp').click();
+  });
+
+  // ── Timer de reenvío (60s) ────────────────────────────────────────────────
+  let resendTimeout = null;
+  const startResendTimer = () => {
+    const timerEl  = document.getElementById('resend-timer');
+    const secEl    = document.getElementById('resend-sec');
+    const resendBtn = document.getElementById('btn-resend-otp');
+    let   secs     = 60;
+    resendBtn.disabled = true;
+    resendBtn.classList.add('opacity-40', 'cursor-default');
+    timerEl.classList.remove('hidden');
+    resendTimeout = setInterval(() => {
+      secs--;
+      if (secEl) secEl.textContent = secs;
+      if (secs <= 0) {
+        clearInterval(resendTimeout);
+        timerEl.classList.add('hidden');
+        resendBtn.disabled = false;
+        resendBtn.classList.remove('opacity-40', 'cursor-default');
+      }
+    }, 1000);
+  };
+  startResendTimer();
+
+  // ── Verificar código ─────────────────────────────────────────────────────
+  document.getElementById('btn-verify-otp').addEventListener('click', async () => {
+    const code    = otpInput.value.trim();
+    const errDiv  = document.getElementById('otp-error');
+    const btn     = document.getElementById('btn-verify-otp');
+
+    errDiv.classList.add('hidden');
+
+    if (code.length !== 6) {
+      errDiv.textContent = 'Ingresa el código completo de 6 dígitos.';
+      errDiv.classList.remove('hidden');
+      return;
+    }
+
+    btn.disabled = true;
+    btn.innerHTML = '<div style="width:16px;height:16px;border:2px solid rgba(255,255,255,0.3);border-top-color:white;border-radius:50%;animation:spin 0.7s linear infinite"></div> Verificando...';
+
+    try {
+      const res = await supabase.functions.invoke('verify-mfa-code', {
+        body:    { code },
+        headers: { Authorization: `Bearer ${session.access_token}` }
+      });
+
+      if (res.error || !res.data?.verified) {
+        const msg = res.data?.error || 'Código incorrecto. Intente de nuevo.';
+        errDiv.textContent = msg;
+        errDiv.classList.remove('hidden');
+        btn.disabled = false;
+        btn.innerHTML = '<span class="material-symbols-outlined text-[16px]">verified_user</span> Verificar y entrar';
+        otpInput.value = '';
+        otpInput.focus();
+        return;
+      }
+
+      // ✓ Verificado — cargar perfil y entrar
+      await checkSession();
+      if (!currentSession) {
+        errDiv.textContent = 'No se pudo cargar su perfil. Recargue e intente de nuevo.';
+        errDiv.classList.remove('hidden');
+        btn.disabled = false;
+        btn.innerHTML = '<span class="material-symbols-outlined text-[16px]">verified_user</span> Verificar y entrar';
+        return;
+      }
+      showAlert(`Bienvenido, ${currentSession.name}`);
+      renderApp();
+      prewarmMods();
+
+    } catch (err) {
+      errDiv.textContent = 'Error de conexión. Intente nuevamente.';
+      errDiv.classList.remove('hidden');
+      btn.disabled = false;
+      btn.innerHTML = '<span class="material-symbols-outlined text-[16px]">verified_user</span> Verificar y entrar';
+    }
+  });
+
+  // ── Reenviar código ──────────────────────────────────────────────────────
+  document.getElementById('btn-resend-otp').addEventListener('click', async () => {
+    const errDiv = document.getElementById('otp-error');
+    errDiv.classList.add('hidden');
+    try {
+      const res = await supabase.functions.invoke('send-mfa-code', {
+        headers: { Authorization: `Bearer ${session.access_token}` }
+      });
+      if (res.error) throw new Error(res.error.message);
+      showAlert('Nuevo código enviado a tu correo.');
+      startResendTimer();
+    } catch (err) {
+      errDiv.textContent = 'No se pudo reenviar el código: ' + err.message;
+      errDiv.classList.remove('hidden');
+    }
+  });
+
+  // ── Volver al login ──────────────────────────────────────────────────────
+  document.getElementById('btn-mfa-back').addEventListener('click', async () => {
+    if (resendTimeout) clearInterval(resendTimeout);
+    await supabase.auth.signOut();
+    currentSession = null;
+    authState = 'login';
+    renderAuthView();
+  });
+}
+
+// 2. Registro (Crear Cuenta Corporativa)
+function renderRegisterView() {
+  appRoot.innerHTML = `
+    <div class="min-h-screen flex" style="background:#f8f9fa">
+
+      <!-- Panel Izquierdo: Branding -->
+      <div class="hidden lg:flex flex-col justify-between w-2/5 p-12 relative overflow-hidden" style="background:linear-gradient(145deg,#8b0000 0%,#b5000b 45%,#d40010 80%,#ff1a24 100%)">
+        <div style="position:absolute;inset:0;background-image:radial-gradient(circle at 20% 80%, rgba(255,255,255,0.06) 0%, transparent 50%),radial-gradient(circle at 80% 20%, rgba(255,255,255,0.04) 0%, transparent 50%);pointer-events:none"></div>
+        <div style="position:absolute;bottom:-80px;right:-80px;width:320px;height:320px;border-radius:50%;background:rgba(255,255,255,0.04);pointer-events:none"></div>
+
+        <div style="position:relative;z-index:2">
+          <div style="display:inline-flex;align-items:center;gap:12px;margin-bottom:48px">
+            <div style="width:48px;height:48px;background:rgba(255,255,255,0.15);border:1px solid rgba(255,255,255,0.2);border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:900;color:white">E</div>
+            <div>
+              <div style="color:white;font-weight:800;font-size:18px;line-height:1.1">SIT EBEMA</div>
+              <div style="color:rgba(255,255,255,0.6);font-size:11px;letter-spacing:0.08em;text-transform:uppercase">Sistema Integrado de Transporte</div>
+            </div>
+          </div>
+
+          <h2 style="color:white;font-size:32px;font-weight:800;line-height:1.2;letter-spacing:-0.02em;margin-bottom:16px">Regístrese como<br/>Proveedor de Servicio</h2>
+          <p style="color:rgba(255,255,255,0.72);font-size:15px;line-height:1.6;max-width:300px">Cree la cuenta de su empresa de transportes para gestionar la documentación de su flota con EBEMA.</p>
+        </div>
+
+        <!-- Pasos del proceso -->
+        <div style="position:relative;z-index:2">
+          <p style="color:rgba(255,255,255,0.55);font-size:11px;text-transform:uppercase;letter-spacing:0.07em;margin-bottom:16px">Proceso de registro</p>
+          <div style="display:flex;flex-direction:column;gap:12px">
+            <div style="display:flex;align-items:center;gap:12px">
+              <div style="width:28px;height:28px;background:#b5000b;border:2px solid rgba(255,255,255,0.8);border-radius:50%;display:flex;align-items:center;justify-content:center;color:white;font-size:12px;font-weight:700">1</div>
+              <span style="color:white;font-size:13px">Completar datos corporativos</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:12px">
+              <div style="width:28px;height:28px;background:rgba(255,255,255,0.12);border:2px solid rgba(255,255,255,0.3);border-radius:50%;display:flex;align-items:center;justify-content:center;color:rgba(255,255,255,0.6);font-size:12px;font-weight:700">2</div>
+              <span style="color:rgba(255,255,255,0.6);font-size:13px">Aprobación por administrador</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:12px">
+              <div style="width:28px;height:28px;background:rgba(255,255,255,0.12);border:2px solid rgba(255,255,255,0.3);border-radius:50%;display:flex;align-items:center;justify-content:center;color:rgba(255,255,255,0.6);font-size:12px;font-weight:700">3</div>
+              <span style="color:rgba(255,255,255,0.6);font-size:13px">Acceso al sistema habilitado</span>
+            </div>
+          </div>
+          <p style="color:rgba(255,255,255,0.35);font-size:11px;margin-top:24px">© 2026 EBEMA Chile — Solo dominio @ebema.cl</p>
+        </div>
+      </div>
+
+      <!-- Panel Derecho: Formulario de Registro -->
+      <div class="flex-1 flex items-center justify-center p-8 overflow-y-auto">
+        <div style="width:100%;max-width:440px;animation:slideUp 0.4s ease-out">
+
+          <!-- Header -->
+          <div style="margin-bottom:32px">
+            <button id="link-back-login" style="display:inline-flex;align-items:center;gap:6px;color:#5c5f61;background:none;border:none;cursor:pointer;font-size:13px;margin-bottom:20px;padding:0" onmouseover="this.style.color='#b5000b'" onmouseout="this.style.color='#5c5f61'">
+              <span class="material-symbols-outlined" style="font-size:16px">arrow_back</span>
+              Volver al Login
+            </button>
+            <h1 style="font-size:26px;font-weight:800;color:#191c1d;letter-spacing:-0.02em;line-height:1.2;margin-bottom:6px">Regístrate como Proveedor de Servicio</h1>
+            <p style="color:#5c5f61;font-size:14px">Complete los datos de su empresa de transportes.</p>
+          </div>
+
+          <!-- Alerta de error -->
+          <div id="register-error-alert" style="display:none;align-items:center;gap:8px;padding:10px 14px;background:#ffdad6;border:1px solid rgba(186,26,26,0.2);border-radius:8px;margin-bottom:20px;font-size:13px;color:#93000a">
+            <span class="material-symbols-outlined" style="font-size:16px">error</span>
+            <span id="register-error-text"></span>
+          </div>
+
+          <!-- Formulario -->
+          <form id="register-form" style="display:flex;flex-direction:column;gap:16px">
+            <!-- Razón Social -->
+            <div>
+              <label style="display:block;font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#5c5f61;margin-bottom:6px">Razón Social</label>
+              <div style="position:relative">
+                <span class="material-symbols-outlined" style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:#5c5f61;font-size:18px;pointer-events:none">business</span>
+                <input type="text" id="reg-razonsocial" placeholder="Ej. Transportes del Sur Ltda." required maxlength="120"
+                  style="width:100%;padding:12px 12px 12px 40px;border:1.5px solid #e1e3e4;border-radius:8px;font-size:14px;background:white;color:#191c1d;outline:none;transition:border-color 0.2s;box-sizing:border-box"
+                  onfocus="this.style.borderColor='#b5000b'" onblur="this.style.borderColor='#e1e3e4'" />
+              </div>
+            </div>
+
+            <!-- RUT y Teléfono -->
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+              <div>
+                <label style="display:block;font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#5c5f61;margin-bottom:6px">RUT Empresa</label>
+                <div style="position:relative">
+                  <span class="material-symbols-outlined" style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:#5c5f61;font-size:18px;pointer-events:none">pin</span>
+                  <input type="text" id="reg-rut" placeholder="76.123.456-7" required
+                    style="width:100%;padding:12px 12px 12px 40px;border:1.5px solid #e1e3e4;border-radius:8px;font-size:14px;background:white;color:#191c1d;outline:none;transition:border-color 0.2s;box-sizing:border-box"
+                    onfocus="this.style.borderColor='#b5000b'" onblur="this.style.borderColor='#e1e3e4'" />
+                </div>
+              </div>
+              <div>
+                <label style="display:block;font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#5c5f61;margin-bottom:6px">Teléfono</label>
+                <div style="position:relative">
+                  <span class="material-symbols-outlined" style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:#5c5f61;font-size:18px;pointer-events:none">call</span>
+                  <input type="tel" id="reg-telefono" placeholder="+56 9 1234 5678" required maxlength="30"
+                    style="width:100%;padding:12px 12px 12px 40px;border:1.5px solid #e1e3e4;border-radius:8px;font-size:14px;background:white;color:#191c1d;outline:none;transition:border-color 0.2s;box-sizing:border-box"
+                    onfocus="this.style.borderColor='#b5000b'" onblur="this.style.borderColor='#e1e3e4'" />
+                </div>
+              </div>
+            </div>
+
+            <!-- Representante Legal -->
+            <div>
+              <label style="display:block;font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#5c5f61;margin-bottom:6px">Nombre Representante Legal</label>
+              <div style="position:relative">
+                <span class="material-symbols-outlined" style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:#5c5f61;font-size:18px;pointer-events:none">person</span>
+                <input type="text" id="reg-representante" placeholder="Ej. Juan Pérez Soto" required maxlength="80"
+                  style="width:100%;padding:12px 12px 12px 40px;border:1.5px solid #e1e3e4;border-radius:8px;font-size:14px;background:white;color:#191c1d;outline:none;transition:border-color 0.2s;box-sizing:border-box"
+                  onfocus="this.style.borderColor='#b5000b'" onblur="this.style.borderColor='#e1e3e4'" />
+              </div>
+            </div>
+
+            <!-- Email -->
+            <div>
+              <label style="display:block;font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#5c5f61;margin-bottom:6px">Correo de Contacto</label>
+              <div style="position:relative">
+                <span class="material-symbols-outlined" style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:#5c5f61;font-size:18px;pointer-events:none">mail</span>
+                <input type="email" id="reg-email" placeholder="contacto@suempresa.cl" required
+                  style="width:100%;padding:12px 12px 12px 40px;border:1.5px solid #e1e3e4;border-radius:8px;font-size:14px;background:white;color:#191c1d;outline:none;transition:border-color 0.2s;box-sizing:border-box"
+                  onfocus="this.style.borderColor='#b5000b'" onblur="this.style.borderColor='#e1e3e4'" />
+              </div>
+            </div>
+
+            <!-- Contraseña con indicador -->
+            <div>
+              <label style="display:block;font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#5c5f61;margin-bottom:6px">Contraseña</label>
+              <div style="position:relative">
+                <span class="material-symbols-outlined" style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:#5c5f61;font-size:18px;pointer-events:none">lock</span>
+                <input type="password" id="reg-password" placeholder="Mínimo 6 caracteres" required
+                  style="width:100%;padding:12px 40px 12px 40px;border:1.5px solid #e1e3e4;border-radius:8px;font-size:14px;background:white;color:#191c1d;outline:none;transition:border-color 0.2s;box-sizing:border-box"
+                  onfocus="this.style.borderColor='#b5000b'" onblur="this.style.borderColor='#e1e3e4'" />
+                <button type="button" id="toggle-reg-pass" style="position:absolute;right:12px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:#5c5f61;display:flex;align-items:center">
+                  <span class="material-symbols-outlined" style="font-size:18px">visibility</span>
+                </button>
+              </div>
+              <!-- Indicador de fuerza -->
+              <div style="margin-top:8px">
+                <div style="display:flex;gap:4px;margin-bottom:4px">
+                  <div id="str-bar-1" style="height:3px;flex:1;border-radius:2px;background:#e1e3e4;transition:background 0.3s"></div>
+                  <div id="str-bar-2" style="height:3px;flex:1;border-radius:2px;background:#e1e3e4;transition:background 0.3s"></div>
+                  <div id="str-bar-3" style="height:3px;flex:1;border-radius:2px;background:#e1e3e4;transition:background 0.3s"></div>
+                  <div id="str-bar-4" style="height:3px;flex:1;border-radius:2px;background:#e1e3e4;transition:background 0.3s"></div>
+                </div>
+                <p id="str-label" style="font-size:11px;color:#5c5f61">Ingrese una contraseña</p>
+              </div>
+            </div>
+
+            <!-- Confirmar Contraseña -->
+            <div>
+              <label style="display:block;font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#5c5f61;margin-bottom:6px">Confirmar Contraseña</label>
+              <div style="position:relative">
+                <span class="material-symbols-outlined" style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:#5c5f61;font-size:18px;pointer-events:none">lock_reset</span>
+                <input type="password" id="reg-confirm" placeholder="Repita su contraseña" required
+                  style="width:100%;padding:12px 12px 12px 40px;border:1.5px solid #e1e3e4;border-radius:8px;font-size:14px;background:white;color:#191c1d;outline:none;transition:border-color 0.2s;box-sizing:border-box"
+                  onfocus="this.style.borderColor='#b5000b'" onblur="this.style.borderColor='#e1e3e4'" />
+              </div>
+            </div>
+
+            <button type="submit" id="btn-reg-submit"
+              style="width:100%;padding:13px;background:#b5000b;color:white;border:none;border-radius:8px;font-size:15px;font-weight:700;cursor:pointer;transition:background 0.2s,transform 0.1s;display:flex;align-items:center;justify-content:center;gap:8px;margin-top:4px"
+              onmouseover="this.style.background='#930007'" onmouseout="this.style.background='#b5000b'"
+              onmousedown="this.style.transform='scale(0.98)'" onmouseup="this.style.transform='scale(1)'"
+            >
+              <span class="material-symbols-outlined" style="font-size:18px">person_add</span>
+              Crear Cuenta de Proveedor
+            </button>
+          </form>
+
+          <!-- Footer -->
+          <div style="margin-top:24px;padding-top:18px;border-top:1px solid #e9bcb6;text-align:center">
+            <p style="font-size:13px;color:#5c5f61">¿Ya tiene cuenta? <button id="link-back-login-footer" style="color:#b5000b;background:none;border:none;cursor:pointer;font-weight:700;font-size:13px" onmouseover="this.style.textDecoration='underline'" onmouseout="this.style.textDecoration='none'">Iniciar Sesión</button></p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <style>
+      @keyframes slideUp {
+        from { opacity: 0; transform: translateY(24px); }
+        to { opacity: 1; transform: translateY(0); }
+      }
+    </style>
+  `;
+
+  // Toggle contraseña
+  document.getElementById('toggle-reg-pass').addEventListener('click', () => {
+    const input = document.getElementById('reg-password');
+    const icon = document.querySelector('#toggle-reg-pass .material-symbols-outlined');
+    input.type = input.type === 'password' ? 'text' : 'password';
+    icon.textContent = input.type === 'password' ? 'visibility' : 'visibility_off';
+  });
+
+  // Indicador de fuerza de contraseña
+  document.getElementById('reg-password').addEventListener('input', (e) => {
+    const val = e.target.value;
+    const bars = [1,2,3,4].map(n => document.getElementById(`str-bar-${n}`));
+    const label = document.getElementById('str-label');
+    let strength = 0;
+    if (val.length >= 6) strength++;
+    if (val.length >= 10) strength++;
+    if (/[A-Z]/.test(val) && /[0-9]/.test(val)) strength++;
+    if (/[^A-Za-z0-9]/.test(val)) strength++;
+    const colors = ['#ba1a1a', '#f59e0b', '#10b981', '#059669'];
+    const labels = ['Muy débil', 'Débil', 'Buena', 'Excelente'];
+    bars.forEach((b, i) => { b.style.background = i < strength ? colors[strength - 1] : '#e1e3e4'; });
+    label.textContent = val.length === 0 ? 'Ingrese una contraseña' : labels[strength - 1] || 'Muy débil';
+    label.style.color = strength > 0 ? colors[strength - 1] : '#5c5f61';
+  });
+
+  ['link-back-login', 'link-back-login-footer'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('click', () => { authState = 'login'; renderAuthView(); });
+  });
+
+  const regErrorAlert = document.getElementById('register-error-alert');
+  const regErrorText = document.getElementById('register-error-text');
+
+  // Formato automático del RUT
+  document.getElementById('reg-rut').addEventListener('blur', (e) => {
+    e.target.value = formatRut(e.target.value);
+  });
+
+  // Formato automático del Teléfono (siempre con prefijo +56)
+  document.getElementById('reg-telefono').addEventListener('blur', (e) => {
+    if (e.target.value.trim()) e.target.value = formatPhone(e.target.value);
+  });
+
+  document.getElementById('register-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const razonSocial = document.getElementById('reg-razonsocial').value.trim();
+    const rut = formatRut(document.getElementById('reg-rut').value.trim());
+    const telefono = formatPhone(document.getElementById('reg-telefono').value.trim());
+    const representante = document.getElementById('reg-representante').value.trim();
+    const email = document.getElementById('reg-email').value.trim().toLowerCase();
+    const pass = document.getElementById('reg-password').value;
+    const confirmPass = document.getElementById('reg-confirm').value;
+    const btn = document.getElementById('btn-reg-submit');
+
+    const showErr = (msg) => {
+      regErrorText.innerText = msg;
+      regErrorAlert.style.display = 'flex';
+      btn.innerHTML = '<span class="material-symbols-outlined" style="font-size:18px">person_add</span> Crear Cuenta de Proveedor';
+      btn.disabled = false;
+    };
+
+    if (email.endsWith('@ebema.cl')) return showErr('Este registro es solo para proveedores externos. Los funcionarios EBEMA ingresan con su correo corporativo en la pestaña Funcionarios EBEMA.');
+    if (!validateRut(rut)) return showErr('El RUT de la empresa no es válido');
+    if (pass.length < 6) return showErr('La contraseña debe tener mínimo 6 caracteres');
+    if (pass !== confirmPass) return showErr('Las contraseñas no coinciden');
+
+    btn.innerHTML = '<div style="width:18px;height:18px;border:2px solid rgba(255,255,255,0.3);border-top-color:white;border-radius:50%;animation:spin 0.7s linear infinite"></div> Creando cuenta...';
+    btn.disabled = true;
+
+    // Registro real en Supabase Auth (requiere confirmación por correo).
+    // Los datos de la empresa viajan en los metadatos y se convierten en
+    // el perfil de proveedor en el primer inicio de sesión.
+    const { error } = await supabase.auth.signUp({
+      email,
+      password: pass,
+      options: { data: { tipo: 'proveedor', razonSocial, rut, telefono, representante } }
+    });
+
+    if (error) {
+      const m = (error.message || '').toLowerCase();
+      if (m.includes('already registered')) return showErr('El correo ya se encuentra registrado');
+      return showErr('No se pudo crear la cuenta: ' + error.message);
+    }
+
+    showAlert('Cuenta creada. Revise su correo para confirmar la cuenta antes de iniciar sesión.');
+    authState = 'login';
+    renderAuthView();
+  });
+}
+
+// 3. Recuperar Clave
+function renderRecoverView() {
+  appRoot.innerHTML = `
+    <div class="min-h-screen flex" style="background:#f8f9fa">
+
+      <!-- Panel Izquierdo: Branding -->
+      <div class="hidden lg:flex flex-col justify-between w-2/5 p-12 relative overflow-hidden" style="background:linear-gradient(145deg,#8b0000 0%,#b5000b 45%,#d40010 80%,#ff1a24 100%)">
+        <div style="position:absolute;inset:0;background-image:radial-gradient(circle at 20% 80%, rgba(255,255,255,0.06) 0%, transparent 50%),radial-gradient(circle at 80% 20%, rgba(255,255,255,0.04) 0%, transparent 50%);pointer-events:none"></div>
+        <div style="position:absolute;bottom:-80px;right:-80px;width:320px;height:320px;border-radius:50%;background:rgba(255,255,255,0.04);pointer-events:none"></div>
+
+        <div style="position:relative;z-index:2">
+          <div style="display:inline-flex;align-items:center;gap:12px;margin-bottom:48px">
+            <div style="width:48px;height:48px;background:rgba(255,255,255,0.15);border:1px solid rgba(255,255,255,0.2);border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:900;color:white">E</div>
+            <div>
+              <div style="color:white;font-weight:800;font-size:18px;line-height:1.1">SIT EBEMA</div>
+              <div style="color:rgba(255,255,255,0.6);font-size:11px;letter-spacing:0.08em;text-transform:uppercase">Sistema Integrado de Transporte</div>
+            </div>
+          </div>
+
+          <h2 style="color:white;font-size:32px;font-weight:800;line-height:1.2;letter-spacing:-0.02em;margin-bottom:16px">Recupere<br/>su acceso</h2>
+          <p style="color:rgba(255,255,255,0.72);font-size:15px;line-height:1.6;max-width:300px">Ingrese su correo corporativo y recibirá instrucciones para restablecer su contraseña en minutos.</p>
+        </div>
+
+        <!-- Instrucciones del proceso -->
+        <div style="position:relative;z-index:2">
+          <p style="color:rgba(255,255,255,0.55);font-size:11px;text-transform:uppercase;letter-spacing:0.07em;margin-bottom:16px">¿Cómo funciona?</p>
+          <div style="display:flex;flex-direction:column;gap:14px">
+            <div style="display:flex;align-items:flex-start;gap:12px">
+              <div style="min-width:28px;height:28px;background:rgba(255,255,255,0.12);border-radius:50%;display:flex;align-items:center;justify-content:center">
+                <span class="material-symbols-outlined" style="color:white;font-size:14px">mail</span>
+              </div>
+              <div>
+                <p style="color:white;font-size:13px;font-weight:600;margin-bottom:2px">Ingrese su correo</p>
+                <p style="color:rgba(255,255,255,0.55);font-size:12px">Use su dirección @ebema.cl corporativa</p>
+              </div>
+            </div>
+            <div style="display:flex;align-items:flex-start;gap:12px">
+              <div style="min-width:28px;height:28px;background:rgba(255,255,255,0.12);border-radius:50%;display:flex;align-items:center;justify-content:center">
+                <span class="material-symbols-outlined" style="color:white;font-size:14px">mark_email_read</span>
+              </div>
+              <div>
+                <p style="color:white;font-size:13px;font-weight:600;margin-bottom:2px">Revise su bandeja</p>
+                <p style="color:rgba(255,255,255,0.55);font-size:12px">Le enviaremos un enlace seguro</p>
+              </div>
+            </div>
+            <div style="display:flex;align-items:flex-start;gap:12px">
+              <div style="min-width:28px;height:28px;background:rgba(255,255,255,0.12);border-radius:50%;display:flex;align-items:center;justify-content:center">
+                <span class="material-symbols-outlined" style="color:white;font-size:14px">lock_open</span>
+              </div>
+              <div>
+                <p style="color:white;font-size:13px;font-weight:600;margin-bottom:2px">Restablezca su clave</p>
+                <p style="color:rgba(255,255,255,0.55);font-size:12px">Cree una nueva contraseña segura</p>
+              </div>
+            </div>
+          </div>
+          <p style="color:rgba(255,255,255,0.35);font-size:11px;margin-top:24px">© 2026 EBEMA Chile — Acceso restringido</p>
+        </div>
+      </div>
+
+      <!-- Panel Derecho: Formulario de Recuperación -->
+      <div class="flex-1 flex items-center justify-center p-8">
+        <div style="width:100%;max-width:420px;animation:slideUp 0.4s ease-out">
+
+          <!-- Estado: Formulario -->
+          <div id="recover-step-form">
+            <div style="margin-bottom:32px">
+              <button id="link-back-login" style="display:inline-flex;align-items:center;gap:6px;color:#5c5f61;background:none;border:none;cursor:pointer;font-size:13px;margin-bottom:20px;padding:0" onmouseover="this.style.color='#b5000b'" onmouseout="this.style.color='#5c5f61'">
+                <span class="material-symbols-outlined" style="font-size:16px">arrow_back</span>
+                Volver al Login
+              </button>
+
+              <div style="width:52px;height:52px;background:#ffdad5;border-radius:14px;display:flex;align-items:center;justify-content:center;margin-bottom:20px">
+                <span class="material-symbols-outlined" style="color:#b5000b;font-size:28px">lock_reset</span>
+              </div>
+
+              <h1 style="font-size:26px;font-weight:800;color:#191c1d;letter-spacing:-0.02em;line-height:1.2;margin-bottom:6px">Recuperar Contraseña</h1>
+              <p style="color:#5c5f61;font-size:14px">Ingrese su correo corporativo para recibir el enlace de restablecimiento.</p>
+            </div>
+
+            <form id="recover-form" style="display:flex;flex-direction:column;gap:18px">
+              <div>
+                <label style="display:block;font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#5c5f61;margin-bottom:6px">Correo Corporativo</label>
+                <div style="position:relative">
+                  <span class="material-symbols-outlined" style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:#5c5f61;font-size:18px;pointer-events:none">mail</span>
+                  <input type="email" id="recover-email" placeholder="usuario@ebema.cl" required
+                    style="width:100%;padding:12px 12px 12px 40px;border:1.5px solid #e1e3e4;border-radius:8px;font-size:14px;background:white;color:#191c1d;outline:none;transition:border-color 0.2s;box-sizing:border-box"
+                    onfocus="this.style.borderColor='#b5000b'" onblur="this.style.borderColor='#e1e3e4'" />
+                </div>
+              </div>
+
+              <button type="submit" id="btn-recover-submit"
+                style="width:100%;padding:13px;background:#b5000b;color:white;border:none;border-radius:8px;font-size:15px;font-weight:700;cursor:pointer;transition:background 0.2s;display:flex;align-items:center;justify-content:center;gap:8px"
+                onmouseover="this.style.background='#930007'" onmouseout="this.style.background='#b5000b'"
+              >
+                <span class="material-symbols-outlined" style="font-size:18px">send</span>
+                Enviar Instrucciones
+              </button>
+            </form>
+          </div>
+
+          <!-- Estado: Éxito (oculto inicialmente) -->
+          <div id="recover-step-success" style="display:none;text-align:center;animation:slideUp 0.4s ease-out">
+            <div style="width:72px;height:72px;background:#dcfce7;border-radius:50%;display:flex;align-items:center;justify-content:center;margin:0 auto 24px">
+              <span class="material-symbols-outlined" style="color:#16a34a;font-size:36px">mark_email_read</span>
+            </div>
+            <h2 style="font-size:22px;font-weight:800;color:#191c1d;margin-bottom:10px">¡Correo enviado!</h2>
+            <p style="color:#5c5f61;font-size:14px;line-height:1.6;margin-bottom:28px">Hemos enviado las instrucciones de recuperación a <strong id="recover-email-display"></strong>. Revise su bandeja de entrada.</p>
+            <div style="padding:14px;background:#f3f4f5;border-radius:8px;margin-bottom:24px;text-align:left">
+              <p style="font-size:12px;color:#5c5f61;display:flex;align-items:flex-start;gap:8px">
+                <span class="material-symbols-outlined" style="font-size:16px;color:#b5000b;flex-shrink:0;margin-top:1px">info</span>
+                Si no recibe el correo en 5 minutos, revise la carpeta de spam o contacte al administrador del sistema.
+              </p>
+            </div>
+            <button id="btn-go-login" style="width:100%;padding:12px;background:#b5000b;color:white;border:none;border-radius:8px;font-size:14px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px" onmouseover="this.style.background='#930007'" onmouseout="this.style.background='#b5000b'">
+              <span class="material-symbols-outlined" style="font-size:16px">login</span>
+              Volver al Inicio de Sesión
+            </button>
+          </div>
+
+        </div>
+      </div>
+    </div>
+
+    <style>
+      @keyframes slideUp {
+        from { opacity: 0; transform: translateY(24px); }
+        to { opacity: 1; transform: translateY(0); }
+      }
+    </style>
+  `;
+
+  document.getElementById('link-back-login').addEventListener('click', () => {
+    authState = 'login'; renderAuthView();
+  });
+
+  document.getElementById('btn-go-login')?.addEventListener('click', () => {
+    authState = 'login'; renderAuthView();
+  });
+
+  document.getElementById('recover-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const email = document.getElementById('recover-email').value.trim().toLowerCase();
+    const btn = document.getElementById('btn-recover-submit');
+
+    if (!email.endsWith('@ebema.cl')) {
+      showAlert('El correo debe ser de dominio corporativo @ebema.cl', 'error');
+      return;
+    }
+
+    btn.innerHTML = '<div style="width:16px;height:16px;border:2px solid rgba(255,255,255,0.3);border-top-color:white;border-radius:50%;animation:spin 0.7s linear infinite"></div> Enviando...';
+    btn.disabled = true;
+
+    // Envío real del correo de recuperación vía Supabase Auth
+    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: window.location.origin + window.location.pathname
+    });
+
+    if (error) {
+      showAlert('No se pudo enviar el correo: ' + error.message, 'error');
+      btn.innerHTML = 'Enviar instrucciones';
+      btn.disabled = false;
+      return;
+    }
+    document.getElementById('recover-step-form').style.display = 'none';
+    const successEl = document.getElementById('recover-step-success');
+    successEl.style.display = 'block';
+    document.getElementById('recover-email-display').textContent = email;
+
+    document.getElementById('btn-go-login').addEventListener('click', () => {
+      authState = 'login'; renderAuthView();
+    });
+  });
+}
+
+// ==========================================================================
+// PERMISOS POR PERFIL — matriz central en js/permisos.js (25-sep-2026)
+// Lo que un perfil no puede ver/hacer se oculta, sin mensajes.
+// ==========================================================================
+function roleCanSeeEntry(entry) {
+  return puedeVerMenu(entry.group || entry.tab);
+}
+function childVisible(entry, c) {
+  return puedeVerMenu(entry.group, c.sub);
+}
+
+// Display name para el topbar (sin guiones bajos ni mayúsculas crudas)
+const ROLE_DISPLAY = Object.fromEntries(Object.entries(PERFILES).map(([k, v]) => [k, v.label]));
+
+// ==========================================================================
+// MENU LATERAL - estructura declarativa con grupos desplegables
+// ==========================================================================
+const SIDEBAR_MENU = [
+  { tab: 'home', icon: 'home', label: 'Home' },
+  { tab: 'rates', icon: 'payments', label: 'Cotizador Despacho' },
+  {
+    group: 'proveedores', icon: 'groups', label: 'Proveedores', children: [
+      { tab: 'transports', sub: 'transportistas', icon: 'badge',          label: 'Transportistas' },
+      { tab: 'transports', sub: 'flota',          icon: 'local_shipping', label: 'Flota Camiones' },
+      { tab: 'transports', sub: 'conductores',    icon: 'person',         label: 'Conductores' },
+      { tab: 'abastecimiento', sub: 'proveedores', icon: 'factory',       label: 'Proveedores (Fábricas)' },
+    ]
+  },
+  {
+    group: 'rutas', icon: 'route', label: 'Rutas de Transporte', children: [
+      { tab: 'routes', sub: 'centros', icon: 'location_on', label: 'Centros Logisticos' },
+      { tab: 'routes', sub: 'rutas',   icon: 'route',       label: 'Rutas' },
+      { tab: 'routes', sub: 'zonas',   icon: 'map',         label: 'Zonas de Transportes' },
+    ]
+  },
+  {
+    group: 'tarifas-transporte', icon: 'calculate', label: 'Tarifas Transporte', children: [
+      { tab: 'tarifas-transporte', sub: 'peajes',        icon: 'toll',              label: 'Peajes' },
+      { tab: 'tarifas-transporte', sub: 'combustibles',  icon: 'local_gas_station', label: 'Combustibles y Rendimientos' },
+      { tab: 'tarifas-transporte', sub: 'seguros',       icon: 'shield',            label: 'Seguros y Permisos' },
+      { tab: 'tarifas-transporte', sub: 'costos-extras', icon: 'add_circle',        label: 'Costos Extras' },
+      { tab: 'tarifas-transporte', sub: 'variables',     icon: 'tune',              label: 'Variables Generales' },
+      { tab: 'tarifas-transporte', sub: 'resultados',    icon: 'speed',             label: 'Motor de Costos' },
+      { tab: 'tarifas-transporte', sub: 'camiones',      icon: 'local_shipping',    label: 'Tarifas por Camion' },
+      { tab: 'tarifas-transporte', sub: 'zcap',          icon: 'table_chart',       label: 'Tarifas Rutas' },
+    ]
+  },
+  {
+    group: 'tarifas-clientes', icon: 'request_quote', label: 'Tarifas Clientes', children: [
+      { tab: 'tarifas-clientes', sub: 'historico',     icon: 'history',       label: 'Historico (6M)' },
+      { tab: 'tarifas-clientes', sub: 'consolidacion', icon: 'inventory',     label: 'Consolidacion' },
+      { tab: 'tarifas-clientes', sub: 'densidad',      icon: 'location_on',   label: 'Densidad Logistica' },
+      { tab: 'tarifas-clientes', sub: 'especiales',    icon: 'star',          label: 'Frecuencia y Especiales' },
+      { tab: 'tarifas-clientes', sub: 'cluster',       icon: 'map',           label: 'Cluster' },
+      { tab: 'tarifas-clientes', sub: 'zfmp',          icon: 'request_quote', label: 'Tarifas $/Kg' },
+      { tab: 'tarifas-clientes', sub: 'zfmi',          icon: 'request_quote', label: 'Tarifa Min/Max' },
+    ]
+  },
+  {
+    group: 'abastecimiento', icon: 'inventory_2', label: 'Gestión Troncales', children: [
+      { tab: 'abastecimiento', sub: 'calendario',              icon: 'calendar_month',            label: 'Calendario Sucursales' },
+      // { tab: 'abastecimiento', sub: 'quiebres', icon: 'production_quantity_limits', label: 'Quiebres Sucursales' }, // OCULTO: integrado en Pedidos Traslados
+      { tab: 'abastecimiento', sub: 'stock_almacen',          icon: 'inventory',                  label: 'Stock Almacén 4000' },
+      { tab: 'abastecimiento', sub: 'pedidos_traslados_revex', icon: 'recycling',                 label: 'Revex' },
+      { tab: 'abastecimiento', sub: 'pedidos_venta',          icon: 'sell',                       label: 'Ventas CD (1003)' },
+      { tab: 'abastecimiento', sub: 'retiros',                icon: 'factory',                    label: 'Retiros de Fábrica' },
+      { tab: 'abastecimiento', sub: 'pedidos_traslados_4000', icon: 'local_shipping',             label: 'Crossdocking' },
+      { tab: 'abastecimiento', sub: 'pedidos_traslados',      icon: 'swap_horiz',                 label: 'Pedidos de Traslados' },
+      { tab: 'abastecimiento', sub: 'plan_carga',             icon: 'local_shipping',             label: 'Plan de Carga' },
+      // (30-sep-2026, Jordan) Entregas Creadas y Documentos de Transporte quedan OCULTAS: son sólo cruce interno
+      // del Plan de Carga (abast_plan_foto_entrega / abast_plan_foto_dt), no se muestran en la plataforma.
+      // { tab: 'abastecimiento', sub: 'entregas_creadas',       icon: 'assignment_turned_in',       label: 'Entregas Creadas' },
+      // { tab: 'abastecimiento', sub: 'documentos_transporte',  icon: 'description',                label: 'Documentos de Transporte' },
+      { tab: 'abastecimiento', sub: 'seguimiento_carga',      icon: 'fact_check',                 label: 'Seguimiento de Carga' },
+      { tab: 'abastecimiento', sub: 'ind_plan_carga',         icon: 'insights',                   label: 'Indicadores Plan de Carga' },
+    ]
+  },
+  {
+    group: 'indicadores', icon: 'monitoring', label: 'Indicadores', children: [
+      { tab: 'indicadores', sub: 'consolidado', icon: 'dashboard',      label: 'Consolidado' },
+      { tab: 'indicadores', sub: 'nivel',       icon: 'local_shipping', label: 'Nivel de Servicio' },
+      { tab: 'indicadores', sub: 'tarifa',      icon: 'request_quote',  label: 'Tarifa $/Kg' },
+      { tab: 'indicadores', sub: 'margen',      icon: 'trending_down',  label: 'Margen de Flete' },
+    ]
+  },
+  {
+    group: 'flete-tercero', icon: 'local_shipping', label: 'Flete Tercero', children: [
+      { tab: 'flete-tercero', sub: 'dashboard',    icon: 'monitoring', label: 'Nivel de Servicio' },
+      { tab: 'flete-tercero', sub: 'seguimiento',  icon: 'search',     label: 'Seguimiento por Pedido' },
+      { tab: 'flete-tercero', sub: 'vencidos',     icon: 'event_busy',      label: 'Pedidos Vencidos' },
+      { tab: 'flete-tercero', sub: 'en_curso',     icon: 'pending_actions', label: 'Pedidos en Curso' },
+    ]
+  },
+  { tab: 'roles', icon: 'admin_panel_settings', label: 'Roles y Perfiles' },
+];
+
+// Subtab real del modulo destino para cada submenu del sidebar.
+// null = el modulo no distingue subtab aun; los que no tienen vista propia
+// se enlazan a la vista existente mas cercana (se construyen en fases siguientes).
+const SUB_ALIAS = {
+  'transports':         { transportistas: null, flota: null, conductores: null },
+  'tarifas-clientes':   { zfmp: 'resultados', zfmi: 'zfmi' },
+};
+
+// ==========================================================================
+// MENÚ LATERAL v2 (rediseño 29-sep-2026)
+// La estructura de PERMISOS sigue siendo SIDEBAR_MENU (grupos/hojas que usa
+// permisos.js). NAV_LAYOUT sólo define CÓMO se agrupan en pantalla: módulos
+// con secciones (p. ej. «Tarifas» junta Tarifas Transporte y Tarifas Clientes).
+// ==========================================================================
+const NAV_LAYOUT = [
+  { tab: 'home' },
+  { tab: 'rates' },
+  { key: 'troncales', icon: 'inventory_2', label: 'Gestión Troncales', sections: [
+    // (30-sep-2026, Jordan) Orden: Configuraciones · Orden de Carga · Planificación
+    { label: 'Configuraciones', group: 'abastecimiento', collapsible: true, subs: ['calendario', 'stock_almacen'] },
+    { label: 'Orden de Carga', group: 'abastecimiento', subs: ['pedidos_traslados_revex', 'pedidos_venta', 'retiros', 'pedidos_traslados_4000', 'pedidos_traslados'] },
+    { label: 'Planificación', group: 'abastecimiento', subs: ['plan_carga', 'seguimiento_carga', 'ind_plan_carga'] },
+  ] },
+  { key: 'flete', icon: 'local_shipping', label: 'Flete Tercero', sections: [{ label: 'Seguimiento', group: 'flete-tercero' }] },
+  { key: 'ind', icon: 'monitoring', label: 'Indicadores', sections: [{ label: 'Reportes', group: 'indicadores' }] },
+  { key: 'tarifas', icon: 'calculate', label: 'Tarifas', sections: [
+    { label: 'Transporte', group: 'tarifas-transporte' },
+    { label: 'Clientes', group: 'tarifas-clientes' },
+  ] },
+  { key: 'maestros', icon: 'groups', label: 'Maestros', sections: [
+    { label: 'Proveedores', group: 'proveedores' },
+    { label: 'Rutas', group: 'rutas' },
+  ] },
+  { tab: 'roles' },
+];
+const FAV_DEFAULT = ['abastecimiento:plan_carga', 'abastecimiento:calendario', 'abastecimiento:ind_plan_carga'];
+const LS_FAVS = 'sit_nav_favs';
+const LS_COLL = 'sit_nav_collapsed';
+const LS_SECT = 'sit_nav_sect_closed';
+
+function _lsGet(k, def) { try { const v = localStorage.getItem(k); return v == null ? def : JSON.parse(v); } catch (_e) { return def; } }
+function _lsSet(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (_e) { /* sin almacenamiento */ } }
+const _escN = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+
+// Hojas visibles del menú para el perfil actual: [{ key, tab, sub, label, icon, modulo, seccion }]
+function navLeaves() {
+  const out = [];
+  NAV_LAYOUT.forEach(m => {
+    if (m.tab) {
+      const e = SIDEBAR_MENU.find(x => !x.group && x.tab === m.tab);
+      if (e && roleCanSeeEntry(e)) out.push({ key: e.tab, tab: e.tab, sub: null, label: e.label, icon: e.icon, modulo: e.label, seccion: '' });
+      return;
+    }
+    m.sections.forEach(sec => {
+      const g = SIDEBAR_MENU.find(x => x.group === sec.group);
+      if (!g || !roleCanSeeEntry(g)) return;
+      const kids = sec.subs ? sec.subs.map(s => g.children.find(c => c.sub === s)).filter(Boolean) : g.children;
+      kids.filter(c => childVisible(g, c)).forEach(c => out.push({
+        key: `${c.tab}:${c.sub}`, tab: c.tab, sub: c.sub, label: c.label, icon: c.icon, modulo: m.label, seccion: sec.label, modKey: m.key, secLabel: sec.label,
+      }));
+    });
+  });
+  return out;
+}
+function navFavs() {
+  const leaves = navLeaves();
+  const favs = _lsGet(LS_FAVS, FAV_DEFAULT);
+  return (Array.isArray(favs) ? favs : FAV_DEFAULT).map(k => leaves.find(l => l.key === k)).filter(Boolean);
+}
+function navCrumbs(tab, sub) {
+  const leaves = navLeaves();
+  const l = leaves.find(x => x.tab === tab && (sub ? x.sub === sub : !x.sub));
+  if (!l) { const m = leaves.find(x => x.tab === tab); return { path: [], last: m ? m.modulo : '' }; }
+  if (!l.sub) return { path: [], last: l.label };
+  return { path: [l.modulo, l.seccion].filter(Boolean), last: l.label };
+}
+
+function sidebarNavHTML() {
+  const leaves = navLeaves();
+  const favs = navFavs();
+  const favKeys = new Set(favs.map(f => f.key));
+  const closed = new Set(_lsGet(LS_SECT, []));
+  const favHTML = favs.length ? `
+    <div class="sv-navsec" id="sv-favs">
+      <div class="sv-navlbl sv-hide-c">Favoritos</div>
+      ${favs.map(f => `<a class="sv-item sv-fav" data-fav-tab="${f.tab}" ${f.sub ? `data-fav-sub="${f.sub}"` : ''} title="${_escN(f.label)}">
+        <span class="material-symbols-outlined">${f.icon}</span><span class="sv-hide-c">${_escN(f.label)}</span></a>`).join('')}
+    </div>` : '';
+  const mods = NAV_LAYOUT.map(m => {
+    if (m.tab) {
+      const l = leaves.find(x => x.tab === m.tab && !x.sub);
+      if (!l) return '';
+      return `<a class="sv-item sidebar-item" data-tab="${l.tab}" id="nav-${l.tab}" title="${_escN(l.label)}">
+        <span class="material-symbols-outlined">${l.icon}</span><span class="sv-hide-c">${_escN(l.label)}</span></a>`;
+    }
+    const secs = m.sections.map(sec => {
+      const items = leaves.filter(l => l.modKey === m.key && l.secLabel === sec.label);
+      if (!items.length) return '';
+      const sk = `${m.key}|${sec.label}`;
+      // (30-sep-2026) Todas las secciones se pueden expandir/contraer (salvo collapsible:false).
+      const coll = sec.collapsible !== false;
+      const isClosed = coll && closed.has(sk);
+      return `<div class="sv-sectwrap">
+        <div class="sv-sect ${coll ? 'is-coll' : ''} ${isClosed ? 'is-closed' : ''}" ${coll ? `data-sect="${_escN(sk)}"` : ''}>
+          <span>${_escN(sec.label)}${coll ? `<small class="sv-sect-n"> · ${items.length}</small>` : ''}</span>${coll ? '<span class="material-symbols-outlined">expand_more</span>' : ''}</div>
+        <div class="sv-sectbody ${isClosed ? 'hidden' : ''}">
+          ${items.map(c => `<a class="sv-child sidebar-item" data-tab="${c.tab}" data-sub="${c.sub}" title="${_escN(c.label)}">
+            <span class="sv-lbl">${_escN(c.label)}</span>
+            <button class="sv-star ${favKeys.has(c.key) ? 'is-on' : ''}" data-star="${c.key}" data-ro-ok title="${favKeys.has(c.key) ? 'Quitar de favoritos' : 'Agregar a favoritos'}"><span class="material-symbols-outlined">star</span></button>
+          </a>`).join('')}
+        </div></div>`;
+    }).join('');
+    if (!secs.trim()) return '';
+    return `<div class="sv-group" data-mod="${m.key}">
+      <a class="sv-item sv-group-toggle" title="${_escN(m.label)}">
+        <span class="material-symbols-outlined">${m.icon}</span><span class="sv-hide-c" style="flex:1">${_escN(m.label)}</span>
+        <span class="material-symbols-outlined sv-chev sv-hide-c">expand_more</span></a>
+      <div class="sv-kids hidden">${secs}</div></div>`;
+  }).join('');
+  return `${favHTML}
+    <div class="sv-navsec"><div class="sv-navlbl sv-hide-c">Módulos</div>${mods}</div>`;
+}
+
+// Paleta «Ir a una vista» (Ctrl K)
+function openGotoPalette() {
+  if (document.querySelector('.sv-pal-bg')) return;
+  const leaves = navLeaves();
+  const norm = s => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+  const bg = document.createElement('div');
+  bg.className = 'sv-pal-bg';
+  bg.innerHTML = `<div class="sv-pal" role="dialog" aria-label="Ir a una vista">
+    <div class="sv-pal-in"><span class="material-symbols-outlined">search</span><input placeholder="Ir a una vista…" aria-label="Buscar vista"/><span class="sv-kbd">Esc</span></div>
+    <div class="sv-pal-list"></div></div>`;
+  document.body.appendChild(bg);
+  const inp = bg.querySelector('input'), list = bg.querySelector('.sv-pal-list');
+  let sel = 0, cur = leaves;
+  const close = () => bg.remove();
+  const go = l => { close(); if (l) switchTab(l.tab, l.sub); };
+  const draw = () => {
+    const q = norm(inp.value.trim());
+    cur = q ? leaves.filter(l => norm(`${l.label} ${l.modulo} ${l.seccion}`).includes(q)) : leaves;
+    if (sel >= cur.length) sel = Math.max(0, cur.length - 1);
+    list.innerHTML = cur.length ? cur.map((l, i) => `<div class="sv-pal-it ${i === sel ? 'is-sel' : ''}" data-i="${i}">
+      <span class="material-symbols-outlined">${l.icon}</span><span>${_escN(l.label)}</span>
+      <span class="sv-pal-g">${_escN([l.sub ? l.modulo : '', l.seccion].filter(Boolean).join(' › '))}</span></div>`).join('')
+      : '<div class="sv-pal-empty">Sin coincidencias.</div>';
+    list.querySelectorAll('[data-i]').forEach(el => el.addEventListener('click', () => go(cur[+el.dataset.i])));
+    list.querySelector('.is-sel')?.scrollIntoView({ block: 'nearest' });
+  };
+  inp.addEventListener('input', () => { sel = 0; draw(); });
+  inp.addEventListener('keydown', e => {
+    if (e.key === 'ArrowDown') { sel = Math.min(sel + 1, cur.length - 1); draw(); e.preventDefault(); }
+    else if (e.key === 'ArrowUp') { sel = Math.max(sel - 1, 0); draw(); e.preventDefault(); }
+    else if (e.key === 'Enter') { go(cur[sel]); }
+    else if (e.key === 'Escape') { close(); }
+  });
+  bg.addEventListener('mousedown', e => { if (e.target === bg) close(); });
+  draw();
+  inp.focus();
+}
+let _paletteKeyBound = false;
+function bindPaletteKey() {
+  if (_paletteKeyBound) return;
+  _paletteKeyBound = true;
+  document.addEventListener('keydown', e => {
+    if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K')) {
+      if (!document.getElementById('sv-nav')) return;
+      e.preventDefault();
+      openGotoPalette();
+    }
+  });
+}
+
+function wireSidebar() {
+  const nav = document.getElementById('sv-nav');
+  // Hojas del menú (módulos simples y vistas dentro de secciones)
+  nav.querySelectorAll('.sidebar-item').forEach(item => {
+    item.addEventListener('click', e => {
+      if (e.target.closest('[data-star]')) return;
+      switchTab(item.getAttribute('data-tab'), item.getAttribute('data-sub') || null);
+    });
+  });
+  // Favoritos
+  nav.querySelectorAll('.sv-fav').forEach(item => item.addEventListener('click', () =>
+    switchTab(item.dataset.favTab, item.dataset.favSub || null)));
+  // Estrella: agregar/quitar favorito
+  nav.querySelectorAll('[data-star]').forEach(btn => btn.addEventListener('click', e => {
+    e.preventDefault(); e.stopPropagation();
+    const k = btn.dataset.star;
+    const cur = navFavs().map(f => f.key);
+    const next = cur.includes(k) ? cur.filter(x => x !== k) : cur.concat([k]);
+    _lsSet(LS_FAVS, next);
+    rerenderSidebar();
+  }));
+  // Módulos con secciones
+  nav.querySelectorAll('.sv-group-toggle').forEach(t => t.addEventListener('click', () => {
+    const grp = t.closest('.sv-group');
+    if (document.body.classList.contains('sv-side-collapsed')) {
+      setSideCollapsed(false);
+      grp.querySelector('.sv-kids').classList.remove('hidden');
+      t.classList.add('is-expanded');
+      return;
+    }
+    const kids = grp.querySelector('.sv-kids');
+    const abrir = kids.classList.contains('hidden');
+    kids.classList.toggle('hidden', !abrir);
+    t.classList.toggle('is-expanded', abrir);
+  }));
+  // Secciones colapsables (p. ej. «Datos SAP»)
+  nav.querySelectorAll('[data-sect]').forEach(h => h.addEventListener('click', () => {
+    const body = h.nextElementSibling;
+    const cerrar = !body.classList.contains('hidden');
+    body.classList.toggle('hidden', cerrar);
+    h.classList.toggle('is-closed', cerrar);
+    const set = new Set(_lsGet(LS_SECT, []));
+    if (cerrar) set.add(h.dataset.sect); else set.delete(h.dataset.sect);
+    _lsSet(LS_SECT, [...set]);
+  }));
+}
+function rerenderSidebar() {
+  const cont = document.getElementById('sidebar-nav-container');
+  if (!cont) return;
+  const openMods = [...document.querySelectorAll('.sv-group')].filter(g => !g.querySelector('.sv-kids').classList.contains('hidden')).map(g => g.dataset.mod);
+  cont.innerHTML = sidebarNavHTML();
+  openMods.forEach(k => {
+    const g = document.querySelector(`.sv-group[data-mod="${k}"]`);
+    if (g) { g.querySelector('.sv-kids').classList.remove('hidden'); g.querySelector('.sv-group-toggle').classList.add('is-expanded'); }
+  });
+  wireSidebar();
+  marcarNavActivo(currentTab, currentSub);
+}
+function setSideCollapsed(v) {
+  document.body.classList.toggle('sv-side-collapsed', !!v);
+  _lsSet(LS_COLL, !!v);
+  const ic = document.querySelector('#sv-side-toggle .material-symbols-outlined');
+  if (ic) ic.textContent = v ? 'left_panel_open' : 'left_panel_close';
+}
+function marcarNavActivo(tabName, subName) {
+  document.querySelectorAll('.sidebar-item.is-active, .sv-fav.is-active').forEach(i => i.classList.remove('is-active'));
+  document.querySelectorAll('.sv-group-toggle.is-open-group').forEach(t => t.classList.remove('is-open-group'));
+  const selector = subName
+    ? `.sidebar-item[data-tab="${tabName}"][data-sub="${subName}"]`
+    : `.sidebar-item[data-tab="${tabName}"]:not([data-sub])`;
+  const activeNav = document.querySelector(selector);
+  if (activeNav) {
+    activeNav.classList.add('is-active');
+    const grp = activeNav.closest('.sv-group');
+    if (grp) {
+      grp.querySelector('.sv-kids').classList.remove('hidden');
+      const tg = grp.querySelector('.sv-group-toggle');
+      tg.classList.add('is-open-group', 'is-expanded');
+      const body = activeNav.closest('.sv-sectbody');
+      if (body && body.classList.contains('hidden')) { body.classList.remove('hidden'); body.previousElementSibling?.classList.remove('is-closed'); }
+    }
+  }
+  const favSel = subName ? `.sv-fav[data-fav-tab="${tabName}"][data-fav-sub="${subName}"]` : `.sv-fav[data-fav-tab="${tabName}"]:not([data-fav-sub])`;
+  document.querySelector(favSel)?.classList.add('is-active');
+  return activeNav;
+}
+function setBreadcrumb(tabName, subName) {
+  const c = navCrumbs(tabName, subName);
+  const el = document.getElementById('sv-crumbs');
+  if (!el) return;
+  el.innerHTML = c.path.map(p => `<span>${_escN(p)}</span><span class="material-symbols-outlined">chevron_right</span>`).join('')
+    + `<span class="sv-crumb-last" id="current-page-title">${_escN(c.last)}</span>`;
+  document.title = (c.last ? c.last + ' · ' : '') + 'SIT EBEMA';
+}
+
+
+// ==========================================================================
+// MODO SOLO LECTURA (perfiles sin acción 'editar' en permisos.js)
+// Oculta en silencio las acciones de escritura. Sin avisos ni campos atenuados.
+// Un MutationObserver re-aplica el ocultamiento a lo que las vistas pintan
+// de forma asíncrona (tablas que cargan después, detalles expandibles, etc.).
+// ==========================================================================
+const WRITE_ICONS = new Set([
+  'save','add','delete','edit','upload','add_circle','person_add','person_off',
+  'how_to_reg','remove','cloud_upload','create','mode_edit','delete_forever',
+  'send','publish','check_circle','done_all','download','import_export','file_download',
+]);
+const WRITE_WORDS = ['guardar','agregar','crear','eliminar','actualizar','nuevo',
+  'nueva','importar','subir','enviar','confirmar','descargar','exportar','publicar',
+  'csv','excluir','reactivar','coordinar','invitar','editar'];
+// Botones de navegación/filtro que nunca se ocultan
+const NAV_ATTRS = ['data-chip','data-echip','data-exp','data-truck','data-origen','data-refrescar',
+  'data-modo','data-rango-clear','data-close','data-cancel','data-tab','data-sub'];
+// Vistas sin restricciones de escritura en la interfaz (calculadoras)
+const TABS_SIN_READONLY = ['rates', 'home', 'indicadores'];
+
+let _roObserver = null;
+
+function botonDescargaPermitido(btn) {
+  if (can('descargar')) return true;
+  const esPlan = currentTab === 'abastecimiento' && currentSub === 'plan_carga';
+  if (!can('descargar_plan') || !esPlan) return false;
+  return btn.hasAttribute('data-descarga') || btn.hasAttribute('data-csv');
+}
+
+function ocultarEscritura(stage) {
+  stage.querySelectorAll('button:not([data-ro-ok])').forEach(btn => {
+    if (NAV_ATTRS.some(a => btn.hasAttribute(a))) { btn.setAttribute('data-ro-ok', ''); return; }
+    const esDescarga = btn.hasAttribute('data-descarga') || btn.hasAttribute('data-csv');
+    if (esDescarga) {
+      if (botonDescargaPermitido(btn)) btn.setAttribute('data-ro-ok', '');
+      else btn.style.display = 'none';
+      return;
+    }
+    const iconTxt = btn.querySelector('.material-symbols-outlined')?.textContent?.trim() ?? '';
+    const btnTxt  = btn.textContent?.trim().toLowerCase() ?? '';
+    const isWrite = WRITE_ICONS.has(iconTxt) || WRITE_WORDS.some(w => btnTxt.includes(w));
+    const isNav   = btnTxt.includes('buscar') || btn.id?.includes('search') || iconTxt === 'close' || iconTxt === 'search';
+    if (isWrite && !isNav) btn.style.display = 'none';
+  });
+  // Campos editables dentro de tablas (celdas editables en línea)
+  stage.querySelectorAll('tbody input:not([type=radio]):not([type=checkbox]), tbody select, tbody textarea').forEach(el => {
+    el.disabled = true;
+  });
+}
+
+function applyReadOnlyMode(stage) {
+  if (_roObserver) { _roObserver.disconnect(); _roObserver = null; }
+  if (!esSoloLectura() || TABS_SIN_READONLY.includes(currentTab)) return;
+
+  ocultarEscritura(stage);
+  let pend = false;
+  _roObserver = new MutationObserver(() => {
+    if (pend) return;
+    pend = true;
+    requestAnimationFrame(() => { pend = false; ocultarEscritura(stage); });
+  });
+  _roObserver.observe(stage, { childList: true, subtree: true });
+
+  // Interceptar envíos de formulario dentro de la vista (un solo listener por stage)
+  if (stage._roSubmit) return;
+  stage._roSubmit = true;
+  stage.addEventListener('submit', e => {
+    if (!esSoloLectura() || TABS_SIN_READONLY.includes(currentTab)) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+  }, true);
+}
+
+// ==========================================================================
+// SHELL DEL DASHBOARD DE SIT EBEMA
+// ==========================================================================
+function renderDashboardShell() {
+  setSesionPermisos(currentSession?.role, currentSession?.centros);
+  const nombre = String(currentSession?.name || currentSession?.email || '');
+  const iniciales = nombre.split(/[\s._@-]+/).filter(Boolean).slice(0, 2).map(p => p[0].toUpperCase()).join('') || 'U';
+  document.body.classList.toggle('sv-side-collapsed', !!_lsGet(LS_COLL, false));
+  const coll = document.body.classList.contains('sv-side-collapsed');
+  appRoot.innerHTML = `
+    <nav class="sv-nav" id="sv-nav" aria-label="Menú principal">
+      <div class="sv-brand">
+        <div class="sv-hide-c" style="display:flex;flex-direction:column">
+          <span class="sv-brand-t">SIT EBEMA</span><span class="sv-brand-s">Logistics Admin</span>
+        </div>
+        <button class="sv-iconbtn" id="sv-side-toggle" data-ro-ok title="Contraer / expandir menú">
+          <span class="material-symbols-outlined">${coll ? 'left_panel_open' : 'left_panel_close'}</span></button>
+      </div>
+      <button class="sv-goto" id="sv-goto" data-ro-ok title="Ir a una vista (Ctrl K)">
+        <span class="material-symbols-outlined">search</span>
+        <span class="sv-hide-c" style="flex:1">Ir a una vista…</span><span class="sv-kbd sv-hide-c">Ctrl K</span>
+      </button>
+      <div class="sv-navscroll" id="sidebar-nav-container">${sidebarNavHTML()}</div>
+      <div class="sv-foot">
+        <div class="sv-avatar" title="${_escN(nombre)}">${_escN(iniciales)}</div>
+        <div class="sv-user sv-hide-c">
+          <div class="sv-user-n" id="topbar-user-name">${_escN(nombre)}</div>
+          <div class="sv-user-r">${_escN(ROLE_DISPLAY[currentSession.role] || currentSession.role)}</div>
+        </div>
+        <button class="sv-iconbtn sv-hide-c" id="btn-logout" data-ro-ok title="Cerrar sesión"><span class="material-symbols-outlined">logout</span></button>
+      </div>
+    </nav>
+
+    <header class="sv-header">
+      <div class="sv-crumbs" id="sv-crumbs"><span class="sv-crumb-last" id="current-page-title"></span></div>
+      <div class="sv-upd hidden" id="sv-upd" title="Última actualización de los datos SAP de esta vista"></div>
+    </header>
+
+    <main class="sv-main">
+      <div id="stage-area"></div>
+    </main>
+  `;
+
+  document.getElementById('btn-logout').addEventListener('click', handleLogout);
+  document.getElementById('sv-side-toggle').addEventListener('click', () =>
+    setSideCollapsed(!document.body.classList.contains('sv-side-collapsed')));
+  document.getElementById('sv-goto').addEventListener('click', openGotoPalette);
+  bindPaletteKey();
+  wireSidebar();
+
+  // Cargar pestaña inicial. (4-oct-2026, Jordan) Al refrescar se vuelve a la última vista
+  // abierta, guardada en la URL (#/tab/sub); si no hay o no está permitida, HOME.
+  const desdeUrl = vistaDesdeUrl();
+  if (desdeUrl) { currentTab = desdeUrl.tab; currentSub = desdeUrl.sub; }
+  switchTab(currentTab, currentSub);
+}
+
+// (4-oct-2026) Vista actual en la URL: #/abastecimiento/plan_carga
+function vistaDesdeUrl() {
+  const m = String(window.location.hash || '').match(/^#\/([\w-]+)(?:\/([\w-]+))?$/);
+  if (!m) return null;
+  const tab = m[1], sub = m[2] || null;
+  const existe = SIDEBAR_MENU.some(e => (!e.group && e.tab === tab) || (e.group && (e.children || []).some(ch => ch.tab === tab && (sub == null || ch.sub === sub))));
+  return existe ? { tab, sub } : null;
+}
+function guardarVistaEnUrl(tab, sub) {
+  try {
+    const h = `#/${tab}${sub ? '/' + sub : ''}`;
+    if (window.location.hash !== h) history.replaceState(null, '', window.location.pathname + window.location.search + h);
+  } catch (_e) { /* sin history API */ }
+}
+
+function _stageSpinner(stage) {
+  stage.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;height:200px;gap:12px;color:#b5000b">
+    <div style="width:22px;height:22px;border:3px solid #ffdad5;border-top-color:#b5000b;border-radius:50%;animation:spin 0.6s linear infinite"></div>
+    <span style="font-size:13px;font-weight:600;letter-spacing:0.04em">Cargando...</span>
+  </div>`;
+}
+
+// Resuelve la clave de menú (grupo o ítem) de una vista y valida el acceso
+function vistaPermitida(tabName, subName) {
+  const simple = SIDEBAR_MENU.find(e => !e.group && e.tab === tabName);
+  if (simple) return puedeVerMenu(simple.tab);
+  const grupos = SIDEBAR_MENU.filter(e => e.group && e.children?.some(c => c.tab === tabName));
+  if (!grupos.length) return false;
+  // Coincidencia exacta tab+sub primero (p.ej. abastecimiento:proveedores vive en el grupo Proveedores)
+  const exacto = grupos.find(g => g.children.some(c => c.tab === tabName && c.sub === subName));
+  if (exacto) return puedeVerMenu(exacto.group, subName);
+  if (subName == null) return grupos.some(g => g.children.some(c => c.tab === tabName && puedeVerMenu(g.group, c.sub)));
+  return false;
+}
+function primeraVistaPermitida() {
+  for (const e of SIDEBAR_MENU) {
+    if (!e.group) { if (puedeVerMenu(e.tab)) return { tab: e.tab, sub: null }; continue; }
+    const c = e.children.find(ch => puedeVerMenu(e.group, ch.sub));
+    if (c) return { tab: c.tab, sub: c.sub };
+  }
+  return null;
+}
+
+async function switchTab(tabName, subName = null) {
+  // Grupo sin pestaña explícita → primera pestaña permitida (sólo perfiles con menú restringido)
+  if (subName == null && !SIDEBAR_MENU.some(e => !e.group && e.tab === tabName) && !puedeVerMenu('__todo__')) {
+    for (const g of SIDEBAR_MENU.filter(e => e.group)) {
+      const c = g.children.find(ch => ch.tab === tabName && puedeVerMenu(g.group, ch.sub));
+      if (c) { subName = c.sub; break; }
+    }
+  }
+  // Verificar acceso a la vista según perfil (permisos.js)
+  if (!vistaPermitida(tabName, subName)) {
+    const fb = primeraVistaPermitida();
+    if (fb && !(fb.tab === tabName && fb.sub === subName)) { switchTab(fb.tab, fb.sub); return; }
+    document.getElementById('stage-area').innerHTML = '';
+    return;
+  }
+  currentTab = tabName;
+  currentSub = subName;
+  guardarVistaEnUrl(tabName, subName);
+
+  // Estado activo en el menú lateral y breadcrumb del encabezado
+  marcarNavActivo(tabName, subName);
+  setBreadcrumb(tabName, subName);
+  const upd = document.getElementById('sv-upd');
+  if (upd) { upd.classList.add('hidden'); upd.innerHTML = ''; }
+
+  // Resolver alias de subtab (submenus que apuntan a vistas existentes)
+  const aliasMap = SUB_ALIAS[tabName] || {};
+  const alias = subName != null ? (aliasMap[subName] !== undefined ? aliasMap[subName] : subName) : null;
+
+  const stage = document.getElementById('stage-area');
+
+  _stageSpinner(stage);
+  switch (tabName) {
+    case 'home': {
+      const m = await loadMod('ind', './indicadores.js?v=202610041957');
+      m.renderIndicadoresHome(stage);
+      break;
+    }
+    case 'rates': {
+      await loadRoutesData();
+      const m = await loadMod('rates', './rates.js?v=202610041957');
+      m.renderRatesView(stage);
+      break;
+    }
+    case 'transports': {
+      const m = await loadMod('trans', './transports.js?v=202610041957');
+      m.renderTransportsView(stage);
+      break;
+    }
+    case 'routes': {
+      await loadRoutesData();
+      const m = await loadMod('routes', './routes.js?v=202610041957');
+      if (alias) m.setRoutesSubTab(alias);
+      m.renderRoutesView(stage);
+      break;
+    }
+    case 'roles': {
+      const m = await loadMod('roles', './roles.js?v=202610041957');
+      m.renderRolesView(stage);
+      break;
+    }
+    case 'tarifas-transporte': {
+      await loadRoutesData();
+      await loadHistoricoFlete360();
+      const m = await loadMod('tt', './tarifas-transporte.js?v=202610041957');
+      if (alias) m.setActiveSub(alias);
+      m.renderTariffTransportView(stage);
+      break;
+    }
+    case 'tarifas-clientes': {
+      await loadRoutesData();
+      await loadHistoricoFlete360();
+      const m = await loadMod('tc', './tarifas-clientes.js?v=202610041957');
+      if (alias) m.setActiveSubC(alias);
+      m.renderClientTariffView(stage);
+      break;
+    }
+    case 'abastecimiento': {
+      await loadRoutesData();
+      const m = await loadMod('abast', './abastecimiento.js?v=202610041957');
+      if (subName) m.setAbastSubTab(subName);
+      m.renderAbastecimientoView(stage);
+      break;
+    }
+    case 'indicadores': {
+      const m = await loadMod('ind', './indicadores.js?v=202610041957');
+      if (subName) m.setIndicadoresSubTab(subName);
+      m.renderIndicadoresView(stage);
+      break;
+    }
+    case 'flete-tercero': {
+      await loadRoutesData();
+      const m = await loadMod('fter', './flete-tercero.js?v=202610041957');
+      if (subName) m.setFleteTerceroSubTab(subName);
+      m.renderFleteTerceroView(stage);
+      break;
+    }
+  }
+  // Aplicar modo solo lectura si corresponde
+  applyReadOnlyMode(stage);
+}
+
+// Exponer utilidad de limpieza en consola
