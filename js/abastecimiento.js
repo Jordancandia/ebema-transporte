@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610051140';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610051140';
-import { getDatabase } from './data.js?v=202610051140';
+import { supabase } from './supabase-client.js?v=202610051145';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610051145';
+import { getDatabase } from './data.js?v=202610051145';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610051140';
-import { confirmar } from './confirmar.js?v=202610051140';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610051145';
+import { confirmar } from './confirmar.js?v=202610051145';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -1011,7 +1011,7 @@ function showCoordRetiroModal(row, ctx) {
     const editando = !!row._modo;
     let dirs = [];
     try {
-      const { data } = await supabase.from('abast_proveedor_direcciones').select('id, nombre_fabrica, direccion, comuna')
+      const { data } = await supabase.from('abast_proveedor_direcciones').select('id, nombre_fabrica, direccion, comuna, region, contacto_nombre, contacto_telefono')
         .eq('proveedor_id', row.proveedor ?? '').eq('activo', true);
       dirs = data || [];
     } catch (_) { /* sin direcciones guardadas */ }
@@ -1032,7 +1032,7 @@ function showCoordRetiroModal(row, ctx) {
     if (row._fab_direccion) {
       const m = dirs.find(d => d.direccion === row._fab_direccion);
       if (m) st.dirSel = String(m.id); else { st.dirSel = 'new'; st.dirTxt = row._fab_direccion; }
-    } else if (dirs.length === 1) { st.dirSel = String(dirs[0].id); st.comuna = st.comuna || dirs[0].comuna || ''; }
+    } else if (dirs.length === 1) { st.dirSel = String(dirs[0].id); st.comuna = st.comuna || dirs[0].comuna || ''; st.contacto = st.contacto || dirs[0].contacto_nombre || ''; st.tel = st.tel || dirs[0].contacto_telefono || ''; }
     else if (!dirs.length) st.dirSel = 'new';
     // OC ya coordinadas en el mismo camión (misma patente y fecha) se precargan como acompañantes.
     if (editando && t0.patente_camion && row._fecha_retiro) {
@@ -1213,7 +1213,7 @@ function showCoordRetiroModal(row, ctx) {
       panel.querySelectorAll('[data-modo]').forEach(b => b.addEventListener('click', () => { st.modo = b.dataset.modo; draw(); }));
       panel.querySelectorAll('[data-tipo]').forEach(b => b.addEventListener('click', () => { st.tipo = st.tipo === b.dataset.tipo && !rm() ? '' : b.dataset.tipo; draw(); }));
       panel.querySelectorAll('[data-dir]').forEach(b => b.addEventListener('click', () => {
-        st.dirSel = b.dataset.dir; const d = dirs.find(x => String(x.id) === st.dirSel); if (d && d.comuna) st.comuna = d.comuna; draw();
+        st.dirSel = b.dataset.dir; const d = dirs.find(x => String(x.id) === st.dirSel); if (d) { if (d.comuna) st.comuna = d.comuna; if (d.contacto_nombre) st.contacto = d.contacto_nombre; if (d.contacto_telefono) st.tel = d.contacto_telefono; } draw();
       }));
       panel.querySelectorAll('[data-k]').forEach(i => i.addEventListener(i.type === 'checkbox' || i.type === 'date' ? 'change' : 'input', () => { st[i.dataset.k] = i.type === 'checkbox' ? i.checked : i.value; }));
       panel.querySelectorAll('[data-x]').forEach(i => i.addEventListener('input', () => { const e = st.extras.get(i.dataset.x); if (e) e[i.dataset.xk] = i.value; }));
@@ -1237,7 +1237,7 @@ function showCoordRetiroModal(row, ctx) {
         }
         const fabDir = dirMain();
         if (st.dirSel === 'new' && st.guardar && fabDir && row.proveedor) {
-          await supabase.from('abast_proveedor_direcciones').insert({ proveedor_id: row.proveedor, nombre_fabrica: fabDir, direccion: fabDir, comuna: st.comuna.trim(), activo: true });
+          await supabase.from('abast_proveedor_direcciones').insert({ proveedor_id: row.proveedor, nombre_fabrica: fabDir.toUpperCase(), direccion: fabDir, comuna: st.comuna.trim(), contacto_nombre: st.contacto.trim() || null, contacto_telefono: st.tel.trim() || null, activo: true });
         }
         const email = await getUserEmail(), now = new Date().toISOString();
         const transp = rm() ? {
@@ -3293,7 +3293,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610051140');
+    const m = await import('./ind-plan-carga.js?v=202610051145');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
@@ -5479,162 +5479,171 @@ function exportarCSV(cfg, filas) {
 }
 
 // ============================================================================
-// SUBMENU 1: PROVEEDORES
+// SUBMENU 1: PROVEEDORES — maestra de proveedores (5-oct-2026, Jordan)
+// Base: maestra SAP (ID + nombre). Nombres siempre en MAYÚSCULA (también lo fuerza un
+// trigger en BD). Alta manual, edición de nombre, activar/desactivar (no se elimina) y
+// direcciones de fábrica con nombre, dirección, comuna, región y contacto (nombre/teléfono/correo).
 // ============================================================================
+const REGIONES_CL = ['Arica y Parinacota', 'Tarapacá', 'Antofagasta', 'Atacama', 'Coquimbo', 'Valparaíso',
+  'Metropolitana de Santiago', "Libertador General Bernardo O'Higgins", 'Maule', 'Ñuble', 'Biobío', 'La Araucanía',
+  'Los Ríos', 'Los Lagos', 'Aysén del General Carlos Ibáñez del Campo', 'Magallanes y de la Antártica Chilena'];
+const PROV_PAGE = 50;
+const provUI = { q: '', estado: 'act', conFab: false, page: 0 };
+const mailValido = v => !String(v ?? '').trim() || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(v).trim());
+
 async function loadProveedores() {
-  const { data, error } = await supabase
-    .from('abast_proveedores')
-    .select('*, direcciones:abast_proveedor_direcciones(*)')
-    .order('nombre', { ascending: true });
-  if (error) { console.error(error); showAlert('Error al cargar proveedores: ' + error.message, 'error'); return []; }
-  return data || [];
+  const out = [];
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await supabase.from('abast_proveedores')
+      .select('*, direcciones:abast_proveedor_direcciones(*)')
+      .order('nombre', { ascending: true }).range(from, from + 999);
+    if (error) { console.error(error); showAlert('Error al cargar proveedores: ' + error.message, 'error'); return out; }
+    out.push(...(data || []));
+    if (!data || data.length < 1000) break;
+  }
+  out.forEach(p => (p.direcciones || []).sort((a, b) => String(a.nombre_fabrica || '').localeCompare(String(b.nombre_fabrica || ''))));
+  return out;
 }
 
 async function renderProveedores(stage) {
   stage.innerHTML = `<div class="text-secondary text-body-md p-md">Cargando proveedores…</div>`;
   proveedores = await loadProveedores();
+  const norm = s => String(s ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
 
-  let filtro = '';
+  function filtrados() {
+    const q = norm(provUI.q).trim();
+    return proveedores.filter(p => (provUI.estado === 'all' || (provUI.estado === 'act' ? p.activo !== false : p.activo === false))
+      && (!provUI.conFab || (p.direcciones || []).length > 0)
+      && (!q || norm(`${p.id} ${p.nombre} ${(p.direcciones || []).map(d => `${d.nombre_fabrica} ${d.comuna} ${d.contacto_nombre}`).join(' ')}`).includes(q)));
+  }
+  const seg = (k, lbl, n) => `<button data-estado="${k}" class="px-md py-xs rounded-lg text-[13px] font-bold ${provUI.estado === k ? 'bg-primary text-on-primary' : 'text-secondary hover:bg-surface-container-high'}">${lbl} <span class="opacity-80">${n}</span></button>`;
 
-  function draw() {
-    const q = filtro.trim().toLowerCase();
-    const rows = proveedores.filter(p => !q
-      || (p.nombre || '').toLowerCase().includes(q)
-      || (p.id || '').toLowerCase().includes(q)
-      || (p.contacto_nombre || '').toLowerCase().includes(q));
-
+  function shell() {
+    const nAct = proveedores.filter(p => p.activo !== false).length;
     stage.innerHTML = `
       <div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm rounded-lg">
-        <div class="flex items-center justify-between mb-md border-b border-outline-variant pb-sm">
+        <div class="flex items-center justify-between gap-md flex-wrap mb-md border-b border-outline-variant pb-sm">
           <div>
             <h3 class="text-headline-sm font-bold text-on-surface">GESTIÓN TRONCALES – PROVEEDORES</h3>
-            <p class="text-[13px] text-secondary">Contactos y direcciones de fabrica para retiro de material</p>
+            <p class="text-[13px] text-secondary">Maestra de proveedores y direcciones de fábrica para retiro de material</p>
           </div>
-          <button id="ab-nuevo-prov"
-            class="bg-primary text-on-primary px-md py-sm rounded-lg text-body-md font-bold hover:opacity-90 transition-opacity">
-            <span class="material-symbols-outlined text-[18px] align-middle mr-xs">add</span>Nuevo Proveedor
-          </button>
+          <button id="ab-nuevo-prov" class="bg-primary text-on-primary px-md py-sm rounded-lg text-body-md font-bold hover:opacity-90 transition-opacity">
+            <span class="material-symbols-outlined text-[18px] align-middle mr-xs">add</span>Nuevo proveedor</button>
         </div>
-
-        <div class="mb-md">
-          <input id="ab-prov-buscar" value="${escapeHtml(filtro)}" placeholder="Buscar por ID, nombre o contacto…"
-            class="w-full md:w-1/2 border border-outline-variant rounded-lg px-md py-sm text-body-md focus:border-primary outline-none" />
+        <div class="flex items-center gap-md flex-wrap mb-md">
+          <label class="flex items-center gap-xs border border-outline-variant rounded-lg px-md py-sm flex-1 min-w-[240px] max-w-[520px] focus-within:border-primary">
+            <span class="material-symbols-outlined text-[18px] text-secondary">search</span>
+            <input id="ab-prov-buscar" value="${escapeHtml(provUI.q)}" placeholder="Buscar por ID, nombre, fábrica, comuna o contacto…" class="w-full outline-none text-body-md bg-transparent" autocomplete="off"/></label>
+          <div class="flex items-center gap-xs border border-outline-variant rounded-lg p-xs">
+            ${seg('act', 'Activos', nAct)}${seg('ina', 'Inactivos', proveedores.length - nAct)}${seg('all', 'Todos', proveedores.length)}</div>
+          <label class="flex items-center gap-xs text-[13px] text-secondary cursor-pointer"><input id="ab-prov-confab" type="checkbox" ${provUI.conFab ? 'checked' : ''} class="w-4 h-4"/> Sólo con fábricas</label>
         </div>
-
-        <div class="overflow-x-auto">
-          <table class="w-full text-body-md">
-            <thead>
-              <tr class="text-left text-[12px] uppercase tracking-wide text-secondary border-b border-outline-variant">
-                <th class="py-sm pr-md">ID</th>
-                <th class="py-sm pr-md">Proveedor</th>
-                <th class="py-sm pr-md">Contacto</th>
-                <th class="py-sm pr-md">Correo</th>
-                <th class="py-sm pr-md">Telefono</th>
-                <th class="py-sm pr-md text-center">Fabricas</th>
-                <th class="py-sm pr-md text-right">Acciones</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${rows.length === 0 ? `
-                <tr><td colspan="7" class="py-lg text-center text-secondary">Sin proveedores registrados.</td></tr>
-              ` : rows.map(p => `
-                <tr class="border-b border-outline-variant/60 hover:bg-surface-container-low">
-                  <td class="py-sm pr-md font-data-mono text-[13px]">${escapeHtml(p.id)}</td>
-                  <td class="py-sm pr-md font-semibold">${escapeHtml(p.nombre || '')}
-                    ${p.activo === false ? '<span class="ml-xs text-[11px] text-error">(inactivo)</span>' : ''}</td>
-                  <td class="py-sm pr-md">${escapeHtml(p.contacto_nombre || '—')}</td>
-                  <td class="py-sm pr-md">${escapeHtml(p.contacto_correo || '—')}</td>
-                  <td class="py-sm pr-md">${escapeHtml(p.contacto_telefono || '—')}</td>
-                  <td class="py-sm pr-md text-center">
-                    <span class="inline-flex items-center justify-center min-w-[24px] h-[24px] px-xs rounded-full bg-surface-container-high text-[12px] font-bold">
-                      ${(p.direcciones || []).length}</span>
-                  </td>
-                  <td class="py-sm pr-md text-right whitespace-nowrap">
-                    <button data-dir="${escapeHtml(p.id)}" title="Direcciones de fabrica"
-                      class="text-secondary hover:text-primary p-xs"><span class="material-symbols-outlined text-[20px]">factory</span></button>
-                    <button data-edit="${escapeHtml(p.id)}" title="Editar"
-                      class="text-secondary hover:text-primary p-xs"><span class="material-symbols-outlined text-[20px]">edit</span></button>
-                    <button data-del="${escapeHtml(p.id)}" title="Eliminar"
-                      class="text-secondary hover:text-error p-xs"><span class="material-symbols-outlined text-[20px]">delete</span></button>
-                  </td>
-                </tr>
-                ${selectedProveedorId === p.id ? renderDireccionesPanel(p) : ''}
-              `).join('')}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    `;
-
-    const search = stage.querySelector('#ab-prov-buscar');
-    search.addEventListener('input', e => { filtro = e.target.value; draw();
-      const s = stage.querySelector('#ab-prov-buscar'); if (s){ s.focus(); s.setSelectionRange(s.value.length, s.value.length);} });
-    stage.querySelector('#ab-nuevo-prov').addEventListener('click', () => openProveedorModal(null, draw));
-    stage.querySelectorAll('[data-edit]').forEach(b => b.addEventListener('click',
-      () => openProveedorModal(proveedores.find(x => x.id === b.dataset.edit), draw)));
-    stage.querySelectorAll('[data-del]').forEach(b => b.addEventListener('click',
-      () => deleteProveedor(b.dataset.del, draw)));
-    stage.querySelectorAll('[data-dir]').forEach(b => b.addEventListener('click', () => {
-      selectedProveedorId = selectedProveedorId === b.dataset.dir ? null : b.dataset.dir;
-      draw();
-    }));
-
-    wireDireccionesPanel(stage, draw);
+        <div id="ab-prov-tabla"></div>
+      </div>`;
+    const s = stage.querySelector('#ab-prov-buscar');
+    let tk;
+    s.addEventListener('input', e => { clearTimeout(tk); tk = setTimeout(() => { provUI.q = e.target.value; provUI.page = 0; tabla(); }, 180); });
+    stage.querySelectorAll('[data-estado]').forEach(b => b.addEventListener('click', () => { provUI.estado = b.dataset.estado; provUI.page = 0; shell(); }));
+    stage.querySelector('#ab-prov-confab').addEventListener('change', e => { provUI.conFab = e.target.checked; provUI.page = 0; tabla(); });
+    stage.querySelector('#ab-nuevo-prov').addEventListener('click', () => openProveedorModal(null, shell));
+    tabla();
   }
 
-  draw();
+  function tabla() {
+    const box = stage.querySelector('#ab-prov-tabla'); if (!box) return;
+    const rows = filtrados();
+    const pages = Math.max(1, Math.ceil(rows.length / PROV_PAGE));
+    provUI.page = Math.min(provUI.page, pages - 1);
+    const vis = rows.slice(provUI.page * PROV_PAGE, (provUI.page + 1) * PROV_PAGE);
+    box.innerHTML = `
+      <div class="overflow-x-auto">
+        <table class="w-full text-body-md">
+          <thead><tr class="text-left text-[12px] uppercase tracking-wide text-secondary border-b border-outline-variant">
+            <th class="py-sm pr-md">ID</th><th class="py-sm pr-md">Proveedor</th><th class="py-sm pr-md">Estado</th>
+            <th class="py-sm pr-md text-center">Fábricas</th><th class="py-sm pr-md text-right">Acciones</th></tr></thead>
+          <tbody>
+            ${vis.length === 0 ? `<tr><td colspan="5" class="py-lg text-center text-secondary">Sin proveedores para el filtro.</td></tr>` : vis.map(p => `
+              <tr class="border-b border-outline-variant/60 hover:bg-surface-container-low ${p.activo === false ? 'opacity-60' : ''}">
+                <td class="py-sm pr-md font-data-mono text-[13px]">${escapeHtml(p.id)}</td>
+                <td class="py-sm pr-md font-semibold">${escapeHtml(p.nombre || '')}</td>
+                <td class="py-sm pr-md">${p.activo === false
+                  ? '<span class="inline-flex items-center gap-xs text-[12px] font-bold px-sm py-[2px] rounded-full bg-error-container text-on-error-container">Inactivo</span>'
+                  : '<span class="inline-flex items-center gap-xs text-[12px] font-bold px-sm py-[2px] rounded-full" style="background:#dcfce7;color:#14532d">Activo</span>'}</td>
+                <td class="py-sm pr-md text-center">
+                  <button data-dir="${escapeHtml(p.id)}" title="Direcciones de fábrica" class="inline-flex items-center gap-xs px-sm py-[2px] rounded-full text-[12px] font-bold ${selectedProveedorId === p.id ? 'bg-primary text-on-primary' : 'bg-surface-container-high text-on-surface hover:bg-surface-container-highest'}">
+                    <span class="material-symbols-outlined text-[16px]">factory</span>${(p.direcciones || []).length}</button></td>
+                <td class="py-sm pr-md text-right whitespace-nowrap">
+                  <button data-edit="${escapeHtml(p.id)}" title="Editar" class="text-secondary hover:text-primary p-xs"><span class="material-symbols-outlined text-[20px]">edit</span></button>
+                  <button data-toggle="${escapeHtml(p.id)}" title="${p.activo === false ? 'Activar' : 'Desactivar'}" class="text-secondary ${p.activo === false ? 'hover:text-primary' : 'hover:text-error'} p-xs">
+                    <span class="material-symbols-outlined text-[20px]">${p.activo === false ? 'toggle_off' : 'toggle_on'}</span></button>
+                </td>
+              </tr>
+              ${selectedProveedorId === p.id ? renderDireccionesPanel(p) : ''}`).join('')}
+          </tbody>
+        </table>
+      </div>
+      <div class="flex items-center justify-between mt-md text-[13px] text-secondary">
+        <span>${rows.length ? `${provUI.page * PROV_PAGE + 1}–${Math.min(rows.length, (provUI.page + 1) * PROV_PAGE)} de ${rows.length}` : '0 resultados'}</span>
+        <div class="flex items-center gap-xs">
+          <button data-pg="-1" ${provUI.page === 0 ? 'disabled' : ''} class="p-xs rounded-lg hover:bg-surface-container-high disabled:opacity-30"><span class="material-symbols-outlined">chevron_left</span></button>
+          <span>Página ${provUI.page + 1} de ${pages}</span>
+          <button data-pg="1" ${provUI.page >= pages - 1 ? 'disabled' : ''} class="p-xs rounded-lg hover:bg-surface-container-high disabled:opacity-30"><span class="material-symbols-outlined">chevron_right</span></button>
+        </div>
+      </div>`;
+    box.querySelectorAll('[data-pg]').forEach(b => b.addEventListener('click', () => { provUI.page += Number(b.dataset.pg); tabla(); }));
+    box.querySelectorAll('[data-edit]').forEach(b => b.addEventListener('click', () => openProveedorModal(proveedores.find(x => x.id === b.dataset.edit), shell)));
+    box.querySelectorAll('[data-toggle]').forEach(b => b.addEventListener('click', () => toggleProveedor(proveedores.find(x => x.id === b.dataset.toggle), shell)));
+    box.querySelectorAll('[data-dir]').forEach(b => b.addEventListener('click', () => { selectedProveedorId = selectedProveedorId === b.dataset.dir ? null : b.dataset.dir; tabla(); }));
+    wireDireccionesPanel(box, tabla);
+  }
+
+  shell();
 }
 
 function renderDireccionesPanel(p) {
   const dirs = p.direcciones || [];
+  const contacto = d => [d.contacto_nombre, d.contacto_telefono, d.contacto_correo].filter(Boolean).map(escapeHtml).join('<br>') || '—';
   return `
-    <tr class="bg-surface-container-low"><td colspan="7" class="p-md">
+    <tr class="bg-surface-container-low"><td colspan="5" class="p-md">
       <div class="border border-outline-variant rounded-lg p-md bg-surface-container-lowest">
         <div class="flex items-center justify-between mb-sm">
-          <h4 class="font-bold text-on-surface">
-            <span class="material-symbols-outlined text-[18px] align-middle mr-xs">factory</span>
-            Direcciones de fabrica — ${escapeHtml(p.nombre || p.id)}
-          </h4>
-          <button data-adddir="${escapeHtml(p.id)}"
-            class="bg-surface-container-high text-on-surface px-sm py-xs rounded-lg text-[13px] font-bold hover:bg-surface-container-highest">
-            <span class="material-symbols-outlined text-[16px] align-middle mr-xs">add_location_alt</span>Agregar direccion
-          </button>
+          <h4 class="font-bold text-on-surface"><span class="material-symbols-outlined text-[18px] align-middle mr-xs">factory</span>
+            Direcciones de fábrica — ${escapeHtml(p.nombre || p.id)}</h4>
+          <button data-adddir="${escapeHtml(p.id)}" class="bg-surface-container-high text-on-surface px-sm py-xs rounded-lg text-[13px] font-bold hover:bg-surface-container-highest">
+            <span class="material-symbols-outlined text-[16px] align-middle mr-xs">add_location_alt</span>Agregar fábrica</button>
         </div>
-        ${dirs.length === 0 ? `<p class="text-secondary text-[13px] py-sm">Sin direcciones registradas. Agrega la ubicacion de la fabrica o bodega de retiro.</p>` : `
-        <table class="w-full text-[13px]">
+        ${dirs.length === 0 ? `<p class="text-secondary text-[13px] py-sm">Sin fábricas registradas. Agrega la dirección de la fábrica o bodega de retiro.</p>` : `
+        <div class="overflow-x-auto"><table class="w-full text-[13px]">
           <thead><tr class="text-left text-[11px] uppercase tracking-wide text-secondary border-b border-outline-variant">
-            <th class="py-xs pr-md">Fabrica / Planta</th><th class="py-xs pr-md">Direccion</th>
-            <th class="py-xs pr-md">Comuna</th><th class="py-xs pr-md">Region</th><th class="py-xs text-right">Acciones</th>
-          </tr></thead>
+            <th class="py-xs pr-md">Fábrica</th><th class="py-xs pr-md">Dirección</th><th class="py-xs pr-md">Comuna</th>
+            <th class="py-xs pr-md">Región</th><th class="py-xs pr-md">Contacto</th><th class="py-xs text-right">Acciones</th></tr></thead>
           <tbody>
             ${dirs.map(d => `
-              <tr class="border-b border-outline-variant/50">
-                <td class="py-xs pr-md">${escapeHtml(d.nombre_fabrica || '—')}</td>
+              <tr class="border-b border-outline-variant/50 align-top ${d.activo === false ? 'opacity-60' : ''}">
+                <td class="py-xs pr-md font-semibold">${escapeHtml(d.nombre_fabrica || '—')}${d.activo === false ? ' <span class="text-[11px] text-error">(inactiva)</span>' : ''}</td>
                 <td class="py-xs pr-md">${escapeHtml(d.direccion || '—')}</td>
                 <td class="py-xs pr-md">${escapeHtml(d.comuna || '—')}</td>
                 <td class="py-xs pr-md">${escapeHtml(d.region || '—')}</td>
+                <td class="py-xs pr-md">${contacto(d)}</td>
                 <td class="py-xs text-right whitespace-nowrap">
-                  <button data-editdir="${d.id}" class="text-secondary hover:text-primary p-xs"><span class="material-symbols-outlined text-[18px]">edit</span></button>
-                  <button data-deldir="${d.id}" class="text-secondary hover:text-error p-xs"><span class="material-symbols-outlined text-[18px]">delete</span></button>
+                  <button data-editdir="${d.id}" title="Editar" class="text-secondary hover:text-primary p-xs"><span class="material-symbols-outlined text-[18px]">edit</span></button>
+                  <button data-deldir="${d.id}" title="Eliminar" class="text-secondary hover:text-error p-xs"><span class="material-symbols-outlined text-[18px]">delete</span></button>
                 </td>
               </tr>`).join('')}
           </tbody>
-        </table>`}
+        </table></div>`}
       </div>
-    </td></tr>
-  `;
+    </td></tr>`;
 }
 
 function wireDireccionesPanel(stage, redraw) {
-  stage.querySelectorAll('[data-adddir]').forEach(b => b.addEventListener('click',
-    () => openDireccionModal(b.dataset.adddir, null, redraw)));
+  stage.querySelectorAll('[data-adddir]').forEach(b => b.addEventListener('click', () => openDireccionModal(b.dataset.adddir, null, redraw)));
   stage.querySelectorAll('[data-editdir]').forEach(b => b.addEventListener('click', () => {
     const prov = proveedores.find(p => p.id === selectedProveedorId);
     const dir = (prov?.direcciones || []).find(d => String(d.id) === b.dataset.editdir);
     openDireccionModal(selectedProveedorId, dir, redraw);
   }));
-  stage.querySelectorAll('[data-deldir]').forEach(b => b.addEventListener('click',
-    () => deleteDireccion(b.dataset.deldir, redraw)));
+  stage.querySelectorAll('[data-deldir]').forEach(b => b.addEventListener('click', () => deleteDireccion(b.dataset.deldir, redraw)));
 }
 
 function modalShell(titulo, bodyHtml) {
@@ -5649,7 +5658,9 @@ function modalShell(titulo, bodyHtml) {
       <div class="p-lg">${bodyHtml}</div>
     </div>`;
   document.body.appendChild(wrap);
-  const close = () => wrap.remove();
+  const onKey = e => { if (e.key === 'Escape') close(); };
+  const close = () => { wrap.remove(); document.removeEventListener('keydown', onKey); };
+  document.addEventListener('keydown', onKey);
   wrap.querySelector('[data-close]').addEventListener('click', close);
   wrap.addEventListener('click', e => { if (e.target === wrap) close(); });
   return { wrap, close };
@@ -5666,85 +5677,103 @@ function field(label, id, value = '', type = 'text', extra = '') {
 
 function openProveedorModal(prov, redraw) {
   const esNuevo = !prov;
-  const { wrap, close } = modalShell(esNuevo ? 'Nuevo Proveedor' : 'Editar Proveedor', `
-    ${field('ID Proveedor', 'f-id', prov?.id || '', 'text', esNuevo ? '' : 'disabled')}
-    ${field('Nombre Proveedor', 'f-nombre', prov?.nombre || '')}
-    ${field('Nombre Contacto', 'f-cnombre', prov?.contacto_nombre || '')}
-    ${field('Correo Contacto', 'f-ccorreo', prov?.contacto_correo || '', 'email')}
-    ${field('Telefono Contacto', 'f-ctel', prov?.contacto_telefono || '')}
+  const { wrap, close } = modalShell(esNuevo ? 'Nuevo proveedor' : 'Editar proveedor', `
+    ${field('ID proveedor (código SAP) *', 'f-id', prov?.id || '', 'text', esNuevo ? 'autocomplete="off"' : 'disabled')}
+    ${field('Nombre proveedor *', 'f-nombre', prov?.nombre || '', 'text', 'style="text-transform:uppercase" autocomplete="off"')}
     <label class="flex items-center gap-sm mt-sm mb-md text-body-md">
-      <input id="f-activo" type="checkbox" ${prov?.activo === false ? '' : 'checked'} class="w-4 h-4"/>
-      <span>Proveedor activo</span>
-    </label>
+      <input id="f-activo" type="checkbox" ${prov?.activo === false ? '' : 'checked'} class="w-4 h-4"/><span>Proveedor activo</span></label>
+    <p class="text-[12px] text-secondary mb-md">Los contactos se registran en cada dirección de fábrica.</p>
     <div class="flex justify-end gap-sm">
       <button data-cancel class="px-md py-sm rounded-lg text-secondary hover:bg-surface-container-high">Cancelar</button>
       <button data-save class="bg-primary text-on-primary px-md py-sm rounded-lg font-bold hover:opacity-90">Guardar</button>
-    </div>
-  `);
+    </div>`);
+  setTimeout(() => wrap.querySelector(esNuevo ? '#f-id' : '#f-nombre')?.focus(), 0);
   wrap.querySelector('[data-cancel]').addEventListener('click', close);
-  wrap.querySelector('[data-save]').addEventListener('click', async () => {
-    const id = wrap.querySelector('#f-id').value.trim();
-    const nombre = wrap.querySelector('#f-nombre').value.trim();
+  wrap.querySelector('[data-save]').addEventListener('click', async e => {
+    const id = wrap.querySelector('#f-id').value.trim().toUpperCase();
+    const nombre = wrap.querySelector('#f-nombre').value.trim().replace(/\s+/g, ' ').toUpperCase();
     if (!id)     { showAlert('El ID del proveedor es obligatorio', 'error'); return; }
     if (!nombre) { showAlert('El nombre del proveedor es obligatorio', 'error'); return; }
-    const payload = {
-      id, nombre,
-      contacto_nombre: wrap.querySelector('#f-cnombre').value.trim() || null,
-      contacto_correo: wrap.querySelector('#f-ccorreo').value.trim() || null,
-      contacto_telefono: wrap.querySelector('#f-ctel').value.trim() || null,
-      activo: wrap.querySelector('#f-activo').checked,
-      updated_at: new Date().toISOString(),
-      updated_by: await getUserEmail(),
-    };
-    const { error } = await supabase.from('abast_proveedores').upsert(payload);
-    if (error) { showAlert('Error al guardar: ' + error.message, 'error'); return; }
-    showAlert('Proveedor guardado', 'success');
+    if (esNuevo) {
+      const ex = proveedores.find(p => p.id === id);
+      if (ex) { showAlert(`El ID ${id} ya existe: ${ex.nombre}${ex.activo === false ? ' (inactivo)' : ''}.`, 'error'); return; }
+    }
+    const payload = { nombre, activo: wrap.querySelector('#f-activo').checked, updated_at: new Date().toISOString(), updated_by: await getUserEmail() };
+    e.currentTarget.disabled = true;
+    const { error } = esNuevo
+      ? await supabase.from('abast_proveedores').insert({ id, ...payload })
+      : await supabase.from('abast_proveedores').update(payload).eq('id', prov.id);
+    if (error) { e.currentTarget.disabled = false; showAlert('Error al guardar: ' + error.message, 'error'); return; }
+    showAlert(esNuevo ? `Proveedor ${id} agregado` : 'Proveedor actualizado', 'success');
     close();
+    if (esNuevo) { provUI.q = id; provUI.estado = 'all'; provUI.page = 0; }
     proveedores = await loadProveedores();
     redraw();
   });
 }
 
-async function deleteProveedor(id, redraw) {
-  if (!await confirmar('¿Eliminar el proveedor y todas sus direcciones de fabrica?')) return;
-  const { error } = await supabase.from('abast_proveedores').delete().eq('id', id);
-  if (error) { showAlert('Error al eliminar: ' + error.message, 'error'); return; }
-  if (selectedProveedorId === id) selectedProveedorId = null;
-  showAlert('Proveedor eliminado', 'success');
-  proveedores = await loadProveedores();
+async function toggleProveedor(p, redraw) {
+  if (!p) return;
+  const activar = p.activo === false;
+  if (!await confirmar(`¿${activar ? 'Activar' : 'Desactivar'} el proveedor ${p.id} · ${p.nombre}?${activar ? '' : '\n\nNo se elimina: sus fábricas se conservan y puedes reactivarlo cuando quieras.'}`,
+    activar ? {} : { aceptar: 'Desactivar', tono: 'peligro', icono: 'toggle_off' })) return;
+  const { error } = await supabase.from('abast_proveedores').update({ activo: activar, updated_at: new Date().toISOString(), updated_by: await getUserEmail() }).eq('id', p.id);
+  if (error) { showAlert('Error al actualizar: ' + error.message, 'error'); return; }
+  p.activo = activar;
+  showAlert(`Proveedor ${activar ? 'activado' : 'desactivado'}`, 'success');
   redraw();
 }
 
 function openDireccionModal(proveedorId, dir, redraw) {
   const esNueva = !dir;
-  const { wrap, close } = modalShell(esNueva ? 'Nueva direccion de fabrica' : 'Editar direccion', `
-    ${field('Fabrica / Planta (etiqueta)', 'd-fab', dir?.nombre_fabrica || '')}
-    ${field('Direccion', 'd-dir', dir?.direccion || '')}
-    ${field('Comuna', 'd-com', dir?.comuna || '')}
-    ${field('Region', 'd-reg', dir?.region || '')}
+  const prov = proveedores.find(p => p.id === proveedorId);
+  const regSel = dir?.region || '';
+  const { wrap, close } = modalShell(esNueva ? 'Nueva fábrica' : 'Editar fábrica', `
+    <p class="text-[13px] text-secondary mb-md">${escapeHtml(proveedorId)} · ${escapeHtml(prov?.nombre || '')}</p>
+    ${field('Nombre fábrica *', 'd-fab', dir?.nombre_fabrica || '', 'text', 'style="text-transform:uppercase" autocomplete="off"')}
+    ${field('Dirección *', 'd-dir', dir?.direccion || '', 'text', 'placeholder="Calle, número"')}
+    <div class="grid grid-cols-2 gap-sm">
+      ${field('Comuna *', 'd-com', dir?.comuna || '')}
+      <label class="block mb-sm"><span class="text-[12px] uppercase tracking-wide text-secondary font-bold">Región *</span>
+        <select id="d-reg" class="mt-xs w-full border border-outline-variant rounded-lg px-md py-sm text-body-md focus:border-primary outline-none bg-transparent">
+          <option value="">Seleccionar…</option>
+          ${REGIONES_CL.map(r => `<option ${r === regSel ? 'selected' : ''}>${escapeHtml(r)}</option>`).join('')}
+          ${regSel && !REGIONES_CL.includes(regSel) ? `<option selected>${escapeHtml(regSel)}</option>` : ''}
+        </select></label>
+    </div>
+    <div class="border-t border-outline-variant mt-sm pt-md">
+      <p class="text-[12px] uppercase tracking-wide text-secondary font-bold mb-sm">Contacto de la fábrica</p>
+      ${field('Nombre contacto', 'd-cnom', dir?.contacto_nombre || '')}
+      <div class="grid grid-cols-2 gap-sm">
+        ${field('Teléfono contacto', 'd-ctel', dir?.contacto_telefono || '', 'tel', 'placeholder="+56 9…"')}
+        ${field('Correo contacto', 'd-cmail', dir?.contacto_correo || '', 'email', 'placeholder="contacto@empresa.cl"')}
+      </div>
+    </div>
+    <label class="flex items-center gap-sm mb-md text-body-md"><input id="d-activo" type="checkbox" ${dir?.activo === false ? '' : 'checked'} class="w-4 h-4"/><span>Fábrica activa (se ofrece al coordinar retiros)</span></label>
     <div class="flex justify-end gap-sm mt-md">
       <button data-cancel class="px-md py-sm rounded-lg text-secondary hover:bg-surface-container-high">Cancelar</button>
       <button data-save class="bg-primary text-on-primary px-md py-sm rounded-lg font-bold hover:opacity-90">Guardar</button>
-    </div>
-  `);
+    </div>`);
+  setTimeout(() => wrap.querySelector('#d-fab')?.focus(), 0);
   wrap.querySelector('[data-cancel]').addEventListener('click', close);
-  wrap.querySelector('[data-save]').addEventListener('click', async () => {
+  wrap.querySelector('[data-save]').addEventListener('click', async e => {
+    const v = id => wrap.querySelector(id).value.trim();
     const payload = {
       proveedor_id: proveedorId,
-      nombre_fabrica: wrap.querySelector('#d-fab').value.trim() || null,
-      direccion: wrap.querySelector('#d-dir').value.trim() || null,
-      comuna: wrap.querySelector('#d-com').value.trim() || null,
-      region: wrap.querySelector('#d-reg').value.trim() || null,
-      updated_at: new Date().toISOString(),
+      nombre_fabrica: v('#d-fab').toUpperCase(), direccion: v('#d-dir'), comuna: v('#d-com'), region: v('#d-reg'),
+      contacto_nombre: v('#d-cnom') || null, contacto_telefono: v('#d-ctel') || null, contacto_correo: v('#d-cmail').toLowerCase() || null,
+      activo: wrap.querySelector('#d-activo').checked,
+      updated_at: new Date().toISOString(), updated_by: await getUserEmail(),
     };
-    let error;
-    if (esNueva) {
-      ({ error } = await supabase.from('abast_proveedor_direcciones').insert(payload));
-    } else {
-      ({ error } = await supabase.from('abast_proveedor_direcciones').update(payload).eq('id', dir.id));
-    }
-    if (error) { showAlert('Error al guardar direccion: ' + error.message, 'error'); return; }
-    showAlert('Direccion guardada', 'success');
+    const faltan = [!payload.nombre_fabrica && 'nombre fábrica', !payload.direccion && 'dirección', !payload.comuna && 'comuna', !payload.region && 'región'].filter(Boolean);
+    if (faltan.length) { showAlert('Completa: ' + faltan.join(', '), 'error'); return; }
+    if (!mailValido(payload.contacto_correo)) { showAlert('El correo de contacto no es válido', 'error'); return; }
+    e.currentTarget.disabled = true;
+    const { error } = esNueva
+      ? await supabase.from('abast_proveedor_direcciones').insert(payload)
+      : await supabase.from('abast_proveedor_direcciones').update(payload).eq('id', dir.id);
+    if (error) { e.currentTarget.disabled = false; showAlert('Error al guardar la fábrica: ' + error.message, 'error'); return; }
+    showAlert('Fábrica guardada', 'success');
     close();
     proveedores = await loadProveedores();
     redraw();
@@ -5752,10 +5781,10 @@ function openDireccionModal(proveedorId, dir, redraw) {
 }
 
 async function deleteDireccion(id, redraw) {
-  if (!await confirmar('¿Eliminar esta direccion de fabrica?')) return;
+  if (!await confirmar('¿Eliminar esta fábrica del proveedor?', { aceptar: 'Eliminar', tono: 'peligro', icono: 'delete' })) return;
   const { error } = await supabase.from('abast_proveedor_direcciones').delete().eq('id', id);
   if (error) { showAlert('Error al eliminar: ' + error.message, 'error'); return; }
-  showAlert('Direccion eliminada', 'success');
+  showAlert('Fábrica eliminada', 'success');
   proveedores = await loadProveedores();
   redraw();
 }
