@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610042042';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610042042';
-import { getDatabase } from './data.js?v=202610042042';
+import { supabase } from './supabase-client.js?v=202610051005';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610051005';
+import { getDatabase } from './data.js?v=202610051005';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610042042';
-import { confirmar } from './confirmar.js?v=202610042042';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610051005';
+import { confirmar } from './confirmar.js?v=202610051005';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -396,12 +396,80 @@ async function loadTransportistasCoord() {
   ]);
   return {
     // (4-oct-2026) Sólo transportistas activos y completos (RUT, teléfono y correo); los BLOQUEADOS no se ofrecen.
-    trans: (t.data || []).filter(x => x.activo !== false && String(x.rut ?? '').trim() && String(x.telefono ?? '').trim() && String(x.email ?? '').trim()).sort((a, b) => String(a.razonSocial || '').localeCompare(String(b.razonSocial || ''))),
+    // (5-oct-2026) Se ofrece TODO el maestro activo; los incompletos van marcados BLOQUEADO (antes se ocultaban y la lista quedaba vacía).
+    trans: (t.data || []).filter(x => x.activo !== false).map(x => ({ ...x, _bloq: !(String(x.rut ?? '').trim() && String(x.telefono ?? '').trim() && String(x.email ?? '').trim()) })).sort((a, b) => String(a.razonSocial || '').localeCompare(String(b.razonSocial || ''))),
     // (4-oct-2026) Todo el maestro activo (incluye bloqueados, marcados), para elegir al programar camiones.
     transTodos: (t.data || []).filter(x => x.activo !== false).sort((a, b) => String(a.razonSocial || '').localeCompare(String(b.razonSocial || ''))),
     choferes: c.data || [],
     camiones: k.data || [],
   };
+}
+// (5-oct-2026, Jordan) Se puede coordinar con un transportista BLOQUEADO del maestro (faltan RUT,
+// teléfono o correo): el camión directo queda «Transporte por confirmar» y NO se programa (foto,
+// correo, Seguimiento de Carga) hasta completar esos datos en una acción posterior (Plan de Carga
+// o maestro de transportistas). El estado se deriva siempre del maestro vigente.
+const faltanTransp = t => !t ? [] : [!String(t.rut ?? '').trim() && 'RUT', !String(t.telefono ?? '').trim() && 'teléfono', !String(t.email ?? '').trim() && 'correo'].filter(Boolean);
+async function loadMaestroTranspMap() {
+  const { data, error } = await supabase.from('transports').select('id,razonSocial,rut,telefono,email,activo');
+  if (error) throw error;
+  return new Map((data || []).map(t => [String(t.id ?? '').trim().toUpperCase(), t]));
+}
+function notaTranspBloq(t) {
+  if (!t || !t._bloq) return '';
+  return `<div class="sv-note-box" style="background:#fef3c7;color:#713f12">Transportista <b>BLOQUEADO</b> en el maestro: faltan ${escapeHtml(faltanTransp(t).join(', '))}. Puedes coordinar igual; el camión queda <b>«Transporte por confirmar»</b> y no se programa (foto ${'15:35'}, correo, Seguimiento de Carga) hasta completar esos datos desde el Plan de Carga o el maestro de transportistas.</div>`;
+}
+function showConfirmarTransportistaModal(t, detalle) {
+  return new Promise(resolve => {
+    const f = faltanTransp(t);
+    const st = { rut: '', tel: '', email: '', err: false, saving: false };
+    const wrap = document.createElement('div');
+    wrap.innerHTML = '<div class="sv-dr-bg" style="z-index:120"></div><aside class="sv-dr" style="z-index:121;width:min(520px,100vw)" role="dialog" aria-label="Confirmar transporte"></aside>';
+    document.body.appendChild(wrap);
+    const panel = wrap.querySelector('aside');
+    const onKey = e => { if (e.key === 'Escape' && !document.querySelector('.sv-cf-bg')) { e.stopPropagation(); fin(false); } };
+    const fin = v => { wrap.remove(); document.removeEventListener('keydown', onKey, true); resolve(v); };
+    document.addEventListener('keydown', onKey, true);
+    wrap.querySelector('.sv-dr-bg').addEventListener('click', () => fin(false));
+    const mailOk = v => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(v).trim());
+    const malos = () => [f.includes('RUT') && !st.rut.trim() && 'rut', f.includes('teléfono') && !st.tel.trim() && 'tel', f.includes('correo') && !mailOk(st.email) && 'email'].filter(Boolean);
+    const campo = (k, t2, ph, extra = '') => { const b = st.err && malos().includes(k); return `<div><label class="sv-flbl" style="display:block;margin-bottom:6px;${b ? 'color:#b5000b' : ''}">${t2} *</label>
+      <label class="sv-inp" style="width:100%;box-sizing:border-box;${b ? 'border-color:#b5000b' : ''}"><input data-k="${k}" value="${escapeHtml(st[k])}" placeholder="${escapeHtml(ph)}" style="width:100%" ${extra}></label></div>`; };
+    function draw() {
+      panel.innerHTML = `
+        <div class="sv-dr-h"><div style="flex:1;min-width:0">
+          <div class="sv-dr-k">Confirmar transporte</div>
+          <div class="sv-dr-t">${escapeHtml(t.razonSocial || '')}</div>
+          <div class="sv-dr-s">ID ${escapeHtml(t.id)}${detalle ? ' · ' + escapeHtml(detalle) : ''}</div></div>
+          <button class="sv-iconbtn" data-cx title="Cerrar (Esc)"><span class="material-symbols-outlined">close</span></button></div>
+        <div class="sv-dr-b" style="gap:14px">
+          ${st.err ? '<div class="sv-note-box" style="background:#ffdad6;color:#93000a;font-weight:700">Completa los datos marcados en rojo (correo válido).</div>' : ''}
+          <div class="sv-note-box">El transportista está <b>bloqueado</b> en el maestro. Completa ${escapeHtml(f.join(', '))} para confirmarlo: se guarda en el maestro y sus camiones coordinados quedan programados.</div>
+          ${f.includes('RUT') ? campo('rut', 'RUT transportista', '76.123.456-7') : ''}
+          ${f.includes('teléfono') ? campo('tel', 'Teléfono contacto', '+56 9…') : ''}
+          ${f.includes('correo') ? campo('email', 'Correo', 'contacto@empresa.cl', 'type="email"') : ''}
+        </div>
+        <div class="sv-dr-f"><span class="sv-dr-note">* Obligatorio</span>
+          <div style="display:flex;gap:8px"><button class="sv-btn" data-cx>Cancelar</button>
+          <button class="sv-btn-p" data-ok ${st.saving ? 'disabled' : ''}><span class="material-symbols-outlined">task_alt</span>Confirmar transporte</button></div></div>`;
+      panel.querySelectorAll('[data-cx]').forEach(b => b.addEventListener('click', () => fin(false)));
+      panel.querySelectorAll('[data-k]').forEach(i => i.addEventListener('input', () => { st[i.dataset.k] = i.value; }));
+      panel.querySelector('[data-ok]').addEventListener('click', async () => {
+        if (malos().length) { st.err = true; draw(); return; }
+        const upd = {};
+        if (f.includes('RUT')) upd.rut = st.rut.trim().toUpperCase();
+        if (f.includes('teléfono')) upd.telefono = st.tel.trim();
+        if (f.includes('correo')) upd.email = st.email.trim().toLowerCase();
+        st.saving = true; draw();
+        const { error } = await supabase.from('transports').update(upd).eq('id', t.id);
+        if (error) { st.saving = false; showAlert('No se pudo actualizar el maestro de transportistas: ' + error.message, 'error'); draw(); return; }
+        Object.assign(t, upd);
+        showAlert(`Transporte confirmado: ${t.razonSocial} queda activo en el maestro.`, 'success');
+        fin(true);
+      });
+      const first = panel.querySelector('[data-k]'); if (first) setTimeout(() => first.focus(), 0);
+    }
+    draw();
+  });
 }
 // Tipo de entrega de las NV 1003 (regla Jordan 2-oct-2026): por CLIENTE (oficina de
 // ventas + Solic.), la suma de sus pedidos pendientes ≥ 85% de un camión de 28 t
@@ -829,9 +897,10 @@ function showCoordVentaModal(row, ctx) {
               <label class="sv-inp" style="width:100%;box-sizing:border-box;min-width:0;${bad('idTrans') ? 'border-color:#b5000b' : ''}"><span class="material-symbols-outlined">local_shipping</span>
                 <select data-sel="trans" style="border:none;background:transparent;width:100%;font:inherit;outline:none">
                   <option value="">Seleccionar transportista…</option>
-                  ${tr.trans.map(t => `<option value="${escapeHtml(t.id)}" ${String(t.id) === st.idTrans ? 'selected' : ''}>${escapeHtml(t.id)} · ${escapeHtml(t.razonSocial || '')}</option>`).join('')}
+                  ${tr.trans.map(t => `<option value="${escapeHtml(t.id)}" ${String(t.id) === st.idTrans ? 'selected' : ''}>${escapeHtml(t.id)} · ${escapeHtml(t.razonSocial || '')}${t._bloq ? ' · BLOQUEADO' : ''}</option>`).join('')}
                   ${st.idTrans && !tr.trans.some(t => String(t.id) === st.idTrans) ? `<option value="${escapeHtml(st.idTrans)}" selected>${escapeHtml(st.idTrans)} · ${escapeHtml(st.transportista)}</option>` : ''}
                 </select></label></div>
+            ${notaTranspBloq(tr.trans.find(t => String(t.id) === st.idTrans))}
             ${chofList().length ? `<div>${lbl('Chofer del transportista', 'chof', false)}
               <label class="sv-inp" style="width:100%;box-sizing:border-box;min-width:0"><span class="material-symbols-outlined">badge</span>
                 <select data-sel="chof" style="border:none;background:transparent;width:100%;font:inherit;outline:none">
@@ -1076,9 +1145,10 @@ function showCoordRetiroModal(row, ctx) {
               <label class="sv-inp" style="${inpS('idTrans')}"><span class="material-symbols-outlined">local_shipping</span>
                 <select data-sel="trans" style="border:none;background:transparent;width:100%;font:inherit;outline:none">
                   <option value="">Seleccionar transportista…</option>
-                  ${tr.trans.map(t => `<option value="${escapeHtml(t.id)}" ${String(t.id) === st.idTrans ? 'selected' : ''}>${escapeHtml(t.id)} · ${escapeHtml(t.razonSocial || '')}</option>`).join('')}
+                  ${tr.trans.map(t => `<option value="${escapeHtml(t.id)}" ${String(t.id) === st.idTrans ? 'selected' : ''}>${escapeHtml(t.id)} · ${escapeHtml(t.razonSocial || '')}${t._bloq ? ' · BLOQUEADO' : ''}</option>`).join('')}
                   ${st.idTrans && !tr.trans.some(t => String(t.id) === st.idTrans) ? `<option value="${escapeHtml(st.idTrans)}" selected>${escapeHtml(st.idTrans)} · ${escapeHtml(st.transportista)}</option>` : ''}
                 </select></label></div>
+            ${notaTranspBloq(tr.trans.find(t => String(t.id) === st.idTrans))}
             ${chofList().length ? `<div>${lbl('Chofer del transportista', 'chof', false)}
               <label class="sv-inp" style="${inpS('chof')}"><span class="material-symbols-outlined">badge</span>
                 <select data-sel="chof" style="border:none;background:transparent;width:100%;font:inherit;outline:none">
@@ -1474,9 +1544,10 @@ function showCoordTrasladoModal(row, ctx) {
               <label class="sv-inp" style="${box('idTrans')}"><span class="material-symbols-outlined">local_shipping</span>
                 <select data-sel="trans" style="border:none;background:transparent;width:100%;font:inherit;outline:none">
                   <option value="">Seleccionar transportista…</option>
-                  ${tr.trans.map(t => `<option value="${escapeHtml(t.id)}" ${String(t.id) === st.idTrans ? 'selected' : ''}>${escapeHtml(t.id)} · ${escapeHtml(t.razonSocial || '')}</option>`).join('')}
+                  ${tr.trans.map(t => `<option value="${escapeHtml(t.id)}" ${String(t.id) === st.idTrans ? 'selected' : ''}>${escapeHtml(t.id)} · ${escapeHtml(t.razonSocial || '')}${t._bloq ? ' · BLOQUEADO' : ''}</option>`).join('')}
                   ${st.idTrans && !tr.trans.some(t => String(t.id) === st.idTrans) ? `<option value="${escapeHtml(st.idTrans)}" selected>${escapeHtml(st.idTrans)} · ${escapeHtml(st.transportista)}</option>` : ''}
                 </select></label></div>
+            ${notaTranspBloq(tr.trans.find(t => String(t.id) === st.idTrans))}
             ${chofList().length ? `<div>${lbl('Chofer del transportista', 'chof', false)}
               <label class="sv-inp" style="${box('chof')}"><span class="material-symbols-outlined">badge</span>
                 <select data-sel="chof" style="border:none;background:transparent;width:100%;font:inherit;outline:none">
@@ -3222,7 +3293,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610042042');
+    const m = await import('./ind-plan-carga.js?v=202610051005');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
@@ -3841,7 +3912,7 @@ async function renderPlanCarga(stage, opts = {}) {
       if (g.pat) {   // un camión físico: no se reparte (si excede 28 t se ve sobre el 100%)
         const ton = sumTon(g.items);
         camionesCliente.push({ items: g.items, ton, grupo: `Patente ${g.pat} · ${nombres}`, cap: CAP_CAMION_DIRECTO,
-          patente: g.pat, patenteCarro: g.co.patente_carro || '', transportista: [g.co.id_transporte, g.co.transportista].filter(Boolean).join(' · '),
+          patente: g.pat, patenteCarro: g.co.patente_carro || '', idTrans: String(g.co.id_transporte ?? '').trim(), transportista: [g.co.id_transporte, g.co.transportista].filter(Boolean).join(' · '),
           chofer: [g.co.chofer_nombre, g.co.chofer_rut, g.co.chofer_telefono].filter(Boolean).join(' · ') });
       } else armarCamiones(g.items, CAP_CAMION_DIRECTO, d => d.pv).forEach(c => camionesCliente.push({ ...c, grupo: nombres, cap: CAP_CAMION_DIRECTO }));
     });
@@ -3956,7 +4027,7 @@ async function renderPlanCarga(stage, opts = {}) {
       const nombres = [...new Set(items.map(d => d.prov).filter(Boolean))].join(' + ');
       (tipo === 'fabCli' ? camionesFabCli : camionesFabSuc).push({ items, ton: items.reduce((s2, d) => s2 + (d.ton || 0), 0),
         grupo: `Patente ${String(e.patente_camion || pat).toUpperCase()} · ${nombres}`, cap: CAP_CAMION_DIRECTO,
-        patente: String(e.patente_camion || pat).toUpperCase(), patenteCarro: e.patente_carro || '',
+        patente: String(e.patente_camion || pat).toUpperCase(), patenteCarro: e.patente_carro || '', idTrans: String(e.id_transporte ?? '').trim(),
         transportista: [e.id_transporte, e.transportista].filter(Boolean).join(' · '),
         chofer: [e.chofer_nombre, e.chofer_rut, e.chofer_telefono].filter(Boolean).join(' · ') });
     });
@@ -4342,7 +4413,16 @@ async function renderPlanCarga(stage, opts = {}) {
       progMap = new Map((data || []).map(x => [`${String(x.ce ?? '').trim()}|${x.camion}`, x]));
     } catch (_e) { progMap = new Map(); }
   }
-  await Promise.all([leerFotoCierre(), leerSegundos(), leerProgramados()]);
+  // (5-oct-2026) Maestro de transportistas: directos con transportista BLOQUEADO = «por confirmar».
+  let maestroTr = new Map();
+  async function leerMaestroTr() { try { maestroTr = await loadMaestroTranspMap(); } catch (_e) { maestroTr = new Map(); } }
+  const porConfirmar = cm => {
+    if (!cm || !cm.patente || !cm.idTrans) return null;
+    const t = maestroTr.get(String(cm.idTrans).trim().toUpperCase());
+    const f = faltanTransp(t);
+    return f.length ? { t, f } : null;
+  };
+  await Promise.all([leerFotoCierre(), leerSegundos(), leerProgramados(), leerMaestroTr()]);
   const otrosProgramados = (ce, cam) => [...progMap.values()]
     .filter(x => !(String(x.ce).trim() === ce && Number(x.camion) === cam))
     .map(x => ({ lbl: `${x.camion === 2 ? '2º camión' : 'camión CD'} ${getNombreCentro(x.ce)}`, patente_camion: x.patente_camion, chofer_rut: x.chofer_rut }));
@@ -4626,6 +4706,8 @@ async function renderPlanCarga(stage, opts = {}) {
       const man = cams.some(c => c.manualId);
       return `<span class="pc-dir" title="${escapeHtml(t.tip)}${man ? ' · armado a mano' : ''}"><span class="material-symbols-outlined" style="color:${t.color}">local_shipping</span>${escapeHtml(t.lbl)}${man ? ' (manual)' : ''} · ${t1(ton)} t${cams.length > 1 ? `<em style="background:${t.color}" title="Se requieren ${cams.length} camiones">X${cams.length}</em>` : ''}</span>`;
     });
+    const pc = DIR_V2.flatMap(t => r[t.lista] || []).filter(porConfirmar);
+    if (pc.length) chips.push(`<button class="pc-dir" data-trconf="${escapeHtml(r.ce)}" title="Camiones directos coordinados con un transportista BLOQUEADO en el maestro: completa sus datos para confirmarlos (hasta entonces no entran a la foto, correo ni Seguimiento)" style="border-color:#f59e0b;background:#fef3c7;color:#713f12;cursor:pointer"><span class="material-symbols-outlined" style="color:#b45309">pending_actions</span>Transporte por confirmar · ${pc.length}</button>`);
     const cand = r.fabCandidatos || [];
     if (cand.length) {
       const tc = cand.reduce((s, x) => s + x.ton, 0);
@@ -4835,7 +4917,8 @@ async function renderPlanCarga(stage, opts = {}) {
     const directos = [];
     DIR_V2.forEach(t => (r[t.lista] || []).forEach(cm => directos.push({ tipo: t.csv, n: cm.n, grupo: cm.grupo || '', ton: r4(cm.ton), cap: cm.cap,
       pct: cm.cap > 0 ? Math.round(cm.ton / cm.cap * 100) : 0, patente: cm.patente || '', patente_carro: cm.patenteCarro || '',
-      transportista: cm.transportista || '', chofer: cm.chofer || '', lineas: cm.patente ? cm.items.map(d => lineaCorreo(t.csv, t.tipo, d)) : [] })));
+      transportista: (cm.transportista || '') + (porConfirmar(cm) ? ' (POR CONFIRMAR)' : ''), chofer: cm.chofer || '', por_confirmar: !!porConfirmar(cm),
+      lineas: cm.patente && !porConfirmar(cm) ? cm.items.map(d => lineaCorreo(t.csv, t.tipo, d)) : [] })));
     const fila = { fecha: hoyIsoPlan, cd_origen: planOrigen, ce: r.ce, nombre: r.nombre, horizonte: r.horizonte, dia_objetivo: isoLocal(diaObj(r)),
       cap: r.cap, total_cd: r4(r.total), pct: r.pct, status: estadoV2(r).lbl.toUpperCase(),
       ton: { ton_revex: r4(r.tonRevex), ton_venta_cons: r4(r.tonVentaCons), ton_retiro: r4(r.tonRetiro), ton_cross: r4(r.tonCross), ton_quiebre: r4(r.tonQuiebre),
@@ -4876,6 +4959,7 @@ async function renderPlanCarga(stage, opts = {}) {
     const out = [];
     DIR_V2.forEach(t => (r[t.lista] || []).forEach(cm => {
       if (!cm.patente) return;          // sólo directos con transporte (patente) coordinado
+      if (porConfirmar(cm)) return;     // (5-oct-2026) transportista bloqueado: aún no se programa
       const items = cm.items || [];
       const tp = String(cm.transportista || '').split(' · '), ch = String(cm.chofer || '').split(' · ');
       const provs = [...new Set(items.map(d => d.prov).filter(Boolean))].join(' + ');
@@ -5015,6 +5099,16 @@ async function renderPlanCarga(stage, opts = {}) {
     stage.querySelectorAll('[data-prog-seg]').forEach(b => b.addEventListener('click', async e => { e.stopPropagation(); await programarSegundo(b.dataset.progSeg); }));
     stage.querySelectorAll('[data-prog-edit]').forEach(b => b.addEventListener('click', async e => { e.stopPropagation(); await editarTransporte(b.dataset.progEdit, Number(b.dataset.progCam || 1)); }));
     stage.querySelectorAll('[data-restablecer]').forEach(b => b.addEventListener('click', async e => { e.stopPropagation(); b.disabled = true; await restablecerAuto(b.dataset.restablecer); }));
+    stage.querySelectorAll('[data-trconf]').forEach(b => b.addEventListener('click', async e => {
+      e.stopPropagation();
+      if (!PUEDE_TRANSPORTE) { showAlert('Sólo el perfil OWNER puede confirmar los datos del transporte.', 'warning'); return; }
+      const r = resultado.find(x => x.ce === b.dataset.trconf); if (!r) return;
+      const porT = new Map();
+      DIR_V2.forEach(t => (r[t.lista] || []).forEach(cm => { const pcf = porConfirmar(cm); if (pcf) { const k = String(pcf.t.id); if (!porT.has(k)) porT.set(k, { t: pcf.t, pats: [] }); porT.get(k).pats.push(cm.patente); } }));
+      let ok = false;
+      for (const { t, pats } of porT.values()) { if (await showConfirmarTransportistaModal(t, `${r.nombre} · patente ${[...new Set(pats)].join(', ')}`)) ok = true; else break; }
+      if (ok) { await leerMaestroTr(); draw(); }
+    }));
     stage.querySelectorAll('[data-dirman-open]').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); st.drawer = b.dataset.dirmanOpen; st.tab = 'dirman'; draw(); }));
     stage.querySelectorAll('[data-deshacer-man]').forEach(b => b.addEventListener('click', async e => { e.stopPropagation(); b.disabled = true; await deshacerManual(Number(b.dataset.deshacerMan)); }));
     const dmChecks = [...stage.querySelectorAll('[data-dm-oc]')];
