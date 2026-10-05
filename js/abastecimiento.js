@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610051145';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610051145';
-import { getDatabase } from './data.js?v=202610051145';
+import { supabase } from './supabase-client.js?v=202610051235';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610051235';
+import { getDatabase } from './data.js?v=202610051235';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610051145';
-import { confirmar } from './confirmar.js?v=202610051145';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610051235';
+import { confirmar } from './confirmar.js?v=202610051235';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -979,6 +979,11 @@ async function anularCoordRetiro(docs) {
   if (error) { showAlert('Error al anular: ' + error.message, 'error'); return false; }
   return true;
 }
+// (5-oct-2026, Jordan) Retiro RM: el transporte (ID del maestro) es obligatorio al coordinar; chofer
+// y patente pueden quedar PENDIENTES. La OC se coordina igual y queda marcada «Chofer/patente pendiente»
+// hasta completarlos editando la coordinación (sin patente el camión directo no queda programado).
+const pendTranspRetiro = t => { t = t || {}; return [!String(t.chofer_nombre ?? '').trim() && 'chofer', !String(t.chofer_rut ?? '').trim() && 'RUT chofer',
+  !String(t.chofer_telefono ?? '').trim() && 'teléfono chofer', !String(t.patente_camion ?? '').trim() && 'patente'].filter(Boolean); };
 async function chequearChoqueRetiro(docsSel, st, ctx) {
   const pat = normPatente(st.patCamion), rut = normPatente(st.choferRut);
   const sel = new Set(docsSel.map(d => String(d).trim()));
@@ -1064,7 +1069,7 @@ function showCoordRetiroModal(row, ctx) {
       if (!st.tel.trim()) f.push('tel');
       if (!st.entrega.trim()) f.push('entrega');
       if (!st.tipo) f.push('tipo');
-      ['idTrans', 'choferNombre', 'choferRut', 'choferTel', 'patCamion'].forEach(k => { if (!String(st[k]).trim()) f.push(k); });
+      if (!String(st.idTrans).trim()) f.push('idTrans');   // (5-oct-2026) chofer y patente pueden quedar pendientes
       st.extras.forEach((e, oc) => {
         if (!e.entrega.trim()) f.push('x_entrega_' + oc);
         const x = rowOf(oc);
@@ -1156,14 +1161,16 @@ function showCoordRetiroModal(row, ctx) {
                   ${chofList().map((x, i) => `<option value="${i}" ${x.rut === st.choferRut ? 'selected' : ''}>${escapeHtml([x.nombre, x.apellido].filter(Boolean).join(' '))} · ${escapeHtml(x.rut || '')}</option>`).join('')}
                 </select></label></div>` : ''}
             <div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:8px">
-              <div>${lbl('Nombre chofer', 'choferNombre', true)}${inp('choferNombre', '')}</div>
-              <div>${lbl('RUT chofer', 'choferRut', true)}${inp('choferRut', '12.345.678-9')}</div>
-              <div>${lbl('Teléfono', 'choferTel', true)}${inp('choferTel', '+56 9…')}</div>
+              <div>${lbl('Nombre chofer', 'choferNombre', false)}${inp('choferNombre', 'Pendiente')}</div>
+              <div>${lbl('RUT chofer', 'choferRut', false)}${inp('choferRut', '12.345.678-9')}</div>
+              <div>${lbl('Teléfono', 'choferTel', false)}${inp('choferTel', '+56 9…')}</div>
             </div>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
-              <div>${lbl('Patente camión', 'patCamion', true)}${inp('patCamion', 'AB-CD-12', 'list="dl-pat-ret" autocomplete="off"')}</div>
+              <div>${lbl('Patente camión', 'patCamion', false)}${inp('patCamion', 'Pendiente', 'list="dl-pat-ret" autocomplete="off"')}</div>
               <div>${lbl('Patente carro (opcional)', 'patCarro', false)}${inp('patCarro', 'Rampla / carro')}</div>
             </div>
+            ${(() => { const pd = pendTranspRetiro({ chofer_nombre: st.choferNombre, chofer_rut: st.choferRut, chofer_telefono: st.choferTel, patente_camion: st.patCamion });
+              return pd.length ? `<div class="sv-note-box" style="background:#fef3c7;color:#713f12"><b>Pendiente:</b> ${escapeHtml(pd.join(', '))}. Puedes coordinar igual; la OC queda marcada <b>«Chofer/patente pendiente»</b> y se completa después con «Editar coordinación».${pd.includes('patente') ? ' Sin patente, el camión directo aún no queda programado en el Plan de Carga.' : ''}</div>` : ''; })()}
             <datalist id="dl-pat-ret">${camList().map(x => `<option value="${escapeHtml(x.id_camion)}">${escapeHtml([x.modelo, x.capacidad_ton ? x.capacidad_ton + ' t' : ''].filter(Boolean).join(' · '))}</option>`).join('')}</datalist>
           </div>
           <div class="sv-card" style="padding:14px 16px;display:flex;flex-direction:column;gap:10px">
@@ -1231,7 +1238,7 @@ function showCoordRetiroModal(row, ctx) {
         if (faltantes().length) { st.err = true; draw(); return; }
         const btn = e.currentTarget; btn.disabled = true;
         const docs = [String(row.doc_compr).trim(), ...(rm() ? [...st.extras.keys()] : [])];
-        if (rm()) {
+        if (rm() && (st.patCamion.trim() || st.choferRut.trim())) {
           const avisos = await chequearChoqueRetiro(docs, st, ctx);
           if (avisos.length && !(await confirmar(`Posible choque con el camión ${st.patCamion.trim().toUpperCase()}\n\n${avisos.map(a => '• ' + a).join('\n')}\n\n¿Guardar igual?`, { aceptar: 'Guardar igual', tono: 'peligro', icono: 'warning' }))) { btn.disabled = false; return; }
         }
@@ -1242,8 +1249,8 @@ function showCoordRetiroModal(row, ctx) {
         const email = await getUserEmail(), now = new Date().toISOString();
         const transp = rm() ? {
           id_transporte: st.idTrans.trim(), transportista: st.transportista || null,
-          chofer_nombre: st.choferNombre.trim(), chofer_rut: st.choferRut.trim(), chofer_telefono: st.choferTel.trim(),
-          patente_camion: st.patCamion.trim().toUpperCase(), patente_carro: st.patCarro.trim().toUpperCase() || null,
+          chofer_nombre: st.choferNombre.trim() || null, chofer_rut: st.choferRut.trim() || null, chofer_telefono: st.choferTel.trim() || null,
+          patente_camion: st.patCamion.trim().toUpperCase() || null, patente_carro: st.patCarro.trim().toUpperCase() || null,
         } : TRANSP_NULL;
         const base = { estado: 'coordinado', tipo_local_rm: st.modo, tipo_retiro: st.tipo || null, fecha_retiro: st.fecha || null, ...transp, updated_by: email, updated_at: now };
         const filas = [{ ...base, doc_compr: String(row.doc_compr).trim(), entrega_entrante: st.entrega.trim() || null,
@@ -1256,7 +1263,9 @@ function showCoordRetiroModal(row, ctx) {
         });
         const { error } = await supabase.from('abast_retiro_estado').upsert(filas, { onConflict: 'doc_compr' });
         if (error) { showAlert('Error al coordinar: ' + error.message, 'error'); btn.disabled = false; return; }
-        showAlert(filas.length > 1 ? `${filas.length} OC coordinadas en el camión ${transp.patente_camion}` : `OC ${row.doc_compr} coordinada como ${rm() ? 'Retiro RM' : 'Retiro local'}`, 'success');
+        const pendG = rm() ? pendTranspRetiro(transp) : [];
+        showAlert((filas.length > 1 ? `${filas.length} OC coordinadas en el camión ${transp.patente_camion || '(patente pendiente)'}` : `OC ${row.doc_compr} coordinada como ${rm() ? 'Retiro RM' : 'Retiro local'}`)
+          + (pendG.length ? ` · pendiente: ${pendG.join(', ')}` : ''), 'success');
         fin(true);
       });
     }
@@ -2830,6 +2839,7 @@ const V2 = {
       { label: 'Alerta', html: r => (retiroAtrasado(r) ? pill('Atrasada', 'bad') : (r._al.k === 'Atrasado' ? pill('Vencida', 'orange') : pill(r._al.k, r._al.k === 'Pronto a vencer' ? 'warn' : r._al.tone)))
           + (r._exp_error ? `<div style="margin-top:4px" title="${escV2(r._pv_denominacion)}">${pill('Expedición errónea', 'purple')}</div>` : '') },
       { label: 'Coordinación', html: r => r._modo === 'RM' ? pill('Retiro RM', 'ok') + (r._transp && r._transp.patente_camion ? `<div class="sv-sub">${escV2(r._transp.patente_camion)}</div>` : '')
+          + (pendTranspRetiro(r._transp).length ? `<div style="margin-top:4px" title="Pendiente: ${escV2(pendTranspRetiro(r._transp).join(', '))}">${pill('Chofer/patente pendiente', 'warn')}</div>` : '')
           : r._modo === 'LOCAL' ? pill('Retiro local', 'orange') : pill('Sin coordinar', 'mute') },
     ],
     excluirEnFila: true,
@@ -2855,6 +2865,7 @@ const V2 = {
       const avisos = [];
       if (retiroAtrasado(r)) avisos.push(`<b>Atrasada:</b> la fecha SAP venció hace ${diasV} días y la OC sigue sin coordinar.`);
       if (r._exp_error) avisos.push(`<b>Expedición errónea:</b> el pedido de venta ${escV2(r.documento)} tiene expedición «${escV2(r._pv_denominacion)}»; debe ser EBE-RET / EBE-DESP o EBE-RET / CLI-RET.`);
+      if (r._modo === 'RM' && pendTranspRetiro(t).length) avisos.push(`<b>Transporte pendiente:</b> falta ${escV2(pendTranspRetiro(t).join(', '))}. Complétalo con «Editar coordinación»${pendTranspRetiro(t).includes('patente') ? '; sin patente el camión directo no queda programado' : ''}.`);
       avisos.push(r._modo === 'RM' ? '<b>Plan de carga:</b> Retiro RM — entra al plan el día de su fecha de retiro.'
         : r._modo === 'LOCAL' ? '<b>Plan de carga:</b> Retiro local — no se considera en el plan.' : '<b>Plan de carga:</b> sin coordinar, no se considera.');
       const rm = r._modo === 'RM';
@@ -3293,7 +3304,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610051145');
+    const m = await import('./ind-plan-carga.js?v=202610051235');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
