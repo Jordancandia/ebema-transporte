@@ -1,16 +1,16 @@
 // PANTALLA 1: Administrador de Tarifas Transporte — SIT EBEMA
 // Sub-módulos: Peajes, Combustibles y Rendimientos, Seguros y Permisos,
 // Variables Generales y Motor de Costo (ZCAP) con exportación CSV.
-import { getDatabase, saveDatabase, getCentreName, getTariffConfig, getClientTariffConfig, truckCapKg, getOrigenGroups, getGroupRepId, buildTruckTypes, TRUCK_BASE_TYPES, loadHistorico, loadHistoricoFlete360, deleteRow } from './data.js?v=202610051235';
-import { CAP_LIST, truckTypesWithCap, calcularMatrizCostos, calcularCostoRuta } from './tarifas-engine.js?v=202610051235';
+import { getDatabase, saveDatabase, getCentreName, getTariffConfig, getClientTariffConfig, truckCapKg, getOrigenGroups, getGroupRepId, buildTruckTypes, TRUCK_BASE_TYPES, loadHistorico, loadHistoricoFlete360, deleteRow } from './data.js?v=202610051701';
+import { CAP_LIST, truckTypesWithCap, calcularMatrizCostos, calcularCostoRuta } from './tarifas-engine.js?v=202610051701';
 import { formatCLP, parseCSV, showAlert, toCSV, downloadFile, escapeHtml } from './utils.js';
-import { supabase } from './supabase-client.js?v=202610051235';
-import { getField } from './zonas-transporte.js?v=202610051235';
-import { renderZcapView, calcZcapRow } from './zcap.js?v=202610051235';
-import { can } from './permisos.js?v=202610051235';
-import { renderPeajesV2, setPeajesTab, renderCombustiblesV2, renderSegurosV2, renderCostosExtrasV2, renderVariablesV2, renderMotorV2 } from './tarifas-insumos.js?v=202610051235';
-import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, textoImpacto, setParamPill, usuarioSesion } from './tarifas-ui.js?v=202610051235';
-import { confirmar } from './confirmar.js?v=202610051235';
+import { supabase } from './supabase-client.js?v=202610051701';
+import { getField } from './zonas-transporte.js?v=202610051701';
+import { renderZcapView, calcZcapRow } from './zcap.js?v=202610051701';
+import { can } from './permisos.js?v=202610051701';
+import { renderPeajesV2, setPeajesTab, renderCombustiblesV2, renderSegurosV2, renderCostosExtrasV2, renderVariablesV2, renderMotorV2 } from './tarifas-insumos.js?v=202610051701';
+import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, textoImpacto, setParamPill, usuarioSesion } from './tarifas-ui.js?v=202610051701';
+import { confirmar } from './confirmar.js?v=202610051701';
 
 // FIX: Escuchar errores de sincronización con Supabase y notificar al usuario
 window.addEventListener('db_sync_error', (e) => {
@@ -179,7 +179,7 @@ export function renderTariffTransportView(container) {
       case 'seguros':       renderSegurosV2(content, db, cfg); break;
       case 'costos-extras': renderCostosExtrasV2(content, db, cfg); break;
       case 'variables':     renderVariablesV2(content, db, cfg); break;
-      default:              renderMotorV2(content, db, cfg, { mergeStgoSb: mergeStgoSbMatriz, onActualizarPonderados: () => actualizarPonderados(db, cfg) });
+      default:              renderMotorV2(content, db, cfg, { onActualizarPonderados: () => actualizarPonderados(db, cfg) }); // (5-oct-2026) SAN BERNARDO separado de SANTIAGO
     }
     return;
   }
@@ -1805,7 +1805,10 @@ function computeParticipacionFresh(db) {
   const SB_IDS   = ['1005'];
   const stgoGrupoObj = grupos.find(g => g.centroIds.some(id => STGO_IDS.includes(String(id))));
   const sbGrupoObj   = grupos.find(g => g.centroIds.some(id => SB_IDS.includes(String(id))));
-  const tieneStgoSb  = !!(stgoGrupoObj && sbGrupoObj);
+  // (5-oct-2026, Jordan) SAN BERNARDO (1005) es un centro independiente: su peso
+  // por ruta sale de SU propia densidad logística (sus rutas y su tonelaje), igual
+  // que la vista Densidad Logística. Ya no se fusiona con SANTIAGO.
+  const tieneStgoSb  = false;
 
   const routeByIdP = new Map();
   routes.forEach(r => {
@@ -1947,6 +1950,10 @@ async function actualizarPonderados(db, cfg) {
   showAlert(`Ponderados actualizados — ${conZcap.size} tipo(s) de camión`);
 }
 
+// Detalle por centro del ponderado de los camiones de SANTIAGO (Santiago vs San Bernardo),
+// para mostrarlo en Tarifas por Camión: { truckId: { SANTIAGO: {norm, esp}, 'SAN BERNARDO': {norm, esp} } }
+let TC_DETALLE = {};
+
 function syncTarifasZcap(db, cfg, grupoFiltro = '') {
   const allGroups  = getOrigenGroups(db);
   const grupos_filt = grupoFiltro ? allGroups.filter(g => g.grupo === grupoFiltro) : allGroups;
@@ -1997,29 +2004,42 @@ function syncTarifasZcap(db, cfg, grupoFiltro = '') {
     };
   }
 
-  grupos_filt.forEach(g => {
-    // SAN BERNARDO: sus rutas se procesan junto con SANTIAGO → skip individual
-    if (g.grupo === 'SAN BERNARDO' && stgoGroup) return;
+  // (5-oct-2026, Jordan) SANTIAGO y SAN BERNARDO (1005) se calculan por separado:
+  // cada uno con sus propias rutas y su propio peso (Densidad Logística). Como las
+  // rutas de SAN BERNARDO usan los tipos de camión de SANTIAGO (zcap.js), la tarifa
+  // ponderada de cada camión es el PROMEDIO SIMPLE de ambos centros.
+  //   Ej. 5T: Santiago 1.670 y San Bernardo 1.540 → 1.605.
+  // Si un centro no tiene rutas para ese camión, se usa sólo el que sí tiene.
+  const esRegComuna = m => (m.ruta.tipo || '').toUpperCase() === 'COMUNA' && m.ruta.clasificRuta === 'Regional';
+  const itemsDe = (grupo, cap) => matriz.filter(m => m.ruta.origen_grupo === grupo && m.capKg === cap && esRegComuna(m));
+  const prom2 = arr => { const v = arr.filter(x => Number(x) > 0); return v.length ? Math.round(v.reduce((s, x) => s + x, 0) / v.length) : 0; };
+  TC_DETALLE = {};
 
-    // Grupos a incluir en el cálculo
-    const gruposCalc = (g.grupo === 'SANTIAGO' && sbGroup) ? STGO_SB : [g.grupo];
+  const procesar = new Set(grupos_filt.map(g => (g.grupo === 'SAN BERNARDO' && stgoGroup) ? 'SANTIAGO' : g.grupo));
+  allGroups.filter(g => procesar.has(g.grupo)).forEach(g => {
+    // SAN BERNARDO no tiene tabla propia: sus rutas se promedian en los camiones de SANTIAGO
+    if (g.grupo === 'SAN BERNARDO' && stgoGroup) return;
+    const combinarSb = g.grupo === 'SANTIAGO' && !!sbGroup;
 
     const rows = (db.truckTypes || []).filter(t => t.Id_centro === g.repId);
     rows.forEach(t => {
-      let items = matriz.filter(m =>
-        gruposCalc.includes(m.ruta.origen_grupo) &&
-        m.capKg === truckCapKg(t.type) &&
-        (m.ruta.tipo || '').toUpperCase() === 'COMUNA' &&
-        m.ruta.clasificRuta === 'Regional'
-      );
-      // Merge STGO+SB por destino para evitar doble conteo en ponderación
-      if (gruposCalc.length > 1 && stgoGroup && sbGroup) {
-        items = mergeStgoSbMatriz(items, stgoGroup.grupo, sbGroup.grupo);
-      }
-      if (items.length === 0) return;
+      const cap = truckCapKg(t.type);
+      const partes = [{ grupo: g.grupo, items: itemsDe(g.grupo, cap) }];
+      if (combinarSb) partes.push({ grupo: sbGroup.grupo, items: itemsDe(sbGroup.grupo, cap) });
+      const conItems = partes.filter(p => p.items.length > 0);
+      if (!conItems.length) return;
       conZcap.add(t.id);
 
-      const mx = metricas(items);
+      const mxs = conItems.map(p => ({ grupo: p.grupo, ...metricas(p.items) }));
+      const esp = mxs.filter(m => m.hasEsp);
+      const mx = {
+        pondNorm: prom2(mxs.map(m => m.pondNorm)),
+        promNorm: prom2(mxs.map(m => m.promNorm)),
+        pondEsp:  prom2(esp.map(m => m.pondEsp)),
+        promEsp:  prom2(esp.map(m => m.promEsp)),
+        hasEsp:   esp.length > 0,
+      };
+      if (combinarSb) TC_DETALLE[t.id] = Object.fromEntries(mxs.map(m => [m.grupo, { norm: m.pondNorm, esp: m.hasEsp ? m.pondEsp : 0 }]));
 
       if (t.ratePerKmPond !== mx.pondNorm) { t.ratePerKmPond = mx.pondNorm; cambios = true; }
       if (t.ratePerKmProm !== mx.promNorm) { t.ratePerKmProm = mx.promNorm; cambios = true; }
@@ -2206,6 +2226,13 @@ function renderTarifasCamion(content, db, cfg) {
     const hasEsp = rutas.some(esEspecial);
     const kms = rutas.map(r => Number(r.km) || 0).filter(k => k > 0);
     const trucks = (db.truckTypes || []).filter(t => t.Id_centro === g.repId).sort((a, b) => truckCapKg(a.type) - truckCapKg(b.type));
+    // Santiago + San Bernardo: el ponderado es el promedio de ambos centros → mostrar cada uno
+    const det = (t, k) => {
+      const d = TC_DETALLE[t.id];
+      if (!d || g.gruposCalc.length < 2) return '';
+      const st = d.SANTIAGO?.[k], sb = d['SAN BERNARDO']?.[k];
+      return `<div class="sv-sub" style="font-size:10.5px;color:#5c5f61">Stgo ${st > 0 ? clp(st) : '—'} · SB ${sb > 0 ? clp(sb) : '—'}</div>`;
+    };
     const inp = (t, campo, unit, w) => numIn(`${t.id}|${campo}`, tcValor(t, campo), { changed: Number(tcValor(t, campo)) !== Number(tcGuardado(t, campo)), unit, w, disabled: !editar, label: `${t.type} ${campo}` });
     const cols = ['Tipo camión', 'Cap.', 'a. KM base', 'b. Costo base', 'c. T. base KM', 'd. Normal pond.'].concat(hasEsp ? ['e. Esp. pond.'] : []).concat([`${hasEsp ? 'f' : 'e'}. Ajust. normal`]).concat(hasEsp ? ['g. Ajust. especial'] : []);
     return `<div class="sv-card">
@@ -2220,14 +2247,14 @@ function renderTarifasCamion(content, db, cfg) {
             <td class="r">${inp(t, 'Kmbase', 'km', '96px')}</td>
             <td class="r">${inp(t, 'baseKM', 'CLP', '130px')}</td>
             <td class="r">${inp(t, 'baseRate', 'CLP', '120px')}</td>
-            <td class="r" style="color:#1e3a8a">${conZcap.has(t.id) ? clp(pn) + '/km' : '<span class="sv-muted">Sin rutas</span>'}</td>
-            ${hasEsp ? `<td class="r" style="color:#713f12">${pe > 0 ? clp(pe) + '/km' : '—'}</td>` : ''}
+            <td class="r" style="color:#1e3a8a">${conZcap.has(t.id) ? clp(pn) + '/km' + det(t, 'norm') : '<span class="sv-muted">Sin rutas</span>'}</td>
+            ${hasEsp ? `<td class="r" style="color:#713f12">${pe > 0 ? clp(pe) + '/km' + det(t, 'esp') : '—'}</td>` : ''}
             <td class="r">${inp(t, 'rateAjustNorm', '$/km', '116px')}</td>
             ${hasEsp ? `<td class="r">${inp(t, 'rateAjustEsp', '$/km', '116px')}</td>` : ''}</tr>`;
         }).join('') : `<tr class="sv-empty"><td colspan="${cols.length}">Sin tipos de camión para este centro.
           ${editar ? `<button class="sv-btn" data-chip data-tcadd="${esc(g.grupo)}" style="margin-left:8px"><span class="material-symbols-outlined">add</span>Agregar tipos</button>` : ''}</td></tr>`}</tbody>
       </table></div>
-      <div class="sv-tfoot"><span>ZCAP tarifa = b + c + máx(0, KM − a) × tarifa ajustada</span><span>Ponderado por las toneladas de cada ruta</span></div>
+      <div class="sv-tfoot"><span>ZCAP tarifa = b + c + máx(0, KM − a) × tarifa ajustada</span><span>${g.gruposCalc.length > 1 ? 'Ponderado = promedio simple de Santiago y San Bernardo (cada uno ponderado por su densidad logística)' : 'Ponderado por las toneladas de cada ruta'}</span></div>
     </div>`;
   }
 

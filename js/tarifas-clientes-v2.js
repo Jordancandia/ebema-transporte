@@ -15,11 +15,11 @@
 // tarifas a clientes y «Guardar y recalcular» escribe sólo client_tariff_config
 // (syncOnly) y, si cambió la asignación de clusters, cluster_rutas por centro.
 // ============================================================================
-import { saveDatabase, getOrigenGroups } from './data.js?v=202610051235';
-import { buildZcapMap } from './zcap.js?v=202610051235';
+import { saveDatabase, getOrigenGroups } from './data.js?v=202610051701';
+import { buildZcapMap } from './zcap.js?v=202610051701';
 import { showAlert } from './utils.js';
-import { can } from './permisos.js?v=202610051235';
-import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, setParamPill, clasifPill, pillHtml } from './tarifas-ui.js?v=202610051235';
+import { can } from './permisos.js?v=202610051701';
+import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, setParamPill, clasifPill, pillHtml } from './tarifas-ui.js?v=202610051701';
 
 const CAPS = [5, 10, 15, 28];
 const CAP_LBL = { 5: '5 t', 10: '10 t', 15: '15 t', 28: '28 t' };
@@ -487,7 +487,8 @@ function renderDensidad(container, ctx) {
       if (!cd) return;
       cfg.participacionRutas = cfg.participacionRutas || {};
       cd.rows.forEach(r => {
-        const e = { peso: r.peso / 100, toneladas: r.ton, clientes: r.clientes, obras: r.obras };
+        // pct: el Motor de Costos / Tarifas por Camión ponderan con .pct (antes faltaba → peso 0)
+        const e = { pct: Math.round(r.peso * 100) / 100, peso: r.peso / 100, toneladas: r.ton, clientes: r.clientes, obras: r.obras };
         if (r.rutaId) cfg.participacionRutas[String(r.rutaId)] = e;
         if (r.rutaCodigo) cfg.participacionRutas[String(r.rutaCodigo)] = e;
       });

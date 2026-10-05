@@ -18,11 +18,11 @@
 //     calculado; el calculado queda en tariff_config.peajesOriginal)
 //   · costos extra → extra_costs (se siguen aplicando por EJES)
 // ============================================================================
-import { saveDatabase, getOrigenGroups, getCentreName, deleteRow } from './data.js?v=202610051235';
-import { CAP_LIST, truckTypesWithCap, calcularCostoRuta } from './tarifas-engine.js?v=202610051235';
+import { saveDatabase, getOrigenGroups, getCentreName, deleteRow } from './data.js?v=202610051701';
+import { CAP_LIST, truckTypesWithCap, calcularCostoRuta } from './tarifas-engine.js?v=202610051701';
 import { showAlert } from './utils.js';
-import { can } from './permisos.js?v=202610051235';
-import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, textoImpacto, setParamPill, usuarioSesion, clasifPill, carPill, pillHtml } from './tarifas-ui.js?v=202610051235';
+import { can } from './permisos.js?v=202610051701';
+import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, textoImpacto, setParamPill, usuarioSesion, clasifPill, carPill, pillHtml } from './tarifas-ui.js?v=202610051701';
 
 // ── Utilidades ──────────────────────────────────────────────────────────────
 function getPath(obj, path) {
@@ -1037,7 +1037,9 @@ export function renderMotorV2(container, db, cfg, helpers = {}) {
   INS.memo = new Map();
   const stgo = grupos.find(g => g.centroIds.some(id => ['1001', '1002', '1003'].includes(String(id))));
   const sb = grupos.find(g => g.centroIds.some(id => String(id) === '1005'));
+  // (5-oct-2026) SAN BERNARDO es un centro independiente: sin helpers.mergeStgoSb no se fusiona
   const combinado = !!(stgo && sb && helpers.mergeStgoSb);
+  if (!combinado && MC.centro === '__STGO_SB__') MC.centro = 'all';
   const chips = combinado
     ? [...grupos.filter(g => g !== stgo && g !== sb), { grupo: '__STGO_SB__', nombre: 'Santiago + San Bernardo' }].sort((a, b) => (a.nombre || '').localeCompare(b.nombre || '', 'es'))
     : grupos;

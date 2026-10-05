@@ -1,12 +1,12 @@
 // MÓDULO: Administrador de Tarifas Clientes — SIT EBEMA v2.1
 // Vistas: Histórico (6M) | Consolidación | Densidad Logística | Frecuencia y Especiales | Cluster | Resultados
-import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig, saveHistorico, loadHistorico, saveHistoricoGlobal, getOrigenGroups, loadHistoricoFlete360 } from './data.js?v=202610051235';
-import { CAP_LIST, truckTypesWithCap, calcularCostoRuta } from './tarifas-engine.js?v=202610051235';
-import { buildZcapMap } from './zcap.js?v=202610051235';
+import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig, saveHistorico, loadHistorico, saveHistoricoGlobal, getOrigenGroups, loadHistoricoFlete360 } from './data.js?v=202610051701';
+import { CAP_LIST, truckTypesWithCap, calcularCostoRuta } from './tarifas-engine.js?v=202610051701';
+import { buildZcapMap } from './zcap.js?v=202610051701';
 import { formatCLP, showAlert, toCSV, downloadFile, formatDateDDMMYYYY, escapeHtml } from './utils.js';
-import { supabase } from './supabase-client.js?v=202610051235';
-import { renderClientesV2 } from './tarifas-clientes-v2.js?v=202610051235';
-import { confirmar } from './confirmar.js?v=202610051235';
+import { supabase } from './supabase-client.js?v=202610051701';
+import { renderClientesV2 } from './tarifas-clientes-v2.js?v=202610051701';
+import { confirmar } from './confirmar.js?v=202610051701';
 
 // ─────────────────────────────────────────────────────────────
 // ESTADO DE MÓDULO
@@ -220,6 +220,15 @@ function ensureCcfg(ccfg) {
   if (!ccfg.especiales)        ccfg.especiales        = { recargoExclusividad: {} };
   if (!ccfg.especiales.recargoExclusividad) ccfg.especiales.recargoExclusividad = {};
   if (!ccfg.consolidacionObjetivo)          ccfg.consolidacionObjetivo          = {};
+  // (5-oct-2026) Consolidación separada: SANTIAGO y SAN_BERNARDO heredan el objetivo
+  // que tenían fusionado (SANTIAGO_+_SAN_BERNARDO) hasta que se editen por separado.
+  const _objMerged = ccfg.consolidacionObjetivo['SANTIAGO_+_SAN_BERNARDO'];
+  if (_objMerged && typeof _objMerged === 'object') {
+    ['SANTIAGO', 'SAN_BERNARDO'].forEach(k => {
+      const own = ccfg.consolidacionObjetivo[k] = ccfg.consolidacionObjetivo[k] || {};
+      Object.entries(_objMerged).forEach(([b, v]) => { if (own[b] === undefined || own[b] === null || own[b] === '') own[b] = v; });
+    });
+  }
   if (!ccfg.histMeta) ccfg.histMeta = { uploadDate: null, rowCount: 0, fileName: '' };
   if (!ccfg.consolidacion) ccfg.consolidacion = {};
 }
@@ -569,7 +578,9 @@ function computeConsolidacionStats() {
   // total combinado (en vez de dos tablas separadas con 100% cada una).
   const STGO_SB_MERGE = ['SANTIAGO', 'SAN BERNARDO'];
   const MERGE_LABEL    = 'SANTIAGO + SAN BERNARDO';
-  const hayStgoSb = STGO_SB_MERGE.every(g => grupoReal.includes(g));
+  // (5-oct-2026, Jordan) SAN BERNARDO (1005) se separa de SANTIAGO: una tabla por
+  // cada centro, con su propia participación% por tipo de camión.
+  const hayStgoSb = false;
   const grupos = grupoReal.flatMap(g => {
     if (hayStgoSb && g === 'SAN BERNARDO') return [];               // se fusiona con SANTIAGO
     if (hayStgoSb && g === 'SANTIAGO')     return [MERGE_LABEL];    // reemplaza a SANTIAGO
