@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610052308';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610052308';
-import { getDatabase } from './data.js?v=202610052308';
+import { supabase } from './supabase-client.js?v=202610052316';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610052316';
+import { getDatabase } from './data.js?v=202610052316';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610052308';
-import { confirmar } from './confirmar.js?v=202610052308';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610052316';
+import { confirmar } from './confirmar.js?v=202610052316';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -3323,14 +3323,53 @@ const V2 = {
   },
 };
 // ── SEGUIMIENTO DE CARGA (4-oct-2026, Jordan) ─────────────────────────────
+// (5-oct-2026, Jordan) Agrupación por centro destino: fila principal con fecha de plan, fecha de
+// carga, centro destino, toneladas, cantidad de SKU y transportistas; detalle con camiones,
+// pedidos y SKU (nombre y cantidades).
+const ORDEN_CAM_SEG = t => t === 'Camión CD' ? 0 : t === '2º camión' ? 1 : 2;
+function agruparSeguimiento(rows) {
+  const ordL = (a, b) => ORDEN_CAM_SEG(a.tipo_camion) - ORDEN_CAM_SEG(b.tipo_camion) || String(a.clave).localeCompare(String(b.clave))
+    || String(a.documento || '').localeCompare(String(b.documento || '')) || String(a.material || '').localeCompare(String(b.material || ''));
+  const grupos = new Map();
+  rows.forEach(r => {
+    const ce = String(r.ce ?? '').trim();
+    const k = `${r.fecha_plan}|${String(r.cd_origen ?? '').trim()}|${ce}`;
+    if (!grupos.has(k)) grupos.set(k, { id: k, fecha_plan: r.fecha_plan, cd_origen: r.cd_origen, origen: r.origen, ce, _lineas: [], _cams: new Map() });
+    const g = grupos.get(k);
+    g._lineas.push(r);
+    const kc = `${r.tipo_camion}|${r.clave}`;
+    if (!g._cams.has(kc)) g._cams.set(kc, { tipo: r.tipo_camion, clave: r.clave, dir: !['Camión CD', '2º camión'].includes(r.tipo_camion),
+      fecha_carga: r.fecha_carga, destino: r.destino, origen: r.origen, id_transporte: r.id_transporte, transportista: r.transportista,
+      chofer_nombre: r.chofer_nombre, chofer_rut: r.chofer_rut, chofer_telefono: r.chofer_telefono, patente_camion: r.patente_camion, patente_carro: r.patente_carro,
+      ton_camion: Number(r.ton_camion) || 0, pct: r.pct_camion, cap: Number(r.cap) || 0, programado_por: r.programado_por, programado_en: r.programado_en, lineas: [] });
+    g._cams.get(kc).lineas.push(r);
+  });
+  return [...grupos.values()].map(g => {
+    g._lineas.sort(ordL);
+    g.camiones = [...g._cams.values()].sort((a, b) => ORDEN_CAM_SEG(a.tipo) - ORDEN_CAM_SEG(b.tipo) || String(a.clave).localeCompare(String(b.clave)));
+    delete g._cams;
+    g.camiones.forEach(c => { c.ton = c.lineas.reduce((s2, x) => s2 + (Number(x.ton) || 0), 0); c.nSku = new Set(c.lineas.map(x => String(x.material ?? '').trim()).filter(Boolean)).size; });
+    const fechas = [...new Set(g.camiones.map(c => c.fecha_carga).filter(Boolean))].sort();
+    g.fecha_carga = fechas[0] || '';
+    g._fechasCarga = fechas;
+    g.ton = g._lineas.reduce((s2, x) => s2 + (Number(x.ton) || 0), 0);
+    g.n_sku = new Set(g._lineas.map(x => String(x.material ?? '').trim()).filter(Boolean)).size;
+    g.n_pedidos = new Set(g._lineas.map(x => String(x.documento ?? '').trim()).filter(Boolean)).size;
+    g.n_lineas = g._lineas.length;
+    g.tipos_carga = [...new Set(g._lineas.map(x => x.tipo_carga).filter(Boolean))];
+    return g;
+  }).sort((a, b) => String(b.fecha_plan || '').localeCompare(String(a.fecha_plan || '')) || String(a.ce).localeCompare(String(b.ce)));
+}
 // Foto de cada camión programado (camión CD, 2º camión y directos con transporte):
 // una fila por línea cargada, con su camión y transportista.
 VISTAS_TRONCAL.seguimiento_carga = {
   titulo: 'GESTIÓN TRONCALES – SEGUIMIENTO DE CARGA',
   vista: 'v_abast_seguimiento_carga',
   centroCampo: 'ce',
-  transform: rows => rows.slice().sort((a, b) => String(b.fecha_carga || '').localeCompare(String(a.fecha_carga || ''))
-    || String(a.ce).localeCompare(String(b.ce)) || String(a.tipo_camion).localeCompare(String(b.tipo_camion)) || String(a.clave).localeCompare(String(b.clave))),
+  // (5-oct-2026, Jordan) Una fila por CENTRO DESTINO (y fecha de plan / CD origen); el detalle
+  // despliega cada camión con sus pedidos y SKU. El CSV se mantiene a nivel de línea.
+  transform: rows => agruparSeguimiento(rows),
+  csvFilas: grupos => grupos.flatMap(g => g._lineas),
   columnas: [
     { key: 'fecha_plan', label: 'Fecha Planificación' }, { key: 'fecha_carga', label: 'Fecha Carga' },
     { key: 'origen', label: 'Origen' }, { key: 'destino', label: 'Destino' }, { key: 'tipo_camion', label: 'Camión' },
@@ -3350,55 +3389,73 @@ VISTAS_TRONCAL.seguimiento_carga = {
 };
 V2.seguimiento_carga = {
   titulo: 'Seguimiento de Carga',
-  desc: 'Foto de cada camión programado (consolidable o directo): qué se carga, en qué camión y con qué transportista.',
+  desc: 'Camiones programados agrupados por centro destino: qué se carga (pedidos y SKU), cuándo y con qué transportista.',
   enrich(rows) {
     rows.forEach(r => {
-      r._dir = !['Camión CD', '2º camión'].includes(r.tipo_camion);
-      r._camTxt = `${r.tipo_camion}${r.patente_camion ? ' · ' + r.patente_camion : ''}`;
+      r._nombreCe = nombreCentro(r.ce) || r.ce;
+      r._hasCD = r.camiones.some(c => c.tipo === 'Camión CD');
+      r._has2 = r.camiones.some(c => c.tipo === '2º camión');
+      r._hasDir = r.camiones.some(c => c.dir);
     });
   },
   rowId: r => r.id,
   chip: { label: 'Destino', of: r => String(r.ce ?? '').trim(), name: v => nombreCentro(v) || v },
-  chip2: { label: 'Tipo de carga', of: r => r.tipo_carga || '' },
-  docSearch: { ph: 'Pedido / OC / entrega', of: r => `${r.documento || ''} ${r.n_entrega || ''} ${r.pedido_venta || ''}` },
+  docSearch: { ph: 'Pedido / OC / entrega', of: r => r._lineas.map(x => `${x.documento || ''} ${x.n_entrega || ''} ${x.pedido_venta || ''}`).join(' ') },
   fecha: { label: 'Carga', of: r => r.fecha_carga },
-  search: { ph: 'Buscar SKU, material, patente o transportista', of: r => `${r.material} ${r.nombre} ${r.patente_camion} ${r.transportista} ${r.proveedor} ${r.cliente}` },
+  search: { ph: 'Buscar SKU, material, patente o transportista', of: r => r._nombreCe + ' ' + r.camiones.map(c => `${c.patente_camion} ${c.transportista} ${c.id_transporte} ${c.chofer_nombre}`).join(' ')
+    + ' ' + r._lineas.map(x => `${x.material} ${x.nombre} ${x.proveedor} ${x.cliente}`).join(' ') },
   kpis: [
-    { key: 'all', label: 'Líneas', color: C_INK, sub: 'en camiones programados' },
-    { key: 'cd', label: 'Camión CD', color: C_GREEN, sub: 'consolidado', fn: r => r.tipo_camion === 'Camión CD' },
-    { key: 'seg', label: '2º camión', color: C_BLUE, sub: 'aceptado y programado', fn: r => r.tipo_camion === '2º camión' },
-    { key: 'dir', label: 'Directos', color: C_ORANGE, sub: 'CD-Cliente / fábrica', fn: r => r._dir },
+    { key: 'all', label: 'Centros destino', color: C_INK, sub: 'con camiones programados' },
+    { key: 'cd', label: 'Con camión CD', color: C_GREEN, sub: 'consolidado', fn: r => r._hasCD },
+    { key: 'seg', label: 'Con 2º camión', color: C_BLUE, sub: 'aceptado y programado', fn: r => r._has2 },
+    { key: 'dir', label: 'Con directos', color: C_ORANGE, sub: 'CD-Cliente / fábrica', fn: r => r._hasDir },
   ],
   cols: [
-    { label: 'Carga', html: r => mono(fmtFechaISO(r.fecha_carga), 'plan ' + fmtFechaISO(r.fecha_plan)) },
-    { label: 'Origen → destino', html: r => txt(r.destino, 'desde ' + (r.origen || '')) },
-    { label: 'Camión', html: r => txt(r._camTxt, `${fmtNum(Number(r.ton_camion) || 0, 1)} t · ${r.pct_camion ?? 0}%`, true) },
-    { label: 'Tipo de carga', html: r => pill(r.tipo_carga || '—', r._dir ? 'warn' : 'ok') },
-    { label: 'Pedido / OC', html: r => mono(r.documento, r.n_entrega ? 'Entrega ' + r.n_entrega : (r.pedido_venta && r.pedido_venta !== r.documento ? 'PV ' + r.pedido_venta : '')) },
-    { label: 'SKU', html: r => matHtml(r.material, r.nombre) },
-    { label: 'Cantidad', al: 'r', html: r => mono(fmtNum(Number(r.cantidad) || 0, 1)) },
-    { label: 'Ton', al: 'r', html: r => `<span class="sv-ton">${tonHtml(Number(r.ton) || 0)}</span>` },
-    { label: 'Transportista', html: r => txt(r.transportista || r.id_transporte, r.chofer_nombre ? 'Chofer ' + r.chofer_nombre : '') },
+    { label: 'Fecha plan', html: r => mono(fmtFechaISO(r.fecha_plan), r.origen ? 'desde ' + r.origen : '') },
+    { label: 'Fecha carga', html: r => mono(fmtFechaISO(r.fecha_carga), r._fechasCarga.length > 1 ? `+ ${r._fechasCarga.slice(1).map(fmtFechaISO).join(', ')}` : '') },
+    { label: 'Centro destino', html: r => txt(r._nombreCe, r.ce, true) },
+    { label: 'Camiones', html: r => r.camiones.map(c => pill(c.tipo, c.dir ? 'warn' : 'ok')).join(' ') },
+    { label: 'Ton', al: 'r', html: r => `<span class="sv-ton">${tonHtml(r.ton)}</span>` },
+    { label: 'SKU', al: 'r', html: r => mono(fmtNum(r.n_sku, 0), `${fmtNum(r.n_pedidos, 0)} ${r.n_pedidos === 1 ? 'pedido' : 'pedidos'}`) },
+    { label: 'Transportista', html: r => r.camiones.map(c => `<div style="white-space:nowrap"><b>${escV2(c.transportista || c.id_transporte || '—')}</b>${c.patente_camion ? ` <span class="sv-mono">${escV2(c.patente_camion)}</span>` : ''}`
+        + `<div class="sv-sub" style="margin:0">${escV2([c.id_transporte, c.chofer_nombre ? 'Chofer ' + c.chofer_nombre : '', c.chofer_telefono].filter(Boolean).join(' · '))}</div></div>`).join('') },
   ],
-  edge: r => r._dir ? C_ORANGE : C_GREEN,
-  note: 'Se guarda al programar el camión (datos de transporte completos) y se actualiza hasta el cierre de las 15:35',
-  minW: '1250px',
+  edge: r => r._hasDir ? C_ORANGE : C_GREEN,
+  note: 'Se guarda al programar el camión (datos de transporte completos) y se actualiza hasta el cierre de las 15:35 · clic en una fila para ver pedidos y SKU',
+  minW: '1150px',
   detalle: r => ({
-    kind: `${r.tipo_camion} · ${r.tipo_carga || ''}`, title: r.documento || r.material,
-    sub: `${r.origen || ''} → ${r.destino || ''}`,
+    kind: 'Seguimiento de carga · centro destino', title: `${r.ce} ${r._nombreCe !== r.ce ? r._nombreCe : ''}`.trim(),
+    sub: `${r.origen || ''} · plan ${fmtFechaISO(r.fecha_plan)} · carga ${r._fechasCarga.map(fmtFechaISO).join(', ') || '—'}`,
     kv: [
-      ['Fecha planificación', fmtFechaISO(r.fecha_plan)], ['Fecha carga', fmtFechaISO(r.fecha_carga)],
-      ['Origen', r.origen], ['Destino', r.destino],
-      ['Tipo de carga', pill(r.tipo_carga || '—', r._dir ? 'warn' : 'ok'), true], ['N° entrega', r.n_entrega || '—'],
-      ['SKU', r.material], ['Material', r.nombre],
-      ['Cantidad', fmtNum(Number(r.cantidad) || 0, 1)], ['Toneladas', tonHtml(Number(r.ton) || 0), true],
-      ['Ton bruta', r.ton_bruta == null ? '—' : fmtNum(Number(r.ton_bruta), 2)], ['% carga camión', `${r.pct_camion ?? 0}% (${fmtNum(Number(r.ton_camion) || 0, 1)} de ${fmtNum(Number(r.cap) || 0, 0)} t)`],
-      ['Pedido de venta', r.pedido_venta || '—'], ['Ruta · comuna', [r.ruta, r.comuna].filter(Boolean).join(' · ') || '—'],
-      ['Proveedor', r.proveedor || '—'], ['Cliente', r.cliente || '—'],
-      ['Transportista', [r.id_transporte, r.transportista].filter(Boolean).join(' · ') || '—'], ['Chofer', [r.chofer_nombre, r.chofer_rut, r.chofer_telefono].filter(Boolean).join(' · ') || '—'],
-      ['Patente camión', r.patente_camion || '—'], ['Patente carro', r.patente_carro || '—'],
-      ['Programado por', r.programado_por || '—'], ['Programado', r.programado_en ? new Date(r.programado_en).toLocaleString('es-CL') : '—'],
+      ['Fecha planificación', fmtFechaISO(r.fecha_plan)], ['Fecha carga', r._fechasCarga.map(fmtFechaISO).join(', ') || '—'],
+      ['Toneladas', tonHtml(r.ton), true], ['Cantidad de SKU', fmtNum(r.n_sku, 0)],
+      ['Pedidos / OC', fmtNum(r.n_pedidos, 0)], ['Líneas', fmtNum(r.n_lineas, 0)],
+      ['Camiones', r.camiones.map(c => pill(c.tipo, c.dir ? 'warn' : 'ok')).join(' '), true], ['Tipos de carga', r.tipos_carga.join(', ') || '—'],
     ],
+    tablas: r.camiones.map(c => {
+      let prev = null;
+      const rows = c.lineas.map(x => {
+        const doc = String(x.documento ?? '').trim();
+        const nuevo = doc !== prev; prev = doc;
+        const sub = x.n_entrega ? 'Entrega ' + x.n_entrega : (x.pedido_venta && x.pedido_venta !== doc ? 'PV ' + x.pedido_venta : '');
+        return [
+          nuevo ? `<b class="sv-mono">${escV2(doc || '—')}</b>${sub ? `<div class="sv-sub" style="margin:0">${escV2(sub)}</div>` : ''}` : '',
+          nuevo ? escV2(x.tipo_carga || '') : '',
+          `<span class="sv-mono">${escV2(x.material || '')}</span>`,
+          escV2(x.nombre || ''),
+          fmtNum(Number(x.cantidad) || 0, 1),
+          fmtNum(Number(x.ton) || 0, 2),
+        ];
+      });
+      return {
+        titulo: `${c.tipo}${c.patente_camion ? ' · ' + c.patente_camion : ''}${c.patente_carro ? ' / carro ' + c.patente_carro : ''} — ${fmtNum(c.ton, 1)} t${c.pct != null ? ` (${c.pct}%)` : ''} · ${c.nSku} SKU`,
+        sub: [[c.id_transporte, c.transportista].filter(Boolean).join(' · '), [c.chofer_nombre, c.chofer_rut, c.chofer_telefono].filter(Boolean).join(' · '),
+          c.dir && c.destino ? c.destino : '', c.fecha_carga && c.fecha_carga !== r.fecha_carga ? 'carga ' + fmtFechaISO(c.fecha_carga) : '',
+          c.programado_por ? 'programado por ' + c.programado_por : ''].filter(Boolean).join(' — '),
+        head: [['Pedido / OC'], ['Tipo de carga'], ['SKU'], ['Nombre'], ['Cantidad', 'r'], ['Ton', 'r']],
+        rows,
+      };
+    }),
   }),
 };
 
@@ -3426,7 +3483,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610052308');
+    const m = await import('./ind-plan-carga.js?v=202610052316');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
@@ -5600,6 +5657,7 @@ async function renderVistaTabla(stage, cfg, modeIdx = 0) {
 }
 
 function exportarCSV(cfg, filas) {
+  if (cfg.csvFilas) filas = cfg.csvFilas(filas);   // vistas agrupadas (Seguimiento de Carga) exportan sus líneas
   const headers = cfg.columnas.map(c => c.label);
   const esc = v => { v = v == null ? '' : String(v); return /[;"\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
   const val = (r, c) => c.valueFn ? c.valueFn(r) : r[c.key];

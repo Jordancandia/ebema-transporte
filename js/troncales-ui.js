@@ -32,7 +32,7 @@ export function tonHtml(n) {
 }
 
 // Encabezado del shell: fecha y hora de la última actualización SAP de la vista
-import { confirmar } from './confirmar.js?v=202610052308';
+import { confirmar } from './confirmar.js?v=202610052316';
 export function setUltimaActualizacion(ts) {
   const el = document.getElementById('sv-upd');
   if (!el) return;
@@ -360,12 +360,15 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
     const d = AV.detalle(r, ctx) || {};
     const kv = (d.kv || []).filter(Boolean).map(([k, v, raw]) =>
       `<div><dt>${esc(k)}</dt><dd>${raw ? (v ?? '—') : (v == null || v === '' ? '—' : esc(v))}</dd></div>`).join('');
-    const tabla = d.tabla && d.tabla.rows && d.tabla.rows.length ? `<div>
-      <div class="sv-dr-sect">${esc(d.tabla.titulo || 'Detalle')}</div>
+    // d.tablas (5-oct-2026): varias tablas en el detalle (p. ej. un camión por tabla); d.tabla sigue funcionando.
+    const tablaHtml = tb => tb && tb.rows && tb.rows.length ? `<div>
+      <div class="sv-dr-sect">${esc(tb.titulo || 'Detalle')}</div>
+      ${tb.sub ? `<div class="sv-sub" style="margin:-4px 0 6px;max-width:none">${esc(tb.sub)}</div>` : ''}
       <div class="sv-card" style="overflow:auto"><table class="sv-table">
-        <thead><tr>${d.tabla.head.map(([l, al]) => `<th class="${al === 'r' ? 'r' : ''}">${esc(l)}</th>`).join('')}</tr></thead>
-        <tbody>${d.tabla.rows.map(row => `<tr>${row.map((c, i) => `<td class="${d.tabla.head[i] && d.tabla.head[i][1] === 'r' ? 'r' : ''}">${c}</td>`).join('')}</tr>`).join('')}</tbody>
+        <thead><tr>${tb.head.map(([l, al]) => `<th class="${al === 'r' ? 'r' : ''}">${esc(l)}</th>`).join('')}</tr></thead>
+        <tbody>${tb.rows.map(row => `<tr>${row.map((c, i) => `<td class="${tb.head[i] && tb.head[i][1] === 'r' ? 'r' : ''}">${c}</td>`).join('')}</tr>`).join('')}</tbody>
       </table></div></div>` : '';
+    const tabla = (d.tablas || (d.tabla ? [d.tabla] : [])).map(tablaHtml).join('');
 
     // Acciones: propias de la vista + excluir/reactivar del Plan de Carga
     const acciones = (d.acciones || []).slice();
