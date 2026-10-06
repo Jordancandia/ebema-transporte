@@ -1,7 +1,7 @@
-import { getDatabase, saveDatabase, calcEjes, getOrigenGroups } from './data.js?v=202610052232';
+import { getDatabase, saveDatabase, calcEjes, getOrigenGroups } from './data.js?v=202610052308';
 import { formatRut, validateRut, generateSapCode, parseCSV, showAlert, escapeHtml } from './utils.js';
-import { renderFichaTransporte } from './ficha-transporte.js?v=202610052232';
-import { abrirModalTroncal } from './troncales.js?v=202610052232';
+import { renderFichaTransporte } from './ficha-transporte.js?v=202610052308';
+import { abrirModalTroncal } from './troncales.js?v=202610052308';
 
 let editingTransportId = null;
 let filtroTipo = ''; // '' | 'ultima_milla' | 'troncal'

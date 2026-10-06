@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610052232';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610052232';
-import { getDatabase } from './data.js?v=202610052232';
+import { supabase } from './supabase-client.js?v=202610052308';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610052308';
+import { getDatabase } from './data.js?v=202610052308';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610052232';
-import { confirmar } from './confirmar.js?v=202610052232';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610052308';
+import { confirmar } from './confirmar.js?v=202610052308';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -418,6 +418,132 @@ function notaTranspBloq(t) {
   if (!t || !t._bloq) return '';
   return `<div class="sv-note-box" style="background:#fef3c7;color:#713f12">Transportista <b>BLOQUEADO</b> en el maestro: faltan ${escapeHtml(faltanTransp(t).join(', '))}. Puedes coordinar igual; el camión queda <b>«Transporte por confirmar»</b> y no se programa (foto ${'15:35'}, correo, Seguimiento de Carga) hasta completar esos datos desde el Plan de Carga o el maestro de transportistas.</div>`;
 }
+
+// ── Selectores buscables (5-oct-2026, Jordan) ────────────────────────────────
+// Reemplazan los <select> largos (247 transportistas) y la lista de radios de direcciones de
+// fábrica. montarBuscador: la opción elegida se ve como tarjeta («Cambiar»); al abrir, un
+// buscador filtra por todas las palabras escritas (sin tildes) y muestra hasta 50 resultados,
+// con ↑ ↓ Enter y Esc. est = { open, q } persiste entre redibujos del panel.
+const normBus = s => String(s ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+const filtrarBus = (items, q, texto) => { const tk = normBus(q).split(/\s+/).filter(Boolean); return !tk.length ? items : items.filter(x => { const t = normBus(texto(x)); return tk.every(k => t.includes(k)); }); };
+// Esc dentro de un selector abierto cierra el selector, no el panel (lo llaman los onKey de los modales).
+function cerrarBuscadorAbierto(e) {
+  const b = document.querySelector('[data-bus-open="1"]');
+  if (!b || typeof b._busCerrar !== 'function') return false;
+  e.stopPropagation(); e.preventDefault(); b._busCerrar(); return true;
+}
+function montarBuscador(host, o) {
+  if (!host) return;
+  const est = o.estado, MAX = 50;
+  const selDe = () => o.items.find(x => String(o.id(x)) === String(o.selId ?? '')) || null;
+  let act = 0;
+  const caja = `width:100%;box-sizing:border-box;min-width:0;${o.invalid ? 'border-color:#b5000b' : ''}`;
+  const filaBtn = (x, i) => `<button type="button" data-bpick="${i}" style="display:flex;align-items:center;gap:10px;width:100%;text-align:left;padding:8px 12px;border:none;border-bottom:1px solid #edeeef;cursor:pointer;font:inherit;background:${i === act ? '#e8eefc' : String(o.id(x)) === String(o.selId ?? '') ? '#f1f5f9' : '#fff'}">${o.fila(x)}</button>`;
+  const res = () => filtrarBus(o.items, est.q, o.texto);
+  const listaHtml = () => {
+    const r = res();
+    if (!o.items.length) return `<div class="sv-sub" style="padding:10px 12px;margin:0">${o.vacio || 'Sin opciones.'}</div>`;
+    if (!r.length) return `<div class="sv-sub" style="padding:10px 12px;margin:0">Sin resultados para «${escapeHtml(est.q)}».</div>`;
+    return r.slice(0, MAX).map(filaBtn).join('') + (r.length > MAX ? `<div class="sv-sub" style="padding:8px 12px;margin:0">${r.length - MAX} más: escribe para acotar.</div>` : '');
+  };
+  const pick = x => { est.open = false; est.q = ''; o.onPick(x); };
+  function render(foco) {
+    const sel = selDe();
+    const abierto = est.open || (!sel && !o.fallback);
+    host.dataset.busOpen = abierto && (sel || o.fallback) ? '1' : '0';
+    host._busCerrar = () => { est.open = false; est.q = ''; render(); };
+    if (!abierto) {
+      host.innerHTML = `<div style="display:flex;align-items:center;gap:10px;padding:9px 12px;border:1px solid ${o.invalid ? '#b5000b' : '#c5c7c9'};border-radius:10px;background:#fafafa">
+        ${sel ? o.tarjeta(sel) : o.fallback}
+        ${o.disabled ? '' : `<button type="button" class="sv-btn" data-bcambiar style="padding:2px 10px;font-size:12px;flex:none">Cambiar</button>`}</div>`;
+      host.querySelector('[data-bcambiar]')?.addEventListener('click', () => { est.open = true; est.q = ''; render(true); });
+      return;
+    }
+    host.innerHTML = `<label class="sv-inp" style="${caja}"><span class="material-symbols-outlined">search</span>
+        <input data-bq value="${escapeHtml(est.q)}" placeholder="${escapeHtml(o.placeholder || 'Buscar…')}" autocomplete="off" style="width:100%">
+        ${sel || o.fallback ? '<button type="button" data-bcancel class="sv-iconbtn" title="Mantener la selección actual (Esc)" style="width:24px;height:24px"><span class="material-symbols-outlined" style="font-size:18px">close</span></button>' : ''}</label>
+      <div data-blist style="margin-top:4px;max-height:${o.alto || 260}px;overflow:auto;border:1px solid #c5c7c9;border-radius:10px;background:#fff">${listaHtml()}</div>`;
+    const inp = host.querySelector('[data-bq]'), lst = host.querySelector('[data-blist]');
+    const wireList = () => lst.querySelectorAll('[data-bpick]').forEach(b => b.addEventListener('click', () => { const x = res()[+b.dataset.bpick]; if (x) pick(x); }));
+    const redrawList = () => { lst.innerHTML = listaHtml(); wireList(); lst.querySelector(`[data-bpick="${act}"]`)?.scrollIntoView({ block: 'nearest' }); };
+    wireList();
+    inp.addEventListener('input', () => { est.q = inp.value; act = 0; redrawList(); });
+    inp.addEventListener('keydown', e => {
+      const n = Math.min(res().length, MAX);
+      if (e.key === 'ArrowDown') { e.preventDefault(); if (n) { act = (act + 1) % n; redrawList(); } }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); if (n) { act = (act - 1 + n) % n; redrawList(); } }
+      else if (e.key === 'Enter') { e.preventDefault(); const x = res()[act]; if (x) pick(x); }
+    });
+    host.querySelector('[data-bcancel]')?.addEventListener('click', () => host._busCerrar());
+    if (foco) setTimeout(() => inp.focus(), 0);
+  }
+  render(!!est.open);
+}
+// Campo de texto libre con sugerencias desplegables (contacto de fábrica): se puede escribir
+// cualquier valor o elegir uno de la lista, que además completa los campos asociados.
+function montarComboLibre(host, o) {
+  if (!host) return;
+  const MAX = 30;
+  let act = -1;
+  host.style.position = 'relative';
+  host.innerHTML = `<label class="sv-inp" style="width:100%;box-sizing:border-box;min-width:0;${o.invalid ? 'border-color:#b5000b' : ''}">
+      <input data-cl value="${escapeHtml(o.valor || '')}" placeholder="${escapeHtml(o.placeholder || '')}" autocomplete="off" style="width:100%">
+      ${o.items.length ? '<span class="material-symbols-outlined" data-cltog style="cursor:pointer;color:#5c5f61" title="Ver contactos guardados">expand_more</span>' : ''}</label>
+    <div data-cllist style="display:none;position:absolute;left:0;right:0;top:100%;margin-top:4px;z-index:5;max-height:220px;overflow:auto;border:1px solid #c5c7c9;border-radius:10px;background:#fff;box-shadow:0 8px 24px rgba(0,0,0,.12)"></div>`;
+  const inp = host.querySelector('[data-cl]'), lst = host.querySelector('[data-cllist]');
+  const res = () => { const r = filtrarBus(o.items, inp.value, o.texto); return r.length ? r : o.items; };
+  const cerrar = () => { lst.style.display = 'none'; host.dataset.busOpen = '0'; act = -1; };
+  host._busCerrar = cerrar;
+  const abrir = () => {
+    if (!o.items.length) return;
+    const r = res().slice(0, MAX);
+    lst.innerHTML = r.map((x, i) => `<button type="button" data-clpick="${i}" style="display:block;width:100%;text-align:left;padding:7px 12px;border:none;border-bottom:1px solid #edeeef;cursor:pointer;font:inherit;background:${i === act ? '#e8eefc' : '#fff'}">${o.fila(x)}</button>`).join('');
+    lst.querySelectorAll('[data-clpick]').forEach(b => b.addEventListener('mousedown', ev => { ev.preventDefault(); const x = r[+b.dataset.clpick]; if (x) { cerrar(); o.onPick(x); } }));
+    lst.style.display = 'block'; host.dataset.busOpen = '1';
+  };
+  inp.addEventListener('focus', abrir);
+  inp.addEventListener('input', () => { o.onInput(inp.value); act = -1; abrir(); });
+  inp.addEventListener('blur', () => setTimeout(cerrar, 120));
+  inp.addEventListener('keydown', e => {
+    if (lst.style.display === 'none') return;
+    const n = Math.min(res().length, MAX);
+    if (e.key === 'ArrowDown') { e.preventDefault(); act = (act + 1) % n; abrir(); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); act = (act - 1 + n) % n; abrir(); }
+    else if (e.key === 'Enter' && act >= 0) { e.preventDefault(); const x = res()[act]; cerrar(); if (x) o.onPick(x); }
+  });
+  host.querySelector('[data-cltog]')?.addEventListener('mousedown', ev => { ev.preventDefault(); if (lst.style.display === 'none') { inp.focus(); abrir(); } else cerrar(); });
+}
+// Transportista del maestro: fila de resultado y tarjeta de la selección.
+const tipoServTransp = t => { const v = String(t.tipo_servicio ?? '').toUpperCase(); return v.includes('TRONCAL') ? 'Troncal' : v.includes('MILLA') ? 'Última milla' : ''; };
+const filaTranspHtml = t => `<span class="sv-mono" style="min-width:68px;color:#5c5f61">${escapeHtml(t.id)}</span>
+  <span style="flex:1;min-width:0"><b style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(t.razonSocial || '')}</b>
+    <small style="color:#5c5f61">${escapeHtml([tipoServTransp(t), t.rut ? 'RUT ' + t.rut : ''].filter(Boolean).join(' · ') || '—')}</small></span>
+  ${t._bloq ? `<span class="sv-pill warn" title="Faltan ${escapeHtml(faltanTransp(t).join(', '))}"><i></i>Bloqueado</span>` : '<span class="sv-pill ok"><i></i>Activo</span>'}`;
+const tarjetaTranspHtml = t => `<span class="material-symbols-outlined" style="color:${t._bloq ? '#b45309' : '#15803d'}">local_shipping</span>
+  <div style="flex:1;min-width:0"><b>${escapeHtml(t.razonSocial || '')}</b><div class="sv-sub" style="margin:0">ID ${escapeHtml(t.id)}${tipoServTransp(t) ? ' · ' + tipoServTransp(t) : ''}${t.rut ? ' · RUT ' + escapeHtml(t.rut) : ''}${t.telefono ? ' · ' + escapeHtml(t.telefono) : ''}</div></div>
+  ${t._bloq ? '<span class="sv-pill warn"><i></i>Bloqueado</span>' : '<span class="sv-pill ok"><i></i>Activo</span>'}`;
+// Monta el selector de transportista en [data-bus="trans"] del panel. st: estado del modal (idTrans, transportista, busT).
+function montarTransp(panel, st, tr, invalid, draw) {
+  st.busT = st.busT || { open: false, q: '' };
+  montarBuscador(panel.querySelector('[data-bus="trans"]'), {
+    items: tr.trans, id: t => t.id, selId: st.idTrans, estado: st.busT, invalid,
+    texto: t => `${t.id} ${t.razonSocial} ${t.rut} ${tipoServTransp(t)}`,
+    fila: filaTranspHtml, tarjeta: tarjetaTranspHtml,
+    fallback: st.idTrans && !tr.trans.some(t => String(t.id) === String(st.idTrans))
+      ? `<span class="material-symbols-outlined" style="color:#b45309">local_shipping</span><div style="flex:1;min-width:0"><b>${escapeHtml(st.transportista || st.idTrans)}</b><div class="sv-sub" style="margin:0">ID ${escapeHtml(st.idTrans)} · no está en el maestro activo</div></div>` : '',
+    placeholder: 'Buscar por ID, nombre o RUT del transportista…', vacio: 'El maestro de transportistas está vacío.',
+    onPick: t => {
+      if (String(t.id) !== String(st.idTrans)) { st.choferNombre = st.choferNombre || ''; }
+      st.idTrans = String(t.id); st.transportista = t.razonSocial || ''; draw();
+    },
+  });
+}
+// (5-oct-2026, Jordan) Al coordinar transporte (Ventas CD, Retiros, Crossdocking) sólo el ID y nombre
+// del transportista son obligatorios; chofer, RUT, teléfono y patente pueden completarse después.
+const notaPendTransp = (st, quien) => {
+  const pd = pendTranspRetiro({ chofer_nombre: st.choferNombre, chofer_rut: st.choferRut, chofer_telefono: st.choferTel, patente_camion: st.patCamion });
+  return pd.length ? `<div class="sv-note-box" style="background:#fef3c7;color:#713f12"><b>Pendiente:</b> ${escapeHtml(pd.join(', '))}. Puedes coordinar igual; ${quien} queda marcado <b>«Chofer/patente pendiente»</b> y se completa después con «Editar coordinación».${pd.includes('patente') ? ' Sin patente, el camión directo aún no queda programado en el Plan de Carga.' : ''}</div>` : '';
+};
 function showConfirmarTransportistaModal(t, detalle) {
   return new Promise(resolve => {
     const f = faltanTransp(t);
@@ -426,7 +552,7 @@ function showConfirmarTransportistaModal(t, detalle) {
     wrap.innerHTML = '<div class="sv-dr-bg" style="z-index:120"></div><aside class="sv-dr" style="z-index:121;width:min(520px,100vw)" role="dialog" aria-label="Confirmar transporte"></aside>';
     document.body.appendChild(wrap);
     const panel = wrap.querySelector('aside');
-    const onKey = e => { if (e.key === 'Escape' && !document.querySelector('.sv-cf-bg')) { e.stopPropagation(); fin(false); } };
+    const onKey = e => { if (e.key === 'Escape' && !document.querySelector('.sv-cf-bg') && !cerrarBuscadorAbierto(e)) { e.stopPropagation(); fin(false); } };
     const fin = v => { wrap.remove(); document.removeEventListener('keydown', onKey, true); resolve(v); };
     document.addEventListener('keydown', onKey, true);
     wrap.querySelector('.sv-dr-bg').addEventListener('click', () => fin(false));
@@ -824,7 +950,7 @@ function showCoordVentaModal(row, ctx) {
     document.body.appendChild(wrap);
     const panel = wrap.querySelector('aside');
     const fin = v => { wrap.remove(); document.removeEventListener('keydown', onKey, true); resolve(v); };
-    const onKey = e => { if (e.key === 'Escape') { e.stopPropagation(); fin(false); } };
+    const onKey = e => { if (e.key === 'Escape' && !cerrarBuscadorAbierto(e)) { e.stopPropagation(); fin(false); } };
     document.addEventListener('keydown', onKey, true);
     wrap.querySelector('.sv-dr-bg').addEventListener('click', () => fin(false));
 
@@ -836,11 +962,7 @@ function showCoordVentaModal(row, ctx) {
       if (!st.direccion.trim()) f.push('direccion');
       if (!st.telefono.trim()) f.push('telefono');
       if (esCli()) {
-        if (!st.idTrans.trim()) f.push('idTrans');
-        if (!st.choferNombre.trim()) f.push('choferNombre');
-        if (!st.choferRut.trim()) f.push('choferRut');
-        if (!st.choferTel.trim()) f.push('choferTel');
-        if (!st.patCamion.trim()) f.push('patCamion');
+        if (!st.idTrans.trim()) f.push('idTrans');   // (5-oct-2026) chofer, RUT, teléfono y patente pueden quedar pendientes
       }
       return f;
     };
@@ -893,13 +1015,8 @@ function showCoordVentaModal(row, ctx) {
           ${esCli() ? `
           <div class="sv-card" style="padding:14px 16px;display:flex;flex-direction:column;gap:10px">
             <div class="sv-b" style="font-size:14px">Datos del transporte (CD-Cliente)</div>
-            <div>${lbl('ID transporte', 'idTrans', true)}
-              <label class="sv-inp" style="width:100%;box-sizing:border-box;min-width:0;${bad('idTrans') ? 'border-color:#b5000b' : ''}"><span class="material-symbols-outlined">local_shipping</span>
-                <select data-sel="trans" style="border:none;background:transparent;width:100%;font:inherit;outline:none">
-                  <option value="">Seleccionar transportista…</option>
-                  ${tr.trans.map(t => `<option value="${escapeHtml(t.id)}" ${String(t.id) === st.idTrans ? 'selected' : ''}>${escapeHtml(t.id)} · ${escapeHtml(t.razonSocial || '')}${t._bloq ? ' · BLOQUEADO' : ''}</option>`).join('')}
-                  ${st.idTrans && !tr.trans.some(t => String(t.id) === st.idTrans) ? `<option value="${escapeHtml(st.idTrans)}" selected>${escapeHtml(st.idTrans)} · ${escapeHtml(st.transportista)}</option>` : ''}
-                </select></label></div>
+            <div>${lbl('Transportista (ID y nombre)', 'idTrans', true)}
+              <div data-bus="trans"></div></div>
             ${notaTranspBloq(tr.trans.find(t => String(t.id) === st.idTrans))}
             ${chofList().length ? `<div>${lbl('Chofer del transportista', 'chof', false)}
               <label class="sv-inp" style="width:100%;box-sizing:border-box;min-width:0"><span class="material-symbols-outlined">badge</span>
@@ -908,14 +1025,15 @@ function showCoordVentaModal(row, ctx) {
                   ${chofList().map((x, i) => `<option value="${i}" ${x.rut === st.choferRut ? 'selected' : ''}>${escapeHtml([x.nombre, x.apellido].filter(Boolean).join(' '))} · ${escapeHtml(x.rut || '')}</option>`).join('')}
                 </select></label></div>` : ''}
             <div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:8px">
-              <div>${lbl('Nombre chofer', 'choferNombre', true)}${inp('choferNombre', '')}</div>
-              <div>${lbl('RUT chofer', 'choferRut', true)}${inp('choferRut', '12.345.678-9')}</div>
-              <div>${lbl('Teléfono', 'choferTel', true)}${inp('choferTel', '+56 9…')}</div>
+              <div>${lbl('Nombre chofer', 'choferNombre', false)}${inp('choferNombre', 'Pendiente')}</div>
+              <div>${lbl('RUT chofer', 'choferRut', false)}${inp('choferRut', '12.345.678-9')}</div>
+              <div>${lbl('Teléfono', 'choferTel', false)}${inp('choferTel', '+56 9…')}</div>
             </div>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
-              <div>${lbl('Patente camión', 'patCamion', true)}${inp('patCamion', 'AB-CD-12', 'list="dl-pat-cam" autocomplete="off"')}</div>
+              <div>${lbl('Patente camión', 'patCamion', false)}${inp('patCamion', 'Pendiente', 'list="dl-pat-cam" autocomplete="off"')}</div>
               <div>${lbl('Patente carro (opcional)', 'patCarro', false)}${inp('patCarro', 'Rampla / carro')}</div>
             </div>
+            ${notaPendTransp(st, 'el pedido')}
             <datalist id="dl-pat-cam">${camList().map(x => `<option value="${escapeHtml(x.id_camion)}">${escapeHtml([x.modelo, x.capacidad_ton ? x.capacidad_ton + ' t' : ''].filter(Boolean).join(' · '))}</option>`).join('')}</datalist>
           </div>` : ''}
         </div>
@@ -929,12 +1047,7 @@ function showCoordVentaModal(row, ctx) {
         st[i.dataset.k] = i.value;
         if (i.type === 'date') { const p = panel.querySelector('[data-plantxt]'); if (p) p.textContent = planTxt(); }
       }));
-      panel.querySelector('[data-sel="trans"]')?.addEventListener('change', e => {
-        st.idTrans = e.target.value;
-        const t = tr.trans.find(x => String(x.id) === st.idTrans);
-        st.transportista = t ? (t.razonSocial || '') : '';
-        draw();
-      });
+      montarTransp(panel, st, tr, bad('idTrans'), draw);
       panel.querySelector('[data-sel="chof"]')?.addEventListener('change', e => {
         const x = chofList()[+e.target.value];
         if (x) { st.choferNombre = [x.nombre, x.apellido].filter(Boolean).join(' '); st.choferRut = x.rut || ''; st.choferTel = x.telefono || st.choferTel; if (x.id_camion) st.patCamion = x.id_camion; draw(); }
@@ -945,7 +1058,7 @@ function showCoordVentaModal(row, ctx) {
         const cli = esCli();
         // Aviso de choque (2-oct-2026): misma patente con otro transportista/chofer el mismo día,
         // misma patente en otra fecha, mismo chofer en otra patente el mismo día, o > 28 t por patente.
-        if (cli) {
+        if (cli && (st.patCamion.trim() || st.choferRut.trim())) {
           const avisos = await chequearChoquePatente(row, st, ctx);
           if (avisos.length && !(await confirmar(`Posible choque con el camión ${st.patCamion.trim().toUpperCase()}\n\n${avisos.map(a => '• ' + a).join('\n')}\n\n¿Guardar igual?`, { aceptar: 'Guardar igual', tono: 'peligro', icono: 'warning' }))) { btn.disabled = false; return; }
         }
@@ -954,11 +1067,12 @@ function showCoordVentaModal(row, ctx) {
           n_entrega: st.entrega.trim(), id_cliente: row._id_cliente || null, nombre_cliente: row._cliente || null,
           comuna: st.comuna.trim() || null, direccion: st.direccion.trim(), telefono: st.telefono.trim(),
           id_transporte: cli ? st.idTrans.trim() : null, transportista: cli ? (st.transportista || null) : null,
-          chofer_nombre: cli ? st.choferNombre.trim() : null, chofer_rut: cli ? st.choferRut.trim() : null, chofer_telefono: cli ? st.choferTel.trim() : null,
-          patente_camion: cli ? st.patCamion.trim().toUpperCase() : null, patente_carro: cli ? (st.patCarro.trim().toUpperCase() || null) : null,
+          chofer_nombre: cli ? (st.choferNombre.trim() || null) : null, chofer_rut: cli ? (st.choferRut.trim() || null) : null, chofer_telefono: cli ? (st.choferTel.trim() || null) : null,
+          patente_camion: cli ? (st.patCamion.trim().toUpperCase() || null) : null, patente_carro: cli ? (st.patCarro.trim().toUpperCase() || null) : null,
         }, !editando);
         if (!ok) { btn.disabled = false; return; }
-        showAlert(`Pedido ${row.doc_ventas} coordinado para el ${fmtFechaISO(st.fecha)}`, 'success');
+        const pendV = cli ? pendTranspRetiro({ chofer_nombre: st.choferNombre, chofer_rut: st.choferRut, chofer_telefono: st.choferTel, patente_camion: st.patCamion }) : [];
+        showAlert(`Pedido ${row.doc_ventas} coordinado para el ${fmtFechaISO(st.fecha)}` + (pendV.length ? ` · pendiente: ${pendV.join(', ')}` : ''), 'success');
         fin(true);
       });
     }
@@ -1051,7 +1165,7 @@ function showCoordRetiroModal(row, ctx) {
     document.body.appendChild(wrap);
     const panel = wrap.querySelector('aside');
     const fin = v => { wrap.remove(); document.removeEventListener('keydown', onKey, true); resolve(v); };
-    const onKey = e => { if (e.key === 'Escape' && !document.querySelector('.sv-cf-bg')) { e.stopPropagation(); fin(false); } };
+    const onKey = e => { if (e.key === 'Escape' && !document.querySelector('.sv-cf-bg') && !cerrarBuscadorAbierto(e)) { e.stopPropagation(); fin(false); } };
     document.addEventListener('keydown', onKey, true);
     wrap.querySelector('.sv-dr-bg').addEventListener('click', () => fin(false));
 
@@ -1127,32 +1241,20 @@ function showCoordRetiroModal(row, ctx) {
           <div class="sv-card" style="padding:14px 16px;display:flex;flex-direction:column;gap:10px">
             <div class="sv-b" style="font-size:14px">Fábrica y contacto</div>
             ${lbl('Dirección de fábrica', 'dir', rm())}
-            <div style="display:flex;flex-direction:column;gap:6px;${bad('dir') ? 'outline:1px solid #b5000b;border-radius:4px' : ''}">
-              ${dirs.map(d => `<button class="sv-opt ${st.dirSel === String(d.id) ? 'is-on' : ''}" data-dir="${d.id}">
-                <span class="material-symbols-outlined" style="color:${st.dirSel === String(d.id) ? '#b5000b' : '#5c5f61'}">${st.dirSel === String(d.id) ? 'radio_button_checked' : 'radio_button_unchecked'}</span>
-                <span><b>${escapeHtml(d.nombre_fabrica || d.direccion)}</b><div class="sv-sub" style="margin:0">${escapeHtml([d.direccion, d.comuna].filter(Boolean).join(', '))}</div></span></button>`).join('')}
-              <button class="sv-opt ${st.dirSel === 'new' ? 'is-on' : ''}" data-dir="new">
-                <span class="material-symbols-outlined" style="color:${st.dirSel === 'new' ? '#b5000b' : '#5c5f61'}">${st.dirSel === 'new' ? 'radio_button_checked' : 'radio_button_unchecked'}</span>
-                <span><b>Otra dirección</b><div class="sv-sub" style="margin:0">Ingresar una nueva</div></span></button>
-            </div>
+            <div data-bus="dir"></div>
             ${st.dirSel === 'new' ? `${inp('dirTxt', 'Calle, número')}
               ${row.proveedor ? `<label style="display:flex;align-items:center;gap:8px;font-size:13px;color:#5c5f61;cursor:pointer"><input type="checkbox" data-k="guardar" ${st.guardar ? 'checked' : ''}> Guardar esta dirección en el proveedor</label>` : ''}` : ''}
             <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
               <div>${lbl('Comuna', 'comuna', rm())}${inp('comuna', '')}</div>
-              <div>${lbl('Contacto', 'contacto', rm())}${inp('contacto', 'Nombre')}</div>
+              <div>${lbl('Contacto', 'contacto', rm())}<div data-combo="contacto"></div></div>
               <div>${lbl('Teléfono', 'tel', rm())}${inp('tel', '+56 9…')}</div>
             </div>
           </div>
           ${rm() ? `
           <div class="sv-card" style="padding:14px 16px;display:flex;flex-direction:column;gap:10px">
             <div class="sv-b" style="font-size:14px">Datos del transporte${st.tipo === 'FAB-CD' ? ' (fábrica → CD)' : ''}</div>
-            <div>${lbl('ID transporte', 'idTrans', true)}
-              <label class="sv-inp" style="${inpS('idTrans')}"><span class="material-symbols-outlined">local_shipping</span>
-                <select data-sel="trans" style="border:none;background:transparent;width:100%;font:inherit;outline:none">
-                  <option value="">Seleccionar transportista…</option>
-                  ${tr.trans.map(t => `<option value="${escapeHtml(t.id)}" ${String(t.id) === st.idTrans ? 'selected' : ''}>${escapeHtml(t.id)} · ${escapeHtml(t.razonSocial || '')}${t._bloq ? ' · BLOQUEADO' : ''}</option>`).join('')}
-                  ${st.idTrans && !tr.trans.some(t => String(t.id) === st.idTrans) ? `<option value="${escapeHtml(st.idTrans)}" selected>${escapeHtml(st.idTrans)} · ${escapeHtml(st.transportista)}</option>` : ''}
-                </select></label></div>
+            <div>${lbl('Transportista (ID y nombre)', 'idTrans', true)}
+              <div data-bus="trans"></div></div>
             ${notaTranspBloq(tr.trans.find(t => String(t.id) === st.idTrans))}
             ${chofList().length ? `<div>${lbl('Chofer del transportista', 'chof', false)}
               <label class="sv-inp" style="${inpS('chof')}"><span class="material-symbols-outlined">badge</span>
@@ -1219,17 +1321,40 @@ function showCoordRetiroModal(row, ctx) {
       panel.querySelectorAll('[data-cx]').forEach(b => b.addEventListener('click', () => fin(false)));
       panel.querySelectorAll('[data-modo]').forEach(b => b.addEventListener('click', () => { st.modo = b.dataset.modo; draw(); }));
       panel.querySelectorAll('[data-tipo]').forEach(b => b.addEventListener('click', () => { st.tipo = st.tipo === b.dataset.tipo && !rm() ? '' : b.dataset.tipo; draw(); }));
-      panel.querySelectorAll('[data-dir]').forEach(b => b.addEventListener('click', () => {
-        st.dirSel = b.dataset.dir; const d = dirs.find(x => String(x.id) === st.dirSel); if (d) { if (d.comuna) st.comuna = d.comuna; if (d.contacto_nombre) st.contacto = d.contacto_nombre; if (d.contacto_telefono) st.tel = d.contacto_telefono; } draw();
-      }));
+      // (5-oct-2026, Jordan) Dirección de fábrica: desplegable buscable (antes una lista con todas las direcciones).
+      st.busD = st.busD || { open: false, q: '' };
+      const dirItems = [...dirs, { id: 'new', _nueva: true }];
+      const dirTxt = d => [d.direccion, d.comuna, d.region].filter(Boolean).join(', ');
+      montarBuscador(panel.querySelector('[data-bus="dir"]'), {
+        items: dirItems, id: d => d.id, selId: st.dirSel, estado: st.busD, invalid: bad('dir'), alto: 240,
+        texto: d => d._nueva ? 'otra direccion nueva ingresar' : `${d.nombre_fabrica} ${d.direccion} ${d.comuna} ${d.region} ${d.contacto_nombre}`,
+        fila: d => d._nueva ? '<span class="material-symbols-outlined" style="color:#5c5f61">add_location_alt</span><span style="flex:1"><b>Otra dirección</b><div class="sv-sub" style="margin:0">Ingresar una nueva</div></span>'
+          : `<span class="material-symbols-outlined" style="color:#5c5f61">factory</span><span style="flex:1;min-width:0"><b>${escapeHtml(d.nombre_fabrica || d.direccion)}</b><div class="sv-sub" style="margin:0">${escapeHtml(dirTxt(d))}${d.contacto_nombre ? ' · ' + escapeHtml(d.contacto_nombre) : ''}</div></span>`,
+        tarjeta: d => d._nueva ? '<span class="material-symbols-outlined" style="color:#5c5f61">add_location_alt</span><div style="flex:1"><b>Otra dirección</b><div class="sv-sub" style="margin:0">Ingrésala abajo</div></div>'
+          : `<span class="material-symbols-outlined" style="color:#b5000b">factory</span><div style="flex:1;min-width:0"><b>${escapeHtml(d.nombre_fabrica || d.direccion)}</b><div class="sv-sub" style="margin:0">${escapeHtml(dirTxt(d))}</div></div>`,
+        placeholder: `Buscar entre ${dirs.length} dirección(es) del proveedor…`,
+        onPick: d => { st.dirSel = String(d.id); if (!d._nueva) { if (d.comuna) st.comuna = d.comuna; if (d.contacto_nombre) st.contacto = d.contacto_nombre; if (d.contacto_telefono) st.tel = d.contacto_telefono; } draw(); },
+      });
+      // Contacto: texto libre con los contactos guardados del proveedor como lista desplegable.
+      const contactos = [];
+      [...dirs].sort((x, y) => (String(y.id) === st.dirSel) - (String(x.id) === st.dirSel)).forEach(d => {
+        const n = String(d.contacto_nombre ?? '').trim(); if (!n) return;
+        const k = normBus(n) + '|' + String(d.contacto_telefono ?? '').trim();
+        if (!contactos.some(c => c.k === k)) contactos.push({ k, nombre: n, tel: String(d.contacto_telefono ?? '').trim(), fab: d.nombre_fabrica || d.direccion || '' });
+      });
+      montarComboLibre(panel.querySelector('[data-combo="contacto"]'), {
+        valor: st.contacto, items: contactos, invalid: bad('contacto'), placeholder: contactos.length ? 'Nombre o elegir ▾' : 'Nombre',
+        texto: c => `${c.nombre} ${c.tel} ${c.fab}`,
+        fila: c => `<b>${escapeHtml(c.nombre)}</b><div class="sv-sub" style="margin:0">${escapeHtml([c.tel, c.fab].filter(Boolean).join(' · '))}</div>`,
+        onInput: v => { st.contacto = v; },
+        onPick: c => { st.contacto = c.nombre; if (c.tel) st.tel = c.tel; draw(); },
+      });
       panel.querySelectorAll('[data-k]').forEach(i => i.addEventListener(i.type === 'checkbox' || i.type === 'date' ? 'change' : 'input', () => { st[i.dataset.k] = i.type === 'checkbox' ? i.checked : i.value; }));
       panel.querySelectorAll('[data-x]').forEach(i => i.addEventListener('input', () => { const e = st.extras.get(i.dataset.x); if (e) e[i.dataset.xk] = i.value; }));
       panel.querySelectorAll('[data-xdel]').forEach(b => b.addEventListener('click', () => { st.extras.delete(b.dataset.xdel); draw(); }));
       panel.querySelector('[data-q]')?.addEventListener('input', e => { st.q = e.target.value; const c = panel.querySelector('[data-cands]'); if (c) { c.innerHTML = candHtml(); wireCands(); } });
       wireCands();
-      panel.querySelector('[data-sel="trans"]')?.addEventListener('change', e => {
-        st.idTrans = e.target.value; const t = tr.trans.find(x => String(x.id) === st.idTrans); st.transportista = t ? (t.razonSocial || '') : ''; draw();
-      });
+      montarTransp(panel, st, tr, bad('idTrans'), draw);
       panel.querySelector('[data-sel="chof"]')?.addEventListener('change', e => {
         const x = chofList()[+e.target.value];
         if (x) { st.choferNombre = [x.nombre, x.apellido].filter(Boolean).join(' '); st.choferRut = x.rut || ''; st.choferTel = x.telefono || st.choferTel; if (x.id_camion) st.patCamion = x.id_camion; draw(); }
@@ -1495,10 +1620,11 @@ function showCoordTrasladoModal(row, ctx) {
     document.body.appendChild(wrap);
     const panel = wrap.querySelector('aside');
     const fin = v => { wrap.remove(); document.removeEventListener('keydown', onKey, true); resolve(v); };
-    const onKey = e => { if (e.key === 'Escape' && !document.querySelector('.sv-cf-bg')) { e.stopPropagation(); fin(false); } };
+    const onKey = e => { if (e.key === 'Escape' && !document.querySelector('.sv-cf-bg') && !cerrarBuscadorAbierto(e)) { e.stopPropagation(); fin(false); } };
     document.addEventListener('keydown', onKey, true);
     wrap.querySelector('.sv-dr-bg').addEventListener('click', () => fin(false));
-    const REQ = ['fecha', 'direccion', 'telefono', 'idTrans', 'choferNombre', 'choferRut', 'choferTel', 'patCamion'];
+    // (5-oct-2026, Jordan) chofer, RUT, teléfono y patente pueden quedar pendientes
+    const REQ = ['fecha', 'direccion', 'telefono', 'idTrans'];
     const faltantes = () => {
       const f = REQ.filter(k => !String(st[k]).trim());
       st.entregas.forEach((v, d) => { if (!String(v).trim()) f.push('ent_' + d); });
@@ -1549,13 +1675,8 @@ function showCoordTrasladoModal(row, ctx) {
           </div>
           <div class="sv-card" style="padding:14px 16px;display:flex;flex-direction:column;gap:10px">
             <div class="sv-b" style="font-size:14px">Datos del transporte</div>
-            <div>${lbl('ID transporte', 'idTrans', true)}
-              <label class="sv-inp" style="${box('idTrans')}"><span class="material-symbols-outlined">local_shipping</span>
-                <select data-sel="trans" style="border:none;background:transparent;width:100%;font:inherit;outline:none">
-                  <option value="">Seleccionar transportista…</option>
-                  ${tr.trans.map(t => `<option value="${escapeHtml(t.id)}" ${String(t.id) === st.idTrans ? 'selected' : ''}>${escapeHtml(t.id)} · ${escapeHtml(t.razonSocial || '')}${t._bloq ? ' · BLOQUEADO' : ''}</option>`).join('')}
-                  ${st.idTrans && !tr.trans.some(t => String(t.id) === st.idTrans) ? `<option value="${escapeHtml(st.idTrans)}" selected>${escapeHtml(st.idTrans)} · ${escapeHtml(st.transportista)}</option>` : ''}
-                </select></label></div>
+            <div>${lbl('Transportista (ID y nombre)', 'idTrans', true)}
+              <div data-bus="trans"></div></div>
             ${notaTranspBloq(tr.trans.find(t => String(t.id) === st.idTrans))}
             ${chofList().length ? `<div>${lbl('Chofer del transportista', 'chof', false)}
               <label class="sv-inp" style="${box('chof')}"><span class="material-symbols-outlined">badge</span>
@@ -1564,12 +1685,13 @@ function showCoordTrasladoModal(row, ctx) {
                   ${chofList().map((x, i) => `<option value="${i}" ${x.rut === st.choferRut ? 'selected' : ''}>${escapeHtml([x.nombre, x.apellido].filter(Boolean).join(' '))} · ${escapeHtml(x.rut || '')}</option>`).join('')}
                 </select></label></div>` : ''}
             <div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:8px">
-              <div>${lbl('Nombre chofer', 'choferNombre', true)}${inp('choferNombre', '')}</div>
-              <div>${lbl('RUT chofer', 'choferRut', true)}${inp('choferRut', '12.345.678-9')}</div>
-              <div>${lbl('Teléfono', 'choferTel', true)}${inp('choferTel', '+56 9…')}</div></div>
+              <div>${lbl('Nombre chofer', 'choferNombre', false)}${inp('choferNombre', 'Pendiente')}</div>
+              <div>${lbl('RUT chofer', 'choferRut', false)}${inp('choferRut', '12.345.678-9')}</div>
+              <div>${lbl('Teléfono', 'choferTel', false)}${inp('choferTel', '+56 9…')}</div></div>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
-              <div>${lbl('Patente camión', 'patCamion', true)}${inp('patCamion', 'AB-CD-12', 'list="dl-pat-tr" autocomplete="off"')}</div>
+              <div>${lbl('Patente camión', 'patCamion', false)}${inp('patCamion', 'Pendiente', 'list="dl-pat-tr" autocomplete="off"')}</div>
               <div>${lbl('Patente carro (opcional)', 'patCarro', false)}${inp('patCarro', 'Rampla / carro')}</div></div>
+            ${notaPendTransp(st, 'el pedido')}
             <datalist id="dl-pat-tr">${camList().map(x => `<option value="${escapeHtml(x.id_camion)}"></option>`).join('')}</datalist>
           </div>
         </div>
@@ -1581,9 +1703,7 @@ function showCoordTrasladoModal(row, ctx) {
       panel.querySelectorAll('[data-ent]').forEach(i => i.addEventListener('input', () => st.entregas.set(i.dataset.ent, i.value)));
       panel.querySelectorAll('[data-add]').forEach(b => b.addEventListener('click', () => { const p = pedidos.get(b.dataset.add); st.entregas.set(b.dataset.add, (p && p.coord && p.coord.n_entrega) || ''); draw(); }));
       panel.querySelectorAll('[data-del]').forEach(b => b.addEventListener('click', () => { st.entregas.delete(b.dataset.del); draw(); }));
-      panel.querySelector('[data-sel="trans"]')?.addEventListener('change', e => {
-        st.idTrans = e.target.value; const t = tr.trans.find(x => String(x.id) === st.idTrans); st.transportista = t ? (t.razonSocial || '') : ''; draw();
-      });
+      montarTransp(panel, st, tr, bad('idTrans'), draw);
       panel.querySelector('[data-sel="chof"]')?.addEventListener('change', e => {
         const x = chofList()[+e.target.value];
         if (x) { st.choferNombre = [x.nombre, x.apellido].filter(Boolean).join(' '); st.choferRut = x.rut || ''; st.choferTel = x.telefono || st.choferTel; if (x.id_camion) st.patCamion = x.id_camion; draw(); }
@@ -1596,7 +1716,7 @@ function showCoordTrasladoModal(row, ctx) {
         let ventas = []; try { ventas = [...(await loadCoordinacionesVenta()).values()]; } catch (_) { /* */ }
         const otrosTr = [...(await loadCoordTraslados()).values()].filter(x => !st.entregas.has(String(x.doc_compr).trim()));
         ventas.map(x => ({ doc: 'NV ' + x.doc_ventas, ...x })).concat(otrosTr.map(x => ({ doc: 'Traslado ' + x.doc_compr, ...x }))).forEach(o => {
-          if (!o.patente_camion) return;
+          if (!o.patente_camion || (!pat && !rut)) return;
           const mismaPat = normPatente(o.patente_camion) === pat;
           if (mismaPat && o.fecha_entrega === st.fecha && String(o.id_transporte ?? '').trim() !== st.idTrans.trim()) av.push(`${o.doc} usa esta patente el ${fmtFechaISO(o.fecha_entrega)} con otro transporte.`);
           else if (mismaPat && o.fecha_entrega === st.fecha && normPatente(o.chofer_rut) !== rut) av.push(`${o.doc} usa esta patente el ${fmtFechaISO(o.fecha_entrega)} con otro chofer.`);
@@ -1609,13 +1729,13 @@ function showCoordTrasladoModal(row, ctx) {
           doc_compr: d, ce: String(row.ce).trim(), tipo_entrega: 'CD-CLIENTE', fecha_entrega: st.fecha, n_entrega: String(ent).trim(),
           nombre_cliente: st.cliente.trim().toUpperCase() || null, comuna: st.comuna.trim() || null, direccion: st.direccion.trim(), telefono: st.telefono.trim(),
           id_transporte: st.idTrans.trim(), transportista: st.transportista || null,
-          chofer_nombre: st.choferNombre.trim(), chofer_rut: st.choferRut.trim(), chofer_telefono: st.choferTel.trim(),
-          patente_camion: st.patCamion.trim().toUpperCase(), patente_carro: st.patCarro.trim().toUpperCase() || null,
+          chofer_nombre: st.choferNombre.trim() || null, chofer_rut: st.choferRut.trim() || null, chofer_telefono: st.choferTel.trim() || null,
+          patente_camion: st.patCamion.trim().toUpperCase() || null, patente_carro: st.patCarro.trim().toUpperCase() || null,
           updated_at: now, updated_by: email, ...((pedidos.get(d) || {}).coord ? {} : { created_at: now, created_by: email }),
         }));
         const { error } = await supabase.from('abast_traslado_coordinacion').upsert(filas, { onConflict: 'doc_compr' });
         if (error) { showAlert('Error al coordinar: ' + error.message, 'error'); btn.disabled = false; return; }
-        showAlert(`${filas.length > 1 ? filas.length + ' pedidos coordinados' : 'Pedido ' + main + ' coordinado'} como CD-Cliente (${filas[0].patente_camion}).`, 'success');
+        showAlert(`${filas.length > 1 ? filas.length + ' pedidos coordinados' : 'Pedido ' + main + ' coordinado'} como CD-Cliente (${filas[0].patente_camion || 'chofer/patente pendiente'}).`, 'success');
         fin(true);
       });
     }
@@ -2731,7 +2851,8 @@ const V2 = {
       { label: 'Líneas', al: 'r', html: r => escV2((r._detalle || []).length) },
       { label: 'Ton', al: 'r', html: r => `<span class="sv-ton">${tonHtml(r._ton_num)}</span>` + (r._n_pedidos_cliente > 1 ? `<div class="sv-sub">cliente ${escV2(fmtNum(r._ton_cliente, 1))} t</div>` : '') },
       { label: 'Fecha entrega', html: r => mono(r._fecha_plan, r._coord ? 'confirmada' : 'SAP · por confirmar') },
-      { label: 'Coordinación', html: r => r._coord ? pill('Pedido Coordinado', 'ok') + (r._coord.n_entrega ? `<div class="sv-sub">Entrega ${escV2(r._coord.n_entrega)}</div>` : '') : pill('Sin coordinar', 'mute') },
+      { label: 'Coordinación', html: r => r._coord ? pill('Pedido Coordinado', 'ok') + (r._coord.n_entrega ? `<div class="sv-sub">Entrega ${escV2(r._coord.n_entrega)}</div>` : '')
+          + (r._coord.tipo_entrega === 'CD-CLIENTE' && pendTranspRetiro(r._coord).length ? `<div style="margin-top:4px" title="Pendiente: ${escV2(pendTranspRetiro(r._coord).join(', '))}">${pill('Chofer/patente pendiente', 'warn')}</div>` : '') : pill('Sin coordinar', 'mute') },
       { label: 'Alerta', html: r => pill(r._al.k, r._al.tone) + (r._estado ? ` ${pill('Parcial', 'warn')}` : '') },
     ],
     // Excluir / Reactivar en la fila principal (no en el detalle) + estado en el Plan de Carga.
@@ -2951,7 +3072,8 @@ const V2 = {
       { label: 'Material', html: r => matHtml(r.material, r.texto_breve) },
       { label: 'Ton', al: 'r', html: r => `<span class="sv-ton">${tonHtml(r._ton_num)}</span>` },
       { label: 'Fecha entrega', html: r => mono(r._cdcli ? fmtFechaISO(r._coord.fecha_entrega) : r.fe_entrega, r._cdcli ? 'coordinada' : '') },
-      { label: 'Tipo entrega', html: r => r._cdcli ? pill('CD-Cliente', 'purple') + (r._coord.patente_camion ? `<div class="sv-sub">${escV2(r._coord.patente_camion)}</div>` : '') : pill('Consolidable', 'info') },
+      { label: 'Tipo entrega', html: r => r._cdcli ? pill('CD-Cliente', 'purple') + (r._coord.patente_camion ? `<div class="sv-sub">${escV2(r._coord.patente_camion)}</div>` : '')
+          + (pendTranspRetiro(r._coord).length ? `<div style="margin-top:4px" title="Pendiente: ${escV2(pendTranspRetiro(r._coord).join(', '))}">${pill('Chofer/patente pendiente', 'warn')}</div>` : '') : pill('Consolidable', 'info') },
       { label: 'Alerta', html: r => pill(r._al.k, r._al.tone) },
     ],
     excluirEnFila: true,
@@ -3304,7 +3426,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610052232');
+    const m = await import('./ind-plan-carga.js?v=202610052308');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
