@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610071945';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610071945';
-import { getDatabase } from './data.js?v=202610071945';
+import { supabase } from './supabase-client.js?v=202610072013';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610072013';
+import { getDatabase } from './data.js?v=202610072013';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610071945';
-import { confirmar } from './confirmar.js?v=202610071945';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610072013';
+import { confirmar } from './confirmar.js?v=202610072013';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -940,10 +940,11 @@ function showCoordModal(row) {
 // ── Modal «Coordinar despacho» de un pedido de venta 1003 (2-oct-2026) ──────
 // Tipo de entrega (sólo OWNER puede cambiarlo), fecha de entrega confirmada, N° de
 // entrega, datos del cliente y, si es CD-CLIENTE, datos del transporte.
-async function chequearChoquePatente(row, st, ctx) {
+async function chequearChoquePatente(row, st, ctx, docsSel = []) {
   const doc = String(row.doc_ventas ?? '').trim();
   const pat = normPatente(st.patCamion), rut = normPatente(st.choferRut);
-  const otros = [...(await loadCoordinacionesVenta()).values()].filter(c => String(c.doc_ventas ?? '').trim() !== doc && c.tipo_entrega === 'CD-CLIENTE');
+  const selSet = new Set([doc, ...docsSel.map(d => String(d ?? '').trim())]);   // (7-oct-2026) pedidos del mismo camión
+  const otros = [...(await loadCoordinacionesVenta()).values()].filter(c => !selSet.has(String(c.doc_ventas ?? '').trim()) && c.tipo_entrega === 'CD-CLIENTE');
   const rowsByDoc = (ctx && ctx._rowsByDoc) || new Map();
   const tonDoc = d => { const r = rowsByDoc.get(String(d ?? '').trim()); return r ? (r._ton_num || 0) : 0; };
   const fF = d => fmtFechaISO(d);
@@ -957,8 +958,8 @@ async function chequearChoquePatente(row, st, ctx) {
   mismaPat.filter(c => c.fecha_entrega !== st.fecha).forEach(c => av.push(`La patente ya está coordinada el ${fF(c.fecha_entrega)} (pedido ${c.doc_ventas}); revisa si la fecha es correcta.`));
   if (rut) otros.filter(c => c.fecha_entrega === st.fecha && normPatente(c.chofer_rut) === rut && normPatente(c.patente_camion) !== pat)
     .forEach(c => av.push(`El chofer ${st.choferNombre.trim() || st.choferRut} ya está coordinado el ${fF(c.fecha_entrega)} en otra patente (${c.patente_camion || '—'}, pedido ${c.doc_ventas}).`));
-  const tonTot = (row._ton_num || 0) + mismoDia.reduce((s, c) => s + tonDoc(c.doc_ventas), 0);
-  if (mismoDia.length && tonTot > CAP_CAMION_DIRECTO + 1e-9) av.push(`Con los pedidos ${mismoDia.map(c => c.doc_ventas).join(', ')} el camión suma ${fmtNum(tonTot, 1)} t (supera ${CAP_CAMION_DIRECTO} t).`);
+  const tonTot = (row._ton_num || 0) + docsSel.reduce((s, d) => s + tonDoc(d), 0) + mismoDia.reduce((s, c) => s + tonDoc(c.doc_ventas), 0);
+  if ((mismoDia.length || docsSel.length) && tonTot > CAP_CAMION_DIRECTO + 1e-9) av.push(`Con los pedidos ${[...docsSel, ...mismoDia.map(c => c.doc_ventas)].join(', ')} el camión suma ${fmtNum(tonTot, 1)} t (supera ${CAP_CAMION_DIRECTO} t).`);
   return av;
 }
 function showCoordVentaModal(row, ctx) {
@@ -982,6 +983,27 @@ function showCoordVentaModal(row, ctx) {
     };
     let tr = { trans: [], choferes: [], camiones: [] };
     try { tr = await loadTransportistasCoord(); } catch (_) { /* sin maestro de transportistas */ }
+    // (7-oct-2026, Jordan) CD-CLIENTE: se pueden sumar otros pedidos de venta del MISMO centro destino
+    // al mismo camión. Comparten fecha y transporte (grupo_camion); cada pedido lleva su N° de entrega
+    // y sus datos de cliente (dirección, comuna, teléfono).
+    const MAIN = String(row.doc_ventas ?? '').trim();
+    const grupo0 = c.grupo_camion || null;
+    const allV = [...(((ctx && ctx._rowsByDoc) || new Map()).values())].filter(x => String(x.doc_ventas ?? '').trim() !== MAIN);
+    const rowOfV = d => allV.find(x => String(x.doc_ventas ?? '').trim() === d) || {};
+    const mismoCe = x => String(x.ofvta ?? '').trim() === String(row.ofvta ?? '').trim();
+    const extraIni = x => { const xc = x._coord || {}, xm = x._mc || {};
+      return { entrega: xc.n_entrega || '', comuna: xc.comuna || xm.comuna || x._comuna || '', direccion: xc.direccion || xm.direccion || '', telefono: xc.telefono || xm.telefono || '' }; };
+    st.extras = new Map(); st.q = '';
+    if (grupo0) allV.filter(x => x._coord && x._coord.grupo_camion === grupo0).forEach(x => st.extras.set(String(x.doc_ventas).trim(), extraIni(x)));
+    const tonSelV = () => (row._ton_num || 0) + [...st.extras.keys()].reduce((s, d) => s + (rowOfV(d)._ton_num || 0), 0);
+    const candV = () => {
+      const q = st.q.trim().toLowerCase();
+      return allV.filter(x => mismoCe(x) && !st.extras.has(String(x.doc_ventas).trim()))
+        .filter(x => !(x._coord && x._coord.grupo_camion && x._coord.grupo_camion !== grupo0))   // ya va en otro camión agrupado
+        .filter(x => !q || `${x.doc_ventas} ${x._cliente || ''} ${x._id_cliente || ''}`.toLowerCase().includes(q))
+        .sort((a, b) => (!!a._coord - !!b._coord) || ((b._ton_num || 0) - (a._ton_num || 0)))
+        .slice(0, 12);
+    };
 
     const wrap = document.createElement('div');
     wrap.id = 'coord-modal-bg';
@@ -1002,6 +1024,7 @@ function showCoordVentaModal(row, ctx) {
       if (!st.telefono.trim()) f.push('telefono');
       if (esCli()) {
         if (!st.idTrans.trim()) f.push('idTrans');   // (5-oct-2026) chofer, RUT, teléfono y patente pueden quedar pendientes
+        st.extras.forEach((e, d) => ['entrega', 'direccion', 'telefono'].forEach(k => { if (!String(e[k] ?? '').trim()) f.push(`x_${k}_${d}`); }));
       }
       return f;
     };
@@ -1017,6 +1040,45 @@ function showCoordVentaModal(row, ctx) {
     };
     const chofList = () => tr.choferes.filter(x => String(x.id_transporte ?? '').trim() === st.idTrans.trim());
     const camList = () => tr.camiones.filter(x => String(x.id_transporte ?? '').trim() === st.idTrans.trim() && String(x.id_camion ?? '').trim());
+    const xinpV = (d, k, ph) => `<label class="sv-inp" style="width:100%;box-sizing:border-box;min-width:0;${bad(`x_${k}_${d}`) ? 'border-color:#b5000b' : ''}"><input data-x="${escapeHtml(d)}" data-xk="${k}" value="${escapeHtml(st.extras.get(d)[k])}" placeholder="${escapeHtml(ph || '')}" style="width:100%"></label>`;
+    const candHtmlV = () => {
+      const cs = candV();
+      if (!cs.length) return `<div class="sv-sub" style="margin:0">Sin otros pedidos con destino ${escapeHtml(getNombreCentro(row.ofvta))} para agregar.</div>`;
+      return cs.map(x => `<button class="sv-opt" data-xadd="${escapeHtml(x.doc_ventas)}" style="padding:6px 10px">
+        <span class="material-symbols-outlined" style="color:#5c5f61">add_circle</span>
+        <span style="flex:1;min-width:0;text-align:left"><b class="sv-mono">${escapeHtml(x.doc_ventas)}</b> <span class="sv-sub" style="display:inline;margin:0">${escapeHtml(x._cliente || ('Cliente ID ' + (x._id_cliente || '—')))}</span></span>
+        <span class="sv-sub" style="margin:0">${x._coord ? 'Coordinado · ' : ''}${fmtNum(x._ton_num || 0, 1)} t</span></button>`).join('');
+    };
+    const grupoHtmlV = () => {
+      const ton = tonSelV();
+      return `<div class="sv-card" style="padding:14px 16px;display:flex;flex-direction:column;gap:10px">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+              <div><div class="sv-b" style="font-size:14px">Otros pedidos en el mismo camión</div>
+                <div class="sv-sub" style="margin:0;max-width:none">Sólo pedidos con el mismo destino (${escapeHtml(getNombreCentro(row.ofvta))}). Comparten fecha y transporte.</div></div>
+              <span class="sv-pill ${ton > CAP_CAMION_DIRECTO + 1e-9 ? 'bad' : 'ok'}"><i></i>${fmtNum(ton, 1)} t de ${CAP_CAMION_DIRECTO} t</span>
+            </div>
+            ${[...st.extras.keys()].map(d => { const x = rowOfV(d); return `
+              <div style="border:1px solid var(--sv-line);border-radius:6px;padding:10px;display:flex;flex-direction:column;gap:8px">
+                <div style="display:flex;align-items:center;gap:8px"><b class="sv-mono">${escapeHtml(d)}</b>
+                  <span class="sv-sub" style="margin:0;flex:1">${escapeHtml(x._cliente || ('Cliente ID ' + (x._id_cliente || '—')))} · ID ${escapeHtml(x._id_cliente || '—')} · ${fmtNum(x._ton_num || 0, 1)} t</span>
+                  <button class="sv-iconbtn" data-xdel="${escapeHtml(d)}" title="Quitar del camión"><span class="material-symbols-outlined">close</span></button></div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+                  <div>${lbl('N° de entrega', 'x_entrega_' + d, true)}${xinpV(d, 'entrega', 'N° entrega SAP')}</div>
+                  <div>${lbl('Teléfono de contacto', 'x_telefono_' + d, true)}${xinpV(d, 'telefono', '+56 9…')}</div>
+                </div>
+                <div style="display:grid;grid-template-columns:1fr 2fr;gap:8px">
+                  <div>${lbl('Comuna', 'x_comuna_' + d, false)}${xinpV(d, 'comuna', '')}</div>
+                  <div>${lbl('Dirección', 'x_direccion_' + d, true)}${xinpV(d, 'direccion', 'Calle, número, obra')}</div>
+                </div>
+              </div>`; }).join('')}
+            <label class="sv-inp" style="width:100%;box-sizing:border-box"><span class="material-symbols-outlined">search</span><input data-q value="${escapeHtml(st.q)}" placeholder="Buscar pedido o cliente para agregar" style="width:100%"></label>
+            <div data-cands style="display:flex;flex-direction:column;gap:4px">${candHtmlV()}</div>
+          </div>`;
+    };
+    const wireCandsV = () => panel.querySelectorAll('[data-xadd]').forEach(b => b.addEventListener('click', () => {
+      const x = rowOfV(b.dataset.xadd); if (!x.doc_ventas) return;
+      st.extras.set(String(x.doc_ventas).trim(), extraIni(x)); draw();
+    }));
 
     function draw() {
       const falt = st.err ? faltantes() : [];
@@ -1074,11 +1136,12 @@ function showCoordVentaModal(row, ctx) {
             </div>
             ${notaPendTransp(st, 'el pedido')}
             <datalist id="dl-pat-cam">${camList().map(x => `<option value="${escapeHtml(x.id_camion)}">${escapeHtml([x.modelo, x.capacidad_ton ? x.capacidad_ton + ' t' : ''].filter(Boolean).join(' · '))}</option>`).join('')}</datalist>
-          </div>` : ''}
+          </div>
+          ${grupoHtmlV()}` : ''}
         </div>
         <div class="sv-dr-f"><span class="sv-dr-note">* Obligatorio · al guardar queda como «Pedido Coordinado»</span>
           <div style="display:flex;gap:8px"><button class="sv-btn" data-cx>Cancelar</button>
-          <button class="sv-btn-p" data-ok><span class="material-symbols-outlined">${editando ? 'save' : 'event_available'}</span>${editando ? 'Guardar cambios' : 'Coordinar despacho'}</button></div></div>`;
+          <button class="sv-btn-p" data-ok><span class="material-symbols-outlined">${editando ? 'save' : 'event_available'}</span>${editando ? 'Guardar cambios' : 'Coordinar despacho'}${esCli() && st.extras.size ? ` (${st.extras.size + 1} pedidos)` : ''}</button></div></div>`;
 
       panel.querySelectorAll('[data-cx]').forEach(b => b.addEventListener('click', () => fin(false)));
       panel.querySelectorAll('[data-tipo]').forEach(b => b.addEventListener('click', () => { if (!puedeTipo) return; st.tipo = b.dataset.tipo; draw(); }));
@@ -1091,35 +1154,64 @@ function showCoordVentaModal(row, ctx) {
         const x = chofList()[+e.target.value];
         if (x) { st.choferNombre = [x.nombre, x.apellido].filter(Boolean).join(' '); st.choferRut = x.rut || ''; st.choferTel = x.telefono || st.choferTel; if (x.id_camion) st.patCamion = x.id_camion; draw(); }
       });
+      // (7-oct-2026) Pedidos acompañantes del mismo camión
+      panel.querySelectorAll('[data-x]').forEach(i => i.addEventListener('input', () => { const ex = st.extras.get(i.dataset.x); if (ex) ex[i.dataset.xk] = i.value; }));
+      panel.querySelectorAll('[data-xdel]').forEach(b => b.addEventListener('click', () => { st.extras.delete(b.dataset.xdel); draw(); }));
+      panel.querySelector('[data-q]')?.addEventListener('input', e => { st.q = e.target.value; const box = panel.querySelector('[data-cands]'); if (box) { box.innerHTML = candHtmlV(); wireCandsV(); } });
+      wireCandsV();
       panel.querySelector('[data-ok]').addEventListener('click', async e => {
         if (faltantes().length) { st.err = true; draw(); return; }
         const btn = e.currentTarget; btn.disabled = true;
         const cli = esCli();
         // Aviso de choque (2-oct-2026): misma patente con otro transportista/chofer el mismo día,
         // misma patente en otra fecha, mismo chofer en otra patente el mismo día, o > 28 t por patente.
+        if (cli && st.extras.size && tonSelV() > CAP_CAMION_DIRECTO + 1e-9 && !(st.patCamion.trim() || st.choferRut.trim())
+          && !(await confirmar(`El camión suma ${fmtNum(tonSelV(), 1)} t\n\nSupera la capacidad de ${CAP_CAMION_DIRECTO} t. ¿Guardar igual?`, { aceptar: 'Guardar igual', tono: 'peligro', icono: 'warning' }))) { btn.disabled = false; return; }
         if (cli && (st.patCamion.trim() || st.choferRut.trim())) {
-          const avisos = await chequearChoquePatente(row, st, ctx);
+          const avisos = await chequearChoquePatente(row, st, ctx, [...st.extras.keys()]);
           if (avisos.length && !(await confirmar(`Posible choque con el camión ${st.patCamion.trim().toUpperCase()}\n\n${avisos.map(a => '• ' + a).join('\n')}\n\n¿Guardar igual?`, { aceptar: 'Guardar igual', tono: 'peligro', icono: 'warning' }))) { btn.disabled = false; return; }
         }
-        const ok = await guardarCoordinacionVenta({
-          doc_ventas: String(row.doc_ventas ?? '').trim(), tipo_entrega: st.tipo, fecha_entrega: st.fecha,
-          n_entrega: st.entrega.trim(), id_cliente: row._id_cliente || null, nombre_cliente: row._cliente || null,
-          comuna: st.comuna.trim() || null, direccion: st.direccion.trim(), telefono: st.telefono.trim(),
+        const extrasG = cli ? [...st.extras.entries()] : [];
+        const grupo = extrasG.length ? (grupo0 || `NV-${MAIN}-${Date.now().toString(36)}`) : null;
+        const baseCoord = {
+          tipo_entrega: st.tipo, fecha_entrega: st.fecha, grupo_camion: grupo,
           id_transporte: cli ? st.idTrans.trim() : null, transportista: cli ? (st.transportista || null) : null,
           chofer_nombre: cli ? (st.choferNombre.trim() || null) : null, chofer_rut: cli ? (st.choferRut.trim() || null) : null, chofer_telefono: cli ? (st.choferTel.trim() || null) : null,
           patente_camion: cli ? (st.patCamion.trim().toUpperCase() || null) : null, patente_carro: cli ? (st.patCarro.trim().toUpperCase() || null) : null,
+        };
+        const ok = await guardarCoordinacionVenta({
+          doc_ventas: MAIN, n_entrega: st.entrega.trim(), id_cliente: row._id_cliente || null, nombre_cliente: row._cliente || null,
+          comuna: st.comuna.trim() || null, direccion: st.direccion.trim(), telefono: st.telefono.trim(), ...baseCoord,
         }, !editando);
         if (!ok) { btn.disabled = false; return; }
-        const docV = String(row.doc_ventas ?? '').trim();
-        if (cli) await registrarSeguimientoCoord([{ doc: docV, tipo: 'CD-CLIENTE', ce: row.ofvta, fechaCarga: st.fecha, origen: '1003 CD Quilicura',
-          destino: `Cliente: ${row._cliente || ('ID ' + (row._id_cliente || ''))}`,
-          transp: { id_transporte: st.idTrans.trim(), transportista: st.transportista, chofer_nombre: st.choferNombre.trim(), chofer_rut: st.choferRut.trim(),
-            chofer_telefono: st.choferTel.trim(), patente_camion: st.patCamion.trim().toUpperCase(), patente_carro: st.patCarro.trim().toUpperCase() },
-          lineas: (row._detalle || []).map(d => lineaSegCoord({ tipo_carga: 'Pedidos de venta CD', documento: docV, n_entrega: st.entrega.trim(), material: d.material, nombre: d.nombre,
-            cantidad: d.pendiente, ton: d.ton, pedido_venta: docV, ruta: d.ruta, comuna: d.comuna, cliente: row._cliente || '' })) }]);
-        else await quitarSeguimientoCoord([docV]);
+        for (const [d, ex] of extrasG) {
+          const x = rowOfV(d);
+          const ok2 = await guardarCoordinacionVenta({
+            doc_ventas: d, n_entrega: ex.entrega.trim(), id_cliente: x._id_cliente || null, nombre_cliente: x._cliente || null,
+            comuna: ex.comuna.trim() || null, direccion: ex.direccion.trim(), telefono: ex.telefono.trim(), ...baseCoord,
+          }, !x._coord);
+          if (!ok2) { btn.disabled = false; return; }
+        }
+        // Pedidos que salieron del camión agrupado: siguen coordinados, pero sin grupo.
+        if (grupo0) {
+          const quedan = new Set(extrasG.map(([d]) => d));
+          const salen = allV.filter(x => x._coord && x._coord.grupo_camion === grupo0 && !quedan.has(String(x.doc_ventas).trim())).map(x => String(x.doc_ventas).trim());
+          if (salen.length) {
+            const { error: eS } = await supabase.from('abast_venta_coordinacion').update({ grupo_camion: null, updated_at: new Date().toISOString(), updated_by: await getUserEmail() }).in('doc_ventas', salen);
+            if (eS) showAlert('Aviso: no se pudo separar ' + salen.join(', ') + ' del camión: ' + eS.message, 'error');
+          }
+        }
+        const transpSeg = { id_transporte: st.idTrans.trim(), transportista: st.transportista, chofer_nombre: st.choferNombre.trim(), chofer_rut: st.choferRut.trim(),
+          chofer_telefono: st.choferTel.trim(), patente_camion: st.patCamion.trim().toUpperCase(), patente_carro: st.patCarro.trim().toUpperCase() };
+        const regSeg = (x, docX, entregaX) => ({ doc: docX, tipo: 'CD-CLIENTE', ce: row.ofvta, fechaCarga: st.fecha, origen: '1003 CD Quilicura',
+          destino: `Cliente: ${x._cliente || ('ID ' + (x._id_cliente || ''))}` + (grupo ? ` · camión compartido (${extrasG.length + 1} pedidos)` : ''), transp: transpSeg,
+          lineas: (x._detalle || []).map(d => lineaSegCoord({ tipo_carga: 'Pedidos de venta CD', documento: docX, n_entrega: entregaX, material: d.material, nombre: d.nombre,
+            cantidad: d.pendiente, ton: d.ton, pedido_venta: docX, ruta: d.ruta, comuna: d.comuna, cliente: x._cliente || '' })) });
+        if (cli) await registrarSeguimientoCoord([regSeg(row, MAIN, st.entrega.trim()), ...extrasG.map(([d, ex]) => regSeg(rowOfV(d), d, ex.entrega.trim()))]);
+        else await quitarSeguimientoCoord([MAIN]);
         const pendV = cli ? pendTranspRetiro({ chofer_nombre: st.choferNombre, chofer_rut: st.choferRut, chofer_telefono: st.choferTel, patente_camion: st.patCamion }) : [];
-        showAlert(`Pedido ${row.doc_ventas} coordinado para el ${fmtFechaISO(st.fecha)}` + (pendV.length ? ` · pendiente: ${pendV.join(', ')}` : ''), 'success');
+        showAlert((extrasG.length ? `${extrasG.length + 1} pedidos coordinados en el mismo camión` : `Pedido ${row.doc_ventas} coordinado`) + ` para el ${fmtFechaISO(st.fecha)}`
+          + (pendV.length ? ` · pendiente: ${pendV.join(', ')}` : ''), 'success');
         fin(true);
       });
     }
@@ -3004,6 +3096,10 @@ const V2 = {
         const fp = parseDateSAP(r._fecha_plan);
         r._plan = !r._coord ? 'SIN_COORD' : (fp && fp.getTime() <= r._dia_obj.getTime() ? 'EN_PLAN' : 'PROGRAMADO');
       });
+      // (7-oct-2026) Pedidos que comparten camión (grupo_camion)
+      const porGrupo = new Map();
+      rows.forEach(r => { const g = r._coord && r._coord.grupo_camion; if (g) (porGrupo.get(g) || porGrupo.set(g, []).get(g)).push(String(r.doc_ventas ?? '').trim()); });
+      rows.forEach(r => { const g = r._coord && r._coord.grupo_camion; r._grupo_docs = g ? (porGrupo.get(g) || []).filter(d => d !== String(r.doc_ventas ?? '').trim()) : []; });
     },
     rowId: r => String(r.doc_ventas ?? '').trim(),
     chip: { label: 'Destino', of: r => String(r.ofvta ?? '').trim(), name: v => nombreCentro(v) || v },
@@ -3024,6 +3120,7 @@ const V2 = {
       { label: 'Destino', html: r => sucHtml(r.ofvta) },
       { label: 'Tipo entrega', html: r => pill(r._directo ? 'CD-Cliente' : 'Consolidable', r._directo ? 'purple' : 'info')
           + (r._tipo_fijo && r._tipo_fijo !== r._tipo_auto ? ` ${pill('Manual', 'mute')}` : '')
+          + (r._grupo_docs && r._grupo_docs.length ? `<div class="sv-sub" title="Mismo camión: ${escV2(r._grupo_docs.join(', '))}">Camión compartido · ${r._grupo_docs.length + 1} pedidos</div>` : '')
           + (r._cond ? `<div class="sv-sub" title="${escV2(r._cond.raw)}">${escV2(r._cond.lbl)}</div>` : '') },
       { label: 'Líneas', al: 'r', html: r => escV2((r._detalle || []).length) },
       { label: 'Ton', al: 'r', html: r => `<span class="sv-ton">${tonHtml(r._ton_num)}</span>` + (r._n_pedidos_cliente > 1 ? `<div class="sv-sub">cliente ${escV2(fmtNum(r._ton_cliente, 1))} t</div>` : '') },
@@ -3080,6 +3177,7 @@ const V2 = {
           c && c.tipo_entrega === 'CD-CLIENTE' ? ['Transporte', [c.id_transporte, c.transportista].filter(Boolean).join(' · ')] : null,
           c && c.tipo_entrega === 'CD-CLIENTE' ? ['Chofer', [c.chofer_nombre, c.chofer_rut, c.chofer_telefono].filter(Boolean).join(' · ')] : null,
           c && c.tipo_entrega === 'CD-CLIENTE' ? ['Patentes', [c.patente_camion ? 'Camión ' + c.patente_camion : '', c.patente_carro ? 'Carro ' + c.patente_carro : ''].filter(Boolean).join(' · ')] : null,
+          r._grupo_docs && r._grupo_docs.length ? ['Mismo camión', r._grupo_docs.join(', ')] : null,
           ['Condición expedición', r._cond ? `${r._cond.lbl} (${r._cond.raw})` : '—'],
           ['Ruta', r._ruta], ['Oficina ventas', `${r.ofvta}${nombreCentro(r.ofvta) ? ' · ' + nombreCentro(r.ofvta) : ''}`],
           ['Toneladas', tonHtml(r._ton_num), true], ['Vendedor', r._vendedor || r.deudor],
@@ -3675,7 +3773,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610071945');
+    const m = await import('./ind-plan-carga.js?v=202610072013');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
@@ -4258,10 +4356,13 @@ async function renderPlanCarga(stage, opts = {}) {
         // (2-oct-2026, Jordan) El camión lo define la PATENTE: NV CD-Cliente con la misma patente
         // camión y la misma fecha forman un solo despacho (aunque sean de clientes distintos).
         // Sin patente → agrupación automática por cliente.
+        // (7-oct-2026, Jordan) NV coordinadas juntas (grupo_camion, mismo centro destino) = un solo camión,
+        // aunque la patente aún esté pendiente.
         const pat = normPatente(co.patente_camion);
-        const gk = pat ? `PAT|${pat}|${co.fecha_entrega}` : `CLI|${clienteKey}`;
+        const grp = String(co.grupo_camion ?? '').trim();
+        const gk = grp ? `GRP|${grp}` : pat ? `PAT|${pat}|${co.fecha_entrega}` : `CLI|${clienteKey}`;
         const nomCli = pv.nombre_1 || co.nombre_cliente || (clienteKey !== doc ? 'Cliente ' + clienteKey : clienteKey);
-        const g = (ventasCliPorGrupo[gk] = ventasCliPorGrupo[gk] || { items: [], clientes: new Set(), pat: pat ? String(co.patente_camion).toUpperCase().trim() : '', co });
+        const g = (ventasCliPorGrupo[gk] = ventasCliPorGrupo[gk] || { items: [], clientes: new Set(), pat: pat ? String(co.patente_camion).toUpperCase().trim() : '', grp, co });
         g.clientes.add(nomCli);
         g.items.push(...items);
       } else if (enPlan) { tonVentaCons += sumTon(items); det.ventaCons.push(...items); }
@@ -4291,9 +4392,9 @@ async function renderPlanCarga(stage, opts = {}) {
     // (AJUSTE 30-sep-2026, Jordan) % de ocupación de camiones directos siempre sobre camión de 28 t.
     Object.values(ventasCliPorGrupo).forEach(g => {
       const nombres = [...g.clientes].join(' + ');
-      if (g.pat) {   // un camión físico: no se reparte (si excede 28 t se ve sobre el 100%)
+      if (g.pat || g.grp) {   // un camión físico: no se reparte (si excede 28 t se ve sobre el 100%)
         const ton = sumTon(g.items);
-        camionesCliente.push({ items: g.items, ton, grupo: `Patente ${g.pat} · ${nombres}`, cap: CAP_CAMION_DIRECTO,
+        camionesCliente.push({ items: g.items, ton, grupo: `${g.pat ? 'Patente ' + g.pat : 'Camión compartido (patente pendiente)'} · ${nombres}`, cap: CAP_CAMION_DIRECTO,
           patente: g.pat, patenteCarro: g.co.patente_carro || '', idTrans: String(g.co.id_transporte ?? '').trim(), transportista: [g.co.id_transporte, g.co.transportista].filter(Boolean).join(' · '),
           chofer: [g.co.chofer_nombre, g.co.chofer_rut, g.co.chofer_telefono].filter(Boolean).join(' · ') });
       } else armarCamiones(g.items, CAP_CAMION_DIRECTO, d => d.pv).forEach(c => camionesCliente.push({ ...c, grupo: nombres, cap: CAP_CAMION_DIRECTO }));
