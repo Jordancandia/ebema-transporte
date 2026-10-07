@@ -1,16 +1,16 @@
 // PANTALLA 1: Administrador de Tarifas Transporte — SIT EBEMA
 // Sub-módulos: Peajes, Combustibles y Rendimientos, Seguros y Permisos,
 // Variables Generales y Motor de Costo (ZCAP) con exportación CSV.
-import { getDatabase, saveDatabase, getCentreName, getTariffConfig, getClientTariffConfig, truckCapKg, getOrigenGroups, getGroupRepId, buildTruckTypes, TRUCK_BASE_TYPES, loadHistorico, loadHistoricoFlete360, deleteRow } from './data.js?v=202610071249';
-import { CAP_LIST, truckTypesWithCap, calcularMatrizCostos, calcularCostoRuta } from './tarifas-engine.js?v=202610071249';
+import { getDatabase, saveDatabase, getCentreName, getTariffConfig, getClientTariffConfig, truckCapKg, getOrigenGroups, getGroupRepId, buildTruckTypes, TRUCK_BASE_TYPES, loadHistorico, loadHistoricoFlete360, deleteRow } from './data.js?v=202610071945';
+import { CAP_LIST, truckTypesWithCap, calcularMatrizCostos, calcularCostoRuta } from './tarifas-engine.js?v=202610071945';
 import { formatCLP, parseCSV, showAlert, toCSV, downloadFile, escapeHtml } from './utils.js';
-import { supabase } from './supabase-client.js?v=202610071249';
-import { getField } from './zonas-transporte.js?v=202610071249';
-import { renderZcapView, calcZcapRow } from './zcap.js?v=202610071249';
-import { can } from './permisos.js?v=202610071249';
-import { renderPeajesV2, setPeajesTab, renderCombustiblesV2, renderSegurosV2, renderCostosExtrasV2, renderVariablesV2, renderMotorV2 } from './tarifas-insumos.js?v=202610071249';
-import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, textoImpacto, setParamPill, usuarioSesion } from './tarifas-ui.js?v=202610071249';
-import { confirmar } from './confirmar.js?v=202610071249';
+import { supabase } from './supabase-client.js?v=202610071945';
+import { getField } from './zonas-transporte.js?v=202610071945';
+import { renderZcapView, calcZcapRow } from './zcap.js?v=202610071945';
+import { can } from './permisos.js?v=202610071945';
+import { renderPeajesV2, setPeajesTab, renderCombustiblesV2, renderSegurosV2, renderCostosExtrasV2, renderVariablesV2, renderMotorV2 } from './tarifas-insumos.js?v=202610071945';
+import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, textoImpacto, setParamPill, usuarioSesion } from './tarifas-ui.js?v=202610071945';
+import { confirmar } from './confirmar.js?v=202610071945';
 
 // FIX: Escuchar errores de sincronización con Supabase y notificar al usuario
 window.addEventListener('db_sync_error', (e) => {
