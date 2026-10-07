@@ -1,6 +1,6 @@
-import { getDatabase, saveDatabase, initDatabase, loadRoutesData, loadHistoricoFlete360 } from './data.js?v=202610071240';
-import { supabase } from './supabase-client.js?v=202610071240';
-import { setSesionPermisos, puedeVerMenu, can, esSoloLectura, PERFILES } from './permisos.js?v=202610071240';
+import { getDatabase, saveDatabase, initDatabase, loadRoutesData, loadHistoricoFlete360 } from './data.js?v=202610071243';
+import { supabase } from './supabase-client.js?v=202610071243';
+import { setSesionPermisos, puedeVerMenu, can, esSoloLectura, PERFILES } from './permisos.js?v=202610071243';
 // ── Módulos cargados bajo demanda (lazy) — se cachean tras la primera carga ──
 const _mod = {};
 async function loadMod(key, modPath) {
@@ -9,9 +9,9 @@ async function loadMod(key, modPath) {
 }
 // Pre-warm: carga indicadores y abastecimiento en background tras login
 function prewarmMods() {
-  setTimeout(() => loadMod('ind',   './indicadores.js?v=202610071240'), 600);
+  setTimeout(() => loadMod('ind',   './indicadores.js?v=202610071243'), 600);
   setTimeout(() => loadRoutesData(), 800);  // pre-fetch tablas pesadas en background
-  setTimeout(() => loadMod('abast', './abastecimiento.js?v=202610071240'), 2000);
+  setTimeout(() => loadMod('abast', './abastecimiento.js?v=202610071243'), 2000);
 }
 import { showAlert, formatRut, validateRut, formatPhone } from './utils.js';
 
@@ -235,7 +235,7 @@ function renderApp() {
   if (!currentSession) {
     renderAuthView();
   } else if (currentSession.tipo === 'proveedor') {
-    import('./provider-portal.js?v=202610071240').then(m => m.renderProviderShell(currentSession, handleLogout));
+    import('./provider-portal.js?v=202610071243').then(m => m.renderProviderShell(currentSession, handleLogout));
   } else {
     renderDashboardShell();
   }
@@ -1713,37 +1713,37 @@ async function switchTab(tabName, subName = null) {
   _stageSpinner(stage);
   switch (tabName) {
     case 'home': {
-      const m = await loadMod('ind', './indicadores.js?v=202610071240');
+      const m = await loadMod('ind', './indicadores.js?v=202610071243');
       m.renderIndicadoresHome(stage);
       break;
     }
     case 'rates': {
       await loadRoutesData();
-      const m = await loadMod('rates', './rates.js?v=202610071240');
+      const m = await loadMod('rates', './rates.js?v=202610071243');
       m.renderRatesView(stage);
       break;
     }
     case 'transports': {
-      const m = await loadMod('trans', './transports.js?v=202610071240');
+      const m = await loadMod('trans', './transports.js?v=202610071243');
       m.renderTransportsView(stage);
       break;
     }
     case 'routes': {
       await loadRoutesData();
-      const m = await loadMod('routes', './routes.js?v=202610071240');
+      const m = await loadMod('routes', './routes.js?v=202610071243');
       if (alias) m.setRoutesSubTab(alias);
       m.renderRoutesView(stage);
       break;
     }
     case 'roles': {
-      const m = await loadMod('roles', './roles.js?v=202610071240');
+      const m = await loadMod('roles', './roles.js?v=202610071243');
       m.renderRolesView(stage);
       break;
     }
     case 'tarifas-transporte': {
       await loadRoutesData();
       await loadHistoricoFlete360();
-      const m = await loadMod('tt', './tarifas-transporte.js?v=202610071240');
+      const m = await loadMod('tt', './tarifas-transporte.js?v=202610071243');
       if (alias) m.setActiveSub(alias);
       m.renderTariffTransportView(stage);
       break;
@@ -1751,27 +1751,27 @@ async function switchTab(tabName, subName = null) {
     case 'tarifas-clientes': {
       await loadRoutesData();
       await loadHistoricoFlete360();
-      const m = await loadMod('tc', './tarifas-clientes.js?v=202610071240');
+      const m = await loadMod('tc', './tarifas-clientes.js?v=202610071243');
       if (alias) m.setActiveSubC(alias);
       m.renderClientTariffView(stage);
       break;
     }
     case 'abastecimiento': {
       await loadRoutesData();
-      const m = await loadMod('abast', './abastecimiento.js?v=202610071240');
+      const m = await loadMod('abast', './abastecimiento.js?v=202610071243');
       if (subName) m.setAbastSubTab(subName);
       m.renderAbastecimientoView(stage);
       break;
     }
     case 'indicadores': {
-      const m = await loadMod('ind', './indicadores.js?v=202610071240');
+      const m = await loadMod('ind', './indicadores.js?v=202610071243');
       if (subName) m.setIndicadoresSubTab(subName);
       m.renderIndicadoresView(stage);
       break;
     }
     case 'flete-tercero': {
       await loadRoutesData();
-      const m = await loadMod('fter', './flete-tercero.js?v=202610071240');
+      const m = await loadMod('fter', './flete-tercero.js?v=202610071243');
       if (subName) m.setFleteTerceroSubTab(subName);
       m.renderFleteTerceroView(stage);
       break;
