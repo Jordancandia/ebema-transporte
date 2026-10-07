@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610052327';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610052327';
-import { getDatabase } from './data.js?v=202610052327';
+import { supabase } from './supabase-client.js?v=202610071240';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610071240';
+import { getDatabase } from './data.js?v=202610071240';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610052327';
-import { confirmar } from './confirmar.js?v=202610052327';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610071240';
+import { confirmar } from './confirmar.js?v=202610071240';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -303,7 +303,7 @@ function tipoQuiebre(sd) {
 // ── Estado de coordinación de retiros (persistente) ─────────────────────────
 async function loadEstadosRetiro() {
   // (3-oct-2026) Incluye los datos de transporte de la coordinación (Retiro RM).
-  const { data, error } = await supabase.from('abast_retiro_estado').select('doc_compr, estado, tipo_retiro, entrega_entrante, tipo_local_rm, fab_direccion, fab_comuna, fab_contacto, fab_telefono, fecha_retiro, updated_at, updated_by, id_transporte, transportista, chofer_nombre, chofer_rut, chofer_telefono, patente_camion, patente_carro');
+  const { data, error } = await supabase.from('abast_retiro_estado').select('doc_compr, estado, tipo_retiro, entrega_entrante, tipo_local_rm, fab_direccion, fab_comuna, fab_contacto, fab_telefono, fecha_retiro, lineas_retiro, updated_at, updated_by, id_transporte, transportista, chofer_nombre, chofer_rut, chofer_telefono, patente_camion, patente_carro');
   const m = {};
   if (!error) (data || []).forEach(r => { const { doc_compr, ...rest } = r; m[String(doc_compr)] = rest; });
   return m;
@@ -779,7 +779,7 @@ async function saveEstadoRetiro(docCompr, estado, tipoRetiro = null, entregaEntr
     if (extraFab.fab_telefono    !== undefined) payload.fab_telefono    = extraFab.fab_telefono;
     if (extraFab.fecha_retiro    !== undefined) payload.fecha_retiro    = extraFab.fecha_retiro || null;
     // Al revertir (no_coordinado), limpiar también tipo_retiro, entrega_entrante y fecha_retiro
-    if (extraFab._clear_retiro) { payload.tipo_retiro = null; payload.entrega_entrante = null; payload.fecha_retiro = null; }
+    if (extraFab._clear_retiro) { payload.tipo_retiro = null; payload.entrega_entrante = null; payload.fecha_retiro = null; payload.lineas_retiro = null; }
   }
   const { error } = await supabase.from('abast_retiro_estado').upsert(payload, { onConflict: 'doc_compr' });
   if (error) { showAlert('Error al guardar estado: ' + error.message, 'error'); return false; }
@@ -1131,11 +1131,22 @@ function showCoordVentaModal(row, ctx) {
 // datos opcionales, tipo FAB-SUC/FAB-CLTE). En Retiro RM se pueden sumar otras OC (mismo u
 // otro proveedor) que van en el mismo camión: comparten fecha, tipo de retiro y transporte;
 // cada una lleva su entrega entrante (y su dirección si es de otro proveedor).
+// (7-oct-2026, Jordan) Productos a retirar: al coordinar se eligen los materiales de la OC y la
+// cantidad de cada uno. abast_retiro_estado.lineas_retiro = { "<material>": cantidad }; NULL = toda
+// la OC por su pendiente (compatibilidad). Material ausente = no se retira. Nunca supera el pendiente.
+function cantRetiroLinea(e, material, pendiente) {
+  const sel = e && e.lineas_retiro;
+  if (!sel || typeof sel !== 'object') return pendiente;
+  const v = sel[String(material ?? '').trim()];
+  if (v === undefined || v === null || v === '') return 0;
+  const n = typeof v === 'number' ? v : parseFloat(String(v).replace(',', '.'));
+  return Math.max(0, Math.min(isFinite(n) ? n : 0, pendiente));
+}
 const TRANSP_NULL = { id_transporte: null, transportista: null, chofer_nombre: null, chofer_rut: null, chofer_telefono: null, patente_camion: null, patente_carro: null };
 async function anularCoordRetiro(docs) {
   const email = await getUserEmail(), now = new Date().toISOString();
   const rows = docs.map(d => ({ doc_compr: String(d).trim(), estado: 'no_coordinado', tipo_local_rm: null, tipo_retiro: null, entrega_entrante: null,
-    fab_direccion: null, fab_comuna: null, fab_contacto: null, fab_telefono: null, fecha_retiro: null, ...TRANSP_NULL, updated_by: email, updated_at: now }));
+    fab_direccion: null, fab_comuna: null, fab_contacto: null, fab_telefono: null, fecha_retiro: null, lineas_retiro: null, ...TRANSP_NULL, updated_by: email, updated_at: now }));
   const { error } = await supabase.from('abast_retiro_estado').upsert(rows, { onConflict: 'doc_compr' });
   if (error) { showAlert('Error al anular: ' + error.message, 'error'); return false; }
   await quitarSeguimientoCoord(docs);
@@ -1155,7 +1166,7 @@ async function chequearChoqueRetiro(docsSel, st, ctx) {
   const otrosRet = Object.entries(estados).filter(([oc, e]) => !sel.has(String(oc).trim()) && modoRetiro(e) === 'RM' && e.patente_camion);
   let ventas = [];
   try { ventas = [...(await loadCoordinacionesVenta()).values()].filter(c => c.patente_camion); } catch (_) { /* */ }
-  const otros = otrosRet.map(([oc, e]) => ({ doc: 'OC ' + oc, fecha: e.fecha_retiro, pat: e.patente_camion, idT: e.id_transporte, tr: e.transportista, chN: e.chofer_nombre, chR: e.chofer_rut, ton: (rowsBy.get(String(oc).trim()) || {})._ton_num || 0 }))
+  const otros = otrosRet.map(([oc, e]) => ({ doc: 'OC ' + oc, fecha: e.fecha_retiro, pat: e.patente_camion, idT: e.id_transporte, tr: e.transportista, chN: e.chofer_nombre, chR: e.chofer_rut, ton: (r0 => r0._ton_ret ?? r0._ton_num ?? 0)(rowsBy.get(String(oc).trim()) || {}) }))
     .concat(ventas.map(c => ({ doc: 'NV ' + c.doc_ventas, fecha: c.fecha_entrega, pat: c.patente_camion, idT: c.id_transporte, tr: c.transportista, chN: c.chofer_nombre, chR: c.chofer_rut, ton: 0 })));
   const fF = d => fmtFechaISO(d);
   const mismaPat = otros.filter(o => normPatente(o.pat) === pat);
@@ -1167,7 +1178,7 @@ async function chequearChoqueRetiro(docsSel, st, ctx) {
   mismaPat.filter(o => o.fecha !== st.fecha).forEach(o => av.push(`La patente ya está coordinada el ${fF(o.fecha)} (${o.doc}); revisa si la fecha es correcta.`));
   if (rut) otros.filter(o => o.fecha === st.fecha && normPatente(o.chR) === rut && normPatente(o.pat) !== pat)
     .forEach(o => av.push(`El chofer ya está coordinado el ${fF(o.fecha)} en otra patente (${o.pat || '—'}, ${o.doc}).`));
-  const tonSel = docsSel.reduce((s, d) => s + ((rowsBy.get(String(d).trim()) || {})._ton_num || 0), 0);
+  const tonSel = st.tonSel != null ? st.tonSel : docsSel.reduce((s, d) => s + (((rowsBy.get(String(d).trim()) || {})._ton_ret ?? (rowsBy.get(String(d).trim()) || {})._ton_num) || 0), 0);
   const tonTot = tonSel + mismoDia.reduce((s, o) => s + (o.ton || 0), 0);
   if (tonTot > CAP_CAMION_DIRECTO + 1e-9) av.push(`El camión suma ${fmtNum(tonTot, 1)} t (supera ${CAP_CAMION_DIRECTO} t).`);
   return av;
@@ -1195,6 +1206,9 @@ function showCoordRetiroModal(row, ctx) {
       choferNombre: t0.chofer_nombre || '', choferRut: t0.chofer_rut || '', choferTel: t0.chofer_telefono || '',
       patCamion: t0.patente_camion || '', patCarro: t0.patente_carro || '',
       extras: new Map(), q: '', err: false,
+      // (7-oct-2026) Productos a retirar: material → { on, cant }. Sin selección guardada = todo el pendiente.
+      lineas: new Map((row._detalle || []).map(d => { const c = cantRetiroLinea({ lineas_retiro: row._lineas_retiro }, d.material, d.pendiente);
+        return [String(d.material ?? '').trim(), { on: c > 0, cant: c > 0 ? c : d.pendiente }]; })),
     };
     if (row._fab_direccion) {
       const m = dirs.find(d => d.direccion === row._fab_direccion);
@@ -1223,6 +1237,7 @@ function showCoordRetiroModal(row, ctx) {
     const mismoProv = x => String(x.proveedor ?? '').trim() === String(row.proveedor ?? '').trim();
     const faltantes = () => {
       const f = [];
+      if (!lineasOk()) f.push('lineas');
       if (!rm()) return f;
       if (!st.fecha) f.push('fecha');
       if (!dirMain()) f.push('dir');
@@ -1246,7 +1261,19 @@ function showCoordRetiroModal(row, ctx) {
     const xinp = (oc, k, ph) => `<label class="sv-inp" style="${inpS(`x_${k}_${oc}`)}"><input data-x="${escapeHtml(oc)}" data-xk="${k}" value="${escapeHtml(st.extras.get(oc)[k])}" placeholder="${escapeHtml(ph || '')}" style="width:100%"></label>`;
     const chofList = () => tr.choferes.filter(x => String(x.id_transporte ?? '').trim() === st.idTrans.trim());
     const camList = () => tr.camiones.filter(x => String(x.id_transporte ?? '').trim() === st.idTrans.trim() && String(x.id_camion ?? '').trim());
-    const tonSel = () => (row._ton_num || 0) + [...st.extras.keys()].reduce((s, oc) => s + ((rowOf(oc) || {})._ton_num || 0), 0);
+    const detOf = m => (row._detalle || []).find(d => String(d.material ?? '').trim() === m) || {};
+    const cantOk = (l, d) => isFinite(l.cant) && l.cant > 0 && l.cant <= (d.pendiente || 0) + 1e-9;
+    const lineasOk = () => { const on = [...st.lineas].filter(([, l]) => l.on); return on.length > 0 && on.every(([m, l]) => cantOk(l, detOf(m))); };
+    const tonLinea = (m, l) => l.on && isFinite(l.cant) ? calcTon(detOf(m).pesoU || 0, Math.max(0, l.cant)) : 0;
+    const tonMain = () => [...st.lineas].reduce((s, [m, l]) => s + tonLinea(m, l), 0);
+    const lineasSel = () => {   // null = toda la OC por su pendiente
+      const det = row._detalle || [];
+      const todo = det.every(d => { const l = st.lineas.get(String(d.material ?? '').trim()); return l && l.on && Math.abs(l.cant - d.pendiente) < 1e-9; });
+      if (todo) return null;
+      const o = {}; st.lineas.forEach((l, m) => { if (l.on && l.cant > 0) o[m] = Math.round(l.cant * 1000) / 1000; });
+      return o;
+    };
+    const tonSel = () => tonMain() + [...st.extras.keys()].reduce((s, oc) => s + (((rowOf(oc) || {})._ton_ret ?? (rowOf(oc) || {})._ton_num) || 0), 0);
     const candidatos = () => {
       const q = st.q.trim().toLowerCase();
       return allRows
@@ -1286,6 +1313,7 @@ function showCoordRetiroModal(row, ctx) {
               <label class="sv-inp" style="${inpS('entrega')}"><span class="material-symbols-outlined">tag</span><input class="is-mono" data-k="entrega" value="${escapeHtml(st.entrega)}" placeholder="N° de entrega" style="width:100%"></label></div>
           </div>
           ${rm() ? '<div class="sv-sub" style="margin-top:-10px;max-width:none">La OC entra al Plan de Carga del día de su fecha de retiro (día en que se carga).</div>' : ''}
+          ${lineasHtml()}
           <div class="sv-card" style="padding:14px 16px;display:flex;flex-direction:column;gap:10px">
             <div class="sv-b" style="font-size:14px">Fábrica y contacto</div>
             ${lbl('Dirección de fábrica', 'dir', rm())}
@@ -1326,11 +1354,11 @@ function showCoordRetiroModal(row, ctx) {
           <div class="sv-card" style="padding:14px 16px;display:flex;flex-direction:column;gap:10px">
             <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
               <div class="sv-b" style="font-size:14px">Otras OC en el mismo camión</div>
-              <span class="sv-pill ${ton > CAP_CAMION_DIRECTO + 1e-9 ? 'bad' : 'ok'}"><i></i>${fmtNum(ton, 1)} t de ${CAP_CAMION_DIRECTO} t</span>
+              <span class="sv-pill ${ton > CAP_CAMION_DIRECTO + 1e-9 ? 'bad' : 'ok'}" data-ton-cam><i></i>${fmtNum(ton, 1)} t de ${CAP_CAMION_DIRECTO} t</span>
             </div>
             ${[...st.extras.keys()].map(oc => { const x = rowOf(oc) || {}; const otro = !mismoProv(x); return `
               <div style="border:1px solid var(--sv-line);border-radius:6px;padding:10px;display:flex;flex-direction:column;gap:8px">
-                <div style="display:flex;align-items:center;gap:8px"><b class="sv-mono">${escapeHtml(oc)}</b><span class="sv-sub" style="margin:0;flex:1">${escapeHtml(x.nombre_1 || '')} → ${escapeHtml(getNombreCentro(x.ce))} · ${fmtNum(x._ton_num || 0, 1)} t</span>
+                <div style="display:flex;align-items:center;gap:8px"><b class="sv-mono">${escapeHtml(oc)}</b><span class="sv-sub" style="margin:0;flex:1">${escapeHtml(x.nombre_1 || '')} → ${escapeHtml(getNombreCentro(x.ce))} · ${fmtNum((x._ton_ret ?? x._ton_num) || 0, 1)} t${x._parcial ? ' (parcial)' : ''}</span>
                   <button class="sv-iconbtn" data-xdel="${escapeHtml(oc)}" title="Quitar del camión"><span class="material-symbols-outlined">close</span></button></div>
                 <div style="display:grid;grid-template-columns:1fr ${otro ? '2fr' : ''};gap:8px">
                   <div>${lbl('Entrega entrante', 'x_entrega_' + oc, true)}${xinp(oc, 'entrega', 'N° de entrega')}</div>
@@ -1349,6 +1377,67 @@ function showCoordRetiroModal(row, ctx) {
           <div style="display:flex;gap:8px"><button class="sv-btn" data-cx>Cancelar</button>
           <button class="sv-btn-p" data-ok><span class="material-symbols-outlined">${editando ? 'save' : 'event_available'}</span>${editando ? 'Guardar cambios' : 'Confirmar coordinación'}${st.extras.size ? ` (${st.extras.size + 1} OC)` : ''}</button></div></div>`;
       wire();
+    }
+    function lineasResumen() {
+      const det = row._detalle || [];
+      const on = [...st.lineas.values()].filter(l => l.on).length;
+      return `${on} de ${det.length} producto${det.length === 1 ? '' : 's'} · ${fmtNum(tonMain(), 2)} t de ${fmtNum(row._ton_num || 0, 2)} t`;
+    }
+    function lineasHtml() {
+      const det = row._detalle || [];
+      if (!det.length) return '';
+      const todos = [...st.lineas.values()].every(l => l.on);
+      const errL = bad('lineas');
+      return `<div class="sv-card" style="padding:14px 16px;display:flex;flex-direction:column;gap:10px;${errL ? 'border-color:#b5000b' : ''}">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
+          <div class="sv-b" style="font-size:14px;${errL ? 'color:#b5000b' : ''}">Productos a retirar *</div>
+          <span class="sv-pill ${errL ? 'bad' : 'ok'}" data-lin-res><i></i>${lineasResumen()}</span>
+        </div>
+        ${errL ? '<div class="sv-sub" style="margin:0;color:#b5000b;max-width:none">Selecciona al menos un producto; la cantidad debe ser mayor a 0 y no superar el pendiente.</div>' : ''}
+        <div style="overflow-x:auto">
+          <table style="width:100%;border-collapse:collapse;font-size:13px">
+            <thead><tr style="text-align:left;color:#5c5f61;border-bottom:1px solid var(--sv-line)">
+              <th style="padding:6px 4px;width:28px"><input type="checkbox" data-lin-all ${todos ? 'checked' : ''} title="Seleccionar todo"></th>
+              <th style="padding:6px 4px">Material</th>
+              <th style="padding:6px 4px;text-align:right">Pendiente</th>
+              <th style="padding:6px 4px;text-align:right;width:110px">A retirar</th>
+              <th style="padding:6px 4px;text-align:right">Ton</th></tr></thead>
+            <tbody>${det.map(d => { const m = String(d.material ?? '').trim(); const l = st.lineas.get(m) || { on: false, cant: 0 }; const ko = st.err && l.on && !cantOk(l, d);
+              return `<tr style="border-bottom:1px solid var(--sv-line);${l.on ? '' : 'opacity:.55'}">
+                <td style="padding:6px 4px"><input type="checkbox" data-lin-on="${escapeHtml(m)}" ${l.on ? 'checked' : ''}></td>
+                <td style="padding:6px 4px;min-width:0"><b class="sv-mono">${escapeHtml(m)}</b><div class="sv-sub" style="margin:0">${escapeHtml(d.texto_breve || '')}</div></td>
+                <td style="padding:6px 4px;text-align:right" class="sv-mono">${fmtNum(d.pendiente, 0)}</td>
+                <td style="padding:6px 4px;text-align:right"><label class="sv-inp" style="width:100px;box-sizing:border-box;${ko ? 'border-color:#b5000b' : ''}"><input type="number" min="0" max="${d.pendiente}" step="any" data-lin-cant="${escapeHtml(m)}" value="${l.on ? escapeHtml(String(l.cant)) : ''}" ${l.on ? '' : 'disabled'} style="width:100%;text-align:right"></label></td>
+                <td style="padding:6px 4px;text-align:right" class="sv-mono" data-lin-ton="${escapeHtml(m)}">${fmtNum(tonLinea(m, l), 2)}</td></tr>`; }).join('')}</tbody>
+          </table>
+        </div>
+        <div class="sv-sub" style="margin:0;max-width:none">Sólo los productos marcados, por la cantidad indicada, entran al Plan de Carga y al Seguimiento de Carga.</div>
+      </div>`;
+    }
+    function wireLineas() {
+      panel.querySelector('[data-lin-all]')?.addEventListener('change', e => {
+        const on = e.target.checked;
+        (row._detalle || []).forEach(d => { const m = String(d.material ?? '').trim(); const l = st.lineas.get(m); if (l) { l.on = on; if (on && !(l.cant > 0)) l.cant = d.pendiente; } });
+        draw();
+      });
+      panel.querySelectorAll('[data-lin-on]').forEach(i => i.addEventListener('change', () => {
+        const m = i.dataset.linOn, l = st.lineas.get(m); if (!l) return;
+        l.on = i.checked; if (l.on && !(l.cant > 0)) l.cant = detOf(m).pendiente || 0;
+        draw();
+      }));
+      panel.querySelectorAll('[data-lin-cant]').forEach(i => {
+        i.addEventListener('input', () => {
+          const m = i.dataset.linCant, l = st.lineas.get(m); if (!l) return;
+          l.cant = i.value === '' ? NaN : parseFloat(String(i.value).replace(',', '.'));
+          const tc = panel.querySelector(`[data-lin-ton="${CSS.escape(m)}"]`); if (tc) tc.textContent = fmtNum(tonLinea(m, l), 2);
+          const rs = panel.querySelector('[data-lin-res]'); if (rs) rs.innerHTML = '<i></i>' + lineasResumen();
+          const tp = panel.querySelector('[data-ton-cam]'); if (tp) { const t = tonSel(); tp.className = 'sv-pill ' + (t > CAP_CAMION_DIRECTO + 1e-9 ? 'bad' : 'ok'); tp.innerHTML = `<i></i>${fmtNum(t, 1)} t de ${CAP_CAMION_DIRECTO} t`; }
+        });
+        i.addEventListener('change', () => {   // al salir: no superar el pendiente
+          const m = i.dataset.linCant, l = st.lineas.get(m), d = detOf(m); if (!l) return;
+          if (isFinite(l.cant) && l.cant > (d.pendiente || 0)) { l.cant = d.pendiente; showAlert(`La cantidad de ${m} no puede superar el pendiente (${fmtNum(d.pendiente, 0)}).`, 'warning'); draw(); }
+        });
+      });
     }
     function candHtml() {
       const c = candidatos();
@@ -1402,6 +1491,7 @@ function showCoordRetiroModal(row, ctx) {
       panel.querySelectorAll('[data-xdel]').forEach(b => b.addEventListener('click', () => { st.extras.delete(b.dataset.xdel); draw(); }));
       panel.querySelector('[data-q]')?.addEventListener('input', e => { st.q = e.target.value; const c = panel.querySelector('[data-cands]'); if (c) { c.innerHTML = candHtml(); wireCands(); } });
       wireCands();
+      wireLineas();
       montarTransp(panel, st, tr, bad('idTrans'), draw);
       panel.querySelector('[data-sel="chof"]')?.addEventListener('change', e => {
         const x = chofList()[+e.target.value];
@@ -1412,6 +1502,7 @@ function showCoordRetiroModal(row, ctx) {
         const btn = e.currentTarget; btn.disabled = true;
         const docs = [String(row.doc_compr).trim(), ...(rm() ? [...st.extras.keys()] : [])];
         if (rm() && (st.patCamion.trim() || st.choferRut.trim())) {
+          st.tonSel = tonSel();
           const avisos = await chequearChoqueRetiro(docs, st, ctx);
           if (avisos.length && !(await confirmar(`Posible choque con el camión ${st.patCamion.trim().toUpperCase()}\n\n${avisos.map(a => '• ' + a).join('\n')}\n\n¿Guardar igual?`, { aceptar: 'Guardar igual', tono: 'peligro', icono: 'warning' }))) { btn.disabled = false; return; }
         }
@@ -1426,11 +1517,11 @@ function showCoordRetiroModal(row, ctx) {
           patente_camion: st.patCamion.trim().toUpperCase() || null, patente_carro: st.patCarro.trim().toUpperCase() || null,
         } : TRANSP_NULL;
         const base = { estado: 'coordinado', tipo_local_rm: st.modo, tipo_retiro: st.tipo || null, fecha_retiro: st.fecha || null, ...transp, updated_by: email, updated_at: now };
-        const filas = [{ ...base, doc_compr: String(row.doc_compr).trim(), entrega_entrante: st.entrega.trim() || null,
+        const filas = [{ ...base, doc_compr: String(row.doc_compr).trim(), entrega_entrante: st.entrega.trim() || null, lineas_retiro: lineasSel(),
           fab_direccion: fabDir || null, fab_comuna: st.comuna.trim() || null, fab_contacto: st.contacto.trim() || null, fab_telefono: st.tel.trim() || null }];
         if (rm()) st.extras.forEach((x, oc) => {
           const xr = rowOf(oc) || {}; const mismo = mismoProv(xr);
-          filas.push({ ...base, doc_compr: String(oc).trim(), entrega_entrante: x.entrega.trim() || null,
+          filas.push({ ...base, doc_compr: String(oc).trim(), entrega_entrante: x.entrega.trim() || null, lineas_retiro: xr._lineas_retiro ?? null,
             fab_direccion: mismo ? (fabDir || null) : (x.dir.trim() || null), fab_comuna: mismo ? (st.comuna.trim() || null) : (x.comuna.trim() || null),
             fab_contacto: mismo ? (st.contacto.trim() || null) : (x.contacto.trim() || null), fab_telefono: mismo ? (st.tel.trim() || null) : (x.tel.trim() || null) });
         });
@@ -1441,8 +1532,8 @@ function showCoordRetiroModal(row, ctx) {
           const ce = String(x.ce ?? row.ce ?? '').trim();
           return { doc: f.doc_compr, tipo: st.tipo, ce, fechaCarga: st.fecha, origen: x.nombre_1 || 'Fábrica',
             destino: st.tipo === 'FAB-CD' ? '1003 CD Quilicura' : st.tipo === 'FAB-CLTE' ? `Cliente: ${x._pv_nombre_cliente || ''}` : `${ce} ${getNombreCentro(ce)}`,
-            transp, lineas: (x._detalle || []).map(d => lineaSegCoord({ tipo_carga: 'Retiro Fábrica', documento: f.doc_compr, n_entrega: f.entrega_entrante || '', material: d.material,
-              nombre: d.texto_breve, cantidad: d.pendiente, ton: d.ton, pedido_venta: x.documento || '', proveedor: x.nombre_1 || '', cliente: x._pv_nombre_cliente || '' })) };
+            transp, lineas: (x._detalle || []).map(d => ({ d, c: cantRetiroLinea(f, d.material, d.pendiente) })).filter(o => o.c > 0).map(({ d, c }) => lineaSegCoord({ tipo_carga: 'Retiro Fábrica', documento: f.doc_compr, n_entrega: f.entrega_entrante || '', material: d.material,
+              nombre: d.texto_breve, cantidad: c, ton: d.pesoU != null ? calcTon(d.pesoU, c) : d.ton, pedido_venta: x.documento || '', proveedor: x.nombre_1 || '', cliente: x._pv_nombre_cliente || '' })) };
         }));
         else await quitarSeguimientoCoord(filas.map(f => f.doc_compr));
         const pendG = rm() ? pendTranspRetiro(transp) : [];
@@ -1962,14 +2053,19 @@ const VISTAS_TRONCAL = {
       for (const [oc, items] of g.entries()) {
         const f = items[0];
         const almVal = String(f.alm ?? '').trim();
-        let ton = 0, pendienteTotal = 0, pedidoTotal = 0, revSaldo = false;
+        let ton = 0, tonRet = 0, pendienteTotal = 0, pedidoTotal = 0, revSaldo = false;
+        const est0 = estados[oc] || {}, coord0 = !!modoRetiro(est0);
         const detalle = items.map(r => {
           const ctdP = parseNum(r.ctd_pedido), ctdE = parseNum(r.ctd_entregada);
           const pend = ctdP - ctdE;
-          const t = calcTon(maxPesoDim(r.peso_bruto, r.tamano_dimens), pend);
-          ton += t; pendienteTotal += pend; pedidoTotal += ctdP;
+          const pesoU = maxPesoDim(r.peso_bruto, r.tamano_dimens);
+          const t = calcTon(pesoU, pend);
+          // (7-oct-2026) Cantidad a retirar según los productos elegidos al coordinar.
+          const ret = coord0 ? cantRetiroLinea(est0, r.material, pend) : pend;
+          const tRet = calcTon(pesoU, ret);
+          ton += t; tonRet += tRet; pendienteTotal += pend; pedidoTotal += ctdP;
           if (ctdE > 0 && ctdE < ctdP) revSaldo = true;
-          return { doc_compr: oc, ce: r.ce, material: r.material, texto_breve: r.texto_breve, pedido: ctdP, pendiente: pend, ton: t };
+          return { doc_compr: oc, ce: r.ce, material: r.material, texto_breve: r.texto_breve, pedido: ctdP, pendiente: pend, ton: t, pesoU, retiro: ret, ton_ret: tRet };
         });
         // (3-oct-2026, Jordan) Tipo de pedido: OC con pedido de venta = CALZADA, sin pedido = STOCK.
         // Tipo de retiro automático: OC ≥ 85% de un camión de 28 t (23,8 t) → STOCK: FAB-SUC,
@@ -1996,6 +2092,7 @@ const VISTAS_TRONCAL = {
           _cliente: tipoRetiro === 'FAB-CLTE',
           _consolidar: tipoRetiro === 'FAB-CD',
           _ton_num: ton, _ton_totales: fmtNum(ton, 4),
+          _ton_ret: tonRet, _parcial: coord0 && !!est0.lineas_retiro, _lineas_retiro: est0.lineas_retiro || null,
           _pendiente_total: pendienteTotal, _pedido_total: pedidoTotal,
           _vigencia: revSaldo ? 'REVISIÓN SALDO PEDIDO' : '',
           _revision_saldo: revSaldo,
@@ -3018,7 +3115,7 @@ const V2 = {
       { label: 'Fecha SAP', html: r => mono(r.fe_entrega) },
       { label: 'Fecha retiro', html: r => r._fecha_retiro ? mono(fmtFechaISO(r._fecha_retiro))
           : (r._modo === 'RM' ? `<span class="sv-b" style="color:${C_RED}">Falta fecha</span>` : '<span class="sv-muted">—</span>') },
-      { label: 'Ton', al: 'r', html: r => `<span class="sv-ton">${tonHtml(r._ton_num)}</span>` + (r._revision_saldo ? '<div class="sv-sub" style="color:#b5000b">saldo pendiente</div>' : '') },
+      { label: 'Ton', al: 'r', html: r => `<span class="sv-ton">${tonHtml(r._ton_num)}</span>` + (r._parcial ? `<div class="sv-sub" style="color:#15803d">retira ${escV2(fmtNum(r._ton_ret, 1))} t</div>` : '') + (r._revision_saldo ? '<div class="sv-sub" style="color:#b5000b">saldo pendiente</div>' : '') },
       { label: 'Alerta', html: r => (retiroAtrasado(r) ? pill('Atrasada', 'bad') : (r._al.k === 'Atrasado' ? pill('Vencida', 'orange') : pill(r._al.k, r._al.k === 'Pronto a vencer' ? 'warn' : r._al.tone)))
           + (r._exp_error ? `<div style="margin-top:4px" title="${escV2(r._pv_denominacion)}">${pill('Expedición errónea', 'purple')}</div>` : '') },
       { label: 'Coordinación', html: r => r._modo === 'RM' ? pill('Retiro RM', 'ok') + (r._transp && r._transp.patente_camion ? `<div class="sv-sub">${escV2(r._transp.patente_camion)}</div>` : '')
@@ -3061,7 +3158,9 @@ const V2 = {
           ['Coordinación', r._modo === 'RM' ? pill('Retiro RM', 'ok') : r._modo === 'LOCAL' ? pill('Retiro local', 'orange') : pill('Sin coordinar', 'mute'), true],
           ['Tipo pedido', r._tipo_pedido === 'CALZADA' ? 'Calzada (con pedido de venta)' : 'Stock'],
           ['Fecha SAP', r.fe_entrega], ['Fecha retiro (carga)', r._fecha_retiro ? fmtFechaISO(r._fecha_retiro) : ''],
-          ['Toneladas', tonHtml(r._ton_num), true], ['Almacén destino', r.alm],
+          ['Toneladas', tonHtml(r._ton_num), true],
+          r._parcial ? ['A retirar', `${tonHtml(r._ton_ret)} · ${(r._detalle || []).filter(d => d.retiro > 0).length} de ${(r._detalle || []).length} productos`, true] : null,
+          ['Almacén destino', r.alm],
           ['Entrega entrante', r._entrega_entrante], ['Contrato de compra', r.contr],
           r._modo ? ['Dirección fábrica', [r._fab_direccion, r._fab_comuna].filter(Boolean).join(', ')] : null,
           r._modo ? ['Contacto', [r._fab_contacto, r._fab_telefono].filter(Boolean).join(' · ')] : null,
@@ -3078,8 +3177,10 @@ const V2 = {
         ],
         tabla: {
           titulo: `${(r._detalle || []).length} ${(r._detalle || []).length === 1 ? 'material pendiente' : 'materiales pendientes'}`,
-          head: [['Material'], ['Descripción'], ['Pendiente', 'r'], ['Ton', 'r']],
-          rows: (r._detalle || []).map(d => [mono(d.material), escV2(d.texto_breve), escV2(fmtNum(d.pendiente, 0)), `<span class="sv-ton">${tonHtml(d.ton)}</span>`]),
+          head: r._modo ? [['Material'], ['Descripción'], ['Pendiente', 'r'], ['A retirar', 'r'], ['Ton a retirar', 'r']] : [['Material'], ['Descripción'], ['Pendiente', 'r'], ['Ton', 'r']],
+          rows: (r._detalle || []).map(d => r._modo
+            ? [mono(d.material), escV2(d.texto_breve), escV2(fmtNum(d.pendiente, 0)), d.retiro > 0 ? escV2(fmtNum(d.retiro, d.retiro % 1 ? 2 : 0)) : '<span class="sv-muted">No retira</span>', `<span class="sv-ton">${tonHtml(d.ton_ret)}</span>`]
+            : [mono(d.material), escV2(d.texto_breve), escV2(fmtNum(d.pendiente, 0)), `<span class="sv-ton">${tonHtml(d.ton)}</span>`]),
         },
         nota: r._tipo_retiro === 'FAB-CD' ? '3º en el orden de llenado del camión CD' : 'Camión directo de fábrica',
         acciones,
@@ -3556,7 +3657,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610052327');
+    const m = await import('./ind-plan-carga.js?v=202610071240');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
@@ -4215,7 +4316,9 @@ async function renderPlanCarga(stage, opts = {}) {
     function sumarRetiro(lista) {
       let sum = 0; const items = [];
       lista.forEach(r => {
-        const cant = parseNum(r.ctd_pedido) - parseNum(r.ctd_entregada);
+        // (7-oct-2026) Sólo los productos/cantidades elegidos al coordinar el retiro.
+        const cant = cantRetiroLinea(estadosRetiro[String(r.doc_compr ?? '').trim()], r.material, parseNum(r.ctd_pedido) - parseNum(r.ctd_entregada));
+        if (!(cant > 0)) return;
         const t = calcTon(maxPesoDim(r.peso_bruto, r.tamano_dimens), cant);
         items.push(itemR(r, cant, t)); sum += t;
       });
@@ -4239,7 +4342,7 @@ async function renderPlanCarga(stage, opts = {}) {
     const retirosFab = retirosDirectosBase
       .filter(r => String(r.ce ?? '').trim() === ce)
       .filter(r => !estaExcluido(exclusionesPlan, 'retiro_fabrica', r.doc_compr, r.material))
-      .filter(r => (parseNum(r.ctd_pedido) - parseNum(r.ctd_entregada)) > 0)
+      .filter(r => cantRetiroLinea(estadosRetiro[String(r.doc_compr ?? '').trim()], r.material, parseNum(r.ctd_pedido) - parseNum(r.ctd_entregada)) > 0)
       .filter(r => { const fr = parseISODate((estadosRetiro[String(r.doc_compr ?? '').trim()] || {}).fecha_retiro); return !!fr && fr.getTime() === fechaPlanCe.getTime(); });
     // (1-oct-2026) Camiones directos armados a mano (abast_plan_camion_manual): las OC unidas
     // forman un camión propio aunque no lleguen al 85% por proveedor/cliente.
@@ -4253,7 +4356,7 @@ async function renderPlanCarga(stage, opts = {}) {
     // camión forman un solo camión (aunque sean de proveedores distintos o no lleguen al 85%).
     const patBuckets = new Map();     // patente → { e, tipo, items }
     retirosFab.forEach(r => {
-      const cant = parseNum(r.ctd_pedido) - parseNum(r.ctd_entregada);
+      const cant = cantRetiroLinea(estadosRetiro[String(r.doc_compr ?? '').trim()], r.material, parseNum(r.ctd_pedido) - parseNum(r.ctd_entregada));
       const t = calcTon(maxPesoDim(r.peso_bruto, r.tamano_dimens), cant);
       const item = itemR(r, cant, t);
       const docPV = String(r.documento ?? '').trim();
