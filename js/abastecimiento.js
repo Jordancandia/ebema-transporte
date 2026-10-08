@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610081903';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610081903';
-import { getDatabase } from './data.js?v=202610081903';
+import { supabase } from './supabase-client.js?v=202610081916';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610081916';
+import { getDatabase } from './data.js?v=202610081916';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610081903';
-import { confirmar } from './confirmar.js?v=202610081903';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610081916';
+import { confirmar } from './confirmar.js?v=202610081916';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -3969,7 +3969,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610081903');
+    const m = await import('./ind-plan-carga.js?v=202610081916');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
@@ -5596,6 +5596,82 @@ async function renderPlanCarga(stage, opts = {}) {
     bajarCsv(CSV_V21, filas, nombre);
   }
 
+  // (8-oct-2026, Jordan) Entregas SAP creadas (disponibles) que NO están consideradas en el Plan de Carga:
+  // no van en el camión CD, ni en el 2º camión aceptado, ni en un camión directo. Con motivo, cantidad y
+  // pedido de traslado asociado; descargable en CSV.
+  async function entregasNoConsideradas() {
+    const ents = await fetchAllRows('v_abast_entregas_disponibles');
+    const txt = v => String(v ?? '').trim();
+    const k3 = (e, d, m) => `${txt(e)}|${txt(d)}|${txt(m)}`, k2 = (d, m) => `${txt(d)}|${txt(m)}`;
+    const enPlan = new Set(), enPlan2 = new Set(), detMap = new Map(), ceSet = new Map();
+    resultadoTodos.forEach(r => {
+      ceSet.set(txt(r.ce), r);
+      marcarCapacidadCD(r);
+      const acept = segAcept.has(r.ce);
+      CAT_V2.forEach(c => (r.det[c.k] || []).forEach(d => {
+        const e = txt(d.entrega_entrante || d.entrega), doc = txt(d.pt ?? d.oc ?? d.pv), mat = txt(d.material);
+        if (!e) return;
+        const key = k3(e, doc, mat);
+        if (d._enCamion || (d._camion2 && acept)) enPlan.add(key);
+        else detMap.set(key, d._camion2 ? '2º camión sugerido sin aceptar' : d._manual === 0 ? 'Sacada manualmente del camión (no carga)' : 'No cabe en el camión (queda para el próximo plan)');
+      }));
+      DIR_V2.forEach(t => (r[t.lista] || []).forEach(cm => (cm.items || []).forEach(d => enPlan2.add(k2(d.pt ?? d.oc ?? d.pv, d.material)))));
+    });
+    const EXCL = { TRASLADO: 'traslados_1003', CROSSDOCK: 'crossdock_4000', REVEX: 'traslados_revex' };
+    const filas = [];
+    ents.forEach(x => {
+      const tipo = txt(x.tipo), ce = txt(x.ce), doc = txt(x.doc_compr), mat = txt(x.material);
+      const origen = tipo === 'CROSSDOCK' ? '1003' : txt(x.cesu);
+      if (origen !== planOrigen) return;
+      if (ce && !enAlcance(ce)) return;
+      const key = k3(x.entrega, doc, mat);
+      if (enPlan.has(key) || enPlan2.has(k2(doc, mat))) return;
+      let motivo;
+      if (!ce) motivo = 'Sin destino (el reporte no trae Destinat.)';
+      else if (estaExcluido(exclusionesPlan, EXCL[tipo] || 'traslados_1003', doc, mat)) motivo = 'Excluida del Plan de Carga';
+      else if (mat.startsWith('7')) motivo = 'Material 7… no se considera';
+      else if (!ceSet.has(ce)) motivo = 'Destino sin plan desde este origen';
+      else if (detMap.has(key)) motivo = detMap.get(key);
+      else if (tipo === 'CROSSDOCK' && coordTraslados.get(doc)?.tipo_entrega === 'CD-CLIENTE') motivo = 'CD-Cliente coordinado para otra fecha';
+      else motivo = 'Fuera de la ventana del plan (fecha / horizonte)';
+      filas.push({ ...x, _motivo: motivo, _suc: getNombreCentro(ce) || '' });
+    });
+    filas.sort((a, b) => txt(a.ce).localeCompare(txt(b.ce)) || txt(a.doc_compr).localeCompare(txt(b.doc_compr)) || txt(a.entrega).localeCompare(txt(b.entrega)));
+    return filas;
+  }
+  const CSV_ENT_NP = ['Origen', 'Centro destino', 'Sucursal', 'Tipo', 'Entrega', 'Pos. entrega', 'Pedido de traslado', 'Pos. pedido', 'Material', 'Descripción', 'Cantidad', 'UM', 'Toneladas', 'Fecha creación entrega', 'Usuario pedido', 'Origen dato', 'Motivo'];
+  const filaEntNP = f => [planOrigen, f.ce || '', f._suc, f.tipo, f.entrega, String(f.pos_entrega || '').replace(/^0+/, ''), f.doc_compr, f.pos || '', f.material, f.texto_breve || '',
+    String(f.cantidad ?? '').replace('.', ','), f.um || '', fmtNum(Number(f.ton) || 0, 4), f.fecha_txt || '', f.creado_por_pedido || '', f.origen_carga === 'MANUAL' ? 'Excel manual' : 'Correo SAP', f._motivo];
+  async function showEntregasNoPlan() {
+    let filas;
+    try { filas = await entregasNoConsideradas(); } catch (e) { showAlert('No se pudieron leer las entregas: ' + (e?.message || e), 'error'); return; }
+    const tonT = filas.reduce((a, f) => a + (Number(f.ton) || 0), 0);
+    const porMot = new Map(); filas.forEach(f => { const m = porMot.get(f._motivo) || { n: 0, ton: 0 }; m.n++; m.ton += Number(f.ton) || 0; porMot.set(f._motivo, m); });
+    const nEnt = new Set(filas.map(f => f.entrega)).size, nPed = new Set(filas.map(f => f.doc_compr)).size;
+    const resumen = [...porMot.entries()].sort((a, b) => b[1].ton - a[1].ton).map(([m, v]) => `<span class="sv-pill mute" style="margin:0 6px 6px 0">${escapeHtml(m)} · ${v.n} líneas · ${t1(v.ton)} t</span>`).join('');
+    const body = filas.map(f => `<tr><td>${escapeHtml(f.ce || '—')}<div class="sv-sub">${escapeHtml(f._suc)}</div></td><td>${escapeHtml(f.tipo)}</td>
+      <td><span class="sv-mono">${escapeHtml(f.entrega)}</span><div class="sv-sub">pos ${escapeHtml(String(f.pos_entrega || '').replace(/^0+/, ''))}</div></td>
+      <td><span class="sv-mono">${escapeHtml(f.doc_compr)}</span><div class="sv-sub">pos ${escapeHtml(f.pos || '—')}</div></td>
+      <td><b>${escapeHtml(f.material)}</b><div class="sv-sub">${escapeHtml(f.texto_breve || '')}</div></td>
+      <td class="r">${escapeHtml(fmtNum(Number(f.cantidad) || 0, (Number(f.cantidad) % 1) ? 2 : 0))} <span class="sv-muted">${escapeHtml(f.um || '')}</span></td>
+      <td class="r"><b>${t1(Number(f.ton) || 0)}</b></td><td>${escapeHtml(f.fecha_txt || '')}</td><td>${escapeHtml(f._motivo)}</td></tr>`).join('');
+    document.body.insertAdjacentHTML('beforeend', `<div id="entnp-bg" class="fixed inset-0 bg-black/40 flex items-center justify-center z-[9999]">
+      <div class="bg-white rounded-xl shadow-2xl p-6 w-[1180px] max-w-[96vw] max-h-[88vh] overflow-y-auto flex flex-col gap-3">
+        <div class="flex items-center justify-between gap-3"><div><h3 class="text-base font-bold text-gray-800">Entregas creadas no consideradas en el Plan de Carga</h3>
+          <p class="text-[12px] text-secondary">Origen ${escapeHtml(planOrigen)} · ${filas.length} líneas · ${nEnt} entregas · ${nPed} pedidos de traslado · ${t1(tonT)} t. Entregas vigentes sin DT que no van en el camión CD, en el 2º camión aceptado ni en un camión directo.</p></div>
+          <div class="flex items-center gap-2"><button class="sv-btn" id="entnp-csv" ${filas.length ? '' : 'disabled'}><span class="material-symbols-outlined">download</span>Descargar (CSV)</button>
+          <button id="entnp-cerrar" class="text-secondary hover:text-on-surface"><span class="material-symbols-outlined">close</span></button></div></div>
+        ${resumen ? `<div style="display:flex;flex-wrap:wrap">${resumen}</div>` : ''}
+        ${filas.length ? `<div class="pc-tbl"><table class="sv-table"><thead><tr><th>Destino</th><th>Tipo</th><th>Entrega</th><th>Pedido de traslado</th><th>Material</th><th class="r">Cantidad</th><th class="r">Ton</th><th>Creación</th><th>Motivo</th></tr></thead><tbody>${body}</tbody></table></div>`
+          : '<div class="sv-note-box">Todas las entregas vigentes están consideradas en el Plan de Carga.</div>'}
+      </div></div>`);
+    const bg = document.getElementById('entnp-bg');
+    const cerrar = () => bg.remove();
+    bg.addEventListener('click', e => { if (e.target === bg) cerrar(); });
+    document.getElementById('entnp-cerrar').addEventListener('click', cerrar);
+    document.getElementById('entnp-csv').addEventListener('click', () => bajarCsv(CSV_ENT_NP, filas.map(filaEntNP), `EntregasNoConsideradas_${planOrigen}_${isoLocal(hoy00())}.csv`));
+  }
+
   // (4-oct-2026, Jordan) El correo de las 08:30 / 12:30 / 15:30 se genera desde esta vista:
   // cada vez que se dibuja (antes del cierre) se guarda el estado de cada sucursal y el contenido
   // de los camiones programados (abast_plan_estado_correo / abast_plan_camion_programado.lineas).
@@ -5775,6 +5851,7 @@ async function renderPlanCarga(stage, opts = {}) {
           <div class="sv-seg" role="group" aria-label="Centro origen">${Object.keys(CALENDARIOS).map(id =>
             `<button data-chip data-origen="${id}" class="${planOrigen === id ? 'is-on' : ''}">${escapeHtml(CALENDARIOS[id].nombre)} · ${id}</button>`).join('')}</div>
           ${PUEDE_EXCLUIR && !cierre.cerrado ? `<button class="sv-btn" data-ver-exclusiones data-chip title="Ver y reactivar exclusiones"><span class="material-symbols-outlined">visibility_off</span>Exclusiones${exclusionesPlan.length ? ` <span class="sv-pill mute" style="padding:0 7px">${exclusionesPlan.length}</span>` : ''}</button>` : ''}
+          <button class="sv-btn" data-ent-noplan title="Entregas SAP creadas que no están consideradas en el Plan de Carga (con pedido de traslado y motivo) · descargable"><span class="material-symbols-outlined">assignment_late</span>Entregas no consideradas</button>
           <button class="sv-btn" data-descarga="__todo__" title="Descarga el plan completo del origen (sin filtro de KPI)"><span class="material-symbols-outlined">download</span>Descargar plan (CSV)</button>
           <button class="sv-btn is-icon" data-refrescar title="Refrescar datos"><span class="material-symbols-outlined">refresh</span></button>
         </div></div>
@@ -5850,6 +5927,7 @@ async function renderPlanCarga(stage, opts = {}) {
       await unirDirectos(b.dataset.dmUnir, dmChecks.filter(c => c.checked).map(c => c.dataset.dmOc), stage.querySelector('[data-dm-tipo-sel]')?.value || 'fabSuc');
       b.disabled = false;
     });
+    stage.querySelector('[data-ent-noplan]')?.addEventListener('click', async e => { e.stopPropagation(); const b = e.currentTarget; b.disabled = true; try { await showEntregasNoPlan(); } finally { b.disabled = false; } });
     stage.querySelectorAll('[data-descarga]').forEach(btn => btn.addEventListener('click', (e) => {
       e.stopPropagation();
       const ce = btn.dataset.descarga;
