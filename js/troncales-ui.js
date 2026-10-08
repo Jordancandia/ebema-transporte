@@ -32,7 +32,7 @@ export function tonHtml(n) {
 }
 
 // Encabezado del shell: fecha y hora de la última actualización SAP de la vista
-import { confirmar } from './confirmar.js?v=202610072013';
+import { confirmar } from './confirmar.js?v=202610072130';
 export function setUltimaActualizacion(ts) {
   const el = document.getElementById('sv-upd');
   if (!el) return;
@@ -158,6 +158,8 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
     return { byChip, filt };
   }
 
+  // (7-oct-2026) Botones extra del encabezado por vista/modo: AV.headBtns = [{ label, icon, perm, run }]; run() → true recarga.
+  const headBtns = () => (AV.headBtns || []).filter(b => !b.perm || deps.can(b.perm));
   function headHTML() {
     const seg = AV.origen ? `<div class="sv-seg" role="group" aria-label="Centro de origen">${AV.origen.opciones.map(([v, l]) =>
       `<button data-chip data-orig="${esc(v)}" class="${st.orig === v ? 'is-on' : ''}"><span class="material-symbols-outlined">warehouse</span>${esc(l)}</button>`).join('')}</div>` : '';
@@ -166,6 +168,7 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
     return `<div class="sv-vhead">
       <div style="min-width:0"><h1 class="sv-h1">${esc(AV.titulo)}</h1>${AV.desc ? `<div class="sv-desc">${esc(AV.desc)}</div>` : ''}</div>
       <div class="sv-actions">${modes}${seg}
+        ${headBtns().map((b, i) => `<button class="sv-btn" data-hbtn="${i}" title="${esc(b.label)}"><span class="material-symbols-outlined">${esc(b.icon || 'bolt')}</span>${esc(b.label)}</button>`).join('')}
         <button class="sv-btn" data-csv title="Descargar CSV"><span class="material-symbols-outlined">download</span>Descargar</button>
         <button class="sv-btn is-icon" data-refrescar title="Refrescar datos"><span class="material-symbols-outlined">refresh</span></button>
       </div></div>`;
@@ -324,6 +327,11 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
     stage.querySelector('[data-dfrom]')?.addEventListener('change', e => { st.dFrom = e.target.value; draw(); });
     stage.querySelector('[data-dto]')?.addEventListener('change', e => { st.dTo = e.target.value; draw(); });
     stage.querySelector('[data-refrescar]')?.addEventListener('click', () => { deps.clearRawCache(); renderTablaV2(stage, cfg, deps, viewKey); });
+    stage.querySelectorAll('[data-hbtn]').forEach(b => b.addEventListener('click', async () => {
+      const hb = headBtns()[+b.dataset.hbtn]; if (!hb) return;
+      b.disabled = true;
+      try { if (await hb.run()) { deps.clearRawCache(); renderTablaV2(stage, cfg, deps, viewKey); return; } } finally { b.disabled = false; }
+    }));
     stage.querySelector('[data-csv]')?.addEventListener('click', () => deps.exportarCSV(active, filt));
     const accFila = (sel, fn) => stage.querySelectorAll(sel).forEach(b => b.addEventListener('click', async e => {
       e.stopPropagation();

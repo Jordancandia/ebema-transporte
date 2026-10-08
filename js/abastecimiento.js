@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610072013';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610072013';
-import { getDatabase } from './data.js?v=202610072013';
+import { supabase } from './supabase-client.js?v=202610072130';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610072130';
+import { getDatabase } from './data.js?v=202610072130';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610072013';
-import { confirmar } from './confirmar.js?v=202610072013';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610072130';
+import { confirmar } from './confirmar.js?v=202610072130';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -3048,6 +3048,7 @@ const V2 = {
       { label: 'Alerta', html: r => pill(r._al.k, r._al.tone) },
     ],
     edge: r => r._al.k === 'Atrasado' ? C_RED : null,
+    planEstado: (r, excluida) => excluida ? pill('Excluida hoy', 'bad') : pill('Sin entrega', 'mute'),
     detalle: r => ({
       kind: 'Traslado Revex', title: r.doc_compr, sub: `${nombreCentro(r.cesu) || r.cesu} → ${nombreCentro(r.ce) || r.ce} · ${r.texto_breve || ''}`,
       kv: [
@@ -3359,7 +3360,7 @@ const V2 = {
     permisoExcluir: 'ajustar_plan',
     planEstado: (r, excluida) => excluida ? pill('Excluida hoy', 'bad')
       : r._cdcli ? pill(r._cd_hoy ? 'En plan · CD-Cliente' : 'CD-Cliente', 'purple') + `<div class="sv-sub">día ${escV2(fmtFechaISO(r._coord.fecha_entrega))}</div>`
-      : pill('En plan', 'ok'),
+      : pill('Sin entrega', 'mute'),
     edge: r => r._cdcli ? '#7e22ce' : (r._al.k === 'Atrasado' ? C_RED : null),
     note: 'Consolidable: va en el camión CD (4º en el orden de llenado) · CD-Cliente: camión directo coordinado, sale el día de su fecha de entrega',
     minW: '1180px',
@@ -3409,9 +3410,10 @@ const V2 = {
       rows.forEach(r => { r._al = alertaV2(r.fecha_confirmada, 7); r._pr = PRIO_V2[r._prioridad_grupo] || PRIO_V2.E; r._q = grupoQuiebre(r._sd); });
       ctx._rows = rows;
       aplicarEstadoPlanTraslados(rows, ctx.estadoPlan);
+      marcarSinEntrega(rows);
     },
     // Tras excluir/reactivar/incluir: recalcula el plan y el estado de cada línea.
-    async onPlanChange(rows, ctx) { ctx.estadoPlan = await estadoPlanTraslados(); aplicarEstadoPlanTraslados(rows, ctx.estadoPlan); },
+    async onPlanChange(rows, ctx) { ctx.estadoPlan = await estadoPlanTraslados(); aplicarEstadoPlanTraslados(rows, ctx.estadoPlan); marcarSinEntrega(rows); },
     chip: { label: 'Destino', of: r => String(r.ce ?? '').trim(), name: v => nombreCentro(v) || v },
     docSearch: { ph: 'N° pedido de traslado', of: r => r.doc_compr },
     fecha: { label: 'Entrega', of: r => r.fecha_confirmada },
@@ -3455,6 +3457,7 @@ const V2 = {
         NO_CABE: 'Está en la ventana del plan pero no cabe en el camión: queda para el próximo plan.',
         EXCLUIDO: 'Excluida hoy del Plan de Carga.',
         FUERA: 'No entra al plan: fuera de la ventana de fechas (−10/+7 días hábiles) o sin cantidad confirmada.',
+        SIN_ENTREGA: 'Pendiente sin entrega SAP: no entra al Plan de Carga hasta que se cree la entrega (vista «Entregas»).',
       }[r._plan] || '';
       const puede = can('incluir_plan');
       const recalcular = async (row, ctx) => { await V2.pedidos_traslados.onPlanChange(ctx._rows, ctx); return { redibujar: true }; };
@@ -3464,7 +3467,7 @@ const V2 = {
           if (!(await quitarInclusionPlan(row.doc_compr, row.material))) return null;
           showAlert('Inclusión manual quitada', 'success'); return recalcular(row, ctx);
         } },
-      ] : (!r._en_plan && r._plan !== 'EXCLUIDO') ? [
+      ] : (!r._en_plan && r._plan !== 'EXCLUIDO' && r._plan !== 'SIN_ENTREGA') ? [
         { label: 'Incluir en plan de carga', icon: 'playlist_add', primary: true, run: async (row, ctx) => {
           if (!await confirmar(`¿Incluir hoy en el Plan de Carga el material ${row.material} del pedido ${row.doc_compr}?\n\nEntra al camión CD antes que el resto de los traslados y puede dejar fuera otras líneas. Vale sólo para el plan de hoy.`)) return null;
           if (!(await incluirEnPlan(row.doc_compr, row.material))) return null;
@@ -3757,6 +3760,192 @@ Object.entries(V2).forEach(([k, v]) => {
   if (cfg.modes && v.modos) cfg.modes.forEach(m => { const mv = v.modos[m.id]; if (mv) { m.v2mode = { cols: mv.cols }; m.v2label = mv.v2label; m.icon = mv.icon; } });
 });
 
+// ── ENTREGAS DISPONIBLES (7-oct-2026, Jordan) ────────────────────────────────
+// Las vistas SQVI muestran el PENDIENTE (lo pedido menos lo que ya tiene entrega); los pendientes sin
+// entrega no entran al Plan de Carga. El modo «Entregas» muestra lo disponible real para cargar: entregas
+// SAP (correo automático o Excel manual) vigentes, sin DT, con destino (Destinat. 950+centro) y pesos de la
+// maestra de productos. Se descuentan del pedido; la parcialidad queda como saldo pendiente del pedido.
+function marcarSinEntrega(rows) {
+  (rows || []).forEach(r => { if (r._plan !== 'EXCLUIDO') { r._plan = 'SIN_ENTREGA'; r._en_plan = false; } });
+}
+const TIPO_ENT_LBL = { TRASLADO: 'Pedidos de Traslados', CROSSDOCK: 'Crossdocking', REVEX: 'Revex' };
+function loadXlsxLibAbast() {
+  if (window.XLSX) return Promise.resolve(window.XLSX);
+  return new Promise((res, rej) => {
+    const sc = document.createElement('script');
+    sc.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js'; sc.async = true;
+    sc.onload = () => (window.XLSX ? res(window.XLSX) : rej(new Error('No se pudo cargar el lector de Excel')));
+    sc.onerror = () => rej(new Error('No se pudo cargar el lector de Excel'));
+    document.head.appendChild(sc);
+  });
+}
+// Carga manual del Excel de entregas SAP (mismas columnas que el reporte del correo + Destinat.).
+function cargarEntregasExcel() {
+  return new Promise(resolve => {
+    const inp = document.createElement('input');
+    inp.type = 'file'; inp.accept = '.xlsx,.xls';
+    inp.addEventListener('change', async () => {
+      const f = inp.files && inp.files[0]; if (!f) { resolve(false); return; }
+      try {
+        const XLSX = await loadXlsxLibAbast();
+        const wb = XLSX.read(await f.arrayBuffer(), { type: 'array', cellDates: true });
+        const aoa = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: true, defval: null });
+        if (!aoa.length) throw new Error('El archivo está vacío');
+        const nh = v => String(v ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]/g, '');
+        const H = aoa[0].map(nh);
+        const col = n => H.indexOf(nh(n));
+        const ix = { entrega: col('Entrega'), creado_por: col('Creado por'), clent: col('ClEnt'), tpdoc: col('TpDoc'), ce: col('CE'), psex: col('PsEx'),
+          ruta: col('Ruta'), pos: col('Pos.'), material: col('Material'), desc: col('Denominación de posición'), um: col('UM'), clvt: col('ClVt'),
+          doc: col('Doc.modelo'), posmod: col('PosMod'), alm: col('Alm.'), destinat: col('Destinat.'), creado_el: col('Creado el'), cant: col('Cantidad entrega') };
+        const faltan = ['entrega', 'pos', 'material', 'doc', 'posmod', 'cant', 'destinat'].filter(k => ix[k] < 0);
+        if (faltan.length) throw new Error('Faltan columnas: ' + faltan.join(', ') + ' (se requiere Entrega, Pos., Material, Doc.modelo, PosMod, Destinat. y Cantidad entrega)');
+        const txtv = v => { if (v == null) return ''; if (typeof v === 'number') return Number.isInteger(v) ? String(v) : String(v); return String(v).trim(); };
+        const ent = v => txtv(v).replace(/\.0+$/, '');
+        const fecha = v => {
+          if (v instanceof Date && !isNaN(v)) return `${v.getFullYear()}-${String(v.getMonth() + 1).padStart(2, '0')}-${String(v.getDate()).padStart(2, '0')}`;
+          const m = String(v ?? '').match(/^(\d{1,2})[./-](\d{1,2})[./-](\d{4})/); if (m) return `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
+          const m2 = String(v ?? '').match(/^(\d{4})-(\d{2})-(\d{2})/); return m2 ? m2[0] : '';
+        };
+        const numv = v => typeof v === 'number' ? v : (parseFloat(String(v ?? '').replace(/\./g, '').replace(',', '.')) || 0);
+        const g = (a, k) => ix[k] >= 0 ? a[ix[k]] : null;
+        const filas = [];
+        for (let i = 1; i < aoa.length; i++) {
+          const a = aoa[i]; if (!a) continue;
+          const e = ent(g(a, 'entrega')), d = ent(g(a, 'doc'));
+          if (!e || !d) continue;
+          filas.push([e, ent(g(a, 'pos')), txtv(g(a, 'creado_por')), txtv(g(a, 'clent')), txtv(g(a, 'tpdoc')), ent(g(a, 'ce')), ent(g(a, 'psex')), txtv(g(a, 'ruta')),
+            ent(g(a, 'material')), txtv(g(a, 'desc')), txtv(g(a, 'um')), txtv(g(a, 'clvt')), d, ent(g(a, 'posmod')), ent(g(a, 'alm')), ent(g(a, 'destinat')),
+            fecha(g(a, 'creado_el')), numv(g(a, 'cant'))]);
+        }
+        if (!filas.length) throw new Error('No se encontraron entregas en el archivo');
+        const nEnt = new Set(filas.map(x => x[0])).size;
+        if (!await confirmar(`¿Cargar ${nEnt} entregas (${filas.length} líneas)?\n\nPasan a ser lo disponible para cargar en el Plan de Carga y se descuentan de los pedidos de traslado, crossdocking y revex.`,
+          { aceptar: 'Cargar', tono: 'normal', icono: 'upload_file' })) { resolve(false); return; }
+        const tot = { recibidas: 0, nuevas: 0, actualizadas: 0, sin_destino: 0 };
+        for (let k = 0; k < filas.length; k += 1000) {
+          const { data, error } = await supabase.rpc('fn_abast_cargar_entregas', { p: { r: filas.slice(k, k + 1000) } });
+          if (error) throw new Error(error.message);
+          ['recibidas', 'nuevas', 'actualizadas'].forEach(x => { tot[x] += Number(data?.[x] || 0); });
+          tot.sin_destino = Number(data?.sin_destino || 0);
+        }
+        showAlert(`Entregas cargadas: ${tot.nuevas} nuevas · ${tot.actualizadas} actualizadas` + (tot.sin_destino ? ` · ${tot.sin_destino} líneas sin destino` : ''), tot.sin_destino ? 'error' : 'success');
+        resolve(true);
+      } catch (err) { console.error(err); showAlert('Error al cargar entregas: ' + (err?.message || err), 'error'); resolve(false); }
+    });
+    inp.click();
+  });
+}
+function v2ModoEntregas(tipo) {
+  const esTr = tipo === 'TRASLADO', esCx = tipo === 'CROSSDOCK';
+  const est = r => r._plan_ent;
+  return {
+    titulo: `${TIPO_ENT_LBL[tipo]} · Entregas`,
+    desc: 'Entregas SAP creadas (disponible real para cargar): son las que alimentan el Plan de Carga. Vigentes = creadas hoy o el día hábil anterior y sin Documento de Transporte.',
+    headBtns: [{ label: 'Cargar entregas (Excel)', icon: 'upload_file', perm: 'ajustar_plan', run: () => cargarEntregasExcel() }],
+    enrich(rows, ctx) {
+      ctx._rows = rows;
+      rows.forEach(r => {
+        r._ton_num = Number(r.ton) || 0;
+        r._al = alertaV2(r.fecha_txt, 5);
+        r.fe_entrega = r.fecha_txt;
+        if (esCx && ctx.coordMap) {
+          r._coord = ctx.coordMap.get(String(r.doc_compr).trim()) || null;
+          r._cdcli = !!(r._coord && r._coord.tipo_entrega === 'CD-CLIENTE');
+          const f = r._coord ? parseISODate(r._coord.fecha_entrega) : null;
+          r._cd_hoy = !!(f && ctx.diaObj && f.getTime() <= ctx.diaObj(r.ce).getTime());
+        }
+      });
+      if (esTr) aplicarEstadoPlanTraslados(rows, ctx.estadoPlan);
+    },
+    async onPlanChange(rows, ctx) { if (esTr) { ctx.estadoPlan = await estadoPlanTraslados(); aplicarEstadoPlanTraslados(rows, ctx.estadoPlan); } },
+    rowId: r => `${r.entrega}|${r.pos_entrega}`,
+    chip: { label: 'Destino', of: r => String(r.ce ?? '').trim() || 'Sin destino', name: v => nombreCentro(v) || v },
+    docSearch: { ph: 'N° entrega o pedido', of: r => `${r.entrega} ${r.doc_compr}` },
+    fecha: { label: 'Creación', of: r => r.fecha_txt },
+    search: { ph: 'Buscar material', of: r => `${r.material} ${r.texto_breve}` },
+    kpis: [
+      { key: 'all', label: 'Líneas', color: C_INK, sub: 'disponibles para cargar' },
+      { key: 'ton', label: 'Toneladas', color: C_GREEN, sub: 'máx(bruto, volumétrico)', valor: rs => fmtNum(rs.reduce((a, r) => a + (r._ton_num || 0), 0), 1) + ' t' },
+      ...(esTr ? [{ key: 'plan', label: 'En plan de carga', color: C_BLUE, sub: 'van en el camión CD hoy', fn: r => !!r._en_plan }] : []),
+      ...(esCx ? [{ key: 'cd', label: 'CD-Cliente', color: '#7e22ce', sub: 'camión directo coordinado', fn: r => r._cdcli }] : []),
+      { key: 'sd', label: 'Sin destino', color: C_RED, sub: 'no entran al plan', fn: r => !r.ce },
+      { key: 'man', label: 'Carga manual', color: C_SEC, sub: 'desde Excel', fn: r => r.origen_carga === 'MANUAL' },
+    ],
+    cols: [
+      { label: 'Entrega', html: r => mono(r.entrega, 'pos ' + (r.pos_entrega || '').replace(/^0+/, '')) },
+      { label: 'Pedido', html: r => mono(r.doc_compr, r.pos ? 'pos ' + r.pos : '') },
+      { label: 'Destino', html: r => r.ce ? sucHtml(r.ce) + (r.destino_inferido ? '<div class="sv-sub" title="El reporte no trae Destinat.; se dedujo del pedido">deducido</div>' : '') : pill('Sin destino', 'bad') },
+      { label: 'Material', html: r => matHtml(r.material, r.texto_breve) },
+      { label: 'Cantidad', al: 'r', html: r => mono(fmtNum(Number(r.cantidad) || 0, (Number(r.cantidad) % 1) ? 2 : 0)) + (r.um ? ` <span class="sv-muted">${escV2(r.um)}</span>` : '') },
+      { label: 'Ton', al: 'r', html: r => `<span class="sv-ton">${tonHtml(r._ton_num)}</span>` + (r.kg_bruto == null && r.kg_vol == null ? '<div class="sv-sub" style="color:#b5000b">sin peso</div>' : '') },
+      { label: 'Creación', html: r => mono(r.fecha_txt, r.origen_carga === 'MANUAL' ? 'Excel' : 'correo SAP') },
+    ],
+    excluirEnFila: true,
+    planEstado: (r, excluida) => excluida ? pill('Excluida hoy', 'bad')
+      : !r.ce ? pill('Sin destino', 'bad')
+      : esTr ? (() => { const p = PLAN_LINEA_V2[r._plan] || PLAN_LINEA_V2.FUERA; return pill(p[0], p[1]); })()
+      : esCx && r._cdcli ? pill(r._cd_hoy ? 'En plan · CD-Cliente' : 'CD-Cliente', 'purple')
+      : pill('En plan', 'ok'),
+    edge: r => !r.ce ? C_RED : (r._en_plan ? C_GREEN : (r._cdcli ? '#7e22ce' : null)),
+    note: 'Sólo las entregas alimentan el Plan de Carga (Traslados, Crossdocking y Revex), con la priorización vigente (Usuario, ABC AA, quiebre, abastecimiento) · Al crearse el DT la entrega sale de esta vista',
+    minW: '1120px',
+    detalle: r => {
+      const acciones = [];
+      if (esCx && can('ajustar_plan')) {
+        acciones.push({ label: r._cdcli ? 'Editar coordinación CD-Cliente' : 'Coordinar como CD-Cliente', icon: 'local_shipping', primary: true,
+          run: async (row, ctx) => ((await showCoordTrasladoModal(row, ctx)) ? { recargar: true } : null) });
+        if (r._cdcli) acciones.push({ label: 'Volver a Consolidable', icon: 'undo', run: async row => {
+          if (!await confirmar(`¿Quitar el camión directo CD-Cliente del pedido ${row.doc_compr}?\n\nVuelve a Consolidable y entra al camión CD.`)) return null;
+          return (await anularCoordTraslados([row.doc_compr])) ? (showAlert('Pedido vuelve a Consolidable', 'success'), { recargar: true }) : null;
+        } });
+      }
+      if (can('ajustar_plan')) acciones.push({ label: 'Descartar entrega', icon: 'block', run: async row => {
+        if (!await confirmar(`¿Descartar la entrega ${row.entrega}?\n\nDeja de considerarse disponible para cargar y deja de descontarse del pedido ${row.doc_compr}. Úsalo si la entrega se anuló en SAP.`)) return null;
+        const { error } = await supabase.rpc('fn_abast_descartar_entrega', { p_entrega: String(row.entrega) });
+        if (error) { showAlert('Error: ' + error.message, 'error'); return null; }
+        showAlert('Entrega descartada', 'success'); clearRawCache(); return { recargar: true };
+      } });
+      return {
+        kind: `Entrega SAP · ${TIPO_ENT_LBL[tipo]}`, title: r.entrega,
+        sub: `${nombreCentro(r.cesu) || r.cesu || '—'} → ${r.ce ? (nombreCentro(r.ce) || r.ce) : 'sin destino'} · ${r.texto_breve || ''}`,
+        aviso: !r.ce ? '<b>Sin destino:</b> el reporte no trae la columna Destinat. y el pedido no está en el SQVI. Carga el Excel con Destinat. para incluirla en el plan.' : '',
+        kv: [
+          ['Entrega', `${r.entrega} · pos ${String(r.pos_entrega || '').replace(/^0+/, '')}`], ['Pedido (doc. modelo)', `${r.doc_compr} · pos ${r.pos || '—'}`],
+          ['Centro expedición', r.cesu], ['Centro destino', r.ce ? `${r.ce}${nombreCentro(r.ce) ? ' · ' + nombreCentro(r.ce) : ''}${r.destino_inferido ? ' (deducido del pedido)' : ''}` : 'Sin destino'],
+          ['Material', `${r.material} · ${r.texto_breve || ''}`], ['Cantidad', `${fmtNum(Number(r.cantidad) || 0, 2)} ${r.um || ''}`.trim()],
+          ['Peso bruto unitario', r.kg_bruto != null ? `${fmtNum(Number(r.kg_bruto), 3)} kg` : '—'], ['Peso volumétrico unitario', r.kg_vol != null ? `${fmtNum(Number(r.kg_vol), 3)} kg` : '—'],
+          ['Toneladas', tonHtml(r._ton_num), true], ['Fecha creación', r.fecha_txt], ['Creada por', r.creado_por_entrega],
+          ['Usuario pedido', r.creado_por_pedido || '—'], ['Fecha entrega SAP (pedido)', r.fecha_sap || '—'],
+          ['Origen del dato', r.origen_carga === 'MANUAL' ? 'Excel manual' : 'Correo SAP'],
+          r._coord ? ['Coordinación', `CD-Cliente · ${fmtFechaISO(r._coord.fecha_entrega)} · ${r._coord.patente_camion || 'patente pendiente'}`] : null,
+        ],
+        nota: esTr ? 'Prioridad del Plan de Carga: Usuario, ABC AA y quiebre (5º) · resto Abastecimiento (6º)' : esCx ? '4º en el orden de llenado (o camión directo si es CD-Cliente)' : '1º en el orden de llenado',
+        acciones,
+      };
+    },
+  };
+}
+[['pedidos_traslados', 'TRASLADO'], ['pedidos_traslados_4000', 'CROSSDOCK'], ['pedidos_traslados_revex', 'REVEX']].forEach(([k, tipo]) => {
+  const cfg = VISTAS_TRONCAL[k];
+  if (!cfg || cfg.modes) return;
+  cfg.modes = [
+    { id: 'pend', v2label: 'Pendientes', icon: 'pending_actions' },
+    { id: 'ent', v2label: 'Entregas', icon: 'local_shipping', vista: 'v_abast_entregas_disponibles',
+      transform: rows => rows.filter(r => r.tipo === tipo), preload: undefined, postFilter: undefined,
+      centroCampo: 'ce', titulo: `${cfg.titulo} – ENTREGAS`,
+      columnas: [
+        { key: 'entrega', label: 'Entrega' }, { key: 'pos_entrega', label: 'Pos. entrega' }, { key: 'doc_compr', label: 'Doc. modelo' }, { key: 'pos', label: 'Pos. modelo' },
+        { key: 'cesu', label: 'Centro expedición' }, { key: 'ce', label: 'Centro destino' }, { key: 'material', label: 'Material' }, { key: 'texto_breve', label: 'Descripción' },
+        { key: 'cantidad', label: 'Cantidad', valueFn: r => String(r.cantidad ?? '').replace('.', ',') }, { key: 'um', label: 'UM' },
+        { key: 'kg_bruto', label: 'Peso bruto (kg/un)', valueFn: r => r.kg_bruto == null ? '' : String(r.kg_bruto).replace('.', ',') },
+        { key: 'kg_vol', label: 'Peso volumétrico (kg/un)', valueFn: r => r.kg_vol == null ? '' : String(r.kg_vol).replace('.', ',') },
+        { key: 'ton', label: 'Ton', valueFn: r => String(r.ton ?? '').replace('.', ',') }, { key: 'fecha_txt', label: 'Fecha creación' },
+        { key: 'origen_carga', label: 'Origen dato' },
+      ],
+      v2mode: v2ModoEntregas(tipo) },
+  ];
+});
+
 // Etiqueta contadora (badge)
 function badgePill(label, count, cls) {
   return `<span class="inline-flex items-center gap-xs px-sm py-xs rounded-full text-[12px] font-bold ${cls}">
@@ -3773,7 +3962,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610072013');
+    const m = await import('./ind-plan-carga.js?v=202610072130');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
@@ -4048,6 +4237,7 @@ const PLAN_LINEA_V2 = {
   NO_CABE:      ['No cabe', 'mute'],
   EXCLUIDO:     ['Excluida hoy', 'bad'],
   FUERA:        ['No considerada', 'mute'],
+  SIN_ENTREGA:  ['Sin entrega', 'mute'],
 };
 function aplicarEstadoPlanTraslados(rows, ep) {
   if (!ep) return;
@@ -4073,11 +4263,13 @@ async function renderPlanCarga(stage, opts = {}) {
 
   const [quiebresRaw, trasladosRaw, revexRaw, retirosRaw, ventasRaw, traslados4000Raw, calendarioRows, estadosRetiro, exclusionesPlan, pvRows, feriadosRows, horizonteRows] = await Promise.all([
     fetchAllRows('v_trc_slim_stock'),
-    fetchAllRows('v_trc_sqvi_pedidos_traslados'),
-    fetchAllRows('v_trc_sqvi_pedidos_traslados'),
+    // (7-oct-2026, Jordan) Traslados, Revex y Crossdocking entran al plan sólo con ENTREGA SAP creada
+    // (disponible real). Mismas columnas que el SQVI; cantidad = entrega, fecha = creación de la entrega.
+    fetchAllRows('v_trc_plan_src_traslados'),
+    fetchAllRows('v_trc_plan_src_traslados'),
     fetchAllRows('v_trc_sqvi_retiros_fabrica'),
     fetchAllRows('v_trc_sqvi_pedidos_venta_1003'),
-    fetchAllRows('v_trc_sqvi_pedidos_traslados_4000'),
+    fetchAllRows('v_trc_plan_src_traslados_4000'),
     fetchAllRows('abast_calendario'),
     loadEstadosRetiro(),
     loadExclusionesPlan(),
@@ -4182,7 +4374,7 @@ async function renderPlanCarga(stage, opts = {}) {
     const dc = String(r.doc_compr ?? '').trim();
     const pos = String(r.pos ?? '').trim();
     if (!dc || !String(r.material ?? '').trim()) return; // excluir subtotales
-    const k = `${dc}|${pos}`;
+    const k = `${dc}|${pos}|${String(r.entrega ?? '').trim()}`;   // una fila por posición de entrega
     const existing = _t4000Map.get(k);
     // Preferir la fila con fecha válida (no 00.00.0000 ni vacía)
     const esValida = fe => fe && String(fe).trim() !== '' && String(fe).trim() !== '00.00.0000';
@@ -4215,7 +4407,7 @@ async function renderPlanCarga(stage, opts = {}) {
     const capRef = CAP_CAMION_DEFAULT;
     const skuInfoCe = skuInfoByCentro[ce] || {};
     const det = { quiebre: [], stock: [], revex: [], cross: [], ventaCons: [], retiro: [], cliente: [], fabSuc: [], fabCli: [] };
-    const itemT = (r, t) => ({ pt: r.doc_compr, material: r.material, nombre: r.texto_breve, fecha: r.fecha_confirmada, ctd: r.ctd_confirmada, ton: t, pv: r.documento, usuario: r.creado_por });
+    const itemT = (r, t) => ({ pt: r.doc_compr, material: r.material, nombre: r.texto_breve, fecha: r.fecha_confirmada, ctd: r.ctd_confirmada, ton: t, pv: r.documento, usuario: r.creado_por, entrega_entrante: r.entrega || '' });
     // Clasifica una línea de Traslados 1003 según prioridadTraslado (usuario
     // creador / clasificación ABC / quiebre) — ver AJUSTES PRIORIZACIÓN 2026-09-18.
     const clasificaTraslado = r => {
@@ -4291,7 +4483,7 @@ async function renderPlanCarga(stage, opts = {}) {
       .filter(r => { const co = coordTraslados.get(String(r.doc_compr ?? '').trim()); if (co && co.tipo_entrega === 'CD-CLIENTE') { crossCdCli.push({ r, co }); return false; } return true; })
       .reduce((sum, r) => { const pend = parseNum(r.ctd_pedido) - parseNum(r.ctd_entregada); const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), pend);
         const tonBruto = calcTon(parseNum(r.peso_neto), pend), tonVol = calcTon(parseNum(r.tamano_dimens), pend);
-        det.cross.push({ pt: r.doc_compr, origen: String(r.cesu ?? '').trim(), ceDestino: String(r.ce ?? '').trim(), almDestino: String(r.alm ?? '').trim(), material: r.material, nombre: r.texto_breve, fecha: r.fe_entrega, ctdPend: pend, ton: t, pv: r.documento, tonBruto, tonVol }); return sum + t; }, 0);
+        det.cross.push({ entrega_entrante: r.entrega || '', pt: r.doc_compr, origen: String(r.cesu ?? '').trim(), ceDestino: String(r.ce ?? '').trim(), almDestino: String(r.alm ?? '').trim(), material: r.material, nombre: r.texto_breve, fecha: r.fe_entrega, ctdPend: pend, ton: t, pv: r.documento, tonBruto, tonVol }); return sum + t; }, 0);
 
     // 5. Notas de Venta 1003 (ofvta = centro): requiere ruta, excluye RETIRA.
     //    >26T  ⇒ CAMIÓN CLIENTE (directo al cliente, no se consolida). Fecha -3/+3.
