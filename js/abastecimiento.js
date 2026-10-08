@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610072130';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610072130';
-import { getDatabase } from './data.js?v=202610072130';
+import { supabase } from './supabase-client.js?v=202610080741';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610080741';
+import { getDatabase } from './data.js?v=202610080741';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610072130';
-import { confirmar } from './confirmar.js?v=202610072130';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610080741';
+import { confirmar } from './confirmar.js?v=202610080741';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -3730,9 +3730,10 @@ V2.seguimiento_carga = {
       const rows = c.lineas.map(x => {
         const doc = String(x.documento ?? '').trim();
         const nuevo = doc !== prev; prev = doc;
-        const sub = x.n_entrega ? 'Entrega ' + x.n_entrega : (x.pedido_venta && x.pedido_venta !== doc ? 'PV ' + x.pedido_venta : '');
+        const sub = x.pedido_venta && x.pedido_venta !== doc ? 'PV ' + x.pedido_venta : '';
         return [
           nuevo ? `<b class="sv-mono">${escV2(doc || '—')}</b>${sub ? `<div class="sv-sub" style="margin:0">${escV2(sub)}</div>` : ''}` : '',
+          x.n_entrega ? `<span class="sv-mono">${escV2(x.n_entrega)}</span>` : '<span class="sv-muted">—</span>',
           nuevo ? escV2(x.tipo_carga || '') : '',
           `<span class="sv-mono">${escV2(x.material || '')}</span>`,
           escV2(x.nombre || ''),
@@ -3745,7 +3746,7 @@ V2.seguimiento_carga = {
         sub: [[c.id_transporte, c.transportista].filter(Boolean).join(' · '), [c.chofer_nombre, c.chofer_rut, c.chofer_telefono].filter(Boolean).join(' · '),
           c.dir && c.destino ? c.destino : '', c.fecha_carga && c.fecha_carga !== r.fecha_carga ? 'carga ' + fmtFechaISO(c.fecha_carga) : '',
           c.programado_por ? 'programado por ' + c.programado_por : ''].filter(Boolean).join(' — '),
-        head: [['Pedido / OC'], ['Tipo de carga'], ['SKU'], ['Nombre'], ['Cantidad', 'r'], ['Ton', 'r']],
+        head: [['Pedido / OC'], ['Entrega'], ['Tipo de carga'], ['SKU'], ['Nombre'], ['Cantidad', 'r'], ['Ton', 'r']],
         rows,
       };
     }),
@@ -3962,7 +3963,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610072130');
+    const m = await import('./ind-plan-carga.js?v=202610080741');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
@@ -5151,6 +5152,7 @@ async function renderPlanCarga(stage, opts = {}) {
     } else {
       await supabase.from('abast_plan_camion_programado').delete().eq('fecha', hoyIsoPlan).eq('cd_origen', planOrigen).eq('ce', ce).eq('camion', 2);
       await quitarSeguimiento(ce, 2);
+      await aplicarFotoServidor(ce, 2);
       const { error } = await supabase.from('abast_plan_segundo_camion').delete().eq('fecha', hoyIsoPlan).eq('cd_origen', planOrigen).eq('ce', ce);
       if (error) { showAlert('No se pudo quitar el 2º camión: ' + error.message, 'error'); return; }
       // Al quitarlo, la carga vuelve al llenado automático (se borran asignaciones de la sucursal).
@@ -5188,8 +5190,8 @@ async function renderPlanCarga(stage, opts = {}) {
     if (!(await guardarProgramado(ce, 1, t))) return;
     await leerProgramados();
     refrescarFill(r);
-    { const sg = segCamionCD(r, 1); if (sg) await guardarSeguimiento(sg); }
-    showAlert(`Camión CD de ${r.nombre} programado (${t.patente_camion}).`, 'success');
+    await guardarFotoCamion(r, 1);
+    showAlert(`Camión CD de ${r.nombre} programado (${t.patente_camion}): foto guardada y enviada a Seguimiento de Carga.`, 'success');
     draw();
   }
   async function quitarProgramacion(ce, cam = 1) {
@@ -5201,6 +5203,7 @@ async function renderPlanCarga(stage, opts = {}) {
     const { error } = await supabase.from('abast_plan_camion_programado').delete().eq('fecha', hoyIsoPlan).eq('cd_origen', planOrigen).eq('ce', ce).eq('camion', cam);
     if (error) { showAlert('No se pudo quitar la programación: ' + error.message, 'error'); return; }
     await quitarSeguimiento(ce, cam);
+    await aplicarFotoServidor(ce, cam);
     // Si no hay 2º camión aceptado, la carga confirmada vuelve al llenado automático.
     if (cam === 1 && !segAcept.has(ce) && !estadoCierre().cerrado) await supabase.from('abast_plan_linea_camion').delete().eq('fecha', hoyIsoPlan).eq('cd_origen', planOrigen).eq('ce', ce).eq('origen', 'confirmado');
     showAlert(`Programación del ${nom} de ${r.nombre} quitada.`, 'success');
@@ -5217,8 +5220,9 @@ async function renderPlanCarga(stage, opts = {}) {
     if (!t) return;
     if (!(await guardarProgramado(ce, 2, t))) return;
     await leerProgramados();
-    { const sg = segCamionCD(r, 2); if (sg) await guardarSeguimiento(sg); }
-    showAlert(`2º camión de ${r.nombre} programado (${t.patente_camion}).`, 'success');
+    refrescarFill(r);
+    await guardarFotoCamion(r, 2);
+    showAlert(`2º camión de ${r.nombre} programado (${t.patente_camion}): foto guardada y enviada a Seguimiento de Carga.`, 'success');
     draw();
   }
   // (4-oct-2026, Jordan) Editar el transporte de un camión ya programado. Cerrado el plan
@@ -5237,7 +5241,7 @@ async function renderPlanCarga(stage, opts = {}) {
       .eq('fecha', p.fecha || hoyIsoPlan).eq('cd_origen', planOrigen).eq('ce', ce).eq('camion', cam);
     if (error) { showAlert('No se pudo actualizar el transporte: ' + error.message, 'error'); return; }
     await leerProgramados();
-    { const sg = segCamionCD(r, cam); if (sg) await guardarSeguimiento(sg, estadoCierre().cerrado); }
+    { const sg = segCamionCD(r, cam); if (sg) await guardarSeguimiento(sg, true); }   // (7-oct-2026) foto congelada: sólo cabecera
     showAlert(`Transporte del ${cam === 2 ? '2º camión' : 'camión CD'} de ${r.nombre} actualizado.`, 'success');
     draw();
   }
@@ -5414,13 +5418,17 @@ async function renderPlanCarga(stage, opts = {}) {
 
   // ── Panel lateral (sólo lectura) ─────────────────────────────────────────
   function tablaItems(tipo, items, color, accFn) {
-    const head = { T: ['Pedido', 'Material', 'Fecha', 'Cant.', 'Ton'], V: ['Pedido de venta', 'Material', 'Fecha', 'Cant.', 'Ton'], R: ['Orden de compra', 'Material', 'Fecha retiro', 'Cant.', 'Ton'], X: ['Pedido traslado', 'Material', 'Fecha', 'Cant.', 'Ton'] }[tipo];
+    // (7-oct-2026, Jordan) Columna N° de entrega (traslados/crossdocking/revex: entrega SAP; ventas: entrega
+    // coordinada; retiros: entrega entrante).
+    const head = { T: ['Pedido', 'Entrega', 'Material', 'Fecha', 'Cant.', 'Ton'], V: ['Pedido de venta', 'Entrega', 'Material', 'Fecha', 'Cant.', 'Ton'], R: ['Orden de compra', 'Entrega', 'Material', 'Fecha retiro', 'Cant.', 'Ton'], X: ['Pedido traslado', 'Entrega', 'Material', 'Fecha', 'Cant.', 'Ton'] }[tipo];
+    const ent = d => String(d.entrega_entrante || d.entrega || '').trim();
     const sub = d => tipo === 'V' ? (d.cliente || '') : tipo === 'R' ? (d.prov || '') : (d._motivo ? d._motivo + ' · ' + (d.material || '') : (d.material || ''));
     const doc = d => tipo === 'V' ? d.pv : tipo === 'R' ? d.oc : d.pt;
     const cant = d => tipo === 'X' ? fmtNum(d.ctdPend, 0) : tipo === 'T' ? escapeHtml(d.ctd ?? '') : fmtNum(parseNum(d.cant), 0);
-    return `<div class="pc-tbl"><table class="sv-table"><thead><tr>${head.map((h, i) => `<th class="${i >= 3 ? 'r' : ''}">${escapeHtml(h)}</th>`).join('')}${accFn ? '<th class="r">Mover</th>' : ''}</tr></thead>
+    return `<div class="pc-tbl"><table class="sv-table"><thead><tr>${head.map((h, i) => `<th class="${i >= 4 ? 'r' : ''}">${escapeHtml(h)}</th>`).join('')}${accFn ? '<th class="r">Mover</th>' : ''}</tr></thead>
       <tbody>${items.map(d => `<tr class="${d._enCamion === false ? (d._camion2 ? 'is-seg' : 'is-fuera') : ''}" title="${d._enCamion === false ? (d._camion2 ? 'Va en el 2º camión (opcional)' : 'No cabe: queda para el próximo plan') : ''}">
         <td><span class="sv-mono">${escapeHtml(String(doc(d) ?? ''))}</span></td>
+        <td>${ent(d) ? `<span class="sv-mono">${escapeHtml(ent(d))}</span>` : '<span class="sv-muted">—</span>'}</td>
         <td><div class="pc-mat"><b>${escapeHtml(d.nombre || '')}</b><small>${escapeHtml(sub(d))}</small></div></td>
         <td class="sv-mono">${escapeHtml(d.fecha || '')}</td><td class="r">${cant(d)}</td><td class="r"><b>${fmtNum(d.ton, 2)}</b></td>${accFn ? `<td class="r" style="white-space:nowrap">${accFn(d)}</td>` : ''}</tr>`).join('')}</tbody></table></div>`;
   }
@@ -5541,7 +5549,7 @@ async function renderPlanCarga(stage, opts = {}) {
 
   // ── Descarga CSV (formato 4.8 + columnas de referencia) ─────────────────
   const CSV_V21 = ['Origen', 'Centro destino', 'Sucursal', 'Estado plan', 'Horizonte', 'Día objetivo', 'Camión', 'Categoría', 'Documento', 'Material', 'Detalle', 'Fecha', 'Cantidad', 'Toneladas', 'En camión', '% carga camión', 'Estado sucursal',
-    'Id Material', 'Pedido de Venta', 'Proveedor', 'Entrega Entrante', 'Ruta', 'Comuna', 'Tipo Expedición', 'Ton Bruto', 'Ton Vol', 'Usuario', 'Motivo Prioridad', 'Entra a indicador',
+    'Id Material', 'Pedido de Venta', 'Proveedor', 'N° Entrega', 'Ruta', 'Comuna', 'Tipo Expedición', 'Ton Bruto', 'Ton Vol', 'Usuario', 'Motivo Prioridad', 'Entra a indicador',
     'Patente camión', 'Patente carro', 'Transporte', 'Chofer'];
   const CAT_CSV = ['REVEX', 'Venta directa', 'Retiro proveedor', 'Crossdocking', 'Quiebre y priorizado', 'Abastecimiento'];
   function filasCsvV21(r, cerrado) {
@@ -5554,7 +5562,7 @@ async function renderPlanCarga(stage, opts = {}) {
       const det = tipo === 'V' ? (d.cliente || '') : tipo === 'R' ? (d.prov || '') : (d._motivo || '');
       const cant = tipo === 'X' ? fmtNum(d.ctdPend, 1) : tipo === 'T' ? (d.ctd ?? '') : fmtNum(parseNum(d.cant), 1);
       return base.concat([camion, cat, doc ?? '', d.nombre || '', det, d.fecha || '', cant, fmtNum(d.ton, 2), enCam, pctTxt, estado,
-        d.material || '', tipo === 'V' ? '' : (d.pv || ''), tipo === 'R' ? (d.prov || '') : '', d.entrega_entrante || '', d.ruta || '', d.comuna || '', d.tipoExp || '',
+        d.material || '', tipo === 'V' ? '' : (d.pv || ''), tipo === 'R' ? (d.prov || '') : '', d.entrega_entrante || d.entrega || '', d.ruta || '', d.comuna || '', d.tipoExp || '',
         fT(d.tonBruto), fT(d.tonVol), d.usuario || '', d._motivo || '']);
     };
     const out = [];
@@ -5586,7 +5594,7 @@ async function renderPlanCarga(stage, opts = {}) {
   const r4 = n => Math.round((Number(n) || 0) * 10000) / 10000;
   const lineaCorreo = (cat, tipo, d) => ({ cat, doc: String((tipo === 'V' ? d.pv : tipo === 'R' ? d.oc : d.pt) ?? '').trim(), material: String(d.material ?? ''), nombre: d.nombre || '',
     cant: r4(tipo === 'X' ? d.ctdPend : parseNum(tipo === 'T' ? d.ctd : d.cant)), ton: r4(d.ton), fecha: d.fecha || '',
-    pv: tipo === 'V' ? '' : String(d.pv ?? ''), prov: d.prov || '', cliente: d.cliente || '', entrega_entrante: d.entrega_entrante || '',
+    pv: tipo === 'V' ? '' : String(d.pv ?? ''), prov: d.prov || '', cliente: d.cliente || '', entrega_entrante: d.entrega_entrante || d.entrega || '',
     ruta: d.ruta || '', comuna: d.comuna || '', ton_bruto: d.tonBruto == null ? null : r4(d.tonBruto), ton_vol: d.tonVol == null ? null : r4(d.tonVol) });
   function estadoCorreoFila(r) {
     marcarCapacidadCD(r);
@@ -5651,6 +5659,29 @@ async function renderPlanCarga(stage, opts = {}) {
     }));
     return out;
   }
+  // (7-oct-2026, Jordan) Al programar (coordinar) un camión se guarda su FOTO: contenido del camión
+  // (abast_plan_camion_programado.lineas, base del correo) y registro en Seguimiento de Carga. La foto
+  // queda congelada: la sincronización automática ya no la reescribe (sólo la completa si falta), así
+  // las entregas que después reciben DT o cambian en SAP no alteran lo coordinado. Editar el transporte
+  // sólo actualiza la cabecera; quitar la programación y volver a programar toma una foto nueva.
+  async function guardarFotoCamion(r, cam) {
+    try {
+      const c = (estadoCorreoFila(r).cams || []).find(x => x.cam === cam);
+      if (c) {
+        const { error } = await supabase.rpc('fn_abast_guardar_lineas_camion', { p_fecha: hoyIsoPlan, p_cd: planOrigen, p_ce: r.ce, p_camion: cam, p_ton: c.ton, p_pct: c.pct, p_lineas: c.lineas });
+        if (error) console.warn('Plan de carga: no se pudo guardar la foto del camión', error.message);
+      }
+      const sg = segCamionCD(r, cam);
+      if (sg) await guardarSeguimiento(sg);
+      await aplicarFotoServidor(r.ce, cam);
+    } catch (e) { console.warn('Plan de carga: foto del camión', e); }
+  }
+  // Foto oficial (abast_plan_carga_snapshot): aplica la foto del camión programado a cualquier hora;
+  // sin programación, deja el camión como no medido.
+  async function aplicarFotoServidor(ce, cam) {
+    const { error } = await supabase.rpc('fn_abast_foto_camion_programado', { p_fecha: hoyIsoPlan, p_cd: planOrigen, p_ce: ce, p_camion: cam });
+    if (error) console.warn('Plan de carga: no se pudo aplicar la foto oficial', error.message);
+  }
   async function guardarSeguimiento(sg, soloCab = false) {
     const { error } = await supabase.rpc('fn_abast_guardar_seguimiento', { p_cab: sg.cab, p_lineas: soloCab ? null : sg.lineas });
     if (error) console.warn('Seguimiento de Carga: no se pudo guardar', error.message);
@@ -5669,13 +5700,17 @@ async function renderPlanCarga(stage, opts = {}) {
     if (!memo.has(kEx)) {
       const { data } = await supabase.from('abast_seguimiento_camion').select('ce,tipo_camion,clave').eq('fecha_plan', hoyIsoPlan).eq('cd_origen', planOrigen);
       memo.set(kEx, (data || []).filter(x => !['Camión CD', '2º camión'].includes(x.tipo_camion) && !String(x.clave || '').startsWith('COORD|')).map(x => `${String(x.ce).trim()}|${x.tipo_camion}|${x.clave}`));
+      memo.set(kEx + '|todos', new Set((data || []).map(x => `${String(x.ce).trim()}|${x.tipo_camion}|${x.clave}`)));
     }
     const existentes = memo.get(kEx);
+    const yaFoto = memo.get(kEx + '|todos') || new Set();
     resultado.forEach(r => {
       const { fila, cams: cs } = estadoCorreoFila(r);
       // Seguimiento de Carga: camiones CD / 2º programados y directos con patente.
       const sgs = [1, 2].map(cam => segCamionCD(r, cam)).filter(Boolean).concat(segDirectos(r));
-      sgs.forEach(sg => { const ks = `seg|${hoyIsoPlan}|${planOrigen}|${r.ce}|${sg.cab.tipo_camion}|${sg.cab.clave}`, ss = JSON.stringify(sg); if (memo.get(ks) !== ss) segs.push({ k: ks, sig: ss, sg }); });
+      // (7-oct-2026) Foto congelada: sólo se registra en Seguimiento lo que aún no tiene foto.
+      sgs.forEach(sg => { const kf = `${r.ce}|${sg.cab.tipo_camion}|${sg.cab.clave}`; if (yaFoto.has(kf)) return;
+        const ks = `seg|${hoyIsoPlan}|${planOrigen}|${r.ce}|${sg.cab.tipo_camion}|${sg.cab.clave}`, ss = JSON.stringify(sg); if (memo.get(ks) !== ss) segs.push({ k: ks, sig: ss, sg, kf }); });
       const vig = sgs.filter(sg => !['Camión CD', '2º camión'].includes(sg.cab.tipo_camion)).map(sg => `${sg.cab.tipo_camion}|${sg.cab.clave}`).sort();
       const kv2 = `segv|${hoyIsoPlan}|${planOrigen}|${r.ce}`, sv = JSON.stringify(vig);
       // Sólo se limpia si hay un directo guardado que ya no existe en el plan (coordinación anulada).
@@ -5683,7 +5718,8 @@ async function renderPlanCarga(stage, opts = {}) {
       if (sobran.length && memo.get(kv2) !== sv) limp.push({ k: kv2, sig: sv, ce: r.ce, vig });
       const k = `${hoyIsoPlan}|${planOrigen}|${r.ce}`, sig = JSON.stringify(fila);
       if (memo.get(k) !== sig) filas.push({ k, sig, fila });
-      cs.forEach(c => { const kc = `${k}|${c.cam}`, sc = JSON.stringify(c); if (memo.get(kc) !== sc) cams.push({ k: kc, sig: sc, ce: r.ce, c }); });
+      cs.forEach(c => { const pg = progMap.get(`${r.ce}|${c.cam}`); if (pg && Array.isArray(pg.lineas) && pg.lineas.length) return;   // foto ya tomada
+        const kc = `${k}|${c.cam}`, sc = JSON.stringify(c); if (memo.get(kc) !== sc) cams.push({ k: kc, sig: sc, ce: r.ce, c }); });
     });
     if (!filas.length && !cams.length && !segs.length && !limp.length) return;
     const quien = await getUserEmail(), ahora = new Date().toISOString();
@@ -5705,7 +5741,7 @@ async function renderPlanCarga(stage, opts = {}) {
       const { error } = await supabase.rpc('fn_abast_limpiar_seguimiento_directos', { p_fecha: hoyIsoPlan, p_cd: planOrigen, p_ce: x.ce, p_vigentes: vigCo });
       if (!error) { memo.set(x.k, x.sig); memo.set(kEx, existentes.filter(e => !e.startsWith(x.ce + '|') || x.vig.includes(e.slice(x.ce.length + 1)))); }
     }
-    for (const x of segs) { if (await guardarSeguimiento(x.sg)) memo.set(x.k, x.sig); }
+    for (const x of segs) { if (await guardarSeguimiento(x.sg)) { memo.set(x.k, x.sig); yaFoto.add(x.kf); } }
   }
 
   function draw() {
