@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610081942';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610081942';
-import { getDatabase } from './data.js?v=202610081942';
+import { supabase } from './supabase-client.js?v=202610082027';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610082027';
+import { getDatabase } from './data.js?v=202610082027';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610081942';
-import { confirmar } from './confirmar.js?v=202610081942';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610082027';
+import { confirmar } from './confirmar.js?v=202610082027';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -4053,7 +4053,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610081942');
+    const m = await import('./ind-plan-carga.js?v=202610082027');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
@@ -5687,19 +5687,40 @@ async function renderPlanCarga(stage, opts = {}) {
     const ents = await fetchAllRows('v_abast_entregas_disponibles');
     const txt = v => String(v ?? '').trim();
     const k3 = (e, d, m) => `${txt(e)}|${txt(d)}|${txt(m)}`, k2 = (d, m) => `${txt(d)}|${txt(m)}`;
-    const enPlan = new Set(), enPlan2 = new Set(), detMap = new Map(), ceSet = new Map();
+    // (8-oct-2026, Jordan) Sólo cuentan como consideradas las líneas de camiones PROGRAMADOS (con transporte):
+    // camión CD / 2º camión con datos de transporte (según su foto) y directos con transporte confirmado.
+    const enPlan = new Set(), enPlan2 = new Set(), detMap = new Map(), dirMap = new Map(), ceSet = new Map();
     resultadoTodos.forEach(r => {
       ceSet.set(txt(r.ce), r);
       marcarCapacidadCD(r);
       const acept = segAcept.has(r.ce);
+      const fotoKeys = cam => {
+        const p = progMap.get(`${r.ce}|${cam}`);
+        if (!p) return null;
+        const set = new Set();
+        (Array.isArray(p.lineas) ? p.lineas : []).forEach(l => String(l.entrega_entrante || '').split(',').map(txt).filter(Boolean)
+          .forEach(e => set.add(k3(e, l.doc, l.material))));
+        return set;
+      };
+      const f1 = fotoKeys(1), f2 = fotoKeys(2);
+      [f1, f2].forEach(f => f && f.forEach(k => enPlan.add(k)));
       CAT_V2.forEach(c => (r.det[c.k] || []).forEach(d => {
         const e = txt(d.entrega_entrante || d.entrega), doc = txt(d.pt ?? d.oc ?? d.pv), mat = txt(d.material);
         if (!e) return;
         const key = k3(e, doc, mat);
-        if (d._enCamion || (d._camion2 && acept)) enPlan.add(key);
-        else detMap.set(key, d._camion2 ? '2º camión sugerido sin aceptar' : d._manual === 0 ? 'Sacada manualmente del camión (no carga)' : 'No cabe en el camión (queda para el próximo plan)');
+        if (enPlan.has(key)) return;
+        let m;
+        if (d._enCamion) m = f1 ? (f1.size ? 'No quedó en la foto del camión CD programado' : null) : 'Va en el camión CD sin programar (falta transporte)';
+        else if (d._camion2 && acept) m = f2 ? (f2.size ? 'No quedó en la foto del 2º camión programado' : null) : 'Va en el 2º camión aceptado sin programar (falta transporte)';
+        else m = d._camion2 ? '2º camión sugerido sin aceptar' : d._manual === 0 ? 'Sacada manualmente del camión (no carga)' : 'No cabe en el camión (queda para el próximo plan)';
+        if (m === null) enPlan.add(key);   // programado sin foto guardada: se toma el cálculo
+        else detMap.set(key, m);
       }));
-      DIR_V2.forEach(t => (r[t.lista] || []).forEach(cm => (cm.items || []).forEach(d => enPlan2.add(k2(d.pt ?? d.oc ?? d.pv, d.material)))));
+      DIR_V2.forEach(t => (r[t.lista] || []).forEach(cm => (cm.items || []).forEach(d => {
+        const k = k2(d.pt ?? d.oc ?? d.pv, d.material);
+        if (cm.patente && !porConfirmar(cm)) enPlan2.add(k);
+        else dirMap.set(k, cm.patente ? `Camión ${t.csv} con transportista por confirmar` : `Camión ${t.csv} sin transporte coordinado`);
+      })));
     });
     const EXCL = { TRASLADO: 'traslados_1003', CROSSDOCK: 'crossdock_4000', REVEX: 'traslados_revex' };
     const filas = [];
@@ -5716,6 +5737,7 @@ async function renderPlanCarga(stage, opts = {}) {
       else if (mat.startsWith('7')) motivo = 'Material 7… no se considera';
       else if (!ceSet.has(ce)) motivo = 'Destino sin plan desde este origen';
       else if (detMap.has(key)) motivo = detMap.get(key);
+      else if (dirMap.has(k2(doc, mat))) motivo = dirMap.get(k2(doc, mat));
       else if (tipo === 'CROSSDOCK' && coordTraslados.get(doc)?.tipo_entrega === 'CD-CLIENTE') motivo = 'CD-Cliente coordinado para otra fecha';
       else motivo = 'Fuera de la ventana del plan (fecha / horizonte)';
       filas.push({ ...x, _motivo: motivo, _suc: getNombreCentro(ce) || '' });
@@ -5742,7 +5764,7 @@ async function renderPlanCarga(stage, opts = {}) {
     document.body.insertAdjacentHTML('beforeend', `<div id="entnp-bg" class="fixed inset-0 bg-black/40 flex items-center justify-center z-[9999]">
       <div class="bg-white rounded-xl shadow-2xl p-6 w-[1180px] max-w-[96vw] max-h-[88vh] overflow-y-auto flex flex-col gap-3">
         <div class="flex items-center justify-between gap-3"><div><h3 class="text-base font-bold text-gray-800">Entregas creadas no consideradas en el Plan de Carga</h3>
-          <p class="text-[12px] text-secondary">Origen ${escapeHtml(planOrigen)} · ${filas.length} líneas · ${nEnt} entregas · ${nPed} pedidos de traslado · ${t1(tonT)} t. Entregas vigentes sin DT que no van en el camión CD, en el 2º camión aceptado ni en un camión directo.</p></div>
+          <p class="text-[12px] text-secondary">Origen ${escapeHtml(planOrigen)} · ${filas.length} líneas · ${nEnt} entregas · ${nPed} pedidos de traslado · ${t1(tonT)} t. Entregas vigentes sin DT que no van en un camión programado (camión CD / 2º camión con transporte, o directo con transporte confirmado).</p></div>
           <div class="flex items-center gap-2"><button class="sv-btn" id="entnp-csv" ${filas.length ? '' : 'disabled'}><span class="material-symbols-outlined">download</span>Descargar (CSV)</button>
           <button id="entnp-cerrar" class="text-secondary hover:text-on-surface"><span class="material-symbols-outlined">close</span></button></div></div>
         ${resumen ? `<div style="display:flex;flex-wrap:wrap">${resumen}</div>` : ''}
