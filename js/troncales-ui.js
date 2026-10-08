@@ -32,7 +32,7 @@ export function tonHtml(n) {
 }
 
 // Encabezado del shell: fecha y hora de la última actualización SAP de la vista
-import { confirmar } from './confirmar.js?v=202610081937';
+import { confirmar } from './confirmar.js?v=202610081942';
 export function setUltimaActualizacion(ts) {
   const el = document.getElementById('sv-upd');
   if (!el) return;
@@ -229,7 +229,13 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
     const MAX = 1500;
     const shown = filt.slice(0, MAX);
     const selId = st.drawer;
-    const cols = enFila ? AV.cols.concat([{ label: 'Plan de carga', html: r => celdaPlan(r) }]) : AV.cols;
+    let cols = enFila ? AV.cols.concat([{ label: 'Plan de carga', html: r => celdaPlan(r) }]) : AV.cols;
+    // (8-oct-2026) Acciones en la fila principal (AV.filaAcciones(r) → [{ label, icon, run, tono }])
+    if (AV.filaAcciones) cols = cols.concat([{ label: 'Acciones', html: r => {
+      const acc = AV.filaAcciones(r) || [];
+      return acc.length ? `<div style="display:flex;flex-direction:column;gap:4px;align-items:flex-start">${acc.map((a, i) =>
+        `<button class="sv-btn" data-facc="${esc(r.__rid)}" data-facc-i="${i}" title="${esc(a.title || a.label)}" style="padding:2px 8px;font-size:11px;white-space:nowrap${a.tono === 'peligro' ? ';color:#b91c1c' : ''}">${a.icon ? `<span class="material-symbols-outlined">${a.icon}</span>` : ''}${esc(a.label)}</button>`).join('')}</div>` : '';
+    } }]);
     const body = shown.length ? shown.map(r => {
       const id = rowId(r);
       const edge = AV.edge ? AV.edge(r) : null;
@@ -341,6 +347,17 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
       if (AV.onPlanChange) await AV.onPlanChange(rowsAll, ctx);
       draw();
     }));
+    stage.querySelectorAll('[data-facc]').forEach(b => b.addEventListener('click', async e => {
+      e.stopPropagation();
+      const r = rowsAll.find(x => rowId(x) === b.dataset.facc); if (!r) return;
+      const a = (AV.filaAcciones(r) || [])[+b.dataset.faccI]; if (!a || !a.run) return;
+      b.disabled = true;
+      try {
+        const res = await a.run(r, ctx);
+        if (res && res.recargar) { deps.clearRawCache(); renderTablaV2(stage, cfg, deps, viewKey); return; }
+        if (res && res.redibujar) draw();
+      } finally { b.disabled = false; }
+    }));
     accFila('[data-fila-excl]', excluirFila);
     accFila('[data-fila-reac]', reactivarFila);
     stage.querySelectorAll('tbody tr[data-row]').forEach(tr => tr.addEventListener('click', () => {
@@ -389,7 +406,7 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
     const btns = acciones.map((a, i) => `<button data-acc="${i}" class="${a.primary ? 'sv-btn-p' : 'sv-btn'}">${a.icon ? `<span class="material-symbols-outlined">${a.icon}</span>` : ''}${esc(a.label)}</button>`).join('');
 
     slot.innerHTML = `<div class="sv-dr-bg" data-close></div>
-      <aside class="sv-dr" role="dialog" aria-label="${esc(d.kind || 'Detalle')}">
+      <aside class="sv-dr" role="dialog" aria-label="${esc(d.kind || 'Detalle')}"${AV.drawerW ? ` style="width:${AV.drawerW}"` : ''}>
         <div class="sv-dr-h"><div style="flex:1;min-width:0">
           <div class="sv-dr-k">${esc(d.kind || '')}</div>
           <div class="sv-dr-t">${esc(d.title || id)}</div>
