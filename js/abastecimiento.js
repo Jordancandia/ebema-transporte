@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610081916';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610081916';
-import { getDatabase } from './data.js?v=202610081916';
+import { supabase } from './supabase-client.js?v=202610081922';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610081922';
+import { getDatabase } from './data.js?v=202610081922';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610081916';
-import { confirmar } from './confirmar.js?v=202610081916';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610081922';
+import { confirmar } from './confirmar.js?v=202610081922';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -1658,7 +1658,7 @@ function showCoordRetiroModal(row, ctx) {
 // ── Datos de transporte para programar un camión del Plan de Carga (3-oct-2026) ──
 // ini: datos actuales; otros: [{ lbl, patente_camion, chofer_rut }] camiones ya programados hoy
 // (para el aviso de choque). Devuelve el objeto de transporte o null si se cancela.
-function showTransporteCamionModal({ titulo, sub, ini = {}, otros = [] }) {
+function showTransporteCamionModal({ titulo, sub, ini = {}, otros = [], fechaDef = '' }) {
   return new Promise(async resolve => {
     let tr = { trans: [], transTodos: [], choferes: [], camiones: [] };
     try { tr = await loadTransportistasCoord(); } catch (_) { /* sin maestro */ }
@@ -1671,6 +1671,8 @@ function showTransporteCamionModal({ titulo, sub, ini = {}, otros = [] }) {
       choferNombre: ini.chofer_nombre || '', choferRut: ini.chofer_rut || '', choferTel: ini.chofer_telefono || '',
       patCamion: ini.patente_camion || '', patCarro: ini.patente_carro || '', err: false,
       q: '', open: false, mRut: '', mTel: '', mEmail: '',
+      // (8-oct-2026, Jordan) Día de carga: se elige y se confirma al programar.
+      fechaCarga: String(ini.fecha_carga || fechaDef || '').slice(0, 10),
     };
     const wrap = document.createElement('div');
     wrap.id = 'coord-modal-bg';
@@ -1688,7 +1690,7 @@ function showTransporteCamionModal({ titulo, sub, ini = {}, otros = [] }) {
     const sel = () => transDe(st.idTrans);
     const faltanSel = () => { const t = sel(); return t ? faltan(t) : []; };
     const campoMaestro = { RUT: 'mRut', 'teléfono': 'mTel', correo: 'mEmail' };
-    const REQ = ['choferNombre', 'choferRut', 'choferTel', 'patCamion'];
+    const REQ = ['fechaCarga', 'choferNombre', 'choferRut', 'choferTel', 'patCamion'];
     const faltantes = () => {
       const f = REQ.filter(k => !String(st[k]).trim());
       if (!sel()) f.unshift('idTrans');
@@ -1749,7 +1751,11 @@ function showTransporteCamionModal({ titulo, sub, ini = {}, otros = [] }) {
           <button class="sv-iconbtn" data-cx title="Cerrar (Esc)"><span class="material-symbols-outlined">close</span></button></div>
         <div class="sv-dr-b" style="gap:16px">
           ${falt.length ? '<div class="sv-note-box" style="background:#ffdad6;color:#93000a;font-weight:700">Completa los campos obligatorios marcados en rojo.</div>' : ''}
-          <div class="sv-sub" style="margin:0;max-width:none">Elige el transportista del maestro de transporte; luego el chofer y las patentes. Al guardar, el camión queda programado para carga.</div>
+          <div class="sv-sub" style="margin:0;max-width:none">Elige el día de carga y el transportista del maestro de transporte; luego el chofer y las patentes. Al confirmar, el camión queda programado para carga.</div>
+          <div style="max-width:260px">${lbl('Fecha de carga', 'fechaCarga', true)}
+            <label class="sv-inp" style="width:100%;box-sizing:border-box;${bad('fechaCarga') ? 'border-color:#b5000b' : ''}"><span class="material-symbols-outlined">event</span>
+              <input type="date" data-k="fechaCarga" value="${escapeHtml(st.fechaCarga)}" style="width:100%;border:none;background:transparent;font:inherit;outline:none"></label>
+            ${fechaDef && st.fechaCarga && st.fechaCarga !== String(fechaDef).slice(0, 10) ? `<div class="sv-sub" style="margin:4px 0 0;color:#b45309">Distinto al día objetivo del plan (${escapeHtml(fmtFechaISO(fechaDef))}).</div>` : ''}</div>
           <div>
             ${lbl('Transportista (maestro de transporte)', 'idTrans', true)}
             ${t && !st.open ? selHtml() : `
@@ -1778,9 +1784,10 @@ function showTransporteCamionModal({ titulo, sub, ini = {}, otros = [] }) {
         </div>
         <div class="sv-dr-f"><span class="sv-dr-note">* Obligatorio</span>
           <div style="display:flex;gap:8px"><button class="sv-btn" data-cx>Cancelar</button>
-          <button class="sv-btn-p" data-ok><span class="material-symbols-outlined">local_shipping</span>Programar camión</button></div></div>`;
+          <button class="sv-btn-p" data-ok><span class="material-symbols-outlined">local_shipping</span>Confirmar camión</button></div></div>`;
       panel.querySelectorAll('[data-cx]').forEach(b => b.addEventListener('click', () => fin(null)));
       panel.querySelectorAll('[data-k]').forEach(i => i.addEventListener('input', () => { st[i.dataset.k] = i.value; }));
+      panel.querySelector('[data-k="fechaCarga"]')?.addEventListener('change', e => { st.fechaCarga = e.target.value; draw(); });
       const wirePicks = () => panel.querySelectorAll('[data-tpick]').forEach(b => b.addEventListener('click', () => {
         const x = transDe(b.dataset.tpick);
         if (!x) return;
@@ -1824,7 +1831,12 @@ function showTransporteCamionModal({ titulo, sub, ini = {}, otros = [] }) {
           Object.assign(tsel, upd);
           showAlert(`Maestro actualizado: ${tsel.razonSocial} queda activo.`, 'success');
         }
+        // (8-oct-2026, Jordan) Confirmar el camión con sus datos y el día de carga.
+        const okConf = await confirmar(`¿Confirmar el camión?\n\n${titulo}\nDía de carga: ${fmtFechaISO(st.fechaCarga)}\nTransportista: ${tsel.id} · ${tsel.razonSocial || st.transportista}\nChofer: ${st.choferNombre.trim()} · ${st.choferRut.trim()} · ${st.choferTel.trim()}\nPatente camión: ${st.patCamion.trim().toUpperCase()}${st.patCarro.trim() ? ' · carro ' + st.patCarro.trim().toUpperCase() : ''}`,
+          { aceptar: 'Confirmar camión', tono: 'normal', icono: 'local_shipping' });
+        if (!okConf) { draw(); return; }
         fin({
+          fecha_carga: st.fechaCarga,
           id_transporte: String(tsel.id).trim(), transportista: String(tsel.razonSocial || st.transportista).trim(),
           chofer_nombre: st.choferNombre.trim(), chofer_rut: st.choferRut.trim(), chofer_telefono: st.choferTel.trim(),
           patente_camion: st.patCamion.trim().toUpperCase(), patente_carro: st.patCarro.trim().toUpperCase() || null,
@@ -3969,7 +3981,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610081916');
+    const m = await import('./ind-plan-carga.js?v=202610081922');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
@@ -5180,7 +5192,7 @@ async function renderPlanCarga(stage, opts = {}) {
     if (!PUEDE_TRANSPORTE) { showAlert('Sólo el perfil OWNER puede agregar o modificar los datos del transporte.', 'error'); return; }
     const f = refrescarFill(r);
     const t = await showTransporteCamionModal({ titulo: `Camión CD → ${r.nombre}`, sub: `${t1(f.cargado)} t de ${fmtNum(r.cap, 0)} t · día objetivo ${diaCorto(diaObj(r))}`,
-      ini: progMap.get(`${ce}|1`) || {}, otros: otrosProgramados(ce, 1) });
+      ini: progMap.get(`${ce}|1`) || {}, otros: otrosProgramados(ce, 1), fechaDef: isoLocal(diaObj(r)) });
     if (!t) return;
     const quien = await getUserEmail();
     const filas = new Map();
@@ -5223,7 +5235,7 @@ async function renderPlanCarga(stage, opts = {}) {
     if (!PUEDE_TRANSPORTE) { showAlert('Sólo el perfil OWNER puede agregar o modificar los datos del transporte.', 'error'); return; }
     if (!segAcept.has(ce)) { showAlert('Primero acepta el 2º camión.', 'error'); return; }
     const t = await showTransporteCamionModal({ titulo: `2º camión → ${r.nombre}`, sub: `${t1(r.tonSegundo)} t de ${fmtNum(r.cap, 0)} t · día objetivo ${diaCorto(diaObj(r))}`,
-      ini: progMap.get(`${ce}|2`) || {}, otros: otrosProgramados(ce, 2) });
+      ini: progMap.get(`${ce}|2`) || {}, otros: otrosProgramados(ce, 2), fechaDef: isoLocal(diaObj(r)) });
     if (!t) return;
     if (!(await guardarProgramado(ce, 2, t))) return;
     await leerProgramados();
@@ -5242,7 +5254,7 @@ async function renderPlanCarga(stage, opts = {}) {
     if (!PUEDE_TRANSPORTE) { showAlert('Sólo el perfil OWNER puede agregar o modificar los datos del transporte.', 'error'); return; }
     const t = await showTransporteCamionModal({ titulo: `${cam === 2 ? '2º camión' : 'Camión CD'} → ${r.nombre}`,
       sub: cerrado ? `Plan cerrado · edición OWNER` : `Editar datos del transporte · día objetivo ${diaCorto(diaObj(r))}`,
-      ini: p, otros: otrosProgramados(ce, cam) });
+      ini: p, otros: otrosProgramados(ce, cam), fechaDef: isoLocal(diaObj(r)) });
     if (!t) return;
     const { error } = await supabase.from('abast_plan_camion_programado').update({ ...t, editado_por: await getUserEmail(), editado_en: new Date().toISOString() })
       .eq('fecha', p.fecha || hoyIsoPlan).eq('cd_origen', planOrigen).eq('ce', ce).eq('camion', cam);
@@ -5264,7 +5276,7 @@ async function renderPlanCarga(stage, opts = {}) {
       if (PUEDE_TRANSPORTE)
         btns.push(`<button class="sv-btn" data-prog-quitar="${ceA}" data-prog-cam="${cam}"><span class="material-symbols-outlined">remove_circle</span>Quitar</button>`);
       const ed = p.editado_en ? `<br><small style="color:#5c5f61">Editado por ${escapeHtml(p.editado_por || '')} · ${escapeHtml(new Date(p.editado_en).toLocaleString('es-CL', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }))}</small>` : '';
-      return `<div class="pc-extra pc-seg2 is-ok"><span class="material-symbols-outlined">task_alt</span><div style="flex:1;min-width:0"><b>${nom} programado</b> · Patente ${escapeHtml(p.patente_camion)}${p.patente_carro ? ' · carro ' + escapeHtml(p.patente_carro) : ''}<br>
+      return `<div class="pc-extra pc-seg2 is-ok"><span class="material-symbols-outlined">task_alt</span><div style="flex:1;min-width:0"><b>${nom} programado</b> · Carga ${escapeHtml(cap1(diaCorto(p.fecha_carga ? parseISODate(p.fecha_carga) : diaObj(r))))} · Patente ${escapeHtml(p.patente_camion)}${p.patente_carro ? ' · carro ' + escapeHtml(p.patente_carro) : ''}<br>
         ${escapeHtml([p.id_transporte, p.transportista].filter(Boolean).join(' · '))} · Chofer ${escapeHtml([p.chofer_nombre, p.chofer_rut, p.chofer_telefono].filter(Boolean).join(' · '))}${ed}</div>${btns.length ? `<div style="display:flex;gap:6px;flex-wrap:wrap">${btns.join('')}</div>` : ''}</div>`;
     }
     if (cam === 1) {
@@ -5719,7 +5731,7 @@ async function renderPlanCarga(stage, opts = {}) {
     const lineas = [];
     CAT_V2.forEach(c => (r.det[c.k] || []).forEach(d => { if (cam === 1 ? d._enCamion : d._camion2) lineas.push(lineaSeg(TIPO_CARGA[c.k], c.tipo, d)); }));
     const ton = lineas.reduce((s2, x) => s2 + x.ton, 0);
-    return { cab: { fecha_plan: hoyIsoPlan, fecha_carga: isoLocal(diaObj(r)), cd_origen: planOrigen, ce: r.ce, tipo_camion: cam === 2 ? '2º camión' : 'Camión CD', clave: cam === 2 ? '2' : 'CD',
+    return { cab: { fecha_plan: hoyIsoPlan, fecha_carga: p.fecha_carga || isoLocal(diaObj(r)), cd_origen: planOrigen, ce: r.ce, tipo_camion: cam === 2 ? '2º camión' : 'Camión CD', clave: cam === 2 ? '2' : 'CD',
       origen: orNomPlan(), destino: `${r.ce} ${r.nombre}`, ton: r4(ton), cap: r.cap, pct: r.cap > 0 ? Math.round(ton / r.cap * 100) : 0,
       id_transporte: p.id_transporte || '', transportista: p.transportista || '', chofer_nombre: p.chofer_nombre || '', chofer_rut: p.chofer_rut || '',
       chofer_telefono: p.chofer_telefono || '', patente_camion: p.patente_camion || '', patente_carro: p.patente_carro || '' }, lineas };
