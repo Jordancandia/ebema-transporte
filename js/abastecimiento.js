@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610080756';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610080756';
-import { getDatabase } from './data.js?v=202610080756';
+import { supabase } from './supabase-client.js?v=202610081448';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610081448';
+import { getDatabase } from './data.js?v=202610081448';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610080756';
-import { confirmar } from './confirmar.js?v=202610080756';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610081448';
+import { confirmar } from './confirmar.js?v=202610081448';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -3820,7 +3820,7 @@ function cargarEntregasExcel() {
         }
         if (!filas.length) throw new Error('No se encontraron entregas en el archivo');
         const nEnt = new Set(filas.map(x => x[0])).size;
-        if (!await confirmar(`¿Cargar ${nEnt} entregas (${filas.length} líneas)?\n\nPasan a ser lo disponible para cargar en el Plan de Carga y se descuentan de los pedidos de traslado, crossdocking y revex.`,
+        if (!await confirmar(`¿Cargar ${nEnt} entregas (${filas.length} líneas)?\n\nPasan a ser lo disponible para cargar en el Plan de Carga y se descuentan de los pedidos de traslado, crossdocking y revex.\n\nEl archivo se toma como foto completa: las entregas vigentes sin DT de los mismos centros de expedición que NO vengan en el Excel se descartan.`,
           { aceptar: 'Cargar', tono: 'normal', icono: 'upload_file' })) { resolve(false); return; }
         const tot = { recibidas: 0, nuevas: 0, actualizadas: 0, sin_destino: 0 };
         for (let k = 0; k < filas.length; k += 1000) {
@@ -3829,7 +3829,13 @@ function cargarEntregasExcel() {
           ['recibidas', 'nuevas', 'actualizadas'].forEach(x => { tot[x] += Number(data?.[x] || 0); });
           tot.sin_destino = Number(data?.sin_destino || 0);
         }
-        showAlert(`Entregas cargadas: ${tot.nuevas} nuevas · ${tot.actualizadas} actualizadas` + (tot.sin_destino ? ` · ${tot.sin_destino} líneas sin destino` : ''), tot.sin_destino ? 'error' : 'success');
+        // (8-oct-2026) El Excel es la foto completa: entregas vigentes sin DT de los PsEx del archivo que no vienen en él se descartan
+        const psexSet = [...new Set(filas.map(x => x[6]).filter(Boolean))];
+        const { data: foto, error: eFoto } = await supabase.rpc('fn_abast_foto_entregas', { p: { k: filas.map(x => [x[0], x[1]]), psex: psexSet } });
+        if (eFoto) throw new Error('Entregas cargadas, pero falló la depuración de entregas ausentes: ' + eFoto.message);
+        const nDesc = Number(foto?.descartadas || 0), entDesc = (foto?.entregas || []);
+        clearRawCache();
+        showAlert(`Entregas cargadas: ${tot.nuevas} nuevas · ${tot.actualizadas} actualizadas` + (nDesc ? ` · ${nDesc} líneas de ${entDesc.length} entregas no incluidas en el Excel quedaron descartadas` : '') + (tot.sin_destino ? ` · ${tot.sin_destino} líneas sin destino` : ''), tot.sin_destino ? 'error' : 'success');
         resolve(true);
       } catch (err) { console.error(err); showAlert('Error al cargar entregas: ' + (err?.message || err), 'error'); resolve(false); }
     });
@@ -3963,7 +3969,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610080756');
+    const m = await import('./ind-plan-carga.js?v=202610081448');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
