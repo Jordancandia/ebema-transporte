@@ -11,9 +11,9 @@
 //  La recarga del Excel se procesa en el navegador y se envía en lotes compactos
 //  (RPC fn_maestro_productos_cargar), respetando los productos editados a mano.
 // ============================================================================
-import { supabase } from './supabase-client.js?v=202610081934';
+import { supabase } from './supabase-client.js?v=202610081937';
 import { escapeHtml, showAlert } from './utils.js';
-import { confirmar } from './confirmar.js?v=202610081934';
+import { confirmar } from './confirmar.js?v=202610081937';
 
 const PAGE = 50;
 const LOTE = 2000;

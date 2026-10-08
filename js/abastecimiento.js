@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610081934';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610081934';
-import { getDatabase } from './data.js?v=202610081934';
+import { supabase } from './supabase-client.js?v=202610081937';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610081937';
+import { getDatabase } from './data.js?v=202610081937';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610081934';
-import { confirmar } from './confirmar.js?v=202610081934';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610081937';
+import { confirmar } from './confirmar.js?v=202610081937';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -3635,7 +3635,8 @@ function agruparSeguimiento(rows) {
     const co = esCoord(r);
     // (8-oct-2026, Jordan) Cada coordinación va en su propia posición (fila), aunque comparta
     // transportista, chofer o patente con otra; los camiones del plan siguen agrupados por centro destino.
-    const k = `${r.fecha_plan}|${String(r.cd_origen ?? '').trim()}|${ce}` + (co ? `|${r.tipo_camion}|${r.clave}` : '');
+    // (8-oct-2026, Jordan) Camiones del mismo centro con distinto día de carga van en filas separadas.
+    const k = `${r.fecha_plan}|${String(r.cd_origen ?? '').trim()}|${ce}|${r.fecha_carga || ''}` + (co ? `|${r.tipo_camion}|${r.clave}` : '');
     if (!grupos.has(k)) grupos.set(k, { id: k, fecha_plan: r.fecha_plan, cd_origen: r.cd_origen, origen: r.origen, ce, _lineas: [], _cams: new Map(),
       _coordRow: co, _coordDoc: co ? String(r.clave).slice(6) : '', _coordTipo: co ? r.tipo_camion : '' });
     const g = grupos.get(k);
@@ -3662,7 +3663,7 @@ function agruparSeguimiento(rows) {
     g.tipos_carga = [...new Set(g._lineas.map(x => x.tipo_carga).filter(Boolean))];
     return g;
   }).sort((a, b) => String(b.fecha_plan || '').localeCompare(String(a.fecha_plan || '')) || String(a.ce).localeCompare(String(b.ce))
-    || (a._coordRow - b._coordRow) || String(a._coordDoc).localeCompare(String(b._coordDoc)));
+    || String(a.fecha_carga || '').localeCompare(String(b.fecha_carga || '')) || (a._coordRow - b._coordRow) || String(a._coordDoc).localeCompare(String(b._coordDoc)));
 }
 // (8-oct-2026, Jordan) Anular una coordinación directa desde Seguimiento de Carga.
 const esTrasladoDoc = d => String(d ?? '').trim().startsWith('46');
@@ -4006,7 +4007,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610081934');
+    const m = await import('./ind-plan-carga.js?v=202610081937');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
