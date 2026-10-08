@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610081922';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610081922';
-import { getDatabase } from './data.js?v=202610081922';
+import { supabase } from './supabase-client.js?v=202610081934';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610081934';
+import { getDatabase } from './data.js?v=202610081934';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610081922';
-import { confirmar } from './confirmar.js?v=202610081922';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610081934';
+import { confirmar } from './confirmar.js?v=202610081934';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -3632,12 +3632,15 @@ function agruparSeguimiento(rows) {
   const grupos = new Map();
   rows.forEach(r => {
     const ce = String(r.ce ?? '').trim();
-    const k = `${r.fecha_plan}|${String(r.cd_origen ?? '').trim()}|${ce}`;
-    if (!grupos.has(k)) grupos.set(k, { id: k, fecha_plan: r.fecha_plan, cd_origen: r.cd_origen, origen: r.origen, ce, _lineas: [], _cams: new Map() });
+    const co = esCoord(r);
+    // (8-oct-2026, Jordan) Cada coordinación va en su propia posición (fila), aunque comparta
+    // transportista, chofer o patente con otra; los camiones del plan siguen agrupados por centro destino.
+    const k = `${r.fecha_plan}|${String(r.cd_origen ?? '').trim()}|${ce}` + (co ? `|${r.tipo_camion}|${r.clave}` : '');
+    if (!grupos.has(k)) grupos.set(k, { id: k, fecha_plan: r.fecha_plan, cd_origen: r.cd_origen, origen: r.origen, ce, _lineas: [], _cams: new Map(),
+      _coordRow: co, _coordDoc: co ? String(r.clave).slice(6) : '', _coordTipo: co ? r.tipo_camion : '' });
     const g = grupos.get(k);
     g._lineas.push(r);
-    const co = esCoord(r), pat = normPatente(r.patente_camion);
-    const kc = co ? `C|${r.tipo_camion}|${pat ? 'P|' + pat + '|' + r.fecha_carga : r.clave}` : `${r.tipo_camion}|${r.clave}`;
+    const kc = co ? `C|${r.tipo_camion}|${r.clave}` : `${r.tipo_camion}|${r.clave}`;
     if (!g._cams.has(kc)) g._cams.set(kc, { tipo: r.tipo_camion, clave: r.clave, coord: co, dir: !['Camión CD', '2º camión'].includes(r.tipo_camion),
       fecha_carga: r.fecha_carga, destino: r.destino, origen: r.origen, id_transporte: r.id_transporte, transportista: r.transportista,
       chofer_nombre: r.chofer_nombre, chofer_rut: r.chofer_rut, chofer_telefono: r.chofer_telefono, patente_camion: r.patente_camion, patente_carro: r.patente_carro,
@@ -3658,7 +3661,28 @@ function agruparSeguimiento(rows) {
     g.n_lineas = g._lineas.length;
     g.tipos_carga = [...new Set(g._lineas.map(x => x.tipo_carga).filter(Boolean))];
     return g;
-  }).sort((a, b) => String(b.fecha_plan || '').localeCompare(String(a.fecha_plan || '')) || String(a.ce).localeCompare(String(b.ce)));
+  }).sort((a, b) => String(b.fecha_plan || '').localeCompare(String(a.fecha_plan || '')) || String(a.ce).localeCompare(String(b.ce))
+    || (a._coordRow - b._coordRow) || String(a._coordDoc).localeCompare(String(b._coordDoc)));
+}
+// (8-oct-2026, Jordan) Anular una coordinación directa desde Seguimiento de Carga.
+const esTrasladoDoc = d => String(d ?? '').trim().startsWith('46');
+function puedeAnularCoordSeg(r) {
+  if (!r._coordRow) return false;
+  return r._coordTipo === 'CD-Cliente' ? (esTrasladoDoc(r._coordDoc) ? can('ajustar_plan') : can('coordinar_venta')) : can('coordinar_retiro');
+}
+async function anularCoordDesdeSeguimiento(r) {
+  const doc = r._coordDoc, tipo = r._coordTipo;
+  const que = tipo === 'CD-Cliente' ? (esTrasladoDoc(doc) ? 'pedido de traslado' : 'pedido de venta') : 'OC de retiro';
+  if (!await confirmar(`¿Anular la coordinación ${tipo} del ${que} ${doc}?\n\nVuelve a «Sin coordinar», sale del Plan de Carga y de Seguimiento de Carga.`,
+    { aceptar: 'Anular coordinación', tono: 'peligro', icono: 'event_busy' })) return null;
+  const ok = tipo === 'CD-Cliente' ? (esTrasladoDoc(doc) ? await anularCoordTraslados([doc]) : await anularCoordinacionVenta(doc)) : await anularCoordRetiro([doc]);
+  if (!ok) return null;
+  // Quita también el registro de este seguimiento (aunque sea de un plan anterior).
+  const x = r._lineas[0] || {};
+  await supabase.rpc('fn_abast_quitar_seguimiento', { p_fecha: r.fecha_plan, p_cd: x.cd_origen || r.cd_origen, p_ce: r.ce, p_tipo: tipo, p_clave: 'COORD|' + doc });
+  clearRawCache();
+  showAlert('Coordinación anulada', 'success');
+  return { recargar: true };
 }
 // Foto de cada camión programado (camión CD, 2º camión y directos con transporte):
 // una fila por línea cargada, con su camión y transportista.
@@ -3718,7 +3742,7 @@ V2.seguimiento_carga = {
   cols: [
     { label: 'Fecha plan', html: r => mono(fmtFechaISO(r.fecha_plan), r.origen ? 'desde ' + r.origen : '') },
     { label: 'Fecha carga', html: r => mono(fmtFechaISO(r.fecha_carga), r._fechasCarga.length > 1 ? `+ ${r._fechasCarga.slice(1).map(fmtFechaISO).join(', ')}` : '') },
-    { label: 'Centro destino', html: r => txt(r._nombreCe, r.ce, true) },
+    { label: 'Centro destino', html: r => txt(r._nombreCe, r.ce, true) + (r._coordRow ? `<div class="sv-sub" style="margin:0">Coordinación <span class="sv-mono">${escV2(r._coordDoc)}</span></div>` : '') },
     { label: 'Camiones', html: r => r.camiones.map(c => `<div style="white-space:nowrap;margin:1px 0">${segPill(c)}</div>`).join('') },
     { label: 'Ton', al: 'r', html: r => `<span class="sv-ton">${tonHtml(r.ton)}</span>` },
     { label: 'SKU', al: 'r', html: r => mono(fmtNum(r.n_sku, 0), `${fmtNum(r.n_pedidos, 0)} ${r.n_pedidos === 1 ? 'pedido' : 'pedidos'}`) },
@@ -3726,10 +3750,11 @@ V2.seguimiento_carga = {
         + `<div class="sv-sub" style="margin:0">${escV2([c.id_transporte, c.chofer_nombre ? 'Chofer ' + c.chofer_nombre : '', c.chofer_telefono].filter(Boolean).join(' · '))}</div></div>`).join('') },
   ],
   edge: r => r._hasDir ? C_ORANGE : C_GREEN,
-  note: 'Camiones CD / 2º: al programarlos (hasta el cierre 15:35) · Directos (CD-Cliente, Fáb-Cliente, Fáb-Sucursal, Retiro FAB-CD): al coordinarlos · clic en una fila para ver pedidos y SKU',
+  note: 'Camiones CD / 2º: al programarlos · Directos (CD-Cliente, Fáb-Cliente, Fáb-Sucursal, Retiro FAB-CD): al coordinarlos, una fila por coordinación (se puede anular desde el detalle) · clic en una fila para ver pedidos y SKU',
   minW: '1150px',
   detalle: r => ({
-    kind: 'Seguimiento de carga · centro destino', title: `${r.ce} ${r._nombreCe !== r.ce ? r._nombreCe : ''}`.trim(),
+    kind: r._coordRow ? `Seguimiento de carga · coordinación ${r._coordTipo} ${r._coordDoc}` : 'Seguimiento de carga · centro destino', title: `${r.ce} ${r._nombreCe !== r.ce ? r._nombreCe : ''}`.trim(),
+    acciones: puedeAnularCoordSeg(r) ? [{ label: 'Anular coordinación', icon: 'event_busy', run: async row => anularCoordDesdeSeguimiento(row) }] : [],
     sub: `${r.origen || ''} · plan ${fmtFechaISO(r.fecha_plan)} · carga ${r._fechasCarga.map(fmtFechaISO).join(', ') || '—'}`,
     kv: [
       ['Fecha planificación', fmtFechaISO(r.fecha_plan)], ['Fecha carga', r._fechasCarga.map(fmtFechaISO).join(', ') || '—'],
@@ -3981,7 +4006,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610081922');
+    const m = await import('./ind-plan-carga.js?v=202610081934');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
