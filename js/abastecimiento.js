@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610091437';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610091437';
-import { getDatabase } from './data.js?v=202610091437';
+import { supabase } from './supabase-client.js?v=202610091449';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610091449';
+import { getDatabase } from './data.js?v=202610091449';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610091437';
-import { confirmar } from './confirmar.js?v=202610091437';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610091449';
+import { confirmar } from './confirmar.js?v=202610091449';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -2891,6 +2891,8 @@ const VISTAS_TRONCAL = {
 // siendo las de VISTAS_TRONCAL (vista, preload, transform, postFilter).
 // ============================================================================
 const V2_DEPS = {
+  // (9-oct-2026, Jordan) Ventas CD: NV coordinadas se mantienen en la vista durante el día.
+  augmentRaw: async (vista, rows) => { if (vista === 'v_trc_sqvi_pedidos_venta_1003') await reponerVentasCoordinadas(rows); },
   fetchAllRows, filtrarPorCentro, can, parseDateSAP, exportarCSV, showAlert,
   clearRawCache: () => clearRawCache(),
   loadExclusionesPlan, excluirDelPlan, reactivarEnPlan,
@@ -4075,7 +4077,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610091437');
+    const m = await import('./ind-plan-carga.js?v=202610091449');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
@@ -6180,6 +6182,36 @@ async function renderPlanCarga(stage, opts = {}) {
 // RENDER GENÉRICO DE VISTAS (chips, filtros, buscador, badges, drill-down,
 // editable, modos, CSV)
 // ============================================================================
+// (9-oct-2026, Jordan) Repone en la vista Ventas CD las líneas de NV coordinadas que ya no vienen en el
+// SQVI (o vienen sin pendiente), usando el respaldo abast_coord_sqvi. Se mantienen:
+//  · todo el día en que se coordinaron (o se editó la coordinación), y
+//  · hasta su fecha de entrega mientras la entrega coordinada no tenga DT (igual que el Plan de Carga).
+async function reponerVentasCoordinadas(ventasRaw) {
+  try {
+    const tx = v => String(v ?? '').trim(), hoyIso = isoLocal(hoy00());
+    await supabase.rpc('fn_abast_respaldar_coord_sqvi');
+    const [coordVentas, bkVen] = await Promise.all([loadCoordinacionesVenta(), fetchAllRows('v_abast_coord_sqvi_ventas')]);
+    if (!coordVentas.size || !(bkVen || []).length) return;
+    const esHoy = ts => { if (!ts) return false; const d = new Date(ts); return !isNaN(d) && isoLocal(d) === hoyIso; };
+    const entCo = [...coordVentas.values()].map(c => tx(c.n_entrega)).filter(Boolean);
+    let conDt = new Set();
+    if (entCo.length) { const { data } = await supabase.from('abast_dt_dia').select('entrega').in('entrega', entCo); conDt = new Set((data || []).map(x => tx(x.entrega))); }
+    const liveIdx = new Map(); ventasRaw.forEach((r, i) => liveIdx.set(`${tx(r.doc_ventas)}|${tx(r.pos || r.material)}`, i));
+    const pendV = r => parseNum(r.ctd_confirmada) - parseNum(r.cantidad_entrg);
+    bkVen.forEach(r => {
+      const doc = tx(r.doc_ventas), co = coordVentas.get(doc);
+      if (!co) return;
+      const deHoy = esHoy(co.updated_at) || esHoy(co.created_at);
+      const vigente = co.fecha_entrega && String(co.fecha_entrega).slice(0, 10) >= hoyIso && !(co.n_entrega && conDt.has(tx(co.n_entrega)));
+      if (!deHoy && !vigente) return;
+      if (!(pendV(r) > 0)) return;
+      const k = `${doc}|${tx(r.pos || r.material)}`, i = liveIdx.get(k);
+      if (i === undefined) { ventasRaw.push({ ...r, _respaldo: true }); liveIdx.set(k, ventasRaw.length - 1); }
+      else if (!(pendV(ventasRaw[i]) > 0)) ventasRaw[i] = { ...r, _respaldo: true };
+    });
+  } catch (e) { console.warn('Ventas CD: respaldo de NV coordinadas no disponible', e); }
+}
+
 async function renderVistaTabla(stage, cfg, modeIdx = 0) {
   // Config activa (soporta modos: STOCK / PEDIDO DE VENTAS)
   const active = cfg.modes
@@ -6188,8 +6220,11 @@ async function renderVistaTabla(stage, cfg, modeIdx = 0) {
 
   stage.innerHTML = `<div class="text-secondary text-body-md p-md">Cargando ${escapeHtml(cfg.titulo)}…</div>`;
   const ctx = active.preload ? await active.preload() : {};
-  const rawRows = await fetchAllRows(active.vista);
+  const rawRows = (await fetchAllRows(active.vista)).slice();
   setUltimaActualizacion(maxCargadoEn(rawRows));
+  // (9-oct-2026, Jordan) Ventas CD: una NV coordinada (consolidable o directa) no debe desaparecer de la
+  // vista durante el día aunque SAP la saque del SQVI o quede sin pendiente al crear la entrega.
+  if (active.vista === 'v_trc_sqvi_pedidos_venta_1003') await reponerVentasCoordinadas(rawRows);
   // Perfiles con centros asignados sólo ven filas de sus centros (campo de centro de la vista)
   const _campoCentro = active.centroCampo || active.chipFilter?.campo;
   const _rowsAll = active.transform ? active.transform(rawRows, ctx) : rawRows;

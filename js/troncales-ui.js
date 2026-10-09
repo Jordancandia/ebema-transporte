@@ -32,7 +32,7 @@ export function tonHtml(n) {
 }
 
 // Encabezado del shell: fecha y hora de la última actualización SAP de la vista
-import { confirmar } from './confirmar.js?v=202610091437';
+import { confirmar } from './confirmar.js?v=202610091449';
 export function setUltimaActualizacion(ts) {
   const el = document.getElementById('sv-upd');
   if (!el) return;
@@ -97,8 +97,10 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
     <div class="sv-desc">Cargando datos…</div></div></div></div>`;
 
   const ctx = Object.assign({}, active.preload ? await active.preload() : {}, AV.preload ? await AV.preload() : {});
-  const rawRows = await deps.fetchAllRows(active.vista);
+  const rawRows = (await deps.fetchAllRows(active.vista)).slice();
   setUltimaActualizacion(maxCargadoEn(rawRows));
+  // (9-oct-2026) Hook para reponer filas respaldadas (p. ej. NV coordinadas que SAP sacó del SQVI).
+  if (deps.augmentRaw) await deps.augmentRaw(active.vista, rawRows);
   const campoCentro = active.centroCampo || active.chipFilter?.campo;
   let rowsAll = active.transform ? active.transform(rawRows, ctx) : rawRows;
   rowsAll = campoCentro ? deps.filtrarPorCentro(rowsAll, campoCentro) : rowsAll;
