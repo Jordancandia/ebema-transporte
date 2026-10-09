@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610082111';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610082111';
-import { getDatabase } from './data.js?v=202610082111';
+import { supabase } from './supabase-client.js?v=202610082302';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610082302';
+import { getDatabase } from './data.js?v=202610082302';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610082111';
-import { confirmar } from './confirmar.js?v=202610082111';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610082302';
+import { confirmar } from './confirmar.js?v=202610082302';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -3953,7 +3953,7 @@ function v2ModoEntregas(tipo) {
   const est = r => r._plan_ent;
   return {
     titulo: `${TIPO_ENT_LBL[tipo]} · Entregas`,
-    desc: 'Entregas SAP creadas (disponible real para cargar): son las que alimentan el Plan de Carga. Vigentes = creadas hoy o el día hábil anterior y sin Documento de Transporte.',
+    desc: 'Entregas SAP creadas (disponible real para cargar): son las que alimentan el Plan de Carga. Vigentes = sin Documento de Transporte y no cargadas en un camión programado de un plan anterior (las no programadas siguen disponibles los días siguientes).',
     headBtns: [{ label: 'Cargar entregas (Excel)', icon: 'upload_file', perm: 'ajustar_plan', run: () => cargarEntregasExcel() }],
     enrich(rows, ctx) {
       ctx._rows = rows;
@@ -4075,7 +4075,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610082111');
+    const m = await import('./ind-plan-carga.js?v=202610082302');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
@@ -4421,6 +4421,28 @@ async function renderPlanCarga(stage, opts = {}) {
       else if (!(pendV(ventasRaw[i]) > 0)) ventasRaw[i] = { ...r, _respaldo: true };
     });
   } catch (e) { console.warn('Plan de carga: respaldo de coordinaciones no disponible', e); }
+  // (8-oct-2026, Jordan) Lo considerado en camiones PROGRAMADOS de planes anteriores (Seguimiento de Carga,
+  // sin coordinaciones directas COORD|) ya no está disponible al otro día: las NV y OC de retiro cargadas
+  // salen del plan. Las entregas SAP se descuentan en el servidor (v_abast_entregas_disponibles); lo que no
+  // se programó sigue disponible para el plan del día siguiente.
+  try {
+    const tx = v => String(v ?? '').trim(), hoyIso = isoLocal(hoy00());
+    const desde = isoLocal(new Date(hoy00().getTime() - 45 * 864e5));
+    const { data: cams, error: eCam } = await supabase.from('abast_seguimiento_camion')
+      .select('id,clave,transportista,id_transporte,patente_camion').lt('fecha_plan', hoyIso).gte('fecha_plan', desde).limit(5000);
+    if (eCam) throw eCam;
+    const ids = (cams || []).filter(c => !tx(c.clave).startsWith('COORD|') && (tx(c.transportista) || tx(c.id_transporte) || tx(c.patente_camion))).map(c => c.id);
+    const cargados = new Set();
+    for (let i = 0; i < ids.length; i += 10) {
+      const { data, error } = await supabase.from('abast_seguimiento_carga').select('documento,material').in('camion_id', ids.slice(i, i + 10)).limit(5000);
+      if (error) throw error;
+      (data || []).forEach(l => { if (tx(l.documento)) cargados.add(`${tx(l.documento)}|${tx(l.material)}`); });
+    }
+    if (cargados.size) {
+      for (let i = ventasRaw.length - 1; i >= 0; i--) if (cargados.has(`${tx(ventasRaw[i].doc_ventas)}|${tx(ventasRaw[i].material)}`)) ventasRaw.splice(i, 1);
+      for (let i = retirosRaw.length - 1; i >= 0; i--) if (cargados.has(`${tx(retirosRaw[i].doc_compr)}|${tx(retirosRaw[i].material)}`)) retirosRaw.splice(i, 1);
+    }
+  } catch (e) { console.warn('Plan de carga: no se pudo descontar lo ya programado en planes anteriores', e); }
   // (1-oct-2026) Asignaciones manuales de líneas por origen|centro destino
   const asigMap = new Map();
   asigLineas.forEach(a => {
