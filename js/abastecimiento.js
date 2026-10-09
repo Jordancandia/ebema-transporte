@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610082038';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610082038';
-import { getDatabase } from './data.js?v=202610082038';
+import { supabase } from './supabase-client.js?v=202610082111';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610082111';
+import { getDatabase } from './data.js?v=202610082111';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610082038';
-import { confirmar } from './confirmar.js?v=202610082038';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610082111';
+import { confirmar } from './confirmar.js?v=202610082111';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -3709,6 +3709,25 @@ async function editarTransporteSeguimiento(r, c) {
   showAlert(`Transporte del ${c.tipo} actualizado (${t.patente_camion} · carga ${fmtFechaISO(t.fecha_carga)}).`, 'success');
   return { recargar: true };
 }
+// (8-oct-2026, Jordan) Anular la programación de un camión CD / 2º camión desde Seguimiento de Carga
+// (perfil OWNER): equivale a «Quitar» en el Plan de Carga.
+async function anularProgramacionSeguimiento(r, c) {
+  const x = c.lineas[0] || {};
+  const cd = String(x.cd_origen || r.cd_origen || '').trim(), cam = c.tipo === '2º camión' ? 2 : 1;
+  if (!await confirmar(`¿Anular la programación del ${c.tipo} a ${r.ce} ${nombreCentro(r.ce) || ''}?\n\nPlan ${fmtFechaISO(r.fecha_plan)} · patente ${c.patente_camion || '—'}.\nEl camión deja de estar programado: sale de Seguimiento de Carga, del correo y de la foto/indicadores.`,
+    { aceptar: 'Anular programación', tono: 'peligro', icono: 'event_busy' })) return null;
+  const { error } = await supabase.from('abast_plan_camion_programado').delete().eq('fecha', r.fecha_plan).eq('cd_origen', cd).eq('ce', r.ce).eq('camion', cam);
+  if (error) { showAlert('No se pudo anular la programación: ' + error.message, 'error'); return null; }
+  await supabase.rpc('fn_abast_quitar_seguimiento', { p_fecha: r.fecha_plan, p_cd: cd, p_ce: r.ce, p_tipo: c.tipo, p_clave: c.clave });
+  await supabase.rpc('fn_abast_foto_camion_programado', { p_fecha: r.fecha_plan, p_cd: cd, p_ce: r.ce, p_camion: cam });
+  if (cam === 1) {
+    const { data: sg } = await supabase.from('abast_plan_segundo_camion').select('ce').eq('fecha', r.fecha_plan).eq('cd_origen', cd).eq('ce', r.ce);
+    if (!(sg || []).length) await supabase.from('abast_plan_linea_camion').delete().eq('fecha', r.fecha_plan).eq('cd_origen', cd).eq('ce', r.ce).eq('origen', 'confirmado');
+  }
+  clearRawCache();
+  showAlert(`Programación del ${c.tipo} de ${r.ce} anulada.`, 'success');
+  return { recargar: true };
+}
 async function anularCoordDesdeSeguimiento(r) {
   const doc = r._coordDoc, tipo = r._coordTipo;
   const que = tipo === 'CD-Cliente' ? (esTrasladoDoc(doc) ? 'pedido de traslado' : 'pedido de venta') : 'OC de retiro';
@@ -3796,6 +3815,9 @@ V2.seguimiento_carga = {
     r.camiones.forEach(c => { if (puedeEditarTranspSeg(r, c)) acc.push({ label: r.camiones.length > 1 ? `Editar transporte · ${c.tipo}` : 'Editar transporte', icon: 'edit',
       title: 'Editar datos del transporte y día de carga', run: async row => editarTransporteSeguimiento(row, c) }); });
     if (puedeAnularCoordSeg(r)) acc.push({ label: 'Anular coordinación', icon: 'event_busy', tono: 'peligro', run: async row => anularCoordDesdeSeguimiento(row) });
+    r.camiones.forEach(c => { if (!c.coord && ['Camión CD', '2º camión'].includes(c.tipo) && can('programar_transporte'))
+      acc.push({ label: r.camiones.length > 1 ? `Anular programación · ${c.tipo}` : 'Anular programación', icon: 'event_busy', tono: 'peligro',
+        title: 'Quitar los datos de transporte: el camión deja de estar programado', run: async row => anularProgramacionSeguimiento(row, c) }); });
     return acc;
   },
   note: 'Camiones CD / 2º: al programarlos · Directos (CD-Cliente, Fáb-Cliente, Fáb-Sucursal, Retiro FAB-CD): al coordinarlos, una fila por coordinación (se puede anular desde el detalle) · clic en una fila para ver pedidos y SKU',
@@ -4053,7 +4075,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610082038');
+    const m = await import('./ind-plan-carga.js?v=202610082111');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
@@ -4358,8 +4380,8 @@ async function renderPlanCarga(stage, opts = {}) {
     // (disponible real). Mismas columnas que el SQVI; cantidad = entrega, fecha = creación de la entrega.
     fetchAllRows('v_trc_plan_src_traslados'),
     fetchAllRows('v_trc_plan_src_traslados'),
-    fetchAllRows('v_trc_sqvi_retiros_fabrica'),
-    fetchAllRows('v_trc_sqvi_pedidos_venta_1003'),
+    fetchAllRows('v_trc_sqvi_retiros_fabrica').then(r => r.slice()),     // copia: se agregan líneas respaldadas (8-oct-2026)
+    fetchAllRows('v_trc_sqvi_pedidos_venta_1003').then(r => r.slice()),
     fetchAllRows('v_trc_plan_src_traslados_4000'),
     fetchAllRows('abast_calendario'),
     loadEstadosRetiro(),
@@ -4369,6 +4391,36 @@ async function renderPlanCarga(stage, opts = {}) {
     fetchAllRows('abast_horizonte_centro'),
   ]);
   const [ventasDirectoManual, inclusionesPlan, asigLineas, camManuales, coordVentas, coordTraslados] = await Promise.all([loadVentasDirectoManual(), loadInclusionesPlan(), loadAsignacionLineas(), loadCamionesManuales(), loadCoordinacionesVenta(), loadCoordTraslados()]);
+  // (8-oct-2026, Jordan) NV y OC de retiro COORDINADAS se mantienen en el plan hasta su día de entrega/retiro,
+  // aunque SAP las saque del SQVI (entrega creada / OC recibida): se usan las líneas respaldadas al coordinar
+  // (abast_coord_sqvi, la respalda el servidor cada 20 min y al abrir el plan).
+  try {
+    await supabase.rpc('fn_abast_respaldar_coord_sqvi');
+    const [bkRet, bkVen] = await Promise.all([fetchAllRows('v_abast_coord_sqvi_retiros'), fetchAllRows('v_abast_coord_sqvi_ventas')]);
+    const hoyIso = isoLocal(hoy00()), tx = v => String(v ?? '').trim();
+    // Retiros: OC coordinada que ya no viene en el SQVI → se repone completa.
+    const docsRetLive = new Set(retirosRaw.map(r => tx(r.doc_compr)));
+    bkRet.forEach(r => {
+      const doc = tx(r.doc_compr), e = estadosRetiro[doc] || {};
+      if (docsRetLive.has(doc) || !esEstadoCoordinado(e.estado) || !e.fecha_retiro || String(e.fecha_retiro).slice(0, 10) < hoyIso) return;
+      retirosRaw.push({ ...r, _respaldo: true });
+    });
+    // Ventas: posición coordinada que salió del SQVI o quedó sin pendiente por la entrega creada → se usa
+    // el último estado pendiente, salvo que la entrega coordinada ya tenga DT (despachada).
+    const entCo = [...coordVentas.values()].map(c => tx(c.n_entrega)).filter(Boolean);
+    let conDt = new Set();
+    if (entCo.length) { const { data } = await supabase.from('abast_dt_dia').select('entrega').in('entrega', entCo); conDt = new Set((data || []).map(x => tx(x.entrega))); }
+    const liveIdx = new Map(); ventasRaw.forEach((r, i) => liveIdx.set(`${tx(r.doc_ventas)}|${tx(r.pos || r.material)}`, i));
+    const pendV = r => parseNum(r.ctd_confirmada) - parseNum(r.cantidad_entrg);
+    bkVen.forEach(r => {
+      const doc = tx(r.doc_ventas), co = coordVentas.get(doc);
+      if (!co || !co.fecha_entrega || String(co.fecha_entrega).slice(0, 10) < hoyIso || (co.n_entrega && conDt.has(tx(co.n_entrega)))) return;
+      if (!(pendV(r) > 0)) return;
+      const k = `${doc}|${tx(r.pos || r.material)}`, i = liveIdx.get(k);
+      if (i === undefined) ventasRaw.push({ ...r, _respaldo: true });
+      else if (!(pendV(ventasRaw[i]) > 0)) ventasRaw[i] = { ...r, _respaldo: true };
+    });
+  } catch (e) { console.warn('Plan de carga: respaldo de coordinaciones no disponible', e); }
   // (1-oct-2026) Asignaciones manuales de líneas por origen|centro destino
   const asigMap = new Map();
   asigLineas.forEach(a => {
