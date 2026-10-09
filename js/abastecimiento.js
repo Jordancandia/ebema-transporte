@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610082302';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610082302';
-import { getDatabase } from './data.js?v=202610082302';
+import { supabase } from './supabase-client.js?v=202610091432';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610091432';
+import { getDatabase } from './data.js?v=202610091432';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610082302';
-import { confirmar } from './confirmar.js?v=202610082302';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610091432';
+import { confirmar } from './confirmar.js?v=202610091432';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -4075,7 +4075,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610082302');
+    const m = await import('./ind-plan-carga.js?v=202610091432');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
@@ -4309,6 +4309,35 @@ function asignarCamionesCD(r) {
   });
   const tonNoCarga = orden.filter(d => d._manual === 0).reduce((s, d) => s + (d.ton || 0), 0);
   return { cargado: acc, excedente, segundoPropuesto, tonSegundo: acc2, manual2, tonNoCarga, nManual: orden.filter(d => d._manual !== null).length, orden };
+}
+
+// (9-oct-2026, Jordan) Las líneas sacadas a mano del camión («No carga», camion 0) se
+// descuentan del total del camión CD: se recalculan total, capacidad, %, faltan/sobra,
+// estado y observación. r.totalBruto guarda el total antes de descontar.
+function recalcCargaCD(r) {
+  if (r.totalBruto === undefined) r.totalBruto = r.total;
+  let f = asignarCamionesCD(r);
+  const tot = Math.max(0, r.totalBruto - (f.tonNoCarga || 0));
+  const cap = CENTROS_CAMION_REDUCIDO.includes(r.ce) ? (tot >= CAP_CAMION_DEFAULT ? CAP_CAMION_DEFAULT : CAP_CAMION_REDUCIDO) : CAP_CAMION_DEFAULT;
+  if (cap !== r.cap) { r.cap = cap; f = asignarCamionesCD(r); }
+  const pct = cap > 0 ? Math.round(tot / cap * 100) : 0;
+  let status, statusCls;
+  if (pct >= 80) { status = 'PROGRAMAR'; statusCls = 'bg-green-700 text-white'; }
+  else if (pct >= 70) { status = 'REVISAR'; statusCls = 'bg-yellow-600 text-white'; }
+  else { status = 'CARGA INSUFICIENTE'; statusCls = 'bg-gray-400 text-white'; }
+  let obs = '';
+  if (!r.enCalendario && pct >= 70) obs = 'CUPO EXTRA';
+  if (r.enCalendario && pct < 70) obs = 'EN CALENDARIO - CARGA BAJA';
+  if (r.promovido24) obs = (obs ? obs + ' · ' : '') + 'ADELANTADO A 24H (carga completa)';
+  if (r.tonClienteDiferido > 0) obs = (obs ? obs + ' · ' : '') + 'CD-CLIENTE PRÓXIMO (' + fmtNum(r.tonClienteDiferido, 1) + ' T, fecha entrega posterior)';
+  if (f.segundoPropuesto) obs = (obs ? obs + ' · ' : '') + '2º CAMIÓN OPCIONAL (~' + fmtNum(f.tonSegundo, 1) + ' T)';
+  // Toneladas «No carga» por categoría (para dibujar el camión sin esas líneas).
+  const noCat = {};
+  Object.entries(r.det || {}).forEach(([k, arr]) => { noCat[k] = (arr || []).filter(d => d._manual === 0).reduce((s, d) => s + (d.ton || 0), 0); });
+  r._noCargaCat = noCat;
+  Object.assign(r, { total: tot, cap, pct, sobrecarga: Math.max(0, tot - cap), faltan: Math.max(0, cap - tot), status, statusCls, obs, tonNoCarga: f.tonNoCarga || 0,
+    cargadoCD: f.cargado, excedente: f.excedente, segundoPropuesto: f.segundoPropuesto, tonSegundo: f.tonSegundo });
+  return f;
 }
 
 // ── Estado de cada línea de Pedidos de Traslado en el Plan de Carga (30-sep-2026) ──
@@ -4948,9 +4977,8 @@ async function renderPlanCarga(stage, opts = {}) {
       det, asig: asigMap.get(`${planOrigen}|${ce}`) || new Map(),
     };
     // (AJUSTE 30-sep-2026) Llenado del camión CD y propuesta de 2º camión (≥85% de la capacidad).
-    const fill = asignarCamionesCD(out);
-    Object.assign(out, { cargadoCD: fill.cargado, excedente: fill.excedente, segundoPropuesto: fill.segundoPropuesto, tonSegundo: fill.tonSegundo });
-    if (out.segundoPropuesto) out.obs = (out.obs ? out.obs + ' · ' : '') + '2º CAMIÓN OPCIONAL (~' + fmtNum(fill.tonSegundo, 1) + ' T)';
+    // (9-oct-2026) recalcCargaCD descuenta las líneas «No carga» del total y del %.
+    recalcCargaCD(out);
     return out;
   }).sort((a, b) => {
     // (AJUSTE 24-sep-2026, pedido Jordan) Prioridad real de despacho:
@@ -5187,12 +5215,12 @@ async function renderPlanCarga(stage, opts = {}) {
   // tarjetas que filtran y panel lateral con una pestaña por camión.
   // ==========================================================================
   const CAT_V2 = [
-    { k: 'revex',     lbl: 'REVEX',                color: '#2e3132', ton: r => r.tonRevex,     tipo: 'T' },
-    { k: 'ventaCons', lbl: 'Venta directa',        color: '#5c5f61', ton: r => r.tonVentaCons, tipo: 'V' },
-    { k: 'retiro',    lbl: 'Retiro proveedor',     color: '#936e69', ton: r => r.tonRetiro,    tipo: 'R' },
-    { k: 'cross',     lbl: 'Crossdocking',         color: '#c5c7c9', ton: r => r.tonCross,     tipo: 'X' },
-    { k: 'quiebre',   lbl: 'Quiebre y priorizado', color: '#b5000b', ton: r => r.tonQuiebre,   tipo: 'T' },
-    { k: 'stock',     lbl: 'Abastecimiento',       color: '#ffb4aa', ton: r => r.tonStock,     tipo: 'T' },
+    { k: 'revex',     lbl: 'REVEX',                color: '#2e3132', ton: r => Math.max(0, r.tonRevex - ((r._noCargaCat || {}).revex || 0)),     tipo: 'T' },
+    { k: 'ventaCons', lbl: 'Venta directa',        color: '#5c5f61', ton: r => Math.max(0, r.tonVentaCons - ((r._noCargaCat || {}).ventaCons || 0)), tipo: 'V' },
+    { k: 'retiro',    lbl: 'Retiro proveedor',     color: '#936e69', ton: r => Math.max(0, r.tonRetiro - ((r._noCargaCat || {}).retiro || 0)),    tipo: 'R' },
+    { k: 'cross',     lbl: 'Crossdocking',         color: '#c5c7c9', ton: r => Math.max(0, r.tonCross - ((r._noCargaCat || {}).cross || 0)),     tipo: 'X' },
+    { k: 'quiebre',   lbl: 'Quiebre y priorizado', color: '#b5000b', ton: r => Math.max(0, r.tonQuiebre - ((r._noCargaCat || {}).quiebre || 0)),   tipo: 'T' },
+    { k: 'stock',     lbl: 'Abastecimiento',       color: '#ffb4aa', ton: r => Math.max(0, r.tonStock - ((r._noCargaCat || {}).stock || 0)),     tipo: 'T' },
   ];
   // ── Plan de Carga v2.1 (30-sep-2026, handoff «Plan de Carga v2») ──────────
   // Camión dibujado a escala con segmentos por categoría y espacio libre
@@ -5280,9 +5308,8 @@ async function renderPlanCarga(stage, opts = {}) {
   const matLinea = d => String(d.material ?? '').trim();
   // Recalcula el llenado CD / 2º camión de una sucursal con sus asignaciones actuales.
   function refrescarFill(r) {
-    const f = asignarCamionesCD(r);
-    Object.assign(r, { cargadoCD: f.cargado, excedente: f.excedente, segundoPropuesto: f.segundoPropuesto, tonSegundo: f.tonSegundo });
-    return f;
+    // (9-oct-2026) También recalcula total / % / estado descontando las líneas «No carga».
+    return recalcCargaCD(r);
   }
   // (8-oct-2026, Jordan) Cerrado el plan, el perfil OWNER igual puede aceptar el 2º camión y programar/editar transporte.
   function bloqueadoPorCierre(permiteOwner = false) {
