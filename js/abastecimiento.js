@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610091432';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610091432';
-import { getDatabase } from './data.js?v=202610091432';
+import { supabase } from './supabase-client.js?v=202610091437';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610091437';
+import { getDatabase } from './data.js?v=202610091437';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610091432';
-import { confirmar } from './confirmar.js?v=202610091432';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610091437';
+import { confirmar } from './confirmar.js?v=202610091437';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -4075,7 +4075,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610091432');
+    const m = await import('./ind-plan-carga.js?v=202610091437');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
@@ -4816,7 +4816,11 @@ async function renderPlanCarga(stage, opts = {}) {
         .filter(r => String(r.ce ?? '').trim() === ce)
         .filter(r => !estaExcluido(exclusionesPlan, 'retiro_fabrica', r.doc_compr, r.material))
         .filter(r => (estadosRetiro[String(r.doc_compr ?? '').trim()] || {}).tipo_retiro === 'FAB-CD')
-        .filter(r => { const _e = estadosRetiro[String(r.doc_compr ?? '').trim()] || {}; const fr = parseISODate(_e.fecha_retiro); return !fr || fr.getTime() < hoy00().getTime() || fr.getTime() === fechaObjetivoCe.getTime(); });
+        // (9-oct-2026, Jordan) El retiro entra al plan MÁS PRÓXIMO cuyo día objetivo sea igual o
+        // posterior a su fecha de retiro: cuenta si fecha_retiro ≤ día objetivo (o está atrasado).
+        // Ej.: retiro el mar 13 y centro a 48h con objetivo mié 14 → entra al plan del 14; y como
+        // retiro24 (≤ día hábil 1) también lo suma, si con él el camión supera el 90% se adelanta al 13.
+        .filter(r => { const _e = estadosRetiro[String(r.doc_compr ?? '').trim()] || {}; const fr = parseISODate(_e.fecha_retiro); return !fr || fr.getTime() < hoy00().getTime() || fr.getTime() <= fechaObjetivoCe.getTime(); });
     }
     function sumarRetiro(lista) {
       let sum = 0; const items = [];
