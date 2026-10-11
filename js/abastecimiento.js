@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610111330';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610111330';
-import { getDatabase } from './data.js?v=202610111330';
+import { supabase } from './supabase-client.js?v=202610111344';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610111344';
+import { getDatabase } from './data.js?v=202610111344';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610111330';
-import { confirmar } from './confirmar.js?v=202610111330';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610111344';
+import { confirmar } from './confirmar.js?v=202610111344';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -3626,7 +3626,23 @@ const V2 = {
 // carga, centro destino, toneladas, cantidad de SKU y transportistas; detalle con camiones,
 // pedidos y SKU (nombre y cantidades).
 const ORDEN_CAM_SEG = t => t === 'Camión CD' ? 0 : t === '2º camión' ? 1 : 2;
-function agruparSeguimiento(rows) {
+// (11-oct-2026, Jordan) DT de cada camión (v_abast_seguimiento_dt): documento de transporte con los productos y
+// entregas que realmente se cargaron. Se agrupa por camion_id → DT → líneas.
+function dtPorCamion(dtRows) {
+  const m = new Map();
+  (dtRows || []).forEach(d => {
+    const k = String(d.camion_id);
+    if (!m.has(k)) m.set(k, new Map());
+    const porDt = m.get(k);
+    const t = String(d.transporte ?? '').trim();
+    if (!porDt.has(t)) porDt.set(t, { transporte: t, via: d.via, fecha_dt: d.fecha_dt, id_transporte: d.id_transporte_dt,
+      transportista: d.nombre_transportista, capacidad_ton: Number(d.capacidad_ton) || 0, lineas: [] });
+    porDt.get(t).lineas.push(d);
+  });
+  return m;
+}
+function agruparSeguimiento(rows, dtRows) {
+  const dtMap = dtPorCamion(dtRows);
   const ordL = (a, b) => ORDEN_CAM_SEG(a.tipo_camion) - ORDEN_CAM_SEG(b.tipo_camion) || String(a.clave).localeCompare(String(b.clave))
     || String(a.documento || '').localeCompare(String(b.documento || '')) || String(a.material || '').localeCompare(String(b.material || ''));
   // Coordinaciones (COORD|…): se ocultan las líneas cuyo documento ya va en un camión programado del plan,
@@ -3657,7 +3673,17 @@ function agruparSeguimiento(rows) {
     g._lineas.sort(ordL);
     g.camiones = [...g._cams.values()].sort((a, b) => ORDEN_CAM_SEG(a.tipo) - ORDEN_CAM_SEG(b.tipo) || String(a.clave).localeCompare(String(b.clave)));
     delete g._cams;
-    g.camiones.forEach(c => { c.ton = c.lineas.reduce((s2, x) => s2 + (Number(x.ton) || 0), 0); if (c.coord) { c.cap = CAP_CAMION_DIRECTO; c.pct = Math.round(c.ton / CAP_CAMION_DIRECTO * 100); } c.nSku = new Set(c.lineas.map(x => String(x.material ?? '').trim()).filter(Boolean)).size; });
+    g.camiones.forEach(c => { c.ton = c.lineas.reduce((s2, x) => s2 + (Number(x.ton) || 0), 0); if (c.coord) { c.cap = CAP_CAMION_DIRECTO; c.pct = Math.round(c.ton / CAP_CAMION_DIRECTO * 100); } c.nSku = new Set(c.lineas.map(x => String(x.material ?? '').trim()).filter(Boolean)).size;
+      // DT del camión (puede haber más de uno si el camión salió con varios documentos)
+      const dts = new Map();
+      new Set(c.lineas.map(x => String(x.camion_id))).forEach(id => (dtMap.get(id) || new Map()).forEach((v, k) => dts.set(k, v)));
+      c.dts = [...dts.values()].sort((a, b) => String(a.transporte).localeCompare(String(b.transporte)));
+      const matDt = new Map();
+      c.dts.forEach(d => d.lineas.forEach(x => { const mt = String(x.material ?? '').trim(); if (!matDt.has(mt)) matDt.set(mt, new Set()); matDt.get(mt).add(d.transporte); }));
+      c.lineas.forEach(x => { x.dt = [...(matDt.get(String(x.material ?? '').trim()) || [])].join(' / '); x._cargadoDt = matDt.has(String(x.material ?? '').trim()); });
+      c.nSinDt = c.dts.length ? new Set(c.lineas.filter(x => !x._cargadoDt).map(x => String(x.material ?? '').trim())).size : 0;
+    });
+    g.dts = [...new Set(g.camiones.flatMap(c => c.dts.map(d => d.transporte)))];
     const fechas = [...new Set(g.camiones.map(c => c.fecha_carga).filter(Boolean))].sort();
     g.fecha_carga = fechas[0] || '';
     g._fechasCarga = fechas;
@@ -3755,7 +3781,9 @@ VISTAS_TRONCAL.seguimiento_carga = {
   centroCampo: 'ce',
   // (5-oct-2026, Jordan) Una fila por CENTRO DESTINO (y fecha de plan / CD origen); el detalle
   // despliega cada camión con sus pedidos y SKU. El CSV se mantiene a nivel de línea.
-  transform: rows => agruparSeguimiento(rows),
+  // (11-oct-2026, Jordan) Documento de transporte (DT) con los productos y entregas cargados.
+  async preload() { try { return { dt: await fetchAllRows('v_abast_seguimiento_dt') }; } catch (e) { console.warn('Seguimiento: DT no disponible', e); return { dt: [] }; } },
+  transform: (rows, ctx) => agruparSeguimiento(rows, ctx && ctx.dt),
   csvFilas: grupos => grupos.flatMap(g => g._lineas),
   columnas: [
     { key: 'fecha_plan', label: 'Fecha Planificación' }, { key: 'fecha_carga', label: 'Fecha Carga' },
@@ -3772,6 +3800,7 @@ VISTAS_TRONCAL.seguimiento_carga = {
     { key: 'chofer_nombre', label: 'Chofer' }, { key: 'chofer_rut', label: 'RUT Chofer' }, { key: 'chofer_telefono', label: 'Teléfono' },
     { key: 'patente_camion', label: 'Patente Camión' }, { key: 'patente_carro', label: 'Patente Carro' },
     { key: 'programado_por', label: 'Programado por' },
+    { key: 'dt', label: 'Documento de Transporte' },
   ],
 };
 // Etiqueta por tipo de camión en Seguimiento de Carga (5-oct-2026, Jordan)
@@ -3791,7 +3820,8 @@ V2.seguimiento_carga = {
   },
   rowId: r => r.id,
   chip: { label: 'Destino', of: r => String(r.ce ?? '').trim(), name: v => nombreCentro(v) || v },
-  docSearch: { ph: 'Pedido / OC / entrega', of: r => r._lineas.map(x => `${x.documento || ''} ${x.n_entrega || ''} ${x.pedido_venta || ''}`).join(' ') },
+  docSearch: { ph: 'Pedido / OC / entrega / DT', of: r => r._lineas.map(x => `${x.documento || ''} ${x.n_entrega || ''} ${x.pedido_venta || ''}`).join(' ')
+    + ' ' + r.camiones.flatMap(c => c.dts).map(d => `${d.transporte} ${d.lineas.map(x => x.entrega).join(' ')}`).join(' ') },
   fecha: { label: 'Carga', of: r => r.fecha_carga },
   search: { ph: 'Buscar SKU, material, patente, transportista o tipo', of: r => r._nombreCe + ' ' + r.camiones.map(c => `${c.tipo} ${c.coord ? 'coordinado' : ''} ${c.patente_camion} ${c.transportista} ${c.id_transporte} ${c.chofer_nombre}`).join(' ')
     + ' ' + r._lineas.map(x => `${x.material} ${x.nombre} ${x.proveedor} ${x.cliente}`).join(' ') },
@@ -3801,6 +3831,8 @@ V2.seguimiento_carga = {
     { key: 'seg', label: 'Con 2º camión', color: C_BLUE, sub: 'aceptado y programado', fn: r => r._has2 },
     { key: 'dir', label: 'Con directos', color: C_ORANGE, sub: 'CD-Cliente / fábrica / retiros', fn: r => r._hasDir },
     { key: 'coord', label: 'Coordinados', color: '#7e22ce', sub: 'directos coordinados aún no programados', fn: r => r._hasCoord },
+    { key: 'dt', label: 'Con DT', color: C_BLUE, sub: 'documento de transporte encontrado', fn: r => r.dts.length > 0 },
+    { key: 'sindt', label: 'Sin DT', color: C_ORANGE, sub: 'carga pasada sin documento', fn: r => r.camiones.some(c => segFaltaDt(r, c)) },
   ],
   cols: [
     { label: 'Fecha plan', html: r => mono(fmtFechaISO(r.fecha_plan), r.origen ? 'desde ' + r.origen : '') },
@@ -3809,6 +3841,9 @@ V2.seguimiento_carga = {
     { label: 'Camiones', html: r => r.camiones.map(c => `<div style="white-space:nowrap;margin:1px 0">${segPill(c)}</div>`).join('') },
     { label: 'Ton', al: 'r', html: r => `<span class="sv-ton">${tonHtml(r.ton)}</span>` },
     { label: 'SKU', al: 'r', html: r => mono(fmtNum(r.n_sku, 0), `${fmtNum(r.n_pedidos, 0)} ${r.n_pedidos === 1 ? 'pedido' : 'pedidos'}`) },
+    { label: 'DT', html: r => r.camiones.map(c => `<div style="white-space:nowrap;margin:1px 0">${c.dts.length
+        ? c.dts.map(d => `<span class="sv-mono"><b>${escV2(d.transporte)}</b></span>`).join(' ') + (c.nSinDt ? ` <span class="sv-sub" style="margin:0;display:inline">${c.nSinDt} SKU sin DT</span>` : '')
+        : (segFaltaDt(r, c) ? pill('Sin DT', 'warn') : '<span class="sv-muted">—</span>')}</div>`).join('') },
     { label: 'Transportista', html: r => r.camiones.map(c => `<div style="white-space:nowrap"><b>${escV2(c.transportista || c.id_transporte || '—')}</b>${c.patente_camion ? ` <span class="sv-mono">${escV2(c.patente_camion)}</span>` : ''}`
         + `<div class="sv-sub" style="margin:0">${escV2([c.id_transporte, c.chofer_nombre ? 'Chofer ' + c.chofer_nombre : '', c.chofer_telefono].filter(Boolean).join(' · '))}</div></div>`).join('') },
   ],
@@ -3835,8 +3870,13 @@ V2.seguimiento_carga = {
       ['Toneladas', tonHtml(r.ton), true], ['Cantidad de SKU', fmtNum(r.n_sku, 0)],
       ['Pedidos / OC', fmtNum(r.n_pedidos, 0)], ['Líneas', fmtNum(r.n_lineas, 0)],
       ['Camiones', r.camiones.map(segPill).join(' '), true], ['Tipos de carga', r.tipos_carga.join(', ') || '—'],
+      ['Documento de transporte', r.dts.length ? r.dts.map(t => `<span class="sv-mono"><b>${escV2(t)}</b></span>`).join(' ') : '—', true],
     ],
-    tablas: r.camiones.map(c => {
+    tablas: r.camiones.flatMap(c => [tablaCamionSeg(r, c), ...tablasDtSeg(c)]),
+  }),
+};
+// (11-oct-2026, Jordan) Detalle de un camión: lo planificado (pedidos y SKU) con su DT por SKU.
+function tablaCamionSeg(r, c) {
       let prev = null;
       const rows = c.lineas.map(x => {
         const doc = String(x.documento ?? '').trim();
@@ -3850,6 +3890,7 @@ V2.seguimiento_carga = {
           escV2(x.nombre || ''),
           fmtNum(Number(x.cantidad) || 0, 1),
           fmtNum(Number(x.ton) || 0, 2),
+          x.dt ? `<span class="sv-mono">${escV2(x.dt)}</span>` : (c.dts.length ? pill('No cargado', 'warn') : '<span class="sv-muted">—</span>'),
         ];
       });
       return {
@@ -3857,12 +3898,55 @@ V2.seguimiento_carga = {
         sub: [[c.id_transporte, c.transportista].filter(Boolean).join(' · '), [c.chofer_nombre, c.chofer_rut, c.chofer_telefono].filter(Boolean).join(' · '),
           c.dir && c.destino ? c.destino : '', c.fecha_carga && c.fecha_carga !== r.fecha_carga ? 'carga ' + fmtFechaISO(c.fecha_carga) : '',
           c.programado_por ? 'programado por ' + c.programado_por : ''].filter(Boolean).join(' — '),
-        head: [['Pedido / OC'], ['Entrega'], ['Tipo de carga'], ['SKU'], ['Nombre'], ['Cantidad', 'r'], ['Ton', 'r']],
+        head: [['Pedido / OC'], ['Entrega'], ['Tipo de carga'], ['SKU'], ['Nombre'], ['Cantidad', 'r'], ['Ton', 'r'], ['DT']],
         rows,
       };
-    }),
-  }),
-};
+}
+// (11-oct-2026, Jordan) Documento de transporte: entregas y productos que realmente se cargaron en el camión.
+// Se cruza por entregas del camión; si no hay, por transportista + destino + SKU en común (se indica en el título).
+function tablasDtSeg(c) {
+  return (c.dts || []).map(d => {
+    const tonDt = d.lineas.reduce((s2, x) => s2 + (Number(x.ton_linea) || 0), 0);
+    const ents = new Set(d.lineas.map(x => String(x.entrega ?? '').trim()).filter(Boolean));
+    const fuera = d.lineas.filter(x => !x.en_plan).length;
+    // Cantidad cargada por SKU en este DT (un SKU puede venir en varias entregas) vs lo planificado en el camión
+    const cantMat = new Map();
+    d.lineas.forEach(x => { const mt = String(x.material ?? '').trim(); cantMat.set(mt, (cantMat.get(mt) || 0) + (Number(x.cantidad) || 0)); });
+    const ord = d.lineas.slice().sort((a, b) => String(a.entrega).localeCompare(String(b.entrega)) || String(a.pos).localeCompare(String(b.pos)));
+    let prev = null;
+    const rows = ord.map(x => {
+      const ent = String(x.entrega ?? '').trim(); const nuevo = ent !== prev; prev = ent;
+      const cant = Number(x.cantidad) || 0, plan = x.cant_plan == null ? null : Number(x.cant_plan);
+      const tot = cantMat.get(String(x.material ?? '').trim()) || 0;
+      const estado = !x.en_plan ? pill('Fuera de plan', 'warn')
+        : Math.abs(tot - plan) < 0.001 ? pill('En plan', 'ok') : pill(tot > plan ? 'Más que el plan' : 'Menos que el plan', 'info');
+      return [
+        nuevo ? `<b class="sv-mono">${escV2(ent || '—')}</b>` : '',
+        `<span class="sv-mono">${escV2(x.pos || '')}</span>`,
+        `<span class="sv-mono">${escV2(x.material || '')}</span>`,
+        escV2(x.descripcion || ''),
+        fmtNum(cant, 1) + (x.um ? ` <span class="sv-muted">${escV2(x.um)}</span>` : ''),
+        plan == null ? '<span class="sv-muted">—</span>' : fmtNum(plan, 1),
+        x.ton_linea == null ? '<span class="sv-muted">—</span>' : fmtNum(Number(x.ton_linea), 2),
+        estado,
+      ];
+    });
+    return {
+      titulo: `Documento de transporte ${d.transporte} · ${c.tipo} — ${ents.size} ${ents.size === 1 ? 'entrega' : 'entregas'} · ${d.lineas.length} líneas · ${fmtNum(tonDt, 1)} t`
+        + (d.capacidad_ton ? ` (${Math.round(tonDt / d.capacidad_ton * 100)}% de ${fmtNum(d.capacidad_ton, 1)} t)` : ''),
+      sub: [`creado ${fmtFechaISO(d.fecha_dt)}`, [d.id_transporte, d.transportista].filter(Boolean).join(' · '),
+        d.via === 'Entrega' ? 'cruzado por entregas del camión' : 'cruzado por transportista y destino (sin entrega en común): revisar',
+        fuera ? `${fuera} ${fuera === 1 ? 'línea' : 'líneas'} fuera del plan` : '',
+        c.nSinDt ? `${c.nSinDt} SKU del plan sin cargar` : ''].filter(Boolean).join(' — '),
+      head: [['Entrega'], ['Pos'], ['SKU'], ['Descripción'], ['Cant. DT', 'r'], ['Cant. plan', 'r'], ['Ton', 'r'], ['Estado']],
+      rows,
+    };
+  });
+}
+const hoySeg = () => new Date().toLocaleDateString('en-CA', { timeZone: 'America/Santiago' });
+// Sólo los despachos que salen del CD llevan DT en el reporte SAP (los retiros de fábrica no).
+const SEG_CON_DT = new Set(['Camión CD', '2º camión', 'CD-Cliente']);
+const segFaltaDt = (r, c) => !c.coord && SEG_CON_DT.has(c.tipo) && !c.dts.length && String(c.fecha_carga || r.fecha_carga || '') < hoySeg();
 
 // Enganchar la presentación v2 a cada vista (los modos de Stock 4000 llevan sus columnas)
 Object.entries(V2).forEach(([k, v]) => {
@@ -4080,11 +4164,11 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610111330');
+    const m = await import('./ind-plan-carga.js?v=202610111344');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (currentSub === 'control_diferencias') {  // (11-oct-2026) Control de Diferencias del Plan de Carga
-    const m = await import('./control-diferencias.js?v=202610111330');
+    const m = await import('./control-diferencias.js?v=202610111344');
     await m.renderControlDiferencias(stage);
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
