@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610091454';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610091454';
-import { getDatabase } from './data.js?v=202610091454';
+import { supabase } from './supabase-client.js?v=202610111156';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610111156';
+import { getDatabase } from './data.js?v=202610111156';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610091454';
-import { confirmar } from './confirmar.js?v=202610091454';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610111156';
+import { confirmar } from './confirmar.js?v=202610111156';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -2311,6 +2311,9 @@ const VISTAS_TRONCAL = {
         const k = `${r.doc_ventas}|${r.material}`;
         const ex = dedup.get(k);
         if (!ex) { dedup.set(k, r); return; }
+        // (11-oct-2026) Repartos SAP: prima la fila con pendiente > 0; a igualdad, la fecha más lejana.
+        const pN = parseNum(r.ctd_confirmada) - parseNum(r.cantidad_entrg) > 0, pO = parseNum(ex.ctd_confirmada) - parseNum(ex.cantidad_entrg) > 0;
+        if (pN !== pO) { if (pN) dedup.set(k, r); return; }
         const dNew = parseDateSAP(r.fe_entrega), dOld = parseDateSAP(ex.fe_entrega);
         if (dNew && (!dOld || dNew >= dOld)) dedup.set(k, r);
       });
@@ -2848,7 +2851,7 @@ const VISTAS_TRONCAL = {
     extraChips: [{ campo: 'cd_origen', label: 'CD Origen' }, { campo: 'categoria', label: 'Categoría' }, { campo: 'estado', label: 'Estado' }],
     searchLabel: 'BUSCADOR GENERAL',
     filtros: [],
-    dateRange: { campo: 'fecha', label: 'Fecha Plan (foto 15:35)' },
+    dateRange: { campo: 'fecha', label: 'Fecha Plan (foto cierre 16:30)' },
     badges(filt) {
       // Líneas EN PLAZO (aún dentro de las 48h hábiles) no entran al cálculo.
       const medibles = filt.filter(r => r.estado !== 'EN PLAZO');
@@ -3511,7 +3514,7 @@ const V2 = {
   // ── ENTREGAS CREADAS ──────────────────────────────────────────────────────
   entregas_creadas: {
     titulo: 'Entregas Creadas',
-    desc: 'Entregas creadas en SAP y su comparación con la foto del Plan de Carga (15:35 del día hábil anterior).',
+    desc: 'Entregas creadas en SAP y su comparación con la foto del Plan de Carga (cierre 16:30 del día hábil anterior).',
     enrich(rows) {
       rows.forEach(r => {
         r._est = ESTADO_PLAN_V2[r.estado_plan] || [r.estado_plan || '—', 'mute'];
@@ -3526,7 +3529,7 @@ const V2 = {
       { key: 'CUADRA', label: 'Cuadra', color: C_GREEN, sub: 'igual a lo planificado', fn: r => r.estado_plan === 'CUADRA' },
       { key: 'PARCIAL', label: 'Parcial', color: C_YELLOW, sub: 'menos que el plan', fn: r => r.estado_plan === 'PARCIAL' },
       { key: 'EXCEDE', label: 'Excede', color: C_RED, sub: 'más que el plan', fn: r => r.estado_plan === 'EXCEDE' },
-      { key: 'SIN PLAN', label: 'Sin plan', color: C_GREY, sub: 'no estaba en la foto 15:35', fn: r => r.estado_plan === 'SIN PLAN' },
+      { key: 'SIN PLAN', label: 'Sin plan', color: C_GREY, sub: 'no estaba en la foto de cierre', fn: r => r.estado_plan === 'SIN PLAN' },
     ],
     cols: [
       { label: 'N° entrega', html: r => mono(r.entrega, r.fecha_creacion ? fmtFechaISO(r.fecha_creacion) : '') },
@@ -3552,7 +3555,7 @@ const V2 = {
         ['Material', r.material], ['Cantidad', `${fmtNum(Number(r.cantidad) || 0, 0)} ${r.um || ''}`.trim()],
         ['Doc. precedente', r.doc_modelo], ['Estado plan', pill(r._est[0], r._est[1]), true],
         ['Cant. plan', r.cant_plan == null ? '—' : fmtNum(Number(r.cant_plan), 0)], ['Σ entregas del doc.', fmtNum(Number(r.cant_entregas_doc) || 0, 0)],
-        ['Foto del plan', r.fecha_plan ? fmtFechaISO(r.fecha_plan) + ' · 15:35' : '—'], ['Creado por', r.creado_por],
+        ['Foto del plan', r.fecha_plan ? fmtFechaISO(r.fecha_plan) + ' · 16:30' : '—'], ['Creado por', r.creado_por],
       ],
       nota: 'Plan vs Σ entregas: suma de entregas del documento + material',
     }),
@@ -4077,7 +4080,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610091454');
+    const m = await import('./ind-plan-carga.js?v=202610111156');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
@@ -4436,21 +4439,20 @@ async function renderPlanCarga(stage, opts = {}) {
       if (docsRetLive.has(doc) || !esEstadoCoordinado(e.estado) || !e.fecha_retiro || String(e.fecha_retiro).slice(0, 10) < hoyIso) return;
       retirosRaw.push({ ...r, _respaldo: true });
     });
-    // Ventas: posición coordinada que salió del SQVI o quedó sin pendiente por la entrega creada → se usa
-    // el último estado pendiente, salvo que la entrega coordinada ya tenga DT (despachada).
+    // (11-oct-2026, Jordan) Una NV COORDINADA queda en el plan con las líneas respaldadas al coordinar
+    // (abast_coord_sqvi), aunque la siguiente corrida SQVI —tras crear la entrega— la deje sin pendiente,
+    // con repartos en 0 o la saque: se reemplazan TODAS sus líneas vivas por el respaldo hasta que la
+    // entrega coordinada tenga DT (despachada). Mismo criterio que v_trc_plan_carga_ventas_lineas (foto).
     const entCo = [...coordVentas.values()].map(c => tx(c.n_entrega)).filter(Boolean);
     let conDt = new Set();
     if (entCo.length) { const { data } = await supabase.from('abast_dt_dia').select('entrega').in('entrega', entCo); conDt = new Set((data || []).map(x => tx(x.entrega))); }
-    const liveIdx = new Map(); ventasRaw.forEach((r, i) => liveIdx.set(`${tx(r.doc_ventas)}|${tx(r.pos || r.material)}`, i));
-    const pendV = r => parseNum(r.ctd_confirmada) - parseNum(r.cantidad_entrg);
-    bkVen.forEach(r => {
-      const doc = tx(r.doc_ventas), co = coordVentas.get(doc);
-      if (!co || !co.fecha_entrega || String(co.fecha_entrega).slice(0, 10) < hoyIso || (co.n_entrega && conDt.has(tx(co.n_entrega)))) return;
-      if (!(pendV(r) > 0)) return;
-      const k = `${doc}|${tx(r.pos || r.material)}`, i = liveIdx.get(k);
-      if (i === undefined) ventasRaw.push({ ...r, _respaldo: true });
-      else if (!(pendV(ventasRaw[i]) > 0)) ventasRaw[i] = { ...r, _respaldo: true };
-    });
+    const bkPorDoc = new Map();
+    bkVen.forEach(r => { const d = tx(r.doc_ventas); if (!bkPorDoc.has(d)) bkPorDoc.set(d, []); bkPorDoc.get(d).push(r); });
+    const usarBk = new Set([...bkPorDoc.keys()].filter(d => { const co = coordVentas.get(d); return !!co && !(co.n_entrega && conDt.has(tx(co.n_entrega))); }));
+    if (usarBk.size) {
+      for (let i = ventasRaw.length - 1; i >= 0; i--) if (usarBk.has(tx(ventasRaw[i].doc_ventas))) ventasRaw.splice(i, 1);
+      usarBk.forEach(d => bkPorDoc.get(d).forEach(r => ventasRaw.push({ ...r, _respaldo: true })));
+    }
   } catch (e) { console.warn('Plan de carga: respaldo de coordinaciones no disponible', e); }
   // (8-oct-2026, Jordan) Lo considerado en camiones PROGRAMADOS de planes anteriores (Seguimiento de Carga,
   // sin coordinaciones directas COORD|) ya no está disponible al otro día: las NV y OC de retiro cargadas
@@ -4463,14 +4465,17 @@ async function renderPlanCarga(stage, opts = {}) {
       .select('id,clave,transportista,id_transporte,patente_camion').lt('fecha_plan', hoyIso).gte('fecha_plan', desde).limit(5000);
     if (eCam) throw eCam;
     const ids = (cams || []).filter(c => !tx(c.clave).startsWith('COORD|') && (tx(c.transportista) || tx(c.id_transporte) || tx(c.patente_camion))).map(c => c.id);
-    const cargados = new Set();
+    const cargados = new Set(), cargadosEnt = new Set();
     for (let i = 0; i < ids.length; i += 10) {
-      const { data, error } = await supabase.from('abast_seguimiento_carga').select('documento,material').in('camion_id', ids.slice(i, i + 10)).limit(5000);
+      const { data, error } = await supabase.from('abast_seguimiento_carga').select('documento,material,n_entrega').in('camion_id', ids.slice(i, i + 10)).limit(5000);
       if (error) throw error;
-      (data || []).forEach(l => { if (tx(l.documento)) cargados.add(`${tx(l.documento)}|${tx(l.material)}`); });
+      (data || []).forEach(l => { if (tx(l.documento)) cargados.add(`${tx(l.documento)}|${tx(l.material)}`); if (tx(l.n_entrega)) cargadosEnt.add(tx(l.n_entrega)); });
     }
-    if (cargados.size) {
-      for (let i = ventasRaw.length - 1; i >= 0; i--) if (cargados.has(`${tx(ventasRaw[i].doc_ventas)}|${tx(ventasRaw[i].material)}`)) ventasRaw.splice(i, 1);
+    if (cargados.size || cargadosEnt.size) {
+      // (11-oct-2026, Jordan) NV: se descuenta por la ENTREGA coordinada (una NV re-coordinada con entrega
+      // nueva porque la anterior no viajó vuelve al plan); sin entrega coordinada, por documento+material.
+      const entCoord = d => tx((coordVentas.get(d) || {}).n_entrega);
+      for (let i = ventasRaw.length - 1; i >= 0; i--) { const d = tx(ventasRaw[i].doc_ventas), e = entCoord(d); if (e ? cargadosEnt.has(e) : cargados.has(`${d}|${tx(ventasRaw[i].material)}`)) ventasRaw.splice(i, 1); }
       for (let i = retirosRaw.length - 1; i >= 0; i--) if (cargados.has(`${tx(retirosRaw[i].doc_compr)}|${tx(retirosRaw[i].material)}`)) retirosRaw.splice(i, 1);
     }
   } catch (e) { console.warn('Plan de carga: no se pudo descontar lo ya programado en planes anteriores', e); }
@@ -4705,6 +4710,9 @@ async function renderPlanCarga(stage, opts = {}) {
         const k = `${String(r.doc_ventas ?? '').trim()}|${String(r.material ?? '').trim()}`;
         const ex = _ventasDedupMap.get(k);
         if (!ex) { _ventasDedupMap.set(k, r); return; }
+        // (11-oct-2026) Repartos SAP: prima la fila con pendiente > 0; a igualdad, la fecha más lejana.
+        const pN = parseNum(r.ctd_confirmada) - parseNum(r.cantidad_entrg) > 0, pO = parseNum(ex.ctd_confirmada) - parseNum(ex.cantidad_entrg) > 0;
+        if (pN !== pO) { if (pN) _ventasDedupMap.set(k, r); return; }
         const dNew = parseDateSAP(r.fe_entrega), dOld = parseDateSAP(ex.fe_entrega);
         if (dNew && (!dOld || dNew >= dOld)) _ventasDedupMap.set(k, r);
       });
@@ -6188,27 +6196,21 @@ async function renderPlanCarga(stage, opts = {}) {
 //  · hasta su fecha de entrega mientras la entrega coordinada no tenga DT (igual que el Plan de Carga).
 async function reponerVentasCoordinadas(ventasRaw) {
   try {
-    const tx = v => String(v ?? '').trim(), hoyIso = isoLocal(hoy00());
+    const tx = v => String(v ?? '').trim();
     await supabase.rpc('fn_abast_respaldar_coord_sqvi');
     const [coordVentas, bkVen] = await Promise.all([loadCoordinacionesVenta(), fetchAllRows('v_abast_coord_sqvi_ventas')]);
     if (!coordVentas.size || !(bkVen || []).length) return;
-    const esHoy = ts => { if (!ts) return false; const d = new Date(ts); return !isNaN(d) && isoLocal(d) === hoyIso; };
     const entCo = [...coordVentas.values()].map(c => tx(c.n_entrega)).filter(Boolean);
     let conDt = new Set();
     if (entCo.length) { const { data } = await supabase.from('abast_dt_dia').select('entrega').in('entrega', entCo); conDt = new Set((data || []).map(x => tx(x.entrega))); }
-    const liveIdx = new Map(); ventasRaw.forEach((r, i) => liveIdx.set(`${tx(r.doc_ventas)}|${tx(r.pos || r.material)}`, i));
-    const pendV = r => parseNum(r.ctd_confirmada) - parseNum(r.cantidad_entrg);
-    bkVen.forEach(r => {
-      const doc = tx(r.doc_ventas), co = coordVentas.get(doc);
-      if (!co) return;
-      const deHoy = esHoy(co.updated_at) || esHoy(co.created_at);
-      const vigente = co.fecha_entrega && String(co.fecha_entrega).slice(0, 10) >= hoyIso && !(co.n_entrega && conDt.has(tx(co.n_entrega)));
-      if (!deHoy && !vigente) return;
-      if (!(pendV(r) > 0)) return;
-      const k = `${doc}|${tx(r.pos || r.material)}`, i = liveIdx.get(k);
-      if (i === undefined) { ventasRaw.push({ ...r, _respaldo: true }); liveIdx.set(k, ventasRaw.length - 1); }
-      else if (!(pendV(ventasRaw[i]) > 0)) ventasRaw[i] = { ...r, _respaldo: true };
-    });
+    // (11-oct-2026, Jordan) NV coordinada: todas sus líneas vivas se reemplazan por el respaldo tomado al
+    // coordinar, hasta que la entrega coordinada tenga DT (mismo criterio que el Plan de Carga).
+    const bkPorDoc = new Map();
+    bkVen.forEach(r => { const d = tx(r.doc_ventas); if (!bkPorDoc.has(d)) bkPorDoc.set(d, []); bkPorDoc.get(d).push(r); });
+    const usarBk = new Set([...bkPorDoc.keys()].filter(d => { const co = coordVentas.get(d); return !!co && !(co.n_entrega && conDt.has(tx(co.n_entrega))); }));
+    if (!usarBk.size) return;
+    for (let i = ventasRaw.length - 1; i >= 0; i--) if (usarBk.has(tx(ventasRaw[i].doc_ventas))) ventasRaw.splice(i, 1);
+    usarBk.forEach(d => bkPorDoc.get(d).forEach(r => ventasRaw.push({ ...r, _respaldo: true })));
   } catch (e) { console.warn('Ventas CD: respaldo de NV coordinadas no disponible', e); }
 }
 
