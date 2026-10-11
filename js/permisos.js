@@ -48,6 +48,7 @@ export const PERFILES = {
       ...ABAST_OPERATIVAS,
       // Entregas Creadas / Documentos de Transporte: ocultas (cruce interno, 30-sep-2026)
       'abastecimiento:ind_plan_carga',
+      'abastecimiento:control_diferencias',   // (11-oct-2026) Control de Diferencias
     ],
     // 30-sep-2026: sin Excluir (sólo OWNER) y alcance a todos los centros por defecto.
     acciones: ['editar', 'descargar', 'descargar_plan', 'ajustar_plan'],
