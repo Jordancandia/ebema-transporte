@@ -32,7 +32,7 @@ export function tonHtml(n) {
 }
 
 // Encabezado del shell: fecha y hora de la última actualización SAP de la vista
-import { confirmar } from './confirmar.js?v=202610111348';
+import { confirmar } from './confirmar.js?v=202610111405';
 export function setUltimaActualizacion(ts) {
   const el = document.getElementById('sv-upd');
   if (!el) return;
@@ -61,6 +61,14 @@ function isoToDate(s) {
   const m = String(s || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
   return m ? new Date(+m[1], +m[2] - 1, +m[3]) : null;
 }
+const MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+const DIAS_SEM = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom'];
+function fechaLarga(f) {
+  const [y, m, d] = String(f || '').split('-').map(Number);
+  if (!y) return '';
+  const dt = new Date(y, m - 1, d);
+  return `${['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'][dt.getDay()]} ${d} de ${MESES[m - 1]}${y !== new Date().getFullYear() ? ' de ' + y : ''}`;
+}
 function hoyISO() {
   const h = new Date();
   return `${h.getFullYear()}-${String(h.getMonth() + 1).padStart(2, '0')}-${String(h.getDate()).padStart(2, '0')}`;
@@ -78,6 +86,8 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
   if (!_estado.has(viewKey) && cfg.dateDefaultHoy) { st.dFrom = st.dTo = hoyISO(); }
   _estado.set(viewKey, st);
   st.open = null;
+  // (11-oct-2026) Vista calendario opcional (AV.calendario): se elige entre Calendario y Lista.
+  if (!st.vista) st.vista = V.calendario ? 'cal' : 'lista';
   if (stage._fClose) { document.removeEventListener('click', stage._fClose); document.removeEventListener('keydown', stage._fClose); }
   stage._fClose = e => {
     if (!st.open || !stage.isConnected) return;
@@ -123,6 +133,7 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
   }
 
   const rowId = r => r.__rid;
+  const esCal = () => !!(AV.calendario && st.vista === 'cal');
   const kpisDef = AV.kpis || [];
   const kpiFn = k => (kpisDef.find(x => x.key === k) || {}).fn;
 
@@ -131,7 +142,7 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
     return rowsAll.filter(r => {
       if (AV.origen && st.orig && String(AV.origen.of(r) ?? '').trim() !== st.orig) return false;
       if (AV.docSearch && qd && !String(AV.docSearch.of(r) ?? '').includes(qd)) return false;
-      if (AV.fecha && (dF || dT)) {
+      if (AV.fecha && (dF || dT) && !esCal()) {
         const d = deps.parseDateSAP(AV.fecha.of(r));
         if (!d) return false;
         if (dF && d < dF) return false;
@@ -169,7 +180,9 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
       `<button data-chip data-mode="${i}" class="${st.mode === i ? 'is-on' : ''}">${m.icon ? `<span class="material-symbols-outlined">${m.icon}</span>` : ''}${esc(m.v2label || m.label)}</button>`).join('')}</div>` : '';
     return `<div class="sv-vhead">
       <div style="min-width:0"><h1 class="sv-h1">${esc(AV.titulo)}</h1>${AV.desc ? `<div class="sv-desc">${esc(AV.desc)}</div>` : ''}</div>
-      <div class="sv-actions">${modes}${seg}
+      <div class="sv-actions">${AV.calendario ? `<div class="sv-seg" role="group" aria-label="Vista">
+        <button data-chip data-vista="cal" class="${esCal() ? 'is-on' : ''}"><span class="material-symbols-outlined">calendar_month</span>Calendario</button>
+        <button data-chip data-vista="lista" class="${!esCal() ? 'is-on' : ''}"><span class="material-symbols-outlined">view_list</span>Lista</button></div>` : ''}${modes}${seg}
         ${headBtns().map((b, i) => `<button class="sv-btn" data-hbtn="${i}" title="${esc(b.label)}"><span class="material-symbols-outlined">${esc(b.icon || 'bolt')}</span>${esc(b.label)}</button>`).join('')}
         <button class="sv-btn" data-csv title="Descargar CSV"><span class="material-symbols-outlined">download</span>Descargar</button>
         <button class="sv-btn is-icon" data-refrescar title="Refrescar datos"><span class="material-symbols-outlined">refresh</span></button>
@@ -180,7 +193,7 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
   function draw() {
     const pre = base();
     const { byChip, filt } = aplica(pre);
-    const hasFilter = exOn() || st.kpi !== 'all' || st.chip !== 'all' || st.chip2 !== 'all' || !!st.q.trim() || !!st.qDoc.trim() || !!st.dFrom || !!st.dTo;
+    const hasFilter = exOn() || st.kpi !== 'all' || st.chip !== 'all' || st.chip2 !== 'all' || !!st.q.trim() || !!st.qDoc.trim() || ((!!st.dFrom || !!st.dTo) && !esCal());
 
     const kpis = kpisDef.length ? `<div class="sv-kpis">${kpisDef.map(k => {
       const n = k.fn ? byChip.filter(k.fn).length : byChip.length;
@@ -221,7 +234,7 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
     const inputs = [];
     if (AV.docSearch) inputs.push(`<label class="sv-inp" title="${esc(AV.docSearch.ph)}"><span class="material-symbols-outlined">tag</span>
       <input class="is-mono" data-qdoc inputmode="numeric" placeholder="${esc(AV.docSearch.ph)}" value="${esc(st.qDoc)}" style="width:190px"/></label>`);
-    if (AV.fecha) inputs.push(`<div class="sv-inp" title="${esc(AV.fecha.label)}"><span class="material-symbols-outlined">date_range</span>
+    if (AV.fecha && !esCal()) inputs.push(`<div class="sv-inp" title="${esc(AV.fecha.label)}"><span class="material-symbols-outlined">date_range</span>
       <span class="sv-sep">${esc(AV.fecha.label)}</span>
       <input type="date" data-dfrom value="${esc(st.dFrom)}" aria-label="Desde"/><span class="sv-sep">–</span><input type="date" data-dto value="${esc(st.dTo)}" aria-label="Hasta"/></div>`);
     if (AV.search) inputs.push(`<label class="sv-inp"><span class="material-symbols-outlined">search</span>
@@ -250,16 +263,99 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
       ${headHTML()}
       ${kpis}
       ${filtros}
-      <div class="sv-card">
+      ${esCal() ? calHTML(filt) : `<div class="sv-card">
         <div class="sv-tablewrap"><table class="sv-table" style="min-width:${AV.minW || '900px'}">
           <thead><tr>${cols.map(c => `<th class="${c.al === 'r' ? 'r' : ''}">${esc(c.label)}</th>`).join('')}</tr></thead>
           <tbody>${body}</tbody></table></div>
         <div class="sv-tfoot"><span>${filt.length.toLocaleString('es-CL')} de ${rowsAll.filter(r => !AV.origen || String(AV.origen.of(r) ?? '').trim() === st.orig).length.toLocaleString('es-CL')} registros${filt.length > MAX ? ` · mostrando ${MAX}, usa los filtros para acotar` : ''}</span><span>${esc(nota)}</span></div>
-      </div>
+      </div>`}
       <div data-drawer-slot></div>
     </div>`;
     wire(filt);
     if (st.drawer) openDrawer(st.drawer);
+  }
+
+  // ── Calendario (11-oct-2026, Jordan) ─────────────────────────────────────
+  // AV.calendario = { fecha(r) → 'YYYY-MM-DD', chip(r) → html (resumen en la celda), totalDia(rows) → texto,
+  //   resumenDia(rows) → html, tarjeta(r) → html (panel del día), leyenda → html, vacio → texto }.
+  // Clic en un día → panel con sus planes; clic en una tarjeta → panel lateral de detalle de siempre.
+  function calHTML(filt) {
+    const C = AV.calendario;
+    const porDia = new Map();
+    filt.forEach(r => { const f = String(C.fecha(r) || '').slice(0, 10); if (!/^\d{4}-\d{2}-\d{2}$/.test(f)) return; if (!porDia.has(f)) porDia.set(f, []); porDia.get(f).push(r); });
+    const hoy = hoyISO();
+    if (!st.calDia) {
+      const dias = [...porDia.keys()].sort();
+      st.calDia = porDia.has(hoy) ? hoy : (dias.find(d => d > hoy) || dias[dias.length - 1] || hoy);
+    }
+    if (!st.calMes) st.calMes = st.calDia.slice(0, 7);
+    const [y, m] = st.calMes.split('-').map(Number);
+    const pad = n => String(n).padStart(2, '0');
+    const iso = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    const off = (new Date(y, m - 1, 1).getDay() + 6) % 7;
+    const nDias = new Date(y, m, 0).getDate();
+    const semanas = Math.ceil((off + nDias) / 7);
+    const delMes = [...porDia.entries()].filter(([d]) => d.startsWith(st.calMes)).flatMap(([, rs]) => rs);
+    let celdas = '';
+    for (let i = 0; i < semanas * 7; i++) {
+      const d = new Date(y, m - 1, 1 - off + i), f = iso(d), rs = porDia.get(f) || [];
+      const cls = ['sv-cdr-d', d.getMonth() !== m - 1 ? 'is-out' : '', f === hoy ? 'is-today' : '', f === st.calDia ? 'is-sel' : '',
+        rs.length ? 'has' : '', i % 7 >= 5 ? 'is-we' : ''].filter(Boolean).join(' ');
+      celdas += `<button class="${cls}" data-cal-dia="${f}" aria-label="${esc(fechaLarga(f))}${rs.length ? `, ${rs.length} planes` : ''}" aria-pressed="${f === st.calDia}">
+        <span class="sv-cdr-dh"><span class="sv-cdr-n">${d.getDate()}</span>${rs.length ? `<span class="sv-cdr-t">${esc(C.totalDia(rs))}</span>` : ''}</span>
+        ${rs.slice(0, 4).map(C.chip).join('')}${rs.length > 4 ? `<span class="sv-cdr-more">+${rs.length - 4} más</span>` : ''}</button>`;
+    }
+    const rsDia = (porDia.get(st.calDia) || []);
+    const cards = rsDia.length ? rsDia.map(r => `<div class="sv-cdr-card ${st.drawer === r.__rid ? 'is-sel' : ''}" data-cal-row="${esc(r.__rid)}" role="button" tabindex="0">${C.tarjeta(r)}</div>`).join('')
+      : `<div class="sv-cdr-empty"><span class="material-symbols-outlined">event_available</span>${esc(C.vacio || 'Sin planes este día.')}</div>`;
+    return `<div class="sv-cdr">
+      <div class="sv-card sv-cdr-main">
+        <div class="sv-cdr-h">
+          <button class="sv-iconbtn" data-cal-nav="-1" title="Mes anterior"><span class="material-symbols-outlined">chevron_left</span></button>
+          <div class="sv-cdr-m">${esc(MESES[m - 1])} ${y}</div>
+          <button class="sv-iconbtn" data-cal-nav="1" title="Mes siguiente"><span class="material-symbols-outlined">chevron_right</span></button>
+          <button class="sv-btn" data-cal-hoy style="padding:4px 10px">Hoy</button>
+          <span class="sv-cdr-ms">${delMes.length ? esc(C.resumenMes ? C.resumenMes(delMes) : `${delMes.length} planes`) : 'Sin planes en el mes'}</span>
+        </div>
+        <div class="sv-cdr-scroll"><div class="sv-cdr-grid">
+          ${DIAS_SEM.map((dn, i) => `<div class="sv-cdr-wd ${i >= 5 ? 'is-we' : ''}">${dn}</div>`).join('')}
+          ${celdas}
+        </div></div>
+        ${C.leyenda ? `<div class="sv-cdr-leg">${C.leyenda}</div>` : ''}
+      </div>
+      <aside class="sv-card sv-cdr-side" aria-live="polite">
+        <div class="sv-cdr-sh">
+          <div class="sv-cdr-sk">${esc(C.etiquetaDia || 'Día')}</div>
+          <div class="sv-cdr-st">${esc(fechaLarga(st.calDia))}</div>
+          ${rsDia.length && C.resumenDia ? `<div class="sv-cdr-ss">${C.resumenDia(rsDia)}</div>` : ''}
+        </div>
+        <div class="sv-cdr-cards">${cards}</div>
+      </aside>
+    </div>`;
+  }
+  function wireCal() {
+    stage.querySelectorAll('[data-cal-dia]').forEach(b => b.addEventListener('click', () => {
+      st.calDia = b.dataset.calDia;
+      if (!st.calDia.startsWith(st.calMes)) st.calMes = st.calDia.slice(0, 7);
+      draw();
+      if (window.matchMedia('(max-width: 1180px)').matches) stage.querySelector('.sv-cdr-side')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }));
+    stage.querySelectorAll('[data-cal-nav]').forEach(b => b.addEventListener('click', () => {
+      const [y, m] = st.calMes.split('-').map(Number);
+      const d = new Date(y, m - 1 + Number(b.dataset.calNav), 1);
+      st.calMes = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; draw();
+    }));
+    stage.querySelector('[data-cal-hoy]')?.addEventListener('click', () => { st.calDia = hoyISO(); st.calMes = st.calDia.slice(0, 7); draw(); });
+    const abrir = el => {
+      st.drawer = el.dataset.calRow;
+      stage.querySelectorAll('.sv-cdr-card.is-sel').forEach(x => x.classList.remove('is-sel'));
+      el.classList.add('is-sel');
+      openDrawer(st.drawer);
+    };
+    stage.querySelectorAll('[data-cal-row]').forEach(el => {
+      el.addEventListener('click', () => abrir(el));
+      el.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); abrir(el); } });
+    });
   }
 
   function celdaPlan(r) {
@@ -294,6 +390,11 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
   }
 
   function wire(filt) {
+    stage.querySelectorAll('[data-vista]').forEach(b => b.addEventListener('click', () => {
+      if (st.vista === b.dataset.vista) return;
+      st.vista = b.dataset.vista; st.open = null; draw();
+    }));
+    if (esCal()) wireCal();
     stage.querySelectorAll('[data-kpi]').forEach(b => b.addEventListener('click', () => {
       const k = b.dataset.kpi; st.kpi = (st.kpi === k && k !== 'all') ? 'all' : k; draw();
     }));
@@ -375,7 +476,7 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
     st.drawer = null;
     const slot = stage.querySelector('[data-drawer-slot]');
     if (slot) slot.innerHTML = '';
-    stage.querySelectorAll('tbody tr.is-sel').forEach(x => x.classList.remove('is-sel'));
+    stage.querySelectorAll('tbody tr.is-sel, .sv-cdr-card.is-sel').forEach(x => x.classList.remove('is-sel'));
     document.removeEventListener('keydown', escKey);
   }
   function escKey(e) { if (e.key === 'Escape' && !document.querySelector('.sv-pal-bg, #coord-modal-bg, #excl-modal-bg')) closeDrawer(); }
@@ -399,13 +500,15 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
 
     // Acciones: propias de la vista + excluir/reactivar del Plan de Carga
     const acciones = (d.acciones || []).slice();
+    // (11-oct-2026) En el calendario no hay columna Acciones: las acciones de la fila van al detalle.
+    if (esCal() && AV.filaAcciones) (AV.filaAcciones(r) || []).forEach(a => acciones.push(Object.assign({}, a)));
     if (puedeExcluir && !enFila) {
       const ex = exclusionDe(r);
       acciones.push(ex
         ? { id: 'reactivar', label: 'Reactivar en el plan', icon: 'visibility', primary: false }
         : { id: 'excluir', label: active.excluir.material ? 'Excluir línea del plan' : 'Excluir del plan', icon: 'visibility_off', primary: !(d.acciones || []).some(a => a.primary) });
     }
-    const btns = acciones.map((a, i) => `<button data-acc="${i}" class="${a.primary ? 'sv-btn-p' : 'sv-btn'}">${a.icon ? `<span class="material-symbols-outlined">${a.icon}</span>` : ''}${esc(a.label)}</button>`).join('');
+    const btns = acciones.map((a, i) => `<button data-acc="${i}" class="${a.primary ? 'sv-btn-p' : 'sv-btn'}"${a.tono === 'peligro' ? ' style="color:#b91c1c"' : ''}${a.title ? ` title="${esc(a.title)}"` : ''}>${a.icon ? `<span class="material-symbols-outlined">${a.icon}</span>` : ''}${esc(a.label)}</button>`).join('');
 
     slot.innerHTML = `<div class="sv-dr-bg" data-close></div>
       <aside class="sv-dr" role="dialog" aria-label="${esc(d.kind || 'Detalle')}"${AV.drawerW ? ` style="width:${AV.drawerW}"` : ''}>

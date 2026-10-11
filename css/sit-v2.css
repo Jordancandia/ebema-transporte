@@ -672,3 +672,68 @@ tr.tf-sel td:first-child { box-shadow: inset 3px 0 0 var(--sv-primary); }
 .sv-sect { font-size: 11.5px; font-weight: 800; letter-spacing: .06em; color: var(--sv-ink); padding: 10px 8px 4px; }
 .sv-sectwrap + .sv-sectwrap .sv-sect { border-top: 1px solid var(--sv-line2); margin-top: 4px; }
 .sv-sect-n { font-size: 10.5px; font-weight: 600; color: var(--sv-ink2); letter-spacing: 0; }
+
+/* ── Calendario (11-oct-2026, Jordan) — Seguimiento de Carga: clic en un día → planes del día ── */
+.sv-cdr { display: grid; grid-template-columns: minmax(0, 1fr) 420px; gap: 16px; align-items: start; min-width: 0; max-width: 100%; }
+.sv-cdr > * { min-width: 0; }
+.sv-cdr-main { padding: 14px 16px 12px; min-width: 0; }
+.sv-cdr-h { display: flex; align-items: center; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
+.sv-cdr-m { font-size: 18px; font-weight: 700; text-transform: capitalize; min-width: 150px; text-align: center; }
+.sv-cdr-ms { margin-left: auto; font-size: 12px; color: var(--sv-ink2); }
+.sv-cdr-scroll { overflow-x: auto; }
+.sv-cdr-grid { display: grid; grid-template-columns: repeat(7, minmax(92px, 1fr)); gap: 4px; min-width: 660px; }
+.sv-cdr-wd { font-size: 11px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--sv-ink2); padding: 2px 6px 4px; }
+.sv-cdr-wd.is-we { color: #9ca3af; }
+.sv-cdr-d { min-height: 112px; display: flex; flex-direction: column; gap: 3px; align-items: stretch; text-align: left; padding: 6px; border-radius: 6px;
+  border: 1px solid var(--sv-line2); background: #fff; cursor: pointer; font-family: inherit; color: var(--sv-ink); transition: border-color .12s, box-shadow .12s; }
+.sv-cdr-d:hover { border-color: var(--sv-line-h); }
+.sv-cdr-d:focus-visible { outline: 2px solid var(--sv-primary); outline-offset: 1px; }
+.sv-cdr-d.is-we:not(.has) { background: var(--sv-s1); }
+.sv-cdr-d.is-out { opacity: .45; }
+.sv-cdr-d.is-sel { border-color: var(--sv-primary); box-shadow: inset 0 0 0 1px var(--sv-primary); background: var(--sv-sel2); }
+.sv-cdr-dh { display: flex; align-items: center; justify-content: space-between; gap: 4px; margin-bottom: 1px; }
+.sv-cdr-n { font-size: 13px; font-weight: 700; width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center; border-radius: 50%; }
+.sv-cdr-d.is-today .sv-cdr-n { background: var(--sv-primary); color: #fff; }
+.sv-cdr-t { font-family: var(--sv-mono); font-size: 11px; font-weight: 700; color: var(--sv-ink3); }
+.sv-cdr-chip { display: flex; align-items: center; gap: 4px; font-size: 11px; line-height: 16px; padding: 1px 5px 1px 6px; border-radius: 3px;
+  background: color-mix(in srgb, var(--c) 10%, #fff); box-shadow: inset 3px 0 0 var(--c); color: var(--sv-ink); white-space: nowrap; overflow: hidden; }
+.sv-cdr-chip span { overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1; }
+.sv-cdr-chip b { font-family: var(--sv-mono); font-weight: 700; font-size: 10px; color: var(--sv-ink3); }
+.sv-cdr-more { font-size: 11px; font-weight: 700; color: var(--sv-ink2); padding-left: 6px; }
+.sv-cdr-leg { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 12px; font-size: 12px; color: var(--sv-ink2); }
+.sv-cdr-leg span { display: inline-flex; align-items: center; gap: 6px; }
+.sv-cdr-leg i { width: 10px; height: 10px; border-radius: 2px; background: var(--c); }
+.sv-cdr-side { position: sticky; top: 72px; max-height: calc(100vh - 96px); display: flex; flex-direction: column; overflow: hidden; }
+.sv-cdr-sh { padding: 14px 16px 12px; border-bottom: 1px solid var(--sv-line); }
+.sv-cdr-sk { font-size: 11px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--sv-ink2); }
+.sv-cdr-st { font-size: 18px; font-weight: 700; margin-top: 2px; }
+.sv-cdr-st::first-letter { text-transform: uppercase; }
+.sv-cdr-ss { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.sv-cdr-cards { overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+.sv-cdr-card { border: 1px solid var(--sv-line); border-radius: 8px; padding: 12px; background: #fff; cursor: pointer; transition: border-color .12s, box-shadow .12s; }
+.sv-cdr-card:hover { border-color: var(--sv-line-h); box-shadow: 0 2px 8px rgba(0,0,0,.06); }
+.sv-cdr-card:focus-visible { outline: 2px solid var(--sv-primary); outline-offset: 1px; }
+.sv-cdr-card.is-sel { border-color: var(--sv-primary); box-shadow: inset 0 0 0 1px var(--sv-primary); }
+.sv-cdr-ch { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; margin-bottom: 8px; }
+.sv-cdr-ch b { font-size: 15px; }
+.sv-cdr-ton { font-family: var(--sv-mono); font-size: 15px; font-weight: 700; white-space: nowrap; }
+.sv-cdr-cam { border-top: 1px dashed var(--sv-line); padding-top: 8px; margin-top: 8px; display: flex; flex-direction: column; gap: 4px; }
+.sv-cdr-cam1 { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.sv-cdr-est { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 700; color: var(--c); }
+.sv-cdr-est::before { content: ''; width: 8px; height: 8px; border-radius: 50%; background: var(--c); }
+.sv-cdr-pct { margin-left: auto; font-family: var(--sv-mono); font-size: 12px; font-weight: 700; }
+.sv-cdr-bar { height: 6px; border-radius: 3px; background: var(--sv-s2); overflow: hidden; }
+.sv-cdr-bar i { display: block; height: 100%; border-radius: 3px; }
+.sv-cdr-l2 { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--sv-ink3); min-width: 0; }
+.sv-cdr-l2 .material-symbols-outlined { font-size: 16px; color: var(--sv-ink2); }
+.sv-cdr-l2 > span:not(.material-symbols-outlined) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.sv-cdr-empty { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 32px 12px; color: var(--sv-ink2); font-size: 13px; text-align: center; }
+.sv-cdr-empty .material-symbols-outlined { font-size: 32px; color: #9ca3af; }
+@media (max-width: 1180px) {
+  .sv-cdr { grid-template-columns: minmax(0, 1fr); }
+  .sv-cdr-side { position: static; max-height: none; }
+}
+@media (max-width: 760px) {
+  .sv-cdr-main { padding: 10px; }
+  .sv-cdr-d { min-height: 84px; }
+}

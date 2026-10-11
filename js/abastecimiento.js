@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610111348';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610111348';
-import { getDatabase } from './data.js?v=202610111348';
+import { supabase } from './supabase-client.js?v=202610111405';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610111405';
+import { getDatabase } from './data.js?v=202610111405';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610111348';
-import { confirmar } from './confirmar.js?v=202610111348';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610111405';
+import { confirmar } from './confirmar.js?v=202610111405';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -3861,6 +3861,41 @@ V2.seguimiento_carga = {
     return acc;
   },
   note: 'Camiones CD / 2º: al programarlos · Directos (CD-Cliente, Fáb-Cliente, Fáb-Sucursal, Retiro FAB-CD): al coordinarlos, una fila por coordinación (se puede anular desde el detalle) · clic en una fila para ver pedidos y SKU',
+  // (11-oct-2026, Jordan) Vista calendario por fecha de carga: clic en un día → planes del día; clic en un plan → detalle.
+  calendario: {
+    fecha: r => r.fecha_carga,
+    etiquetaDia: 'Carga del día',
+    vacio: 'No hay camiones programados ni coordinaciones con carga este día.',
+    totalDia: rows => fmtNum(rows.reduce((s2, r) => s2 + (Number(r.ton) || 0), 0), 0) + ' t',
+    chip: r => {
+      const e = estadoGrupoSeg(r);
+      return `<span class="sv-cdr-chip" style="--c:${SEG_EST[e].c}" title="${escV2(`${r._nombreCe} · ${SEG_EST[e].l}`)}"><span>${escV2(r._nombreCe)}</span><b>${fmtNum(Number(r.ton) || 0, 0)}t</b></span>`;
+    },
+    resumenMes: rows => { const n = rows.reduce((s2, r) => s2 + r.camiones.length, 0); return `${n} ${n === 1 ? 'camión' : 'camiones'} · ${fmtNum(rows.reduce((s2, r) => s2 + (Number(r.ton) || 0), 0), 0)} t en el mes`; },
+    resumenDia: rows => {
+      const cams = rows.flatMap(r => r.camiones.map(c => estadoCamSeg(r, c)));
+      const cnt = k => cams.filter(x => x === k).length;
+      return [pill(`${cams.length} ${cams.length === 1 ? 'camión' : 'camiones'}`, 'mute'), pill(fmtNum(rows.reduce((s2, r) => s2 + (Number(r.ton) || 0), 0), 1) + ' t', 'mute'),
+        ...['cargado', 'prog', 'coord', 'sindt'].filter(k => cnt(k)).map(k => pill(`${cnt(k)} ${SEG_EST[k].l.replace(/^./, ch => ch.toLowerCase())}`, SEG_EST[k].tono))].join('');
+    },
+    tarjeta: r => {
+      const cams = r.camiones.map(c => {
+        const e = estadoCamSeg(r, c), E = SEG_EST[e];
+        const pct = c.pct != null ? Number(c.pct) : (c.cap ? Math.round(c.ton / c.cap * 100) : null);
+        const dt = c.dts.length ? 'DT ' + c.dts.map(d => d.transporte).join(' / ') + (c.nSinDt ? ` · ${c.nSinDt} SKU sin cargar` : '') : E.l;
+        return `<div class="sv-cdr-cam" style="--c:${E.c}">
+          <div class="sv-cdr-cam1">${pill(c.tipo, SEG_TONO[c.tipo] || 'warn')}<span class="sv-cdr-est">${escV2(E.l)}</span>${pct != null ? `<span class="sv-cdr-pct">${pct}%</span>` : ''}</div>
+          ${pct != null ? `<div class="sv-cdr-bar"><i style="width:${Math.min(pct, 100)}%;background:${colorUmbral(pct)}"></i></div>` : ''}
+          <div class="sv-cdr-l2"><span class="material-symbols-outlined">local_shipping</span><span>${escV2(c.transportista || c.id_transporte || 'Sin transportista')}${c.patente_camion ? ` · <b class="sv-mono">${escV2(c.patente_camion)}</b>` : ''}${c.chofer_nombre ? ` · ${escV2(c.chofer_nombre)}` : ''}</span></div>
+          <div class="sv-cdr-l2"><span class="material-symbols-outlined">${c.dts.length ? 'receipt_long' : 'inventory_2'}</span><span>${escV2(dt)} · ${fmtNum(c.nSku, 0)} SKU · ${fmtNum(c.ton, 1)} t</span></div>
+        </div>`;
+      }).join('');
+      return `<div class="sv-cdr-ch"><div style="min-width:0"><b>${escV2(r._nombreCe)}</b> <span class="sv-mono sv-muted">${escV2(r.ce)}</span>
+          <div class="sv-sub" style="margin:2px 0 0">${escV2([r.origen ? 'desde ' + r.origen : '', 'plan ' + fmtFechaISO(r.fecha_plan), r._coordRow ? `coordinación ${r._coordTipo} ${r._coordDoc}` : ''].filter(Boolean).join(' · '))}</div></div>
+        <div class="sv-cdr-ton">${fmtNum(Number(r.ton) || 0, 1)} t</div></div>${cams}`;
+    },
+    get leyenda() { return ['cargado', 'prog', 'coord', 'sindt'].map(k => `<span style="--c:${SEG_EST[k].c}"><i></i>${SEG_EST[k].l}</span>`).join('') + '<span>· Clic en un día para ver sus planes; clic en un plan para el detalle</span>'; },
+  },
   minW: '1300px',
   detalle: r => ({
     kind: r._coordRow ? `Seguimiento de carga · coordinación ${r._coordTipo} ${r._coordDoc}` : 'Seguimiento de carga · centro destino', title: `${r.ce} ${r._nombreCe !== r.ce ? r._nombreCe : ''}`.trim(),
@@ -3944,6 +3979,15 @@ function tablasDtSeg(c) {
   });
 }
 const hoySeg = () => new Date().toLocaleDateString('en-CA', { timeZone: 'America/Santiago' });
+// (11-oct-2026, Jordan) Estado de cada camión en el calendario de Seguimiento de Carga.
+const SEG_EST = {
+  cargado: { l: 'Cargado (con DT)', c: '#15803d', tono: 'ok' },
+  prog: { l: 'Programado', c: '#1d4ed8', tono: 'info' },
+  coord: { l: 'Coordinado', c: '#7e22ce', tono: 'purple' },
+  sindt: { l: 'Sin DT', c: '#c2410c', tono: 'warn' },
+};
+const estadoCamSeg = (r, c) => c.dts.length ? 'cargado' : segFaltaDt(r, c) ? 'sindt' : c.coord ? 'coord' : 'prog';
+const estadoGrupoSeg = r => { const es = r.camiones.map(c => estadoCamSeg(r, c)); return ['sindt', 'prog', 'coord', 'cargado'].find(k => es.includes(k)) || 'prog'; };
 // Sólo los despachos que salen del CD llevan DT en el reporte SAP (los retiros de fábrica no).
 const SEG_CON_DT = new Set(['Camión CD', '2º camión', 'CD-Cliente']);
 const segFaltaDt = (r, c) => !c.coord && SEG_CON_DT.has(c.tipo) && !c.dts.length && String(c.fecha_carga || r.fecha_carga || '') < hoySeg();
@@ -4164,11 +4208,11 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610111348');
+    const m = await import('./ind-plan-carga.js?v=202610111405');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (currentSub === 'control_diferencias') {  // (11-oct-2026) Control de Diferencias del Plan de Carga
-    const m = await import('./control-diferencias.js?v=202610111348');
+    const m = await import('./control-diferencias.js?v=202610111405');
     await m.renderControlDiferencias(stage);
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
