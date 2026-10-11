@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610111249';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610111249';
-import { getDatabase } from './data.js?v=202610111249';
+import { supabase } from './supabase-client.js?v=202610111330';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610111330';
+import { getDatabase } from './data.js?v=202610111330';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610111249';
-import { confirmar } from './confirmar.js?v=202610111249';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610111330';
+import { confirmar } from './confirmar.js?v=202610111330';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -4080,11 +4080,11 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610111249');
+    const m = await import('./ind-plan-carga.js?v=202610111330');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (currentSub === 'control_diferencias') {  // (11-oct-2026) Control de Diferencias del Plan de Carga
-    const m = await import('./control-diferencias.js?v=202610111249');
+    const m = await import('./control-diferencias.js?v=202610111330');
     await m.renderControlDiferencias(stage);
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
@@ -5301,6 +5301,15 @@ async function renderPlanCarga(stage, opts = {}) {
       progMap = new Map((data || []).map(x => [`${String(x.ce ?? '').trim()}|${x.camion}`, x]));
     } catch (_e) { progMap = new Map(); }
   }
+  // (11-oct-2026) Diferencias abiertas por centro destino (Control de Diferencias) → tag en la fila del centro.
+  let difMap = new Map();
+  async function leerDiferencias() {
+    try {
+      const { data } = await supabase.from('abast_control_diferencia').select('centro,efecto').eq('estado', 'abierta').not('centro', 'is', null);
+      difMap = new Map();
+      (data || []).forEach(x => { const k = String(x.centro ?? '').trim(); const v = difMap.get(k) || { n: 0, bloq: 0 }; v.n++; if (x.efecto === 'Bloquea líneas') v.bloq++; difMap.set(k, v); });
+    } catch (_e) { difMap = new Map(); }
+  }
   // (5-oct-2026) Maestro de transportistas: directos con transportista BLOQUEADO = «por confirmar».
   let maestroTr = new Map();
   async function leerMaestroTr() { try { maestroTr = await loadMaestroTranspMap(); } catch (_e) { maestroTr = new Map(); } }
@@ -5310,7 +5319,7 @@ async function renderPlanCarga(stage, opts = {}) {
     const f = faltanTransp(t);
     return f.length ? { t, f } : null;
   };
-  await Promise.all([leerFotoCierre(), leerSegundos(), leerProgramados(), leerMaestroTr()]);
+  await Promise.all([leerFotoCierre(), leerSegundos(), leerProgramados(), leerMaestroTr(), leerDiferencias()]);
   const otrosProgramados = (ce, cam) => [...progMap.values()]
     .filter(x => !(String(x.ce).trim() === ce && Number(x.camion) === cam))
     .map(x => ({ lbl: `${x.camion === 2 ? '2º camión' : 'camión CD'} ${getNombreCentro(x.ce)}`, patente_camion: x.patente_camion, chofer_rut: x.chofer_rut }));
@@ -5572,6 +5581,9 @@ async function renderPlanCarga(stage, opts = {}) {
       ? TAG('local_shipping', '2º camión programado', `2º camión aceptado (${t1(r.tonSegundo)} t): entra a la foto de las ${HHMM_CIERRE} y a los indicadores`, 'seg-ok')
       : TAG('local_shipping', '2º camión opcional', `Lo que no cabe (${t1(r.excedente)} t) llega al 85% de un camión: se puede programar un 2º camión de ${t1(r.tonSegundo)} t`, 'extra'));
     if (r.tonClienteDiferido > 0) t.push(TAG('event_upcoming', 'CD-Cliente próximo', `CD-Cliente con fecha de entrega posterior: ${t1(r.tonClienteDiferido)} t`, 'h48'));
+    // (11-oct-2026) Diferencias abiertas del centro (Gestión Troncales → Control de Diferencias).
+    const dif = difMap.get(String(r.ce));
+    if (dif && dif.n) t.push(TAG('rule', `${dif.n} diferencia${dif.n > 1 ? 's' : ''}`, `${dif.n} diferencia(s) abierta(s) en Control de Diferencias${dif.bloq ? ` · ${dif.bloq} bloquean líneas` : ''}: revisar antes del corte`, 'baja'));
     return t.join('');
   }
   // Camión a escala: segmentos por categoría (orden de llenado) + espacio libre rayado
