@@ -32,7 +32,7 @@ export function tonHtml(n) {
 }
 
 // Encabezado del shell: fecha y hora de la última actualización SAP de la vista
-import { confirmar } from './confirmar.js?v=202610111405';
+import { confirmar } from './confirmar.js?v=202610111429';
 export function setUltimaActualizacion(ts) {
   const el = document.getElementById('sv-upd');
   if (!el) return;
@@ -489,7 +489,13 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
     const kv = (d.kv || []).filter(Boolean).map(([k, v, raw]) =>
       `<div><dt>${esc(k)}</dt><dd>${raw ? (v ?? '—') : (v == null || v === '' ? '—' : esc(v))}</dd></div>`).join('');
     // d.tablas (5-oct-2026): varias tablas en el detalle (p. ej. un camión por tabla); d.tabla sigue funcionando.
-    const tablaHtml = tb => tb && tb.rows && tb.rows.length ? `<div>
+    // (11-oct-2026) tb.html: bloque libre (p. ej. ficha del transporte); tb.vacio: texto cuando la tabla no tiene filas.
+    const tablaHtml = tb => tb && tb.html != null ? `<div>
+      ${tb.titulo ? `<div class="sv-dr-sect">${esc(tb.titulo)}</div>` : ''}
+      ${tb.sub ? `<div class="sv-sub" style="margin:-4px 0 6px;max-width:none">${esc(tb.sub)}</div>` : ''}${tb.html}</div>`
+      : tb && tb.vacio && !(tb.rows && tb.rows.length) ? `<div><div class="sv-dr-sect">${esc(tb.titulo || 'Detalle')}</div>
+      <div class="sv-sub" style="margin:0;max-width:none">${esc(tb.vacio)}</div></div>`
+      : tb && tb.rows && tb.rows.length ? `<div>
       <div class="sv-dr-sect">${esc(tb.titulo || 'Detalle')}</div>
       ${tb.sub ? `<div class="sv-sub" style="margin:-4px 0 6px;max-width:none">${esc(tb.sub)}</div>` : ''}
       <div class="sv-card" style="overflow:auto"><table class="sv-table">
