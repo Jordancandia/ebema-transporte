@@ -1,8 +1,8 @@
-import { getDatabase, saveDatabase, getCentreName } from './data.js?v=202610121744';
+import { getDatabase, saveDatabase, getCentreName } from './data.js?v=202610121751';
 import { showAlert, escapeHtml } from './utils.js';
-import { supabase } from './supabase-client.js?v=202610121744';
-import { ROLES_CON_CENTROS, PERFILES, ALIAS_PERFIL, ACCIONES_EXTRA, VISTAS_CATALOGO, perfilVeMenu, esOwner, can, TODOS_CENTROS } from './permisos.js?v=202610121744';
-import { confirmar } from './confirmar.js?v=202610121744';
+import { supabase } from './supabase-client.js?v=202610121751';
+import { ROLES_CON_CENTROS, PERFILES, ALIAS_PERFIL, ACCIONES_EXTRA, VISTAS_CATALOGO, perfilVeMenu, esOwner, can, TODOS_CENTROS } from './permisos.js?v=202610121751';
+import { confirmar } from './confirmar.js?v=202610121751';
 
 // --- Perfiles de Acceso (Roles y Perfiles + Row Level Security) ---
 // 5 perfiles canónicos. Cada uno determina qué puede ver/editar el usuario
@@ -62,7 +62,8 @@ const LEGACY_ROLE_MAP = {
 // Ajuste 2026-09-17 (correo Plan de Carga): se agrega OWNER — mismo criterio,
 // solo para definir a qué centro(s) se dirigen sus correos de notificación del
 // Plan de Carga; NO restringe en absoluto su acceso total a la plataforma.
-const CENTRO_ROLES = ['JEFE_OPERACIONES', 'JEFE_SUCURSAL', 'OWNER'];
+// (12-oct-2026, Jordan) Se quitó «Centro(s) de Preferencia»: el correo de Plan de Carga llega a todos los usuarios.
+const CENTRO_ROLES = [];
 // Roles que requieren un "Transportista" asociado
 const TRANSPORTE_ROLES = ['TRANSPORTISTA', 'CHOFER'];
 
@@ -243,22 +244,6 @@ export function renderRolesView(container) {
               }).join('')}
             </div>
             <p id="role-desc-text" style="font-size:12px;color:#5c5f61;margin-top:8px;line-height:1.4;background:#f8f9fa;border:1px solid #e1e3e4;border-radius:6px;padding:8px 10px"></p>
-          </div>
-
-          <div id="field-centro" style="display:none">
-            <label style="display:block;font-size:11px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#5c5f61;margin-bottom:6px">Centro(s) de Preferencia</label>
-            <label style="display:flex;align-items:center;gap:8px;padding:8px 10px;border:1.5px solid #e1e3e4;border-radius:8px;margin-bottom:8px;cursor:pointer;background:#f8f9fa">
-              <input type="checkbox" id="modal-user-centro-todos" style="width:16px;height:16px;accent-color:#b5000b" />
-              <span style="font-size:13px;font-weight:700;color:#191c1d">Todos los centros</span>
-            </label>
-            <div id="modal-user-centro-list" style="max-height:160px;overflow-y:auto;border:1.5px solid #e1e3e4;border-radius:8px;padding:8px 10px;display:flex;flex-direction:column;gap:6px">
-              ${(db.logisticsCentres || []).map(cd => `
-                <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
-                  <input type="checkbox" class="modal-user-centro-item" value="${cd.id}" style="width:15px;height:15px;accent-color:#b5000b" />
-                  <span style="font-size:13px;color:#191c1d">${cd.nombre} (${cd.id})</span>
-                </label>`).join('')}
-            </div>
-            <p style="font-size:11px;color:#5c5f61;margin-top:6px;line-height:1.4">Puede elegir uno, varios o todos los centros. Se usa solo para dirigir los correos de notificación de este usuario — no limita los datos que puede ver.</p>
           </div>
 
           <div id="field-centros-asig" style="display:none">
@@ -615,7 +600,7 @@ async function saveUser() {
   const extras = esOwner() && !TRANSPORTE_ROLES.includes(selectedRole) ? getExtras() : null;
 
   // Limpiar asociaciones que no correspondan al perfil
-  const finalCentrosPreferencia = CENTRO_ROLES.includes(selectedRole) ? centrosPreferencia : null;
+  const finalCentrosPreferencia = null;
   const finalTransportistaId = TRANSPORTE_ROLES.includes(selectedRole) ? transportistaId : null;
 
   if (editIdx === '') {
