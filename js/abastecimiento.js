@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610121755';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610121755';
-import { getDatabase } from './data.js?v=202610121755';
+import { supabase } from './supabase-client.js?v=202610121758';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610121758';
+import { getDatabase } from './data.js?v=202610121758';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610121755';
-import { confirmar, pedirDato } from './confirmar.js?v=202610121755';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610121758';
+import { confirmar, pedirDato } from './confirmar.js?v=202610121758';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -1659,7 +1659,9 @@ function showCoordRetiroModal(row, ctx) {
 // ── Datos de transporte para programar un camión del Plan de Carga (3-oct-2026) ──
 // ini: datos actuales; otros: [{ lbl, patente_camion, chofer_rut }] camiones ya programados hoy
 // (para el aviso de choque). Devuelve el objeto de transporte o null si se cancela.
-function showTransporteCamionModal({ titulo, sub, ini = {}, otros = [], fechaDef = '' }) {
+// (12-oct-2026) modo 'coordinar': guarda los datos del transporte SIN programar (la carga sigue actualizándose).
+function showTransporteCamionModal({ titulo, sub, ini = {}, otros = [], fechaDef = '', modo = 'programar' }) {
+  const COORD = modo === 'coordinar';
   return new Promise(async resolve => {
     let tr = { trans: [], transTodos: [], choferes: [], camiones: [] };
     try { tr = await loadTransportistasCoord(); } catch (_) { /* sin maestro */ }
@@ -1746,13 +1748,13 @@ function showTransporteCamionModal({ titulo, sub, ini = {}, otros = [], fechaDef
       const t = sel();
       panel.innerHTML = `
         <div class="sv-dr-h"><div style="flex:1;min-width:0">
-          <div class="sv-dr-k">Programar camión</div>
+          <div class="sv-dr-k">${COORD ? 'Coordinar transporte' : 'Programar camión'}</div>
           <div class="sv-dr-t">${escapeHtml(titulo)}</div>
           ${sub ? `<div class="sv-dr-s">${escapeHtml(sub)}</div>` : ''}</div>
           <button class="sv-iconbtn" data-cx title="Cerrar (Esc)"><span class="material-symbols-outlined">close</span></button></div>
         <div class="sv-dr-b" style="gap:16px">
           ${falt.length ? '<div class="sv-note-box" style="background:#ffdad6;color:#93000a;font-weight:700">Completa los campos obligatorios marcados en rojo.</div>' : ''}
-          <div class="sv-sub" style="margin:0;max-width:none">Elige el día de carga y el transportista del maestro de transporte; luego el chofer y las patentes. Al confirmar, el camión queda programado para carga.</div>
+          <div class="sv-sub" style="margin:0;max-width:none">Elige el día de carga y el transportista del maestro de transporte; luego el chofer y las patentes. ${COORD ? 'Al guardar, el transporte queda <b>coordinado sin programar</b>: la carga del camión sigue actualizándose y el perfil OWNER lo programa con estos datos.' : 'Al confirmar, el camión queda programado para carga.'}</div>
           <div style="max-width:260px">${lbl('Fecha de carga', 'fechaCarga', true)}
             <label class="sv-inp" style="width:100%;box-sizing:border-box;${bad('fechaCarga') ? 'border-color:#b5000b' : ''}"><span class="material-symbols-outlined">event</span>
               <input type="date" data-k="fechaCarga" value="${escapeHtml(st.fechaCarga)}" style="width:100%;border:none;background:transparent;font:inherit;outline:none"></label>
@@ -1785,7 +1787,7 @@ function showTransporteCamionModal({ titulo, sub, ini = {}, otros = [], fechaDef
         </div>
         <div class="sv-dr-f"><span class="sv-dr-note">* Obligatorio</span>
           <div style="display:flex;gap:8px"><button class="sv-btn" data-cx>Cancelar</button>
-          <button class="sv-btn-p" data-ok><span class="material-symbols-outlined">local_shipping</span>Confirmar camión</button></div></div>`;
+          <button class="sv-btn-p" data-ok><span class="material-symbols-outlined">${COORD ? 'event_available' : 'local_shipping'}</span>${COORD ? 'Guardar coordinación' : 'Confirmar camión'}</button></div></div>`;
       panel.querySelectorAll('[data-cx]').forEach(b => b.addEventListener('click', () => fin(null)));
       panel.querySelectorAll('[data-k]').forEach(i => i.addEventListener('input', () => { st[i.dataset.k] = i.value; }));
       panel.querySelector('[data-k="fechaCarga"]')?.addEventListener('change', e => { st.fechaCarga = e.target.value; draw(); });
@@ -1833,8 +1835,8 @@ function showTransporteCamionModal({ titulo, sub, ini = {}, otros = [], fechaDef
           showAlert(`Maestro actualizado: ${tsel.razonSocial} queda activo.`, 'success');
         }
         // (8-oct-2026, Jordan) Confirmar el camión con sus datos y el día de carga.
-        const okConf = await confirmar(`¿Confirmar el camión?\n\n${titulo}\nDía de carga: ${fmtFechaISO(st.fechaCarga)}\nTransportista: ${tsel.id} · ${tsel.razonSocial || st.transportista}\nChofer: ${st.choferNombre.trim()} · ${st.choferRut.trim()} · ${st.choferTel.trim()}\nPatente camión: ${st.patCamion.trim().toUpperCase()}${st.patCarro.trim() ? ' · carro ' + st.patCarro.trim().toUpperCase() : ''}`,
-          { aceptar: 'Confirmar camión', tono: 'normal', icono: 'local_shipping' });
+        const okConf = await confirmar(`${COORD ? '¿Guardar la coordinación del transporte (sin programar)?' : '¿Confirmar el camión?'}\n\n${titulo}\nDía de carga: ${fmtFechaISO(st.fechaCarga)}\nTransportista: ${tsel.id} · ${tsel.razonSocial || st.transportista}\nChofer: ${st.choferNombre.trim()} · ${st.choferRut.trim()} · ${st.choferTel.trim()}\nPatente camión: ${st.patCamion.trim().toUpperCase()}${st.patCarro.trim() ? ' · carro ' + st.patCarro.trim().toUpperCase() : ''}`,
+          { aceptar: COORD ? 'Guardar coordinación' : 'Confirmar camión', tono: 'normal', icono: COORD ? 'event_available' : 'local_shipping' });
         if (!okConf) { draw(); return; }
         fin({
           fecha_carga: st.fechaCarga,
@@ -4406,11 +4408,11 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610121755');
+    const m = await import('./ind-plan-carga.js?v=202610121758');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (currentSub === 'control_diferencias') {  // (11-oct-2026) Control de Diferencias del Plan de Carga
-    const m = await import('./control-diferencias.js?v=202610121755');
+    const m = await import('./control-diferencias.js?v=202610121758');
     await m.renderControlDiferencias(stage);
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
@@ -5379,6 +5381,7 @@ async function renderPlanCarga(stage, opts = {}) {
   // (4-oct-2026, Jordan) Sólo el perfil OWNER agrega/modifica los datos del transporte, también
   // después del cierre. El Planner Abastecimiento no puede en ningún momento.
   const PUEDE_TRANSPORTE = can('programar_transporte');
+  const PUEDE_COORD = can('coordinar_transporte') || PUEDE_TRANSPORTE;   // (12-oct-2026) coordinar sin programar
   const btnExcluir = (tipo, doc, material) => !PUEDE_EXCLUIR ? '' : `<button data-excluir="${escapeHtml(tipo)}|${escapeHtml(String(doc ?? ''))}|${escapeHtml(String(material ?? ''))}" title="Excluir del Plan de Carga de hoy" class="text-[11px] font-bold text-error hover:underline whitespace-nowrap">Excluir</button>`;
   function blkWrap(lbl, items, tableHtml) {
     const sub = items.reduce((s, d) => s + (d.ton || 0), 0);
@@ -5627,6 +5630,16 @@ async function renderPlanCarga(stage, opts = {}) {
       progMap = new Map((data || []).map(x => [`${String(x.ce ?? '').trim()}|${x.camion}`, x]));
     } catch (_e) { progMap = new Map(); }
   }
+  // (12-oct-2026, Jordan) Transporte coordinado SIN programar (Planner Distribución): datos guardados,
+  // la carga sigue actualizándose; el OWNER programa con estos datos (foto, correo, seguimiento).
+  let coordMap = new Map();
+  async function leerCoordinados() {
+    try {
+      const { data } = await supabase.from('abast_plan_camion_coordinado').select('*')
+        .eq('fecha', isoLocal(hoy00())).eq('cd_origen', planOrigen);
+      coordMap = new Map((data || []).map(x => [`${String(x.ce ?? '').trim()}|${x.camion}`, x]));
+    } catch (_e) { coordMap = new Map(); }
+  }
   // (11-oct-2026) Diferencias abiertas por centro destino (Control de Diferencias) → tag en la fila del centro.
   let difMap = new Map();
   async function leerDiferencias() {
@@ -5645,7 +5658,7 @@ async function renderPlanCarga(stage, opts = {}) {
     const f = faltanTransp(t);
     return f.length ? { t, f } : null;
   };
-  await Promise.all([leerFotoCierre(), leerSegundos(), leerProgramados(), leerMaestroTr(), leerDiferencias()]);
+  await Promise.all([leerFotoCierre(), leerSegundos(), leerProgramados(), leerMaestroTr(), leerDiferencias(), leerCoordinados()]);
   const otrosProgramados = (ce, cam) => [...progMap.values()]
     .filter(x => !(String(x.ce).trim() === ce && Number(x.camion) === cam))
     .map(x => ({ lbl: `${x.camion === 2 ? '2º camión' : 'camión CD'} ${getNombreCentro(x.ce)}`, patente_camion: x.patente_camion, chofer_rut: x.chofer_rut }));
@@ -5653,7 +5666,34 @@ async function renderPlanCarga(stage, opts = {}) {
     const { error } = await supabase.from('abast_plan_camion_programado').upsert({ fecha: hoyIsoPlanP(), cd_origen: planOrigen, ce, camion: cam, ...t,
       programado_por: await getUserEmail(), programado_en: new Date().toISOString() }, { onConflict: 'fecha,cd_origen,ce,camion' });
     if (error) { showAlert('No se pudo programar el camión: ' + error.message, 'error'); return false; }
+    // (12-oct-2026) Programado: la coordinación previa ya no aplica
+    if (coordMap.has(`${ce}|${cam}`)) { await supabase.from('abast_plan_camion_coordinado').delete().eq('fecha', hoyIsoPlanP()).eq('cd_origen', planOrigen).eq('ce', ce).eq('camion', cam); coordMap.delete(`${ce}|${cam}`); }
     return true;
+  }
+  // (12-oct-2026, Jordan) Coordinar transporte sin programar: no congela la carga, no guarda foto ni va a Seguimiento.
+  async function coordinarTransporte(ce, cam) {
+    const r = resultado.find(x => x.ce === ce);
+    if (!r) return;
+    if (!PUEDE_COORD) { showAlert('Tu perfil no puede coordinar transporte.', 'error'); return; }
+    const nom = cam === 2 ? '2º camión' : 'Camión CD';
+    const t = await showTransporteCamionModal({ titulo: `${nom} → ${r.nombre}`, sub: `Coordinar transporte (sin programar) · día objetivo ${diaCorto(diaObj(r))}`,
+      ini: coordMap.get(`${ce}|${cam}`) || {}, otros: otrosProgramados(ce, cam), fechaDef: isoLocal(diaObj(r)), modo: 'coordinar' });
+    if (!t) return;
+    const { error } = await supabase.from('abast_plan_camion_coordinado').upsert({ fecha: hoyIsoPlanP(), cd_origen: planOrigen, ce, camion: cam, ...t,
+      coordinado_por: await getUserEmail(), coordinado_en: new Date().toISOString() }, { onConflict: 'fecha,cd_origen,ce,camion' });
+    if (error) { showAlert('No se pudo guardar la coordinación: ' + error.message, 'error'); return; }
+    await leerCoordinados();
+    showAlert(`Transporte del ${nom.toLowerCase()} de ${r.nombre} coordinado (${t.patente_camion}). Falta programarlo (perfil OWNER); la carga sigue actualizándose.`, 'success');
+    draw();
+  }
+  async function quitarCoordinacionTransp(ce, cam) {
+    const r = resultado.find(x => x.ce === ce);
+    if (!r || !PUEDE_COORD) return;
+    if (!await confirmar(`¿Quitar el transporte coordinado del ${cam === 2 ? '2º camión' : 'camión CD'} de ${r.nombre}?`)) return;
+    const { error } = await supabase.from('abast_plan_camion_coordinado').delete().eq('fecha', hoyIsoPlanP()).eq('cd_origen', planOrigen).eq('ce', ce).eq('camion', cam);
+    if (error) { showAlert('No se pudo quitar la coordinación: ' + error.message, 'error'); return; }
+    await leerCoordinados();
+    draw();
   }
   function hoyIsoPlanP() { return isoLocal(hoy00()); }
   const hoyIsoPlan = isoLocal(hoy00());
@@ -5718,7 +5758,7 @@ async function renderPlanCarga(stage, opts = {}) {
     if (!PUEDE_TRANSPORTE) { showAlert('Sólo el perfil OWNER puede agregar o modificar los datos del transporte.', 'error'); return; }
     const f = refrescarFill(r);
     const t = await showTransporteCamionModal({ titulo: `Camión CD → ${r.nombre}`, sub: `${t1(f.cargado)} t de ${fmtNum(r.cap, 0)} t · día objetivo ${diaCorto(diaObj(r))}`,
-      ini: progMap.get(`${ce}|1`) || {}, otros: otrosProgramados(ce, 1), fechaDef: isoLocal(diaObj(r)) });
+      ini: progMap.get(`${ce}|1`) || coordMap.get(`${ce}|1`) || {}, otros: otrosProgramados(ce, 1), fechaDef: isoLocal(diaObj(r)) });
     if (!t) return;
     const quien = await getUserEmail();
     const filas = new Map();
@@ -5761,7 +5801,7 @@ async function renderPlanCarga(stage, opts = {}) {
     if (!PUEDE_TRANSPORTE) { showAlert('Sólo el perfil OWNER puede agregar o modificar los datos del transporte.', 'error'); return; }
     if (!segAcept.has(ce)) { showAlert('Primero acepta el 2º camión.', 'error'); return; }
     const t = await showTransporteCamionModal({ titulo: `2º camión → ${r.nombre}`, sub: `${t1(r.tonSegundo)} t de ${fmtNum(r.cap, 0)} t · día objetivo ${diaCorto(diaObj(r))}`,
-      ini: progMap.get(`${ce}|2`) || {}, otros: otrosProgramados(ce, 2), fechaDef: isoLocal(diaObj(r)) });
+      ini: progMap.get(`${ce}|2`) || coordMap.get(`${ce}|2`) || {}, otros: otrosProgramados(ce, 2), fechaDef: isoLocal(diaObj(r)) });
     if (!t) return;
     if (!(await guardarProgramado(ce, 2, t))) return;
     await leerProgramados();
@@ -5808,13 +5848,27 @@ async function renderPlanCarga(stage, opts = {}) {
     if (cam === 1) {
       // (4-oct-2026, Jordan) Sólo los camiones en estado PROGRAMAR muestran el botón de transporte.
       // (8-oct-2026) Cerrado el plan, el OWNER puede programar el camión CD aunque no esté en «Programar».
-      if (!(r.cargadoCD > 0.05) || (estadoV2(r).k !== 'prog' && !(cerrado && PUEDE_TRANSPORTE))) return '';
-      const btn = PUEDE_TRANSPORTE ? `<button class="sv-btn-p" data-prog-cd="${ceA}"><span class="material-symbols-outlined">local_shipping</span>Agregar datos del transporte</button>` : '';
-      return `<div class="pc-extra is-mute pc-seg2"><span class="material-symbols-outlined">pending</span><div style="flex:1;min-width:0"><b>Camión CD sin programar</b> · ${PUEDE_TRANSPORTE ? 'agrega los datos del transporte para programarlo' : 'faltan los datos del transporte (los agrega el perfil OWNER)'}. Sólo los camiones programados entran a la foto de las ${HHMM_CIERRE}, al correo y a los indicadores.${cerrado ? ' Plan cerrado.' : ''}</div>${btn}</div>`;
+      if (!(r.cargadoCD > 0.05) || (estadoV2(r).k !== 'prog' && !(cerrado && PUEDE_TRANSPORTE) && !coordMap.get(`${r.ce}|1`))) return '';
+    } else if (!segAcept.has(r.ce)) return '';
+    const progAttr = cam === 1 ? 'data-prog-cd' : 'data-prog-seg';
+    // (12-oct-2026, Jordan) Transporte coordinado sin programar: datos guardados, la carga sigue actualizándose.
+    const co = coordMap.get(`${r.ce}|${cam}`);
+    if (co) {
+      const bt = [];
+      if (PUEDE_TRANSPORTE) bt.push(`<button class="sv-btn-p" ${progAttr}="${ceA}" title="Programar con los datos coordinados (congela la carga, foto y Seguimiento)"><span class="material-symbols-outlined">task_alt</span>Programar</button>`);
+      if (PUEDE_COORD) bt.push(`<button class="sv-btn" data-coord-tr="${ceA}" data-prog-cam="${cam}"><span class="material-symbols-outlined">edit</span>Editar coordinación</button>`);
+      if (PUEDE_COORD) bt.push(`<button class="sv-btn" data-coord-quitar="${ceA}" data-prog-cam="${cam}"><span class="material-symbols-outlined">remove_circle</span>Quitar</button>`);
+      return `<div class="pc-extra pc-seg2" style="background:#eff6ff;border-color:#93c5fd"><span class="material-symbols-outlined" style="color:#1d4ed8">event_available</span><div style="flex:1;min-width:0"><b>${nom} · transporte coordinado, sin programar</b> · Carga ${escapeHtml(cap1(diaCorto(co.fecha_carga ? parseISODate(co.fecha_carga) : diaObj(r))))} · Patente ${escapeHtml(co.patente_camion || '—')}${co.patente_carro ? ' · carro ' + escapeHtml(co.patente_carro) : ''}<br>
+        ${escapeHtml([co.id_transporte, co.transportista].filter(Boolean).join(' · '))} · Chofer ${escapeHtml([co.chofer_nombre, co.chofer_rut, co.chofer_telefono].filter(Boolean).join(' · '))}
+        <br><small style="color:#5c5f61">Coordinado por ${escapeHtml(co.coordinado_por || '')} · la carga sigue actualizándose hasta que el perfil OWNER lo programe.</small></div><div style="display:flex;gap:6px;flex-wrap:wrap">${bt.join('')}</div></div>`;
     }
-    if (!segAcept.has(r.ce)) return '';
-    const btn = PUEDE_TRANSPORTE ? `<button class="sv-btn-p" data-prog-seg="${ceA}"><span class="material-symbols-outlined">local_shipping</span>Agregar datos del transporte</button>` : '';
-    return `<div class="pc-extra is-mute pc-seg2"><span class="material-symbols-outlined">pending</span><div style="flex:1;min-width:0"><b>2º camión aceptado, sin transporte</b> · ${PUEDE_TRANSPORTE ? 'agrega los datos del transporte para programarlo' : 'faltan los datos del transporte (los agrega el perfil OWNER)'}. Sólo con transporte entra a la foto de las ${HHMM_CIERRE}, al correo y a los indicadores.${cerrado ? ' Plan cerrado.' : ''}</div>${btn}</div>`;
+    const bt = [];
+    if (PUEDE_TRANSPORTE) bt.push(`<button class="sv-btn-p" ${progAttr}="${ceA}"><span class="material-symbols-outlined">local_shipping</span>Agregar datos y programar</button>`);
+    if (PUEDE_COORD && !cerrado) bt.push(`<button class="sv-btn${PUEDE_TRANSPORTE ? '' : '-p'}" data-coord-tr="${ceA}" data-prog-cam="${cam}"><span class="material-symbols-outlined">event_available</span>Coordinar transporte</button>`);
+    const txt = PUEDE_TRANSPORTE ? 'agrega los datos del transporte para programarlo, o sólo coordínalo y la carga sigue actualizándose'
+      : PUEDE_COORD ? 'coordina el transporte: los datos quedan guardados y la carga sigue actualizándose hasta que el perfil OWNER lo programe'
+      : 'faltan los datos del transporte (los coordina Planner Distribución y lo programa el perfil OWNER)';
+    return `<div class="pc-extra is-mute pc-seg2"><span class="material-symbols-outlined">pending</span><div style="flex:1;min-width:0"><b>${cam === 1 ? 'Camión CD sin programar' : '2º camión aceptado, sin transporte'}</b> · ${txt}. Sólo los camiones programados entran a la foto de las ${HHMM_CIERRE}, al correo y a los indicadores.${cerrado ? ' Plan cerrado.' : ''}</div>${bt.length ? `<div style="display:flex;gap:6px;flex-wrap:wrap">${bt.join('')}</div>` : ''}</div>`;
   }
   // Mueve una línea: cam = 1 (camión CD) | 2 (2º camión) | 0 (no carga) | 'auto' (vuelve a la regla).
   async function moverLinea(ce, docu, mat, cam) {
@@ -6462,6 +6516,8 @@ async function renderPlanCarga(stage, opts = {}) {
     stage.querySelectorAll('[data-prog-quitar]').forEach(b => b.addEventListener('click', async e => { e.stopPropagation(); await quitarProgramacion(b.dataset.progQuitar, Number(b.dataset.progCam || 1)); }));
     stage.querySelectorAll('[data-prog-seg]').forEach(b => b.addEventListener('click', async e => { e.stopPropagation(); await programarSegundo(b.dataset.progSeg); }));
     stage.querySelectorAll('[data-prog-edit]').forEach(b => b.addEventListener('click', async e => { e.stopPropagation(); await editarTransporte(b.dataset.progEdit, Number(b.dataset.progCam || 1)); }));
+    stage.querySelectorAll('[data-coord-tr]').forEach(b => b.addEventListener('click', async e => { e.stopPropagation(); await coordinarTransporte(b.dataset.coordTr, Number(b.dataset.progCam || 1)); }));
+    stage.querySelectorAll('[data-coord-quitar]').forEach(b => b.addEventListener('click', async e => { e.stopPropagation(); await quitarCoordinacionTransp(b.dataset.coordQuitar, Number(b.dataset.progCam || 1)); }));
     stage.querySelectorAll('[data-restablecer]').forEach(b => b.addEventListener('click', async e => { e.stopPropagation(); b.disabled = true; await restablecerAuto(b.dataset.restablecer); }));
     stage.querySelectorAll('[data-trconf]').forEach(b => b.addEventListener('click', async e => {
       e.stopPropagation();
