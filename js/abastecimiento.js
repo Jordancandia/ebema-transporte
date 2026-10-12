@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610121758';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610121758';
-import { getDatabase } from './data.js?v=202610121758';
+import { supabase } from './supabase-client.js?v=202610121801';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610121801';
+import { getDatabase } from './data.js?v=202610121801';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610121758';
-import { confirmar, pedirDato } from './confirmar.js?v=202610121758';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610121801';
+import { confirmar, pedirDato } from './confirmar.js?v=202610121801';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -4408,11 +4408,11 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610121758');
+    const m = await import('./ind-plan-carga.js?v=202610121801');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (currentSub === 'control_diferencias') {  // (11-oct-2026) Control de Diferencias del Plan de Carga
-    const m = await import('./control-diferencias.js?v=202610121758');
+    const m = await import('./control-diferencias.js?v=202610121801');
     await m.renderControlDiferencias(stage);
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
@@ -5683,7 +5683,7 @@ async function renderPlanCarga(stage, opts = {}) {
       coordinado_por: await getUserEmail(), coordinado_en: new Date().toISOString() }, { onConflict: 'fecha,cd_origen,ce,camion' });
     if (error) { showAlert('No se pudo guardar la coordinación: ' + error.message, 'error'); return; }
     await leerCoordinados();
-    showAlert(`Transporte del ${nom.toLowerCase()} de ${r.nombre} coordinado (${t.patente_camion}). Falta programarlo (perfil OWNER); la carga sigue actualizándose.`, 'success');
+    showAlert(`Transporte del ${nom.toLowerCase()} de ${r.nombre} coordinado (${t.patente_camion}). Falta programarlo (Owner o Planner Distribución); la carga sigue actualizándose.`, 'success');
     draw();
   }
   async function quitarCoordinacionTransp(ce, cam) {
@@ -5860,14 +5860,14 @@ async function renderPlanCarga(stage, opts = {}) {
       if (PUEDE_COORD) bt.push(`<button class="sv-btn" data-coord-quitar="${ceA}" data-prog-cam="${cam}"><span class="material-symbols-outlined">remove_circle</span>Quitar</button>`);
       return `<div class="pc-extra pc-seg2" style="background:#eff6ff;border-color:#93c5fd"><span class="material-symbols-outlined" style="color:#1d4ed8">event_available</span><div style="flex:1;min-width:0"><b>${nom} · transporte coordinado, sin programar</b> · Carga ${escapeHtml(cap1(diaCorto(co.fecha_carga ? parseISODate(co.fecha_carga) : diaObj(r))))} · Patente ${escapeHtml(co.patente_camion || '—')}${co.patente_carro ? ' · carro ' + escapeHtml(co.patente_carro) : ''}<br>
         ${escapeHtml([co.id_transporte, co.transportista].filter(Boolean).join(' · '))} · Chofer ${escapeHtml([co.chofer_nombre, co.chofer_rut, co.chofer_telefono].filter(Boolean).join(' · '))}
-        <br><small style="color:#5c5f61">Coordinado por ${escapeHtml(co.coordinado_por || '')} · la carga sigue actualizándose hasta que el perfil OWNER lo programe.</small></div><div style="display:flex;gap:6px;flex-wrap:wrap">${bt.join('')}</div></div>`;
+        <br><small style="color:#5c5f61">Coordinado por ${escapeHtml(co.coordinado_por || '')} · la carga sigue actualizándose hasta que se programe (Owner o Planner Distribución).</small></div><div style="display:flex;gap:6px;flex-wrap:wrap">${bt.join('')}</div></div>`;
     }
     const bt = [];
     if (PUEDE_TRANSPORTE) bt.push(`<button class="sv-btn-p" ${progAttr}="${ceA}"><span class="material-symbols-outlined">local_shipping</span>Agregar datos y programar</button>`);
     if (PUEDE_COORD && !cerrado) bt.push(`<button class="sv-btn${PUEDE_TRANSPORTE ? '' : '-p'}" data-coord-tr="${ceA}" data-prog-cam="${cam}"><span class="material-symbols-outlined">event_available</span>Coordinar transporte</button>`);
     const txt = PUEDE_TRANSPORTE ? 'agrega los datos del transporte para programarlo, o sólo coordínalo y la carga sigue actualizándose'
-      : PUEDE_COORD ? 'coordina el transporte: los datos quedan guardados y la carga sigue actualizándose hasta que el perfil OWNER lo programe'
-      : 'faltan los datos del transporte (los coordina Planner Distribución y lo programa el perfil OWNER)';
+      : PUEDE_COORD ? 'coordina el transporte: los datos quedan guardados y la carga sigue actualizándose hasta que se programe (Owner o Planner Distribución)'
+      : 'faltan los datos del transporte (los agrega Owner o Planner Distribución)';
     return `<div class="pc-extra is-mute pc-seg2"><span class="material-symbols-outlined">pending</span><div style="flex:1;min-width:0"><b>${cam === 1 ? 'Camión CD sin programar' : '2º camión aceptado, sin transporte'}</b> · ${txt}. Sólo los camiones programados entran a la foto de las ${HHMM_CIERRE}, al correo y a los indicadores.${cerrado ? ' Plan cerrado.' : ''}</div>${bt.length ? `<div style="display:flex;gap:6px;flex-wrap:wrap">${bt.join('')}</div>` : ''}</div>`;
   }
   // Mueve una línea: cam = 1 (camión CD) | 2 (2º camión) | 0 (no carga) | 'auto' (vuelve a la regla).

@@ -59,8 +59,8 @@ export const PERFILES = {
     label: 'Planner Distribución', clase: 'OWNER', alcance: 'TODOS',
     menu: ['home', 'rates', ...TRONCALES, 'flete-tercero', 'indicadores', 'tarifas-transporte', 'tarifas-clientes', ...MAESTROS, 'roles'],
     privilegios: ['COMENTAR', 'EDITAR', 'INVITAR'],
-    // (12-oct-2026, Jordan) Coordina el transporte de los camiones del Plan de Carga, pero no programa.
-    acciones: [...P_VISUALIZAR, ...P_COMENTAR, ...P_EDITAR, ...P_INVITAR, 'coordinar_transporte'],
+    // (12-oct-2026, Jordan) Coordina, programa y edita el transporte de los camiones del Plan de Carga.
+    acciones: [...P_VISUALIZAR, ...P_COMENTAR, ...P_EDITAR, ...P_INVITAR, 'coordinar_transporte', 'programar_transporte'],
   },
   JEFE_ABASTECIMIENTO: {
     label: 'Jefe Abastecimiento', clase: 'PLANNER_ABASTECIMIENTO', alcance: 'TODOS',
