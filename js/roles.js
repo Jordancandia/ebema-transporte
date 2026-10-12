@@ -1,31 +1,42 @@
-import { getDatabase, saveDatabase, getCentreName } from './data.js?v=202610111429';
+import { getDatabase, saveDatabase, getCentreName } from './data.js?v=202610121719';
 import { showAlert, escapeHtml } from './utils.js';
-import { supabase } from './supabase-client.js?v=202610111429';
-import { ROLES_CON_CENTROS } from './permisos.js?v=202610111429';
-import { confirmar } from './confirmar.js?v=202610111429';
+import { supabase } from './supabase-client.js?v=202610121719';
+import { ROLES_CON_CENTROS, PERFILES, ALIAS_PERFIL, ACCIONES_EXTRA, VISTAS_CATALOGO, perfilVeMenu, esOwner, can, TODOS_CENTROS } from './permisos.js?v=202610121719';
+import { confirmar } from './confirmar.js?v=202610121719';
 
 // --- Perfiles de Acceso (Roles y Perfiles + Row Level Security) ---
 // 5 perfiles canónicos. Cada uno determina qué puede ver/editar el usuario
 // en la plataforma; el control real de acceso se aplica vía RLS en Supabase
 // usando el rol y, cuando corresponde, el centro/transportista asociado.
+// Perfiles v2 (12-oct-2026, planilla ROLES_Y_PERFILES.xlsx). Vistas y privilegios
+// por defecto en js/permisos.js; sólo OWNER agrega vistas/funcionalidades extra.
 const ROLE_CONFIG = {
   'OWNER':                  { bg: '#ffdad5', text: '#93000a', border: '#ffb4aa', icon: 'workspace_premium', label: 'Owner' },
-  'PLANNER_OPERACIONES':    { bg: '#ede7f6', text: '#4527a0', border: '#b39ddb', icon: 'monitoring',         label: 'Planner Operaciones' },
-  'PLANNER_ABASTECIMIENTO': { bg: '#e0f2f1', text: '#00695c', border: '#80cbc4', icon: 'inventory_2',        label: 'Planner Abastecimiento' },
-  'ADMINISTRADOR_DEPOSITO': { bg: '#e3f2fd', text: '#0d47a1', border: '#90caf9', icon: 'warehouse',          label: 'Admin. Depósito' },
-  'AGENTE_COMERCIAL':       { bg: '#e8f5e9', text: '#1b5e20', border: '#a5d6a7', icon: 'request_quote',      label: 'Agente' },
+  'ADMINISTRADOR':          { bg: '#fce4ec', text: '#880e4f', border: '#f48fb1', icon: 'shield_person',     label: 'Administrador' },
+  'PLANNER_DISTRIBUCION':   { bg: '#fff3e0', text: '#bf360c', border: '#ffab91', icon: 'alt_route',         label: 'Planner Distribución' },
+  'JEFE_ABASTECIMIENTO':    { bg: '#e0f2f1', text: '#004d40', border: '#4db6ac', icon: 'inventory_2',       label: 'Jefe Abastecimiento' },
+  'PLANNER_ABASTECIMIENTO': { bg: '#e0f2f1', text: '#00695c', border: '#80cbc4', icon: 'inventory',         label: 'Planner Abastecimiento' },
+  'JEFE_OPERACIONES':       { bg: '#e3f2fd', text: '#0d47a1', border: '#90caf9', icon: 'warehouse',         label: 'Jefe Operaciones' },
+  'PLANNER_OPERACIONES':    { bg: '#ede7f6', text: '#4527a0', border: '#b39ddb', icon: 'monitoring',        label: 'Planner Operaciones' },
+  'JEFE_SUCURSAL':          { bg: '#e8eaf6', text: '#283593', border: '#9fa8da', icon: 'storefront',        label: 'Jefe Sucursal' },
+  'JEFE_CATEGORIA':         { bg: '#f1f8e9', text: '#33691e', border: '#c5e1a5', icon: 'category',          label: 'Jefe Categoría' },
+  'VENDEDOR':               { bg: '#e8f5e9', text: '#1b5e20', border: '#a5d6a7', icon: 'request_quote',     label: 'Vendedor' },
   'TRANSPORTISTA':          { bg: '#fff3e0', text: '#e65100', border: '#ffcc80', icon: 'local_shipping',    label: 'Transportista' },
-  'CHOFER':                 { bg: '#f3e5f5', text: '#6a1b9a', border: '#ce93d8', icon: 'badge',              label: 'Chofer' }
+  'CHOFER':                 { bg: '#f3e5f5', text: '#6a1b9a', border: '#ce93d8', icon: 'badge',             label: 'Chofer' }
 };
 
 // Descripciones de cada perfil (se muestran al seleccionar el rol en el modal)
-// Ajuste 2026-09-17: alcance de vistas de Admin. Depósito y Agente redefinido.
 const ROLE_DESCRIPTIONS = {
-  'OWNER': 'Administrador del sistema: ve todas las vistas y centros, edita, elimina, descarga bases de datos e invita usuarios asignando perfiles.',
-  'PLANNER_OPERACIONES': 'Solo visualización de todas las vistas y centros, excepto Cotizador Despacho, Tarifas Transporte, Tarifas Clientes y Roles.',
-  'PLANNER_ABASTECIMIENTO': 'Proveedores y Gestión Troncales de todos los centros, con edición y descarga (sin exclusión de líneas del Plan de Carga).',
-  'ADMINISTRADOR_DEPOSITO': 'Solo visualización de sus centros asignados: Home, Cotizador, Proveedores, Rutas, Gestión Troncales (con descarga del Plan de Carga), Indicadores y Flete Tercero.',
-  'AGENTE_COMERCIAL': 'Perfil comercial. Solo visualización de sus centros asignados: Cotizador Despacho, Rutas de Transporte y Gestión Troncales (con descarga del Plan de Carga).',
+  'OWNER': 'Todas las vistas y centros. Visualizar, comentar, editar, borrar e invitar. Único perfil que agrega vistas o funcionalidades extra a un usuario.',
+  'ADMINISTRADOR': 'Todas las vistas y centros. Visualizar, comentar, editar (excluir y subir pedidos al Plan de Carga) e invitar usuarios. No borra.',
+  'PLANNER_DISTRIBUCION': 'Todas las vistas (Cotizador, Gestión Troncales, Flete Tercero, Indicadores, Tarifas, Maestros, Roles) y centros. Comenta, edita e invita.',
+  'JEFE_ABASTECIMIENTO': 'Home y Gestión Troncales completa, todos los centros. Comenta y edita (excluir y subir pedidos al Plan de Carga).',
+  'PLANNER_ABASTECIMIENTO': 'Home y Gestión Troncales completa, todos los centros. Comenta y edita (excluir y subir pedidos al Plan de Carga).',
+  'JEFE_OPERACIONES': 'Sus centros: Home, Gestión Troncales, Flete Tercero, Indicadores y Tarifas Clientes. Comenta (sin edición).',
+  'PLANNER_OPERACIONES': 'Sus centros: Home, Cotizador, Gestión Troncales, Flete Tercero, Indicadores y Tarifas Clientes. Comenta (sin edición).',
+  'JEFE_SUCURSAL': 'Sus centros: Home, Cotizador, Gestión Troncales, Flete Tercero, Indicadores y Tarifas Clientes. Comenta (sin edición).',
+  'JEFE_CATEGORIA': 'Todos los centros: Home, Gestión Troncales e Indicadores. Comenta (sin edición).',
+  'VENDEDOR': 'Sus centros: Home, Cotizador Despacho y Planificación de Gestión Troncales. Solo visualización.',
   'TRANSPORTISTA': 'Ve el estado de sus camiones, cuenta bancaria asociada, transportes y choferes. Edita solo lo que está en su perfil.',
   'CHOFER': 'Ve el estado de su camión asignado, datos del transporte y sus datos personales (nombre, RUT, correo, teléfono, licencia y carnet).'
 };
@@ -35,10 +46,11 @@ const LEGACY_ROLE_MAP = {
   'Administrador': 'OWNER',
   'admin': 'OWNER',
   'Admin SIT': 'OWNER',
-  'Operador Logístico': 'ADMINISTRADOR_DEPOSITO',
-  'operador': 'ADMINISTRADOR_DEPOSITO',
-  'Logistics Operator': 'ADMINISTRADOR_DEPOSITO',
-  'Visita': 'AGENTE_COMERCIAL',
+  'Operador Logístico': 'JEFE_OPERACIONES',
+  'operador': 'JEFE_OPERACIONES',
+  'Logistics Operator': 'JEFE_OPERACIONES',
+  'Visita': 'VENDEDOR',
+  ...ALIAS_PERFIL,
   'proveedor': 'TRANSPORTISTA'
 };
 
@@ -50,14 +62,14 @@ const LEGACY_ROLE_MAP = {
 // Ajuste 2026-09-17 (correo Plan de Carga): se agrega OWNER — mismo criterio,
 // solo para definir a qué centro(s) se dirigen sus correos de notificación del
 // Plan de Carga; NO restringe en absoluto su acceso total a la plataforma.
-const CENTRO_ROLES = ['ADMINISTRADOR_DEPOSITO', 'OWNER'];
+const CENTRO_ROLES = ['JEFE_OPERACIONES', 'JEFE_SUCURSAL', 'OWNER'];
 // Roles que requieren un "Transportista" asociado
 const TRANSPORTE_ROLES = ['TRANSPORTISTA', 'CHOFER'];
 
 // Normaliza un rol (legado o nuevo) a uno de los 5 perfiles canónicos
 function normalizeRole(role) {
   if (ROLE_CONFIG[role]) return role;
-  return LEGACY_ROLE_MAP[role] || 'AGENTE_COMERCIAL';
+  return LEGACY_ROLE_MAP[role] || 'VENDEDOR';
 }
 
 function getRoleConfig(role) {
@@ -89,7 +101,8 @@ export function renderRolesView(container) {
 
   const totalUsers = users.length;
   const ownerCount = users.filter(u => normalizeRole(u.role) === 'OWNER').length;
-  const depositoCount = users.filter(u => normalizeRole(u.role) === 'ADMINISTRADOR_DEPOSITO').length;
+  const depositoCount = users.filter(u => ROLES_CON_CENTROS.includes(normalizeRole(u.role))).length;
+  const ES_OWNER = esOwner();
   const activeCount = users.filter(u => u.activo !== false).length;
 
   container.innerHTML = `
@@ -100,12 +113,12 @@ export function renderRolesView(container) {
           <h1 class="font-headline-lg text-headline-lg text-on-surface">Roles y Perfiles</h1>
           <p class="font-body-lg text-body-lg text-secondary mt-1">Gestione los accesos y permisos de usuarios corporativos en SIT EBEMA.</p>
         </div>
-        <button id="btn-open-add-user"
+        ${can('invitar') ? `<button id="btn-open-add-user"
           style="display:inline-flex;align-items:center;gap:8px;padding:10px 20px;background:#b5000b;color:white;border:none;border-radius:8px;font-size:14px;font-weight:700;cursor:pointer;transition:background 0.2s"
           onmouseover="this.style.background='#930007'" onmouseout="this.style.background='#b5000b'">
           <span class="material-symbols-outlined" style="font-size:18px">person_add</span>
           Agregar Usuario
-        </button>
+        </button>` : ''}
       </div>
     </div>
 
@@ -127,7 +140,7 @@ export function renderRolesView(container) {
       </div>
       <div style="background:white;border:1px solid #e1e3e4;border-radius:8px;padding:16px;display:flex;justify-content:space-between;align-items:center">
         <div>
-          <p style="font-size:10px;font-weight:700;letter-spacing:0.07em;text-transform:uppercase;color:#5c5f61;margin-bottom:4px">Admin. Depósito</p>
+          <p style="font-size:10px;font-weight:700;letter-spacing:0.07em;text-transform:uppercase;color:#5c5f61;margin-bottom:4px">Perfiles por centro</p>
           <p style="font-size:28px;font-weight:800;color:#0d47a1;line-height:1">${depositoCount}</p>
         </div>
         <span class="material-symbols-outlined" style="font-size:32px;color:#0d47a1;opacity:0.3">warehouse</span>
@@ -177,7 +190,7 @@ export function renderRolesView(container) {
 
     <!-- Modal: Agregar / Editar Usuario -->
     <div id="modal-user" style="position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:999;display:none;align-items:center;justify-content:center;padding:16px;backdrop-filter:blur(2px)">
-      <div style="background:white;border-radius:16px;width:100%;max-width:480px;box-shadow:0 20px 60px rgba(0,0,0,0.2);animation:slideUp 0.3s ease-out">
+      <div style="background:white;border-radius:16px;width:100%;max-width:560px;max-height:92vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,0.2);animation:slideUp 0.3s ease-out">
         <div style="padding:24px 24px 0">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
             <div>
@@ -217,7 +230,7 @@ export function renderRolesView(container) {
           <div>
             <label style="display:block;font-size:11px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#5c5f61;margin-bottom:8px">Rol de Acceso (Perfil)</label>
             <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px" id="rol-selector">
-              ${Object.keys(ROLE_CONFIG).map(rol => {
+              ${Object.keys(ROLE_CONFIG).filter(rol => ES_OWNER || rol !== 'OWNER').map(rol => {
                 const rc = getRoleConfig(rol);
                 return `
                 <label style="cursor:pointer">
@@ -250,6 +263,11 @@ export function renderRolesView(container) {
 
           <div id="field-centros-asig" style="display:none">
             <label style="display:block;font-size:11px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#5c5f61;margin-bottom:6px">Centros Asignados</label>
+            <label style="display:flex;align-items:center;gap:8px;padding:8px 10px;border:1.5px solid #e1e3e4;border-radius:8px;margin-bottom:8px;cursor:pointer;background:#f8f9fa">
+              <input type="checkbox" id="asig-todos-centros" style="width:16px;height:16px;accent-color:#b5000b" />
+              <span style="font-size:13px;font-weight:700;color:#191c1d">Todos los centros</span>
+              <span style="font-size:11px;color:#5c5f61">(incluye centros nuevos)</span>
+            </label>
             <div style="display:flex;gap:8px;margin-bottom:6px">
               <button type="button" id="asig-todos" style="font-size:11px;font-weight:700;color:#b5000b;background:none;border:none;cursor:pointer;padding:0">Marcar todos</button>
               <button type="button" id="asig-ninguno" style="font-size:11px;font-weight:700;color:#5c5f61;background:none;border:none;cursor:pointer;padding:0">Limpiar</button>
@@ -261,8 +279,36 @@ export function renderRolesView(container) {
                   <span style="font-size:13px;color:#191c1d">${cd.nombre} (${cd.id})</span>
                 </label>`).join('')}
             </div>
-            <p style="font-size:11px;color:#5c5f61;margin-top:6px;line-height:1.4">El usuario solo verá información de estos centros (centro destino).</p>
+            <p style="font-size:11px;color:#5c5f61;margin-top:6px;line-height:1.4">Uno, varios o todos. El usuario solo verá información de estos centros (centro destino).</p>
           </div>
+
+          ${ES_OWNER ? `
+          <div id="field-extras" style="border:1.5px dashed #ffb4aa;border-radius:10px;padding:12px;background:#fffaf9">
+            <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
+              <span class="material-symbols-outlined" style="font-size:18px;color:#b5000b">tune</span>
+              <span style="font-size:11px;font-weight:800;letter-spacing:0.05em;text-transform:uppercase;color:#93000a">Accesos adicionales (solo Owner)</span>
+            </div>
+            <p style="font-size:11px;color:#5c5f61;line-height:1.4;margin-bottom:8px">Se suman a la estructura por defecto del perfil. Las vistas ya incluidas en el perfil aparecen marcadas y bloqueadas.</p>
+            <p style="font-size:10px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#5c5f61;margin:6px 0 4px">Vistas</p>
+            <div id="extras-vistas" style="max-height:180px;overflow-y:auto;border:1px solid #e1e3e4;border-radius:8px;padding:8px 10px;background:white">
+              ${VISTAS_CATALOGO.map(g => `
+                <p style="font-size:10px;font-weight:700;color:#93000a;margin:6px 0 2px">${escapeHtml(g.modulo)}</p>
+                ${g.items.map(([k, lbl]) => `
+                <label style="display:flex;align-items:center;gap:8px;cursor:pointer;padding:2px 0">
+                  <input type="checkbox" class="extra-vista" value="${k}" style="width:15px;height:15px;accent-color:#b5000b" />
+                  <span style="font-size:12px;color:#191c1d">${escapeHtml(lbl)}</span>
+                </label>`).join('')}`).join('')}
+            </div>
+            <p style="font-size:10px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#5c5f61;margin:10px 0 4px">Funcionalidades</p>
+            <div id="extras-acciones" style="border:1px solid #e1e3e4;border-radius:8px;padding:8px 10px;background:white;display:flex;flex-direction:column;gap:4px">
+              ${ACCIONES_EXTRA.map(a => `
+                <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+                  <input type="checkbox" class="extra-accion" value="${a.key}" data-solo-editor="${a.soloEditor ? 1 : 0}" style="width:15px;height:15px;accent-color:#b5000b" />
+                  <span style="font-size:12px;color:#191c1d">${escapeHtml(a.label)}</span>
+                </label>`).join('')}
+            </div>
+            <p style="font-size:10px;color:#5c5f61;margin-top:6px;line-height:1.4">Las funcionalidades de edición solo se habilitan en perfiles con privilegio Editar. Los datos visibles en una vista extra respetan el perfil base y sus centros.</p>
+          </div>` : ''}
 
           <div id="field-transportista" style="display:none">
             <label style="display:block;font-size:11px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#5c5f61;margin-bottom:6px">Transportista Asociado</label>
@@ -321,7 +367,7 @@ export function renderRolesView(container) {
   });
 
   // Abrir modal (nuevo usuario)
-  document.getElementById('btn-open-add-user').addEventListener('click', () => {
+  document.getElementById('btn-open-add-user')?.addEventListener('click', () => {
     openModal();
   });
 
@@ -376,14 +422,51 @@ function setupCentroSelector() {
 
 // Centros asignados (restricción de datos por centro)
 function getCentrosAsignados() {
+  if (document.getElementById('asig-todos-centros')?.checked) return [TODOS_CENTROS];
   return Array.from(document.querySelectorAll('.modal-user-asig-item:checked')).map(c => c.value);
+}
+function toggleAsigTodos(on) {
+  const list = document.getElementById('modal-user-asig-list');
+  document.querySelectorAll('.modal-user-asig-item').forEach(c => { c.disabled = on; if (on) c.checked = false; });
+  if (list) list.style.opacity = on ? '0.5' : '1';
 }
 function setCentrosAsignados(centros) {
   const sel = Array.isArray(centros) ? centros.map(String) : [];
-  document.querySelectorAll('.modal-user-asig-item').forEach(c => { c.checked = sel.includes(c.value); });
+  const todos = sel.includes(TODOS_CENTROS);
+  const chk = document.getElementById('asig-todos-centros');
+  if (chk) chk.checked = todos;
+  document.querySelectorAll('.modal-user-asig-item').forEach(c => { c.checked = !todos && sel.includes(c.value); });
+  toggleAsigTodos(todos);
+}
+
+// Accesos adicionales (sólo OWNER): marca extras del usuario y bloquea lo que ya trae el perfil
+let _extrasUsuario = { vistasExtra: [], accionesExtra: [] };
+function refreshExtras(role) {
+  const p = PERFILES[role];
+  const editor = !!p && p.acciones.includes('editar');
+  document.querySelectorAll('.extra-vista').forEach(c => {
+    const base = perfilVeMenu(role, c.value);
+    c.disabled = base;
+    c.checked = base || _extrasUsuario.vistasExtra.includes(c.value);
+    c.parentElement.style.opacity = base ? '0.55' : '1';
+  });
+  document.querySelectorAll('.extra-accion').forEach(c => {
+    const base = !!p && p.acciones.includes(c.value);
+    const bloqueada = base || (c.dataset.soloEditor === '1' && !editor);
+    c.disabled = bloqueada;
+    c.checked = base || (!bloqueada && _extrasUsuario.accionesExtra.includes(c.value));
+    c.parentElement.style.opacity = bloqueada ? '0.55' : '1';
+  });
+}
+function getExtras() {
+  return {
+    vistasExtra: Array.from(document.querySelectorAll('.extra-vista:checked:not(:disabled)')).map(c => c.value),
+    accionesExtra: Array.from(document.querySelectorAll('.extra-accion:checked:not(:disabled)')).map(c => c.value),
+  };
 }
 function setupAsignadosSelector() {
-  document.getElementById('asig-todos')?.addEventListener('click', () => document.querySelectorAll('.modal-user-asig-item').forEach(c => { c.checked = true; }));
+  document.getElementById('asig-todos-centros')?.addEventListener('change', e => toggleAsigTodos(e.target.checked));
+  document.getElementById('asig-todos')?.addEventListener('click', () => document.querySelectorAll('.modal-user-asig-item:not(:disabled)').forEach(c => { c.checked = true; }));
   document.getElementById('asig-ninguno')?.addEventListener('click', () => document.querySelectorAll('.modal-user-asig-item').forEach(c => { c.checked = false; }));
 }
 
@@ -422,6 +505,8 @@ function updateRoleFields(role) {
   const fieldAsig = document.getElementById('field-centros-asig');
   if (fieldAsig) fieldAsig.style.display = ROLES_CON_CENTROS.includes(role) ? 'block' : 'none';
   if (fieldTransportista) fieldTransportista.style.display = TRANSPORTE_ROLES.includes(role) ? 'block' : 'none';
+  const fieldExtras = document.getElementById('field-extras');
+  if (fieldExtras) { fieldExtras.style.display = TRANSPORTE_ROLES.includes(role) ? 'none' : 'block'; refreshExtras(role); }
 }
 
 function openModal(userIdx = null) {
@@ -442,8 +527,9 @@ function openModal(userIdx = null) {
   if (transportistaSelect) transportistaSelect.value = '';
   setSelectedCentros(null); // por defecto: Todos los centros
   setCentrosAsignados([]);
+  _extrasUsuario = { vistasExtra: [], accionesExtra: [] };
 
-  let selectedRole = 'AGENTE_COMERCIAL';
+  let selectedRole = 'VENDEDOR';
 
   if (userIdx !== null) {
     // Modo edición
@@ -462,6 +548,7 @@ function openModal(userIdx = null) {
     selectedRole = normalizeRole(user.role);
     setSelectedCentros(user.centrosPreferencia || null);
     setCentrosAsignados(user.centrosAsignados || []);
+    _extrasUsuario = { vistasExtra: Array.isArray(user.vistasExtra) ? user.vistasExtra : [], accionesExtra: Array.isArray(user.accionesExtra) ? user.accionesExtra : [] };
     if (transportistaSelect && user.transportistaId) transportistaSelect.value = user.transportistaId;
   } else {
     // Modo creación
@@ -523,6 +610,10 @@ async function saveUser() {
     return showErr('Asigne al menos un centro a este perfil.');
   }
 
+  if (selectedRole === 'OWNER' && !esOwner()) return showErr('Solo un Owner puede asignar el perfil Owner.');
+  // Accesos adicionales: sólo OWNER los define; otros perfiles conservan los existentes
+  const extras = esOwner() && !TRANSPORTE_ROLES.includes(selectedRole) ? getExtras() : null;
+
   // Limpiar asociaciones que no correspondan al perfil
   const finalCentrosPreferencia = CENTRO_ROLES.includes(selectedRole) ? centrosPreferencia : null;
   const finalTransportistaId = TRANSPORTE_ROLES.includes(selectedRole) ? transportistaId : null;
@@ -541,6 +632,7 @@ async function saveUser() {
       body: {
         email, name, role: selectedRole,
         centrosPreferencia: finalCentrosPreferencia, centrosAsignados, transportistaId: finalTransportistaId,
+        ...(extras || {}),
         redirectTo: window.location.origin + window.location.pathname
       }
     });
@@ -552,7 +644,7 @@ async function saveUser() {
       return showErr((data && data.error) || error?.message || 'No se pudo enviar la invitación.');
     }
     // Reflejar en la tabla localmente (pendiente de activación)
-    db.users.push({ email, name, role: selectedRole, centrosPreferencia: finalCentrosPreferencia, centrosAsignados, transportistaId: finalTransportistaId, activo: true, lastAccess: 'Invitación enviada' });
+    db.users.push({ email, name, role: selectedRole, centrosPreferencia: finalCentrosPreferencia, centrosAsignados, transportistaId: finalTransportistaId, vistasExtra: extras?.vistasExtra || [], accionesExtra: extras?.accionesExtra || [], activo: true, lastAccess: 'Invitación enviada' });
     showAlert((data && (data.message || data.warning)) || `Invitación enviada a ${email}.`);
     closeModal();
     const container = document.getElementById('stage-area');
@@ -568,6 +660,7 @@ async function saveUser() {
     db.users[idx].centrosPreferencia = finalCentrosPreferencia;
     db.users[idx].centrosAsignados = centrosAsignados;
     db.users[idx].transportistaId = finalTransportistaId;
+    if (extras) { db.users[idx].vistasExtra = extras.vistasExtra; db.users[idx].accionesExtra = extras.accionesExtra; }
     showAlert(`Perfil de ${name} actualizado.`);
   }
 
@@ -622,7 +715,8 @@ function renderUsersTable(usersList, viewContainer, isFiltered = false) {
     let asociadoTxt = '';
     if (ROLES_CON_CENTROS.includes(normRole)) {
       const asig = user.centrosAsignados || [];
-      asociadoTxt = asig.length === 0 ? 'Sin centros asignados'
+      asociadoTxt = asig.includes(TODOS_CENTROS) ? 'Todos los centros'
+        : asig.length === 0 ? 'Sin centros asignados'
         : asig.length === 1 ? (getCentreName(db, asig[0]) || asig[0])
         : `${asig.length} centros asignados`;
     } else if (CENTRO_ROLES.includes(normRole)) {
@@ -639,6 +733,10 @@ function renderUsersTable(usersList, viewContainer, isFiltered = false) {
       asociadoTxt = t ? (t.razonSocial || t.nombre || '') : '';
     }
 
+    const nExtras = (Array.isArray(user.vistasExtra) ? user.vistasExtra.length : 0) + (Array.isArray(user.accionesExtra) ? user.accionesExtra.length : 0);
+    // Sólo OWNER gestiona usuarios Owner; nadie se edita a sí mismo salvo OWNER
+    const sesEmail = (JSON.parse(localStorage.getItem('ebema_user_session') || '{}').email || '').toLowerCase();
+    const gestionable = esOwner() || (normRole !== 'OWNER' && (user.email || '').toLowerCase() !== sesEmail);
     const tr = document.createElement('tr');
     tr.className = 'user-row';
     tr.style.cssText = 'border-bottom:1px solid #f3f4f5;transition:background 0.15s';
@@ -664,6 +762,7 @@ function renderUsersTable(usersList, viewContainer, isFiltered = false) {
           ${roleDisplay}
         </span>
         ${asociadoTxt ? `<p style="font-size:10px;color:#5c5f61;margin-top:4px">${asociadoTxt}</p>` : ''}
+        ${nExtras ? `<p style="font-size:10px;color:#b5000b;font-weight:700;margin-top:2px" title="Vistas/funcionalidades agregadas por Owner">+${nExtras} acceso${nExtras > 1 ? 's' : ''} adicional${nExtras > 1 ? 'es' : ''}</p>` : ''}
       </td>
       <td style="padding:14px 16px;text-align:center">
         <span style="display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border-radius:20px;font-size:10px;font-weight:700;${isActive ? 'background:#e8f5e9;color:#1b5e20;border:1px solid #a5d6a7' : 'background:#fce4e4;color:#b71c1c;border:1px solid #ef9a9a'}">
@@ -673,12 +772,12 @@ function renderUsersTable(usersList, viewContainer, isFiltered = false) {
       </td>
       <td style="padding:14px 16px;text-align:center">
         <div style="display:inline-flex;align-items:center;gap:4px">
-          <button class="btn-edit-user" data-idx="${realIdx}"
+          ${gestionable ? `<button class="btn-edit-user" data-idx="${realIdx}"
             title="Editar perfil"
             style="padding:6px;background:#f3f4f5;border:1px solid #e1e3e4;border-radius:6px;cursor:pointer;display:flex;align-items:center;transition:all 0.15s"
             onmouseover="this.style.background='#e7e8e9';this.style.borderColor='#b5000b'" onmouseout="this.style.background='#f3f4f5';this.style.borderColor='#e1e3e4'">
             <span class="material-symbols-outlined" style="font-size:16px;color:#5c5f61">edit</span>
-          </button>
+          </button>` : ''}
           ${isPending && isActive ? `
           <button class="btn-resend-invite" data-idx="${realIdx}" data-email="${user.email}"
             title="Reenviar invitación"
@@ -686,18 +785,18 @@ function renderUsersTable(usersList, viewContainer, isFiltered = false) {
             onmouseover="this.style.background='#ffecb3'" onmouseout="this.style.background='#fff8e1'">
             <span class="material-symbols-outlined" style="font-size:16px;color:#f57f17">forward_to_inbox</span>
           </button>` : ''}
-          <button class="btn-toggle-user" data-idx="${realIdx}"
+          ${gestionable ? `<button class="btn-toggle-user" data-idx="${realIdx}"
             title="${isActive ? 'Desactivar usuario' : 'Activar usuario'}"
             style="padding:6px;background:${isActive ? '#fff8f7' : '#f0fdf4'};border:1px solid ${isActive ? '#ffb4aa' : '#a5d6a7'};border-radius:6px;cursor:pointer;display:flex;align-items:center;transition:all 0.15s"
             onmouseover="this.style.opacity='0.75'" onmouseout="this.style.opacity='1'">
             <span class="material-symbols-outlined" style="font-size:16px;color:${isActive ? '#b5000b' : '#2e7d32'}">${isActive ? 'person_off' : 'how_to_reg'}</span>
-          </button>
-          <button class="btn-delete-user" data-idx="${realIdx}" data-email="${user.email}" data-name="${escapeHtml(user.name || user.email)}"
+          </button>` : ''}
+          ${can('eliminar') ? `<button class="btn-delete-user" data-idx="${realIdx}" data-email="${user.email}" data-name="${escapeHtml(user.name || user.email)}"
             title="Eliminar usuario permanentemente"
             style="padding:6px;background:#fff8f7;border:1px solid #ffb4aa;border-radius:6px;cursor:pointer;display:flex;align-items:center;transition:all 0.15s"
             onmouseover="this.style.background='#ffdad6';this.style.borderColor='#b5000b'" onmouseout="this.style.background='#fff8f7';this.style.borderColor='#ffb4aa'">
             <span class="material-symbols-outlined" style="font-size:16px;color:#b5000b">delete_forever</span>
-          </button>
+          </button>` : ''}
         </div>
       </td>
     `;

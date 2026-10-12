@@ -1,6 +1,6 @@
-import { getDatabase, saveDatabase, initDatabase, loadRoutesData, loadHistoricoFlete360 } from './data.js?v=202610111429';
-import { supabase } from './supabase-client.js?v=202610111429';
-import { setSesionPermisos, puedeVerMenu, can, esSoloLectura, PERFILES } from './permisos.js?v=202610111429';
+import { getDatabase, saveDatabase, initDatabase, loadRoutesData, loadHistoricoFlete360 } from './data.js?v=202610121719';
+import { supabase } from './supabase-client.js?v=202610121719';
+import { setSesionPermisos, puedeVerMenu, can, esSoloLectura, PERFILES, normalizarPerfil } from './permisos.js?v=202610121719';
 // ── Módulos cargados bajo demanda (lazy) — se cachean tras la primera carga ──
 const _mod = {};
 async function loadMod(key, modPath) {
@@ -9,9 +9,9 @@ async function loadMod(key, modPath) {
 }
 // Pre-warm: carga indicadores y abastecimiento en background tras login
 function prewarmMods() {
-  setTimeout(() => loadMod('ind',   './indicadores.js?v=202610111429'), 600);
+  setTimeout(() => loadMod('ind',   './indicadores.js?v=202610121719'), 600);
   setTimeout(() => loadRoutesData(), 800);  // pre-fetch tablas pesadas en background
-  setTimeout(() => loadMod('abast', './abastecimiento.js?v=202610111429'), 2000);
+  setTimeout(() => loadMod('abast', './abastecimiento.js?v=202610121719'), 2000);
 }
 import { showAlert, formatRut, validateRut, formatPhone } from './utils.js';
 
@@ -191,7 +191,7 @@ async function checkSession() {
       u = {
         email,
         name: googleName || email.split('@')[0].toUpperCase(),
-        role: 'AGENTE_COMERCIAL', // rol canónico inicial (no privilegiado); un OWNER puede cambiarlo después
+        role: 'VENDEDOR', // perfil inicial (no privilegiado); un OWNER puede cambiarlo después
         activo: true,
         lastAccess: new Date().toLocaleDateString('es-CL')
       };
@@ -216,8 +216,9 @@ async function checkSession() {
       return;
     }
 
-    currentSession = { email, name: u.name, role: u.role, tipo: 'funcionario', centros: Array.isArray(u.centrosAsignados) ? u.centrosAsignados : [] };
-    setSesionPermisos(currentSession.role, currentSession.centros);
+    currentSession = { email, name: u.name, role: normalizarPerfil(u.role), tipo: 'funcionario', centros: Array.isArray(u.centrosAsignados) ? u.centrosAsignados : [],
+      vistasExtra: Array.isArray(u.vistasExtra) ? u.vistasExtra : [], accionesExtra: Array.isArray(u.accionesExtra) ? u.accionesExtra : [] };
+    setSesionPermisos(currentSession.role, currentSession.centros, currentSession);
     localStorage.setItem(SESSION_KEY, JSON.stringify(currentSession));
   } catch (err) {
     console.error('Error verificando sesión:', err);
@@ -235,7 +236,7 @@ function renderApp() {
   if (!currentSession) {
     renderAuthView();
   } else if (currentSession.tipo === 'proveedor') {
-    import('./provider-portal.js?v=202610111429').then(m => m.renderProviderShell(currentSession, handleLogout));
+    import('./provider-portal.js?v=202610121719').then(m => m.renderProviderShell(currentSession, handleLogout));
   } else {
     renderDashboardShell();
   }
@@ -1543,6 +1544,21 @@ function botonDescargaPermitido(btn) {
   return btn.hasAttribute('data-descarga') || btn.hasAttribute('data-csv');
 }
 
+// (12-oct-2026) BORRAR es privilegio aparte: perfiles con EDITAR pero sin BORRAR
+// (Administrador, Planner Distribución, Abastecimiento) no ven botones de eliminar.
+const DELETE_ICONS = new Set(['delete', 'delete_forever', 'delete_sweep', 'person_remove']);
+const DELETE_WORDS = ['eliminar', 'borrar'];
+function ocultarBorrado(stage) {
+  stage.querySelectorAll('button:not([data-del-ok])').forEach(btn => {
+    if (NAV_ATTRS.some(a => btn.hasAttribute(a))) { btn.setAttribute('data-del-ok', ''); return; }
+    const iconTxt = btn.querySelector('.material-symbols-outlined')?.textContent?.trim() ?? '';
+    const btnTxt  = btn.textContent?.trim().toLowerCase() ?? '';
+    const titleTxt = (btn.getAttribute('title') || '').toLowerCase();
+    if (DELETE_ICONS.has(iconTxt) || DELETE_WORDS.some(w => btnTxt.includes(w) || titleTxt.includes(w))) btn.style.display = 'none';
+    else btn.setAttribute('data-del-ok', '');
+  });
+}
+
 function ocultarEscritura(stage) {
   stage.querySelectorAll('button:not([data-ro-ok])').forEach(btn => {
     if (NAV_ATTRS.some(a => btn.hasAttribute(a))) { btn.setAttribute('data-ro-ok', ''); return; }
@@ -1566,14 +1582,18 @@ function ocultarEscritura(stage) {
 
 function applyReadOnlyMode(stage) {
   if (_roObserver) { _roObserver.disconnect(); _roObserver = null; }
-  if (!esSoloLectura() || TABS_SIN_READONLY.includes(currentTab)) return;
+  if (TABS_SIN_READONLY.includes(currentTab)) return;
+  const soloLectura = esSoloLectura();
+  const sinBorrar = !can('eliminar');
+  if (!soloLectura && !sinBorrar) return;
+  const aplicar = () => { if (soloLectura) ocultarEscritura(stage); else ocultarBorrado(stage); };
 
-  ocultarEscritura(stage);
+  aplicar();
   let pend = false;
   _roObserver = new MutationObserver(() => {
     if (pend) return;
     pend = true;
-    requestAnimationFrame(() => { pend = false; ocultarEscritura(stage); });
+    requestAnimationFrame(() => { pend = false; aplicar(); });
   });
   _roObserver.observe(stage, { childList: true, subtree: true });
 
@@ -1591,7 +1611,7 @@ function applyReadOnlyMode(stage) {
 // SHELL DEL DASHBOARD DE SIT EBEMA
 // ==========================================================================
 function renderDashboardShell() {
-  setSesionPermisos(currentSession?.role, currentSession?.centros);
+  setSesionPermisos(currentSession?.role, currentSession?.centros, currentSession);
   const nombre = String(currentSession?.name || currentSession?.email || '');
   const iniciales = nombre.split(/[\s._@-]+/).filter(Boolean).slice(0, 2).map(p => p[0].toUpperCase()).join('') || 'U';
   document.body.classList.toggle('sv-side-collapsed', !!_lsGet(LS_COLL, false));
@@ -1614,7 +1634,7 @@ function renderDashboardShell() {
         <div class="sv-avatar" title="${_escN(nombre)}">${_escN(iniciales)}</div>
         <div class="sv-user sv-hide-c">
           <div class="sv-user-n" id="topbar-user-name">${_escN(nombre)}</div>
-          <div class="sv-user-r">${_escN(ROLE_DISPLAY[currentSession.role] || currentSession.role)}</div>
+          <div class="sv-user-r">${_escN(ROLE_DISPLAY[normalizarPerfil(currentSession.role)] || currentSession.role)}</div>
         </div>
         <button class="sv-iconbtn sv-hide-c" id="btn-logout" data-ro-ok title="Cerrar sesión"><span class="material-symbols-outlined">logout</span></button>
       </div>
@@ -1721,37 +1741,37 @@ async function switchTab(tabName, subName = null) {
   _stageSpinner(stage);
   switch (tabName) {
     case 'home': {
-      const m = await loadMod('ind', './indicadores.js?v=202610111429');
+      const m = await loadMod('ind', './indicadores.js?v=202610121719');
       m.renderIndicadoresHome(stage);
       break;
     }
     case 'rates': {
       await loadRoutesData();
-      const m = await loadMod('rates', './rates.js?v=202610111429');
+      const m = await loadMod('rates', './rates.js?v=202610121719');
       m.renderRatesView(stage);
       break;
     }
     case 'transports': {
-      const m = await loadMod('trans', './transports.js?v=202610111429');
+      const m = await loadMod('trans', './transports.js?v=202610121719');
       m.renderTransportsView(stage);
       break;
     }
     case 'routes': {
       await loadRoutesData();
-      const m = await loadMod('routes', './routes.js?v=202610111429');
+      const m = await loadMod('routes', './routes.js?v=202610121719');
       if (alias) m.setRoutesSubTab(alias);
       m.renderRoutesView(stage);
       break;
     }
     case 'roles': {
-      const m = await loadMod('roles', './roles.js?v=202610111429');
+      const m = await loadMod('roles', './roles.js?v=202610121719');
       m.renderRolesView(stage);
       break;
     }
     case 'tarifas-transporte': {
       await loadRoutesData();
       await loadHistoricoFlete360();
-      const m = await loadMod('tt', './tarifas-transporte.js?v=202610111429');
+      const m = await loadMod('tt', './tarifas-transporte.js?v=202610121719');
       if (alias) m.setActiveSub(alias);
       m.renderTariffTransportView(stage);
       break;
@@ -1759,32 +1779,32 @@ async function switchTab(tabName, subName = null) {
     case 'tarifas-clientes': {
       await loadRoutesData();
       await loadHistoricoFlete360();
-      const m = await loadMod('tc', './tarifas-clientes.js?v=202610111429');
+      const m = await loadMod('tc', './tarifas-clientes.js?v=202610121719');
       if (alias) m.setActiveSubC(alias);
       m.renderClientTariffView(stage);
       break;
     }
     case 'abastecimiento': {
       await loadRoutesData();
-      const m = await loadMod('abast', './abastecimiento.js?v=202610111429');
+      const m = await loadMod('abast', './abastecimiento.js?v=202610121719');
       if (subName) m.setAbastSubTab(subName);
       m.renderAbastecimientoView(stage);
       break;
     }
     case 'indicadores': {
-      const m = await loadMod('ind', './indicadores.js?v=202610111429');
+      const m = await loadMod('ind', './indicadores.js?v=202610121719');
       if (subName) m.setIndicadoresSubTab(subName);
       m.renderIndicadoresView(stage);
       break;
     }
     case 'productos': {
-      const m = await loadMod('mprod', './maestro-productos.js?v=202610111429');
+      const m = await loadMod('mprod', './maestro-productos.js?v=202610121719');
       m.renderMaestroProductos(stage);
       break;
     }
     case 'flete-tercero': {
       await loadRoutesData();
-      const m = await loadMod('fter', './flete-tercero.js?v=202610111429');
+      const m = await loadMod('fter', './flete-tercero.js?v=202610121719');
       if (subName) m.setFleteTerceroSubTab(subName);
       m.renderFleteTerceroView(stage);
       break;

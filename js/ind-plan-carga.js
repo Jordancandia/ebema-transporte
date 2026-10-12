@@ -18,11 +18,11 @@
 // Tailwind del sitio está compilado y no incluye clases nuevas.
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610111429';
-import { filtrarPorCentro, getRol } from './permisos.js?v=202610111429';
+import { supabase } from './supabase-client.js?v=202610121719';
+import { filtrarPorCentro, rolClase } from './permisos.js?v=202610121719';
 import { showAlert, escapeHtml } from './utils.js';
-import { getDatabase } from './data.js?v=202610111429';
-import { truckGauge } from './troncales-ui.js?v=202610111429';
+import { getDatabase } from './data.js?v=202610121719';
+import { truckGauge } from './troncales-ui.js?v=202610121719';
 
 const META_CONS = 85;   // % consolidación objetivo por viaje
 const META_EFEC = 90;   // % efectividad objetivo del Plan de Carga
@@ -72,7 +72,7 @@ async function fetchPag(vista, build) {
 // ── entrada ────────────────────────────────────────────────────────────────
 export async function renderIndPlanCarga(stage, options = {}) {
   root = stage; opts = options;
-  const rol = getRol();
+  const rol = rolClase();
   S.canEdit = rol === 'OWNER' || rol === 'ADMIN';
   if (!S.desde) {
     const h = new Date(); const d = new Date(); d.setDate(d.getDate() - 30);

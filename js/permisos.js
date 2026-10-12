@@ -1,10 +1,13 @@
 // ============================================================================
 //  PERMISOS POR PERFIL Y CENTRO — fuente única de verdad del frontend
-//  (25-sep-2026). La base de datos aplica la misma lógica vía RLS:
-//  app_role(), app_centros(), app_grupos() — ver migración
-//  perfiles_planner_centros_asignados.
+//  v2 (12-oct-2026, Jordan · planilla ROLES_Y_PERFILES.xlsx).
+//  La base de datos aplica la misma lógica vía RLS: app_perfil() (perfil real),
+//  app_role() (clase de seguridad), app_centros() ('*' = todos), app_tiene_accion().
+//  Migración SQL: supabase/sql/2026-10-12_perfiles_v2_roles.sql
 //
 //  Regla de UI: lo que un perfil no puede hacer se OCULTA, sin mensajes.
+//  Estructura por defecto según perfil; sólo OWNER agrega vistas/funcionalidades
+//  extra por usuario (app_users."vistasExtra" / "accionesExtra").
 //
 //  Menú: cada perfil lista las claves visibles.
 //    'tab'            → ítem simple (home, rates, roles)
@@ -13,101 +16,171 @@
 //  null = ve todo el menú.
 // ============================================================================
 
-const ABAST_OPERATIVAS = [
-  'abastecimiento:stock_almacen',
-  'abastecimiento:pedidos_traslados_revex',
-  'abastecimiento:pedidos_venta',
-  'abastecimiento:retiros',
-  'abastecimiento:pedidos_traslados_4000',
-  'abastecimiento:pedidos_traslados',
-  'abastecimiento:plan_carga',
-  'abastecimiento:seguimiento_carga',
+// Gestión Troncales — secciones del menú (NAV_LAYOUT en app.js)
+const TRONCALES_CONFIG = ['abastecimiento:calendario', 'abastecimiento:stock_almacen'];
+const TRONCALES_ORDEN = [
+  'abastecimiento:pedidos_traslados_revex', 'abastecimiento:pedidos_venta', 'abastecimiento:retiros',
+  'abastecimiento:pedidos_traslados_4000', 'abastecimiento:pedidos_traslados',
 ];
+const TRONCALES_PLANIF = [
+  'abastecimiento:plan_carga', 'abastecimiento:seguimiento_carga',
+  'abastecimiento:control_diferencias', 'abastecimiento:ind_plan_carga',
+];
+const TRONCALES = [...TRONCALES_CONFIG, ...TRONCALES_ORDEN, ...TRONCALES_PLANIF];
+const MAESTROS = ['proveedores', 'rutas', 'productos'];
 
+// Privilegios de la planilla → acciones de la plataforma
+//   VISUALIZAR: base de todos (descarga del Plan de Carga incluida, como hasta ahora)
+//   COMENTAR:   reservado (funcionalidad de comentarios pendiente)
+//   EDITAR:     excluir pedidos y subir pedidos al Plan de Carga + edición de datos de sus vistas
+//   BORRAR:     sólo OWNER
+//   INVITAR:    invitar usuarios desde Roles y Perfiles
+const P_VISUALIZAR = ['descargar_plan'];
+const P_COMENTAR = ['comentar'];
+const P_EDITAR = ['editar', 'descargar', 'excluir', 'incluir_plan', 'ajustar_plan'];
+const P_BORRAR = ['eliminar'];
+const P_INVITAR = ['invitar'];
+// Acciones operativas que por defecto sólo tiene OWNER (asignables como extra)
+const OWNER_EXTRA = ['coordinar_venta', 'coordinar_retiro', 'forzar_cd_cliente', 'programar_transporte', 'editar_dt_seguimiento', 'descargar_bd'];
+
+// clase = clase de seguridad en BD (app_role()); debe coincidir con la migración
 export const PERFILES = {
   OWNER: {
-    label: 'Owner',
-    menu: null,
-    acciones: ['editar', 'eliminar', 'descargar', 'descargar_plan', 'excluir', 'incluir_plan', 'forzar_cd_cliente', 'coordinar_retiro', 'coordinar_venta', 'invitar', 'descargar_bd', 'ajustar_plan', 'programar_transporte', 'editar_dt_seguimiento'],
-    alcance: 'TODOS',
+    label: 'Owner', clase: 'OWNER', menu: null, alcance: 'TODOS',
+    privilegios: ['VISUALIZAR', 'COMENTAR', 'EDITAR', 'BORRAR', 'INVITAR'],
+    acciones: [...P_VISUALIZAR, ...P_COMENTAR, ...P_EDITAR, ...P_BORRAR, ...P_INVITAR, ...OWNER_EXTRA],
   },
-  PLANNER_OPERACIONES: {
-    label: 'Planner Operaciones',
-    // Igual que OWNER, sin Cotizador, Tarifas Transporte, Tarifas Clientes ni Roles.
-    menu: [
-      'home', 'proveedores', 'rutas', 'abastecimiento', 'indicadores', 'flete-tercero',
-    ],
-    acciones: ['descargar_plan'],
-    alcance: 'TODOS',
+  ADMINISTRADOR: {
+    label: 'Administrador', clase: 'OWNER', menu: null, alcance: 'TODOS',
+    privilegios: ['VISUALIZAR', 'COMENTAR', 'EDITAR', 'INVITAR'],
+    acciones: [...P_VISUALIZAR, ...P_COMENTAR, ...P_EDITAR, ...P_INVITAR],
+  },
+  PLANNER_DISTRIBUCION: {
+    label: 'Planner Distribución', clase: 'OWNER', alcance: 'TODOS',
+    menu: ['home', 'rates', ...TRONCALES, 'flete-tercero', 'indicadores', 'tarifas-transporte', 'tarifas-clientes', ...MAESTROS, 'roles'],
+    privilegios: ['COMENTAR', 'EDITAR', 'INVITAR'],
+    acciones: [...P_VISUALIZAR, ...P_COMENTAR, ...P_EDITAR, ...P_INVITAR],
+  },
+  JEFE_ABASTECIMIENTO: {
+    label: 'Jefe Abastecimiento', clase: 'PLANNER_ABASTECIMIENTO', alcance: 'TODOS',
+    menu: ['home', ...TRONCALES],
+    privilegios: ['COMENTAR', 'EDITAR'],
+    acciones: [...P_VISUALIZAR, ...P_COMENTAR, ...P_EDITAR],
   },
   PLANNER_ABASTECIMIENTO: {
-    label: 'Planner Abastecimiento',
-    menu: [
-      'proveedores',
-      'abastecimiento:calendario',
-      ...ABAST_OPERATIVAS,
-      // Entregas Creadas / Documentos de Transporte: ocultas (cruce interno, 30-sep-2026)
-      'abastecimiento:ind_plan_carga',
-      'abastecimiento:control_diferencias',   // (11-oct-2026) Control de Diferencias
-    ],
-    // 30-sep-2026: sin Excluir (sólo OWNER) y alcance a todos los centros por defecto.
-    acciones: ['editar', 'descargar', 'descargar_plan', 'ajustar_plan'],
-    alcance: 'TODOS',
+    label: 'Planner Abastecimiento', clase: 'PLANNER_ABASTECIMIENTO', alcance: 'TODOS',
+    menu: ['home', ...TRONCALES],
+    privilegios: ['COMENTAR', 'EDITAR'],
+    acciones: [...P_VISUALIZAR, ...P_COMENTAR, ...P_EDITAR],
   },
-  ADMINISTRADOR_DEPOSITO: {
-    label: 'Admin. Depósito',
-    menu: [
-      'home', 'rates', 'proveedores', 'rutas',
-      ...ABAST_OPERATIVAS,
-      'indicadores:nivel', 'indicadores:tarifa', 'indicadores:margen',
-      'flete-tercero',
-    ],
-    acciones: ['descargar_plan'],
-    alcance: 'CENTROS',
+  JEFE_OPERACIONES: {
+    label: 'Jefe Operaciones', clase: 'ADMINISTRADOR_DEPOSITO', alcance: 'CENTROS',
+    menu: ['home', ...TRONCALES, 'flete-tercero', 'indicadores', 'tarifas-clientes'],
+    privilegios: ['COMENTAR'],
+    acciones: [...P_VISUALIZAR, ...P_COMENTAR],
   },
-  AGENTE_COMERCIAL: {
-    label: 'Agente',
-    menu: ['rates', 'rutas', ...ABAST_OPERATIVAS],
-    acciones: ['descargar_plan'],
-    alcance: 'CENTROS',
+  PLANNER_OPERACIONES: {
+    label: 'Planner Operaciones', clase: 'ADMINISTRADOR_DEPOSITO', alcance: 'CENTROS',
+    menu: ['home', 'rates', ...TRONCALES, 'flete-tercero', 'indicadores', 'tarifas-clientes'],
+    privilegios: ['COMENTAR'],
+    acciones: [...P_VISUALIZAR, ...P_COMENTAR],
   },
-  // Pendientes de definición: sin vistas en la plataforma interna (usan el portal).
-  TRANSPORTISTA: { label: 'Transportista', menu: [], acciones: [], alcance: 'CENTROS' },
-  CHOFER:        { label: 'Chofer',        menu: [], acciones: [], alcance: 'CENTROS' },
+  JEFE_SUCURSAL: {
+    label: 'Jefe Sucursal', clase: 'ADMINISTRADOR_DEPOSITO', alcance: 'CENTROS',
+    menu: ['home', 'rates', ...TRONCALES, 'flete-tercero', 'indicadores', 'tarifas-clientes'],
+    privilegios: ['COMENTAR'],
+    acciones: [...P_VISUALIZAR, ...P_COMENTAR],
+  },
+  JEFE_CATEGORIA: {
+    label: 'Jefe Categoría', clase: 'PLANNER_OPERACIONES', alcance: 'TODOS',
+    menu: ['home', ...TRONCALES, 'indicadores'],
+    privilegios: ['COMENTAR'],
+    acciones: [...P_VISUALIZAR, ...P_COMENTAR],
+  },
+  VENDEDOR: {
+    label: 'Vendedor', clase: 'AGENTE_COMERCIAL', alcance: 'CENTROS',
+    menu: ['home', 'rates', ...TRONCALES_PLANIF],
+    privilegios: ['VISUALIZAR'],
+    acciones: [...P_VISUALIZAR],
+  },
+  // Sin vistas en la plataforma interna (usan el portal de proveedor).
+  TRANSPORTISTA: { label: 'Transportista', clase: 'TRANSPORTISTA', menu: [], acciones: [], privilegios: [], alcance: 'CENTROS' },
+  CHOFER:        { label: 'Chofer',        clase: 'CHOFER',        menu: [], acciones: [], privilegios: [], alcance: 'CENTROS' },
 };
 
-// Perfiles que requieren centros asignados (restricción de datos)
+// Nombres antiguos (antes del 12-oct-2026) → perfil vigente
+export const ALIAS_PERFIL = { AGENTE_COMERCIAL: 'VENDEDOR', ADMINISTRADOR_DEPOSITO: 'JEFE_OPERACIONES' };
+export function normalizarPerfil(r) { return ALIAS_PERFIL[r] || r; }
+
+// Perfiles que requieren centros asignados (restricción de datos por centro destino)
 export const ROLES_CON_CENTROS = Object.keys(PERFILES).filter(r => PERFILES[r].alcance === 'CENTROS' && !['TRANSPORTISTA', 'CHOFER'].includes(r));
+// Perfiles que pueden invitar / ver Roles y Perfiles
+export const PERFILES_INTERNOS = Object.keys(PERFILES).filter(r => !['TRANSPORTISTA', 'CHOFER'].includes(r));
+export const TODOS_CENTROS = '*';
+
+// Funcionalidades que OWNER puede agregar a un usuario (además de su perfil).
+// soloEditor: requieren un perfil con EDITAR (la BD no permite escribir a perfiles de sólo lectura).
+export const ACCIONES_EXTRA = [
+  { key: 'descargar',             label: 'Descargar reportes (CSV/Excel)' },
+  { key: 'coordinar_venta',       label: 'Coordinar despacho de Ventas CD', soloEditor: true },
+  { key: 'coordinar_retiro',      label: 'Coordinar Retiros de Fábrica', soloEditor: true },
+  { key: 'forzar_cd_cliente',     label: 'Forzar / revertir tipo CD-Cliente', soloEditor: true },
+  { key: 'programar_transporte',  label: 'Programar camión con transporte', soloEditor: true },
+  { key: 'editar_dt_seguimiento', label: 'Editar DT en Seguimiento de Carga', soloEditor: true },
+];
 
 // ── Sesión activa ───────────────────────────────────────────────────────────
 let _role = null;
 let _centros = [];
+let _vistasExtra = [];
+let _accionesExtra = [];
 
-export function setSesionPermisos(role, centros) {
-  _role = role || null;
-  _centros = Array.isArray(centros) ? centros.map(c => String(c).trim()).filter(Boolean) : [];
+const _arr = v => Array.isArray(v) ? v.map(x => String(x).trim()).filter(Boolean) : [];
+export function setSesionPermisos(role, centros, extras = {}) {
+  _role = role ? normalizarPerfil(role) : null;
+  _centros = _arr(centros);
+  _vistasExtra = _arr(extras?.vistasExtra);
+  _accionesExtra = _arr(extras?.accionesExtra);
 }
 export function getRol() { return _role; }
-function perfil() { return PERFILES[_role] || { menu: [], acciones: [], alcance: 'CENTROS' }; }
+export function getPerfil() { return _role; }
+function perfil() { return PERFILES[_role] || { menu: [], acciones: [], alcance: 'CENTROS', clase: null }; }
+// Clase de seguridad (igual a app_role() en BD): OWNER, PLANNER_ABASTECIMIENTO, PLANNER_OPERACIONES, ADMINISTRADOR_DEPOSITO, AGENTE_COMERCIAL…
+export function rolClase() { return perfil().clase || null; }
+export function esOwner() { return _role === 'OWNER'; }
 
-// ¿Puede ejecutar la acción?
-export function can(accion) { return perfil().acciones.includes(accion); }
+// ¿Puede ejecutar la acción? (perfil base + funcionalidades extra asignadas por OWNER)
+export function can(accion) { return perfil().acciones.includes(accion) || _accionesExtra.includes(accion); }
 export function esSoloLectura() { return !can('editar'); }
 
 // ── Menú ────────────────────────────────────────────────────────────────────
 // key: 'home' | 'proveedores' (grupo) | 'abastecimiento:plan_carga' (pestaña)
-export function puedeVerMenu(grupoOTab, sub = null) {
-  const m = perfil().menu;
-  if (m === null) return true;
+function _match(m, grupoOTab, sub) {
   if (m.includes(grupoOTab)) return true;
   if (sub != null && m.includes(`${grupoOTab}:${sub}`)) return true;
   if (sub == null && m.some(k => k.startsWith(grupoOTab + ':'))) return true; // grupo con alguna pestaña visible
   return false;
 }
+export function puedeVerMenu(grupoOTab, sub = null) {
+  const m = perfil().menu;
+  if (m === null) return true;
+  return _match(m, grupoOTab, sub) || _match(_vistasExtra, grupoOTab, sub);
+}
+// ¿El perfil base (sin extras) ya ve esa clave? — usado por Roles y Perfiles
+export function perfilVeMenu(role, key) {
+  const p = PERFILES[normalizarPerfil(role)];
+  if (!p) return false;
+  if (p.menu === null) return true;
+  const [g, s] = key.split(':');
+  return _match(p.menu, g, s ?? null);
+}
 
 // ── Alcance por centro ──────────────────────────────────────────────────────
-// null = ve todos los centros; array = sólo esos (vacío = ninguno)
-export function centrosAlcance() { return perfil().alcance === 'TODOS' ? null : _centros.slice(); }
+// null = ve todos los centros; array = sólo esos (vacío = ninguno). '*' = todos.
+export function centrosAlcance() {
+  if (perfil().alcance === 'TODOS' || _centros.includes(TODOS_CENTROS)) return null;
+  return _centros.slice();
+}
 export function enAlcance(centro) {
   const a = centrosAlcance();
   if (a === null) return true;
@@ -119,3 +192,15 @@ export function filtrarPorCentro(rows, campoOFn) {
   const get = typeof campoOFn === 'function' ? campoOFn : (r => r[campoOFn]);
   return rows.filter(r => a.includes(String(get(r) ?? '').trim()));
 }
+
+// Catálogo de vistas que OWNER puede agregar a un usuario (clave de menú → etiqueta)
+export const VISTAS_CATALOGO = [
+  { modulo: 'General', items: [['home', 'Home'], ['rates', 'Cotizador Despacho']] },
+  { modulo: 'Gestión Troncales · Configuraciones', items: [['abastecimiento:calendario', 'Calendario Sucursales'], ['abastecimiento:stock_almacen', 'Stock Almacén 4000']] },
+  { modulo: 'Gestión Troncales · Orden de Carga', items: [['abastecimiento:pedidos_traslados_revex', 'Revex'], ['abastecimiento:pedidos_venta', 'Ventas CD (1003)'], ['abastecimiento:retiros', 'Retiros de Fábrica'], ['abastecimiento:pedidos_traslados_4000', 'Crossdocking'], ['abastecimiento:pedidos_traslados', 'Pedidos de Traslados']] },
+  { modulo: 'Gestión Troncales · Planificación', items: [['abastecimiento:plan_carga', 'Plan de Carga'], ['abastecimiento:seguimiento_carga', 'Seguimiento de Carga'], ['abastecimiento:control_diferencias', 'Control de Diferencias'], ['abastecimiento:ind_plan_carga', 'Indicadores Plan de Carga']] },
+  { modulo: 'Flete Tercero / Indicadores', items: [['flete-tercero', 'Flete Tercero (Seguimiento)'], ['indicadores', 'Indicadores (Reportes)']] },
+  { modulo: 'Tarifas', items: [['tarifas-transporte', 'Tarifas Transporte'], ['tarifas-clientes', 'Tarifas Clientes']] },
+  { modulo: 'Maestros', items: [['proveedores', 'Proveedores'], ['rutas', 'Rutas'], ['productos', 'Productos']] },
+  { modulo: 'Administración', items: [['roles', 'Roles y Perfiles']] },
+];

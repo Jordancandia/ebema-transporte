@@ -10,12 +10,14 @@
 // puede subir (fn_abast_subir_exceso_entrega) y queda sujeto al llenado del camión.
 // CSS encapsulado (.cdf-*): el Tailwind del sitio está compilado.
 // ============================================================================
-import { supabase } from './supabase-client.js?v=202610111429';
-import { filtrarPorCentro, getRol } from './permisos.js?v=202610111429';
+import { supabase } from './supabase-client.js?v=202610121719';
+import { filtrarPorCentro, getRol, rolClase } from './permisos.js?v=202610121719';
 import { showAlert, escapeHtml } from './utils.js';
 
 const C = { ink: '#191c1d', ink2: '#5c5f61', line: '#e1e3e4', soft: '#f8f9fa', red: '#b5000b', amber: '#ca8a04', green: '#15803d', blue: '#1d4ed8' };
 const ROL_LBL = { PLANNER_ABASTECIMIENTO: 'Planner Abastecimiento', PLANNER_OPERACIONES: 'Planner Operaciones', OWNER: 'Owner' };
+// (12-oct-2026) perfiles v2: responsable que cubre cada perfil (igual que fn_abast_cerrar_diferencia)
+const RESP_PERFIL = { PLANNER_ABASTECIMIENTO: 'PLANNER_ABASTECIMIENTO', JEFE_ABASTECIMIENTO: 'PLANNER_ABASTECIMIENTO', PLANNER_OPERACIONES: 'PLANNER_OPERACIONES', JEFE_OPERACIONES: 'PLANNER_OPERACIONES' };
 const EST_LBL = { abierta: 'Abiertas', cerrada: 'Cerradas', resuelta_auto: 'Resueltas automáticas' };
 const S = { estado: 'abierta', resp: null, control: 'all', q: '', rows: [], cat: [], ult: null, page: 0 };
 const PAGE = 50;
@@ -24,8 +26,8 @@ const esc = s => escapeHtml(String(s ?? ''));
 const fmt = (n, d = 1) => (n == null || n === '' || isNaN(n)) ? '—' : Number(n).toLocaleString('es-CL', { minimumFractionDigits: d, maximumFractionDigits: d });
 const fh = ts => { if (!ts) return '—'; const d = new Date(ts); return isNaN(d) ? '—' : d.toLocaleString('es-CL', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }); };
 const rol = () => getRol() || '';
-const puedeCerrar = r => ['OWNER', 'ADMIN'].includes(rol()) || rol() === r.responsable;
-const puedeSubir = () => ['OWNER', 'ADMIN', 'PLANNER_ABASTECIMIENTO'].includes(rol());
+const puedeCerrar = r => ['OWNER', 'ADMIN'].includes(rolClase()) || rol() === r.responsable || rolClase() === r.responsable || RESP_PERFIL[rol()] === r.responsable;
+const puedeSubir = () => ['OWNER', 'ADMIN', 'PLANNER_ABASTECIMIENTO'].includes(rolClase());
 
 async function fetchPag(build) {
   const size = 1000; let out = [];
@@ -40,7 +42,7 @@ async function fetchPag(build) {
 
 export async function renderControlDiferencias(stage) {
   root = stage;
-  if (S.resp === null) S.resp = ['PLANNER_ABASTECIMIENTO', 'PLANNER_OPERACIONES'].includes(rol()) ? rol() : 'all';
+  if (S.resp === null) S.resp = RESP_PERFIL[rol()] || 'all';
   root.innerHTML = `${css()}<div class="cdf"><div class="cdf-empty">Cargando diferencias…</div></div>`;
   await cargar();
   pintar();
