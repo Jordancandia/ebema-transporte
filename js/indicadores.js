@@ -5,8 +5,8 @@
 //  Lee en vivo las vistas v_ind_* de Supabase (RLS: usuario @ebema.cl con rol).
 //  Paleta alineada a las presentaciones (PPT) del Comité de Transporte.
 // ============================================================================
-import { supabase } from './supabase-client.js?v=202610121816';
-import { centrosAlcance } from './permisos.js?v=202610121816';
+import { supabase } from './supabase-client.js?v=202610121824';
+import { centrosAlcance } from './permisos.js?v=202610121824';
 
 // --- Paleta PPT -------------------------------------------------------------
 const C = {
@@ -48,7 +48,7 @@ const money0 = v => sgn(v)+'$'+nf0.format(Math.abs(Math.round(v)));
 const money1 = v => sgn(v)+'$'+nf1.format(Math.abs(v));
 const mm = v => (v==null?'–':sgn(v)+'$'+nf1.format(Math.abs(v))+' MM');
 const mesCorto = lbl => (({'01':'ene','02':'feb','03':'mar','04':'abr','05':'may','06':'jun','07':'jul','08':'ago','09':'sep','10':'oct','11':'nov','12':'dic'})[String(lbl).slice(5,7)]||lbl);
-const nice = s => s.charAt(0)+s.slice(1).toLowerCase();
+const nice = s => String(s||'').toLowerCase().split(' ').map(w=>w==='y'?w:w.charAt(0).toUpperCase()+w.slice(1)).join(' ');
 
 // ============================================================================
 //  ENTRYPOINT
@@ -195,7 +195,7 @@ async function loadCentro(){
         spot:spot.data||[], dest:dest.data||[], tdest:tdest.data||[], vend:vend.data||[],
         con:con.data||[], tie:tie.data||[], scm:scm.data||[] };
     }
-    const grupos = [...new Set(_cacheCen.ns.map(r=>r.grupo))].filter(g=>g&&g!=='OTROS').sort();
+    const grupos = [...new Set([].concat(_cacheCen.ns||[],_cacheCen.tar||[],_cacheCen.mar||[]).map(r=>r.grupo))].filter(g=>g&&g!=='OTROS').sort();
     if (!_grupo || grupos.indexOf(_grupo)<0){
       // default: grupo con más líneas evaluadas
       const tot={}; _cacheCen.ns.forEach(r=>{ tot[r.grupo]=(tot[r.grupo]||0)+(r.lineas||0); });
@@ -385,7 +385,7 @@ function centroHTML(d, grupos, grupo){
           tile('Peor mes',mm((w.monto||0)/1e6),mesCorto(w.mes_label||''),'text-[#EE1B22]'); })(),
       legend([{n:'No cobrado $MM',c:C.red}])+`<div id="c_scm"></div>`)}
 
-    <div class="text-[13px] text-secondary mt-lg leading-relaxed">Centro = grupo de origen (Centro Origen). OTIF por semana ISO llega al último mes cerrado; tarifa, margen y operación a la fecha más reciente. Comuna = 2º tramo de la ruta. Consolidación = Σpeso ÷ (capacidad×1000) por viaje. Planta C&D y Electrosoldado se agrupan en Santiago.</div>`;
+    <div class="text-[13px] text-secondary mt-lg leading-relaxed">Centro = grupo de origen (Centro Origen). OTIF por semana ISO llega al último mes cerrado; tarifa, margen y operación a la fecha más reciente. Comuna = 2º tramo de la ruta. Consolidación = Σpeso ÷ (capacidad×1000) por viaje. Planta Corte y Doblado (1001) se informa como centro independiente; Electrosoldado se agrupa en Santiago.</div>`;
 }
 
 function vendTablaHTML(rows, grupo){
@@ -798,7 +798,7 @@ const hoyISO = () => { const d=new Date(); return d.getFullYear()+'-'+String(d.g
 const isoLocal = ts => { const d=new Date(ts); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); };
 const hhmm = ts => new Date(ts).toLocaleTimeString('es-CL',{hour:'2-digit',minute:'2-digit',hour12:false});
 const ddmm = ts => new Date(ts).toLocaleDateString('es-CL',{day:'2-digit',month:'2-digit'});
-const tc = s => String(s||'').toLowerCase().replace(/(^|[\s-])\S/g, m => m.toUpperCase());
+const tc = s => String(s||'').toLowerCase().replace(/(^|[\s-])\S/g, m => m.toUpperCase()).replace(/ Y /g,' y ');
 function stKey(v,meta,tol){ if(v==null||meta==null) return null; return v>=meta?'good':(v>=meta-tol?'warn':'bad'); }
 const ST_TXT = { good:'Sobre meta', warn:'Cerca de meta', bad:'Bajo meta' };
 function homeGo(tab,sub){
@@ -960,8 +960,8 @@ function homeGerencial(D,G,enCurso,tituloPer){
   let cen='';
   if(G&&G.rows.length){
     const c={good:[],warn:[],bad:[]}; G.rows.forEach(r=>{ const k=stKey(r.otif,META.otif,5); if(k) c[k].push(r); });
-    const n=G.rows.length, seg=(k)=>c[k].length?`<div data-t="${ST_TXT[k]}: ${c[k].map(r=>tc(r.grupo)).join(', ')}" style="flex:${c[k].length};background:${HM[k]};height:16px"></div>`:'';
-    const peor=G.rows.slice().sort((a,b)=>a.otif-b.otif).slice(0,3);
+    const n=G.rows.filter(r=>r.otif!=null).length, seg=(k)=>c[k].length?`<div data-t="${ST_TXT[k]}: ${c[k].map(r=>tc(r.grupo)).join(', ')}" style="flex:${c[k].length};background:${HM[k]};height:16px"></div>`:'';
+    const peor=G.rows.filter(r=>r.otif!=null).sort((a,b)=>a.otif-b.otif).slice(0,3);
     cen=`<div style="min-width:0">
       <div style="font-size:13px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:${HM.muted};margin-bottom:8px">Centros vs meta OTIF</div>
       <div style="display:flex;gap:2px;border-radius:6px;overflow:hidden">${seg('good')}${seg('warn')}${seg('bad')}</div>
@@ -1010,7 +1010,7 @@ async function homeDatosGrupo(desde, enCurso){
   const fc = enCurso && ant ? ant : act, fc0 = enCurso && ant ? ant2 : ant;   // mes cerrado para datos de flete
   const idx=(rows)=>{ const m={}; (rows||[]).forEach(r=>{ m[r.grupo+'|'+r.mes_label]=r; }); return m; };
   const iN=idx(ns.data), iT=idx(tar.data), iM=idx(mar.data), iC=idx(con.data);
-  const grupos=[...new Set((ns.data||[]).map(r=>r.grupo))].filter(g=>g&&g!=='OTROS');
+  const grupos=[...new Set([].concat(ns.data||[],tar.data||[],mar.data||[]).map(r=>r.grupo))].filter(g=>g&&g!=='OTROS');
   const v=(i,g,m,k)=>{ const r=i[g+'|'+m]; return r&&r[k]!=null?Number(r[k]):null; };
   const rows=grupos.map(g=>({
     grupo:g,
@@ -1020,7 +1020,7 @@ async function homeDatosGrupo(desde, enCurso){
     consol:v(iC,g,act,'consol_pct'), consol0:v(iC,g,ant,'consol_pct'),
     tk:v(iT,g,fc,'tarifa_kg'), tk0:v(iT,g,fc0,'tarifa_kg'), ton:v(iT,g,fc,'toneladas'),
     margen:v(iM,g,fc,'margen'), cob:v(iM,g,fc,'cobertura_pct')
-  })).filter(r=>r.otif!=null);
+  })).filter(r=>r.otif!=null||r.tk!=null||r.margen!=null);
   return { act, ant, fc, rows };
 }
 
@@ -1144,13 +1144,13 @@ function homeFoco(G,D){
   const d=(n.otif_pct!=null&&n0.otif_pct!=null)?n.otif_pct-n0.otif_pct:null;
   let h=`<div class="text-label-caps text-secondary uppercase" style="margin-bottom:8px">Foco del mes</div>`;
   if(!G||!G.rows.length) return h+`<div class="text-body-md">OTIF ${pct(n.otif_pct)} vs meta ${META.otif}%.</div>`;
-  const bajo=G.rows.filter(r=>r.otif<META.otif);
-  const caida=G.rows.filter(r=>r.otif0!=null).map(r=>({g:r.grupo,d:r.otif-r.otif0})).sort((a,b)=>a.d-b.d)[0];
+  const bajo=G.rows.filter(r=>r.otif!=null&&r.otif<META.otif);
+  const caida=G.rows.filter(r=>r.otif!=null&&r.otif0!=null).map(r=>({g:r.grupo,d:r.otif-r.otif0})).sort((a,b)=>a.d-b.d)[0];
   let frase=`OTIF <b>${pct(n.otif_pct)}</b>`+(d!=null?` (${d>=0?'+':'−'}${nf1.format(Math.abs(d))} pp)`:'')+`: `+
-    (bajo.length?`<b>${bajo.length} de ${G.rows.length}</b> centros bajo meta`:'todos los centros sobre meta')+
+    (bajo.length?`<b>${bajo.length} de ${G.rows.filter(r=>r.otif!=null).length}</b> centros bajo meta`:'todos los centros sobre meta')+
     (caida&&caida.d<0?`. Mayor caída: <b>${esc(tc(caida.g))}</b> (${nf1.format(caida.d)} pp).`:'.');
   h+=`<div style="font-size:18px;line-height:1.45;margin-bottom:10px">${frase}</div>`;
-  const crit=G.rows.slice().sort((a,b)=>a.otif-b.otif).slice(0,3);
+  const crit=G.rows.filter(r=>r.otif!=null).sort((a,b)=>a.otif-b.otif).slice(0,3);
   h+=`<div style="display:flex;gap:8px;flex-wrap:wrap">`+crit.map(r=>{ const s=stKey(r.otif,META.otif,5);
     return `<a href="#" data-go="indicadores|nivel" data-t="${esc(tc(r.grupo))}: OTIF ${pct(r.otif)} · Fill ${pct(r.fill)}" style="text-decoration:none;display:inline-flex;gap:8px;align-items:center;background:${HM[s+'Bg']};border-radius:999px;padding:5px 12px;font-size:15px;color:${HM.ink}">
       ${esc(tc(r.grupo))} <b style="color:${HM[s]};font-variant-numeric:tabular-nums">${pct(r.otif)}</b></a>`; }).join('')+`</div>`;
