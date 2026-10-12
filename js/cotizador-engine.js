@@ -26,7 +26,7 @@ export const UMBRAL_DIRECTO_CALZADA = 0.9; // FABRICA-CLIENTE / FABRICA-SUCURSAL
 export const UMBRAL_DIRECTO_STOCK = 0.8;   // CD-CLIENTE
 
 // Entrega en ruta troncal: el troncal deja la carga en la comuna de destino si
-// queda en su camino (desvío ≤ 10 km) y la carga supera 1.800 kg; se cobra el
+// queda en su camino (origen→comuna→centro < origen→centro→comuna en km) y la carga supera 1.800 kg; se cobra el
 // troncal proporcional hasta la comuna + cargo fijo, sin última milla.
 export const DESVIO_MAX_KM = 10;
 export const KILOS_MIN_EN_RUTA = 1800;
@@ -499,8 +499,13 @@ export function cotizar(ctx, input) {
         const eOD = findRuta(ctx, o, ctx.grupoInfo.get(d)?.comuna);
         const eDC = findRuta(ctx, d, nDes);
         if (!eOD || !eDC || !(eOD.km > 0)) return;
+        // Regla Jordan (12-oct-2026): entrega en ruta si el recorrido
+        // origen → comuna → centro destino tiene menos km que
+        // origen → centro destino → comuna (ej. SGO→Curicó→Talca 278 km < SGO→Talca→Curicó 339 km).
         const desvio = Math.round(eOC.km + eDC.km - eOD.km);
-        if (desvio > DESVIO_MAX_KM) return;
+        const kmEnRuta = Math.round(eOC.km + eDC.km);
+        const kmViaCentro = Math.round(eOD.km + eDC.km);
+        if (!(kmEnRuta < kmViaCentro)) return;
         // Tarifa del troncal que realmente viaja (centro origen → centro destino),
         // prorrateada por los km hasta la comuna: el camión no llega al centro destino.
         const trOD = precioTroncal(eOD, kilos);
@@ -519,7 +524,7 @@ export function cotizar(ctx, input) {
         const tramos = [];
         if (ret) tramos.push({ key: 'retiro', label: 'Retiro (primera milla)', monto: ret.monto, regla: ret.regla, ruta: ret.ruta, camion: ret.camion });
         tramos.push({ key: 'troncal_ruta', label: `Traslado troncal con entrega en ruta (${input.comunaDespacho})`, monto: tr.precio, ruta: tr.ruta, camion: tr.camion,
-          regla: `${tr.regla} · en ruta ${nombreG(ctx, o)} → ${nombreG(ctx, d)}: ${eOC.km} + ${eDC.km} − ${eOD.km} = desvío ${Math.max(0, desvio)} km (máx. ${DESVIO_MAX_KM})${desvio < 0 ? ' — la comuna queda antes del centro destino' : ''}` });
+          regla: `${tr.regla} · en ruta ${nombreG(ctx, o)} → ${input.comunaDespacho} → ${nombreG(ctx, d)}: ${eOC.km} + ${eDC.km} = ${kmEnRuta} km < vía centro ${eOD.km} + ${eDC.km} = ${kmViaCentro} km (desvío ${Math.max(0, desvio)} km)` });
         tramos.push({ key: 'cargo_ruta', label: 'Cargo entrega en ruta', monto: CARGO_ENTREGA_EN_RUTA, regla: `Cargo fijo por parada del troncal (carga > ${KILOS_MIN_EN_RUTA.toLocaleString('es-CL')} kg)` });
         const total = tramos.reduce((a, t) => a + t.monto, 0);
         const inicio = calzada ? `Retiro ${ret.tipo === 'troncal' ? 'troncal' : (ret.tipo === 'exclusivo' ? 'exclusivo' : 'local')} ${nombreG(ctx, o)}` : `${flujo === 'EBE-DESP' ? 'Stock' : 'Recepción fábrica en'} ${nombreG(ctx, o)}`;
