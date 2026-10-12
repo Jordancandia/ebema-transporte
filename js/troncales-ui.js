@@ -32,7 +32,8 @@ export function tonHtml(n) {
 }
 
 // Encabezado del shell: fecha y hora de la última actualización SAP de la vista
-import { confirmar } from './confirmar.js?v=202610121719';
+import { confirmar } from './confirmar.js?v=202610121729';
+import { comentariosHabilitados, conteosComentarios, celdaComentarios, montarHilo, tomarFoco, abrirHiloSuelto } from './comentarios.js?v=202610121729';
 export function setUltimaActualizacion(ts) {
   const el = document.getElementById('sv-upd');
   if (!el) return;
@@ -117,6 +118,25 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
   if (active.postFilter) rowsAll = active.postFilter(rowsAll, 'all', ctx);
   if (AV.enrich) AV.enrich(rowsAll, ctx);
   rowsAll.forEach((r, i) => { r.__rid = AV.rowId ? String(AV.rowId(r)) : String(i); });
+
+  // (12-oct-2026) Comentarios por fila en Orden de Carga: clave estable (rowId o documento|material)
+  const conComent = comentariosHabilitados(viewKey);
+  const claveCom = r => AV.rowId ? String(AV.rowId(r))
+    : active.excluir ? [active.excluir.doc(r), typeof active.excluir.material === 'function' ? active.excluir.material(r) : ''].map(x => String(x ?? '').trim()).join('|')
+    : r.__rid;
+  const docCom = r => {
+    if (!active.excluir) return claveCom(r);
+    const d = String(active.excluir.doc(r) ?? '').trim();
+    const m = typeof active.excluir.material === 'function' ? String(active.excluir.material(r) ?? '').trim() : '';
+    return m ? `${d} · mat. ${m}` : d;
+  };
+  let conteos = conComent ? await conteosComentarios(viewKey) : new Map();
+  const foco = conComent ? tomarFoco(viewKey) : null;
+  if (foco) {
+    const fr = rowsAll.find(r => claveCom(r) === foco.clave);
+    if (fr) { st.drawer = fr.__rid; st._focoCom = foco.comentarioId || true; }
+    else setTimeout(() => abrirHiloSuelto(foco), 0);
+  }
 
   // Exclusiones del Plan de Carga (acción del panel lateral, sólo perfiles con permiso)
   const puedeExcluir = !!(active.excluir && deps.can(AV.permisoExcluir || 'excluir'));
@@ -245,6 +265,7 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
     const shown = filt.slice(0, MAX);
     const selId = st.drawer;
     let cols = enFila ? AV.cols.concat([{ label: 'Plan de carga', html: r => celdaPlan(r) }]) : AV.cols;
+    if (conComent) cols = cols.concat([{ label: 'Coment.', html: r => celdaComentarios(conteos.get(claveCom(r)) || 0, r.__rid) }]);
     // (8-oct-2026) Acciones en la fila principal (AV.filaAcciones(r) → [{ label, icon, run, tono }])
     if (AV.filaAcciones) cols = cols.concat([{ label: 'Acciones', html: r => {
       const acc = AV.filaAcciones(r) || [];
@@ -461,6 +482,13 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
         if (res && res.redibujar) draw();
       } finally { b.disabled = false; }
     }));
+    stage.querySelectorAll('[data-cmt]').forEach(b => b.addEventListener('click', e => {
+      e.stopPropagation();
+      st.drawer = b.dataset.cmt; st._focoCom = 'hilo';
+      stage.querySelectorAll('tbody tr.is-sel').forEach(x => x.classList.remove('is-sel'));
+      b.closest('tr')?.classList.add('is-sel');
+      openDrawer(st.drawer);
+    }));
     accFila('[data-fila-excl]', excluirFila);
     accFila('[data-fila-reac]', reactivarFila);
     stage.querySelectorAll('tbody tr[data-row]').forEach(tr => tr.addEventListener('click', () => {
@@ -527,10 +555,27 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
           ${d.aviso ? `<div class="sv-note-box">${d.aviso}</div>` : ''}
           ${kv ? `<dl class="sv-kv" style="margin:0">${kv}</dl>` : ''}
           ${tabla}
+          ${conComent ? '<div data-hilo style="border-top:1px solid var(--sv-line,#e1e3e4);padding-top:16px"></div>' : ''}
         </div>
         <div class="sv-dr-f"><span class="sv-dr-note">${esc(d.nota || '')}</span><div style="display:flex;gap:8px;flex-wrap:wrap">${btns}</div></div>
       </aside>`;
     slot.querySelectorAll('[data-close]').forEach(b => b.addEventListener('click', closeDrawer));
+    const hiloEl = slot.querySelector('[data-hilo]');
+    if (hiloEl) {
+      const fc = st._focoCom; st._focoCom = null;
+      montarHilo(hiloEl, { vista: viewKey, clave: claveCom(r), documento: docCom(r), centro: campoCentro ? String(r[campoCentro] ?? '').trim() : null,
+        focoId: typeof fc === 'number' ? fc : null,
+        onCount: n => {
+          const k = claveCom(r);
+          if ((conteos.get(k) || 0) === n) return;
+          conteos.set(k, n);
+          const cel = stage.querySelector(`[data-cmt="${CSS.escape(r.__rid)}"]`);
+          if (cel) cel.outerHTML = celdaComentarios(n, r.__rid);
+          const nb = stage.querySelector(`[data-cmt="${CSS.escape(r.__rid)}"]`);
+          nb?.addEventListener('click', e => { e.stopPropagation(); st.drawer = r.__rid; st._focoCom = 'hilo'; openDrawer(r.__rid); });
+        } });
+      if (fc === 'hilo') setTimeout(() => hiloEl.scrollIntoView({ block: 'start', behavior: 'smooth' }), 60);
+    }
     document.removeEventListener('keydown', escKey);
     document.addEventListener('keydown', escKey);
     slot.querySelectorAll('[data-acc]').forEach(b => b.addEventListener('click', async () => {
