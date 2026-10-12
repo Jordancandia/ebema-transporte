@@ -14,8 +14,8 @@
 // ZFMP = ZCAP ÷ kilos a consolidar, ZFMI = ZCAP camión mínimo ÷ pedidos promedio
 // del cluster, Tarifa Express = ZCAP × (1 + recargo exclusividad del centro).
 // ---------------------------------------------------------------------------
-import { getOrigenGroups, truckCapKg } from './data.js?v=202610122037';
-import { buildZcapMap } from './zcap.js?v=202610122037';
+import { getOrigenGroups, truckCapKg } from './data.js?v=202610122051';
+import { buildZcapMap } from './zcap.js?v=202610122051';
 
 export const TRUCK_ORDER = ['Camión 5 Ton', 'Camión 10 Ton', 'Camión 15 Ton', 'Camión 28 Ton'];
 export const TRUCK_TRONCAL = 'Camión 28 Ton';
@@ -275,6 +275,10 @@ export function precioLocalConsolidado(entry, kilos) {
   if (sobre28) {
     precio = bruto;
     regla = `Sobre ${fmtKg(t.cap)}: ${fmtKg(kilos)} × ZFMP ${fmtKgRate(t.zfmp)} (${t.type}, sin tope)`;
+  } else if (t.cap >= 28000) {
+    // Regla 12-oct-2026: camión 28 t → tarifa mínima = máxima (ZCAP fijo)
+    precio = t.zcap;
+    regla = `Camión 28 t: tarifa fija ZCAP ${t.type} (mín = máx)`;
   } else if (bruto >= t.zcap) {
     precio = t.zcap;
     regla = `Tope ZCAP ${t.type} (camión completo)`;

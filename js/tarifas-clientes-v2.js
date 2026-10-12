@@ -15,11 +15,11 @@
 // tarifas a clientes y «Guardar y recalcular» escribe sólo client_tariff_config
 // (syncOnly) y, si cambió la asignación de clusters, cluster_rutas por centro.
 // ============================================================================
-import { saveDatabase, getOrigenGroups } from './data.js?v=202610122037';
-import { buildZcapMap } from './zcap.js?v=202610122037';
+import { saveDatabase, getOrigenGroups } from './data.js?v=202610122051';
+import { buildZcapMap } from './zcap.js?v=202610122051';
 import { showAlert } from './utils.js';
-import { can } from './permisos.js?v=202610122037';
-import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, setParamPill, clasifPill, pillHtml } from './tarifas-ui.js?v=202610122037';
+import { can } from './permisos.js?v=202610122051';
+import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, setParamPill, clasifPill, pillHtml } from './tarifas-ui.js?v=202610122051';
 
 const CAPS = [5, 10, 15, 28];
 const CAP_LBL = { 5: '5 t', 10: '10 t', 15: '15 t', 28: '28 t' };
@@ -129,7 +129,9 @@ function calcTarifas(ctx, ccfgX, zOver = null) {
     const mn = minPorRuta.get(cod);
     const kilosTarifMin = (mn && pedProm > 0) ? mn.kilos / pedProm : null;
     const zfmpMin = (mn && mn.zcap > 0 && mn.kilos > 0) ? mn.zcap / mn.kilos : null;
-    const zfmi = (kilosTarifMin != null && zfmpMin != null) ? kilosTarifMin * zfmpMin : null;
+    let zfmi = (kilosTarifMin != null && zfmpMin != null) ? kilosTarifMin * zfmpMin : null;
+    // Regla Jordan 12-oct-2026: camión 28 t a clientes → tarifa mínima = máxima (ZCAP)
+    if (bkt >= 28 && zcap > 0) zfmi = zcap;
     const rec = recargoDe(ccfgX, grupo);
     rows.push({ key, ruta, truck, grupo, capKg, zcap, factorPct, kilos, zfmp, cod,
       clusterKey, clObj, clusterOp: opMap.get(String(ruta.id || '')) || opMap.get(String(ruta.codigo || '')) || '',
