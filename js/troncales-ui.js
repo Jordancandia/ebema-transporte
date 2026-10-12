@@ -32,8 +32,8 @@ export function tonHtml(n) {
 }
 
 // Encabezado del shell: fecha y hora de la última actualización SAP de la vista
-import { confirmar } from './confirmar.js?v=202610121804';
-import { comentariosHabilitados, conteosComentarios, celdaComentarios, montarHilo, tomarFoco, abrirHiloSuelto } from './comentarios.js?v=202610121804';
+import { confirmar } from './confirmar.js?v=202610121808';
+import { comentariosHabilitados, conteosComentarios, celdaComentarios, montarHilo, tomarFoco, abrirHiloSuelto } from './comentarios.js?v=202610121808';
 export function setUltimaActualizacion(ts) {
   const el = document.getElementById('sv-upd');
   if (!el) return;
@@ -393,7 +393,8 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
   async function excluirFila(r) {
     const ex = active.excluir;
     const doc = ex.doc(r), mat = typeof ex.material === 'function' ? ex.material(r) : null;
-    const etiqueta = mat ? `el material ${mat} del documento ${doc}` : `el documento ${doc} completo`;
+    const esEnt = String(doc ?? '').startsWith('ENT:');
+    const etiqueta = esEnt ? `la entrega ${String(doc).slice(4)}${mat ? ' · material ' + mat : ''}` : mat ? `el material ${mat} del documento ${doc}` : `el documento ${doc} completo`;
     if (!await confirmar(`¿Excluir del Plan de Carga ${etiqueta}?\n\nLa exclusión vale sólo para el plan de hoy.`)) return false;
     if (!(await deps.excluirDelPlan(ex.tipo, doc, mat || null, 'Excluido desde ' + AV.titulo))) return false;
     deps.showAlert('Excluido del Plan de Carga', 'success');

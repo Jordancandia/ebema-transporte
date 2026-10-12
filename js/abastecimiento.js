@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610121804';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610121804';
-import { getDatabase } from './data.js?v=202610121804';
+import { supabase } from './supabase-client.js?v=202610121808';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610121808';
+import { getDatabase } from './data.js?v=202610121808';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610121804';
-import { confirmar, pedirDato } from './confirmar.js?v=202610121804';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610121808';
+import { confirmar, pedirDato } from './confirmar.js?v=202610121808';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -725,6 +725,11 @@ async function reactivarEnPlan(id) {
 }
 // true si (doc[, material]) está excluido: aplica match exacto de material,
 // o una exclusión de todo el documento (material === '' en abast_plan_exclusiones).
+// (12-oct-2026, Jordan) Exclusión por ENTREGA + material (Crossdocking / Pedidos de Traslados): doc = 'ENT:<entrega>'.
+const docEnt = entrega => 'ENT:' + String(entrega ?? '').trim();
+function excluidaEntrega(exclusiones, tipo, entrega, material) {
+  return !!String(entrega ?? '').trim() && estaExcluido(exclusiones, tipo, docEnt(entrega), material);
+}
 function estaExcluido(exclusiones, tipo, doc, material) {
   const d = String(doc ?? '').trim();
   const m = material != null ? String(material).trim() : '';
@@ -735,7 +740,7 @@ function showExclusionesModal(exclusiones, onChange) {
   const TIPO_LBL = { venta_1003: 'Pedido de Venta 1003', crossdock_4000: 'Traslado Crossdocking 4000', traslados_revex: 'Traslado REVEX', traslados_1003: 'Traslado 1003', retiro_fabrica: 'Retiro de Fábrica' };
   const filas = exclusiones.map(e => `<tr class="border-b border-outline-variant/40">
     <td class="py-xs pr-md text-[12px]">${escapeHtml(TIPO_LBL[e.tipo] || e.tipo)}</td>
-    <td class="py-xs pr-md text-[12px] font-bold">${escapeHtml(e.doc)}</td>
+    <td class="py-xs pr-md text-[12px] font-bold">${String(e.doc ?? '').startsWith('ENT:') ? 'Entrega ' + escapeHtml(String(e.doc).slice(4)) : escapeHtml(e.doc)}</td>
     <td class="py-xs pr-md text-[12px]">${e.material ? escapeHtml(e.material) : '<span class="text-secondary">— (todo el pedido)</span>'}</td>
     <td class="py-xs pr-md text-[12px] text-secondary">${escapeHtml(e.motivo || '')}</td>
     <td class="py-xs pr-md text-[11px] text-secondary">${escapeHtml(horaChile(e.created_at))}</td>
@@ -4389,6 +4394,8 @@ function v2ModoEntregas(tipo) {
         { key: 'ton', label: 'Ton', valueFn: r => String(r.ton ?? '').replace('.', ',') }, { key: 'fecha_txt', label: 'Fecha creación' },
         { key: 'origen_carga', label: 'Origen dato' },
       ],
+      // (12-oct-2026, Jordan) Crossdocking y Pedidos de Traslados excluyen por entrega + material.
+      ...(tipo !== 'REVEX' && cfg.excluir ? { excluir: { tipo: cfg.excluir.tipo, doc: r => docEnt(r.entrega), material: r => r.material } } : {}),
       v2mode: v2ModoEntregas(tipo) },
   ];
 });
@@ -4409,11 +4416,11 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610121804');
+    const m = await import('./ind-plan-carga.js?v=202610121808');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (currentSub === 'control_diferencias') {  // (11-oct-2026) Control de Diferencias del Plan de Carga
-    const m = await import('./control-diferencias.js?v=202610121804');
+    const m = await import('./control-diferencias.js?v=202610121808');
     await m.renderControlDiferencias(stage);
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
@@ -4727,7 +4734,7 @@ function aplicarEstadoPlanTraslados(rows, ep) {
     const kl = _keyInc(r.doc_compr, r.material);
     r._plan_inc = incSet.has(kl);
     r._plan_centro = ep.centros[`${orig}|${ce}`] || null;
-    r._plan = estaExcluido(ep.exclusiones || [], 'traslados_1003', r.doc_compr, r.material) ? 'EXCLUIDO'
+    r._plan = (estaExcluido(ep.exclusiones || [], 'traslados_1003', r.doc_compr, r.material) || excluidaEntrega(ep.exclusiones || [], 'traslados_1003', r.entrega, r.material)) ? 'EXCLUIDO'
       : (ep.lineas.get(`${orig}|${ce}|${kl}`) || 'FUERA');
     r._en_plan = r._plan === 'EN_CAMION' || r._plan === 'CAMION2';
   });
@@ -4960,7 +4967,7 @@ async function renderPlanCarga(stage, opts = {}) {
       .filter(r => String(r.ce ?? '').trim() === ce)
       .filter(r => fechaEnRangoHabil(r.fecha_confirmada, 10, 7, feriadosSet) || incSet.has(_keyInc(r.doc_compr, r.material)))
       .filter(r => parseNum(r.ctd_confirmada) > 0)
-      .filter(r => !estaExcluido(exclusionesPlan, 'traslados_1003', r.doc_compr, r.material))
+      .filter(r => !estaExcluido(exclusionesPlan, 'traslados_1003', r.doc_compr, r.material) && !excluidaEntrega(exclusionesPlan, 'traslados_1003', r.entrega, r.material))
       .map(r => ({ r, prio: clasificaTraslado(r), forz: incSet.has(_keyInc(r.doc_compr, r.material)) }));
 
     // (AJUSTE 30-sep-2026) Empates: documento y material (mismo orden que la foto del servidor).
@@ -5011,7 +5018,7 @@ async function renderPlanCarga(stage, opts = {}) {
     const tonCross = t4000
       .filter(r => String(r.ce ?? '').trim() === ce)
       .filter(r => parseNum(r.ctd_pedido) > parseNum(r.ctd_entregada))
-      .filter(r => !estaExcluido(exclusionesPlan, 'crossdock_4000', r.doc_compr, r.material))
+      .filter(r => !estaExcluido(exclusionesPlan, 'crossdock_4000', r.doc_compr, r.material) && !excluidaEntrega(exclusionesPlan, 'crossdock_4000', r.entrega, r.material))
       // (4-oct-2026, Jordan) Pedidos de traslado coordinados como CD-CLIENTE salen en camión
       // directo al cliente: no se consolidan en el camión del CD.
       .filter(r => { const co = coordTraslados.get(String(r.doc_compr ?? '').trim()); if (co && co.tipo_entrega === 'CD-CLIENTE') { crossCdCli.push({ r, co }); return false; } return true; })
@@ -5878,12 +5885,15 @@ async function renderPlanCarga(stage, opts = {}) {
     const k = `${docu}|${mat}`;
     // (12-oct-2026, Jordan) Subir al camión CD una línea/entrega que no cabe: sólo si cabe en la capacidad libre;
     // si no, se pide bajar carga del camión para hacerle espacio.
-    if (cam === 1) {
+    // Misma regla para el 2º camión (camión extra): sólo si cabe en su capacidad libre.
+    if (cam === 1 || cam === 2) {
       const f0 = refrescarFill(r);
       const d0 = (f0.orden || []).find(x => docLinea(x) === docu && matLinea(x) === mat);
-      if (d0 && !d0._enCamion) {
-        const libre = Math.max(0, r.cap - (f0.cargado || 0));
-        if ((d0.ton || 0) > libre + 1e-6) { await bajarParaSubir(r, d0, f0, libre); return; }
+      const yaVa = d0 && (cam === 1 ? d0._enCamion : d0._camion2);
+      if (d0 && !yaVa) {
+        const usado = cam === 1 ? (f0.cargado || 0) : (f0.tonSegundo || 0);
+        const libre = Math.max(0, r.cap - usado);
+        if ((d0.ton || 0) > libre + 1e-6) { await bajarParaSubir(r, d0, f0, libre, cam); return; }
       }
     }
     const { error } = cam === 'auto'
@@ -5897,10 +5907,11 @@ async function renderPlanCarga(stage, opts = {}) {
     draw();
   }
   // (12-oct-2026, Jordan) La línea no cabe: elegir qué bajar del camión CD (queda «No carga» hoy) para subirla.
-  function bajarParaSubir(r, sube, f, libre) {
+  function bajarParaSubir(r, sube, f, libre, cam = 1) {
     return new Promise(resolve => {
       const falta = (sube.ton || 0) - libre;
-      const enCam = (f.orden || []).filter(x => x._enCamion && !(docLinea(x) === docLinea(sube) && matLinea(x) === matLinea(sube)));
+      const nomCam = cam === 2 ? '2º camión' : 'camión CD';
+      const enCam = (f.orden || []).filter(x => (cam === 2 ? x._camion2 : x._enCamion) && !(docLinea(x) === docLinea(sube) && matLinea(x) === matLinea(sube)));
       const sel = new Set();
       const wrap = document.createElement('div');
       wrap.id = 'excl-modal-bg';
@@ -5912,12 +5923,12 @@ async function renderPlanCarga(stage, opts = {}) {
         const tonSel = enCam.filter((x, i) => sel.has(i)).reduce((a, x) => a + (x.ton || 0), 0);
         const ok = tonSel + 1e-6 >= falta;
         wrap.innerHTML = `<div class="sv-dr-bg" style="z-index:120" data-x></div><aside class="sv-dr" style="z-index:121;width:min(720px,100vw)" role="dialog" aria-label="Bajar carga para subir">
-          <div class="sv-dr-h"><div style="flex:1;min-width:0"><div class="sv-dr-k">No cabe en el camión CD</div>
+          <div class="sv-dr-h"><div style="flex:1;min-width:0"><div class="sv-dr-k">No cabe en el ${nomCam}</div>
             <div class="sv-dr-t">Subir ${escapeHtml(docLinea(sube))} · ${nomL(sube)}</div>
             <div class="sv-dr-s">${t1(sube.ton || 0)} t a subir · libre ${t1(libre)} t de ${fmtNum(r.cap, 0)} t · hay que bajar al menos <b>${t1(falta)} t</b></div></div>
             <button class="sv-iconbtn" data-x title="Cerrar (Esc)"><span class="material-symbols-outlined">close</span></button></div>
           <div class="sv-dr-b" style="gap:12px">
-            <div class="sv-note-box">Marca las líneas que se bajan del camión CD. Quedan como <b>«No carga»</b> hoy (vuelven a estar disponibles en el próximo plan) y la línea elegida sube al camión.</div>
+            <div class="sv-note-box">Marca las líneas que se bajan del ${nomCam}. Quedan como <b>«No carga»</b> hoy (vuelven a estar disponibles en el próximo plan) y la línea elegida sube al camión.</div>
             <div class="sv-card" style="overflow:auto;max-height:52vh"><table class="sv-table"><thead><tr><th></th><th>Pedido / OC</th><th>Material</th><th class="r">Ton</th></tr></thead><tbody>
               ${enCam.map((x, i) => `<tr style="cursor:pointer" data-i="${i}"><td><input type="checkbox" ${sel.has(i) ? 'checked' : ''} data-i="${i}"></td><td><span class="sv-mono">${escapeHtml(docLinea(x))}</span>${x._manual === 1 ? ' <small style="color:#7c3aed;font-weight:700">FIJO</small>' : ''}</td><td><div class="pc-mat"><b>${escapeHtml(x.material || '')}</b><small>${nomL(x)}</small></div></td><td class="r"><b>${t1(x.ton || 0)}</b></td></tr>`).join('')}
             </tbody></table></div>
@@ -5935,11 +5946,11 @@ async function renderPlanCarga(stage, opts = {}) {
           const quien = await getUserEmail(), now = new Date().toISOString();
           const fila = (x, cam) => ({ fecha: hoyIsoPlan, cd_origen: planOrigen, ce: r.ce, documento: docLinea(x), material: matLinea(x), camion: cam, origen: 'manual', updated_by: quien, updated_at: now });
           const bajan = enCam.filter((x, i) => sel.has(i));
-          const filas = [...bajan.map(x => fila(x, 0)), fila(sube, 1)];
+          const filas = [...bajan.map(x => fila(x, 0)), fila(sube, cam)];
           const { error } = await supabase.from('abast_plan_linea_camion').upsert(filas, { onConflict: 'fecha,cd_origen,ce,documento,material' });
           if (error) { showAlert('No se pudo ajustar la carga: ' + error.message, 'error'); cerrar(false); return; }
           bajan.forEach(x => r.asig.set(`${docLinea(x)}|${matLinea(x)}`, 0));
-          r.asig.set(`${docLinea(sube)}|${matLinea(sube)}`, 1);
+          r.asig.set(`${docLinea(sube)}|${matLinea(sube)}`, cam);
           refrescarFill(r);
           if (segAcept.has(r.ce)) await supabase.from('abast_plan_segundo_camion').update({ ton_propuesta: Math.round(r.tonSegundo * 10000) / 10000 }).eq('fecha', hoyIsoPlan).eq('cd_origen', planOrigen).eq('ce', r.ce);
           showAlert(`Subida ${docLinea(sube)} (${t1(sube.ton || 0)} t); bajadas ${bajan.length} línea${bajan.length > 1 ? 's' : ''} (${t1(bajan.reduce((a, x) => a + (x.ton || 0), 0))} t).`, 'success');
@@ -6309,7 +6320,7 @@ async function renderPlanCarga(stage, opts = {}) {
       if (enPlan.has(key) || enPlan2.has(k2(doc, mat))) return;
       let motivo;
       if (!ce) motivo = 'Sin destino (el reporte no trae Destinat.)';
-      else if (estaExcluido(exclusionesPlan, EXCL[tipo] || 'traslados_1003', doc, mat)) motivo = 'Excluida del Plan de Carga';
+      else if (estaExcluido(exclusionesPlan, EXCL[tipo] || 'traslados_1003', doc, mat) || excluidaEntrega(exclusionesPlan, EXCL[tipo] || 'traslados_1003', x.entrega, mat)) motivo = 'Excluida del Plan de Carga';
       else if (mat.startsWith('7')) motivo = 'Material 7… no se considera';
       else if (!ceSet.has(ce)) motivo = 'Destino sin plan desde este origen';
       else if (detMap.has(key)) motivo = detMap.get(key);
