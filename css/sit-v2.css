@@ -737,3 +737,22 @@ tr.tf-sel td:first-child { box-shadow: inset 3px 0 0 var(--sv-primary); }
   .sv-cdr-main { padding: 10px; }
   .sv-cdr-d { min-height: 84px; }
 }
+
+/* ── Seguimiento de Carga (12-oct-2026): tipo de camión, pendiente documento, fichas grandes ── */
+.sv-tipo { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px 3px 6px; border-radius: 6px; background: var(--c); color: #fff;
+  font-size: 11px; font-weight: 800; letter-spacing: .03em; line-height: 16px; white-space: nowrap; text-transform: uppercase; }
+.sv-tipo .material-symbols-outlined { font-size: 15px; }
+.sv-tipo.is-lg { font-size: 13px; padding: 5px 10px 5px 8px; }
+.sv-tipo.is-lg .material-symbols-outlined { font-size: 18px; }
+.sv-pendoc { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 12px; background: #fef08a; color: #713f12;
+  border: 1px solid #eab308; font-size: 11px; font-weight: 800; letter-spacing: .03em; white-space: nowrap; }
+.sv-pendoc .material-symbols-outlined { font-size: 14px; }
+.sv-segbig { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; margin-bottom: 12px; }
+.sv-segbox { border: 1px solid var(--sv-line); border-radius: 10px; padding: 12px 14px; background: #fff; box-shadow: inset 4px 0 0 var(--c, var(--sv-line)); }
+.sv-segbox-k { display: flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; color: var(--c, var(--sv-ink2)); margin-bottom: 4px; }
+.sv-segbox-k .material-symbols-outlined { font-size: 18px; }
+.sv-segbox-t { font-size: 18px; line-height: 24px; font-weight: 800; color: var(--sv-ink); }
+.sv-segbox-l { font-size: 14px; line-height: 21px; color: var(--sv-ink); margin-top: 2px; }
+.sv-segbox-l .sv-muted { font-size: 13px; }
+.sv-segbox-pat { display: inline-block; border: 2px solid var(--sv-ink); border-radius: 4px; padding: 1px 8px; font-family: var(--sv-mono); font-size: 16px; font-weight: 800; margin-right: 6px; }
+.sv-segbox + .sv-segbox { }

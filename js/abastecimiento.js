@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610121738';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610121738';
-import { getDatabase } from './data.js?v=202610121738';
+import { supabase } from './supabase-client.js?v=202610121744';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610121744';
+import { getDatabase } from './data.js?v=202610121744';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610121738';
-import { confirmar, pedirDato } from './confirmar.js?v=202610121738';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610121744';
+import { confirmar, pedirDato } from './confirmar.js?v=202610121744';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -408,7 +408,8 @@ async function registrarSeguimientoCoord(regs) {
     for (const r of regs) {
       if (!r.lineas || !r.lineas.length) continue;
       const t = r.transp || {}, ton = r.lineas.reduce((s, x) => s + (Number(x.ton) || 0), 0);
-      const cab = { fecha_plan: hoy, fecha_carga: r.fechaCarga || '', cd_origen: '1003', ce: String(r.ce ?? '').trim(),
+      // (12-oct-2026) CD de origen real de la coordinación (1003 Quilicura o 1081 CD Biobío)
+      const cab = { fecha_plan: hoy, fecha_carga: r.fechaCarga || '', cd_origen: String(r.cd || '1003').trim() || '1003', ce: String(r.ce ?? '').trim(),
         tipo_camion: SEG_TIPO_COORD[r.tipo] || r.tipo, clave: segClaveCoord(r.doc), origen: r.origen || '', destino: r.destino || '',
         ton: r4s(ton), cap: CAP_CAMION_DIRECTO, pct: Math.round(ton / CAP_CAMION_DIRECTO * 100),
         id_transporte: t.id_transporte || '', transportista: t.transportista || '', chofer_nombre: t.chofer_nombre || '', chofer_rut: t.chofer_rut || '',
@@ -2006,7 +2007,9 @@ function showCoordTrasladoModal(row, ctx) {
         }));
         const { error } = await supabase.from('abast_traslado_coordinacion').upsert(filas, { onConflict: 'doc_compr' });
         if (error) { showAlert('Error al coordinar: ' + error.message, 'error'); btn.disabled = false; return; }
-        await registrarSeguimientoCoord(filas.map(f => ({ doc: f.doc_compr, tipo: 'CD-CLIENTE', ce: f.ce, fechaCarga: f.fecha_entrega, origen: '1003 CD Quilicura',
+        const cdDe = d => String((rows.find(x => String(x.doc_compr).trim() === d) || row).cesu ?? '1003').trim() || '1003';
+        await registrarSeguimientoCoord(filas.map(f => ({ doc: f.doc_compr, tipo: 'CD-CLIENTE', ce: f.ce, fechaCarga: f.fecha_entrega, cd: cdDe(f.doc_compr),
+          origen: cdDe(f.doc_compr) === '1081' ? '1081 CD Biobío' : '1003 CD Quilicura',
           destino: `Cliente: ${f.nombre_cliente || ('Traslado ' + f.doc_compr)}`, transp: f,
           lineas: rows.filter(x => String(x.doc_compr).trim() === f.doc_compr).map(x => lineaSegCoord({ tipo_carga: 'Crossdocking', documento: f.doc_compr, n_entrega: f.n_entrega,
             material: x.material, nombre: x.texto_breve, cantidad: parseNum(x.ctd_pedido) - parseNum(x.ctd_entregada), ton: x._ton_num, cliente: f.nombre_cliente || x._cliente || '' })) })));
@@ -3648,7 +3651,7 @@ function dtPorCamion(dtRows) {
   });
   return m;
 }
-function agruparSeguimiento(rows, dtRows, ajustes) {
+function agruparSeguimiento(rows, dtRows, ajustes, clientes) {
   const dtMap = dtPorCamion(dtRows);
   const descartes = new Map();
   (ajustes || []).filter(a => a.accion === 'descartar').forEach(a => { const k = String(a.camion_id); if (!descartes.has(k)) descartes.set(k, []); descartes.get(k).push(String(a.transporte).trim()); });
@@ -3692,6 +3695,7 @@ function agruparSeguimiento(rows, dtRows, ajustes) {
       c.lineas.forEach(x => { x.dt = [...(matDt.get(String(x.material ?? '').trim()) || [])].join(' / '); x._cargadoDt = matDt.has(String(x.material ?? '').trim()); });
       c.nSinDt = c.dts.length ? new Set(c.lineas.filter(x => !x._cargadoDt).map(x => String(x.material ?? '').trim())).size : 0;
       c.cat = segCategoria(c, g); c.lbl = SEG_CAT[c.cat];
+      c.clientes = clientesCamionSeg(c, clientes);
       c.camionIds = [...new Set(c.lineas.map(x => x.camion_id))];
       c.descartados = [...new Set(c.camionIds.flatMap(id => descartes.get(String(id)) || []))];
       c.lineas.forEach(x => { x._lbl = c.lbl; });
@@ -3797,11 +3801,17 @@ VISTAS_TRONCAL.seguimiento_carga = {
   // (11-oct-2026, Jordan) Documento de transporte (DT) con los productos y entregas cargados.
   async preload() {
     try {
-      const [dt, aj] = await Promise.all([fetchAllRows('v_abast_seguimiento_dt'), supabase.from('abast_seguimiento_dt_ajuste').select('camion_id,transporte,accion,creado_por,creado_en').limit(5000)]);
-      return { dt, ajustes: (aj && aj.data) || [] };
-    } catch (e) { console.warn('Seguimiento: DT no disponible', e); return { dt: [], ajustes: [] }; }
+      const cols = 'nombre_cliente,id_cliente,direccion,comuna,telefono,n_entrega,fecha_entrega';
+      const [dt, aj, cv, ct] = await Promise.all([fetchAllRows('v_abast_seguimiento_dt'), supabase.from('abast_seguimiento_dt_ajuste').select('camion_id,transporte,accion,creado_por,creado_en').limit(5000),
+        supabase.from('abast_venta_coordinacion').select('doc_ventas,' + cols).limit(5000), supabase.from('abast_traslado_coordinacion').select('doc_compr,' + cols).limit(5000)]);
+      // (12-oct-2026, Jordan) Datos del cliente de las coordinaciones CD-Cliente para el detalle
+      const clientes = new Map();
+      ((cv && cv.data) || []).forEach(x => clientes.set(String(x.doc_ventas ?? '').trim(), x));
+      ((ct && ct.data) || []).forEach(x => clientes.set(String(x.doc_compr ?? '').trim(), x));
+      return { dt, ajustes: (aj && aj.data) || [], clientes };
+    } catch (e) { console.warn('Seguimiento: DT no disponible', e); return { dt: [], ajustes: [], clientes: new Map() }; }
   },
-  transform: (rows, ctx) => agruparSeguimiento(rows, ctx && ctx.dt, ctx && ctx.ajustes),
+  transform: (rows, ctx) => agruparSeguimiento(rows, ctx && ctx.dt, ctx && ctx.ajustes, ctx && ctx.clientes),
   csvFilas: grupos => grupos.flatMap(g => g._lineas),
   columnas: [
     { key: 'fecha_plan', label: 'Fecha Planificación' }, { key: 'fecha_carga', label: 'Fecha Carga' },
@@ -3826,10 +3836,37 @@ VISTAS_TRONCAL.seguimiento_carga = {
 const SEG_TONO = { 'Camión CD': 'ok', '2º camión': 'info', 'CD-Cliente': 'purple', 'Fáb-Cliente': 'orange', 'Fáb-Sucursal': 'orange', 'Retiro FAB-CD': 'warn' };
 // (11-oct-2026, Jordan) Tipo de despacho en Seguimiento: troncal consolidado, camión extra (antes «2º camión»),
 // NV directa a cliente, fábrica → cliente / sucursal y retiro de fábrica.
+// (12-oct-2026, Jordan) Identificación visual por tipo: CONSOLIDABLE, CD-CLIENTE, FÁBRICA-CLIENTE, FÁBRICA-SUCURSAL (+ retiro).
 const SEG_CAT = {
-  troncal: 'Troncal consolidado', extra: 'Camión extra', nv: 'NV directa a cliente', cdsuc: 'Directo CD → sucursal',
-  fabcli: 'Fábrica → Cliente', fabsuc: 'Fábrica → Sucursal', retiro: 'Retiro de fábrica',
+  troncal: 'Consolidable', extra: 'Consolidable · camión extra', nv: 'CD-Cliente', cdsuc: 'CD-Cliente · traslado',
+  fabcli: 'Fábrica-Cliente', fabsuc: 'Fábrica-Sucursal', retiro: 'Retiro de fábrica',
 };
+const SEG_CAT_VIS = {
+  troncal: { c: '#15803d', i: 'conveyor_belt' }, extra: { c: '#0e7490', i: 'add_road' },
+  nv: { c: '#7e22ce', i: 'person_pin_circle' }, cdsuc: { c: '#9333ea', i: 'person_pin_circle' },
+  fabcli: { c: '#c2410c', i: 'factory' }, fabsuc: { c: '#1d4ed8', i: 'storefront' }, retiro: { c: '#a16207', i: 'warehouse' },
+};
+const segColor = c => (SEG_CAT_VIS[c.cat] || SEG_CAT_VIS.troncal).c;
+const segTipo = (c, lg) => { const v = SEG_CAT_VIS[c.cat] || SEG_CAT_VIS.troncal;
+  return `<span class="sv-tipo${lg ? ' is-lg' : ''}" style="--c:${v.c}" title="${escV2(c.lbl || c.tipo)}"><span class="material-symbols-outlined">${v.i}</span>${escV2(c.lbl || c.tipo)}</span>`; };
+const PENDOC_HTML = '<span class="sv-pendoc"><span class="material-symbols-outlined">schedule</span>PENDIENTE DOCUMENTO</span>';
+// Clientes del camión CD-Cliente (coordinación de Ventas CD o Crossdocking); si no hay coordinación, lo que traen las líneas.
+function clientesCamionSeg(c, clientes) {
+  if (!['nv', 'cdsuc'].includes(c.cat) && c.tipo !== 'CD-Cliente') return [];
+  const docs = new Set();
+  if (c.coord) docs.add(String(c.clave || '').slice(6).trim());
+  c.lineas.forEach(x => { [x.documento, x.pedido_venta].forEach(d => { if (String(d ?? '').trim()) docs.add(String(d).trim()); }); });
+  const out = new Map();
+  docs.forEach(d => {
+    const k = clientes && clientes.get(d);
+    if (k) { const key = (k.id_cliente || k.nombre_cliente || d); const o = out.get(key) || { ...k, docs: [] }; o.docs.push(d); out.set(key, o); }
+  });
+  if (!out.size) {
+    const l = c.lineas.find(x => x.cliente) || c.lineas[0];
+    if (l && (l.cliente || l.comuna)) out.set('L', { nombre_cliente: l.cliente || '', comuna: l.comuna || '', docs: [...docs] });
+  }
+  return [...out.values()];
+}
 function segCategoria(c, g) {
   if (c.tipo === 'Camión CD') return 'troncal';
   // (11-oct-2026, Jordan) El 2º camión es «Camión extra» sólo si carga el mismo día que el troncal de ese destino;
@@ -3844,7 +3881,7 @@ function segCategoria(c, g) {
   if (c.tipo === 'Retiro FAB-CD') return 'retiro';
   return 'troncal';
 }
-const segPill = c => pill(c.lbl || c.tipo, SEG_TONO[c.tipo] || 'warn') + (c.coord ? ' ' + pill(c.patente_camion ? 'Coordinado' : 'Coordinado · patente pendiente', 'mute') : '');
+const segPill = c => segTipo(c) + (c.coord ? ' ' + pill(c.patente_camion ? 'Coordinado' : 'Coordinado · patente pendiente', 'mute') : '');
 V2.seguimiento_carga = {
   titulo: 'Seguimiento de Carga',
   desc: 'Camiones programados agrupados por centro destino: qué se carga (pedidos y SKU), cuándo y con qué transportista.',
@@ -3856,6 +3893,8 @@ V2.seguimiento_carga = {
     });
   },
   rowId: r => r.id,
+  // (12-oct-2026, Jordan) Camiones por CD de origen: Quilicura (1003) y CD Biobío (1081)
+  origen: { of: r => r.cd_origen, opciones: [['*', 'Todos los CD'], ['1003', 'CD Quilicura · 1003'], ['1081', 'CD Biobío · 1081']] },
   chip: { label: 'Destino', of: r => String(r.ce ?? '').trim(), name: v => nombreCentro(v) || v },
   docSearch: { ph: 'Pedido / OC / entrega / DT', of: r => r._lineas.map(x => `${x.documento || ''} ${x.n_entrega || ''} ${x.pedido_venta || ''}`).join(' ')
     + ' ' + r.camiones.flatMap(c => c.dts).map(d => `${d.transporte} ${d.lineas.map(x => x.entrega).join(' ')}`).join(' ') },
@@ -3864,14 +3903,14 @@ V2.seguimiento_carga = {
     + ' ' + r._lineas.map(x => `${x.material} ${x.nombre} ${x.proveedor} ${x.cliente}`).join(' ') },
   kpis: [
     { key: 'all', label: 'Centros destino', color: C_INK, sub: 'con camiones programados' },
-    { key: 'troncal', label: 'Troncal consolidado', color: C_GREEN, sub: 'camión CD a sucursal', fn: r => r._cats.has('troncal') },
-    { key: 'extra', label: 'Camión extra', color: C_BLUE, sub: 'aceptado y programado', fn: r => r._cats.has('extra') },
-    { key: 'nv', label: 'NV directa a cliente', color: '#7e22ce', sub: 'desde el CD (y traslados directos)', fn: r => r._cats.has('nv') || r._cats.has('cdsuc') },
-    { key: 'fab', label: 'Fábrica → cliente / sucursal', color: C_ORANGE, sub: 'despacho directo de fábrica', fn: r => r._cats.has('fabcli') || r._cats.has('fabsuc') },
-    { key: 'retiro', label: 'Retiros de fábrica', color: '#a16207', sub: 'fábrica → CD', fn: r => r._cats.has('retiro') },
+    { key: 'troncal', label: 'Consolidable', color: SEG_CAT_VIS.troncal.c, sub: 'troncal CD → sucursal (y extra)', fn: r => r._cats.has('troncal') || r._cats.has('extra') },
+    { key: 'nv', label: 'CD-Cliente', color: SEG_CAT_VIS.nv.c, sub: 'NV / traslado directo a cliente', fn: r => r._cats.has('nv') || r._cats.has('cdsuc') },
+    { key: 'fabcli', label: 'Fábrica-Cliente', color: SEG_CAT_VIS.fabcli.c, sub: 'despacho directo de fábrica', fn: r => r._cats.has('fabcli') },
+    { key: 'fabsuc', label: 'Fábrica-Sucursal', color: SEG_CAT_VIS.fabsuc.c, sub: 'fábrica → sucursal', fn: r => r._cats.has('fabsuc') },
+    { key: 'retiro', label: 'Retiros de fábrica', color: SEG_CAT_VIS.retiro.c, sub: 'fábrica → CD', fn: r => r._cats.has('retiro') },
     { key: 'dt', label: 'Con DT', color: '#0f766e', sub: 'documento de transporte encontrado', fn: r => r.dts.length > 0 },
-    { key: 'revisar', label: 'Revisar DT', color: '#ca8a04', sub: 'cruzado sólo por transportista', fn: r => r.camiones.some(c => estadoCamSeg(r, c) === 'revisar') },
-    { key: 'sindt', label: 'Sin DT', color: C_ORANGE, sub: 'carga pasada sin documento', fn: r => r.camiones.some(c => segFaltaDt(r, c)) },
+    { key: 'revisar', label: 'Revisar DT', color: '#ea580c', sub: 'cruzado sólo por transportista', fn: r => r.camiones.some(c => estadoCamSeg(r, c) === 'revisar') },
+    { key: 'pendoc', label: 'Pendiente documento', color: '#eab308', sub: 'sin documento de transporte', fn: r => r.camiones.some(c => estadoCamSeg(r, c) === 'pendoc') },
   ],
   cols: [
     { label: 'Fecha plan', html: r => mono(fmtFechaISO(r.fecha_plan), r.origen ? 'desde ' + r.origen : '') },
@@ -3882,11 +3921,11 @@ V2.seguimiento_carga = {
     { label: 'SKU', al: 'r', html: r => mono(fmtNum(r.n_sku, 0), `${fmtNum(r.n_pedidos, 0)} ${r.n_pedidos === 1 ? 'pedido' : 'pedidos'}`) },
     { label: 'DT', html: r => r.camiones.map(c => `<div style="white-space:nowrap;margin:1px 0">${c.dts.length
         ? c.dts.map(d => `<span class="sv-mono"><b>${escV2(d.transporte)}</b></span>${dtRevisar(d) ? ' ' + pill('Revisar', 'warn') : ''}`).join(' ') + (c.nSinDt ? ` <span class="sv-sub" style="margin:0;display:inline">${c.nSinDt} SKU sin DT</span>` : '')
-        : (segFaltaDt(r, c) ? pill('Sin DT', 'warn') : '<span class="sv-muted">—</span>')}</div>`).join('') },
+        : (estadoCamSeg(r, c) === 'pendoc' ? PENDOC_HTML : '<span class="sv-muted" title="Este tipo no genera DT en SAP">No aplica</span>')}</div>`).join('') },
     { label: 'Transportista', html: r => r.camiones.map(c => `<div style="white-space:nowrap"><b>${escV2(c.transportista || c.id_transporte || '—')}</b>${c.patente_camion ? ` <span class="sv-mono">${escV2(c.patente_camion)}</span>` : ''}`
         + `<div class="sv-sub" style="margin:0">${escV2([c.id_transporte, c.chofer_nombre ? 'Chofer ' + c.chofer_nombre : '', c.chofer_telefono].filter(Boolean).join(' · '))}</div></div>`).join('') },
   ],
-  edge: r => r.camiones.some(c => c.dir) ? C_ORANGE : C_GREEN,
+  edge: r => r.camiones.length ? segColor(r.camiones[0]) : C_GREEN,
   // (8-oct-2026, Jordan) Detalle más ancho; Editar transporte y Anular coordinación en la fila principal.
   drawerW: 'min(1100px, 96vw)',
   filaAcciones: r => {
@@ -3915,25 +3954,28 @@ V2.seguimiento_carga = {
       const cams = rows.flatMap(r => r.camiones.map(c => estadoCamSeg(r, c)));
       const cnt = k => cams.filter(x => x === k).length;
       return [pill(`${cams.length} ${cams.length === 1 ? 'camión' : 'camiones'}`, 'mute'), pill(fmtNum(rows.reduce((s2, r) => s2 + (Number(r.ton) || 0), 0), 1) + ' t', 'mute'),
-        ...['cargado', 'revisar', 'prog', 'coord', 'sindt'].filter(k => cnt(k)).map(k => pill(`${cnt(k)} ${SEG_EST[k].l.replace(/^./, ch => ch.toLowerCase())}`, SEG_EST[k].tono))].join('');
+        ...SEG_EST_ORDEN.filter(k => cnt(k)).map(k => pill(`${cnt(k)} ${SEG_EST[k].l.replace(/^./, ch => ch.toLowerCase())}`, SEG_EST[k].tono))].join('');
     },
     tarjeta: r => {
       const cams = r.camiones.map(c => {
         const e = estadoCamSeg(r, c), E = SEG_EST[e];
         const pct = c.pct != null ? Number(c.pct) : (c.cap ? Math.round(c.ton / c.cap * 100) : null);
         const dt = c.dts.length ? 'DT ' + c.dts.map(d => d.transporte + (dtRevisar(d) ? ' (revisar)' : '')).join(' / ') + (c.nSinDt ? ` · ${c.nSinDt} SKU sin cargar` : '') : E.l;
+        const cli = c.clientes && c.clientes.length ? `<div class="sv-cdr-l2"><span class="material-symbols-outlined">person</span><span><b>${escV2(c.clientes.map(k => k.nombre_cliente || k.id_cliente).filter(Boolean).join(' / '))}</b>${c.clientes[0].comuna ? ` · ${escV2(c.clientes[0].comuna)}` : ''}</span></div>` : '';
         return `<div class="sv-cdr-cam" style="--c:${E.c}">
-          <div class="sv-cdr-cam1">${pill(c.lbl, SEG_TONO[c.tipo] || 'warn')}<span class="sv-cdr-est">${escV2(E.l)}</span>${pct != null ? `<span class="sv-cdr-pct">${pct}%</span>` : ''}</div>
+          <div class="sv-cdr-cam1">${segTipo(c)}${e === 'pendoc' ? PENDOC_HTML : `<span class="sv-cdr-est">${escV2(E.l)}</span>`}${pct != null ? `<span class="sv-cdr-pct">${pct}%</span>` : ''}</div>
           ${pct != null ? `<div class="sv-cdr-bar"><i style="width:${Math.min(pct, 100)}%;background:${colorUmbral(pct)}"></i></div>` : ''}
           <div class="sv-cdr-l2"><span class="material-symbols-outlined">local_shipping</span><span>${escV2(c.transportista || c.id_transporte || 'Sin transportista')}${c.patente_camion ? ` · <b class="sv-mono">${escV2(c.patente_camion)}</b>` : ''}${c.chofer_nombre ? ` · ${escV2(c.chofer_nombre)}` : ''}</span></div>
-          <div class="sv-cdr-l2"><span class="material-symbols-outlined">${c.dts.length ? 'receipt_long' : 'inventory_2'}</span><span>${escV2(dt)} · ${fmtNum(c.nSku, 0)} SKU · ${fmtNum(c.ton, 1)} t</span></div>
+          ${cli}<div class="sv-cdr-l2"><span class="material-symbols-outlined">${c.dts.length ? 'receipt_long' : 'inventory_2'}</span><span>${escV2(dt)} · ${fmtNum(c.nSku, 0)} SKU · ${fmtNum(c.ton, 1)} t</span></div>
         </div>`;
       }).join('');
       return `<div class="sv-cdr-ch"><div style="min-width:0"><b>${escV2(r._nombreCe)}</b> <span class="sv-mono sv-muted">${escV2(r.ce)}</span>
           <div class="sv-sub" style="margin:2px 0 0">${escV2([r.origen ? 'desde ' + r.origen : '', 'plan ' + fmtFechaISO(r.fecha_plan), r._coordRow ? `coordinación ${r._coordTipo} ${r._coordDoc}` : ''].filter(Boolean).join(' · '))}</div></div>
         <div class="sv-cdr-ton">${fmtNum(Number(r.ton) || 0, 1)} t</div></div>${cams}`;
     },
-    get leyenda() { return ['cargado', 'revisar', 'prog', 'coord', 'sindt'].map(k => `<span style="--c:${SEG_EST[k].c}"><i></i>${SEG_EST[k].l}</span>`).join('') + '<span>· Clic en un día para ver sus planes; clic en un plan para el detalle</span>'; },
+    get leyenda() { return SEG_EST_ORDEN.map(k => `<span style="--c:${SEG_EST[k].c}"><i></i>${SEG_EST[k].l}</span>`).join('')
+      + '<span>·</span>' + ['troncal', 'nv', 'fabcli', 'fabsuc', 'retiro'].map(k => segTipo({ cat: k, lbl: SEG_CAT[k] })).join(' ')
+      + '<span>· Clic en un día para ver sus planes; clic en un plan para el detalle</span>'; },
   },
   minW: '1300px',
   detalle: r => ({
@@ -4021,25 +4063,39 @@ const segKv = (k, v, raw) => `<div><dt>${escV2(k)}</dt><dd>${raw ? (v || '—') 
 function fichaTransporteSeg(r, c) {
   const pct = c.pct != null ? Number(c.pct) : (c.cap ? Math.round(c.ton / c.cap * 100) : null);
   const e = estadoCamSeg(r, c), E = SEG_EST[e];
+  const col = segColor(c);
+  const descHtml = c.descartados.length ? `<div class="sv-sub" style="margin:4px 0 0;white-space:normal">Descartado${c.descartados.length > 1 ? 's' : ''} por OWNER: <span class="sv-mono">${escV2(c.descartados.join(', '))}</span></div>` : '';
   const dtHtml = c.dts.length
     ? c.dts.map(d => `<div style="margin:2px 0"><b class="sv-mono">${escV2(d.transporte)}</b> ${pill(...(DT_VIA[d.via] || [d.via, 'mute']))}`
-        + `<div class="sv-sub" style="margin:0;white-space:normal">creado ${escV2(fmtFechaISO(d.fecha_dt))}${d.capacidad_ton ? ` · capacidad ${fmtNum(d.capacidad_ton, 1)} t` : ''}${d.transportista ? ` · ${escV2(d.transportista)}` : ''}${d.ajustado_por ? ` · por ${escV2(d.ajustado_por)}` : ''}</div></div>`).join('')
-      + (c.descartados.length ? `<div class="sv-sub" style="margin:4px 0 0;white-space:normal">Descartado${c.descartados.length > 1 ? 's' : ''} por OWNER: <span class="sv-mono">${escV2(c.descartados.join(', '))}</span></div>` : '')
-    : `${pill(e === 'sindt' ? 'Sin documento de transporte' : SEG_CON_DT.has(c.tipo) ? 'Aún sin documento de transporte' : 'No aplica (sin DT en SAP)', e === 'sindt' ? 'warn' : 'mute')}`
-      + `<div class="sv-sub" style="margin:2px 0 0">${e === 'sindt' ? 'Carga pasada sin DT · abajo, el plan' : 'Abajo, los productos del plan'}</div>`
-      + (c.descartados.length ? `<div class="sv-sub" style="margin:4px 0 0;white-space:normal">Descartado${c.descartados.length > 1 ? 's' : ''} por OWNER: <span class="sv-mono">${escV2(c.descartados.join(', '))}</span></div>` : '');
-  const html = `<div class="sv-card" style="padding:12px 14px;box-shadow:inset 3px 0 0 ${E.c}">
-    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px">${segPill(c)}<span class="sv-cdr-est" style="--c:${E.c}">${escV2(E.l)}</span>
+        + `<div class="sv-sub" style="margin:0;white-space:normal">creado ${escV2(fmtFechaISO(d.fecha_dt))}${d.capacidad_ton ? ` · capacidad ${fmtNum(d.capacidad_ton, 1)} t` : ''}${d.transportista ? ` · ${escV2(d.transportista)}` : ''}${d.ajustado_por ? ` · por ${escV2(d.ajustado_por)}` : ''}</div></div>`).join('') + descHtml
+    : (e === 'pendoc' ? PENDOC_HTML + `<div class="sv-sub" style="margin:2px 0 0">Abajo, los productos del plan de carga</div>`
+        : pill('No aplica (sin DT en SAP)', 'mute') + `<div class="sv-sub" style="margin:2px 0 0">Abajo, los productos del plan</div>`) + descHtml;
+  const tel = v => v ? `<a href="tel:${escV2(String(v).replace(/[^\d+]/g, ''))}" class="sv-mono">${escV2(v)}</a>` : '';
+  // (12-oct-2026, Jordan) Cliente (CD-Cliente) y transporte destacados, en grande.
+  const cliBox = (c.clientes || []).map(k => `<div class="sv-segbox" style="--c:${col}">
+      <div class="sv-segbox-k"><span class="material-symbols-outlined">person_pin_circle</span>Cliente</div>
+      <div class="sv-segbox-t">${escV2(k.nombre_cliente || 'Sin nombre')}</div>
+      ${k.id_cliente ? `<div class="sv-segbox-l"><span class="sv-muted">ID</span> <span class="sv-mono">${escV2(k.id_cliente)}</span></div>` : ''}
+      ${k.direccion || k.comuna ? `<div class="sv-segbox-l"><span class="material-symbols-outlined" style="font-size:16px;vertical-align:-3px">location_on</span> ${escV2([k.direccion, k.comuna].filter(Boolean).join(', '))}</div>` : ''}
+      ${k.telefono ? `<div class="sv-segbox-l"><span class="material-symbols-outlined" style="font-size:16px;vertical-align:-3px">call</span> ${tel(k.telefono)}</div>` : ''}
+      <div class="sv-segbox-l">${k.docs && k.docs.length ? `<span class="sv-muted">Pedido</span> <b class="sv-mono">${escV2(k.docs.join(', '))}</b>` : ''}${k.n_entrega ? ` · <span class="sv-muted">Entrega</span> <span class="sv-mono">${escV2(k.n_entrega)}</span>` : ''}${k.fecha_entrega ? ` · <span class="sv-muted">Fecha</span> ${escV2(fmtFechaISO(k.fecha_entrega))}` : ''}</div>
+    </div>`).join('');
+  const trBox = `<div class="sv-segbox" style="--c:${col}">
+      <div class="sv-segbox-k"><span class="material-symbols-outlined">local_shipping</span>Transporte</div>
+      <div class="sv-segbox-t">${escV2(c.transportista || (c.id_transporte ? 'ID ' + c.id_transporte : 'Sin transportista'))}</div>
+      ${c.id_transporte && c.transportista ? `<div class="sv-segbox-l"><span class="sv-muted">ID</span> <span class="sv-mono">${escV2(c.id_transporte)}</span></div>` : ''}
+      <div class="sv-segbox-l" style="margin-top:6px">${c.patente_camion ? `<span class="sv-segbox-pat">${escV2(c.patente_camion)}</span>` : pill('Patente pendiente', 'warn')}${c.patente_carro ? `<span class="sv-muted">carro</span> <span class="sv-mono">${escV2(c.patente_carro)}</span>` : ''}</div>
+      <div class="sv-segbox-l" style="margin-top:6px"><span class="material-symbols-outlined" style="font-size:16px;vertical-align:-3px">badge</span> ${c.chofer_nombre ? `<b>${escV2(c.chofer_nombre)}</b>` : '<span class="sv-muted">Chofer pendiente</span>'}${c.chofer_rut ? ` · <span class="sv-mono">${escV2(c.chofer_rut)}</span>` : ''}</div>
+      ${c.chofer_telefono ? `<div class="sv-segbox-l"><span class="material-symbols-outlined" style="font-size:16px;vertical-align:-3px">call</span> ${tel(c.chofer_telefono)}</div>` : ''}
+      <div class="sv-segbox-l"><span class="material-symbols-outlined" style="font-size:16px;vertical-align:-3px">event</span> Carga <b>${escV2(fmtFechaISO(c.fecha_carga || r.fecha_carga))}</b></div>
+    </div>`;
+  const html = `<div class="sv-card" style="padding:12px 14px;box-shadow:inset 4px 0 0 ${col}">
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px">${segTipo(c, true)}${c.coord ? pill('Coordinado', 'mute') : ''}
+      ${e === 'pendoc' ? PENDOC_HTML : `<span class="sv-cdr-est" style="--c:${E.c}">${escV2(E.l)}</span>`}
       <span style="margin-left:auto;font-family:var(--sv-mono);font-weight:700">${fmtNum(c.ton, 1)} t${pct != null ? ` · ${pct}%` : ''} · ${fmtNum(c.nSku, 0)} SKU</span></div>
     ${pct != null ? `<div class="sv-cdr-bar" style="margin-bottom:12px"><i style="width:${Math.min(pct, 100)}%;background:${colorUmbral(pct)}"></i></div>` : ''}
+    <div class="sv-segbig">${cliBox}${trBox}</div>
     <dl class="sv-kv" style="margin:0">
-      ${segKv('Transportista', c.transportista ? `<b>${escV2(c.transportista)}</b>${c.id_transporte ? ` <span class="sv-mono sv-muted">${escV2(c.id_transporte)}</span>` : ''}` : (c.id_transporte ? `<span class="sv-mono">${escV2(c.id_transporte)}</span>` : ''), true)}
-      ${segKv('Chofer', c.chofer_nombre)}
-      ${segKv('RUT chofer', c.chofer_rut ? `<span class="sv-mono">${escV2(c.chofer_rut)}</span>` : '', true)}
-      ${segKv('Teléfono', c.chofer_telefono ? `<a href="tel:${escV2(String(c.chofer_telefono).replace(/[^\d+]/g, ''))}" class="sv-mono">${escV2(c.chofer_telefono)}</a>` : '', true)}
-      ${segKv('Patente camión', c.patente_camion ? `<b class="sv-mono">${escV2(c.patente_camion)}</b>` : pill('Pendiente', 'warn'), true)}
-      ${segKv('Patente carro', c.patente_carro ? `<span class="sv-mono">${escV2(c.patente_carro)}</span>` : '', true)}
-      ${segKv('Fecha de carga', fmtFechaISO(c.fecha_carga || r.fecha_carga))}
       ${segKv('Ruta', [c.origen, c.destino].filter(Boolean).join(' → '))}
       ${segKv('Programado por', [c.programado_por, c.programado_en ? new Date(c.programado_en).toLocaleString('es-CL', { dateStyle: 'short', timeStyle: 'short' }) : ''].filter(Boolean).join(' · '))}
       ${segKv('Documento de transporte', dtHtml, true)}
@@ -4117,17 +4173,18 @@ function cuadraturaDtSeg(c) {
 }
 const hoySeg = () => new Date().toLocaleDateString('en-CA', { timeZone: 'America/Santiago' });
 // (11-oct-2026, Jordan) Estado de cada camión en el calendario de Seguimiento de Carga.
+// (12-oct-2026, Jordan) Sin documento de transporte → amarillo «Pendiente documento».
 const SEG_EST = {
   cargado: { l: 'Cargado (con DT)', c: '#15803d', tono: 'ok' },
-  revisar: { l: 'Revisar DT', c: '#ca8a04', tono: 'warn' },
-  prog: { l: 'Programado', c: '#1d4ed8', tono: 'info' },
-  coord: { l: 'Coordinado', c: '#7e22ce', tono: 'purple' },
-  sindt: { l: 'Sin DT', c: '#c2410c', tono: 'warn' },
+  revisar: { l: 'Revisar DT', c: '#ea580c', tono: 'orange' },
+  pendoc: { l: 'Pendiente documento', c: '#eab308', tono: 'warn' },
+  coord: { l: 'Coordinado (sin DT SAP)', c: '#7e22ce', tono: 'purple' },
 };
+const SEG_EST_ORDEN = ['cargado', 'revisar', 'pendoc', 'coord'];
 // DT cruzado sólo por transportista (sin entrega en común) = «revisar» hasta que el OWNER lo confirme, descarte o cambie.
 const dtRevisar = d => d.via === 'Transportista';
-const estadoCamSeg = (r, c) => c.dts.length ? (c.dts.every(dtRevisar) ? 'revisar' : 'cargado') : segFaltaDt(r, c) ? 'sindt' : c.coord ? 'coord' : 'prog';
-const estadoGrupoSeg = r => { const es = r.camiones.map(c => estadoCamSeg(r, c)); return ['sindt', 'revisar', 'prog', 'coord', 'cargado'].find(k => es.includes(k)) || 'prog'; };
+const estadoCamSeg = (r, c) => c.dts.length ? (c.dts.every(dtRevisar) ? 'revisar' : 'cargado') : SEG_CON_DT.has(c.tipo) ? 'pendoc' : 'coord';
+const estadoGrupoSeg = r => { const es = r.camiones.map(c => estadoCamSeg(r, c)); return ['pendoc', 'revisar', 'coord', 'cargado'].find(k => es.includes(k)) || 'pendoc'; };
 const DT_VIA = { Entrega: ['Cruzado por entregas', 'ok'], Transportista: ['Revisar · cruzado sólo por transportista', 'warn'], Confirmado: ['Confirmado por OWNER', 'ok'], Manual: ['Asignado a mano', 'info'] };
 // Sólo los despachos que salen del CD llevan DT en el reporte SAP (los retiros de fábrica no).
 const SEG_CON_DT = new Set(['Camión CD', '2º camión', 'CD-Cliente']);
@@ -4349,11 +4406,11 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610121738');
+    const m = await import('./ind-plan-carga.js?v=202610121744');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (currentSub === 'control_diferencias') {  // (11-oct-2026) Control de Diferencias del Plan de Carga
-    const m = await import('./control-diferencias.js?v=202610121738');
+    const m = await import('./control-diferencias.js?v=202610121744');
     await m.renderControlDiferencias(stage);
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);

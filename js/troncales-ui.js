@@ -32,8 +32,8 @@ export function tonHtml(n) {
 }
 
 // Encabezado del shell: fecha y hora de la última actualización SAP de la vista
-import { confirmar } from './confirmar.js?v=202610121738';
-import { comentariosHabilitados, conteosComentarios, celdaComentarios, montarHilo, tomarFoco, abrirHiloSuelto } from './comentarios.js?v=202610121738';
+import { confirmar } from './confirmar.js?v=202610121744';
+import { comentariosHabilitados, conteosComentarios, celdaComentarios, montarHilo, tomarFoco, abrirHiloSuelto } from './comentarios.js?v=202610121744';
 export function setUltimaActualizacion(ts) {
   const el = document.getElementById('sv-upd');
   if (!el) return;
@@ -160,7 +160,7 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
   function base() {
     const qd = st.qDoc.trim(), dF = isoToDate(st.dFrom), dT = isoToDate(st.dTo);
     return rowsAll.filter(r => {
-      if (AV.origen && st.orig && String(AV.origen.of(r) ?? '').trim() !== st.orig) return false;
+      if (AV.origen && st.orig && st.orig !== '*' && String(AV.origen.of(r) ?? '').trim() !== st.orig) return false;
       if (AV.docSearch && qd && !String(AV.docSearch.of(r) ?? '').includes(qd)) return false;
       if (AV.fecha && (dF || dT) && !esCal()) {
         const d = deps.parseDateSAP(AV.fecha.of(r));
@@ -288,7 +288,7 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
         <div class="sv-tablewrap"><table class="sv-table" style="min-width:${AV.minW || '900px'}">
           <thead><tr>${cols.map(c => `<th class="${c.al === 'r' ? 'r' : ''}">${esc(c.label)}</th>`).join('')}</tr></thead>
           <tbody>${body}</tbody></table></div>
-        <div class="sv-tfoot"><span>${filt.length.toLocaleString('es-CL')} de ${rowsAll.filter(r => !AV.origen || String(AV.origen.of(r) ?? '').trim() === st.orig).length.toLocaleString('es-CL')} registros${filt.length > MAX ? ` · mostrando ${MAX}, usa los filtros para acotar` : ''}</span><span>${esc(nota)}</span></div>
+        <div class="sv-tfoot"><span>${filt.length.toLocaleString('es-CL')} de ${rowsAll.filter(r => !AV.origen || st.orig === '*' || String(AV.origen.of(r) ?? '').trim() === st.orig).length.toLocaleString('es-CL')} registros${filt.length > MAX ? ` · mostrando ${MAX}, usa los filtros para acotar` : ''}</span><span>${esc(nota)}</span></div>
       </div>`}
       <div data-drawer-slot></div>
     </div>`;
