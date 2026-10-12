@@ -32,8 +32,8 @@ export function tonHtml(n) {
 }
 
 // Encabezado del shell: fecha y hora de la última actualización SAP de la vista
-import { confirmar } from './confirmar.js?v=202610121801';
-import { comentariosHabilitados, conteosComentarios, celdaComentarios, montarHilo, tomarFoco, abrirHiloSuelto } from './comentarios.js?v=202610121801';
+import { confirmar } from './confirmar.js?v=202610121804';
+import { comentariosHabilitados, conteosComentarios, celdaComentarios, montarHilo, tomarFoco, abrirHiloSuelto } from './comentarios.js?v=202610121804';
 export function setUltimaActualizacion(ts) {
   const el = document.getElementById('sv-upd');
   if (!el) return;
@@ -139,7 +139,8 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
   }
 
   // Exclusiones del Plan de Carga (acción del panel lateral, sólo perfiles con permiso)
-  const puedeExcluir = !!(active.excluir && deps.can(AV.permisoExcluir || 'excluir'));
+  // (12-oct-2026) active.sinExcluir: el modo muestra el estado del plan pero sin botón Excluir (p. ej. Pendientes de traslados).
+  const puedeExcluir = !!(active.excluir && !active.sinExcluir && deps.can(AV.permisoExcluir || 'excluir'));
   // excluirEnFila (2-oct-2026): estado + botón Excluir/Reactivar en la fila principal
   // (columna «Plan de carga») en vez del panel lateral de detalle.
   const enFila = !!(active.excluir && AV.excluirEnFila);

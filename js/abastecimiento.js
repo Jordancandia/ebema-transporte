@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610121801';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610121801';
-import { getDatabase } from './data.js?v=202610121801';
+import { supabase } from './supabase-client.js?v=202610121804';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610121804';
+import { getDatabase } from './data.js?v=202610121804';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610121801';
-import { confirmar, pedirDato } from './confirmar.js?v=202610121801';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610121804';
+import { confirmar, pedirDato } from './confirmar.js?v=202610121804';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -4375,7 +4375,8 @@ function v2ModoEntregas(tipo) {
   const cfg = VISTAS_TRONCAL[k];
   if (!cfg || cfg.modes) return;
   cfg.modes = [
-    { id: 'pend', v2label: 'Pendientes', icon: 'pending_actions' },
+    // (12-oct-2026, Jordan) En Crossdocking y Pedidos de Traslados el Excluir va en las Entregas (lo que alimenta el plan).
+    { id: 'pend', v2label: 'Pendientes', icon: 'pending_actions', sinExcluir: tipo !== 'REVEX' },
     { id: 'ent', v2label: 'Entregas', icon: 'local_shipping', vista: 'v_abast_entregas_disponibles',
       transform: rows => rows.filter(r => r.tipo === tipo), preload: undefined, postFilter: undefined,
       centroCampo: 'ce', titulo: `${cfg.titulo} – ENTREGAS`,
@@ -4408,11 +4409,11 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610121801');
+    const m = await import('./ind-plan-carga.js?v=202610121804');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (currentSub === 'control_diferencias') {  // (11-oct-2026) Control de Diferencias del Plan de Carga
-    const m = await import('./control-diferencias.js?v=202610121801');
+    const m = await import('./control-diferencias.js?v=202610121804');
     await m.renderControlDiferencias(stage);
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
@@ -5875,6 +5876,16 @@ async function renderPlanCarga(stage, opts = {}) {
     const r = resultado.find(x => x.ce === ce);
     if (!r || bloqueadoPorCierre()) return;
     const k = `${docu}|${mat}`;
+    // (12-oct-2026, Jordan) Subir al camión CD una línea/entrega que no cabe: sólo si cabe en la capacidad libre;
+    // si no, se pide bajar carga del camión para hacerle espacio.
+    if (cam === 1) {
+      const f0 = refrescarFill(r);
+      const d0 = (f0.orden || []).find(x => docLinea(x) === docu && matLinea(x) === mat);
+      if (d0 && !d0._enCamion) {
+        const libre = Math.max(0, r.cap - (f0.cargado || 0));
+        if ((d0.ton || 0) > libre + 1e-6) { await bajarParaSubir(r, d0, f0, libre); return; }
+      }
+    }
     const { error } = cam === 'auto'
       ? await supabase.from('abast_plan_linea_camion').delete().eq('fecha', hoyIsoPlan).eq('cd_origen', planOrigen).eq('ce', ce).eq('documento', docu).eq('material', mat)
       : await supabase.from('abast_plan_linea_camion').upsert({ fecha: hoyIsoPlan, cd_origen: planOrigen, ce, documento: docu, material: mat, camion: Number(cam), origen: 'manual', updated_by: await getUserEmail(), updated_at: new Date().toISOString() }, { onConflict: 'fecha,cd_origen,ce,documento,material' });
@@ -5884,6 +5895,60 @@ async function renderPlanCarga(stage, opts = {}) {
     // Si el 2º camión ya estaba aceptado, se actualiza su tonelaje.
     if (segAcept.has(ce)) await supabase.from('abast_plan_segundo_camion').update({ ton_propuesta: Math.round(r.tonSegundo * 10000) / 10000 }).eq('fecha', hoyIsoPlan).eq('cd_origen', planOrigen).eq('ce', ce);
     draw();
+  }
+  // (12-oct-2026, Jordan) La línea no cabe: elegir qué bajar del camión CD (queda «No carga» hoy) para subirla.
+  function bajarParaSubir(r, sube, f, libre) {
+    return new Promise(resolve => {
+      const falta = (sube.ton || 0) - libre;
+      const enCam = (f.orden || []).filter(x => x._enCamion && !(docLinea(x) === docLinea(sube) && matLinea(x) === matLinea(sube)));
+      const sel = new Set();
+      const wrap = document.createElement('div');
+      wrap.id = 'excl-modal-bg';
+      const cerrar = v => { wrap.remove(); document.removeEventListener('keydown', onEsc, true); resolve(v); };
+      const onEsc = e => { if (e.key === 'Escape') { e.stopPropagation(); cerrar(false); } };
+      document.addEventListener('keydown', onEsc, true);
+      const nomL = x => escapeHtml(x.nombre || x.material || '');
+      const pintar = () => {
+        const tonSel = enCam.filter((x, i) => sel.has(i)).reduce((a, x) => a + (x.ton || 0), 0);
+        const ok = tonSel + 1e-6 >= falta;
+        wrap.innerHTML = `<div class="sv-dr-bg" style="z-index:120" data-x></div><aside class="sv-dr" style="z-index:121;width:min(720px,100vw)" role="dialog" aria-label="Bajar carga para subir">
+          <div class="sv-dr-h"><div style="flex:1;min-width:0"><div class="sv-dr-k">No cabe en el camión CD</div>
+            <div class="sv-dr-t">Subir ${escapeHtml(docLinea(sube))} · ${nomL(sube)}</div>
+            <div class="sv-dr-s">${t1(sube.ton || 0)} t a subir · libre ${t1(libre)} t de ${fmtNum(r.cap, 0)} t · hay que bajar al menos <b>${t1(falta)} t</b></div></div>
+            <button class="sv-iconbtn" data-x title="Cerrar (Esc)"><span class="material-symbols-outlined">close</span></button></div>
+          <div class="sv-dr-b" style="gap:12px">
+            <div class="sv-note-box">Marca las líneas que se bajan del camión CD. Quedan como <b>«No carga»</b> hoy (vuelven a estar disponibles en el próximo plan) y la línea elegida sube al camión.</div>
+            <div class="sv-card" style="overflow:auto;max-height:52vh"><table class="sv-table"><thead><tr><th></th><th>Pedido / OC</th><th>Material</th><th class="r">Ton</th></tr></thead><tbody>
+              ${enCam.map((x, i) => `<tr style="cursor:pointer" data-i="${i}"><td><input type="checkbox" ${sel.has(i) ? 'checked' : ''} data-i="${i}"></td><td><span class="sv-mono">${escapeHtml(docLinea(x))}</span>${x._manual === 1 ? ' <small style="color:#7c3aed;font-weight:700">FIJO</small>' : ''}</td><td><div class="pc-mat"><b>${escapeHtml(x.material || '')}</b><small>${nomL(x)}</small></div></td><td class="r"><b>${t1(x.ton || 0)}</b></td></tr>`).join('')}
+            </tbody></table></div>
+          </div>
+          <div class="sv-dr-f"><span class="sv-dr-note" style="${ok ? 'color:#15803d' : 'color:#b5000b'}">Seleccionado ${t1(tonSel)} t de ${t1(falta)} t necesarias${ok ? ' ✓' : ''}</span>
+            <div style="display:flex;gap:8px"><button class="sv-btn" data-x>Cancelar</button>
+            <button class="sv-btn-p" data-ok ${ok ? '' : 'disabled'}><span class="material-symbols-outlined">swap_vert</span>Bajar y subir</button></div></div></aside>`;
+        wrap.querySelectorAll('[data-x]').forEach(b => b.addEventListener('click', () => cerrar(false)));
+        wrap.querySelectorAll('tr[data-i]').forEach(tr => tr.addEventListener('click', e => {
+          const i = +tr.dataset.i; if (sel.has(i)) sel.delete(i); else sel.add(i);
+          e.preventDefault(); pintar();
+        }));
+        wrap.querySelector('[data-ok]')?.addEventListener('click', async e => {
+          e.currentTarget.disabled = true;
+          const quien = await getUserEmail(), now = new Date().toISOString();
+          const fila = (x, cam) => ({ fecha: hoyIsoPlan, cd_origen: planOrigen, ce: r.ce, documento: docLinea(x), material: matLinea(x), camion: cam, origen: 'manual', updated_by: quien, updated_at: now });
+          const bajan = enCam.filter((x, i) => sel.has(i));
+          const filas = [...bajan.map(x => fila(x, 0)), fila(sube, 1)];
+          const { error } = await supabase.from('abast_plan_linea_camion').upsert(filas, { onConflict: 'fecha,cd_origen,ce,documento,material' });
+          if (error) { showAlert('No se pudo ajustar la carga: ' + error.message, 'error'); cerrar(false); return; }
+          bajan.forEach(x => r.asig.set(`${docLinea(x)}|${matLinea(x)}`, 0));
+          r.asig.set(`${docLinea(sube)}|${matLinea(sube)}`, 1);
+          refrescarFill(r);
+          if (segAcept.has(r.ce)) await supabase.from('abast_plan_segundo_camion').update({ ton_propuesta: Math.round(r.tonSegundo * 10000) / 10000 }).eq('fecha', hoyIsoPlan).eq('cd_origen', planOrigen).eq('ce', r.ce);
+          showAlert(`Subida ${docLinea(sube)} (${t1(sube.ton || 0)} t); bajadas ${bajan.length} línea${bajan.length > 1 ? 's' : ''} (${t1(bajan.reduce((a, x) => a + (x.ton || 0), 0))} t).`, 'success');
+          cerrar(true); draw();
+        });
+      };
+      document.body.appendChild(wrap);
+      pintar();
+    });
   }
   async function restablecerAuto(ce) {
     const r = resultado.find(x => x.ce === ce);
