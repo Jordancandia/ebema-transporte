@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610121729';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610121729';
-import { getDatabase } from './data.js?v=202610121729';
+import { supabase } from './supabase-client.js?v=202610121738';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610121738';
+import { getDatabase } from './data.js?v=202610121738';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610121729';
-import { confirmar, pedirDato } from './confirmar.js?v=202610121729';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610121738';
+import { confirmar, pedirDato } from './confirmar.js?v=202610121738';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -2026,6 +2026,24 @@ const ESTADO_OPTS = [
 // ============================================================================
 // VISTAS DE DATOS TRONCALES
 // ============================================================================
+// (12-oct-2026) Cantidades en Crossdocking por centro destino + SKU (mismas líneas pendientes que muestra
+// la vista Crossdocking). Se compara con la salida (cantidad_salida) y con el pendiente del traslado.
+let _stockOcultasCx = 0;
+function indiceCrossdockStock(rows) {
+  const idx = new Map();
+  (rows || []).forEach(r => {
+    if (!String(r.cesu ?? '').trim() || String(r.cesu ?? '').startsWith('*')) return;
+    const mat = String(r.material ?? '').trim(); if (!mat) return;
+    const ped = parseNum(r.ctd_pedido), ent = parseNum(r.ctd_entregada);
+    if (!(ped > ent)) return;
+    const k = `${String(r.ce ?? '').trim()}|${mat}`;
+    if (!idx.has(k)) idx.set(k, []);
+    const qs = idx.get(k);
+    [parseNum(r.cantidad_salida), Math.round((ped - ent) * 1000) / 1000].forEach(q => { if (q > 0) qs.push(q); });
+  });
+  return idx;
+}
+
 const VISTAS_TRONCAL = {
   // ── QUIEBRES SUCURSAL (SLIM) ──────────────────────────────────────────────
   quiebres: {
@@ -2550,60 +2568,63 @@ const VISTAS_TRONCAL = {
   },
 
   // ── STOCK ALMACÉN 4000 (unifica Stock + Plan Troncales) ───────────────────
+  // (12-oct-2026, Jordan) Una sola vista con Stock y Pedidos de venta del almacén 4000 (columna Tipo).
+  // Se oculta lo que ya está en Crossdocking (mismo centro destino + SKU + cantidad) para no duplicar.
   stock_almacen: {
     titulo: 'GESTIÓN TRONCALES – STOCK ALMACÉN 4000',
-    chipFilter: { campo: 'ce', label: 'Centro' },
-    modes: [
-      {
-        id: 'stock', label: 'STOCK',
-        vista: 'v_trc_sqvi_plan_troncales',
-        transform(rows) {
-          return rows
-            .filter(r => String(r.material ?? '').trim() !== '')
-            .filter(r => !String(r.ce ?? '').startsWith('*'))
-            .map(r => {
-              const pm = maxPesoDim(r.peso_bruto, r.tamano_dimens);
-              return { ...r, _peso_mayor: fmtNum(pm, 2), _ton_totales: fmtNum(calcTon(pm, r.libre_utiliz), 3) };
-            });
-        },
-        columnas: [
-          { key: 'ce', label: 'Centro Destino' },
-          { key: 'alm', label: 'Almacén Destino' },
-          { key: 'material', label: 'ID Material' },
-          { key: 'texto_breve_de_material', label: 'Nombre Material' },
-          { key: 'umb', label: 'UN Pedido' },
-          { key: 'libre_utiliz', label: 'Cantidad Disponible', cls: 'text-right font-data-mono' },
-          { key: '_peso_mayor', label: 'Peso Mayor', cls: 'text-right font-data-mono' },
-          { key: '_ton_totales', label: 'Toneladas Totales', cls: 'text-right font-data-mono font-bold' },
-        ],
-      },
-      {
-        id: 'pedidos', label: 'PEDIDO DE VENTAS',
-        vista: 'v_trc_sqvi_stock_almacen_4000',
-        transform(rows) {
-          return rows.map(r => {
-            const rl = lookupRuta(r.ruta);
-            const pm = maxPesoDim(r.peso_bruto, r.tamano_dimens);
-            return { ...r, _comuna: rl.comuna, _region: rl.region, _peso_mayor: fmtNum(pm, 2), _ton_totales: fmtNum(calcTon(pm, r.libre_utiliz), 3) };
-          });
-        },
-        columnas: [
-          { key: 'ce', label: 'Centro Destino' },
-          { key: 'alm', label: 'Almacén Destino' },
-          { key: 'material', label: 'ID Material' },
-          { key: 'denominacion_de_posicion', label: 'Nombre Material' },
-          { key: 'libre_utiliz', label: 'Cantidad Disponible', cls: 'text-right font-data-mono' },
-          { key: 'umb', label: 'UM Pedido' },
-          { key: 'ruta', label: 'Ruta' },
-          { key: '_comuna', label: 'Comuna' },
-          { key: '_region', label: 'Región' },
-          { key: 'deudor', label: 'ID Vendedor' },
-          { key: 'documento', label: 'Pedido de Ventas' },
-          { key: 'creado', label: 'Fecha de Entrega' },
-          { key: '_peso_mayor', label: 'Peso Mayor', cls: 'text-right font-data-mono' },
-          { key: '_ton_totales', label: 'Toneladas Totales', cls: 'text-right font-data-mono font-bold' },
-        ],
-      },
+    chipFilter: { campo: 'ce', label: 'Centro Destino' },
+    vista: 'v_trc_sqvi_plan_troncales',
+    async preload() {
+      const [pvRows, cxRows] = await Promise.all([
+        fetchAllRows('v_trc_sqvi_stock_almacen_4000'),
+        fetchAllRows('v_trc_sqvi_pedidos_traslados_4000'),
+      ]);
+      return { stockPvRows: pvRows, stockCxIdx: indiceCrossdockStock(cxRows) };
+    },
+    transform(rows, ctx) {
+      const cx = (ctx && ctx.stockCxIdx) || new Map();
+      let ocultas = 0;
+      const enCx = (ce, mat, cant) => {
+        const qs = cx.get(`${String(ce ?? '').trim()}|${String(mat ?? '').trim()}`);
+        const q = parseNum(cant);
+        if (qs && q > 0 && qs.some(x => Math.abs(x - q) < 1e-6)) { ocultas++; return true; }
+        return false;
+      };
+      const stock = rows
+        .filter(r => String(r.material ?? '').trim() !== '')
+        .filter(r => !String(r.ce ?? '').startsWith('*'))
+        .filter(r => !enCx(r.ce, r.material, r.libre_utiliz))
+        .map(r => {
+          const pm = maxPesoDim(r.peso_bruto, r.tamano_dimens);
+          return { ...r, _tipo: 'Stock', _nombre: r.texto_breve_de_material || '', _peso_mayor: fmtNum(pm, 2), _ton_totales: fmtNum(calcTon(pm, r.libre_utiliz), 3) };
+        });
+      const pedidos = ((ctx && ctx.stockPvRows) || [])
+        .filter(r => String(r.material ?? '').trim() !== '')
+        .filter(r => !enCx(r.ce, r.material, r.libre_utiliz))
+        .map(r => {
+          const rl = lookupRuta(r.ruta);
+          const pm = maxPesoDim(r.peso_bruto, r.tamano_dimens);
+          return { ...r, _tipo: 'Pedido de venta', _nombre: r.denominacion_de_posicion || '', _comuna: rl.comuna, _region: rl.region,
+            _peso_mayor: fmtNum(pm, 2), _ton_totales: fmtNum(calcTon(pm, r.libre_utiliz), 3) };
+        });
+      _stockOcultasCx = ocultas;
+      return stock.concat(pedidos);
+    },
+    columnas: [
+      { key: '_tipo', label: 'Tipo' },
+      { key: 'ce', label: 'Centro Destino' },
+      { key: 'alm', label: 'Almacén Destino' },
+      { key: 'material', label: 'ID Material' },
+      { key: '_nombre', label: 'Nombre Material' },
+      { key: 'libre_utiliz', label: 'Cantidad Disponible', cls: 'text-right font-data-mono' },
+      { key: 'umb', label: 'UM' },
+      { key: 'documento', label: 'Pedido de Ventas' },
+      { key: 'ruta', label: 'Ruta' },
+      { key: '_comuna', label: 'Comuna' },
+      { key: 'deudor', label: 'ID Vendedor' },
+      { key: 'creado', label: 'Fecha de Entrega' },
+      { key: '_peso_mayor', label: 'Peso Mayor', cls: 'text-right font-data-mono' },
+      { key: '_ton_totales', label: 'Toneladas Totales', cls: 'text-right font-data-mono font-bold' },
     ],
   },
 
@@ -2983,46 +3004,32 @@ const V2 = {
         r._q = grupoQuiebre(r._sd);
       });
     },
-    chip: { label: 'Clase ABC', of: r => r._abc, orden: orderAbc },
-    search: { ph: 'Buscar material', of: r => `${r.material} ${r.texto_breve_de_material || r.denominacion_de_posicion || ''} ${r.documento || ''}` },
+    // (12-oct-2026) Filtro por Centro destino (se quitó el de Clase ABC) y por Tipo (Stock / Pedido de venta)
+    chip: { label: 'Destino', of: r => String(r.ce ?? '').trim(), name: v => nombreCentro(v) ? `${v} · ${nombreCentro(v)}` : v },
+    chips: [{ key: 'tipo', label: 'Tipo', of: r => r._tipo }],
+    search: { ph: 'Buscar material o pedido', of: r => `${r.material} ${r._nombre || ''} ${r.documento || ''}` },
     kpis: [
-      { key: 'all', label: 'SKU', color: C_INK, sub: 'con stock en 4000' },
+      { key: 'all', label: 'SKU', color: C_INK, sub: 'stock y pedidos en 4000' },
       { key: 'q', label: 'Quebrados', color: C_RED, sub: '0 a 3 días', fn: r => r._q.g === 'q' },
       { key: 'c', label: 'Críticos', color: C_ORANGE, sub: '4 a 5 días', fn: r => r._q.g === 'c' },
       { key: 'r', label: 'En revisión', color: C_YELLOW, sub: '6 a 7 días', fn: r => r._q.g === 'r' },
     ],
     edge: r => r._q.g === 'q' ? C_RED : null,
-    note: 'Días de stock según SLIM del centro destino',
-    minW: '1000px',
-    modos: {
-      stock: {
-        v2label: 'Stock', icon: 'inventory',
-        cols: [
-          { label: 'Material', html: r => matHtml(r.material, r.texto_breve_de_material) },
-          { label: 'Destino', html: r => sucHtml(r.ce) },
-          { label: 'Clase ABC', html: r => mono(r._abc) },
-          { label: 'Stock (un)', al: 'r', html: r => escV2(r.libre_utiliz || '0') + (r.umb ? ` <span class="sv-muted">${escV2(r.umb)}</span>` : '') },
-          { label: 'Ton', al: 'r', html: r => `<span class="sv-ton">${tonHtml(tonNum(r._ton_totales))}</span>` },
-          { label: 'Días de stock', al: 'r', html: r => r._sd == null ? '<span class="sv-muted">—</span>' : `<span class="sv-b" style="color:${r._sd <= 3 ? C_RED : C_INK}">${r._sd}</span>` },
-          { label: 'Estado', html: r => pill(r._q.lbl, r._q.tone) },
-        ],
-      },
-      pedidos: {
-        v2label: 'Pedido de ventas', icon: 'sell',
-        cols: [
-          { label: 'Pedido de venta', html: r => mono(r.documento, r.creado ? 'entrega ' + r.creado : '') },
-          { label: 'Destino', html: r => sucHtml(r.ce) },
-          { label: 'Material', html: r => matHtml(r.material, r.denominacion_de_posicion) },
-          { label: 'Cantidad', al: 'r', html: r => escV2(r.libre_utiliz || '0') + (r.umb ? ` <span class="sv-muted">${escV2(r.umb)}</span>` : '') },
-          { label: 'Ruta', html: r => mono(r.ruta, r._comuna) },
-          { label: 'Ton', al: 'r', html: r => `<span class="sv-ton">${tonHtml(tonNum(r._ton_totales))}</span>` },
-          { label: 'Días de stock', al: 'r', html: r => r._sd == null ? '<span class="sv-muted">—</span>' : `<span class="sv-b" style="color:${r._sd <= 3 ? C_RED : C_INK}">${r._sd}</span>` },
-          { label: 'Estado', html: r => pill(r._q.lbl, r._q.tone) },
-        ],
-      },
-    },
+    note: () => `Días de stock según SLIM del centro destino${_stockOcultasCx ? ` · ${_stockOcultasCx} línea${_stockOcultasCx > 1 ? 's' : ''} oculta${_stockOcultasCx > 1 ? 's' : ''} por estar en Crossdocking` : ''}`,
+    minW: '1100px',
+    cols: [
+      { label: 'Tipo', html: r => pill(r._tipo, r._tipo === 'Stock' ? 'info' : 'purple') },
+      { label: 'Material', html: r => matHtml(r.material, r._nombre) },
+      { label: 'Destino', html: r => sucHtml(r.ce) },
+      { label: 'Pedido de venta', html: r => r.documento ? mono(r.documento, [r.ruta, r._comuna].filter(Boolean).join(' · ') || (r.creado ? 'entrega ' + r.creado : '')) : '<span class="sv-muted">—</span>' },
+      { label: 'Clase ABC', html: r => mono(r._abc) },
+      { label: 'Cantidad', al: 'r', html: r => escV2(r.libre_utiliz || '0') + (r.umb ? ` <span class="sv-muted">${escV2(r.umb)}</span>` : '') },
+      { label: 'Ton', al: 'r', html: r => `<span class="sv-ton">${tonHtml(tonNum(r._ton_totales))}</span>` },
+      { label: 'Días de stock', al: 'r', html: r => r._sd == null ? '<span class="sv-muted">—</span>' : `<span class="sv-b" style="color:${r._sd <= 3 ? C_RED : C_INK}">${r._sd}</span>` },
+      { label: 'Estado', html: r => pill(r._q.lbl, r._q.tone) },
+    ],
     detalle: r => ({
-      kind: 'Material · almacén 4000', title: r.material, sub: (r.texto_breve_de_material || r.denominacion_de_posicion || '') + (nombreCentro(r.ce) ? ' → ' + nombreCentro(r.ce) : ''),
+      kind: `${r._tipo || 'Material'} · almacén 4000`, title: r.material, sub: (r._nombre || r.texto_breve_de_material || r.denominacion_de_posicion || '') + (nombreCentro(r.ce) ? ' → ' + nombreCentro(r.ce) : ''),
       kv: [
         ['Centro destino', `${r.ce}${nombreCentro(r.ce) ? ' · ' + nombreCentro(r.ce) : ''}`],
         ['Clase ABC', r._abc],
@@ -4342,11 +4349,11 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610121729');
+    const m = await import('./ind-plan-carga.js?v=202610121738');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (currentSub === 'control_diferencias') {  // (11-oct-2026) Control de Diferencias del Plan de Carga
-    const m = await import('./control-diferencias.js?v=202610121729');
+    const m = await import('./control-diferencias.js?v=202610121738');
     await m.renderControlDiferencias(stage);
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
