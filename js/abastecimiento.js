@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610122131';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610122131';
-import { getDatabase } from './data.js?v=202610122131';
+import { supabase } from './supabase-client.js?v=202610131217';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610131217';
+import { getDatabase } from './data.js?v=202610131217';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610122131';
-import { confirmar, pedirDato } from './confirmar.js?v=202610122131';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610131217';
+import { confirmar, pedirDato } from './confirmar.js?v=202610131217';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -1255,6 +1255,18 @@ async function anularCoordRetiro(docs) {
 // hasta completarlos editando la coordinación (sin patente el camión directo no queda programado).
 const pendTranspRetiro = t => { t = t || {}; return [!String(t.chofer_nombre ?? '').trim() && 'chofer', !String(t.chofer_rut ?? '').trim() && 'RUT chofer',
   !String(t.chofer_telefono ?? '').trim() && 'teléfono chofer', !String(t.patente_camion ?? '').trim() && 'patente'].filter(Boolean); };
+// (13-oct-2026, Jordan) OC de retiro ya registrada en un camión PROGRAMADO de un plan cerrado (fecha_plan < hoy,
+// no COORD|): el Plan de Carga la da por cargada y no la vuelve a mostrar. Al re-coordinarla se alerta para revisar
+// si el retiro se hizo y, si no, sacarla del plan cerrado (fn_abast_liberar_oc_plan) para liberarla.
+async function chequearOcPlanCerrado(docs) {
+  const tx = v => String(v ?? '').trim();
+  const { data: lin } = await supabase.from('abast_seguimiento_carga').select('camion_id,documento,material,cantidad,ton').in('documento', docs).limit(2000);
+  if (!lin || !lin.length) return [];
+  const ids = [...new Set(lin.map(l => l.camion_id))];
+  const { data: cams } = await supabase.from('abast_seguimiento_camion').select('id,clave,fecha_plan,destino,patente_camion,transportista,id_transporte').in('id', ids).lt('fecha_plan', isoLocal(hoy00()));
+  const cm = new Map((cams || []).filter(c => !tx(c.clave).startsWith('COORD|') && (tx(c.transportista) || tx(c.id_transporte) || tx(c.patente_camion))).map(c => [c.id, c]));
+  return lin.filter(l => cm.has(l.camion_id)).map(l => ({ ...l, cam: cm.get(l.camion_id) }));
+}
 async function chequearChoqueRetiro(docsSel, st, ctx) {
   const pat = normPatente(st.patCamion), rut = normPatente(st.choferRut);
   const sel = new Set(docsSel.map(d => String(d).trim()));
@@ -1617,6 +1629,18 @@ function showCoordRetiroModal(row, ctx) {
         if (faltantes().length) { st.err = true; draw(); return; }
         const btn = e.currentTarget; btn.disabled = true;
         const docs = [String(row.doc_compr).trim(), ...(rm() ? [...st.extras.keys()] : [])];
+        if (rm()) {
+          const prev = await chequearOcPlanCerrado(docs);
+          if (prev.length) {
+            const grp = new Map();
+            prev.forEach(p => { const k = `${String(p.documento).trim()}|${p.camion_id}`; const g = grp.get(k) || { p, ton: 0 }; g.ton += Number(p.ton) || 0; grp.set(k, g); });
+            const txt = [...grp.values()].map(({ p, ton }) => `• OC ${String(p.documento).trim()} → plan ${fmtFechaISO(p.cam.fecha_plan)} · ${p.cam.destino || ''} · ${p.cam.patente_camion || 'sin patente'} · ${p.cam.transportista || ''} (${fmtNum(ton, 2)} t)`).join('\n');
+            const lib = await confirmar(`Esta OC ya está registrada en un plan cerrado:\n\n${txt}\n\nRevisa si ese retiro se realizó. Si NO se retiró, hay que sacarla del plan cerrado para liberarla; si no, no aparecerá en el Plan de Carga.\n\n¿Sacar la OC del plan cerrado y coordinar?`, { aceptar: 'Liberar y coordinar', tono: 'peligro', icono: 'warning' });
+            if (!lib) { btn.disabled = false; return; }
+            const { error: eLib } = await supabase.rpc('fn_abast_liberar_oc_plan', { p_docs: [...new Set(prev.map(p => String(p.documento).trim()))] });
+            if (eLib) { showAlert('No se pudo liberar la OC del plan cerrado: ' + eLib.message, 'error'); btn.disabled = false; return; }
+          }
+        }
         if (rm() && (st.patCamion.trim() || st.choferRut.trim())) {
           st.tonSel = tonSel();
           const avisos = await chequearChoqueRetiro(docs, st, ctx);
@@ -4416,11 +4440,11 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610122131');
+    const m = await import('./ind-plan-carga.js?v=202610131217');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (currentSub === 'control_diferencias') {  // (11-oct-2026) Control de Diferencias del Plan de Carga
-    const m = await import('./control-diferencias.js?v=202610122131');
+    const m = await import('./control-diferencias.js?v=202610131217');
     await m.renderControlDiferencias(stage);
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
