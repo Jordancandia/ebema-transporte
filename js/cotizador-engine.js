@@ -14,8 +14,8 @@
 // ZFMP = ZCAP ÷ kilos a consolidar, ZFMI = ZCAP camión mínimo ÷ pedidos promedio
 // del cluster, Tarifa Express = ZCAP × (1 + recargo exclusividad del centro).
 // ---------------------------------------------------------------------------
-import { getOrigenGroups, truckCapKg } from './data.js?v=202610122128';
-import { buildZcapMap } from './zcap.js?v=202610122128';
+import { getOrigenGroups, truckCapKg } from './data.js?v=202610122131';
+import { buildZcapMap } from './zcap.js?v=202610122131';
 
 export const TRUCK_ORDER = ['Camión 5 Ton', 'Camión 10 Ton', 'Camión 15 Ton', 'Camión 28 Ton'];
 export const TRUCK_TRONCAL = 'Camión 28 Ton';
@@ -496,6 +496,9 @@ export function cotizar(ctx, input) {
   // desvío = km(centro origen → comuna) + km(centro destino → comuna) − km(centro origen → centro destino)
   if (retira === 'NO' && kilos > KILOS_MIN_EN_RUTA) {
     origenes.forEach(o => {
+      // Regla 12-oct-2026: si el centro de origen atiende la comuna (Regional),
+      // es despacho directo CD → cliente: sin entrega en ruta ni cargo adicional.
+      if (esRegional(ctx, o, nDes)) return;
       const eOC = findRuta(ctx, o, nDes);
       if (!eOC || !(eOC.km > 0)) return;
       destinos.forEach(d => {
