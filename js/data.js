@@ -1,7 +1,7 @@
 // Capa de datos de SIT EBEMA
 // Fuente principal: Supabase (PostgreSQL compartido, protegido con RLS).
 // localStorage se mantiene como copia local de respaldo (modo sin conexión).
-import { supabase } from './supabase-client.js?v=202610141313';
+import { supabase } from './supabase-client.js?v=202610141512';
 
 const STORAGE_KEY = 'ebema_transporte_db';
 

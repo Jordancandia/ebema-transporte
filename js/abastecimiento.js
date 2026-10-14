@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610141313';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610141313';
-import { getDatabase } from './data.js?v=202610141313';
+import { supabase } from './supabase-client.js?v=202610141512';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610141512';
+import { getDatabase } from './data.js?v=202610141512';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610141313';
-import { confirmar, pedirDato } from './confirmar.js?v=202610141313';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610141512';
+import { confirmar, pedirDato } from './confirmar.js?v=202610141512';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -3154,6 +3154,9 @@ const V2 = {
         r._dia_obj = ctx.diaObj(r.ofvta);
         const fp = parseDateSAP(r._fecha_plan);
         r._plan = !r._coord ? 'SIN_COORD' : (fp && fp.getTime() <= r._dia_obj.getTime() ? 'EN_PLAN' : 'PROGRAMADO');
+        // (14-oct-2026, Jordan) NV en camión programado → COORDINADO bloqueado, fuera del plan.
+        r._cargada = VENTAS_PROGRAMADAS.get(doc) || null;
+        if (r._cargada) r._plan = 'CARGADA';
       });
       // (7-oct-2026) Pedidos que comparten camión (grupo_camion)
       const porGrupo = new Map();
@@ -3167,9 +3170,10 @@ const V2 = {
     fecha: { label: 'Entrega', of: r => r._fecha_plan },
     kpis: [
       { key: 'all', label: 'Pedidos', color: C_INK, sub: 'pendientes con ruta' },
-      { key: 'sc', label: 'Sin coordinar', color: C_ORANGE, sub: 'no entran al plan', fn: r => !r._coord },
-      { key: 'co', label: 'Coordinados', color: C_GREEN, sub: 'pedido coordinado', fn: r => !!r._coord },
-      { key: 'pl', label: 'En plan de carga', color: C_BLUE, sub: 'pedidos coordinados', fn: r => !!r._coord },
+      { key: 'sc', label: 'Sin coordinar', color: C_ORANGE, sub: 'no entran al plan', fn: r => !r._coord && !r._cargada },
+      { key: 'co', label: 'Coordinados', color: C_GREEN, sub: 'pedido coordinado', fn: r => !!r._coord && !r._cargada },
+      { key: 'pl', label: 'En plan de carga', color: C_BLUE, sub: 'pedidos coordinados', fn: r => !!r._coord && !r._cargada },
+      { key: 'cg', label: 'COORDINADO', color: C_SEC, sub: 'en camión programado · bloqueado', fn: r => !!r._cargada },
       { key: 'cd', label: 'CD-Cliente', color: '#7e22ce', sub: 'cliente ≥ 23,8 t o definido', fn: r => !!r._directo },
       { key: 'at', label: 'Atrasados', color: C_RED, sub: 'fecha de entrega vencida', fn: r => r._al.k === 'Atrasado' },
     ],
@@ -3184,7 +3188,8 @@ const V2 = {
       { label: 'Líneas', al: 'r', html: r => escV2((r._detalle || []).length) },
       { label: 'Ton', al: 'r', html: r => `<span class="sv-ton">${tonHtml(r._ton_num)}</span>` + (r._n_pedidos_cliente > 1 ? `<div class="sv-sub">cliente ${escV2(fmtNum(r._ton_cliente, 1))} t</div>` : '') },
       { label: 'Fecha entrega', html: r => mono(r._fecha_plan, r._coord ? 'confirmada' : 'SAP · por confirmar') },
-      { label: 'Coordinación', html: r => r._coord ? pill('Pedido Coordinado', 'ok') + (r._coord.n_entrega ? `<div class="sv-sub">Entrega ${escV2(r._coord.n_entrega)}</div>` : '')
+      { label: 'Coordinación', html: r => r._cargada ? pill('COORDINADO', 'info') + `<div class="sv-sub" title="Bloqueado: va en un camión programado">🔒 Camión ${escV2(r._cargada.patente || r._cargada.transportista || 'programado')} · carga ${escV2(fmtFechaISO(String(r._cargada.fecha_carga).slice(0, 10)))}</div>`
+        : r._coord ? pill('Pedido Coordinado', 'ok') + (r._coord.n_entrega ? `<div class="sv-sub">Entrega ${escV2(r._coord.n_entrega)}</div>` : '')
           + (r._coord.tipo_entrega === 'CD-CLIENTE' && pendTranspRetiro(r._coord).length ? `<div style="margin-top:4px" title="Pendiente: ${escV2(pendTranspRetiro(r._coord).join(', '))}">${pill('Chofer/patente pendiente', 'warn')}</div>` : '') : pill('Sin coordinar', 'mute') },
       { label: 'Alerta', html: r => pill(r._al.k, r._al.tone) + (r._estado ? ` ${pill('Parcial', 'warn')}` : '') },
     ],
@@ -3192,11 +3197,13 @@ const V2 = {
     excluirEnFila: true,
     // (2-oct-2026, Jordan) Pedido coordinado = «En plan» (igual que Revex); si su fecha es
     // posterior al día objetivo de hoy, se indica para qué día entra.
-    planEstado: (r, excluida) => excluida ? pill('Excluida hoy', 'bad')
+    bloqueado: r => !!r._cargada,
+    planEstado: (r, excluida) => r._cargada ? `<span title="Ya va en un camión programado: no se vuelve a considerar">${pill('En camión programado', 'mute')}</span>`
+      : excluida ? pill('Excluida hoy', 'bad')
       : r._coord ? `<span title="Plan de carga con día objetivo ${escV2(r._fecha_plan)}">${pill('En plan', 'ok')}</span>`
         + (r._plan === 'PROGRAMADO' ? `<div class="sv-sub">día ${escV2(r._fecha_plan)}</div>` : '')
       : pill('No considerado', 'mute'),
-    edge: r => r._coord ? C_GREEN : (r._al.k === 'Atrasado' ? C_RED : null),
+    edge: r => r._cargada ? C_GREY : r._coord ? C_GREEN : (r._al.k === 'Atrasado' ? C_RED : null),
     note: 'Tipo de entrega por cliente: ≥ 23,8 t (85% de 28 t) → CD-Cliente; si no, Consolidable · Sólo los pedidos coordinados entran al Plan de Carga',
     minW: '1280px',
     detalle: r => {
@@ -3205,11 +3212,13 @@ const V2 = {
       const reglaLbl = `${r._tipo_auto === 'CD-CLIENTE' ? 'CD-Cliente' : 'Consolidable'} · el cliente suma ${fmtNum(r._ton_cliente, 1)} t en ${r._n_pedidos_cliente} ${r._n_pedidos_cliente === 1 ? 'pedido' : 'pedidos'} (umbral 23,8 t)`;
       const origenLbl = r._tipo_origen === 'COORDINACION' ? 'definido al coordinar' : r._tipo_origen === 'MANUAL' ? 'marcado manual' : 'regla automática';
       const diaObjTxt = r._dia_obj ? fmtFechaISO(isoLocal(r._dia_obj)) : '';
-      const aviso = r._plan === 'EN_PLAN' ? `<b>Plan de carga:</b> pedido coordinado para el ${escV2(r._fecha_plan)}; entra al Plan de Carga de hoy (día objetivo ${escV2(diaObjTxt)}).`
+      const k = r._cargada;
+      const aviso = k ? `<b>COORDINADO · bloqueado:</b> el pedido ya va en un camión programado (${escV2(k.tipo || 'camión')} · carga ${escV2(fmtFechaISO(String(k.fecha_carga).slice(0, 10)))}${k.patente ? ' · patente ' + escV2(k.patente) : ''}${k.transportista ? ' · ' + escV2(k.transportista) : ''}). No se vuelve a considerar en el Plan de Carga; sale de la vista cuando el SQVI deje de traerlo.`
+        : r._plan === 'EN_PLAN' ? `<b>Plan de carga:</b> pedido coordinado para el ${escV2(r._fecha_plan)}; entra al Plan de Carga de hoy (día objetivo ${escV2(diaObjTxt)}).`
         : r._plan === 'PROGRAMADO' ? `<b>Plan de carga:</b> pedido coordinado para el ${escV2(r._fecha_plan)}; entrará al plan cuyo día objetivo sea esa fecha.`
         : '<b>Plan de carga:</b> sin coordinar, no se considera. Usa «Coordinar despacho» para confirmar la fecha de entrega.';
       const acciones = [];
-      if (can('coordinar_venta')) {
+      if (!k && can('coordinar_venta')) {
         acciones.push({ label: c ? 'Editar coordinación' : 'Coordinar despacho', icon: 'event_available', primary: true,
           run: async (row, ctx) => ((await showCoordVentaModal(row, ctx)) ? { recargar: true } : null) });
         if (c) acciones.push({ label: 'Anular coordinación', icon: 'event_busy', run: async row => {
@@ -3217,7 +3226,7 @@ const V2 = {
           return (await anularCoordinacionVenta(row.doc_ventas)) ? (showAlert('Coordinación anulada', 'success'), { recargar: true }) : null;
         } });
       }
-      if (r._manual && !c && can('forzar_cd_cliente')) acciones.push({ label: 'Volver a regla automática', icon: 'undo', run: async row => {
+      if (!k && r._manual && !c && can('forzar_cd_cliente')) acciones.push({ label: 'Volver a regla automática', icon: 'undo', run: async row => {
         if (!await confirmar(`¿Quitar el tipo de entrega manual del pedido ${row.doc_ventas}?\n\nVuelve a evaluarse con la regla de 23,8 t por cliente.`)) return null;
         return (await setVentaDirectoManual(row.doc_ventas, null)) ? (showAlert('Pedido vuelve a la regla automática', 'success'), { recargar: true }) : null;
       } });
@@ -3227,7 +3236,7 @@ const V2 = {
         aviso,
         kv: [
           ['Tipo de entrega', `${tipoLbl(r._tipo_entrega)} · ${origenLbl}`], ['Regla automática', reglaLbl],
-          ['Estado', c ? pill('Pedido Coordinado', 'ok') : pill('Sin coordinar', 'mute'), true],
+          ['Estado', k ? pill('COORDINADO', 'info') : c ? pill('Pedido Coordinado', 'ok') : pill('Sin coordinar', 'mute'), true],
           ['Fecha entrega', c ? `${r._fecha_plan} (confirmada)` : `${r.fe_entrega || '—'} (SAP, por confirmar)`],
           c ? ['N° de entrega', c.n_entrega] : null,
           ['ID cliente (Solic.)', r._id_cliente], ['Cliente', r._cliente],
@@ -4459,11 +4468,11 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610141313');
+    const m = await import('./ind-plan-carga.js?v=202610141512');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (currentSub === 'control_diferencias') {  // (11-oct-2026) Control de Diferencias del Plan de Carga
-    const m = await import('./control-diferencias.js?v=202610141313');
+    const m = await import('./control-diferencias.js?v=202610141512');
     await m.renderControlDiferencias(stage);
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
@@ -6711,9 +6720,40 @@ async function renderPlanCarga(stage, opts = {}) {
 // SQVI (o vienen sin pendiente), usando el respaldo abast_coord_sqvi. Se mantienen:
 //  · todo el día en que se coordinaron (o se editó la coordinación), y
 //  · hasta su fecha de entrega mientras la entrega coordinada no tenga DT (igual que el Plan de Carga).
+// (14-oct-2026, Jordan) NV en un camión PROGRAMADO (día de carga + camión con transporte) → estado
+// «COORDINADO» bloqueado en Ventas CD (sin coordinar/editar/anular/excluir; no se vuelve a considerar),
+// mientras el SQVI la siga trayendo. Si el SQVI ya no la trae, sale de la vista (se entiende entregada).
+const VENTAS_PROGRAMADAS = new Map();   // doc_ventas → { fecha_carga, fecha_plan, patente, transportista, ce, tipo }
+async function cargarVentasProgramadas() {
+  VENTAS_PROGRAMADAS.clear();
+  const tx = v => String(v ?? '').trim();
+  const desde = isoLocal(new Date(hoy00().getTime() - 45 * 864e5));
+  const { data: cams, error } = await supabase.from('abast_seguimiento_camion')
+    .select('id,fecha_plan,fecha_carga,ce,tipo_camion,transportista,id_transporte,patente_camion').gte('fecha_plan', desde).limit(5000);
+  if (error) throw error;
+  const prog = (cams || []).filter(c => tx(c.transportista) || tx(c.id_transporte) || tx(c.patente_camion));
+  const byId = new Map(prog.map(c => [c.id, c]));
+  const ids = [...byId.keys()];
+  for (let i = 0; i < ids.length; i += 10) {
+    const { data, error: e2 } = await supabase.from('abast_seguimiento_carga').select('camion_id,documento,pedido_venta,tipo_carga').in('camion_id', ids.slice(i, i + 10)).limit(5000);
+    if (e2) throw e2;
+    (data || []).forEach(l => {
+      if (!/venta/i.test(tx(l.tipo_carga))) return;          // sólo líneas de Pedidos de venta CD
+      const doc = tx(l.documento) || tx(l.pedido_venta);
+      if (!doc) return;
+      const c = byId.get(l.camion_id), prev = VENTAS_PROGRAMADAS.get(doc);
+      if (prev && String(prev.fecha_plan) >= String(c.fecha_plan)) return;   // el camión más reciente
+      VENTAS_PROGRAMADAS.set(doc, { fecha_plan: c.fecha_plan, fecha_carga: c.fecha_carga || c.fecha_plan, patente: tx(c.patente_camion),
+        transportista: tx(c.transportista) || tx(c.id_transporte), ce: tx(c.ce), tipo: c.tipo_camion || '' });
+    });
+  }
+}
 async function reponerVentasCoordinadas(ventasRaw) {
+  const tx = v => String(v ?? '').trim();
+  try { await cargarVentasProgramadas(); } catch (e) { console.warn('Ventas CD: no se pudieron leer los camiones programados', e); }
+  // NV programada que ya no viene en el SQVI → se entiende entregada: no se repone desde el respaldo.
+  const docsLive = new Set(ventasRaw.map(r => tx(r.doc_ventas)));
   try {
-    const tx = v => String(v ?? '').trim();
     await supabase.rpc('fn_abast_respaldar_coord_sqvi');
     const [coordVentas, bkVen] = await Promise.all([loadCoordinacionesVenta(), fetchAllRows('v_abast_coord_sqvi_ventas')]);
     if (!coordVentas.size || !(bkVen || []).length) return;
@@ -6724,7 +6764,8 @@ async function reponerVentasCoordinadas(ventasRaw) {
     // coordinar, hasta que la entrega coordinada tenga DT (mismo criterio que el Plan de Carga).
     const bkPorDoc = new Map();
     bkVen.forEach(r => { const d = tx(r.doc_ventas); if (!bkPorDoc.has(d)) bkPorDoc.set(d, []); bkPorDoc.get(d).push(r); });
-    const usarBk = new Set([...bkPorDoc.keys()].filter(d => { const co = coordVentas.get(d); return !!co && !(co.n_entrega && conDt.has(tx(co.n_entrega))); }));
+    const usarBk = new Set([...bkPorDoc.keys()].filter(d => { const co = coordVentas.get(d); return !!co && !(co.n_entrega && conDt.has(tx(co.n_entrega)))
+      && !(VENTAS_PROGRAMADAS.has(d) && !docsLive.has(d)); }));
     if (!usarBk.size) return;
     for (let i = ventasRaw.length - 1; i >= 0; i--) if (usarBk.has(tx(ventasRaw[i].doc_ventas))) ventasRaw.splice(i, 1);
     usarBk.forEach(d => bkPorDoc.get(d).forEach(r => ventasRaw.push({ ...r, _respaldo: true })));

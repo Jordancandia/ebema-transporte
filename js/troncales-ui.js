@@ -32,8 +32,8 @@ export function tonHtml(n) {
 }
 
 // Encabezado del shell: fecha y hora de la última actualización SAP de la vista
-import { confirmar } from './confirmar.js?v=202610141313';
-import { comentariosHabilitados, conteosComentarios, celdaComentarios, montarHilo, tomarFoco, abrirHiloSuelto } from './comentarios.js?v=202610141313';
+import { confirmar } from './confirmar.js?v=202610141512';
+import { comentariosHabilitados, conteosComentarios, celdaComentarios, montarHilo, tomarFoco, abrirHiloSuelto } from './comentarios.js?v=202610141512';
 export function setUltimaActualizacion(ts) {
   const el = document.getElementById('sv-upd');
   if (!el) return;
@@ -384,7 +384,7 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
     const ex = exclusionDe(r);
     const pill = AV.planEstado ? AV.planEstado(r, !!ex)
       : (ex ? '<span class="sv-pill bad"><i></i>Excluida hoy</span>' : '<span class="sv-pill ok"><i></i>En plan</span>');
-    if (!puedeExcluir) return pill;
+    if (!puedeExcluir || (AV.bloqueado && AV.bloqueado(r))) return pill;   // (14-oct-2026) NV en camión programado: bloqueada
     const btn = ex
       ? `<button class="sv-btn" data-fila-reac="${esc(r.__rid)}" title="Reactivar en el Plan de Carga" style="padding:2px 8px;font-size:11px"><span class="material-symbols-outlined">visibility</span>Reactivar</button>`
       : `<button class="sv-btn" data-fila-excl="${esc(r.__rid)}" title="Excluir del Plan de Carga" style="padding:2px 8px;font-size:11px;color:#b91c1c"><span class="material-symbols-outlined">visibility_off</span>Excluir</button>`;
