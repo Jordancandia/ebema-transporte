@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610131217';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610131217';
-import { getDatabase } from './data.js?v=202610131217';
+import { supabase } from './supabase-client.js?v=202610141313';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610141313';
+import { getDatabase } from './data.js?v=202610141313';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610131217';
-import { confirmar, pedirDato } from './confirmar.js?v=202610131217';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610141313';
+import { confirmar, pedirDato } from './confirmar.js?v=202610141313';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -4288,7 +4288,7 @@ function cargarEntregasExcel() {
         }
         if (!filas.length) throw new Error('No se encontraron entregas en el archivo');
         const nEnt = new Set(filas.map(x => x[0])).size;
-        if (!await confirmar(`¿Cargar ${nEnt} entregas (${filas.length} líneas)?\n\nPasan a ser lo disponible para cargar en el Plan de Carga y se descuentan de los pedidos de traslado, crossdocking y revex.\n\nEl archivo se toma como foto completa: las entregas vigentes sin DT de los mismos centros de expedición que NO vengan en el Excel se descartan.`,
+        if (!await confirmar(`¿Cargar ${nEnt} entregas (${filas.length} líneas)?\n\nPasan a ser lo disponible para cargar en el Plan de Carga y se descuentan de los pedidos de traslado, crossdocking y revex.\n\nEl archivo se toma como foto completa: las entregas vigentes sin DT que NO vengan en el Excel dejan de considerarse. Las que ya estaban en un camión programado quedan para revisar como duplicadas.`,
           { aceptar: 'Cargar', tono: 'normal', icono: 'upload_file' })) { resolve(false); return; }
         const tot = { recibidas: 0, nuevas: 0, actualizadas: 0, sin_destino: 0 };
         for (let k = 0; k < filas.length; k += 1000) {
@@ -4298,12 +4298,16 @@ function cargarEntregasExcel() {
           tot.sin_destino = Number(data?.sin_destino || 0);
         }
         // (8-oct-2026) El Excel es la foto completa: entregas vigentes sin DT de los PsEx del archivo que no vienen en él se descartan
-        const psexSet = [...new Set(filas.map(x => x[6]).filter(Boolean))];
-        const { data: foto, error: eFoto } = await supabase.rpc('fn_abast_foto_entregas', { p: { k: filas.map(x => [x[0], x[1]]), psex: psexSet } });
+        // (14-oct-2026, Jordan) Foto completa de TODOS los centros (sin filtro PsEx): lo que no viene en el Excel deja de considerarse.
+        // Si una entrega del Excel ya estaba en un camión programado de un plan anterior queda RETENIDA: "Revisar entrega duplicada".
+        const { data: foto, error: eFoto } = await supabase.rpc('fn_abast_foto_entregas', { p: { k: filas.map(x => [x[0], x[1]]) } });
         if (eFoto) throw new Error('Entregas cargadas, pero falló la depuración de entregas ausentes: ' + eFoto.message);
         const nDesc = Number(foto?.descartadas || 0), entDesc = (foto?.entregas || []);
         clearRawCache();
         showAlert(`Entregas cargadas: ${tot.nuevas} nuevas · ${tot.actualizadas} actualizadas` + (nDesc ? ` · ${nDesc} líneas de ${entDesc.length} entregas no incluidas en el Excel quedaron descartadas` : '') + (tot.sin_destino ? ` · ${tot.sin_destino} líneas sin destino` : ''), tot.sin_destino ? 'error' : 'success');
+        const entDup = (foto?.duplicadas || []);
+        if (entDup.length) await confirmar(`${entDup.length} entrega(s) del archivo ya estaban en un camión programado de un plan anterior:\n\n${entDup.join(', ')}\n\nQuedan en la vista Entregas con la observación "Revisar entrega duplicada" y NO se consideran en el Plan de Carga hasta regularizar: confirmar si se cargó en el camión o sacarla de esa coordinación para liberarla.`,
+          { aceptar: 'Entendido', tono: 'peligro', icono: 'warning' });
         resolve(true);
       } catch (err) { console.error(err); showAlert('Error al cargar entregas: ' + (err?.message || err), 'error'); resolve(false); }
     });
@@ -4344,6 +4348,7 @@ function v2ModoEntregas(tipo) {
       ...(esTr ? [{ key: 'plan', label: 'En plan de carga', color: C_BLUE, sub: 'van en el camión CD hoy', fn: r => !!r._en_plan }] : []),
       ...(esCx ? [{ key: 'cd', label: 'CD-Cliente', color: '#7e22ce', sub: 'camión directo coordinado', fn: r => r._cdcli }] : []),
       { key: 'sd', label: 'Sin destino', color: C_RED, sub: 'no entran al plan', fn: r => !r.ce },
+      { key: 'dup', label: 'Revisar duplicada', color: '#b45309', sub: 'ya iba en camión programado', fn: r => !!r._dup },
       { key: 'man', label: 'Carga manual', color: C_SEC, sub: 'desde Excel', fn: r => r.origen_carga === 'MANUAL' },
     ],
     cols: [
@@ -4356,16 +4361,28 @@ function v2ModoEntregas(tipo) {
       { label: 'Creación', html: r => mono(r.fecha_txt, r.origen_carga === 'MANUAL' ? 'Excel' : 'correo SAP') },
     ],
     excluirEnFila: true,
-    planEstado: (r, excluida) => excluida ? pill('Excluida hoy', 'bad')
+    planEstado: (r, excluida) => r._dup ? pill('Revisar entrega duplicada', 'warn') : excluida ? pill('Excluida hoy', 'bad')
       : !r.ce ? pill('Sin destino', 'bad')
       : esTr ? (() => { const p = PLAN_LINEA_V2[r._plan] || PLAN_LINEA_V2.FUERA; return pill(p[0], p[1]); })()
       : esCx && r._cdcli ? pill(r._cd_hoy ? 'En plan · CD-Cliente' : 'CD-Cliente', 'purple')
       : pill('En plan', 'ok'),
-    edge: r => !r.ce ? C_RED : (r._en_plan ? C_GREEN : (r._cdcli ? '#7e22ce' : null)),
+    edge: r => r._dup ? '#b45309' : !r.ce ? C_RED : (r._en_plan ? C_GREEN : (r._cdcli ? '#7e22ce' : null)),
     note: 'Sólo las entregas alimentan el Plan de Carga (Traslados, Crossdocking y Revex), con la priorización vigente (Usuario, ABC AA, quiebre, abastecimiento) · Al crearse el DT la entrega sale de esta vista',
     minW: '1120px',
     detalle: r => {
       const acciones = [];
+      if (r._dup && can('ajustar_plan')) {
+        const reg = acc => async row => {
+          if (!await confirmar(acc === 'CARGADA' ? `¿Confirmar que la entrega ${row.entrega} se cargó en el camión programado?\n\nQueda fuera del Plan de Carga.`
+            : `¿Sacar la entrega ${row.entrega} de la coordinación del camión programado?\n\nSe libera y vuelve a estar disponible para el Plan de Carga.`,
+            { aceptar: acc === 'CARGADA' ? 'Confirmar carga' : 'Liberar', tono: acc === 'CARGADA' ? 'normal' : 'peligro' })) return null;
+          const { error } = await supabase.rpc('fn_abast_regularizar_entrega', { p_entrega: String(row.entrega), p_accion: acc });
+          if (error) { showAlert('No se pudo regularizar: ' + error.message, 'error'); return null; }
+          showAlert(acc === 'CARGADA' ? 'Entrega confirmada como cargada' : 'Entrega liberada del camión', 'success'); clearRawCache(); return { recargar: true };
+        };
+        acciones.push({ label: 'Cargada en camión', icon: 'local_shipping', primary: true, run: reg('CARGADA') });
+        acciones.push({ label: 'Liberar (sacar del camión)', icon: 'lock_open', run: reg('LIBERADA') });
+      }
       if (esCx && can('ajustar_plan')) {
         acciones.push({ label: r._cdcli ? 'Editar coordinación CD-Cliente' : 'Coordinar como CD-Cliente', icon: 'local_shipping', primary: true,
           run: async (row, ctx) => ((await showCoordTrasladoModal(row, ctx)) ? { recargar: true } : null) });
@@ -4383,7 +4400,7 @@ function v2ModoEntregas(tipo) {
       return {
         kind: `Entrega SAP · ${TIPO_ENT_LBL[tipo]}`, title: r.entrega,
         sub: `${nombreCentro(r.cesu) || r.cesu || '—'} → ${r.ce ? (nombreCentro(r.ce) || r.ce) : 'sin destino'} · ${r.texto_breve || ''}`,
-        aviso: !r.ce ? '<b>Sin destino:</b> el reporte no trae la columna Destinat. y el pedido no está en el SQVI. Carga el Excel con Destinat. para incluirla en el plan.' : '',
+        aviso: r._dup ? `<b>Revisar entrega duplicada:</b> esta entrega ya iba en un camión programado (${escV2(r.camiones || '')}). No se considera en el Plan de Carga hasta confirmar si se cargó o liberarla.` : !r.ce ? '<b>Sin destino:</b> el reporte no trae la columna Destinat. y el pedido no está en el SQVI. Carga el Excel con Destinat. para incluirla en el plan.' : '',
         kv: [
           ['Entrega', `${r.entrega} · pos ${String(r.pos_entrega || '').replace(/^0+/, '')}`], ['Pedido (doc. modelo)', `${r.doc_compr} · pos ${r.pos || '—'}`],
           ['Centro expedición', r.cesu], ['Centro destino', r.ce ? `${r.ce}${nombreCentro(r.ce) ? ' · ' + nombreCentro(r.ce) : ''}${r.destino_inferido ? ' (deducido del pedido)' : ''}` : 'Sin destino'],
@@ -4407,7 +4424,9 @@ function v2ModoEntregas(tipo) {
     // (12-oct-2026, Jordan) En Crossdocking y Pedidos de Traslados el Excluir va en las Entregas (lo que alimenta el plan).
     { id: 'pend', v2label: 'Pendientes', icon: 'pending_actions', sinExcluir: tipo !== 'REVEX' },
     { id: 'ent', v2label: 'Entregas', icon: 'local_shipping', vista: 'v_abast_entregas_disponibles',
-      transform: rows => rows.filter(r => r.tipo === tipo), preload: undefined, postFilter: undefined,
+      // (14-oct-2026, Jordan) + entregas RETENIDAS (ya iban en un camión programado): observación "Revisar entrega duplicada"
+      preload: async () => { const { data, error } = await supabase.rpc('fn_abast_entregas_duplicadas'); if (error) console.warn('Entregas duplicadas', error); return { dup: data || [] }; },
+      transform: (rows, ctx) => rows.filter(r => r.tipo === tipo).concat((ctx?.dup || []).filter(r => r.tipo === tipo).map(r => ({ ...r, _dup: true }))), postFilter: undefined,
       centroCampo: 'ce', titulo: `${cfg.titulo} – ENTREGAS`,
       columnas: [
         { key: 'entrega', label: 'Entrega' }, { key: 'pos_entrega', label: 'Pos. entrega' }, { key: 'doc_compr', label: 'Doc. modelo' }, { key: 'pos', label: 'Pos. modelo' },
@@ -4440,11 +4459,11 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610131217');
+    const m = await import('./ind-plan-carga.js?v=202610141313');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (currentSub === 'control_diferencias') {  // (11-oct-2026) Control de Diferencias del Plan de Carga
-    const m = await import('./control-diferencias.js?v=202610131217');
+    const m = await import('./control-diferencias.js?v=202610141313');
     await m.renderControlDiferencias(stage);
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
