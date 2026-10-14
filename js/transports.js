@@ -1,7 +1,7 @@
-import { getDatabase, saveDatabase, calcEjes, getOrigenGroups } from './data.js?v=202610141649';
+import { getDatabase, saveDatabase, calcEjes, getOrigenGroups } from './data.js?v=202610141655';
 import { formatRut, validateRut, generateSapCode, parseCSV, showAlert, escapeHtml } from './utils.js';
-import { renderFichaTransporte } from './ficha-transporte.js?v=202610141649';
-import { abrirModalTroncal } from './troncales.js?v=202610141649';
+import { renderFichaTransporte } from './ficha-transporte.js?v=202610141655';
+import { abrirModalTroncal } from './troncales.js?v=202610141655';
 
 let editingTransportId = null;
 let filtroTipo = ''; // '' | 'ultima_milla' | 'troncal'
@@ -379,8 +379,8 @@ export function renderTransportsView(container) {
     if (!validateRut(rut)) { showAlert('El RUT ingresado no es válido.', 'error'); return; }
 
     const rutEnUltimaMilla = (db2.transports || []).some(t => t.rut === rut);
-    const rutEnTroncal     = (db2.troncales  || []).some(t => t.rut === rut);
-    if (rutEnUltimaMilla || rutEnTroncal) { showAlert('RUT ya registrado en proveedores.', 'error'); return; }
+    // (14-oct-2026) db.troncales es sólo local (nunca llegó a Supabase): no bloquea el alta.
+    if (rutEnUltimaMilla) { showAlert('RUT ya registrado en proveedores.', 'error'); return; }
 
     // (14-oct-2026, Jordan) Todo proveedor nuevo (Última Milla o Troncal) va al maestro `transports`
     // (el que lee Plan de Carga). Antes los Troncales quedaban sólo en db.troncales (localStorage) y
