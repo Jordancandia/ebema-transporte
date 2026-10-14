@@ -18,11 +18,11 @@
 //     calculado; el calculado queda en tariff_config.peajesOriginal)
 //   · costos extra → extra_costs (se siguen aplicando por EJES)
 // ============================================================================
-import { saveDatabase, getOrigenGroups, getCentreName, deleteRow } from './data.js?v=202610141528';
-import { CAP_LIST, truckTypesWithCap, calcularCostoRuta } from './tarifas-engine.js?v=202610141528';
+import { saveDatabase, getOrigenGroups, getCentreName, deleteRow } from './data.js?v=202610141531';
+import { CAP_LIST, truckTypesWithCap, calcularCostoRuta } from './tarifas-engine.js?v=202610141531';
 import { showAlert } from './utils.js';
-import { can } from './permisos.js?v=202610141528';
-import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, textoImpacto, setParamPill, usuarioSesion, clasifPill, carPill, pillHtml } from './tarifas-ui.js?v=202610141528';
+import { can } from './permisos.js?v=202610141531';
+import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, textoImpacto, setParamPill, usuarioSesion, clasifPill, carPill, pillHtml } from './tarifas-ui.js?v=202610141531';
 
 // ── Utilidades ──────────────────────────────────────────────────────────────
 function getPath(obj, path) {
