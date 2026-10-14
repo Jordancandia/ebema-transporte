@@ -1,7 +1,7 @@
-import { getDatabase, saveDatabase, calcEjes, getOrigenGroups } from './data.js?v=202610141531';
+import { getDatabase, saveDatabase, calcEjes, getOrigenGroups } from './data.js?v=202610141649';
 import { formatRut, validateRut, generateSapCode, parseCSV, showAlert, escapeHtml } from './utils.js';
-import { renderFichaTransporte } from './ficha-transporte.js?v=202610141531';
-import { abrirModalTroncal } from './troncales.js?v=202610141531';
+import { renderFichaTransporte } from './ficha-transporte.js?v=202610141649';
+import { abrirModalTroncal } from './troncales.js?v=202610141649';
 
 let editingTransportId = null;
 let filtroTipo = ''; // '' | 'ultima_milla' | 'troncal'
@@ -382,35 +382,25 @@ export function renderTransportsView(container) {
     const rutEnTroncal     = (db2.troncales  || []).some(t => t.rut === rut);
     if (rutEnUltimaMilla || rutEnTroncal) { showAlert('RUT ya registrado en proveedores.', 'error'); return; }
 
-    if (nuevoTipo === 'ultima_milla') {
-      const id = 't' + Date.now();
-      db2.transports = db2.transports || [];
-      db2.transports.push({
-        id, razonSocial, rut, codigoSap, direccion, telefono, email,
-        ownerEmail: email,
-        activo: true,
-        camiones: [],
-        choferes: [],
-        documentos: {},
-        centrosServicio: []
-      });
-      saveDatabase(db2, { syncOnly: ['transports', 'transportsCamiones', 'transportsChoferes'] });
-      showAlert(`Proveedor Última Milla "${razonSocial}" creado. Agrega patentes y choferes desde Editar.`);
-    } else {
-      db2.troncales = db2.troncales || [];
-      db2.troncales.push({
-        id: 'tr_' + Date.now() + '_' + Math.random().toString(36).slice(2,7),
-        razonSocial, rut, codigoSap, direccion, telefono, email,
-        activo: true,
-        camiones: [],
-        choferes: [],
-        documentos: {},
-        rutasCobertura: [],
-        centrosServicio: []
-      });
-      saveDatabase(db2, { syncOnly: ['transports', 'transportsCamiones', 'transportsChoferes'] });
-      showAlert(`Proveedor Troncal "${razonSocial}" creado. Agrega patentes, choferes y rutas desde Editar.`);
-    }
+    // (14-oct-2026, Jordan) Todo proveedor nuevo (Última Milla o Troncal) va al maestro `transports`
+    // (el que lee Plan de Carga). Antes los Troncales quedaban sólo en db.troncales (localStorage) y
+    // nunca llegaban a Supabase. El id es el Código SAP cuando se informa (igual que la nómina SAP).
+    const esTroncal = nuevoTipo !== 'ultima_milla';
+    const id = codigoSap || ('t' + Date.now());
+    if ((db2.transports || []).some(t => String(t.id).trim().toUpperCase() === id)) { showAlert(`El código ${id} ya existe en el maestro de transportistas.`, 'error'); return; }
+    db2.transports = db2.transports || [];
+    db2.transports.push({
+      id, razonSocial, rut, codigoSap, direccion, telefono, email,
+      ownerEmail: email,
+      activo: true,
+      tipo_servicio: esTroncal ? 'TRONCAL' : 'ULTIMA MILLA',
+      camiones: [],
+      choferes: [],
+      documentos: {},
+      centrosServicio: []
+    });
+    saveDatabase(db2, { syncOnly: ['transports', 'transportsCamiones', 'transportsChoferes'] });
+    showAlert(`Proveedor ${esTroncal ? 'Troncal' : 'Última Milla'} "${razonSocial}" creado. Agrega patentes y choferes desde Editar.`);
 
     closeNuevo();
     renderTransportsView(container);
