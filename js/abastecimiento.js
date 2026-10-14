@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610141655';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610141655';
-import { getDatabase } from './data.js?v=202610141655';
+import { supabase } from './supabase-client.js?v=202610141916';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610141916';
+import { getDatabase } from './data.js?v=202610141916';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610141655';
-import { confirmar, pedirDato } from './confirmar.js?v=202610141655';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610141916';
+import { confirmar, pedirDato } from './confirmar.js?v=202610141916';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -353,6 +353,113 @@ async function setVentaDirectoManual(doc, tipo) {
 // Coordinado entran al Plan de Carga (fecha coordinada ≤ día objetivo del centro).
 // Patente normalizada para comparar (sin guiones, puntos ni espacios, en mayúsculas).
 const normPatente = p => String(p ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+// (14-oct-2026, Jordan) Formato único de patente: AA-AA-11 (nueva) o AA-11-11 (antigua), siempre
+// con guiones y en mayúsculas. La BD (trigger fmt_patente) aplica el mismo formato al guardar.
+const PAT_RE = /^[A-Z]{2}([A-Z]{2}|[0-9]{2})[0-9]{2}$/;
+function fmtPatente(p) {
+  const raw = String(p ?? '').trim();
+  if (!raw) return '';
+  const n = normPatente(raw);
+  return PAT_RE.test(n) ? `${n.slice(0, 2)}-${n.slice(2, 4)}-${n.slice(4, 6)}` : raw.toUpperCase();
+}
+const patenteValida = p => !String(p ?? '').trim() || PAT_RE.test(normPatente(p));
+const chofKey = (rut, nombre) => normPatente(rut) || ('N:' + String(nombre ?? '').trim().toUpperCase().replace(/\s+/g, ' '));
+// (14-oct-2026, Jordan) Base de choferes por patente (abast_base_choferes): se alimenta sola con cada
+// coordinación/programación guardada (trigger en BD). Al indicar la patente se propone el chofer
+// usado la última vez; el planner puede editar nombre, RUT y teléfono antes de guardar.
+const choferesDePatente = (tr, pat) => {
+  const n = normPatente(pat);
+  if (!n) return [];
+  return ((tr && tr.base) || []).filter(b => normPatente(b.patente) === n)
+    .sort((a, b) => String(b.ultimo_uso || '').localeCompare(String(a.ultimo_uso || '')));
+};
+function wirePatentes(panel, st, tr, draw) {
+  const iCam = panel.querySelector('[data-k="patCamion"]');
+  const iCar = panel.querySelector('[data-k="patCarro"]');
+  if (!iCam) return;
+  // Autocompletar: patentes del maestro + de la base (del transportista elegido primero).
+  const dl = iCam.list;
+  if (dl) {
+    [...dl.options].forEach(o => { o.value = fmtPatente(o.value); });
+    const ya = new Set([...dl.options].map(o => normPatente(o.value)));
+    const idT = String(st.idTrans ?? '').trim();
+    const base = ((tr && tr.base) || []).slice().sort((a, b) => (String(b.id_transporte) === idT) - (String(a.id_transporte) === idT));
+    base.forEach(b => {
+      const n = normPatente(b.patente);
+      if (ya.has(n)) return;
+      ya.add(n);
+      const o = document.createElement('option');
+      o.value = b.patente;
+      o.textContent = [b.chofer_nombre, b.transportista].filter(Boolean).join(' · ');
+      dl.appendChild(o);
+    });
+  }
+  const marcar = i => {
+    const ok = patenteValida(i.value);
+    const box = i.closest('.sv-inp');
+    if (box) box.style.borderColor = ok ? '' : '#b5000b';
+    let h = i.closest('.sv-inp')?.parentElement?.querySelector('[data-pathint]');
+    if (!ok && !h && box) { h = document.createElement('div'); h.dataset.pathint = '1'; h.className = 'sv-sub'; h.style.cssText = 'margin:4px 0 0;color:#b5000b'; h.textContent = 'Formato AA-AA-11 o AA-11-11'; box.after(h); }
+    if (ok && h) h.remove();
+  };
+  [iCam, iCar].filter(Boolean).forEach(i => {
+    i.setAttribute('maxlength', '9');
+    i.setAttribute('autocomplete', 'off');
+    i.style.textTransform = 'uppercase';
+    if (!i.value) i.placeholder = i === iCam ? (/pendiente/i.test(i.placeholder) ? 'AA-AA-11 · pendiente' : 'AA-AA-11') : 'AA-AA-11 (opcional)';
+    const fijar = () => { const f = fmtPatente(i.value); if (i.value !== f) i.value = f; st[i.dataset.k] = f; marcar(i); };
+    i.addEventListener('blur', () => { fijar(); if (i === iCam) sugerir(true); });
+    i.addEventListener('change', () => { fijar(); if (i === iCam) sugerir(true); });   // selección desde el autocompletar
+    if (i.value) marcar(i);
+  });
+  // Choferes registrados con la patente: propuesta editable.
+  const grid = iCam.closest('div[style*="grid"]') || iCam.closest('.sv-inp')?.parentElement;
+  const box = document.createElement('div');
+  box.dataset.patsug = '1';
+  box.style.cssText = 'display:flex;flex-direction:column;gap:6px';
+  grid?.after(box);
+  const aplicar = b => {
+    st.choferNombre = b.chofer_nombre || '';
+    st.choferRut = b.chofer_rut || '';
+    st.choferTel = b.chofer_telefono || st.choferTel || '';
+    if (!String(st.patCarro ?? '').trim() && b.patente_carro) st.patCarro = b.patente_carro;
+    if (!String(st.idTrans ?? '').trim() && b.id_transporte) {
+      const t = [...((tr && tr.trans) || []), ...((tr && tr.transTodos) || [])].find(x => String(x.id) === String(b.id_transporte));
+      if (t) { st.idTrans = String(t.id); st.transportista = t.razonSocial || b.transportista || ''; }
+    }
+    st._patMsg = `Chofer propuesto desde la base de choferes (${fmtPatente(b.patente)}). Puedes editar nombre, RUT y teléfono antes de guardar.`;
+    draw();
+  };
+  function sugerir(auto) {
+    const pat = st.patCamion;
+    if (!normPatente(pat) || !patenteValida(pat)) { box.innerHTML = ''; return; }
+    const lst = choferesDePatente(tr, pat);
+    if (!lst.length) { st._patMsg = ''; box.innerHTML = '<div class="sv-sub" style="margin:0;max-width:none">Patente nueva: al guardar, la patente y el chofer quedan registrados en la base de choferes.</div>'; return; }
+    if (auto && !String(st.choferNombre ?? '').trim() && !String(st.choferRut ?? '').trim()) { aplicar(lst[0]); return; }
+    const kAct = chofKey(st.choferRut, st.choferNombre);
+    box.innerHTML = (st._patMsg ? `<div class="sv-note-box" style="background:#e0f2fe;color:#0c4a6e">${escapeHtml(st._patMsg)}</div>` : '')
+      + `<div class="sv-sub" style="margin:0;max-width:none">Choferes registrados con ${escapeHtml(fmtPatente(pat))} (clic para usar):</div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px">${lst.slice(0, 6).map((b, ix) => {
+        const on = chofKey(b.chofer_rut, b.chofer_nombre) === kAct;
+        return `<button type="button" class="sv-opt ${on ? 'is-on' : ''}" data-patpick="${ix}" style="padding:4px 10px;width:auto">
+          <span class="material-symbols-outlined" style="font-size:16px">${on ? 'check_circle' : 'badge'}</span>
+          <span style="text-align:left"><b>${escapeHtml(b.chofer_nombre || 'Sin nombre')}</b> <span class="sv-sub" style="display:inline;margin:0">${escapeHtml([b.chofer_rut, b.chofer_telefono].filter(Boolean).join(' · '))}</span></span></button>`;
+      }).join('')}</div>`;
+    box.querySelectorAll('[data-patpick]').forEach(btn => btn.addEventListener('click', () => { const b = lst[+btn.dataset.patpick]; if (b) aplicar(b); }));
+  }
+  sugerir(false);
+  // Guardar: no se acepta una patente fuera de formato.
+  const ok = panel.querySelector('[data-ok]');
+  ok?.addEventListener('click', e => {
+    [iCam, iCar].filter(Boolean).forEach(i => { const f = fmtPatente(i.value); i.value = f; st[i.dataset.k] = f; marcar(i); });
+    const malas = [iCam, iCar].filter(i => i && !patenteValida(i.value));
+    if (malas.length) {
+      e.stopImmediatePropagation(); e.preventDefault();
+      showAlert(`Patente con formato inválido (${malas.map(i => i.value).join(', ')}). Usa AA-AA-11 (nueva) o AA-11-11 (antigua).`, 'error');
+      malas[0].focus();
+    }
+  });
+}
 async function loadCoordinacionesVenta() {
   const { data, error } = await supabase.from('abast_venta_coordinacion').select('*');
   if (error) { console.error(error); return new Map(); }
@@ -429,19 +536,31 @@ async function anularCoordinacionVenta(doc) {
   return true;
 }
 async function loadTransportistasCoord() {
-  const [t, c, k] = await Promise.all([
+  const [t, c, k, b] = await Promise.all([
     supabase.from('transports').select('id,razonSocial,rut,activo,telefono,email,tipo_servicio'),
     supabase.from('transports_choferes').select('rut,nombre,apellido,telefono,id_transporte,id_camion'),
     supabase.from('transports_camiones').select('id_camion,id_transporte,modelo,capacidad_ton'),
+    supabase.from('abast_base_choferes').select('patente,chofer_nombre,chofer_rut,chofer_telefono,id_transporte,transportista,patente_carro,usos,ultimo_uso').order('ultimo_uso', { ascending: false }).limit(5000),
   ]);
+  // (14-oct-2026) Base de choferes por patente: se suma a los choferes del maestro del transportista.
+  const base = (b && !b.error && b.data) || [];
+  const chofM = (c.data || []).slice();
+  const vistos = new Set(chofM.map(x => chofKey(x.rut, [x.nombre, x.apellido].filter(Boolean).join(' '))));
+  base.forEach(x => {
+    const k = chofKey(x.chofer_rut, x.chofer_nombre);
+    if (vistos.has(k)) return;
+    vistos.add(k);
+    chofM.push({ rut: x.chofer_rut || '', nombre: x.chofer_nombre || '', apellido: '', telefono: x.chofer_telefono || '', id_transporte: x.id_transporte || '', id_camion: x.patente || null });
+  });
   return {
     // (4-oct-2026) Sólo transportistas activos y completos (RUT, teléfono y correo); los BLOQUEADOS no se ofrecen.
     // (5-oct-2026) Se ofrece TODO el maestro activo; los incompletos van marcados BLOQUEADO (antes se ocultaban y la lista quedaba vacía).
     trans: (t.data || []).filter(x => x.activo !== false).map(x => ({ ...x, _bloq: !(String(x.rut ?? '').trim() && String(x.telefono ?? '').trim() && String(x.email ?? '').trim()) })).sort((a, b) => String(a.razonSocial || '').localeCompare(String(b.razonSocial || ''))),
     // (4-oct-2026) Todo el maestro activo (incluye bloqueados, marcados), para elegir al programar camiones.
     transTodos: (t.data || []).filter(x => x.activo !== false).sort((a, b) => String(a.razonSocial || '').localeCompare(String(b.razonSocial || ''))),
-    choferes: c.data || [],
+    choferes: chofM,
     camiones: k.data || [],
+    base,
   };
 }
 // (5-oct-2026, Jordan) Se puede coordinar con un transportista BLOQUEADO del maestro (faltan RUT,
@@ -1156,9 +1275,10 @@ function showCoordVentaModal(row, ctx) {
         if (i.type === 'date') { const p = panel.querySelector('[data-plantxt]'); if (p) p.textContent = planTxt(); }
       }));
       montarTransp(panel, st, tr, bad('idTrans'), draw);
+      wirePatentes(panel, st, tr, draw);
       panel.querySelector('[data-sel="chof"]')?.addEventListener('change', e => {
         const x = chofList()[+e.target.value];
-        if (x) { st.choferNombre = [x.nombre, x.apellido].filter(Boolean).join(' '); st.choferRut = x.rut || ''; st.choferTel = x.telefono || st.choferTel; if (x.id_camion) st.patCamion = x.id_camion; draw(); }
+        if (x) { st.choferNombre = [x.nombre, x.apellido].filter(Boolean).join(' '); st.choferRut = x.rut || ''; st.choferTel = x.telefono || st.choferTel; if (x.id_camion) st.patCamion = fmtPatente(x.id_camion); draw(); }
       });
       // (7-oct-2026) Pedidos acompañantes del mismo camión
       panel.querySelectorAll('[data-x]').forEach(i => i.addEventListener('input', () => { const ex = st.extras.get(i.dataset.x); if (ex) ex[i.dataset.xk] = i.value; }));
@@ -1175,7 +1295,7 @@ function showCoordVentaModal(row, ctx) {
           && !(await confirmar(`El camión suma ${fmtNum(tonSelV(), 1)} t\n\nSupera la capacidad de ${CAP_CAMION_DIRECTO} t. ¿Guardar igual?`, { aceptar: 'Guardar igual', tono: 'peligro', icono: 'warning' }))) { btn.disabled = false; return; }
         if (cli && (st.patCamion.trim() || st.choferRut.trim())) {
           const avisos = await chequearChoquePatente(row, st, ctx, [...st.extras.keys()]);
-          if (avisos.length && !(await confirmar(`Posible choque con el camión ${st.patCamion.trim().toUpperCase()}\n\n${avisos.map(a => '• ' + a).join('\n')}\n\n¿Guardar igual?`, { aceptar: 'Guardar igual', tono: 'peligro', icono: 'warning' }))) { btn.disabled = false; return; }
+          if (avisos.length && !(await confirmar(`Posible choque con el camión ${fmtPatente(st.patCamion)}\n\n${avisos.map(a => '• ' + a).join('\n')}\n\n¿Guardar igual?`, { aceptar: 'Guardar igual', tono: 'peligro', icono: 'warning' }))) { btn.disabled = false; return; }
         }
         const extrasG = cli ? [...st.extras.entries()] : [];
         const grupo = extrasG.length ? (grupo0 || `NV-${MAIN}-${Date.now().toString(36)}`) : null;
@@ -1183,7 +1303,7 @@ function showCoordVentaModal(row, ctx) {
           tipo_entrega: st.tipo, fecha_entrega: st.fecha, grupo_camion: grupo,
           id_transporte: cli ? st.idTrans.trim() : null, transportista: cli ? (st.transportista || null) : null,
           chofer_nombre: cli ? (st.choferNombre.trim() || null) : null, chofer_rut: cli ? (st.choferRut.trim() || null) : null, chofer_telefono: cli ? (st.choferTel.trim() || null) : null,
-          patente_camion: cli ? (st.patCamion.trim().toUpperCase() || null) : null, patente_carro: cli ? (st.patCarro.trim().toUpperCase() || null) : null,
+          patente_camion: cli ? (fmtPatente(st.patCamion) || null) : null, patente_carro: cli ? (fmtPatente(st.patCarro) || null) : null,
         };
         const ok = await guardarCoordinacionVenta({
           doc_ventas: MAIN, n_entrega: st.entrega.trim(), id_cliente: row._id_cliente || null, nombre_cliente: row._cliente || null,
@@ -1208,7 +1328,7 @@ function showCoordVentaModal(row, ctx) {
           }
         }
         const transpSeg = { id_transporte: st.idTrans.trim(), transportista: st.transportista, chofer_nombre: st.choferNombre.trim(), chofer_rut: st.choferRut.trim(),
-          chofer_telefono: st.choferTel.trim(), patente_camion: st.patCamion.trim().toUpperCase(), patente_carro: st.patCarro.trim().toUpperCase() };
+          chofer_telefono: st.choferTel.trim(), patente_camion: fmtPatente(st.patCamion), patente_carro: fmtPatente(st.patCarro) };
         const regSeg = (x, docX, entregaX) => ({ doc: docX, tipo: 'CD-CLIENTE', ce: row.ofvta, fechaCarga: st.fecha, origen: '1003 CD Quilicura',
           destino: `Cliente: ${x._cliente || ('ID ' + (x._id_cliente || ''))}` + (grupo ? ` · camión compartido (${extrasG.length + 1} pedidos)` : ''), transp: transpSeg,
           lineas: (x._detalle || []).map(d => lineaSegCoord({ tipo_carga: 'Pedidos de venta CD', documento: docX, n_entrega: entregaX, material: d.material, nombre: d.nombre,
@@ -1621,9 +1741,10 @@ function showCoordRetiroModal(row, ctx) {
       wireCands();
       wireLineas();
       montarTransp(panel, st, tr, bad('idTrans'), draw);
+      wirePatentes(panel, st, tr, draw);
       panel.querySelector('[data-sel="chof"]')?.addEventListener('change', e => {
         const x = chofList()[+e.target.value];
-        if (x) { st.choferNombre = [x.nombre, x.apellido].filter(Boolean).join(' '); st.choferRut = x.rut || ''; st.choferTel = x.telefono || st.choferTel; if (x.id_camion) st.patCamion = x.id_camion; draw(); }
+        if (x) { st.choferNombre = [x.nombre, x.apellido].filter(Boolean).join(' '); st.choferRut = x.rut || ''; st.choferTel = x.telefono || st.choferTel; if (x.id_camion) st.patCamion = fmtPatente(x.id_camion); draw(); }
       });
       panel.querySelector('[data-ok]').addEventListener('click', async e => {
         if (faltantes().length) { st.err = true; draw(); return; }
@@ -1644,7 +1765,7 @@ function showCoordRetiroModal(row, ctx) {
         if (rm() && (st.patCamion.trim() || st.choferRut.trim())) {
           st.tonSel = tonSel();
           const avisos = await chequearChoqueRetiro(docs, st, ctx);
-          if (avisos.length && !(await confirmar(`Posible choque con el camión ${st.patCamion.trim().toUpperCase()}\n\n${avisos.map(a => '• ' + a).join('\n')}\n\n¿Guardar igual?`, { aceptar: 'Guardar igual', tono: 'peligro', icono: 'warning' }))) { btn.disabled = false; return; }
+          if (avisos.length && !(await confirmar(`Posible choque con el camión ${fmtPatente(st.patCamion)}\n\n${avisos.map(a => '• ' + a).join('\n')}\n\n¿Guardar igual?`, { aceptar: 'Guardar igual', tono: 'peligro', icono: 'warning' }))) { btn.disabled = false; return; }
         }
         const fabDir = dirMain();
         if (st.dirSel === 'new' && st.guardar && fabDir && row.proveedor) {
@@ -1654,7 +1775,7 @@ function showCoordRetiroModal(row, ctx) {
         const transp = rm() ? {
           id_transporte: st.idTrans.trim(), transportista: st.transportista || null,
           chofer_nombre: st.choferNombre.trim() || null, chofer_rut: st.choferRut.trim() || null, chofer_telefono: st.choferTel.trim() || null,
-          patente_camion: st.patCamion.trim().toUpperCase() || null, patente_carro: st.patCarro.trim().toUpperCase() || null,
+          patente_camion: fmtPatente(st.patCamion) || null, patente_carro: fmtPatente(st.patCarro) || null,
         } : TRANSP_NULL;
         const base = { estado: 'coordinado', tipo_local_rm: st.modo, tipo_retiro: st.tipo || null, fecha_retiro: st.fecha || null, ...transp, updated_by: email, updated_at: now };
         const filas = [{ ...base, doc_compr: String(row.doc_compr).trim(), entrega_entrante: st.entrega.trim() || null, lineas_retiro: lineasSel(MAIN),
@@ -1836,9 +1957,10 @@ function showTransporteCamionModal({ titulo, sub, ini = {}, otros = [], fechaDef
         if (st.open || !t) setTimeout(() => q.focus(), 0);
       }
       panel.querySelector('[data-tcambiar]')?.addEventListener('click', () => { st.open = true; draw(); });
+      wirePatentes(panel, st, tr, draw);
       panel.querySelector('[data-sel="chof"]')?.addEventListener('change', e => {
         const x = chofList()[+e.target.value];
-        if (x) { st.choferNombre = [x.nombre, x.apellido].filter(Boolean).join(' '); st.choferRut = x.rut || ''; st.choferTel = x.telefono || st.choferTel; if (x.id_camion) st.patCamion = x.id_camion; draw(); }
+        if (x) { st.choferNombre = [x.nombre, x.apellido].filter(Boolean).join(' '); st.choferRut = x.rut || ''; st.choferTel = x.telefono || st.choferTel; if (x.id_camion) st.patCamion = fmtPatente(x.id_camion); draw(); }
       });
       panel.querySelector('[data-ok]').addEventListener('click', async e => {
         if (faltantes().length) { st.err = true; draw(); return; }
@@ -1849,7 +1971,7 @@ function showTransporteCamionModal({ titulo, sub, ini = {}, otros = [], fechaDef
           if (normPatente(o.patente_camion) === pat) av.push(`La patente ya está programada hoy en ${o.lbl}.`);
           else if (rut && normPatente(o.chofer_rut) === rut) av.push(`El chofer ya está programado hoy en ${o.lbl} (patente ${o.patente_camion}).`);
         });
-        if (av.length && !(await confirmar(`Posible choque con el camión ${st.patCamion.trim().toUpperCase()}\n\n${av.map(a => '• ' + a).join('\n')}\n\n¿Programar igual?`, { aceptar: 'Programar igual', tono: 'peligro', icono: 'warning' }))) return;
+        if (av.length && !(await confirmar(`Posible choque con el camión ${fmtPatente(st.patCamion)}\n\n${av.map(a => '• ' + a).join('\n')}\n\n¿Programar igual?`, { aceptar: 'Programar igual', tono: 'peligro', icono: 'warning' }))) return;
         // Transportista bloqueado: se completan en el maestro los datos que faltaban.
         const fs = faltan(tsel);
         if (fs.length) {
@@ -1864,14 +1986,14 @@ function showTransporteCamionModal({ titulo, sub, ini = {}, otros = [], fechaDef
           showAlert(`Maestro actualizado: ${tsel.razonSocial} queda activo.`, 'success');
         }
         // (8-oct-2026, Jordan) Confirmar el camión con sus datos y el día de carga.
-        const okConf = await confirmar(`${COORD ? '¿Guardar la coordinación del transporte (sin programar)?' : '¿Confirmar el camión?'}\n\n${titulo}\nDía de carga: ${fmtFechaISO(st.fechaCarga)}\nTransportista: ${tsel.id} · ${tsel.razonSocial || st.transportista}\nChofer: ${st.choferNombre.trim()} · ${st.choferRut.trim()} · ${st.choferTel.trim()}\nPatente camión: ${st.patCamion.trim().toUpperCase()}${st.patCarro.trim() ? ' · carro ' + st.patCarro.trim().toUpperCase() : ''}`,
+        const okConf = await confirmar(`${COORD ? '¿Guardar la coordinación del transporte (sin programar)?' : '¿Confirmar el camión?'}\n\n${titulo}\nDía de carga: ${fmtFechaISO(st.fechaCarga)}\nTransportista: ${tsel.id} · ${tsel.razonSocial || st.transportista}\nChofer: ${st.choferNombre.trim()} · ${st.choferRut.trim()} · ${st.choferTel.trim()}\nPatente camión: ${fmtPatente(st.patCamion)}${st.patCarro.trim() ? ' · carro ' + fmtPatente(st.patCarro) : ''}`,
           { aceptar: COORD ? 'Guardar coordinación' : 'Confirmar camión', tono: 'normal', icono: COORD ? 'event_available' : 'local_shipping' });
         if (!okConf) { draw(); return; }
         fin({
           fecha_carga: st.fechaCarga,
           id_transporte: String(tsel.id).trim(), transportista: String(tsel.razonSocial || st.transportista).trim(),
           chofer_nombre: st.choferNombre.trim(), chofer_rut: st.choferRut.trim(), chofer_telefono: st.choferTel.trim(),
-          patente_camion: st.patCamion.trim().toUpperCase(), patente_carro: st.patCarro.trim().toUpperCase() || null,
+          patente_camion: fmtPatente(st.patCamion), patente_carro: fmtPatente(st.patCarro) || null,
         });
       });
     }
@@ -2007,9 +2129,10 @@ function showCoordTrasladoModal(row, ctx) {
       panel.querySelectorAll('[data-add]').forEach(b => b.addEventListener('click', () => { const p = pedidos.get(b.dataset.add); st.entregas.set(b.dataset.add, (p && p.coord && p.coord.n_entrega) || ''); draw(); }));
       panel.querySelectorAll('[data-del]').forEach(b => b.addEventListener('click', () => { st.entregas.delete(b.dataset.del); draw(); }));
       montarTransp(panel, st, tr, bad('idTrans'), draw);
+      wirePatentes(panel, st, tr, draw);
       panel.querySelector('[data-sel="chof"]')?.addEventListener('change', e => {
         const x = chofList()[+e.target.value];
-        if (x) { st.choferNombre = [x.nombre, x.apellido].filter(Boolean).join(' '); st.choferRut = x.rut || ''; st.choferTel = x.telefono || st.choferTel; if (x.id_camion) st.patCamion = x.id_camion; draw(); }
+        if (x) { st.choferNombre = [x.nombre, x.apellido].filter(Boolean).join(' '); st.choferRut = x.rut || ''; st.choferTel = x.telefono || st.choferTel; if (x.id_camion) st.patCamion = fmtPatente(x.id_camion); draw(); }
       });
       panel.querySelector('[data-ok]').addEventListener('click', async e => {
         if (faltantes().length) { st.err = true; draw(); return; }
@@ -2026,14 +2149,14 @@ function showCoordTrasladoModal(row, ctx) {
           else if (!mismaPat && rut && o.fecha_entrega === st.fecha && normPatente(o.chofer_rut) === rut) av.push(`El chofer ya está coordinado el ${fmtFechaISO(o.fecha_entrega)} en otra patente (${o.patente_camion}, ${o.doc}).`);
         });
         if (tonSel() > CAP_CAMION_DIRECTO + 1e-9) av.push(`Los pedidos suman ${fmtNum(tonSel(), 1)} t (supera ${CAP_CAMION_DIRECTO} t).`);
-        if (av.length && !(await confirmar(`Posible choque con el camión ${st.patCamion.trim().toUpperCase()}\n\n${av.map(a => '• ' + a).join('\n')}\n\n¿Guardar igual?`, { aceptar: 'Guardar igual', tono: 'peligro', icono: 'warning' }))) { btn.disabled = false; return; }
+        if (av.length && !(await confirmar(`Posible choque con el camión ${fmtPatente(st.patCamion)}\n\n${av.map(a => '• ' + a).join('\n')}\n\n¿Guardar igual?`, { aceptar: 'Guardar igual', tono: 'peligro', icono: 'warning' }))) { btn.disabled = false; return; }
         const email = await getUserEmail(), now = new Date().toISOString();
         const filas = [...st.entregas.entries()].map(([d, ent]) => ({
           doc_compr: d, ce: String(row.ce).trim(), tipo_entrega: 'CD-CLIENTE', fecha_entrega: st.fecha, n_entrega: String(ent).trim(),
           nombre_cliente: st.cliente.trim().toUpperCase() || null, comuna: st.comuna.trim() || null, direccion: st.direccion.trim(), telefono: st.telefono.trim(),
           id_transporte: st.idTrans.trim(), transportista: st.transportista || null,
           chofer_nombre: st.choferNombre.trim() || null, chofer_rut: st.choferRut.trim() || null, chofer_telefono: st.choferTel.trim() || null,
-          patente_camion: st.patCamion.trim().toUpperCase() || null, patente_carro: st.patCarro.trim().toUpperCase() || null,
+          patente_camion: fmtPatente(st.patCamion) || null, patente_carro: fmtPatente(st.patCarro) || null,
           updated_at: now, updated_by: email, ...((pedidos.get(d) || {}).coord ? {} : { created_at: now, created_by: email }),
         }));
         const { error } = await supabase.from('abast_traslado_coordinacion').upsert(filas, { onConflict: 'doc_compr' });
@@ -4468,11 +4591,11 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610141655');
+    const m = await import('./ind-plan-carga.js?v=202610141916');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (currentSub === 'control_diferencias') {  // (11-oct-2026) Control de Diferencias del Plan de Carga
-    const m = await import('./control-diferencias.js?v=202610141655');
+    const m = await import('./control-diferencias.js?v=202610141916');
     await m.renderControlDiferencias(stage);
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
