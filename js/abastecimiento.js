@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610150754';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610150754';
-import { getDatabase } from './data.js?v=202610150754';
+import { supabase } from './supabase-client.js?v=202610150908';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610150908';
+import { getDatabase } from './data.js?v=202610150908';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610150754';
-import { confirmar, pedirDato } from './confirmar.js?v=202610150754';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610150908';
+import { confirmar, pedirDato } from './confirmar.js?v=202610150908';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -4595,11 +4595,11 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610150754');
+    const m = await import('./ind-plan-carga.js?v=202610150908');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (currentSub === 'control_diferencias') {  // (11-oct-2026) Control de Diferencias del Plan de Carga
-    const m = await import('./control-diferencias.js?v=202610150754');
+    const m = await import('./control-diferencias.js?v=202610150908');
     await m.renderControlDiferencias(stage);
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
@@ -4687,6 +4687,8 @@ const CAP_CAMION_DIRECTO = 28;
 //    planificación que suman > 85% de la capacidad (mismo proveedor+destino / mismo cliente).
 const UMBRAL_CD_CLIENTE = 0.85;
 const UMBRAL_FABRICA = 0.85;
+// (15-oct-2026, Jordan) Estado del camión CD en el Plan de Carga: PROGRAMAR ≥85% (antes 80%), REVISAR 70–84%, CARGA INSUFICIENTE <70%.
+const PCT_PROGRAMAR_CD = 85;
 // Umbral de la promoción automática 48h → 24h del camión CD (AJUSTE 24-sep-2026).
 // Se mantiene en 90%: el cambio a 85% del 28-sep aplica sólo a camiones directos.
 const UMBRAL_PROMOCION_24H = 0.90;
@@ -4846,7 +4848,7 @@ function recalcCargaCD(r) {
   if (cap !== r.cap) { r.cap = cap; f = asignarCamionesCD(r); }
   const pct = cap > 0 ? Math.round(tot / cap * 100) : 0;
   let status, statusCls;
-  if (pct >= 80) { status = 'PROGRAMAR'; statusCls = 'bg-green-700 text-white'; }
+  if (pct >= PCT_PROGRAMAR_CD) { status = 'PROGRAMAR'; statusCls = 'bg-green-700 text-white'; }
   else if (pct >= 70) { status = 'REVISAR'; statusCls = 'bg-yellow-600 text-white'; }
   else { status = 'CARGA INSUFICIENTE'; statusCls = 'bg-gray-400 text-white'; }
   let obs = '';
@@ -5494,7 +5496,7 @@ async function renderPlanCarga(stage, opts = {}) {
     const enCalendario = (horizonteEfectivo === 48 ? programadosDia2 : programadosDia1).has(ce);
 
     let status, statusCls;
-    if (pct >= 80) { status = 'PROGRAMAR'; statusCls = 'bg-green-700 text-white'; }
+    if (pct >= PCT_PROGRAMAR_CD) { status = 'PROGRAMAR'; statusCls = 'bg-green-700 text-white'; }
     else if (pct >= 70) { status = 'REVISAR'; statusCls = 'bg-yellow-600 text-white'; }
     else { status = 'CARGA INSUFICIENTE'; statusCls = 'bg-gray-400 text-white'; }
 
@@ -5542,7 +5544,7 @@ async function renderPlanCarga(stage, opts = {}) {
 
   function truckSVG(pct) {
     const p = Math.min(pct, 100);
-    const fill = pct >= 80 ? '#15803d' : pct >= 70 ? '#ca8a04' : '#9ca3af';
+    const fill = pct >= PCT_PROGRAMAR_CD ? '#15803d' : pct >= 70 ? '#ca8a04' : '#9ca3af';
     const bgFill = '#e5e7eb';
     return `<svg viewBox="0 0 60 30" width="64" height="32" xmlns="http://www.w3.org/2000/svg">
       <rect x="0" y="4" width="38" height="20" rx="2" fill="${bgFill}" stroke="#6b7280" stroke-width="1"/>
@@ -5782,7 +5784,7 @@ async function renderPlanCarga(stage, opts = {}) {
   const d24Txt = (diaHabil1.getTime() === manana.getTime() ? 'Mañana · ' : '') + diaCorto(diaHabil1);
   const d48Txt = cap1(diaCorto(diaHabil2));
   const diaObj = r => (r.horizonte === 48 ? diaHabil2 : diaHabil1);
-  const estadoV2 = r => r.pct >= 80 ? { lbl: 'Programar', tone: 'ok', k: 'prog', bg: '#dcfce7', fg: '#14532d', dot: '#15803d' }
+  const estadoV2 = r => r.pct >= PCT_PROGRAMAR_CD ? { lbl: 'Programar', tone: 'ok', k: 'prog', bg: '#dcfce7', fg: '#14532d', dot: '#15803d' }
     : r.pct >= 70 ? { lbl: 'Revisar', tone: 'warn', k: 'rev', bg: '#fef3c7', fg: '#713f12', dot: '#ca8a04' }
     : { lbl: 'Carga insuficiente', tone: 'bad', k: 'ins', bg: '#ffdad6', fg: '#93000a', dot: '#b5000b' };
   const pillEstado = e => `<span class="pc-st" style="background:${e.bg};color:${e.fg}"><i style="background:${e.dot}"></i>${escapeHtml(e.lbl)}</span>`;
@@ -6265,7 +6267,7 @@ async function renderPlanCarga(stage, opts = {}) {
   }
   function filaV2(r) {
     const e = estadoV2(r);
-    const pctC = r.pct >= 80 ? '#15803d' : r.pct >= 70 ? '#a16207' : '#b5000b';
+    const pctC = r.pct >= PCT_PROGRAMAR_CD ? '#15803d' : r.pct >= 70 ? '#a16207' : '#b5000b';
     const fs = r.sobrecarga > 0 ? `<span style="color:#15803d">Sobran ${t1(r.sobrecarga)} t</span>` : `<span style="color:${r.pct < 70 ? '#b5000b' : '#5c5f61'}">Faltan ${t1(r.faltan)} t</span>`;
     return `<div class="pc-row ${r.enCalendario && r.pct >= 70 ? 'is-agenda' : ''} ${st.drawer === r.ce ? 'is-sel' : ''}" role="button" tabindex="0" data-chip data-suc="${escapeHtml(r.ce)}">
       <div class="pc-suc"><div><b>${escapeHtml(r.nombre)}</b><span class="sv-mono">${escapeHtml(r.ce)}</span></div><div class="pc-tags">${tagsV2(r)}</div></div>
@@ -6707,8 +6709,8 @@ async function renderPlanCarga(stage, opts = {}) {
   function draw() {
     resultado.forEach(refrescarFill);
     const kpiDef = [
-      { key: 'prog', label: 'Programar', color: '#15803d', sub: 'sucursales ≥80%', fn: r => estadoV2(r).k === 'prog' },
-      { key: 'rev', label: 'Revisar', color: '#ca8a04', sub: 'sucursales 70–80%', fn: r => estadoV2(r).k === 'rev' },
+      { key: 'prog', label: 'Programar', color: '#15803d', sub: 'sucursales ≥85%', fn: r => estadoV2(r).k === 'prog' },
+      { key: 'rev', label: 'Revisar', color: '#ca8a04', sub: 'sucursales 70–84%', fn: r => estadoV2(r).k === 'rev' },
       { key: 'ins', label: 'Insuficiente', color: '#b5000b', sub: 'bajo 70%', fn: r => estadoV2(r).k === 'ins' },
       { key: 'seg', label: '2º camión', color: '#15803d', sub: 'propuestos (≥85%) · aceptados', fn: r => r.segundoPropuesto,
         valor: l => { const p = l.filter(r => r.segundoPropuesto); return `${p.length} · ${p.filter(r => segAcept.has(r.ce)).length}`; } },
