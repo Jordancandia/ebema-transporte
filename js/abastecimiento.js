@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610151246';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610151246';
-import { getDatabase } from './data.js?v=202610151246';
+import { supabase } from './supabase-client.js?v=202610151254';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610151254';
+import { getDatabase } from './data.js?v=202610151254';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610151246';
-import { confirmar, pedirDato } from './confirmar.js?v=202610151246';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610151254';
+import { confirmar, pedirDato } from './confirmar.js?v=202610151254';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -4595,11 +4595,11 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610151246');
+    const m = await import('./ind-plan-carga.js?v=202610151254');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (currentSub === 'control_diferencias') {  // (11-oct-2026) Control de Diferencias del Plan de Carga
-    const m = await import('./control-diferencias.js?v=202610151246');
+    const m = await import('./control-diferencias.js?v=202610151254');
     await m.renderControlDiferencias(stage);
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
@@ -6240,22 +6240,29 @@ async function renderPlanCarga(stage, opts = {}) {
     return t.join('');
   }
   // Camión a escala: segmentos por categoría (orden de llenado) + espacio libre rayado
+  // (15-oct-2026, Jordan) La barra muestra lo que REALMENTE va en el camión CD (asignación por línea
+  // completa, asignarCamionesCD): antes repartía por categoría y pintaba como «Retiro» espacio que en
+  // realidad ocupaban otras líneas (una OC de retiro no se divide). «No cabe» = líneas fuera del camión CD.
   function camionHtml(r) {
-    let acc = 0;
+    marcarCapacidadCD(r);
     const segs = [], chicos = [];
+    let cargado = 0;
     CAT_V2.forEach((c, i) => {
-      const v = c.ton(r);
-      if (!(v > 0)) return;
-      const inC = Math.max(0, Math.min(v, r.cap - acc));
-      acc += v;
-      if (inC <= 0) { chicos.push({ color: c.color, lbl: c.lbl + ' (no cabe)', ton: v }); return; }
-      const w = inC / r.cap * 100;
-      segs.push(`<div class="pc-seg" title="${escapeHtml(c.lbl)}: ${t1(v)} t" style="width:calc(${w.toFixed(2)}% - 2px);background:${c.color};color:${CAT_FG[i]}">${w >= 5.5 ? `<b>${t1(inC)}</b>` : ''}${w >= 11 ? `<small>${escapeHtml(CAT_CORTO[i])}</small>` : ''}</div>`);
-      if (w < 5.5) chicos.push({ color: c.color, lbl: c.lbl, ton: inC });
+      const it = (r.det && r.det[c.k]) || [];
+      const inC = it.filter(d => d._enCamion).reduce((s2, d) => s2 + (d.ton || 0), 0);
+      const fuera = it.filter(d => !d._enCamion && d._manual !== 0).reduce((s2, d) => s2 + (d.ton || 0), 0);
+      if (inC > 0.005) {
+        cargado += inC;
+        const w = Math.min(inC, r.cap) / r.cap * 100;
+        segs.push(`<div class="pc-seg" title="${escapeHtml(c.lbl)}: ${t1(inC)} t en el camión${fuera > 0.05 ? ` · ${t1(fuera)} t no caben` : ''}" style="width:calc(${w.toFixed(2)}% - 2px);background:${c.color};color:${CAT_FG[i]}">${w >= 5.5 ? `<b>${t1(inC)}</b>` : ''}${w >= 11 ? `<small>${escapeHtml(CAT_CORTO[i])}</small>` : ''}</div>`);
+        if (w < 5.5) chicos.push({ color: c.color, lbl: c.lbl, ton: inC });
+      }
+      if (fuera > 0.05) chicos.push({ color: c.color, lbl: c.lbl + ' (no cabe)', ton: fuera });
     });
-    const libre = r.faltan > 0.05 ? `<div class="pc-free">${r.faltan / r.cap >= 0.12 ? `Libre ${t1(r.faltan)} t` : ''}</div>` : '';
+    const libreT = Math.max(0, r.cap - cargado);
+    const libre = libreT > 0.05 ? `<div class="pc-free">${libreT / r.cap >= 0.12 ? `Libre ${t1(libreT)} t` : ''}</div>` : '';
     return `<div class="pc-truckw"><div class="pc-truck"><div class="pc-box">${segs.join('')}${libre}</div><div class="pc-cab"></div></div>
-      ${chicos.length ? `<div class="pc-small">${chicos.map(s => `<span><i style="background:${s.color}"></i>${escapeHtml(s.lbl)} <b>${t1(s.ton)} t</b></span>`).join('')}</div>` : ''}</div>`;
+      ${chicos.length ? `<div class="pc-small">${chicos.map(s2 => `<span><i style="background:${s2.color}"></i>${escapeHtml(s2.lbl)} <b>${t1(s2.ton)} t</b></span>`).join('')}</div>` : ''}</div>`;
   }
   function directosV2(r) {
     const chips = DIR_V2.filter(t => (r[t.lista] || []).length).map(t => {
@@ -6382,8 +6389,13 @@ async function renderPlanCarga(stage, opts = {}) {
         + segundoHtml(r, fill)
         // (4-oct-2026, Jordan) Sólo lo que va en el camión; lo que queda fuera se ve en el CSV.
         + ((() => { const accC = accMover(r, 'cd'); return CAT_V2.map((c, i) => { const it = (r.det[c.k] || []).filter(d => d._enCamion); return it.length ? grupoHtml(c.color, CAT_LARGO[i], it, c.tipo, accC) : ''; }).join(''); })() || '<div class="sv-note-box">El camión CD no tiene carga para esta sucursal.</div>')
-        + ((() => { const fuera = CAT_V2.reduce((s2, c) => s2 + (r.det[c.k] || []).filter(d => !d._enCamion && !d._camion2).reduce((a2, d) => a2 + (d.ton || 0), 0), 0);
-            return fuera > 0.05 ? `<div class="sv-dr-note" style="margin-top:8px">${t1(fuera)} t quedan fuera del camión (no se muestran); el detalle completo está en «Descargar sucursal (CSV)».</div>` : ''; })());
+        // (15-oct-2026, Jordan) Las líneas que quedan fuera del camión CD se muestran (antes sólo el total),
+        // con su OC/pedido y los botones para subirlas al camión CD o al 2º camión.
+        + ((() => {
+            const accF = accMover(r, 'cd');
+            const grp = CAT_V2.map((c, i) => { const it = (r.det[c.k] || []).filter(d => !d._enCamion && !d._camion2 && d._manual !== 0); return it.length ? grupoHtml(c.color, CAT_LARGO[i] + ' · fuera del camión', it, c.tipo, accF) : ''; }).join('');
+            const fuera = CAT_V2.reduce((s2, c) => s2 + (r.det[c.k] || []).filter(d => !d._enCamion && !d._camion2 && d._manual !== 0).reduce((a2, d) => a2 + (d.ton || 0), 0), 0);
+            return grp ? `<div class="sv-dr-note" style="margin:14px 0 6px;font-weight:700">Fuera del camión CD · ${t1(fuera)} t (no caben${r.segundoPropuesto || fill.segundoPropuesto ? '; lo que cabe va al 2º camión' : ''})</div><div style="opacity:.75">${grp}</div>` : ''; })());
     }
     if (tab === 'dirman') return dirManHtml(r);
     const [tk, n] = tab.split(':');
