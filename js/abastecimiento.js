@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610151445';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610151445';
-import { getDatabase } from './data.js?v=202610151445';
+import { supabase } from './supabase-client.js?v=202610151522';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610151522';
+import { getDatabase } from './data.js?v=202610151522';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610151445';
-import { confirmar, pedirDato } from './confirmar.js?v=202610151445';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610151522';
+import { confirmar, pedirDato } from './confirmar.js?v=202610151522';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -3288,7 +3288,11 @@ const V2 = {
       (horizRows || []).filter(r => String(r.centro_origen ?? '').trim() === '1003')
         .forEach(r => { horiz[String(r.centro_destino ?? '').trim()] = Number(r.horizonte_horas) === 48 ? 48 : 24; });
       const d1 = addBusinessDays(hoy00(), 1, feriadosSet), d2 = addBusinessDays(hoy00(), 2, feriadosSet);
-      return { pvMap, ventasDirectoManual, feriadosSet, coordMap, maestro, diaHabil2: d2, diaObj: ce => (horiz[String(ce ?? '').trim()] === 48 ? d2 : d1) };
+      // (15-oct-2026, Jordan) NV con SALDO ACTIVADO (viajó parcial): se desbloquea para recoordinar el saldo.
+      let saldoDocs = new Set();
+      try { const { data } = await supabase.from('v_abast_saldo_activo').select('documento,tipo_carga').limit(2000);
+        saldoDocs = new Set((data || []).filter(x => /venta/i.test(String(x.tipo_carga ?? ''))).map(x => String(x.documento ?? '').trim())); } catch (_) { /* opcional */ }
+      return { pvMap, ventasDirectoManual, feriadosSet, coordMap, maestro, saldoDocs, diaHabil2: d2, diaObj: ce => (horiz[String(ce ?? '').trim()] === 48 ? d2 : d1) };
     },
     enrich(rows, ctx) {
       ctx._rowsByDoc = new Map(rows.map(r => [String(r.doc_ventas ?? '').trim(), r]));
@@ -3307,7 +3311,8 @@ const V2 = {
         const fp = parseDateSAP(r._fecha_plan);
         r._plan = !r._coord ? 'SIN_COORD' : (fp && fp.getTime() <= r._dia_obj.getTime() ? 'EN_PLAN' : 'PROGRAMADO');
         // (14-oct-2026, Jordan) NV en camión programado → COORDINADO bloqueado, fuera del plan.
-        r._cargada = VENTAS_PROGRAMADAS.get(doc) || null;
+        r._saldoAct = !!(ctx.saldoDocs && ctx.saldoDocs.has(doc));
+        r._cargada = r._saldoAct ? null : (VENTAS_PROGRAMADAS.get(doc) || null);   // saldo activo → editable
         if (r._cargada) r._plan = 'CARGADA';
       });
       // (7-oct-2026) Pedidos que comparten camión (grupo_camion)
@@ -3447,7 +3452,7 @@ const V2 = {
       { label: 'Orden de compra', html: r => mono(r.doc_compr, r.contr ? 'contrato ' + r.contr : '') },
       { label: 'Proveedor', html: r => txt(r.nombre_1, r.proveedor, true) },
       { label: 'Destino', html: r => sucHtml(r.ce) },
-      { label: 'Tipo pedido', html: r => pill(r._tipo_pedido === 'CALZADA' ? 'Calzada' : 'Stock', r._tipo_pedido === 'CALZADA' ? 'info' : 'mute') + (r.documento ? `<div class="sv-sub">PV ${escV2(r.documento)}</div>` : '') },
+      { label: 'Tipo pedido', html: r => pill(r._tipo_pedido === 'CALZADA' ? 'Calzada' : 'Stock', r._tipo_pedido === 'CALZADA' ? 'info' : 'mute') + (r.documento ? `<div class="sv-sub">PV ${escV2(r.documento)}</div>` : '') + (esIngSum(r) ? `<div style="margin-top:4px">${ingSumPill(true)}</div>` : '') },
       { label: 'Tipo retiro', html: r => pill(r._tipo_retiro, TIPO_RETIRO_TONE[r._tipo_retiro] || 'mute') + `<div class="sv-sub">${r._tipo_origen === 'COORDINACION' ? 'coordinado' : 'automático'}</div>` },
       { label: 'Fecha SAP', html: r => mono(r.fe_entrega) },
       { label: 'Fecha retiro', html: r => r._fecha_retiro ? mono(fmtFechaISO(r._fecha_retiro))
@@ -3483,6 +3488,7 @@ const V2 = {
       if (retiroAtrasado(r)) avisos.push(`<b>Atrasada:</b> la fecha SAP venció hace ${diasV} días y la OC sigue sin coordinar.`);
       if (r._exp_error) avisos.push(`<b>Expedición errónea:</b> el pedido de venta ${escV2(r.documento)} tiene expedición «${escV2(r._pv_denominacion)}»; debe ser EBE-RET / EBE-DESP o EBE-RET / CLI-RET.`);
       if (r._modo === 'RM' && pendTranspRetiro(t).length) avisos.push(`<b>Transporte pendiente:</b> falta ${escV2(pendTranspRetiro(t).join(', '))}. Complétalo con «Editar coordinación»${pendTranspRetiro(t).includes('patente') ? '; sin patente el camión directo no queda programado' : ''}.`);
+      if (esIngSum(r)) avisos.push(`<b>${ING_SUM_TXT}:</b> OC calzada con destino CD 1003 (PV ${escV2(r.documento)}). Ingresar el retiro en el CD y cargarlo en el camión junto con el pedido de venta.`);
       avisos.push(r._modo === 'RM' ? '<b>Plan de carga:</b> Retiro RM — entra al plan el día de su fecha de retiro.'
         : r._modo === 'LOCAL' ? '<b>Plan de carga:</b> Retiro local — no se considera en el plan.' : '<b>Plan de carga:</b> sin coordinar, no se considera.');
       const rm = r._modo === 'RM';
@@ -3494,6 +3500,7 @@ const V2 = {
           ['Regla automática', `${r._tipo_auto} · ${fmtNum(r._ton_num, 1)} t (umbral 23,8 t)`],
           ['Coordinación', r._modo === 'RM' ? pill('Retiro RM', 'ok') : r._modo === 'LOCAL' ? pill('Retiro local', 'orange') : pill('Sin coordinar', 'mute'), true],
           ['Tipo pedido', r._tipo_pedido === 'CALZADA' ? 'Calzada (con pedido de venta)' : 'Stock'],
+          esIngSum(r) ? ['Instrucción', ingSumPill(false), true] : null,
           ['Fecha SAP', r.fe_entrega], ['Fecha retiro (carga)', r._fecha_retiro ? fmtFechaISO(r._fecha_retiro) : ''],
           ['Toneladas', tonHtml(r._ton_num), true],
           r._parcial ? ['A retirar', `${tonHtml(r._ton_ret)} · ${(r._detalle || []).filter(d => d.retiro > 0).length} de ${(r._detalle || []).length} productos`, true] : null,
@@ -4733,11 +4740,11 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610151445');
+    const m = await import('./ind-plan-carga.js?v=202610151522');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (currentSub === 'control_diferencias') {  // (11-oct-2026) Control de Diferencias del Plan de Carga
-    const m = await import('./control-diferencias.js?v=202610151445');
+    const m = await import('./control-diferencias.js?v=202610151522');
     await m.renderControlDiferencias(stage);
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
@@ -4934,6 +4941,11 @@ function esEstadoCoordinado(estado) { return estado === 'coordinado' || estado =
 // PROPONE si lo que no cabe llega al 85% de la capacidad; es opcional y sólo entra al
 // plan (y a los indicadores) si se acepta antes del cierre de las 15:35.
 const UMBRAL_SEGUNDO_CAMION = 0.85;
+// (15-oct-2026, Jordan) Retiro de fábrica CALZADA (con pedido de venta) que apunta al centro 1003: el retiro
+// se ingresa en el CD y sube al camión junto con su pedido de venta (guía facturable).
+const ING_SUM_TXT = 'INGRESAR Y SUMINISTRAR PEDIDO DE VENTAS / GUIA FACTURABLE';
+const esIngSum = r => String(r.documento ?? r.pv ?? '').trim() !== '' && String(r._ce_oc ?? r.ce ?? '').trim() === '1003';
+const ingSumPill = (corto) => `<span class="sv-pill warn" title="${ING_SUM_TXT}: el retiro se ingresa en el CD 1003 y sube al camión con su pedido de venta" style="white-space:normal;line-height:1.2"><i></i>${corto ? 'INGRESAR Y SUMINISTRAR PV / GUÍA FACTURABLE' : ING_SUM_TXT}</span>`;
 // (15-oct-2026, Jordan) Pedidos/OC marcados PRIORIDAD de carga (se cargan al abrir el Plan de Carga).
 let PRIO_DOCS = new Set();
 function asignarCamionesCD(r) {
@@ -5546,7 +5558,7 @@ async function renderPlanCarga(stage, opts = {}) {
       const tonBruto = calcTon(parseNum(r.peso_bruto), cant), tonVol = calcTon(parseNum(r.tamano_dimens), cant);
       // Fecha de Retiro coordinada (prioridad) — si no hay, se usa la fecha de entrega SAP de referencia.
       const fecha = _e.fecha_retiro ? fmtFechaISO(_e.fecha_retiro) : r.fe_entrega;
-      return { oc: r.doc_compr, idProv: r.proveedor, prov: r.nombre_1, material: r.material, nombre: r.texto_breve, fecha, cant, ton: t, tonBruto, tonVol, pv: r.documento, entrega_entrante: ee }; };
+      return { oc: r.doc_compr, idProv: r.proveedor, prov: r.nombre_1, material: r.material, nombre: r.texto_breve, fecha, cant, ton: t, tonBruto, tonVol, pv: r.documento, entrega_entrante: ee, _ingSum: esIngSum(r) }; };
     // (AJUSTE 24-sep-2026, pedido Jordan) Se calcula el Retiro CD para AMBAS
     // fechas objetivo posibles (mañana=diaHabil1 y pasado mañana=diaHabil2),
     // en vez de una sola según el horizonte configurado. Esto permite evaluar
@@ -6514,7 +6526,7 @@ async function renderPlanCarga(stage, opts = {}) {
     const cant = d => tipo === 'X' ? fmtNum(d.ctdPend, 0) : tipo === 'T' ? escapeHtml(d.ctd ?? '') : fmtNum(parseNum(d.cant), 0);
     return `<div class="pc-tbl"><table class="sv-table"><thead><tr>${head.map((h, i) => `<th class="${i >= 4 ? 'r' : ''}">${escapeHtml(h)}</th>`).join('')}${accFn ? '<th class="r">Mover</th>' : ''}</tr></thead>
       <tbody>${items.map(d => `<tr class="${d._enCamion === false ? (d._camion2 ? 'is-seg' : 'is-fuera') : ''}" title="${d._enCamion === false ? (d._camion2 ? 'Va en el 2º camión (opcional)' : 'No cabe: queda para el próximo plan') : ''}">
-        <td><span class="sv-mono">${escapeHtml(String(doc(d) ?? ''))}</span>${d._prio ? '<div><span class="sv-pill bad" title="Marcado PRIORIDAD de carga por la sucursal" style="font-size:10px"><i></i>PRIORIDAD</span></div>' : ''}</td>
+        <td><span class="sv-mono">${escapeHtml(String(doc(d) ?? ''))}</span>${d._prio ? '<div><span class="sv-pill bad" title="Marcado PRIORIDAD de carga por la sucursal" style="font-size:10px"><i></i>PRIORIDAD</span></div>' : ''}${d._ingSum ? `<div style="margin-top:2px;font-size:10px">${ingSumPill(true)}</div><div class="sv-sub" style="margin:0">PV ${escapeHtml(String(d.pv ?? ''))}</div>` : ''}</td>
         <td>${ent(d) ? `<span class="sv-mono">${escapeHtml(ent(d))}</span>` : '<span class="sv-muted">—</span>'}</td>
         <td><div class="pc-mat"><b>${escapeHtml(d.nombre || '')}</b><small>${escapeHtml(sub(d))}</small></div></td>
         <td class="sv-mono">${escapeHtml(d.fecha || '')}</td><td class="r">${cant(d)}</td><td class="r"><b>${fmtNum(d.ton, 2)}</b></td>${accFn ? `<td class="r" style="white-space:nowrap">${accFn(d)}</td>` : ''}</tr>`).join('')}</tbody></table></div>`;
