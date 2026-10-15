@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610151436';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610151436';
-import { getDatabase } from './data.js?v=202610151436';
+import { supabase } from './supabase-client.js?v=202610151442';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610151442';
+import { getDatabase } from './data.js?v=202610151442';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610151436';
-import { confirmar, pedirDato } from './confirmar.js?v=202610151436';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610151442';
+import { confirmar, pedirDato } from './confirmar.js?v=202610151442';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -3071,12 +3071,41 @@ const VISTAS_TRONCAL = {
 // franja de color y panel lateral. La carga y las reglas de negocio siguen
 // siendo las de VISTAS_TRONCAL (vista, preload, transform, postFilter).
 // ============================================================================
+// (15-oct-2026, Jordan) PRIORIDAD de carga por pedido/OC (abast_prioridad_carga): la marca el Jefe de
+// Operaciones de la sucursal en Retiros de Fábrica, Crossdocking y Pedidos de Traslados; el Plan de Carga
+// la alerta y la sube primero dentro de su categoría.
+async function loadPrioridades(tipo) {
+  let q = supabase.from('abast_prioridad_carga').select('id,tipo,documento,centro,motivo,marcado_por,marcado_en').eq('activo', true).limit(5000);
+  if (tipo) q = q.eq('tipo', tipo);
+  const { data, error } = await q;
+  if (error) { console.warn('Prioridades de carga no disponibles', error); return new Map(); }
+  return new Map((data || []).map(x => [`${x.tipo}|${String(x.documento ?? '').trim()}`, x]));
+}
+async function togglePrioridad(tipo, doc, centro, on) {
+  const d = String(doc ?? '').trim(); if (!d) return false;
+  const quien = await getUserEmail();
+  if (on) {
+    const motivo = await pedirDato(`Marcar PRIORIDAD de carga · ${d}\n\nSe alertará en el Plan de Carga y subirá primero dentro de su categoría. Motivo (opcional):`,
+      { placeholder: 'Ej. quiebre crítico, obra detenida, cliente esperando', aceptar: 'Marcar prioridad', icono: 'priority_high', opcional: true });
+    if (motivo === null) return false;
+    const { error } = await supabase.from('abast_prioridad_carga').insert({ tipo, documento: d, centro: centro || null, motivo: String(motivo || '').trim() || null, marcado_por: quien });
+    if (error) { showAlert('No se pudo marcar la prioridad: ' + error.message, 'error'); return false; }
+    showAlert(`${d} marcado como PRIORIDAD de carga`, 'success');
+  } else {
+    if (!await confirmar(`¿Quitar la PRIORIDAD de carga de ${d}?`, { aceptar: 'Quitar prioridad', icono: 'remove_done' })) return false;
+    const { error } = await supabase.from('abast_prioridad_carga').update({ activo: false, desmarcado_por: quien, desmarcado_en: new Date().toISOString() }).eq('tipo', tipo).eq('documento', d).eq('activo', true);
+    if (error) { showAlert('No se pudo quitar la prioridad: ' + error.message, 'error'); return false; }
+    showAlert(`Prioridad quitada a ${d}`, 'success');
+  }
+  return true;
+}
 const V2_DEPS = {
   // (9-oct-2026, Jordan) Ventas CD: NV coordinadas se mantienen en la vista durante el día.
   augmentRaw: async (vista, rows) => { if (vista === 'v_trc_sqvi_pedidos_venta_1003') await reponerVentasCoordinadas(rows); },
   fetchAllRows, filtrarPorCentro, can, parseDateSAP, exportarCSV, showAlert,
   clearRawCache: () => clearRawCache(),
   loadExclusionesPlan, excluirDelPlan, reactivarEnPlan,
+  loadPrioridades, togglePrioridad, enAlcance,
 };
 const ORIGENES_CD = [['1003', 'CD Quilicura · 1003'], ['1081', 'CD Concepción · 1081']];
 const C_INK = '#191c1d', C_RED = '#b5000b', C_ORANGE = '#ea580c', C_YELLOW = '#ca8a04', C_GREEN = '#15803d', C_GREY = '#9ca3af', C_BLUE = '#1d4ed8', C_SEC = '#5c5f61';
@@ -3394,6 +3423,7 @@ const V2 = {
   // datos de transporte y varias OC por camión, Excluir en la fila, sólo OWNER edita.
   retiros: {
     titulo: 'Retiros de Fábrica',
+    prioridad: { tipo: 'retiro', doc: r => r.doc_compr ?? r.oc ?? r.pt, centro: r => r.ce },   // (15-oct-2026) check PRIORIDAD
     desc: 'Órdenes de compra con retiro a proveedor. Sólo los Retiro RM entran al Plan de Carga, el día de su fecha de retiro (día en que se carga).',
     rowId: r => String(r.doc_compr ?? '').trim(),
     enrich(rows, ctx) { ctx._rows = rows; rows.forEach(r => { r._al = alertaV2(r.fe_entrega, 5); }); },
@@ -3502,6 +3532,7 @@ const V2 = {
   // Modifican: OWNER y Planner Abastecimiento (permiso ajustar_plan).
   pedidos_traslados_4000: {
     titulo: 'Crossdocking',
+    prioridad: { tipo: 'cross', doc: r => r.doc_compr ?? r.oc ?? r.pt, centro: r => r.ce },   // (15-oct-2026) check PRIORIDAD
     desc: 'Traslados desde Almacén 4000 (CD Quilicura) a sucursales. Por defecto entran al Plan de Carga como Consolidable (camión CD).',
     rowId: r => `${r.doc_compr}|${r._pos || r.material}`,
     async preload() {
@@ -3593,6 +3624,7 @@ const V2 = {
   // ── PEDIDOS DE TRASLADOS ──────────────────────────────────────────────────
   pedidos_traslados: {
     titulo: 'Pedidos de Traslados',
+    prioridad: { tipo: 'traslado', doc: r => r.doc_compr ?? r.oc ?? r.pt, centro: r => r.ce },   // (15-oct-2026) check PRIORIDAD
     desc: 'Pedidos de traslados desde centros de distribución a sucursales',
     origen: { of: r => r.cesu, opciones: ORIGENES_CD },
     async preload() { return { estadoPlan: await estadoPlanTraslados() }; },
@@ -4698,11 +4730,11 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610151436');
+    const m = await import('./ind-plan-carga.js?v=202610151442');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (currentSub === 'control_diferencias') {  // (11-oct-2026) Control de Diferencias del Plan de Carga
-    const m = await import('./control-diferencias.js?v=202610151436');
+    const m = await import('./control-diferencias.js?v=202610151442');
     await m.renderControlDiferencias(stage);
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
@@ -4899,6 +4931,8 @@ function esEstadoCoordinado(estado) { return estado === 'coordinado' || estado =
 // PROPONE si lo que no cabe llega al 85% de la capacidad; es opcional y sólo entra al
 // plan (y a los indicadores) si se acepta antes del cierre de las 15:35.
 const UMBRAL_SEGUNDO_CAMION = 0.85;
+// (15-oct-2026, Jordan) Pedidos/OC marcados PRIORIDAD de carga (se cargan al abrir el Plan de Carga).
+let PRIO_DOCS = new Set();
 function asignarCamionesCD(r) {
   const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
   const doc = d => String(d.pt ?? d.oc ?? d.pv ?? '').trim();
@@ -4909,8 +4943,10 @@ function asignarCamionesCD(r) {
   const forz = trs.filter(d => d._forzadoPlan);
   [r.det.revex, r.det.ventaCons, r.det.retiro, r.det.cross, forz,
    (r.det.quiebre || []).filter(d => !d._forzadoPlan), (r.det.stock || []).filter(d => !d._forzadoPlan)].forEach(arr => {
+    (arr || []).forEach(d => { d._prio = PRIO_DOCS.has(doc(d)); });
     (arr || []).slice()
-      .sort((a, b) => ((a._orden ?? 0) - (b._orden ?? 0)) || cmp(doc(a), doc(b)) || cmp(mat(a), mat(b)))
+      // (15-oct-2026) PRIORIDAD primero dentro de su categoría (no salta categorías).
+      .sort((a, b) => ((b._prio ? 1 : 0) - (a._prio ? 1 : 0)) || ((a._orden ?? 0) - (b._orden ?? 0)) || cmp(doc(a), doc(b)) || cmp(mat(a), mat(b)))
       .forEach(d => orden.push(d));
   });
   // (1-oct-2026) Asignación manual/confirmada (r.asig: doc|material → 1 CD, 2 2º camión, 0 no carga).
@@ -5168,6 +5204,8 @@ async function renderPlanCarga(stage, opts = {}) {
       if (sinBase.length) console.warn('Plan de carga: saldos sin línea base en SAP (SQVI)', sinBase.map(x => `${x.documento}|${x.material}`));
     }
   } catch (e) { console.warn('Plan de carga: saldos activados no disponibles', e); }
+  try { const pm = await loadPrioridades(); PRIO_DOCS = new Set([...pm.values()].map(x => String(x.documento ?? '').trim())); }
+  catch (e) { PRIO_DOCS = new Set(); console.warn('Plan de carga: prioridades no disponibles', e); }
   // (1-oct-2026) Asignaciones manuales de líneas por origen|centro destino
   const asigMap = new Map();
   asigLineas.forEach(a => {
@@ -6386,6 +6424,17 @@ async function renderPlanCarga(stage, opts = {}) {
       ? TAG('local_shipping', '2º camión programado', `2º camión aceptado (${t1(r.tonSegundo)} t): entra a la foto de las ${HHMM_CIERRE} y a los indicadores`, 'seg-ok')
       : TAG('local_shipping', '2º camión opcional', `Lo que no cabe (${t1(r.excedente)} t) llega al 85% de un camión: se puede programar un 2º camión de ${t1(r.tonSegundo)} t`, 'extra'));
     if (r.tonClienteDiferido > 0) t.push(TAG('event_upcoming', 'CD-Cliente próximo', `CD-Cliente con fecha de entrega posterior: ${t1(r.tonClienteDiferido)} t`, 'h48'));
+    // (15-oct-2026, Jordan) Pedidos/OC con PRIORIDAD de carga: alerta (roja si alguno queda fuera del camión CD).
+    if (PRIO_DOCS.size && r.det) {
+      marcarCapacidadCD(r);
+      const pr = CAT_V2.flatMap(c => (r.det[c.k] || []).filter(d => d._prio));
+      if (pr.length) {
+        const docsP = [...new Set(pr.map(d => String(d.pt ?? d.oc ?? d.pv ?? '').trim()))];
+        const fuera = [...new Set(pr.filter(d => !d._enCamion).map(d => String(d.pt ?? d.oc ?? d.pv ?? '').trim()))];
+        t.push(TAG('priority_high', fuera.length ? `Prioridad fuera (${fuera.length})` : `Prioridad (${docsP.length})`,
+          fuera.length ? `Pedidos/OC PRIORITARIOS que no van en el camión CD: ${fuera.join(', ')}` : `Pedidos/OC PRIORITARIOS en el camión CD: ${docsP.join(', ')}`, fuera.length ? 'baja' : 'seg-ok'));
+      }
+    }
     // (11-oct-2026) Diferencias abiertas del centro (Gestión Troncales → Control de Diferencias).
     const dif = difMap.get(String(r.ce));
     if (dif && dif.n) t.push(TAG('rule', `${dif.n} diferencia${dif.n > 1 ? 's' : ''}`, `${dif.n} diferencia(s) abierta(s) en Control de Diferencias${dif.bloq ? ` · ${dif.bloq} bloquean líneas` : ''}: revisar antes del corte`, 'baja'));
@@ -6462,7 +6511,7 @@ async function renderPlanCarga(stage, opts = {}) {
     const cant = d => tipo === 'X' ? fmtNum(d.ctdPend, 0) : tipo === 'T' ? escapeHtml(d.ctd ?? '') : fmtNum(parseNum(d.cant), 0);
     return `<div class="pc-tbl"><table class="sv-table"><thead><tr>${head.map((h, i) => `<th class="${i >= 4 ? 'r' : ''}">${escapeHtml(h)}</th>`).join('')}${accFn ? '<th class="r">Mover</th>' : ''}</tr></thead>
       <tbody>${items.map(d => `<tr class="${d._enCamion === false ? (d._camion2 ? 'is-seg' : 'is-fuera') : ''}" title="${d._enCamion === false ? (d._camion2 ? 'Va en el 2º camión (opcional)' : 'No cabe: queda para el próximo plan') : ''}">
-        <td><span class="sv-mono">${escapeHtml(String(doc(d) ?? ''))}</span></td>
+        <td><span class="sv-mono">${escapeHtml(String(doc(d) ?? ''))}</span>${d._prio ? '<div><span class="sv-pill bad" title="Marcado PRIORIDAD de carga por la sucursal" style="font-size:10px"><i></i>PRIORIDAD</span></div>' : ''}</td>
         <td>${ent(d) ? `<span class="sv-mono">${escapeHtml(ent(d))}</span>` : '<span class="sv-muted">—</span>'}</td>
         <td><div class="pc-mat"><b>${escapeHtml(d.nombre || '')}</b><small>${escapeHtml(sub(d))}</small></div></td>
         <td class="sv-mono">${escapeHtml(d.fecha || '')}</td><td class="r">${cant(d)}</td><td class="r"><b>${fmtNum(d.ton, 2)}</b></td>${accFn ? `<td class="r" style="white-space:nowrap">${accFn(d)}</td>` : ''}</tr>`).join('')}</tbody></table></div>`;

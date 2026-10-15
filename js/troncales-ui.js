@@ -32,8 +32,8 @@ export function tonHtml(n) {
 }
 
 // Encabezado del shell: fecha y hora de la última actualización SAP de la vista
-import { confirmar } from './confirmar.js?v=202610151436';
-import { comentariosHabilitados, conteosComentarios, celdaComentarios, montarHilo, tomarFoco, abrirHiloSuelto } from './comentarios.js?v=202610151436';
+import { confirmar } from './confirmar.js?v=202610151442';
+import { comentariosHabilitados, conteosComentarios, celdaComentarios, montarHilo, tomarFoco, abrirHiloSuelto } from './comentarios.js?v=202610151442';
 export function setUltimaActualizacion(ts) {
   const el = document.getElementById('sv-upd');
   if (!el) return;
@@ -153,6 +153,20 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
       && (String(e.material ?? '').trim() === '' || String(e.material ?? '').trim() === mat)) || null;
   }
 
+  // (15-oct-2026, Jordan) PRIORIDAD de carga: check por pedido/OC (AV.prioridad = { tipo, doc, centro }).
+  // La marca el Jefe de Operaciones de la sucursal (acción marcar_prioridad, sólo sus centros) y alerta en el Plan de Carga.
+  const prioCfg = AV.prioridad && deps.loadPrioridades ? AV.prioridad : null;
+  let prios = prioCfg ? await deps.loadPrioridades(prioCfg.tipo) : new Map();
+  const prioDoc = r => String(prioCfg.doc(r) ?? '').trim();
+  const prioDe = r => prios.get(`${prioCfg.tipo}|${prioDoc(r)}`) || null;
+  const puedePrio = r => deps.can('marcar_prioridad') && (!deps.enAlcance || !prioCfg.centro || deps.enAlcance(String(prioCfg.centro(r) ?? '').trim()));
+  function celdaPrio(r) {
+    const p = prioDe(r), ed = puedePrio(r) && prioDoc(r);
+    const pill = p ? `<span class="sv-pill bad" title="Prioridad marcada por ${esc(p.marcado_por || '')}${p.motivo ? ' · ' + esc(p.motivo) : ''}"><i></i>PRIORIDAD</span>` : '';
+    if (!ed) return pill || '<span class="sv-muted">—</span>';
+    return `<label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;white-space:nowrap" title="${p ? 'Quitar prioridad de carga' : 'Marcar como prioritario de carga'}">
+      <input type="checkbox" data-prio="${esc(r.__rid)}" ${p ? 'checked' : ''} style="width:16px;height:16px;accent-color:#b5000b;cursor:pointer">${pill}</label>`;
+  }
   const rowId = r => r.__rid;
   const esCal = () => !!(AV.calendario && st.vista === 'cal');
   const kpisDef = AV.kpis || [];
@@ -266,6 +280,7 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
     const shown = filt.slice(0, MAX);
     const selId = st.drawer;
     let cols = enFila ? AV.cols.concat([{ label: 'Plan de carga', html: r => celdaPlan(r) }]) : AV.cols;
+    if (prioCfg) cols = [{ label: 'Prioridad', html: r => celdaPrio(r) }].concat(cols);
     if (conComent) cols = cols.concat([{ label: 'Coment.', html: r => celdaComentarios(conteos.get(claveCom(r)) || 0, r.__rid) }]);
     // (8-oct-2026) Acciones en la fila principal (AV.filaAcciones(r) → [{ label, icon, run, tono }])
     if (AV.filaAcciones) cols = cols.concat([{ label: 'Acciones', html: r => {
@@ -491,6 +506,17 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
       b.closest('tr')?.classList.add('is-sel');
       openDrawer(st.drawer);
     }));
+    stage.querySelectorAll('[data-prio]').forEach(ch => {
+      ch.addEventListener('click', e => e.stopPropagation());
+      ch.closest('label')?.addEventListener('click', e => e.stopPropagation());
+      ch.addEventListener('change', async () => {
+        const r = rowsAll.find(x => x.__rid === ch.dataset.prio); if (!r) return;
+        ch.disabled = true;
+        const ok = await deps.togglePrioridad(prioCfg.tipo, prioDoc(r), prioCfg.centro ? String(prioCfg.centro(r) ?? '').trim() : null, ch.checked);
+        if (ok) prios = await deps.loadPrioridades(prioCfg.tipo);
+        draw();
+      });
+    });
     accFila('[data-fila-excl]', excluirFila);
     accFila('[data-fila-reac]', reactivarFila);
     stage.querySelectorAll('tbody tr[data-row]').forEach(tr => tr.addEventListener('click', () => {

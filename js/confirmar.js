@@ -103,7 +103,7 @@ export function pedirDato(mensaje, opts = {}) {
     };
     const aceptar = () => {
       const v = inp.value.trim();
-      if (!v || (opts.patron && !opts.patron.test(v))) { err.textContent = opts.error || 'Dato no válido'; err.style.display = ''; inp.focus(); return; }
+      if ((!v && !opts.opcional) || (v && opts.patron && !opts.patron.test(v))) { err.textContent = opts.error || 'Dato no válido'; err.style.display = ''; inp.focus(); return; }
       cerrar(v);
     };
     const onKey = e => {
