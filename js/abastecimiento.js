@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610151423';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610151423';
-import { getDatabase } from './data.js?v=202610151423';
+import { supabase } from './supabase-client.js?v=202610151436';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610151436';
+import { getDatabase } from './data.js?v=202610151436';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610151423';
-import { confirmar, pedirDato } from './confirmar.js?v=202610151423';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610151436';
+import { confirmar, pedirDato } from './confirmar.js?v=202610151436';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -4698,11 +4698,11 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610151423');
+    const m = await import('./ind-plan-carga.js?v=202610151436');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (currentSub === 'control_diferencias') {  // (11-oct-2026) Control de Diferencias del Plan de Carga
-    const m = await import('./control-diferencias.js?v=202610151423');
+    const m = await import('./control-diferencias.js?v=202610151436');
     await m.renderControlDiferencias(stage);
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
@@ -7073,8 +7073,15 @@ async function reponerVentasCoordinadas(ventasRaw) {
     // coordinar, hasta que la entrega coordinada tenga DT (mismo criterio que el Plan de Carga).
     const bkPorDoc = new Map();
     bkVen.forEach(r => { const d = tx(r.doc_ventas); if (!bkPorDoc.has(d)) bkPorDoc.set(d, []); bkPorDoc.get(d).push(r); });
+    // (15-oct-2026, Jordan) NV en camión programado cuya fecha de carga ya pasó y que en el SQVI vivo viene
+    // SIN pendiente (entrega creada por todo lo confirmado) → se entiende despachada aunque SAP no cierre la
+    // NV ni haya DT (p. ej. CD-Cliente): no se repone desde el respaldo y sale de la vista.
+    const hoyIso = isoLocal(hoy00());
+    const sinPendVivo = d => { const ls = ventasRaw.filter(r => tx(r.doc_ventas) === d && !r._respaldo);
+      return ls.length > 0 && ls.every(r => parseNum(r.ctd_confirmada) - parseNum(r.cantidad_entrg) <= 0); };
+    const despachada = d => { const p = VENTAS_PROGRAMADAS.get(d); return !!p && String(p.fecha_carga || '').slice(0, 10) < hoyIso && sinPendVivo(d); };
     const usarBk = new Set([...bkPorDoc.keys()].filter(d => { const co = coordVentas.get(d); return !!co && !(co.n_entrega && conDt.has(tx(co.n_entrega)))
-      && !(VENTAS_PROGRAMADAS.has(d) && !docsLive.has(d)); }));
+      && !(VENTAS_PROGRAMADAS.has(d) && !docsLive.has(d)) && !despachada(d); }));
     if (!usarBk.size) return;
     for (let i = ventasRaw.length - 1; i >= 0; i--) if (usarBk.has(tx(ventasRaw[i].doc_ventas))) ventasRaw.splice(i, 1);
     usarBk.forEach(d => bkPorDoc.get(d).forEach(r => ventasRaw.push({ ...r, _respaldo: true })));
