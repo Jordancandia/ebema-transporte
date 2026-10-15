@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610150908';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610150908';
-import { getDatabase } from './data.js?v=202610150908';
+import { supabase } from './supabase-client.js?v=202610151245';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610151245';
+import { getDatabase } from './data.js?v=202610151245';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610150908';
-import { confirmar, pedirDato } from './confirmar.js?v=202610150908';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610151245';
+import { confirmar, pedirDato } from './confirmar.js?v=202610151245';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -4595,11 +4595,11 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610150908');
+    const m = await import('./ind-plan-carga.js?v=202610151245');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (currentSub === 'control_diferencias') {  // (11-oct-2026) Control de Diferencias del Plan de Carga
-    const m = await import('./control-diferencias.js?v=202610150908');
+    const m = await import('./control-diferencias.js?v=202610151245');
     await m.renderControlDiferencias(stage);
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
@@ -4975,6 +4975,18 @@ async function renderPlanCarga(stage, opts = {}) {
       usarBk.forEach(d => bkPorDoc.get(d).forEach(r => ventasRaw.push({ ...r, _respaldo: true })));
     }
   } catch (e) { console.warn('Plan de carga: respaldo de coordinaciones no disponible', e); }
+  // (15-oct-2026, Jordan) OC calzada con centro 1003 cuyo pedido de venta es de una sucursal: el plan
+  // usa la oficina de ventas (ofvta) de la NV como centro destino → entra como Retiro CD de esa sucursal.
+  try {
+    try { await supabase.rpc('fn_abast_calzada_destino_refresh'); } catch (_) { /* opcional */ }
+    const { data: cdz, error: eCdz } = await supabase.from('v_abast_calzada_destino').select('doc_compr,ce_destino').limit(5000);
+    if (eCdz) throw eCdz;
+    const destCalz = new Map((cdz || []).map(x => [String(x.doc_compr ?? '').trim(), String(x.ce_destino ?? '').trim()]));
+    retirosRaw.forEach(r => {
+      const dst = destCalz.get(String(r.doc_compr ?? '').trim());
+      if (dst && String(r.ce ?? '').trim() === '1003') { r._ce_oc = r.ce; r.ce = dst; }
+    });
+  } catch (e) { console.warn('Plan de carga: destino de calzadas 1003 no disponible', e); }
   // (8-oct-2026, Jordan) Lo considerado en camiones PROGRAMADOS de planes anteriores (Seguimiento de Carga,
   // sin coordinaciones directas COORD|) ya no está disponible al otro día: las NV y OC de retiro cargadas
   // salen del plan. Las entregas SAP se descuentan en el servidor (v_abast_entregas_disponibles); lo que no
