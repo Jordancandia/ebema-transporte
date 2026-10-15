@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610151254';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610151254';
-import { getDatabase } from './data.js?v=202610151254';
+import { supabase } from './supabase-client.js?v=202610151423';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610151423';
+import { getDatabase } from './data.js?v=202610151423';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610151254';
-import { confirmar, pedirDato } from './confirmar.js?v=202610151254';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610151423';
+import { confirmar, pedirDato } from './confirmar.js?v=202610151423';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -4153,7 +4153,7 @@ V2.seguimiento_carga = {
       ['Documento de transporte', r.dts.length ? r.dts.map(t => `<span class="sv-mono"><b>${escV2(t)}</b></span>`).join(' ') : '—', true],
     ],
     tablas: r.camiones.flatMap(c => detalleCamionSeg(r, c)),
-    acciones: accionesDtSeg(r),
+    acciones: [...accionesSaldoSeg(r), ...accionesDtSeg(r)],
     nota: can('editar_dt_seguimiento') && r.camiones.some(c => c.dts.some(dtRevisar)) ? 'Hay DT por revisar: confírmalo, descártalo o asigna el correcto.' : '',
   }),
 };
@@ -4178,6 +4178,109 @@ async function quitarAjusteDt(camionIds, transporte) {
   const { error } = await supabase.from('abast_seguimiento_dt_ajuste').delete().in('camion_id', camionIds).eq('transporte', String(transporte).trim());
   if (error) { showAlert('No se pudo quitar el ajuste del DT: ' + error.message, 'error'); return false; }
   return true;
+}
+// ── Activar saldo (15-oct-2026, Jordan) ────────────────────────────────────
+// Una línea de un camión programado que viajó PARCIAL (NV, retiro, traslado, crossdocking, revex):
+// el planner indica cuánto viajó y la diferencia queda como saldo disponible para un nuevo camión
+// del Plan de Carga (tabla abast_saldo_activado). OWNER y Planner Distribución, a cualquier hora.
+function accionesSaldoSeg(r) {
+  if (!can('activar_saldo')) return [];
+  const varios = r.camiones.length > 1;
+  return r.camiones.filter(c => (c.lineas || []).length).map(c => ({
+    label: `Activar saldo${varios ? ' · ' + c.lbl : ''}`, icon: 'replay', run: async () => {
+      const ok = await showActivarSaldoModal(r, c);
+      if (!ok) return null;
+      clearRawCache(); return { recargar: true };
+    } }));
+}
+function showActivarSaldoModal(r, c) {
+  const tx = v => String(v ?? '').trim();
+  const ids = (c.camionIds || []).filter(Boolean);
+  return new Promise(async resolve => {
+    let exist = [];
+    try {
+      const { data } = await supabase.from('abast_saldo_activado').select('id,camion_id,documento,material,cantidad_saldo,cantidad_viajo,creado_por,creado_en').in('camion_id', ids.length ? ids : [-1]).eq('activo', true);
+      exist = data || [];
+    } catch (_) { /* tabla no disponible */ }
+    const exKey = x => `${x.camion_id}|${tx(x.documento)}|${tx(x.material)}`;
+    const exMap = new Map(exist.map(x => [exKey(x), x]));
+    const lineas = (c.lineas || []).map(x => ({ ...x, _plan: Number(x.cantidad) || 0, _ton: Number(x.ton) || 0 }));
+    const st = { viajo: new Map(lineas.map((x, i) => [i, String(x._plan).replace('.', ',')])), motivo: '', saving: false };
+    const wrap = document.createElement('div');
+    wrap.innerHTML = '<div class="sv-dr-bg" style="z-index:120"></div><aside class="sv-dr" style="z-index:121;width:min(860px,100vw)" role="dialog" aria-label="Activar saldo"></aside>';
+    document.body.appendChild(wrap);
+    const panel = wrap.querySelector('aside');
+    const onKey = e => { if (e.key === 'Escape' && !document.querySelector('.sv-cf-bg')) { e.stopPropagation(); fin(false); } };
+    const fin = v => { wrap.remove(); document.removeEventListener('keydown', onKey, true); resolve(v); };
+    document.addEventListener('keydown', onKey, true);
+    wrap.querySelector('.sv-dr-bg').addEventListener('click', () => fin(false));
+    const num = v => { let t = String(v ?? '').trim(); if (!t) return NaN;
+      if (t.includes(',')) t = t.replace(/\./g, '').replace(',', '.'); else if (/^\d{1,3}(\.\d{3})+$/.test(t)) t = t.replace(/\./g, '');
+      const n = Number(t); return isFinite(n) ? n : NaN; };
+    const saldoDe = i => { const x = lineas[i], v = num(st.viajo.get(i)); return isFinite(v) ? Math.max(0, x._plan - v) : 0; };
+    const malos = () => lineas.map((x, i) => i).filter(i => { const v = num(st.viajo.get(i)); return !isFinite(v) || v < 0 || v > lineas[i]._plan + 1e-9; });
+    function draw() {
+      const nuevos = lineas.map((x, i) => i).filter(i => !exMap.has(`${x0(i)}`) && saldoDe(i) > 1e-9);
+      const tonN = nuevos.reduce((s2, i) => s2 + (lineas[i]._plan ? lineas[i]._ton * saldoDe(i) / lineas[i]._plan : 0), 0);
+      const bad = new Set(malos());
+      panel.innerHTML = `
+        <div class="sv-dr-h"><div style="flex:1;min-width:0">
+          <div class="sv-dr-k">Activar saldo</div>
+          <div class="sv-dr-t">${escapeHtml(c.lbl || c.tipo || 'Camión')}${c.patente_camion ? ' · ' + escapeHtml(c.patente_camion) : ''}</div>
+          <div class="sv-dr-s">${escapeHtml(r._nombreCe || r.ce || '')} · plan ${escapeHtml(fmtFechaISO(r.fecha_plan))} · carga ${escapeHtml(fmtFechaISO(c.fecha_carga || r.fecha_carga) || '—')}</div></div>
+          <button class="sv-iconbtn" data-cx title="Cerrar (Esc)"><span class="material-symbols-outlined">close</span></button></div>
+        <div class="sv-dr-b" style="gap:12px">
+          <div class="sv-note-box">Indica cuánto <b>viajó realmente</b> en este camión. La diferencia queda como <b>saldo</b> y vuelve al Plan de Carga para un nuevo camión (con la marca «SALDO»). El saldo sale del plan cuando se sube a otro camión programado.</div>
+          ${bad.size ? '<div class="sv-note-box" style="background:#ffdad6;color:#93000a;font-weight:700">Revisa las cantidades marcadas: deben estar entre 0 y lo planificado.</div>' : ''}
+          <div class="pc-tbl" style="max-height:52vh;overflow:auto"><table class="sv-table"><thead><tr>
+            <th>Pedido / OC</th><th>Tipo</th><th>SKU · Nombre</th><th class="r">Plan</th><th class="r">Viajó</th><th class="r">Saldo</th></tr></thead><tbody>
+            ${lineas.map((x, i) => { const e = exMap.get(x0(i)); return `<tr>
+              <td><b class="sv-mono">${escapeHtml(tx(x.documento) || '—')}</b>${x.n_entrega ? `<div class="sv-sub" style="margin:0">Ent. ${escapeHtml(x.n_entrega)}</div>` : ''}</td>
+              <td>${escapeHtml(x.tipo_carga || '')}</td>
+              <td><span class="sv-mono">${escapeHtml(tx(x.material))}</span> <span class="sv-sub" style="display:inline;margin:0">${escapeHtml(x.nombre || '')}</span></td>
+              <td class="r sv-mono">${fmtNum(x._plan, 1)}</td>
+              <td class="r">${e ? `<span class="sv-mono">${fmtNum(Number(e.cantidad_viajo) || 0, 1)}</span>` : `<label class="sv-inp" style="width:92px;${bad.has(i) ? 'border-color:#b5000b' : ''}"><input data-v="${i}" value="${escapeHtml(st.viajo.get(i))}" inputmode="decimal" style="width:100%;text-align:right"></label>`}</td>
+              <td class="r">${e ? `<span class="sv-pill warn"><i></i>${fmtNum(Number(e.cantidad_saldo) || 0, 1)} activo</span> <button class="sv-btn" data-anular="${e.id}" style="padding:2px 8px;font-size:11px" title="Anular el saldo activado">Anular</button>`
+                : (saldoDe(i) > 1e-9 ? `<b class="sv-mono" style="color:#b45309">${fmtNum(saldoDe(i), 1)}</b>` : '<span class="sv-muted">—</span>')}</td></tr>`; }).join('')}
+          </tbody></table></div>
+          <div><label class="sv-flbl" style="display:block;margin-bottom:6px">Motivo (opcional)</label>
+            <label class="sv-inp" style="width:100%;box-sizing:border-box"><input data-mot value="${escapeHtml(st.motivo)}" placeholder="Ej. no cupo en el camión, faltó producto, rechazo" style="width:100%"></label></div>
+        </div>
+        <div class="sv-dr-f"><span class="sv-dr-note">${nuevos.length ? `${nuevos.length} línea(s) · ${fmtNum(tonN, 2)} t de saldo` : 'Sin saldo nuevo'}</span>
+          <div style="display:flex;gap:8px"><button class="sv-btn" data-cx>Cancelar</button>
+          <button class="sv-btn-p" data-ok ${st.saving || !nuevos.length ? 'disabled' : ''}><span class="material-symbols-outlined">replay</span>Activar saldo</button></div></div>`;
+      panel.querySelectorAll('[data-cx]').forEach(b => b.addEventListener('click', () => fin(false)));
+      panel.querySelectorAll('[data-v]').forEach(inp => inp.addEventListener('change', () => { st.viajo.set(+inp.dataset.v, inp.value); draw(); }));
+      panel.querySelector('[data-mot]')?.addEventListener('input', e => { st.motivo = e.target.value; });
+      panel.querySelectorAll('[data-anular]').forEach(b => b.addEventListener('click', async () => {
+        if (!await confirmar('¿Anular este saldo?\n\nDeja de estar disponible para el Plan de Carga.', { aceptar: 'Anular', tono: 'peligro', icono: 'undo' })) return;
+        const { error } = await supabase.from('abast_saldo_activado').update({ activo: false, anulado_por: await getUserEmail(), anulado_en: new Date().toISOString() }).eq('id', Number(b.dataset.anular));
+        if (error) { showAlert('No se pudo anular el saldo: ' + error.message, 'error'); return; }
+        showAlert('Saldo anulado', 'success'); fin(true);
+      }));
+      panel.querySelector('[data-ok]')?.addEventListener('click', async () => {
+        if (malos().length) { draw(); return; }
+        const quien = await getUserEmail();
+        const filas = lineas.map((x, i) => [x, i]).filter(([x, i]) => !exMap.has(x0(i)) && saldoDe(i) > 1e-9).map(([x, i]) => {
+          const sal = saldoDe(i);
+          return { camion_id: x.camion_id, linea_id: x.id || null, fecha_plan: r.fecha_plan, cd_origen: r.cd_origen || null, ce: r.ce, tipo_carga: x.tipo_carga || '',
+            documento: tx(x.documento), material: tx(x.material), n_entrega: tx(x.n_entrega) || null, nombre: x.nombre || null,
+            cantidad_plan: x._plan, cantidad_viajo: x._plan - sal, cantidad_saldo: sal, ton_saldo: x._plan ? Math.round(x._ton * sal / x._plan * 10000) / 10000 : null,
+            motivo: st.motivo.trim() || null, creado_por: quien };
+        });
+        if (!filas.length) return;
+        const res = filas.reduce((s2, f) => s2 + (f.ton_saldo || 0), 0);
+        if (!await confirmar(`¿Activar ${filas.length} saldo(s) · ${fmtNum(res, 2)} t?\n\n${filas.slice(0, 8).map(f => `• ${f.documento} · ${f.material}: ${fmtNum(f.cantidad_saldo, 1)}`).join('\n')}${filas.length > 8 ? '\n…' : ''}\n\nVuelven al Plan de Carga para un nuevo camión.`, { aceptar: 'Activar saldo', icono: 'replay' })) return;
+        st.saving = true; draw();
+        const { error } = await supabase.from('abast_saldo_activado').insert(filas);
+        if (error) { st.saving = false; showAlert('No se pudo activar el saldo: ' + error.message, 'error'); draw(); return; }
+        showAlert(`${filas.length} saldo(s) activado(s): vuelven al Plan de Carga`, 'success');
+        fin(true);
+      });
+    }
+    function x0(i) { const x = lineas[i]; return `${x.camion_id}|${tx(x.documento)}|${tx(x.material)}`; }
+    draw();
+  });
 }
 function accionesDtSeg(r) {
   if (!can('editar_dt_seguimiento')) return [];
@@ -4595,11 +4698,11 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610151254');
+    const m = await import('./ind-plan-carga.js?v=202610151423');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (currentSub === 'control_diferencias') {  // (11-oct-2026) Control de Diferencias del Plan de Carga
-    const m = await import('./control-diferencias.js?v=202610151254');
+    const m = await import('./control-diferencias.js?v=202610151423');
     await m.renderControlDiferencias(stage);
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
@@ -5016,6 +5119,55 @@ async function renderPlanCarga(stage, opts = {}) {
       for (let i = retirosRaw.length - 1; i >= 0; i--) if (cargados.has(`${tx(retirosRaw[i].doc_compr)}|${tx(retirosRaw[i].material)}`)) retirosRaw.splice(i, 1);
     }
   } catch (e) { console.warn('Plan de carga: no se pudo descontar lo ya programado en planes anteriores', e); }
+  // (15-oct-2026, Jordan) Saldos activados en Seguimiento de Carga (camión que viajó parcial): la línea
+  // vuelve al plan con la cantidad del saldo, marcada «SALDO». Si SAP ya trae la línea viva (p. ej. una
+  // entrega nueva por el saldo), no se duplica. La base de la línea se toma del SQVI (o del respaldo).
+  try {
+    const tx = v => String(v ?? '').trim(), sap = n => String(Math.round(n * 1000) / 1000).replace('.', ',');
+    const { data: saldos, error: eSal } = await supabase.from('v_abast_saldo_activo').select('*').limit(2000);
+    if (eSal) throw eSal;
+    const mios = (saldos || []).filter(x => (tx(x.cd_origen) || '1003') === planOrigen);
+    if (mios.length) {
+      const grp = { ret: [], ven: [], tra: [], x4: [] };
+      mios.forEach(x => {
+        const t = tx(x.tipo_carga).toLowerCase();
+        if (t.includes('retiro')) grp.ret.push(x); else if (t.includes('venta')) grp.ven.push(x);
+        else if (t.includes('cross')) grp.x4.push(x); else grp.tra.push(x);
+      });
+      const docs = a2 => [...new Set(a2.map(x => tx(x.documento)))];
+      const traer = async (vista, col, a2) => { if (!a2.length) return []; const { data } = await supabase.from(vista).select('*').in(col, docs(a2)).limit(5000); return data || []; };
+      const [tRet, tRetB, tVen, tVenB, tTra, tX4] = await Promise.all([
+        traer('v_trc_sqvi_retiros_fabrica', 'doc_compr', grp.ret), traer('v_abast_coord_sqvi_retiros', 'doc_compr', grp.ret),
+        traer('v_trc_sqvi_pedidos_venta_1003', 'doc_ventas', grp.ven), traer('v_abast_coord_sqvi_ventas', 'doc_ventas', grp.ven),
+        traer('v_trc_sqvi_pedidos_traslados', 'doc_compr', grp.tra), traer('v_trc_sqvi_pedidos_traslados_4000', 'doc_compr', grp.x4)]);
+      const base = (lst, docCol, x) => lst.find(r => tx(r[docCol]) === tx(x.documento) && tx(r.material) === tx(x.material));
+      const vivo = (lst, docCol, x) => lst.some(r => tx(r[docCol]) === tx(x.documento) && tx(r.material) === tx(x.material));
+      const sinBase = [];
+      const marca = n => 'SALDO · ' + (n || '');
+      grp.ret.forEach(x => {
+        if (vivo(retirosRaw, 'doc_compr', x)) return;
+        const b = base(tRet, 'doc_compr', x) || base(tRetB, 'doc_compr', x); if (!b) { sinBase.push(x); return; }
+        retirosRaw.push({ ...b, ctd_pedido: sap(Number(x.cantidad_saldo)), ctd_entregada: '0', texto_breve: marca(b.texto_breve), _saldo: true, _saldoId: x.id });
+      });
+      grp.ven.forEach(x => {
+        if (vivo(ventasRaw, 'doc_ventas', x)) return;
+        const b = base(tVen, 'doc_ventas', x) || base(tVenB, 'doc_ventas', x); if (!b) { sinBase.push(x); return; }
+        ventasRaw.push({ ...b, ctd_confirmada: sap(Number(x.cantidad_saldo)), cantidad_entrg: '0', denominacion_de_posicion: marca(b.denominacion_de_posicion), _saldo: true, _saldoId: x.id });
+      });
+      grp.tra.forEach(x => {
+        const esRevex = tx(x.material).startsWith('900000'), dest = esRevex ? revexRaw : trasladosRaw;
+        if (vivo(dest, 'doc_compr', x)) return;
+        const b = base(tTra, 'doc_compr', x); if (!b) { sinBase.push(x); return; }
+        dest.push({ ...b, ctd_confirmada: sap(Number(x.cantidad_saldo)), ctd_pedido: sap(Number(x.cantidad_saldo)), entrega: 'SALDO-' + x.id, pos_entrega: '', texto_breve: marca(b.texto_breve), _saldo: true, _saldoId: x.id });
+      });
+      grp.x4.forEach(x => {
+        if (vivo(traslados4000Raw, 'doc_compr', x)) return;
+        const b = base(tX4, 'doc_compr', x); if (!b) { sinBase.push(x); return; }
+        traslados4000Raw.push({ ...b, ctd_pedido: sap(Number(x.cantidad_saldo)), ctd_entregada: '0', entrega: 'SALDO-' + x.id, pos_entrega: '', texto_breve: marca(b.texto_breve), _saldo: true, _saldoId: x.id });
+      });
+      if (sinBase.length) console.warn('Plan de carga: saldos sin línea base en SAP (SQVI)', sinBase.map(x => `${x.documento}|${x.material}`));
+    }
+  } catch (e) { console.warn('Plan de carga: saldos activados no disponibles', e); }
   // (1-oct-2026) Asignaciones manuales de líneas por origen|centro destino
   const asigMap = new Map();
   asigLineas.forEach(a => {
@@ -5373,7 +5525,7 @@ async function renderPlanCarga(stage, opts = {}) {
       let sum = 0; const items = [];
       lista.forEach(r => {
         // (7-oct-2026) Sólo los productos/cantidades elegidos al coordinar el retiro.
-        const cant = cantRetiroLinea(estadosRetiro[String(r.doc_compr ?? '').trim()], r.material, parseNum(r.ctd_pedido) - parseNum(r.ctd_entregada));
+        const cant = r._saldo ? parseNum(r.ctd_pedido) : cantRetiroLinea(estadosRetiro[String(r.doc_compr ?? '').trim()], r.material, parseNum(r.ctd_pedido) - parseNum(r.ctd_entregada));
         if (!(cant > 0)) return;
         const t = calcTon(maxPesoDim(r.peso_bruto, r.tamano_dimens), cant);
         items.push(itemR(r, cant, t)); sum += t;
@@ -5412,7 +5564,7 @@ async function renderPlanCarga(stage, opts = {}) {
     // camión forman un solo camión (aunque sean de proveedores distintos o no lleguen al 85%).
     const patBuckets = new Map();     // patente → { e, tipo, items }
     retirosFab.forEach(r => {
-      const cant = cantRetiroLinea(estadosRetiro[String(r.doc_compr ?? '').trim()], r.material, parseNum(r.ctd_pedido) - parseNum(r.ctd_entregada));
+      const cant = r._saldo ? parseNum(r.ctd_pedido) : cantRetiroLinea(estadosRetiro[String(r.doc_compr ?? '').trim()], r.material, parseNum(r.ctd_pedido) - parseNum(r.ctd_entregada));
       const t = calcTon(maxPesoDim(r.peso_bruto, r.tamano_dimens), cant);
       const item = itemR(r, cant, t);
       const docPV = String(r.documento ?? '').trim();

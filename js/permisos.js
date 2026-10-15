@@ -41,7 +41,7 @@ const P_EDITAR = ['editar', 'descargar', 'excluir', 'incluir_plan', 'ajustar_pla
 const P_BORRAR = ['eliminar'];
 const P_INVITAR = ['invitar'];
 // Acciones operativas que por defecto sólo tiene OWNER (asignables como extra)
-const OWNER_EXTRA = ['coordinar_venta', 'coordinar_retiro', 'forzar_cd_cliente', 'programar_transporte', 'coordinar_transporte', 'editar_dt_seguimiento', 'descargar_bd'];
+const OWNER_EXTRA = ['coordinar_venta', 'coordinar_retiro', 'forzar_cd_cliente', 'programar_transporte', 'coordinar_transporte', 'editar_dt_seguimiento', 'descargar_bd', 'activar_saldo'];
 
 // clase = clase de seguridad en BD (app_role()); debe coincidir con la migración
 export const PERFILES = {
@@ -60,7 +60,8 @@ export const PERFILES = {
     menu: ['home', 'rates', ...TRONCALES, 'flete-tercero', 'indicadores', 'tarifas-transporte', 'tarifas-clientes', ...MAESTROS, 'roles'],
     privilegios: ['COMENTAR', 'EDITAR', 'INVITAR'],
     // (12-oct-2026, Jordan) Coordina, programa y edita el transporte de los camiones del Plan de Carga.
-    acciones: [...P_VISUALIZAR, ...P_COMENTAR, ...P_EDITAR, ...P_INVITAR, 'coordinar_transporte', 'programar_transporte'],
+    // (15-oct-2026, Jordan) También activa saldos de camiones que viajaron parciales (Seguimiento de Carga).
+    acciones: [...P_VISUALIZAR, ...P_COMENTAR, ...P_EDITAR, ...P_INVITAR, 'coordinar_transporte', 'programar_transporte', 'activar_saldo'],
   },
   JEFE_ABASTECIMIENTO: {
     label: 'Jefe Abastecimiento', clase: 'PLANNER_ABASTECIMIENTO', alcance: 'TODOS',
@@ -129,6 +130,7 @@ export const ACCIONES_EXTRA = [
   { key: 'coordinar_transporte',  label: 'Coordinar transporte del Plan de Carga (sin programar)', soloEditor: true },
   { key: 'programar_transporte',  label: 'Programar camión con transporte', soloEditor: true },
   { key: 'editar_dt_seguimiento', label: 'Editar DT en Seguimiento de Carga', soloEditor: true },
+  { key: 'activar_saldo',         label: 'Activar saldo de camión parcial (Seguimiento de Carga)', soloEditor: true },
 ];
 
 // ── Sesión activa ───────────────────────────────────────────────────────────
