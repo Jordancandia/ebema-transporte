@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610141916';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610141916';
-import { getDatabase } from './data.js?v=202610141916';
+import { supabase } from './supabase-client.js?v=202610150754';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610150754';
+import { getDatabase } from './data.js?v=202610150754';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610141916';
-import { confirmar, pedirDato } from './confirmar.js?v=202610141916';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610150754';
+import { confirmar, pedirDato } from './confirmar.js?v=202610150754';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -4149,6 +4149,7 @@ V2.seguimiento_carga = {
       ['Toneladas', tonHtml(r.ton), true], ['Cantidad de SKU', fmtNum(r.n_sku, 0)],
       ['Pedidos / OC', fmtNum(r.n_pedidos, 0)], ['Líneas', fmtNum(r.n_lineas, 0)],
       ['Camiones', r.camiones.map(segPill).join(' '), true], ['Tipos de carga', r.tipos_carga.join(', ') || '—'],
+      ['Programado por', r.camiones.map(c => `<div style="margin:2px 0">${segPill(c)} ${c.programado_por ? `<b>${escV2(c.programado_por)}</b>` : '<span class="sv-muted">sin usuario</span>'}${c.programado_en ? ` <span class="sv-muted">· ${escV2(progPorSeg({ programado_en: c.programado_en }))}</span>` : ''}</div>`).join(''), true],
       ['Documento de transporte', r.dts.length ? r.dts.map(t => `<span class="sv-mono"><b>${escV2(t)}</b></span>`).join(' ') : '—', true],
     ],
     tablas: r.camiones.flatMap(c => detalleCamionSeg(r, c)),
@@ -4222,6 +4223,8 @@ No corresponde a este camión: deja de mostrarse y de contar en la cuadratura.`)
   });
   return acc;
 }
+// (15-oct-2026, Jordan) Usuario que programó/coordinó el servicio, visible en el detalle.
+const progPorSeg = c => [c.programado_por, c.programado_en ? new Date(c.programado_en).toLocaleString('es-CL', { dateStyle: 'short', timeStyle: 'short' }) : ''].filter(Boolean).join(' · ');
 const segKv = (k, v, raw) => `<div><dt>${escV2(k)}</dt><dd>${raw ? (v || '—') : (v == null || v === '' ? '—' : escV2(v))}</dd></div>`;
 function fichaTransporteSeg(r, c) {
   const pct = c.pct != null ? Number(c.pct) : (c.cap ? Math.round(c.ton / c.cap * 100) : null);
@@ -4251,6 +4254,7 @@ function fichaTransporteSeg(r, c) {
       <div class="sv-segbox-l" style="margin-top:6px"><span class="material-symbols-outlined" style="font-size:16px;vertical-align:-3px">badge</span> ${c.chofer_nombre ? `<b>${escV2(c.chofer_nombre)}</b>` : '<span class="sv-muted">Chofer pendiente</span>'}${c.chofer_rut ? ` · <span class="sv-mono">${escV2(c.chofer_rut)}</span>` : ''}</div>
       ${c.chofer_telefono ? `<div class="sv-segbox-l"><span class="material-symbols-outlined" style="font-size:16px;vertical-align:-3px">call</span> ${tel(c.chofer_telefono)}</div>` : ''}
       <div class="sv-segbox-l"><span class="material-symbols-outlined" style="font-size:16px;vertical-align:-3px">event</span> Carga <b>${escV2(fmtFechaISO(c.fecha_carga || r.fecha_carga))}</b></div>
+      <div class="sv-segbox-l"><span class="material-symbols-outlined" style="font-size:16px;vertical-align:-3px">person_check</span> ${c.programado_por ? `Programado por <b>${escV2(c.programado_por)}</b>${c.programado_en ? ` <span class="sv-muted">· ${escV2(progPorSeg({ programado_en: c.programado_en }))}</span>` : ''}` : '<span class="sv-muted">Sin usuario registrado</span>'}</div>
     </div>`;
   const html = `<div class="sv-card" style="padding:12px 14px;box-shadow:inset 4px 0 0 ${col}">
     <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px">${segTipo(c, true)}${c.coord ? pill('Coordinado', 'mute') : ''}
@@ -4260,7 +4264,7 @@ function fichaTransporteSeg(r, c) {
     <div class="sv-segbig">${cliBox}${trBox}</div>
     <dl class="sv-kv" style="margin:0">
       ${segKv('Ruta', [c.origen, c.destino].filter(Boolean).join(' → '))}
-      ${segKv('Programado por', [c.programado_por, c.programado_en ? new Date(c.programado_en).toLocaleString('es-CL', { dateStyle: 'short', timeStyle: 'short' }) : ''].filter(Boolean).join(' · '))}
+      ${segKv('Programado por', progPorSeg(c))}
       ${segKv('Documento de transporte', dtHtml, true)}
     </dl></div>`;
   return { titulo: `${c.lbl}${c.patente_camion ? ' · ' + c.patente_camion : ''}`, html };
@@ -4591,11 +4595,11 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610141916');
+    const m = await import('./ind-plan-carga.js?v=202610150754');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (currentSub === 'control_diferencias') {  // (11-oct-2026) Control de Diferencias del Plan de Carga
-    const m = await import('./control-diferencias.js?v=202610141916');
+    const m = await import('./control-diferencias.js?v=202610150754');
     await m.renderControlDiferencias(stage);
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
