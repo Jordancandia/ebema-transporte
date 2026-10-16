@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610152146';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610152146';
-import { getDatabase } from './data.js?v=202610152146';
+import { supabase } from './supabase-client.js?v=202610161131';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610161131';
+import { getDatabase } from './data.js?v=202610161131';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610152146';
-import { confirmar, pedirDato } from './confirmar.js?v=202610152146';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610161131';
+import { confirmar, pedirDato } from './confirmar.js?v=202610161131';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -4581,7 +4581,18 @@ function cargarEntregasExcel() {
           const m = String(v ?? '').match(/^(\d{1,2})[./-](\d{1,2})[./-](\d{4})/); if (m) return `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
           const m2 = String(v ?? '').match(/^(\d{4})-(\d{2})-(\d{2})/); return m2 ? m2[0] : '';
         };
-        const numv = v => typeof v === 'number' ? v : (parseFloat(String(v ?? '').replace(/\./g, '').replace(',', '.')) || 0);
+        // (16-oct-2026) Cantidad como texto: "289,44" / "1.234,5" (formato CL) o "289.44" (punto decimal).
+        // Antes se borraban todos los puntos → "289.44" quedaba 28944. El punto sólo es de miles si
+        // calza el patrón 1.234 / 12.345.678; si no, es separador decimal.
+        const numv = v => {
+          if (typeof v === 'number') return v;
+          const t = String(v ?? '').trim().replace(/\s/g, ''); if (!t) return 0;
+          let n;
+          if (t.includes(',')) n = t.replace(/\./g, '').replace(',', '.');
+          else if (/^-?\d{1,3}(\.\d{3})+$/.test(t)) n = t.replace(/\./g, '');
+          else n = t;
+          return parseFloat(n) || 0;
+        };
         const g = (a, k) => ix[k] >= 0 ? a[ix[k]] : null;
         const filas = [];
         for (let i = 1; i < aoa.length; i++) {
@@ -4768,11 +4779,11 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610152146');
+    const m = await import('./ind-plan-carga.js?v=202610161131');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (currentSub === 'control_diferencias') {  // (11-oct-2026) Control de Diferencias del Plan de Carga
-    const m = await import('./control-diferencias.js?v=202610152146');
+    const m = await import('./control-diferencias.js?v=202610161131');
     await m.renderControlDiferencias(stage);
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
@@ -6640,13 +6651,9 @@ async function renderPlanCarga(stage, opts = {}) {
         + segundoHtml(r, fill)
         // (4-oct-2026, Jordan) Sólo lo que va en el camión; lo que queda fuera se ve en el CSV.
         + ((() => { const accC = accMover(r, 'cd'); return CAT_V2.map((c, i) => { const it = (r.det[c.k] || []).filter(d => d._enCamion); return it.length ? grupoHtml(c.color, CAT_LARGO[i], it, c.tipo, accC) : ''; }).join(''); })() || '<div class="sv-note-box">El camión CD no tiene carga para esta sucursal.</div>')
-        // (15-oct-2026, Jordan) Las líneas que quedan fuera del camión CD se muestran (antes sólo el total),
-        // con su OC/pedido y los botones para subirlas al camión CD o al 2º camión.
-        + ((() => {
-            const accF = accMover(r, 'cd');
-            const grp = CAT_V2.map((c, i) => { const it = (r.det[c.k] || []).filter(d => !d._enCamion && !d._camion2 && d._manual !== 0); return it.length ? grupoHtml(c.color, CAT_LARGO[i] + ' · fuera del camión', it, c.tipo, accF) : ''; }).join('');
-            const fuera = CAT_V2.reduce((s2, c) => s2 + (r.det[c.k] || []).filter(d => !d._enCamion && !d._camion2 && d._manual !== 0).reduce((a2, d) => a2 + (d.ton || 0), 0), 0);
-            return grp ? `<div class="sv-dr-note" style="margin:14px 0 6px;font-weight:700">Fuera del camión CD · ${t1(fuera)} t (no caben${r.segundoPropuesto || fill.segundoPropuesto ? '; lo que cabe va al 2º camión' : ''})</div><div style="opacity:.75">${grp}</div>` : ''; })());
+        // (15-oct-2026 21:51, Jordan) El detalle muestra SÓLO lo considerado que cumple la capacidad del camión;
+        // lo que queda fuera no se muestra (sigue en el CSV descargable).
+        ;
     }
     if (tab === 'dirman') return dirManHtml(r);
     const [tk, n] = tab.split(':');

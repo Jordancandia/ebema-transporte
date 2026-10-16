@@ -5,7 +5,7 @@
 //  - Rutas INTERREGIONALES -> SPOT automatico.
 //  - Sectores heredan de su comuna (cascada via trigger en la BD).
 // ==========================================================================
-import { supabase } from './supabase-client.js?v=202610152146';
+import { supabase } from './supabase-client.js?v=202610161131';
 import { showAlert } from './utils.js';
 
 // --- Cartas de Eje Vial por centro. CLAVE = codigo homologable (cardinal).
