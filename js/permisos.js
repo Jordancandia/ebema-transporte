@@ -41,7 +41,7 @@ const P_EDITAR = ['editar', 'descargar', 'excluir', 'incluir_plan', 'ajustar_pla
 const P_BORRAR = ['eliminar'];
 const P_INVITAR = ['invitar'];
 // Acciones operativas que por defecto sólo tiene OWNER (asignables como extra)
-const OWNER_EXTRA = ['coordinar_venta', 'coordinar_retiro', 'forzar_cd_cliente', 'programar_transporte', 'coordinar_transporte', 'editar_dt_seguimiento', 'descargar_bd', 'activar_saldo', 'marcar_prioridad'];
+const OWNER_EXTRA = ['coordinar_venta', 'coordinar_retiro', 'forzar_cd_cliente', 'programar_transporte', 'coordinar_transporte', 'editar_dt_seguimiento', 'descargar_bd', 'activar_saldo', 'marcar_prioridad', 'evaluar_prioridad'];
 
 // clase = clase de seguridad en BD (app_role()); debe coincidir con la migración
 export const PERFILES = {
@@ -61,19 +61,21 @@ export const PERFILES = {
     privilegios: ['COMENTAR', 'EDITAR', 'INVITAR'],
     // (12-oct-2026, Jordan) Coordina, programa y edita el transporte de los camiones del Plan de Carga.
     // (15-oct-2026, Jordan) También activa saldos de camiones que viajaron parciales (Seguimiento de Carga).
-    acciones: [...P_VISUALIZAR, ...P_COMENTAR, ...P_EDITAR, ...P_INVITAR, 'coordinar_transporte', 'programar_transporte', 'activar_saldo', 'marcar_prioridad'],
+    acciones: [...P_VISUALIZAR, ...P_COMENTAR, ...P_EDITAR, ...P_INVITAR, 'coordinar_transporte', 'programar_transporte', 'activar_saldo'],
   },
   JEFE_ABASTECIMIENTO: {
     label: 'Jefe Abastecimiento', clase: 'PLANNER_ABASTECIMIENTO', alcance: 'TODOS',
     menu: ['home', ...TRONCALES],
     privilegios: ['COMENTAR', 'EDITAR'],
-    acciones: [...P_VISUALIZAR, ...P_COMENTAR, ...P_EDITAR],
+    // (15-oct-2026, Jordan) Acepta o rechaza las PRIORIDADES de carga que marca Operaciones.
+    acciones: [...P_VISUALIZAR, ...P_COMENTAR, ...P_EDITAR, 'marcar_prioridad', 'evaluar_prioridad'],
   },
   PLANNER_ABASTECIMIENTO: {
     label: 'Planner Abastecimiento', clase: 'PLANNER_ABASTECIMIENTO', alcance: 'TODOS',
     menu: ['home', ...TRONCALES],
     privilegios: ['COMENTAR', 'EDITAR'],
-    acciones: [...P_VISUALIZAR, ...P_COMENTAR, ...P_EDITAR],
+    // (15-oct-2026, Jordan) Recibe la notificación y acepta o rechaza las PRIORIDADES de carga de Operaciones.
+    acciones: [...P_VISUALIZAR, ...P_COMENTAR, ...P_EDITAR, 'marcar_prioridad', 'evaluar_prioridad'],
   },
   JEFE_OPERACIONES: {
     label: 'Jefe Operaciones', clase: 'ADMINISTRADOR_DEPOSITO', alcance: 'CENTROS',
@@ -86,13 +88,15 @@ export const PERFILES = {
     label: 'Planner Operaciones', clase: 'ADMINISTRADOR_DEPOSITO', alcance: 'CENTROS',
     menu: ['home', 'rates', ...TRONCALES, 'flete-tercero', 'indicadores', 'tarifas-clientes'],
     privilegios: ['COMENTAR'],
-    acciones: [...P_VISUALIZAR, ...P_COMENTAR],
+    // (15-oct-2026, Jordan) Equipo de Operaciones de la sucursal: también marca PRIORIDAD de carga (sus centros).
+    acciones: [...P_VISUALIZAR, ...P_COMENTAR, 'marcar_prioridad'],
   },
   JEFE_SUCURSAL: {
     label: 'Jefe Sucursal', clase: 'ADMINISTRADOR_DEPOSITO', alcance: 'CENTROS',
     menu: ['home', 'rates', ...TRONCALES, 'flete-tercero', 'indicadores', 'tarifas-clientes'],
     privilegios: ['COMENTAR'],
-    acciones: [...P_VISUALIZAR, ...P_COMENTAR],
+    // (15-oct-2026, Jordan) Prioriza entregas de sus centros; entra al flujo de aprobación de Abastecimiento.
+    acciones: [...P_VISUALIZAR, ...P_COMENTAR, 'marcar_prioridad'],
   },
   JEFE_CATEGORIA: {
     label: 'Jefe Categoría', clase: 'PLANNER_OPERACIONES', alcance: 'TODOS',
@@ -132,6 +136,7 @@ export const ACCIONES_EXTRA = [
   { key: 'programar_transporte',  label: 'Programar camión con transporte', soloEditor: true },
   { key: 'editar_dt_seguimiento', label: 'Editar DT en Seguimiento de Carga', soloEditor: true },
   { key: 'marcar_prioridad',      label: 'Marcar PRIORIDAD de carga (Retiros, Crossdocking, Traslados)' },
+  { key: 'evaluar_prioridad',     label: 'Aceptar / rechazar PRIORIDAD de carga — Abastecimiento' },
   { key: 'activar_saldo',         label: 'Activar saldo de camión parcial (Seguimiento de Carga)', soloEditor: true },
 ];
 

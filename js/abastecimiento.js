@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610151522';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610151522';
-import { getDatabase } from './data.js?v=202610151522';
+import { supabase } from './supabase-client.js?v=202610152146';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610152146';
+import { getDatabase } from './data.js?v=202610152146';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610151522';
-import { confirmar, pedirDato } from './confirmar.js?v=202610151522';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610152146';
+import { confirmar, pedirDato } from './confirmar.js?v=202610152146';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -3074,8 +3074,13 @@ const VISTAS_TRONCAL = {
 // (15-oct-2026, Jordan) PRIORIDAD de carga por pedido/OC (abast_prioridad_carga): la marca el Jefe de
 // Operaciones de la sucursal en Retiros de Fábrica, Crossdocking y Pedidos de Traslados; el Plan de Carga
 // la alerta y la sube primero dentro de su categoría.
+// (15-oct-2026, Jordan) Flujo de aprobación: sólo el equipo de Operaciones de la sucursal marca; la marca queda
+// PENDIENTE y notifica a los Planner de Abastecimiento, que la aceptan (pasa a PRIORIDAD de carga) o la rechazan.
+// Sólo las ACEPTADAS suben en el Plan de Carga; el saldo sigue con el orden ya definido.
+// (15-oct-2026, Jordan) Planner/Jefe Abastecimiento priorizan directo (queda ACEPTADA, sin aprobación);
+// Jefe Sucursal también marca y entra al mismo flujo de aprobación que Operaciones.
 async function loadPrioridades(tipo) {
-  let q = supabase.from('abast_prioridad_carga').select('id,tipo,documento,centro,motivo,marcado_por,marcado_en').eq('activo', true).limit(5000);
+  let q = supabase.from('abast_prioridad_carga').select('id,tipo,documento,centro,motivo,marcado_por,marcado_en,estado,evaluado_por,evaluado_en,comentario_eval').eq('activo', true).limit(5000);
   if (tipo) q = q.eq('tipo', tipo);
   const { data, error } = await q;
   if (error) { console.warn('Prioridades de carga no disponibles', error); return new Map(); }
@@ -3084,13 +3089,16 @@ async function loadPrioridades(tipo) {
 async function togglePrioridad(tipo, doc, centro, on) {
   const d = String(doc ?? '').trim(); if (!d) return false;
   const quien = await getUserEmail();
+  const directo = can('evaluar_prioridad');   // Abastecimiento: sin aprobación
   if (on) {
-    const motivo = await pedirDato(`Marcar PRIORIDAD de carga · ${d}\n\nSe alertará en el Plan de Carga y subirá primero dentro de su categoría. Motivo (opcional):`,
-      { placeholder: 'Ej. quiebre crítico, obra detenida, cliente esperando', aceptar: 'Marcar prioridad', icono: 'priority_high', opcional: true });
+    const motivo = await pedirDato(directo
+      ? `Marcar PRIORIDAD de carga · ${d}\n\nQueda como prioridad de carga de inmediato (sin aprobación) y sube primero dentro de su categoría. Motivo (opcional):`
+      : `Solicitar PRIORIDAD de carga · ${d}\n\nSe notificará a los Planner de Abastecimiento para que la evalúen. Al aceptarla pasa a ser prioridad de carga y sube primero dentro de su categoría. Motivo:`,
+      { placeholder: 'Ej. quiebre crítico, obra detenida, cliente esperando', aceptar: directo ? 'Marcar prioridad' : 'Solicitar prioridad', icono: 'priority_high', opcional: true });
     if (motivo === null) return false;
     const { error } = await supabase.from('abast_prioridad_carga').insert({ tipo, documento: d, centro: centro || null, motivo: String(motivo || '').trim() || null, marcado_por: quien });
     if (error) { showAlert('No se pudo marcar la prioridad: ' + error.message, 'error'); return false; }
-    showAlert(`${d} marcado como PRIORIDAD de carga`, 'success');
+    showAlert(directo ? `${d} marcado como PRIORIDAD de carga` : `Prioridad de ${d} enviada a Abastecimiento para aprobación`, 'success');
   } else {
     if (!await confirmar(`¿Quitar la PRIORIDAD de carga de ${d}?`, { aceptar: 'Quitar prioridad', icono: 'remove_done' })) return false;
     const { error } = await supabase.from('abast_prioridad_carga').update({ activo: false, desmarcado_por: quien, desmarcado_en: new Date().toISOString() }).eq('tipo', tipo).eq('documento', d).eq('activo', true);
@@ -3099,13 +3107,33 @@ async function togglePrioridad(tipo, doc, centro, on) {
   }
   return true;
 }
+// (15-oct-2026, Jordan) Planner de Abastecimiento acepta o rechaza la prioridad solicitada por Operaciones.
+async function evaluarPrioridad(tipo, doc, aceptar) {
+  const d = String(doc ?? '').trim(); if (!d) return false;
+  let comentario = null;
+  if (aceptar) {
+    if (!await confirmar(`¿Aceptar la PRIORIDAD de carga de ${d}?\n\nPasa a ser prioridad de carga: sube primero dentro de su categoría en el Plan de Carga; el resto sigue con el orden ya definido.`,
+      { aceptar: 'Aceptar prioridad', icono: 'check_circle' })) return false;
+  } else {
+    comentario = await pedirDato(`Rechazar la PRIORIDAD de carga de ${d}\n\nSe avisará a quien la marcó. Motivo del rechazo:`,
+      { placeholder: 'Ej. sin disponibilidad en fábrica, camión ya completo', aceptar: 'Rechazar prioridad', icono: 'block', opcional: true });
+    if (comentario === null) return false;
+  }
+  const { data, error } = await supabase.from('abast_prioridad_carga')
+    .update({ estado: aceptar ? 'ACEPTADA' : 'RECHAZADA', comentario_eval: String(comentario || '').trim() || null })
+    .eq('tipo', tipo).eq('documento', d).eq('activo', true).eq('estado', 'PENDIENTE').select('id');
+  if (error) { showAlert('No se pudo evaluar la prioridad: ' + error.message, 'error'); return false; }
+  if (!data || !data.length) { showAlert(`La prioridad de ${d} ya fue evaluada o retirada`, 'warning'); return true; }
+  showAlert(aceptar ? `${d} aceptado como PRIORIDAD de carga` : `Prioridad de ${d} rechazada`, aceptar ? 'success' : 'info');
+  return true;
+}
 const V2_DEPS = {
   // (9-oct-2026, Jordan) Ventas CD: NV coordinadas se mantienen en la vista durante el día.
   augmentRaw: async (vista, rows) => { if (vista === 'v_trc_sqvi_pedidos_venta_1003') await reponerVentasCoordinadas(rows); },
   fetchAllRows, filtrarPorCentro, can, parseDateSAP, exportarCSV, showAlert,
   clearRawCache: () => clearRawCache(),
   loadExclusionesPlan, excluirDelPlan, reactivarEnPlan,
-  loadPrioridades, togglePrioridad, enAlcance,
+  loadPrioridades, togglePrioridad, evaluarPrioridad, enAlcance,
 };
 const ORIGENES_CD = [['1003', 'CD Quilicura · 1003'], ['1081', 'CD Concepción · 1081']];
 const C_INK = '#191c1d', C_RED = '#b5000b', C_ORANGE = '#ea580c', C_YELLOW = '#ca8a04', C_GREEN = '#15803d', C_GREY = '#9ca3af', C_BLUE = '#1d4ed8', C_SEC = '#5c5f61';
@@ -4740,11 +4768,11 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610151522');
+    const m = await import('./ind-plan-carga.js?v=202610152146');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (currentSub === 'control_diferencias') {  // (11-oct-2026) Control de Diferencias del Plan de Carga
-    const m = await import('./control-diferencias.js?v=202610151522');
+    const m = await import('./control-diferencias.js?v=202610152146');
     await m.renderControlDiferencias(stage);
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
@@ -4948,6 +4976,10 @@ const esIngSum = r => String(r.documento ?? r.pv ?? '').trim() !== '' && String(
 const ingSumPill = (corto) => `<span class="sv-pill warn" title="${ING_SUM_TXT}: el retiro se ingresa en el CD 1003 y sube al camión con su pedido de venta" style="white-space:normal;line-height:1.2"><i></i>${corto ? 'INGRESAR Y SUMINISTRAR PV / GUÍA FACTURABLE' : ING_SUM_TXT}</span>`;
 // (15-oct-2026, Jordan) Pedidos/OC marcados PRIORIDAD de carga (se cargan al abrir el Plan de Carga).
 let PRIO_DOCS = new Set();
+// (15-oct-2026, Jordan) Columna «Prioridad de carga» en los CSV: la posición se carga como prioritaria.
+const PRIO_CSV_TXT = 'PRIORIDAD DE CARGA';
+const esPrioCarga = d => !!d && PRIO_DOCS.has(String(d.pt ?? d.oc ?? d.pv ?? '').trim());
+const prioCsv = d => esPrioCarga(d) ? PRIO_CSV_TXT : '';
 function asignarCamionesCD(r) {
   const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
   const doc = d => String(d.pt ?? d.oc ?? d.pv ?? '').trim();
@@ -5219,7 +5251,8 @@ async function renderPlanCarga(stage, opts = {}) {
       if (sinBase.length) console.warn('Plan de carga: saldos sin línea base en SAP (SQVI)', sinBase.map(x => `${x.documento}|${x.material}`));
     }
   } catch (e) { console.warn('Plan de carga: saldos activados no disponibles', e); }
-  try { const pm = await loadPrioridades(); PRIO_DOCS = new Set([...pm.values()].map(x => String(x.documento ?? '').trim())); }
+  // (15-oct-2026) Sólo las prioridades ACEPTADAS por Abastecimiento suben en el orden de llenado.
+  try { const pm = await loadPrioridades(); PRIO_DOCS = new Set([...pm.values()].filter(x => x.estado === 'ACEPTADA').map(x => String(x.documento ?? '').trim())); }
   catch (e) { PRIO_DOCS = new Set(); console.warn('Plan de carga: prioridades no disponibles', e); }
   // (1-oct-2026) Asignaciones manuales de líneas por origen|centro destino
   const asigMap = new Map();
@@ -5922,7 +5955,7 @@ async function renderPlanCarga(stage, opts = {}) {
   // camión CD con la columna "En Camión" (SÍ / EXCEDE). Usuario / Motivo
   // Prioridad sólo para Traslados 1003; Ton Bruto / Ton Vol de referencia
   // (Ton SKU sigue siendo el mayor); REVEX no tiene Ton Vol.
-  const CSV_HEADERS = ['Categoría','En Camión','Documento','Id Material','Nombre Material','Pedido de Venta','Proveedor','Entrega Entrante','Ruta','Comuna','Tipo Expedición','Fecha','Cantidad','Ton Bruto','Ton Vol','Ton SKU','Usuario','Motivo Prioridad'];
+  const CSV_HEADERS = ['Categoría','Prioridad de carga','En Camión','Documento','Id Material','Nombre Material','Pedido de Venta','Proveedor','Entrega Entrante','Ruta','Comuna','Tipo Expedición','Fecha','Cantidad','Ton Bruto','Ton Vol','Ton SKU','Usuario','Motivo Prioridad'];
   function csvFilas(r) {
     marcarCapacidadCD(r);
     const cats = [
@@ -5942,9 +5975,9 @@ async function renderPlanCarga(stage, opts = {}) {
       const enCamion = camMark(d);
       const usuario = d.usuario || '', motivo = d._motivo || '';
       // (FIX) Crossdocking usa "ctdPend" (numérico) en vez de "ctd".
-      if (t === 'T') filas.push([cat, enCamion, d.pt, d.material, d.nombre, d.pv || '', '', '', '', '', '', d.fecha || '', d.ctd || (d.ctdPend != null ? fmtNum(d.ctdPend, 1) : ''), fmtT(d.tonBruto), fmtT(d.tonVol), fmtNum(d.ton, 4), usuario, motivo]);
-      else if (t === 'R') filas.push([cat, enCamion, d.oc, d.material, d.nombre, d.pv || '', d.prov, d.entrega_entrante || '', '', '', '', d.fecha || '', fmtNum(parseNum(d.cant), 1), fmtT(d.tonBruto), fmtT(d.tonVol), fmtNum(d.ton, 4), '', '']);
-      else filas.push([cat, enCamion, d.pv, d.material, d.nombre, '', '', '', d.ruta, d.comuna, d.tipoExp || '', d.fecha || '', fmtNum(parseNum(d.cant), 1), fmtT(d.tonBruto), fmtT(d.tonVol), fmtNum(d.ton, 4), '', '']);
+      if (t === 'T') filas.push([cat, prioCsv(d), enCamion, d.pt, d.material, d.nombre, d.pv || '', '', '', '', '', '', d.fecha || '', d.ctd || (d.ctdPend != null ? fmtNum(d.ctdPend, 1) : ''), fmtT(d.tonBruto), fmtT(d.tonVol), fmtNum(d.ton, 4), usuario, motivo]);
+      else if (t === 'R') filas.push([cat, prioCsv(d), enCamion, d.oc, d.material, d.nombre, d.pv || '', d.prov, d.entrega_entrante || '', '', '', '', d.fecha || '', fmtNum(parseNum(d.cant), 1), fmtT(d.tonBruto), fmtT(d.tonVol), fmtNum(d.ton, 4), '', '']);
+      else filas.push([cat, prioCsv(d), enCamion, d.pv, d.material, d.nombre, '', '', '', d.ruta, d.comuna, d.tipoExp || '', d.fecha || '', fmtNum(parseNum(d.cant), 1), fmtT(d.tonBruto), fmtT(d.tonVol), fmtNum(d.ton, 4), '', '']);
     }));
     return filas;
   }
@@ -6516,6 +6549,8 @@ async function renderPlanCarga(stage, opts = {}) {
   }
 
   // ── Panel lateral (sólo lectura) ─────────────────────────────────────────
+  // (15-oct-2026, Jordan) «P» verde junto al documento: entrega/pedido con PRIORIDAD de carga aceptada.
+  const PRIO_BADGE = '<span title="PRIORIDAD DE CARGA: cargar primero" aria-label="Prioridad de carga" style="display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;margin-right:6px;border-radius:50%;background:#15803d;color:#fff;font-size:11px;font-weight:800;line-height:1;vertical-align:middle">P</span>';
   function tablaItems(tipo, items, color, accFn) {
     // (7-oct-2026, Jordan) Columna N° de entrega (traslados/crossdocking/revex: entrega SAP; ventas: entrega
     // coordinada; retiros: entrega entrante).
@@ -6526,7 +6561,7 @@ async function renderPlanCarga(stage, opts = {}) {
     const cant = d => tipo === 'X' ? fmtNum(d.ctdPend, 0) : tipo === 'T' ? escapeHtml(d.ctd ?? '') : fmtNum(parseNum(d.cant), 0);
     return `<div class="pc-tbl"><table class="sv-table"><thead><tr>${head.map((h, i) => `<th class="${i >= 4 ? 'r' : ''}">${escapeHtml(h)}</th>`).join('')}${accFn ? '<th class="r">Mover</th>' : ''}</tr></thead>
       <tbody>${items.map(d => `<tr class="${d._enCamion === false ? (d._camion2 ? 'is-seg' : 'is-fuera') : ''}" title="${d._enCamion === false ? (d._camion2 ? 'Va en el 2º camión (opcional)' : 'No cabe: queda para el próximo plan') : ''}">
-        <td><span class="sv-mono">${escapeHtml(String(doc(d) ?? ''))}</span>${d._prio ? '<div><span class="sv-pill bad" title="Marcado PRIORIDAD de carga por la sucursal" style="font-size:10px"><i></i>PRIORIDAD</span></div>' : ''}${d._ingSum ? `<div style="margin-top:2px;font-size:10px">${ingSumPill(true)}</div><div class="sv-sub" style="margin:0">PV ${escapeHtml(String(d.pv ?? ''))}</div>` : ''}</td>
+        <td style="white-space:nowrap">${esPrioCarga(d) ? PRIO_BADGE : ''}<span class="sv-mono">${escapeHtml(String(doc(d) ?? ''))}</span>${d._ingSum ? `<div style="margin-top:2px;font-size:10px">${ingSumPill(true)}</div><div class="sv-sub" style="margin:0">PV ${escapeHtml(String(d.pv ?? ''))}</div>` : ''}</td>
         <td>${ent(d) ? `<span class="sv-mono">${escapeHtml(ent(d))}</span>` : '<span class="sv-muted">—</span>'}</td>
         <td><div class="pc-mat"><b>${escapeHtml(d.nombre || '')}</b><small>${escapeHtml(sub(d))}</small></div></td>
         <td class="sv-mono">${escapeHtml(d.fecha || '')}</td><td class="r">${cant(d)}</td><td class="r"><b>${fmtNum(d.ton, 2)}</b></td>${accFn ? `<td class="r" style="white-space:nowrap">${accFn(d)}</td>` : ''}</tr>`).join('')}</tbody></table></div>`;
@@ -6534,7 +6569,7 @@ async function renderPlanCarga(stage, opts = {}) {
   const kv = pares => `<div class="pc-kv">${pares.filter(Boolean).map(([k, v]) => `<div><span>${escapeHtml(k)}</span><b>${v}</b></div>`).join('')}</div>`;
   const grupoHtml = (color, titulo, items, tipo, accFn) => {
     const ton = items.reduce((s, d) => s + (d.ton || 0), 0);
-    return `<div class="pc-grp"><div class="pc-grp-h"><i style="background:${color}"></i><b>${escapeHtml(titulo)}</b><small>${items.length} líneas · ${t1(ton)} t</small></div>${tablaItems(tipo, items, color, accFn)}</div>`;
+    return `<div class="pc-grp"><div class="pc-grp-h"><i style="background:${color}"></i><b>${escapeHtml(titulo)}</b><small>${items.length} líneas · ${t1(ton)} t${(() => { const np = items.filter(esPrioCarga).length; return np ? ` · <span style="color:#15803d;font-weight:700">${np} prioritaria${np > 1 ? 's' : ''}</span>` : ''; })()}</small></div>${tablaItems(tipo, items, color, accFn)}</div>`;
   };
   // (1-oct-2026) Botones para mover una línea entre camión CD, 2º camión y «no carga».
   const MV_STYLE = 'font-size:11px;font-weight:700;padding:1px 6px;margin-left:3px;border:1px solid #c5c7c9;border-radius:6px;background:#fff;cursor:pointer';
@@ -6652,7 +6687,7 @@ async function renderPlanCarga(stage, opts = {}) {
   }
 
   // ── Descarga CSV (formato 4.8 + columnas de referencia) ─────────────────
-  const CSV_V21 = ['Origen', 'Centro destino', 'Sucursal', 'Estado plan', 'Horizonte', 'Día objetivo', 'Camión', 'Categoría', 'Documento', 'Material', 'Detalle', 'Fecha', 'Cantidad', 'Toneladas', 'En camión', '% carga camión', 'Estado sucursal',
+  const CSV_V21 = ['Origen', 'Centro destino', 'Sucursal', 'Estado plan', 'Horizonte', 'Día objetivo', 'Camión', 'Categoría', 'Prioridad de carga', 'Documento', 'Material', 'Detalle', 'Fecha', 'Cantidad', 'Toneladas', 'En camión', '% carga camión', 'Estado sucursal',
     'Id Material', 'Pedido de Venta', 'Proveedor', 'N° Entrega', 'Ruta', 'Comuna', 'Tipo Expedición', 'Ton Bruto', 'Ton Vol', 'Usuario', 'Motivo Prioridad', 'Entra a indicador',
     'Patente camión', 'Patente carro', 'Transporte', 'Chofer'];
   const CAT_CSV = ['REVEX', 'Venta directa', 'Retiro proveedor', 'Crossdocking', 'Quiebre y priorizado', 'Abastecimiento'];
@@ -6665,7 +6700,7 @@ async function renderPlanCarga(stage, opts = {}) {
       const doc = tipo === 'V' ? d.pv : tipo === 'R' ? d.oc : d.pt;
       const det = tipo === 'V' ? (d.cliente || '') : tipo === 'R' ? (d.prov || '') : (d._motivo || '');
       const cant = tipo === 'X' ? fmtNum(d.ctdPend, 1) : tipo === 'T' ? (d.ctd ?? '') : fmtNum(parseNum(d.cant), 1);
-      return base.concat([camion, cat, doc ?? '', d.nombre || '', det, d.fecha || '', cant, fmtNum(d.ton, 2), enCam, pctTxt, estado,
+      return base.concat([camion, cat, prioCsv(d), doc ?? '', d.nombre || '', det, d.fecha || '', cant, fmtNum(d.ton, 2), enCam, pctTxt, estado,
         d.material || '', tipo === 'V' ? '' : (d.pv || ''), tipo === 'R' ? (d.prov || '') : '', d.entrega_entrante || d.entrega || '', d.ruta || '', d.comuna || '', d.tipoExp || '',
         fT(d.tonBruto), fT(d.tonVol), d.usuario || '', d._motivo || '']);
     };

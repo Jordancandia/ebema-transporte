@@ -9,8 +9,8 @@
 // Permisos: ver = perfiles internos; comentar / responder / me gusta =
 // privilegio COMENTAR (can('comentar')); ocultar comentario = OWNER.
 // ============================================================================
-import { supabase } from './supabase-client.js?v=202610151522';
-import { can, esOwner, perfilVeMenu } from './permisos.js?v=202610151522';
+import { supabase } from './supabase-client.js?v=202610152146';
+import { can, esOwner, perfilVeMenu } from './permisos.js?v=202610152146';
 import { showAlert } from './utils.js';
 
 export const VISTAS_COMENTARIOS = {
@@ -352,6 +352,10 @@ const TIPO = {
   mencion:   { icon: 'alternate_email', bg: '#e8f0fe', fg: '#1d4ed8', txt: 'te etiquetó en' },
   respuesta: { icon: 'reply',           bg: '#e6f4ea', fg: '#137333', txt: 'respondió en' },
   like:      { icon: 'thumb_up',        bg: '#fff5f3', fg: '#b5000b', txt: 'dio me gusta a tu comentario en' },
+  // (15-oct-2026, Jordan) Flujo de aprobación de PRIORIDAD de carga (Operaciones → Abastecimiento)
+  prioridad_solicitud: { icon: 'priority_high', bg: '#fff4e5', fg: '#c2410c', txt: 'solicita evaluar PRIORIDAD de carga en' },
+  prioridad_aceptada:  { icon: 'check_circle',  bg: '#e6f4ea', fg: '#137333', txt: 'aceptó tu PRIORIDAD de carga en' },
+  prioridad_rechazada: { icon: 'block',         bg: '#fde8e8', fg: '#b91c1c', txt: 'rechazó tu PRIORIDAD de carga en' },
 };
 let _timer = null;
 export async function initCampana(slot, { navegar }) {
@@ -399,7 +403,7 @@ export async function initCampana(slot, { navegar }) {
       const n = items.find(x => x.id === +b.dataset.n); if (!n) return;
       if (!n.leida) { await supabase.from('notificaciones').update({ leida: true }).eq('id', n.id); n.leida = true; }
       abierto = false; pintar(); contar();
-      setFoco({ vista: n.vista, clave: n.clave, documento: n.documento, comentarioId: n.comentario_id });
+      setFoco({ vista: n.vista, clave: n.clave, documento: n.documento, comentarioId: n.comentario_id, prio: String(n.tipo || '').startsWith('prioridad') });
       navegar(n.vista);
     }));
   }

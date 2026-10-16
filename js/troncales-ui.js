@@ -32,8 +32,8 @@ export function tonHtml(n) {
 }
 
 // Encabezado del shell: fecha y hora de la última actualización SAP de la vista
-import { confirmar } from './confirmar.js?v=202610151522';
-import { comentariosHabilitados, conteosComentarios, celdaComentarios, montarHilo, tomarFoco, abrirHiloSuelto } from './comentarios.js?v=202610151522';
+import { confirmar } from './confirmar.js?v=202610152146';
+import { comentariosHabilitados, conteosComentarios, celdaComentarios, montarHilo, tomarFoco, abrirHiloSuelto } from './comentarios.js?v=202610152146';
 export function setUltimaActualizacion(ts) {
   const el = document.getElementById('sv-upd');
   if (!el) return;
@@ -132,7 +132,8 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
   };
   let conteos = conComent ? await conteosComentarios(viewKey) : new Map();
   const foco = conComent ? tomarFoco(viewKey) : null;
-  if (foco) {
+  const focoPrio = foco && foco.prio ? foco : null;   // (15-oct-2026) se resuelve más abajo, tras cargar prioridades
+  if (foco && !foco.prio) {
     const fr = rowsAll.find(r => claveCom(r) === foco.clave);
     if (fr) { st.drawer = fr.__rid; st._focoCom = foco.comentarioId || true; }
     else setTimeout(() => abrirHiloSuelto(foco), 0);
@@ -160,12 +161,32 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
   const prioDoc = r => String(prioCfg.doc(r) ?? '').trim();
   const prioDe = r => prios.get(`${prioCfg.tipo}|${prioDoc(r)}`) || null;
   const puedePrio = r => deps.can('marcar_prioridad') && (!deps.enAlcance || !prioCfg.centro || deps.enAlcance(String(prioCfg.centro(r) ?? '').trim()));
+  // (15-oct-2026, Jordan) Aprobación: la marca de Operaciones queda POR APROBAR hasta que un Planner de
+  // Abastecimiento (acción evaluar_prioridad) la acepta → PRIORIDAD; si la rechaza se desactiva.
+  const puedeEval = () => deps.can('evaluar_prioridad') && !!deps.evaluarPrioridad;
   function celdaPrio(r) {
     const p = prioDe(r), ed = puedePrio(r) && prioDoc(r);
-    const pill = p ? `<span class="sv-pill bad" title="Prioridad marcada por ${esc(p.marcado_por || '')}${p.motivo ? ' · ' + esc(p.motivo) : ''}"><i></i>PRIORIDAD</span>` : '';
-    if (!ed) return pill || '<span class="sv-muted">—</span>';
-    return `<label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;white-space:nowrap" title="${p ? 'Quitar prioridad de carga' : 'Marcar como prioritario de carga'}">
-      <input type="checkbox" data-prio="${esc(r.__rid)}" ${p ? 'checked' : ''} style="width:16px;height:16px;accent-color:#b5000b;cursor:pointer">${pill}</label>`;
+    const pend = !!p && p.estado === 'PENDIENTE';
+    const tit = p ? `Marcada por ${esc(p.marcado_por || '')}${p.motivo ? ' · ' + esc(p.motivo) : ''}${pend ? ' · pendiente de aprobación de Abastecimiento' : (p.evaluado_por ? ' · aceptada por ' + esc(p.evaluado_por) : '')}` : '';
+    const pill = !p ? '' : pend
+      ? `<span class="sv-pill warn" title="${tit}"><i></i>POR APROBAR</span>`
+      : `<span class="sv-pill bad" title="${tit}"><i></i>PRIORIDAD</span>`;
+    const rid = esc(r.__rid);
+    const ev = pend && puedeEval() ? `<span style="display:inline-flex;gap:4px;margin-left:6px;white-space:nowrap">
+      <button class="sv-btn" data-prio-ok="${rid}" title="Aceptar: pasa a ser prioridad de carga" style="padding:2px 8px;font-size:11px;color:#15803d"><span class="material-symbols-outlined">check_circle</span>Aceptar</button>
+      <button class="sv-btn" data-prio-no="${rid}" title="Rechazar la priorización" style="padding:2px 8px;font-size:11px;color:#b91c1c"><span class="material-symbols-outlined">block</span>Rechazar</button></span>` : '';
+    if (!ed) return (pill + ev) || '<span class="sv-muted">—</span>';
+    return `<span style="display:inline-flex;align-items:center;white-space:nowrap"><label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;white-space:nowrap" title="${p ? 'Quitar prioridad de carga' : (puedeEval() ? 'Marcar prioridad de carga' : 'Solicitar prioridad de carga (la aprueba Abastecimiento)')}">
+      <input type="checkbox" data-prio="${rid}" ${p ? 'checked' : ''} style="width:16px;height:16px;accent-color:#b5000b;cursor:pointer">${pill}</label>${ev}</span>`;
+  }
+  if (focoPrio) {
+    // (15-oct-2026) Notificación de PRIORIDAD de carga: filtra la vista por el documento y abre su fila.
+    const d = String(focoPrio.documento ?? '').trim();
+    const fr = prioCfg && d ? rowsAll.find(r => prioDoc(r) === d) : null;
+    if (fr && AV.docSearch && String(AV.docSearch.of(fr) ?? '').includes(d)) st.qDoc = d;
+    else if (fr && AV.search && String(AV.search.of(fr) ?? '').includes(d)) st.q = d;
+    if (fr) st.drawer = fr.__rid;
+    else setTimeout(() => deps.showAlert(`El documento ${d} no aparece en esta vista con los datos actuales (revisa Entregas / Pendientes).`, 'warning'), 0);
   }
   const rowId = r => r.__rid;
   const esCal = () => !!(AV.calendario && st.vista === 'cal');
@@ -517,6 +538,17 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
         draw();
       });
     });
+    // (15-oct-2026) Aceptar / Rechazar prioridad (Planner de Abastecimiento)
+    [['[data-prio-ok]', 'prioOk', true], ['[data-prio-no]', 'prioNo', false]].forEach(([sel, k, acepta]) =>
+      stage.querySelectorAll(sel).forEach(b => b.addEventListener('click', async e => {
+        e.stopPropagation();
+        const r = rowsAll.find(x => x.__rid === b.dataset[k]); if (!r) return;
+        b.disabled = true;
+        try {
+          const ok = await deps.evaluarPrioridad(prioCfg.tipo, prioDoc(r), acepta);
+          if (ok) prios = await deps.loadPrioridades(prioCfg.tipo);
+        } finally { draw(); }
+      })));
     accFila('[data-fila-excl]', excluirFila);
     accFila('[data-fila-reac]', reactivarFila);
     stage.querySelectorAll('tbody tr[data-row]').forEach(tr => tr.addEventListener('click', () => {
