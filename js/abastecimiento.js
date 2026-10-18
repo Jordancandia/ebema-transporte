@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610161131';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610161131';
-import { getDatabase } from './data.js?v=202610161131';
+import { supabase } from './supabase-client.js?v=202610181120';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610181120';
+import { getDatabase } from './data.js?v=202610181120';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610161131';
-import { confirmar, pedirDato } from './confirmar.js?v=202610161131';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610181120';
+import { confirmar, pedirDato } from './confirmar.js?v=202610181120';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -4779,11 +4779,11 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610161131');
+    const m = await import('./ind-plan-carga.js?v=202610181120');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (currentSub === 'control_diferencias') {  // (11-oct-2026) Control de Diferencias del Plan de Carga
-    const m = await import('./control-diferencias.js?v=202610161131');
+    const m = await import('./control-diferencias.js?v=202610181120');
     await m.renderControlDiferencias(stage);
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
@@ -5024,12 +5024,15 @@ function asignarCamionesCD(r) {
   });
   const excedente = orden.filter(d => !d._enCamion && d._manual !== 0).reduce((s, d) => s + (d.ton || 0), 0);
   const manual2 = orden.some(d => d._manual === 2);
-  const segundoPropuesto = manual2 || (excedente > 0 && excedente >= r.cap * UMBRAL_SEGUNDO_CAMION);
+  let segundoPropuesto = manual2 || (excedente > 0 && excedente >= r.cap * UMBRAL_SEGUNDO_CAMION);
   let acc2 = 0;
   orden.forEach(d => { if (d._manual === 2) { d._camion2 = true; acc2 += d.ton || 0; } });
   if (segundoPropuesto) orden.forEach(d => {
     if (d._manual === null && !d._enCamion && acc2 + (d.ton || 0) <= r.cap + 1e-9) { d._camion2 = true; acc2 += d.ton || 0; }
   });
+  // (16-oct-2026) Si el excedente es una línea que por sí sola supera la capacidad (p.ej. peso
+  // volumétrico erróneo), no cabe en ningún camión: no se propone un 2º camión vacío (0 t).
+  if (segundoPropuesto && !manual2 && acc2 <= 1e-9) segundoPropuesto = false;
   const tonNoCarga = orden.filter(d => d._manual === 0).reduce((s, d) => s + (d.ton || 0), 0);
   return { cargado: acc, excedente, segundoPropuesto, tonSegundo: acc2, manual2, tonNoCarga, nManual: orden.filter(d => d._manual !== null).length, orden };
 }

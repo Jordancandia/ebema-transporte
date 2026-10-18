@@ -172,7 +172,11 @@ function _match(m, grupoOTab, sub) {
   if (sub == null && m.some(k => k.startsWith(grupoOTab + ':'))) return true; // grupo con alguna pestaña visible
   return false;
 }
+// (18-oct-2026, Jordan) Vistas sólo del perfil OWNER (ni Administrador ni Planner Distribución);
+// OWNER puede habilitarlas a un usuario como vista extra (p. ej. futuro perfil Portería).
+const SOLO_OWNER = ['porteria'];
 export function puedeVerMenu(grupoOTab, sub = null) {
+  if (SOLO_OWNER.includes(grupoOTab)) return _role === 'OWNER' || _match(_vistasExtra, grupoOTab, sub);
   const m = perfil().menu;
   if (m === null) return true;
   return _match(m, grupoOTab, sub) || _match(_vistasExtra, grupoOTab, sub);
@@ -181,6 +185,7 @@ export function puedeVerMenu(grupoOTab, sub = null) {
 export function perfilVeMenu(role, key) {
   const p = PERFILES[normalizarPerfil(role)];
   if (!p) return false;
+  if (SOLO_OWNER.includes(key.split(':')[0])) return normalizarPerfil(role) === 'OWNER';
   if (p.menu === null) return true;
   const [g, s] = key.split(':');
   return _match(p.menu, g, s ?? null);
@@ -213,5 +218,6 @@ export const VISTAS_CATALOGO = [
   { modulo: 'Flete Tercero / Indicadores', items: [['flete-tercero', 'Flete Tercero (Seguimiento)'], ['indicadores', 'Indicadores (Reportes)']] },
   { modulo: 'Tarifas', items: [['tarifas-transporte', 'Tarifas Transporte'], ['tarifas-clientes', 'Tarifas Clientes']] },
   { modulo: 'Maestros', items: [['proveedores', 'Proveedores'], ['rutas', 'Rutas'], ['productos', 'Productos']] },
+  { modulo: 'Portería (CD Quilicura)', items: [['porteria:registro', 'Reloj Control'], ['porteria:indicadores', 'Indicadores de Portería']] },
   { modulo: 'Administración', items: [['roles', 'Roles y Perfiles']] },
 ];

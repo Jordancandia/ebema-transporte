@@ -15,14 +15,14 @@
 //   · Tarifas de retiro troncal (Regla B) en panel lateral sólo OWNER
 //   · Mapa Leaflet + OSRM como antes
 // ---------------------------------------------------------------------------
-import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig } from './data.js?v=202610161131';
+import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig } from './data.js?v=202610181120';
 import {
   buildCotizadorContext, cotizar, cdsDeComuna, normComuna, camionPorKilos,
   getRetiroTroncalTarifas, RETIRO_TRONCAL_DEFAULT, HUB_GRUPO, FLUJOS
-} from './cotizador-engine.js?v=202610161131';
-import { rolClase } from './permisos.js?v=202610161131';
+} from './cotizador-engine.js?v=202610181120';
+import { rolClase } from './permisos.js?v=202610181120';
 import { showAlert, loadLeaflet } from './utils.js';
-import { esc, fmt, clp, numIn, wireNumIns, setParamPill } from './tarifas-ui.js?v=202610161131';
+import { esc, fmt, clp, numIn, wireNumIns, setParamPill } from './tarifas-ui.js?v=202610181120';
 
 // ── Historial de cotizaciones por perfil (localStorage) ─────────────────────
 const RECENT_QUOTES_MAX = 15;
