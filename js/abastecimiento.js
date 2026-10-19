@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610182320';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610182320';
-import { getDatabase } from './data.js?v=202610182320';
+import { supabase } from './supabase-client.js?v=202610191321';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610191321';
+import { getDatabase } from './data.js?v=202610191321';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610182320';
-import { confirmar, pedirDato } from './confirmar.js?v=202610182320';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610191321';
+import { confirmar, pedirDato } from './confirmar.js?v=202610191321';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -4409,6 +4409,7 @@ VISTAS_TRONCAL.seguimiento_carga = {
       ((cv && cv.data) || []).forEach(x => clientes.set(String(x.doc_ventas ?? '').trim(), x));
       ((ct && ct.data) || []).forEach(x => clientes.set(String(x.doc_compr ?? '').trim(), x));
       ((cp4 && cp4.data) || []).forEach(x => clientes.set(String(x.documento ?? '').trim(), x));   // (18-oct-2026) PV Stock 4000
+      await cargarAjustesCargaSeg();   // (19-oct-2026) historial de «Editar carga»
       return { dt, ajustes: (aj && aj.data) || [], clientes };
     } catch (e) { console.warn('Seguimiento: DT no disponible', e); return { dt: [], ajustes: [], clientes: new Map() }; }
   },
@@ -4590,8 +4591,8 @@ V2.seguimiento_carga = {
       ['Programado por', r.camiones.map(c => `<div style="margin:2px 0">${segPill(c)} ${c.programado_por ? `<b>${escV2(c.programado_por)}</b>` : '<span class="sv-muted">sin usuario</span>'}${c.programado_en ? ` <span class="sv-muted">· ${escV2(progPorSeg({ programado_en: c.programado_en }))}</span>` : ''}</div>`).join(''), true],
       ['Documento de transporte', r.dts.length ? r.dts.map(t => `<span class="sv-mono"><b>${escV2(t)}</b></span>`).join(' ') : '—', true],
     ],
-    tablas: r.camiones.flatMap(c => detalleCamionSeg(r, c)),
-    acciones: [...accionesSaldoSeg(r), ...accionesDtSeg(r)],
+    tablas: r.camiones.flatMap(c => [...detalleCamionSeg(r, c), ...historialCargaSeg(c)]),
+    acciones: [...accionesEditarCargaSeg(r), ...accionesSaldoSeg(r), ...accionesDtSeg(r)],
     nota: can('editar_dt_seguimiento') && r.camiones.some(c => c.dts.some(dtRevisar)) ? 'Hay DT por revisar: confírmalo, descártalo o asigna el correcto.' : '',
   }),
 };
@@ -4616,6 +4617,202 @@ async function quitarAjusteDt(camionIds, transporte) {
   const { error } = await supabase.from('abast_seguimiento_dt_ajuste').delete().in('camion_id', camionIds).eq('transporte', String(transporte).trim());
   if (error) { showAlert('No se pudo quitar el ajuste del DT: ' + error.message, 'error'); return false; }
   return true;
+}
+// ── Editar carga de un camión de un plan cerrado (19-oct-2026, Jordan) ─────────────────
+// Camión coordinado/programado de un plan de días anteriores: quitar pedidos / entregas que no viajaron
+// en ese camión y agregar los que sí viajaron (buscando por pedido de venta, OC, pedido de traslado o
+// entrega SAP). Sólo OWNER y Planner Distribución (acción 'editar_carga_seguimiento'). Motivo obligatorio;
+// cada cambio queda en abast_seguimiento_carga_ajuste. No toca la foto 15:35 ni los indicadores del plan:
+// lo quitado vuelve a estar disponible para el Plan de Carga (si SAP aún lo trae) y lo agregado se descuenta.
+let AJUSTES_CARGA_SEG = new Map();   // camion_id → ajustes (más reciente primero)
+async function cargarAjustesCargaSeg() {
+  try {
+    const desde = new Date(hoy00().getTime() - 60 * 864e5).toISOString();
+    const { data, error } = await supabase.from('abast_seguimiento_carga_ajuste')
+      .select('id,camion_id,accion,tipo_carga,documento,n_entrega,material,nombre,cantidad,ton,fuente,motivo,creado_por,creado_en')
+      .gte('creado_en', desde).order('creado_en', { ascending: false }).limit(5000);
+    if (error) throw error;
+    const m = new Map();
+    (data || []).forEach(a => { const k = String(a.camion_id); if (!m.has(k)) m.set(k, []); m.get(k).push(a); });
+    AJUSTES_CARGA_SEG = m;
+  } catch (e) { AJUSTES_CARGA_SEG = new Map(); console.warn('Seguimiento: ajustes de carga no disponibles', e); }
+}
+const planCerradoSeg = r => String(r.fecha_plan || '') < isoLocal(hoy00());
+function accionesEditarCargaSeg(r) {
+  if (!can('editar_carga_seguimiento') || !planCerradoSeg(r)) return [];
+  const varios = r.camiones.length > 1;
+  return r.camiones.filter(c => (c.camionIds || []).length).map(c => ({
+    label: `Editar carga${varios ? ' · ' + c.lbl : ''}`, icon: 'swap_horiz',
+    title: 'Quitar o agregar pedidos / entregas a este camión (plan cerrado)', run: async () => {
+      const ok = await showEditarCargaModal(r, c);
+      if (!ok) return null;
+      clearRawCache(); return { recargar: true };
+    } }));
+}
+// Historial de ajustes del camión en el detalle
+function historialCargaSeg(c) {
+  const aj = (c.camionIds || []).flatMap(id => AJUSTES_CARGA_SEG.get(String(id)) || []);
+  if (!aj.length) return [];
+  const rows = aj.map(a => [
+    a.accion === 'agregar' ? pill('Agregado', 'ok') : pill('Quitado', 'warn'),
+    `<b class="sv-mono">${escV2(a.documento || '—')}</b>${a.n_entrega ? `<div class="sv-sub" style="margin:0">Ent. ${escV2(a.n_entrega)}</div>` : ''}`,
+    `<span class="sv-mono">${escV2(a.material || '')}</span> <span class="sv-sub" style="display:inline;margin:0">${escV2(a.nombre || '')}</span>`,
+    fmtNum(Number(a.cantidad) || 0, 1), fmtNum(Number(a.ton) || 0, 2),
+    escV2(a.motivo || ''),
+    `${escV2(a.creado_por || '')}<div class="sv-sub" style="margin:0">${escV2(a.creado_en ? new Date(a.creado_en).toLocaleString('es-CL', { dateStyle: 'short', timeStyle: 'short' }) : '')}</div>`,
+  ]);
+  return [{ titulo: `Ajustes de carga${c.lbl ? ' · ' + c.lbl : ''} (${aj.length})`,
+    head: [['Acción'], ['Pedido / OC'], ['SKU · Nombre'], ['Cantidad', 'r'], ['Ton', 'r'], ['Motivo'], ['Usuario']], rows, vacio: '' }];
+}
+function showEditarCargaModal(r, c) {
+  const tx = v => String(v ?? '').trim();
+  const camMain = (c.camionIds || [])[0];
+  const lineas = (c.lineas || []).filter(x => x.id != null).map(x => ({ ...x, _ton: Number(x.ton) || 0, _cant: Number(x.cantidad) || 0 }));
+  const cap = Number(c.cap) || 0, ton0 = lineas.reduce((s2, x) => s2 + x._ton, 0);
+  const st = { quitar: new Set(), add: [], buscar: '', res: null, buscando: false, motivo: '', saving: false };
+  return new Promise(resolve => {
+    const wrap = document.createElement('div');
+    wrap.innerHTML = '<div class="sv-dr-bg" style="z-index:120"></div><aside class="sv-dr" style="z-index:121;width:min(1040px,100vw)" role="dialog" aria-label="Editar carga"></aside>';
+    document.body.appendChild(wrap);
+    const panel = wrap.querySelector('aside');
+    const onKey = e => { if (e.key === 'Escape' && !document.querySelector('.sv-cf-bg')) { e.stopPropagation(); fin(false); } };
+    const fin = v => { wrap.remove(); document.removeEventListener('keydown', onKey, true); resolve(v); };
+    document.addEventListener('keydown', onKey, true);
+    wrap.querySelector('.sv-dr-bg').addEventListener('click', () => fin(false));
+    const num = v => { let t = String(v ?? '').trim(); if (!t) return NaN;
+      if (t.includes(',')) t = t.replace(/\./g, '').replace(',', '.'); else if (/^\d{1,3}(\.\d{3})+$/.test(t)) t = t.replace(/\./g, '');
+      const n = Number(t); return isFinite(n) ? n : NaN; };
+    const fmtIn = n => isFinite(n) ? String(Math.round(n * 10000) / 10000).replace('.', ',') : '';
+    const enCamion = new Set(lineas.map(x => `${tx(x.documento)}|${tx(x.material)}`));
+    const tonQuitar = () => lineas.filter(x => st.quitar.has(x.id)).reduce((s2, x) => s2 + x._ton, 0);
+    const tonAdd = () => st.add.reduce((s2, a) => s2 + (isFinite(num(a.ton)) ? num(a.ton) : 0), 0);
+    const malosAdd = () => st.add.map((a, i) => i).filter(i => { const q = num(st.add[i].cant), t = num(st.add[i].ton); return !(q > 0) || !(t >= 0); });
+    async function buscar() {
+      const d = st.buscar.trim();
+      if (d.length < 5) { showAlert('Ingresa un pedido de venta, OC, pedido de traslado o entrega SAP', 'warning'); return; }
+      st.buscando = true; draw();
+      const { data, error } = await supabase.rpc('fn_abast_seg_buscar_doc', { p_doc: d });
+      st.buscando = false;
+      if (error) { showAlert('No se pudo buscar: ' + error.message, 'error'); st.res = null; draw(); return; }
+      st.res = data || []; draw();
+    }
+    function agregarRes(i) {
+      const x = st.res[i]; if (!x) return;
+      const k = `${tx(x.documento)}|${tx(x.material)}|${tx(x.n_entrega)}`;
+      if (st.add.some(a => a.k === k)) { showAlert('Esa línea ya está en «Por agregar»', 'warning'); return; }
+      st.add.push({ k, x, cant: fmtIn(Number(x.cantidad) || 0), ton: fmtIn(Number(x.ton) || 0), kg: Number(x.kg_un) || 0 });
+      draw();
+    }
+    function draw() {
+      const tq = tonQuitar(), ta = tonAdd(), tonF = ton0 - tq + ta, bad = new Set(malosAdd());
+      const pctF = cap ? Math.round(tonF / cap * 100) : null;
+      const docs = [...new Set(lineas.map(x => tx(x.documento)))];
+      const hay = st.quitar.size || st.add.length;
+      const okSave = hay && !bad.size && st.motivo.trim().length >= 3 && !st.saving;
+      const resHtml = st.res == null ? '' : (!st.res.length ? '<div class="sv-note-box">Sin resultados para ese número (pedido de venta, OC, pedido de traslado o entrega SAP).</div>'
+        : `<div class="pc-tbl" style="max-height:30vh;overflow:auto"><table class="sv-table"><thead><tr><th>Fuente</th><th>Pedido / OC</th><th>Tipo</th><th>SKU · Nombre</th><th class="r">Cantidad</th><th class="r">Ton</th><th></th></tr></thead><tbody>
+          ${st.res.map((x, i) => { const ya = enCamion.has(`${tx(x.documento)}|${tx(x.material)}`); return `<tr>
+            <td>${escapeHtml(x.fuente || '')}<div class="sv-sub" style="margin:0">${escapeHtml(x.ref || '')}</div></td>
+            <td><b class="sv-mono">${escapeHtml(tx(x.documento) || '—')}</b>${x.n_entrega ? `<div class="sv-sub" style="margin:0">Ent. ${escapeHtml(x.n_entrega)}</div>` : ''}${x.cliente || x.proveedor ? `<div class="sv-sub" style="margin:0">${escapeHtml(x.cliente || x.proveedor)}</div>` : ''}</td>
+            <td>${escapeHtml(x.tipo_carga || '')}${x.ce ? `<div class="sv-sub" style="margin:0">→ ${escapeHtml(x.ce)}</div>` : ''}</td>
+            <td><span class="sv-mono">${escapeHtml(tx(x.material))}</span> <span class="sv-sub" style="display:inline;margin:0">${escapeHtml(x.nombre || '')}</span>${ya ? ` ${pill('Ya en este camión', 'warn')}` : ''}</td>
+            <td class="r sv-mono">${fmtNum(Number(x.cantidad) || 0, 1)} <span class="sv-muted">${escapeHtml(x.um || '')}</span></td>
+            <td class="r sv-mono">${Number(x.ton) ? fmtNum(Number(x.ton), 2) : '<span class="sv-muted" title="Sin peso en el maestro: ingrésalo a mano">s/peso</span>'}</td>
+            <td class="r"><button class="sv-btn" data-addres="${i}" style="padding:2px 10px;font-size:12px"><span class="material-symbols-outlined" style="font-size:16px">add</span>Agregar</button></td></tr>`; }).join('')}
+          </tbody></table></div>`);
+      panel.innerHTML = `
+        <div class="sv-dr-h"><div style="flex:1;min-width:0">
+          <div class="sv-dr-k">Editar carga · plan cerrado</div>
+          <div class="sv-dr-t">${escapeHtml(c.lbl || c.tipo || 'Camión')}${c.patente_camion ? ' · ' + escapeHtml(c.patente_camion) : ''}${c.transportista ? ' · ' + escapeHtml(c.transportista) : ''}</div>
+          <div class="sv-dr-s">${escapeHtml(r._nombreCe || r.ce || '')} · plan ${escapeHtml(fmtFechaISO(r.fecha_plan))} · carga ${escapeHtml(fmtFechaISO(c.fecha_carga || r.fecha_carga) || '—')}</div></div>
+          <button class="sv-iconbtn" data-cx title="Cerrar (Esc)"><span class="material-symbols-outlined">close</span></button></div>
+        <div class="sv-dr-b" style="gap:14px">
+          <div class="sv-note-box">Corrige lo que <b>realmente viajó</b> en este camión. Lo que <b>quitas</b> vuelve a estar disponible para el Plan de Carga (si SAP aún lo trae pendiente); lo que <b>agregas</b> se da por cargado. La foto 15:35 y los indicadores del plan no cambian. Si mueves un pedido desde otro camión, quítalo también de ese camión.</div>
+          <div>
+            <div class="sv-flbl" style="margin-bottom:6px">1 · Carga actual — marca lo que <b>no viajó</b> en este camión</div>
+            <div class="pc-tbl" style="max-height:32vh;overflow:auto"><table class="sv-table"><thead><tr><th style="width:34px"></th><th>Pedido / OC</th><th>Tipo</th><th>SKU · Nombre</th><th class="r">Cantidad</th><th class="r">Ton</th></tr></thead><tbody>
+              ${docs.map(d => { const ls = lineas.filter(x => tx(x.documento) === d), todas = ls.every(x => st.quitar.has(x.id));
+                return ls.map((x, j) => { const q = st.quitar.has(x.id); return `<tr style="${q ? 'background:#fff1f0;text-decoration:line-through;color:#93000a' : ''}">
+                  <td><input type="checkbox" data-q="${x.id}" ${q ? 'checked' : ''} title="Quitar esta línea"></td>
+                  <td>${j === 0 ? `<label style="display:flex;gap:6px;align-items:center;text-decoration:none"><input type="checkbox" data-qd="${escapeHtml(d)}" ${todas ? 'checked' : ''} title="Quitar el pedido completo"><b class="sv-mono">${escapeHtml(d || '—')}</b></label>` : ''}${x.n_entrega ? `<div class="sv-sub" style="margin:0">Ent. ${escapeHtml(x.n_entrega)}</div>` : ''}</td>
+                  <td>${j === 0 ? escapeHtml(x.tipo_carga || '') : ''}</td>
+                  <td><span class="sv-mono">${escapeHtml(tx(x.material))}</span> <span class="sv-sub" style="display:inline;margin:0">${escapeHtml(x.nombre || '')}</span></td>
+                  <td class="r sv-mono">${fmtNum(x._cant, 1)}</td><td class="r sv-mono">${fmtNum(x._ton, 2)}</td></tr>`; }).join(''); }).join('') || '<tr><td colspan="6" class="sv-muted">Sin líneas</td></tr>'}
+            </tbody></table></div>
+          </div>
+          <div>
+            <div class="sv-flbl" style="margin-bottom:6px">2 · Agregar lo que <b>sí viajó</b> — busca por pedido de venta, OC, pedido de traslado o entrega SAP</div>
+            <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+              <label class="sv-inp" style="flex:1;max-width:340px"><span class="material-symbols-outlined">search</span><input data-bus value="${escapeHtml(st.buscar)}" placeholder="Ej. 1055954, 4500212655, 4600239394, 81154842" style="width:100%"></label>
+              <button class="sv-btn" data-busbtn ${st.buscando ? 'disabled' : ''}><span class="material-symbols-outlined">${st.buscando ? 'hourglass_top' : 'search'}</span>${st.buscando ? 'Buscando…' : 'Buscar'}</button></div>
+            ${resHtml}
+            ${st.add.length ? `<div class="sv-flbl" style="margin:10px 0 6px">Por agregar (${st.add.length})</div>
+              ${bad.size ? '<div class="sv-note-box" style="background:#ffdad6;color:#93000a;font-weight:700;margin-bottom:6px">Revisa las líneas marcadas: cantidad mayor a 0 y toneladas ≥ 0.</div>' : ''}
+              <div class="pc-tbl"><table class="sv-table"><thead><tr><th>Pedido / OC</th><th>Tipo</th><th>SKU · Nombre</th><th class="r">Cantidad</th><th class="r">Ton</th><th></th></tr></thead><tbody>
+              ${st.add.map((a, i) => `<tr>
+                <td><b class="sv-mono">${escapeHtml(tx(a.x.documento))}</b>${a.x.n_entrega ? `<div class="sv-sub" style="margin:0">Ent. ${escapeHtml(a.x.n_entrega)}</div>` : ''}<div class="sv-sub" style="margin:0">${escapeHtml(a.x.fuente || '')}</div></td>
+                <td>${escapeHtml(a.x.tipo_carga || '')}</td>
+                <td><span class="sv-mono">${escapeHtml(tx(a.x.material))}</span> <span class="sv-sub" style="display:inline;margin:0">${escapeHtml(a.x.nombre || '')}</span></td>
+                <td class="r"><label class="sv-inp" style="width:96px;${bad.has(i) && !(num(a.cant) > 0) ? 'border-color:#b5000b' : ''}"><input data-ac="${i}" value="${escapeHtml(a.cant)}" inputmode="decimal" style="width:100%;text-align:right"></label></td>
+                <td class="r"><label class="sv-inp" style="width:96px;${bad.has(i) && !(num(a.ton) >= 0) ? 'border-color:#b5000b' : ''}" title="${a.kg ? `Se recalcula con ${fmtNum(a.kg, 2)} kg/un` : 'Sin peso en el maestro: ingrésalo a mano'}"><input data-at="${i}" value="${escapeHtml(a.ton)}" inputmode="decimal" style="width:100%;text-align:right"></label></td>
+                <td class="r"><button class="sv-iconbtn" data-adel="${i}" title="Quitar de la lista"><span class="material-symbols-outlined">delete</span></button></td></tr>`).join('')}
+              </tbody></table></div>` : ''}
+          </div>
+          <div><label class="sv-flbl" style="display:block;margin-bottom:6px">Motivo del ajuste (obligatorio)</label>
+            <label class="sv-inp" style="width:100%;box-sizing:border-box"><input data-mot value="${escapeHtml(st.motivo)}" placeholder="Ej. el pedido no se cargó / se cambió la entrega / viajó en este camión y no en el programado" style="width:100%"></label></div>
+        </div>
+        <div class="sv-dr-f"><span class="sv-dr-note">${hay ? `Quitar ${st.quitar.size} línea(s) · ${fmtNum(tq, 2)} t · Agregar ${st.add.length} línea(s) · ${fmtNum(ta, 2)} t · Camión ${fmtNum(ton0, 1)} t → <b>${fmtNum(tonF, 1)} t</b>${pctF != null ? ` (${pctF}%)` : ''}` : 'Sin cambios'}</span>
+          <div style="display:flex;gap:8px"><button class="sv-btn" data-cx>Cancelar</button>
+          <button class="sv-btn-p" data-ok ${okSave ? '' : 'disabled'} title="${hay && st.motivo.trim().length < 3 ? 'Indica el motivo' : ''}"><span class="material-symbols-outlined">save</span>${st.saving ? 'Guardando…' : 'Guardar ajuste'}</button></div></div>`;
+      panel.querySelectorAll('[data-cx]').forEach(b => b.addEventListener('click', () => fin(false)));
+      panel.querySelectorAll('[data-q]').forEach(cb => cb.addEventListener('change', () => { const id = Number(cb.dataset.q); cb.checked ? st.quitar.add(id) : st.quitar.delete(id); draw(); }));
+      panel.querySelectorAll('[data-qd]').forEach(cb => cb.addEventListener('change', () => {
+        lineas.filter(x => tx(x.documento) === cb.dataset.qd).forEach(x => cb.checked ? st.quitar.add(x.id) : st.quitar.delete(x.id)); draw(); }));
+      const inBus = panel.querySelector('[data-bus]');
+      inBus?.addEventListener('input', e => { st.buscar = e.target.value; });
+      inBus?.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); buscar(); } });
+      panel.querySelector('[data-busbtn]')?.addEventListener('click', buscar);
+      panel.querySelectorAll('[data-addres]').forEach(b => b.addEventListener('click', () => agregarRes(Number(b.dataset.addres))));
+      panel.querySelectorAll('[data-ac]').forEach(inp => inp.addEventListener('change', () => {
+        const a = st.add[Number(inp.dataset.ac)]; a.cant = inp.value;
+        const q = num(a.cant); if (a.kg && q > 0) a.ton = fmtIn(a.kg * q / 1000);
+        draw(); }));
+      panel.querySelectorAll('[data-at]').forEach(inp => inp.addEventListener('change', () => { st.add[Number(inp.dataset.at)].ton = inp.value; draw(); }));
+      panel.querySelectorAll('[data-adel]').forEach(b => b.addEventListener('click', () => { st.add.splice(Number(b.dataset.adel), 1); draw(); }));
+      const inMot = panel.querySelector('[data-mot]');
+      inMot?.addEventListener('input', e => {
+        st.motivo = e.target.value;
+        const ok = panel.querySelector('[data-ok]'); if (ok) ok.disabled = !(hay && !bad.size && st.motivo.trim().length >= 3 && !st.saving);
+      });
+      panel.querySelector('[data-ok]')?.addEventListener('click', guardar);
+    }
+    async function guardar() {
+      if (malosAdd().length || st.motivo.trim().length < 3) { draw(); return; }
+      const quitar = lineas.filter(x => st.quitar.has(x.id));
+      const agregar = st.add.map(a => ({ tipo_carga: a.x.tipo_carga || '', documento: tx(a.x.documento), n_entrega: tx(a.x.n_entrega), material: tx(a.x.material),
+        nombre: a.x.nombre || '', cantidad: num(a.cant), ton: num(a.ton), pedido_venta: tx(a.x.pedido_venta), ruta: a.x.ruta || '', comuna: '',
+        proveedor: a.x.proveedor || '', cliente: a.x.cliente || '', fuente: a.x.fuente || '' }));
+      const resumen = [
+        ...quitar.slice(0, 6).map(x => `− ${tx(x.documento)} · ${tx(x.material)}: ${fmtNum(x._cant, 1)}`), quitar.length > 6 ? `− … (${quitar.length - 6} más)` : '',
+        ...agregar.slice(0, 6).map(x => `+ ${x.documento} · ${x.material}: ${fmtNum(x.cantidad, 1)}`), agregar.length > 6 ? `+ … (${agregar.length - 6} más)` : ''].filter(Boolean).join('\n');
+      if (!await confirmar(`¿Guardar el ajuste de carga del ${c.lbl || c.tipo}${c.patente_camion ? ' ' + c.patente_camion : ''}?\n\n${resumen}\n\nMotivo: ${st.motivo.trim()}`,
+        { aceptar: 'Guardar ajuste', icono: 'swap_horiz' })) return;
+      st.saving = true; draw();
+      // Las líneas a quitar se envían a su propio camión (normalmente uno solo); lo agregado va al principal.
+      const porCam = new Map();
+      quitar.forEach(x => { const k = x.camion_id; if (!porCam.has(k)) porCam.set(k, []); porCam.get(k).push(x.id); });
+      if (!porCam.has(camMain)) porCam.set(camMain, []);
+      let res = { quitadas: 0, agregadas: 0, saldos_anulados: 0 };
+      for (const [cid, ids] of porCam) {
+        const { data, error } = await supabase.rpc('fn_abast_seg_editar_carga', { p_camion_id: cid, p_quitar: ids, p_agregar: cid === camMain ? agregar : [], p_motivo: st.motivo.trim() });
+        if (error) { st.saving = false; showAlert('No se pudo guardar el ajuste: ' + error.message, 'error'); draw(); if (res.quitadas || res.agregadas) fin(true); return; }
+        ['quitadas', 'agregadas', 'saldos_anulados'].forEach(k => { res[k] += Number((data || {})[k]) || 0; });
+      }
+      showAlert(`Carga ajustada: ${res.quitadas} línea(s) quitada(s), ${res.agregadas} agregada(s)` + (res.saldos_anulados ? ` · ${res.saldos_anulados} saldo(s) activo(s) anulado(s)` : ''), 'success');
+      fin(true);
+    }
+    draw();
+  });
 }
 // ── Activar saldo (15-oct-2026, Jordan) ────────────────────────────────────
 // Una línea de un camión programado que viajó PARCIAL (NV, retiro, traslado, crossdocking, revex):
@@ -5150,11 +5347,11 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610182320');
+    const m = await import('./ind-plan-carga.js?v=202610191321');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (currentSub === 'control_diferencias') {  // (11-oct-2026) Control de Diferencias del Plan de Carga
-    const m = await import('./control-diferencias.js?v=202610182320');
+    const m = await import('./control-diferencias.js?v=202610191321');
     await m.renderControlDiferencias(stage);
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
