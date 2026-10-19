@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610191321';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610191321';
-import { getDatabase } from './data.js?v=202610191321';
+import { supabase } from './supabase-client.js?v=202610191329';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610191329';
+import { getDatabase } from './data.js?v=202610191329';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610191321';
-import { confirmar, pedirDato } from './confirmar.js?v=202610191321';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610191329';
+import { confirmar, pedirDato } from './confirmar.js?v=202610191329';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -4320,7 +4320,37 @@ function puedeAnularCoordSeg(r) {
 // Camión CD / 2º → abast_plan_camion_programado (perfil OWNER); coordinaciones → su tabla de origen.
 function puedeEditarTranspSeg(r, c) {
   if (c.coord) return puedeAnularCoordSeg(r);
+  // (19-oct-2026, Jordan) Camión directo programado (CD-Cliente, Fábrica-Cliente / Sucursal, retiros): el
+  // pedido queda bloqueado en su vista de origen, así que el transporte se edita desde aquí.
+  if (c.dir) return can('programar_transporte') || can('coordinar_venta') || can('coordinar_retiro');
   return ['Camión CD', '2º camión'].includes(c.tipo) && can('programar_transporte');
+}
+// (19-oct-2026, Jordan) Directo programado: actualiza el transporte (y día de carga) en la coordinación de
+// origen de cada pedido del camión y en sus registros COORD| del Seguimiento. El Plan de Carga del día
+// vuelve a armar el camión directo con la nueva patente al sincronizar.
+async function editarTranspDirectoSeg(c, tr, fecha, email, now) {
+  const tx = v => String(v ?? '').trim();
+  const docs = new Map();
+  (c.lineas || []).forEach(x => { const d = tx(x.documento); if (d && !docs.has(d)) docs.set(d, String(x.tipo_carga || '')); });
+  for (const [doc, tipo] of docs) {
+    let q;
+    if (/retiro/i.test(tipo)) q = supabase.from('abast_retiro_estado').update({ ...tr, fecha_retiro: fecha, updated_by: email, updated_at: now }).eq('doc_compr', doc);
+    else if (esTrasladoDoc(doc)) q = supabase.from('abast_traslado_coordinacion').update({ ...tr, fecha_entrega: fecha, updated_by: email, updated_at: now }).eq('doc_compr', doc);
+    else {
+      q = supabase.from('abast_venta_coordinacion').update({ ...tr, fecha_entrega: fecha, updated_by: email, updated_at: now }).eq('doc_ventas', doc);
+      await supabase.from('abast_pv4000_coordinacion').update({ ...tr, fecha_entrega: fecha, updated_by: email, updated_at: now }).eq('documento', doc);
+    }
+    const { error } = await q;
+    if (error) return error;
+  }
+  // Registros de coordinación (COORD|doc) de esos pedidos: misma cabecera de transporte.
+  const { data: regs } = await supabase.from('abast_seguimiento_camion').select('*').in('clave', [...docs.keys()].map(d => 'COORD|' + d));
+  for (const k of regs || []) {
+    const cab = { fecha_plan: k.fecha_plan, fecha_carga: fecha, cd_origen: k.cd_origen, ce: k.ce, tipo_camion: k.tipo_camion, clave: k.clave,
+      origen: k.origen || '', destino: k.destino || '', ton: k.ton, cap: k.cap, pct: k.pct, ...tr, patente_carro: tr.patente_carro || '' };
+    await supabase.rpc('fn_abast_guardar_seguimiento', { p_cab: cab, p_lineas: null });
+  }
+  return null;
 }
 async function editarTransporteSeguimiento(r, c) {
   const x = c.lineas[0] || {};
@@ -4343,6 +4373,8 @@ async function editarTransporteSeguimiento(r, c) {
     } else {
       ({ error } = await supabase.from('abast_retiro_estado').update({ ...tr, fecha_retiro: t.fecha_carga, updated_by: email, updated_at: now }).eq('doc_compr', doc));
     }
+  } else if (c.dir) {
+    error = await editarTranspDirectoSeg(c, tr, t.fecha_carga, email, now);
   } else {
     ({ error } = await supabase.from('abast_plan_camion_programado').update({ ...tr, fecha_carga: t.fecha_carga, editado_por: email, editado_en: now })
       .eq('fecha', r.fecha_plan).eq('cd_origen', cd).eq('ce', r.ce).eq('camion', c.tipo === '2º camión' ? 2 : 1));
@@ -5347,11 +5379,11 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610191321');
+    const m = await import('./ind-plan-carga.js?v=202610191329');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (currentSub === 'control_diferencias') {  // (11-oct-2026) Control de Diferencias del Plan de Carga
-    const m = await import('./control-diferencias.js?v=202610191321');
+    const m = await import('./control-diferencias.js?v=202610191329');
     await m.renderControlDiferencias(stage);
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
