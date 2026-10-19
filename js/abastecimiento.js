@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610181555';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610181555';
-import { getDatabase } from './data.js?v=202610181555';
+import { supabase } from './supabase-client.js?v=202610182320';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610182320';
+import { getDatabase } from './data.js?v=202610182320';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610181555';
-import { confirmar, pedirDato } from './confirmar.js?v=202610181555';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610182320';
+import { confirmar, pedirDato } from './confirmar.js?v=202610182320';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -532,6 +532,8 @@ const lineaSegCoord = (o) => ({ tipo_carga: o.tipo_carga, documento: String(o.do
 async function anularCoordinacionVenta(doc) {
   const { error } = await supabase.from('abast_venta_coordinacion').delete().eq('doc_ventas', String(doc ?? '').trim());
   if (error) { showAlert('Error al anular la coordinación: ' + error.message, 'error'); return false; }
+  // (18-oct-2026) El pedido puede ser un PV del Stock 4000 coordinado CD-Cliente (desde Seguimiento de Carga).
+  try { await supabase.from('abast_pv4000_coordinacion').delete().eq('documento', String(doc ?? '').trim()); } catch (_) { /* opcional */ }
   await quitarSeguimientoCoord([doc]);
   return true;
 }
@@ -2105,7 +2107,7 @@ async function anularCoordTraslados(docs) {
 // Venta Directa del centro destino (o del centro alternativo) el día de su fecha de entrega, con la leyenda
 // «PEDIDO DE VENTA, EMITIR GUIA FACTURABLE». Se guardan las líneas (snapshot) con las unidades a cargar.
 function showCoordPv4000Modal(row, ctx) {
-  return new Promise(resolve => {
+  return new Promise(async resolve => {
     const doc = String(row.documento ?? '').trim(), co = row._pvc || null;
     const porMat = new Map();
     ((ctx && ctx._rows) || [row]).filter(x => x._tipo === 'Pedido de venta' && String(x.documento ?? '').trim() === doc).forEach(x => {
@@ -2117,59 +2119,138 @@ function showCoordPv4000Modal(row, ctx) {
     const items = [...porMat.values()];
     const linCo = new Map(((co && Array.isArray(co.lineas)) ? co.lineas : []).map(l => [String(l.material ?? '').trim(), Number(l.cantidad) || 0]));
     const feSap = parseDateSAP(row.creado);
+    const c = co || {};
     const st = { ceOrig: String(row.ce ?? '').trim(), ceAlt: ceAltDe(co), errCarga: '', err: false,
       cant: new Map(items.map(it => [it.material, String(co ? Math.min(linCo.get(it.material) || 0, it.pend) : it.pend)])),
-      fecha: (co && co.fecha_entrega) || (feSap ? isoLocal(feSap) : ''), entrega: (co && co.n_entrega) || '' };
+      fecha: c.fecha_entrega || (feSap ? isoLocal(feSap) : ''), entrega: c.n_entrega || '',
+      // (18-oct-2026, Jordan) Tipo de entrega: CONSOLIDABLE (camión CD) o CD-CLIENTE (camión directo).
+      tipo: c.tipo_entrega || 'CONSOLIDABLE',
+      cliente: c.nombre_cliente || '', comuna: c.comuna || '', direccion: c.direccion || '', telefono: c.telefono || '',
+      idTrans: c.id_transporte || '', transportista: c.transportista || '',
+      choferNombre: c.chofer_nombre || '', choferRut: c.chofer_rut || '', choferTel: c.chofer_telefono || '',
+      patCamion: c.patente_camion || '', patCarro: c.patente_carro || '' };
+    let tr = { trans: [], choferes: [], camiones: [] };
+    try { tr = await loadTransportistasCoord(); } catch (_) { /* sin maestro de transportistas */ }
     const wrap = document.createElement('div');
     wrap.id = 'coord-modal-bg';
-    wrap.innerHTML = '<div class="sv-dr-bg" style="z-index:120"></div><aside class="sv-dr" style="z-index:121;width:min(600px,100vw)" role="dialog" aria-label="Coordinar pedido de venta directo"></aside>';
+    wrap.innerHTML = '<div class="sv-dr-bg" style="z-index:120"></div><aside class="sv-dr" style="z-index:121;width:min(620px,100vw)" role="dialog" aria-label="Coordinar pedido de venta"></aside>';
     document.body.appendChild(wrap);
     const panel = wrap.querySelector('aside');
     const fin = v => { wrap.remove(); document.removeEventListener('keydown', onKey, true); resolve(v); };
-    const onKey = e => { if (e.key === 'Escape' && !document.querySelector('.sv-cf-bg')) { e.stopPropagation(); fin(false); } };
+    const onKey = e => { if (e.key === 'Escape' && !document.querySelector('.sv-cf-bg') && !cerrarBuscadorAbierto(e)) { e.stopPropagation(); fin(false); } };
     document.addEventListener('keydown', onKey, true);
     wrap.querySelector('.sv-dr-bg').addEventListener('click', () => fin(false));
+    const esCli = () => st.tipo === 'CD-CLIENTE';
+    const faltantes = () => {
+      const f = [];
+      if (!st.fecha) f.push('fecha');
+      if (esCli()) ['direccion', 'telefono', 'idTrans'].forEach(k => { if (!String(st[k] ?? '').trim()) f.push(k); });
+      return f;
+    };
+    const bad = k => st.err && faltantes().includes(k);
+    const lbl = (t, k, req) => `<label class="sv-flbl" style="display:block;margin-bottom:6px;${bad(k) ? 'color:#b5000b' : ''}">${t}${req ? ' *' : ''}</label>`;
+    const box = k => `width:100%;box-sizing:border-box;min-width:0;${bad(k) ? 'border-color:#b5000b' : ''}`;
+    const inp = (k, ph, extra = '') => `<label class="sv-inp" style="${box(k)}"><input data-k="${k}" value="${escapeHtml(st[k])}" placeholder="${escapeHtml(ph || '')}" style="width:100%" ${extra}></label>`;
+    const chofList = () => tr.choferes.filter(x => String(x.id_transporte ?? '').trim() === st.idTrans.trim());
+    const camList = () => tr.camiones.filter(x => String(x.id_transporte ?? '').trim() === st.idTrans.trim() && String(x.id_camion ?? '').trim());
     function draw() {
-      const malF = st.err && !st.fecha;
+      const falt = st.err ? faltantes() : [];
       panel.innerHTML = `
         <div class="sv-dr-h"><div style="flex:1;min-width:0">
-          <div class="sv-dr-k">${co ? 'Editar coordinación' : 'Coordinar pedido de venta directo'} · Stock 4000</div>
+          <div class="sv-dr-k">${co ? 'Editar coordinación' : 'Coordinar pedido de venta'} · Stock 4000</div>
           <div class="sv-dr-t">${escapeHtml(doc)}</div>
           <div class="sv-dr-s">Almacén 4000 (CD Quilicura) → ${escapeHtml(getNombreCentro(st.ceAlt || st.ceOrig))}</div></div>
           <button class="sv-iconbtn" data-cx title="Cerrar (Esc)"><span class="material-symbols-outlined">close</span></button></div>
         <div class="sv-dr-b" style="gap:16px">
-          <div class="sv-note-box" style="background:#fef3c7;color:#713f12"><b>${LEYENDA_PV4000}</b><br>El pedido sale como venta directa (no como traslado crossdocking) y entra al Plan de Carga como Venta Directa el día de su fecha de entrega.</div>
+          <div class="sv-note-box" style="background:#fef3c7;color:#713f12"><b>${LEYENDA_PV4000}</b><br>El pedido sale como pedido de venta (no como traslado crossdocking): consolidado en el camión CD de la sucursal o en camión directo al cliente.</div>
+          ${falt.length ? '<div class="sv-note-box" style="background:#ffdad6;color:#93000a;font-weight:700">Completa los campos obligatorios marcados en rojo.</div>' : ''}
+          <div>${lbl('Tipo de entrega', 'tipo', true)}
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+              ${[['CONSOLIDABLE', 'Consolidable', 'Sube con la carga a sucursal (camión CD)'], ['CD-CLIENTE', 'CD-Cliente', 'Camión directo al cliente']].map(([v, t, d]) =>
+                `<button class="sv-opt ${st.tipo === v ? 'is-on' : ''}" data-tipo="${v}" style="flex-direction:column;align-items:flex-start;gap:2px"><b style="font-size:14px">${t}</b><span class="sv-sub" style="margin:0">${d}</span></button>`).join('')}
+            </div></div>
           <div style="display:grid;grid-template-columns:220px 1fr;gap:12px;align-items:start">
-            <div><label class="sv-flbl" style="display:block;margin-bottom:6px;${malF ? 'color:#b5000b' : ''}">Fecha de entrega *</label>
-              <label class="sv-inp" style="width:100%;box-sizing:border-box;min-width:0;${malF ? 'border-color:#b5000b' : ''}"><span class="material-symbols-outlined">calendar_today</span><input type="date" data-f value="${escapeHtml(st.fecha)}" style="width:140px"></label></div>
-            <div><label class="sv-flbl" style="display:block;margin-bottom:6px">N° de entrega (opcional)</label>
-              <label class="sv-inp" style="width:100%;box-sizing:border-box;min-width:0"><span class="material-symbols-outlined">tag</span><input class="is-mono" data-e value="${escapeHtml(st.entrega)}" placeholder="N° entrega SAP" style="width:100%"></label></div>
+            <div>${lbl('Fecha de entrega', 'fecha', true)}
+              <label class="sv-inp" style="${box('fecha')}"><span class="material-symbols-outlined">calendar_today</span><input type="date" data-k="fecha" value="${escapeHtml(st.fecha)}" style="width:140px"></label></div>
+            <div>${lbl('N° de entrega (opcional)', 'entrega', false)}
+              <label class="sv-inp" style="${box('entrega')}"><span class="material-symbols-outlined">tag</span><input class="is-mono" data-k="entrega" value="${escapeHtml(st.entrega)}" placeholder="N° entrega SAP" style="width:100%"></label></div>
           </div>
-          <div class="sv-sub" style="margin-top:-10px;max-width:none">Entra al Plan de Carga cuyo día objetivo es esta fecha (se arma el día hábil anterior).</div>
+          <div class="sv-sub" style="margin-top:-10px;max-width:none">Entra al Plan de Carga cuyo día objetivo es esta fecha (se arma el día hábil anterior)${esCli() ? ' como camión directo CD-Cliente' : ' como Venta Directa del camión CD'}.</div>
           ${editorCargaHtml(items, st, { titulo: 'Unidades y centro destino' })}
+          ${esCli() ? `
+          <div class="sv-card" style="padding:14px 16px;display:flex;flex-direction:column;gap:10px">
+            <div class="sv-b" style="font-size:14px">Datos del cliente</div>
+            <div>${lbl('Cliente', 'cliente', false)}${inp('cliente', 'Nombre del cliente')}</div>
+            <div style="display:grid;grid-template-columns:1fr 2fr;gap:8px">
+              <div>${lbl('Comuna', 'comuna', false)}${inp('comuna', '')}</div>
+              <div>${lbl('Dirección', 'direccion', true)}${inp('direccion', 'Calle, número, obra')}</div></div>
+            <div style="max-width:260px">${lbl('Teléfono de contacto', 'telefono', true)}${inp('telefono', '+56 9…')}</div>
+          </div>
+          <div class="sv-card" style="padding:14px 16px;display:flex;flex-direction:column;gap:10px">
+            <div class="sv-b" style="font-size:14px">Datos del transporte (CD-Cliente)</div>
+            <div>${lbl('Transportista (ID y nombre)', 'idTrans', true)}<div data-bus="trans"></div></div>
+            ${notaTranspBloq(tr.trans.find(t => String(t.id) === st.idTrans))}
+            ${chofList().length ? `<div>${lbl('Chofer del transportista', 'chof', false)}
+              <label class="sv-inp" style="${box('chof')}"><span class="material-symbols-outlined">badge</span>
+                <select data-sel="chof" style="border:none;background:transparent;width:100%;font:inherit;outline:none">
+                  <option value="">Elegir para autocompletar…</option>
+                  ${chofList().map((x, i) => `<option value="${i}" ${x.rut === st.choferRut ? 'selected' : ''}>${escapeHtml([x.nombre, x.apellido].filter(Boolean).join(' '))} · ${escapeHtml(x.rut || '')}</option>`).join('')}
+                </select></label></div>` : ''}
+            <div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:8px">
+              <div>${lbl('Nombre chofer', 'choferNombre', false)}${inp('choferNombre', 'Pendiente')}</div>
+              <div>${lbl('RUT chofer', 'choferRut', false)}${inp('choferRut', '12.345.678-9')}</div>
+              <div>${lbl('Teléfono', 'choferTel', false)}${inp('choferTel', '+56 9…')}</div></div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+              <div>${lbl('Patente camión', 'patCamion', false)}${inp('patCamion', 'Pendiente', 'list="dl-pat-p4" autocomplete="off"')}</div>
+              <div>${lbl('Patente carro (opcional)', 'patCarro', false)}${inp('patCarro', 'Rampla / carro')}</div></div>
+            ${notaPendTransp(st, 'el pedido')}
+            <datalist id="dl-pat-p4">${camList().map(x => `<option value="${escapeHtml(x.id_camion)}"></option>`).join('')}</datalist>
+          </div>` : ''}
         </div>
         <div class="sv-dr-f"><span class="sv-dr-note">* Obligatorio</span>
           <div style="display:flex;gap:8px"><button class="sv-btn" data-cx>Cancelar</button>
-          <button class="sv-btn-p" data-ok><span class="material-symbols-outlined">${co ? 'save' : 'event_available'}</span>${co ? 'Guardar cambios' : 'Coordinar venta directa'}</button></div></div>`;
+          <button class="sv-btn-p" data-ok><span class="material-symbols-outlined">${co ? 'save' : 'event_available'}</span>${co ? 'Guardar cambios' : esCli() ? 'Coordinar CD-Cliente' : 'Coordinar consolidado'}</button></div></div>`;
       panel.querySelectorAll('[data-cx]').forEach(b => b.addEventListener('click', () => fin(false)));
-      panel.querySelector('[data-f]').addEventListener('change', e => { st.fecha = e.target.value; });
-      panel.querySelector('[data-e]').addEventListener('input', e => { st.entrega = e.target.value; });
+      panel.querySelectorAll('[data-tipo]').forEach(b => b.addEventListener('click', () => { st.tipo = b.dataset.tipo; draw(); }));
+      panel.querySelectorAll('[data-k]').forEach(i => i.addEventListener(i.type === 'date' ? 'change' : 'input', () => { st[i.dataset.k] = i.value; }));
       wireEditorCarga(panel, st, items, draw);
+      if (esCli()) {
+        montarTransp(panel, st, tr, bad('idTrans'), draw);
+        wirePatentes(panel, st, tr, draw);
+        panel.querySelector('[data-sel="chof"]')?.addEventListener('change', e => {
+          const x = chofList()[+e.target.value];
+          if (x) { st.choferNombre = [x.nombre, x.apellido].filter(Boolean).join(' '); st.choferRut = x.rut || ''; st.choferTel = x.telefono || st.choferTel; if (x.id_camion) st.patCamion = fmtPatente(x.id_camion); draw(); }
+        });
+      }
       panel.querySelector('[data-ok]').addEventListener('click', async e => {
-        if (!st.fecha) { st.err = true; draw(); return; }
+        if (faltantes().length) { st.err = true; draw(); return; }
         const lc = lineasDesdeEditor(items, st);
         if (lc.err) { st.errCarga = lc.err; draw(); return; }
         const btn = e.currentTarget; btn.disabled = true;
+        const cli = esCli();
+        if (cli && lc.total > CAP_CAMION_DIRECTO + 1e-9 && !(await confirmar(`El pedido suma ${fmtNum(lc.total, 1)} t\n\nSupera la capacidad de ${CAP_CAMION_DIRECTO} t. ¿Guardar igual?`, { aceptar: 'Guardar igual', tono: 'peligro', icono: 'warning' }))) { btn.disabled = false; return; }
         const qty = m => { const v = Number(String(st.cant.get(m) ?? '').replace(',', '.')); return Math.round((v > 0 ? v : 0) * 1000) / 1000; };
         const email = await getUserEmail(), now = new Date().toISOString();
-        const payload = { documento: doc, ce: st.ceOrig, ce_alternativo: st.ceAlt && st.ceAlt !== st.ceOrig ? st.ceAlt : null, fecha_entrega: st.fecha,
+        const ceEf = st.ceAlt && st.ceAlt !== st.ceOrig ? st.ceAlt : null;
+        const payload = { documento: doc, ce: st.ceOrig, ce_alternativo: ceEf, fecha_entrega: st.fecha, tipo_entrega: st.tipo,
           n_entrega: st.entrega.trim() || null, leyenda: LEYENDA_PV4000,
+          nombre_cliente: cli ? (st.cliente.trim().toUpperCase() || null) : null, comuna: cli ? (st.comuna.trim() || null) : null,
+          direccion: cli ? st.direccion.trim() : null, telefono: cli ? st.telefono.trim() : null,
+          id_transporte: cli ? st.idTrans.trim() : null, transportista: cli ? (st.transportista || null) : null,
+          chofer_nombre: cli ? (st.choferNombre.trim() || null) : null, chofer_rut: cli ? (st.choferRut.trim() || null) : null, chofer_telefono: cli ? (st.choferTel.trim() || null) : null,
+          patente_camion: cli ? (fmtPatente(st.patCamion) || null) : null, patente_carro: cli ? (fmtPatente(st.patCarro) || null) : null,
           lineas: items.filter(it => qty(it.material) > 0).map(it => ({ material: it.material, nombre: it.nombre, cantidad: qty(it.material), pos: it.pos,
             peso_bruto: it.peso_bruto, tamano_dimens: it.tamano_dimens, ruta: it.ruta })),
           updated_at: now, updated_by: email, ...(co ? {} : { created_at: now, created_by: email }) };
         const { error } = await supabase.from('abast_pv4000_coordinacion').upsert(payload, { onConflict: 'documento' });
         if (error) { showAlert('Error al coordinar: ' + error.message, 'error'); btn.disabled = false; return; }
-        showAlert(`Pedido ${doc} coordinado como venta directa para el ${fmtFechaISO(st.fecha)} (${fmtNum(lc.total, 2)} t${payload.ce_alternativo ? ' · ' + getNombreCentro(payload.ce_alternativo) : ''}) · ${LEYENDA_PV4000}`, 'success');
+        // CD-Cliente: queda en Seguimiento de Carga como coordinación directa (igual que Ventas CD).
+        if (cli) await registrarSeguimientoCoord([{ doc, tipo: 'CD-CLIENTE', ce: ceEf || st.ceOrig, fechaCarga: st.fecha, origen: '1003 CD Quilicura',
+          destino: `Cliente: ${payload.nombre_cliente || ('PV ' + doc)} · ${LEYENDA_PV4000}`, transp: payload,
+          lineas: payload.lineas.map(l => lineaSegCoord({ tipo_carga: 'Pedidos de venta CD', documento: doc, n_entrega: payload.n_entrega || '', material: l.material, nombre: l.nombre,
+            cantidad: l.cantidad, ton: maxPesoDim(l.peso_bruto, l.tamano_dimens) * l.cantidad / 1000, pedido_venta: doc, ruta: l.ruta, cliente: payload.nombre_cliente || LEYENDA_PV4000 })) }]);
+        else await quitarSeguimientoCoord([doc]);
+        showAlert(`Pedido ${doc} coordinado ${cli ? 'CD-Cliente (camión directo)' : 'consolidado (camión CD)'} para el ${fmtFechaISO(st.fecha)} (${fmtNum(lc.total, 2)} t${ceEf ? ' · ' + getNombreCentro(ceEf) : ''}) · ${LEYENDA_PV4000}`, 'success');
         fin(true);
       });
     }
@@ -3471,7 +3552,7 @@ const V2 = {
       { key: 'q', label: 'Quebrados', color: C_RED, sub: '0 a 3 días', fn: r => r._q.g === 'q' },
       { key: 'c', label: 'Críticos', color: C_ORANGE, sub: '4 a 5 días', fn: r => r._q.g === 'c' },
       { key: 'r', label: 'En revisión', color: C_YELLOW, sub: '6 a 7 días', fn: r => r._q.g === 'r' },
-      { key: 'vd', label: 'Venta directa', color: C_GREEN, sub: 'PV coordinados · guía facturable', fn: r => !!r._pvc },
+      { key: 'vd', label: 'PV coordinados', color: C_GREEN, sub: 'consolidado o CD-Cliente · guía facturable', fn: r => !!r._pvc },
     ],
     edge: r => r._pvc ? C_GREEN : r._q.g === 'q' ? C_RED : null,
     note: () => `Días de stock según SLIM del centro destino${_stockOcultasCx ? ` · ${_stockOcultasCx} línea${_stockOcultasCx > 1 ? 's' : ''} oculta${_stockOcultasCx > 1 ? 's' : ''} por estar en Crossdocking` : ''}`,
@@ -3487,7 +3568,8 @@ const V2 = {
       { label: 'Días de stock', al: 'r', html: r => r._sd == null ? '<span class="sv-muted">—</span>' : `<span class="sv-b" style="color:${r._sd <= 3 ? C_RED : C_INK}">${r._sd}</span>` },
       { label: 'Estado', html: r => pill(r._q.lbl, r._q.tone) },
       { label: 'Coordinación', html: r => r._tipo !== 'Pedido de venta' ? '<span class="sv-muted">—</span>'
-          : r._pvc ? pill('Venta directa', 'ok') + `<div class="sv-sub">${escV2(fmtNum(r._pvc_cant, r._pvc_cant % 1 ? 2 : 0))} un · día ${escV2(fmtFechaISO(r._pvc.fecha_entrega))}${r._pvc_ce !== String(r.ce ?? '').trim() ? ' · → ' + escV2(nombreCentro(r._pvc_ce) || r._pvc_ce) : ''}</div><div style="margin-top:4px">${leyendaPv4000Pill(true)}</div>`
+          : r._pvc ? (r._pvc.tipo_entrega === 'CD-CLIENTE' ? pill('CD-Cliente', 'purple') : pill('Consolidado', 'ok'))
+            + (r._pvc.tipo_entrega === 'CD-CLIENTE' && pendTranspRetiro(r._pvc).length ? ` ${pill('Chofer/patente pendiente', 'warn')}` : '') + `<div class="sv-sub">${escV2(fmtNum(r._pvc_cant, r._pvc_cant % 1 ? 2 : 0))} un · día ${escV2(fmtFechaISO(r._pvc.fecha_entrega))}${r._pvc_ce !== String(r.ce ?? '').trim() ? ' · → ' + escV2(nombreCentro(r._pvc_ce) || r._pvc_ce) : ''}</div><div style="margin-top:4px">${leyendaPv4000Pill(true)}</div>`
           : pill('Sin coordinar', 'mute') },
     ],
     detalle: r => ({
@@ -3503,18 +3585,21 @@ const V2 = {
         r.ruta ? ['Ruta', `${r.ruta}${r._comuna ? ' · ' + r._comuna : ''}`] : null,
         r.creado ? ['Fecha de entrega', r.creado] : null,
         r.deudor ? ['ID vendedor', r.deudor] : null,
-        r._pvc ? ['Coordinación', `Venta directa · ${fmtNum(r._pvc_cant, r._pvc_cant % 1 ? 2 : 0)} un · día ${fmtFechaISO(r._pvc.fecha_entrega)}${r._pvc.n_entrega ? ' · entrega ' + r._pvc.n_entrega : ''}`] : null,
+        r._pvc ? ['Coordinación', `${r._pvc.tipo_entrega === 'CD-CLIENTE' ? 'CD-Cliente (camión directo)' : 'Consolidado (camión CD)'} · ${fmtNum(r._pvc_cant, r._pvc_cant % 1 ? 2 : 0)} un · día ${fmtFechaISO(r._pvc.fecha_entrega)}${r._pvc.n_entrega ? ' · entrega ' + r._pvc.n_entrega : ''}`] : null,
+        r._pvc && r._pvc.tipo_entrega === 'CD-CLIENTE' ? ['Entrega en', [r._pvc.nombre_cliente, r._pvc.direccion, r._pvc.comuna, r._pvc.telefono].filter(Boolean).join(' · ')] : null,
+        r._pvc && r._pvc.tipo_entrega === 'CD-CLIENTE' ? ['Transporte', [r._pvc.id_transporte, r._pvc.transportista, r._pvc.patente_camion ? 'Camión ' + r._pvc.patente_camion : '', r._pvc.chofer_nombre].filter(Boolean).join(' · ')] : null,
         r._pvc && r._pvc_ce !== String(r.ce ?? '').trim() ? ['Centro en Plan de Carga', `${r._pvc_ce}${nombreCentro(r._pvc_ce) ? ' · ' + nombreCentro(r._pvc_ce) : ''} (alternativo)`] : null,
         r._pvc ? ['Instrucción', leyendaPv4000Pill(false), true] : null,
       ],
-      aviso: r._pvc ? `<b>${LEYENDA_PV4000}:</b> pedido de venta coordinado como venta directa; entra al Plan de Carga de ${escV2(nombreCentro(r._pvc_ce) || r._pvc_ce)} el día ${escV2(fmtFechaISO(r._pvc.fecha_entrega))}.` : undefined,
+      aviso: r._pvc ? `<b>${LEYENDA_PV4000}:</b> pedido de venta coordinado ${r._pvc.tipo_entrega === 'CD-CLIENTE' ? 'CD-Cliente (camión directo al cliente)' : 'consolidado en el camión CD'}; entra al Plan de Carga de ${escV2(nombreCentro(r._pvc_ce) || r._pvc_ce)} el día ${escV2(fmtFechaISO(r._pvc.fecha_entrega))}.` : undefined,
       acciones: r._tipo !== 'Pedido de venta' || !can('coordinar_venta') ? [] : [
-        { label: r._pvc ? 'Editar coordinación venta directa' : 'Coordinar como pedido de venta directo', icon: 'event_available', primary: true,
+        { label: r._pvc ? 'Editar coordinación' : 'Coordinar pedido de venta', icon: 'event_available', primary: true,
           run: async (row, ctx) => ((await showCoordPv4000Modal(row, ctx)) ? { recargar: true } : null) },
         ...(r._pvc ? [{ label: 'Anular coordinación', icon: 'event_busy', run: async row => {
           if (!await confirmar(`¿Anular la coordinación del pedido de venta ${row.documento}?\n\nSale del Plan de Carga.`)) return null;
           const { error } = await supabase.from('abast_pv4000_coordinacion').delete().eq('documento', String(row.documento).trim());
           if (error) { showAlert('Error al anular: ' + error.message, 'error'); return null; }
+          await quitarSeguimientoCoord([String(row.documento).trim()]);
           showAlert('Coordinación anulada', 'success'); return { recargar: true };
         } }] : []),
       ],
@@ -4253,6 +4338,8 @@ async function editarTransporteSeguimiento(r, c) {
       const tabla = esTrasladoDoc(doc) ? 'abast_traslado_coordinacion' : 'abast_venta_coordinacion';
       const col = esTrasladoDoc(doc) ? 'doc_compr' : 'doc_ventas';
       ({ error } = await supabase.from(tabla).update({ ...tr, fecha_entrega: t.fecha_carga, updated_by: email, updated_at: now }).eq(col, doc));
+      // (18-oct-2026) PV del Stock 4000 coordinado CD-Cliente: mismo cambio en su tabla.
+      if (!error && !esTrasladoDoc(doc)) await supabase.from('abast_pv4000_coordinacion').update({ ...tr, fecha_entrega: t.fecha_carga, updated_by: email, updated_at: now }).eq('documento', doc);
     } else {
       ({ error } = await supabase.from('abast_retiro_estado').update({ ...tr, fecha_retiro: t.fecha_carga, updated_by: email, updated_at: now }).eq('doc_compr', doc));
     }
@@ -4314,12 +4401,14 @@ VISTAS_TRONCAL.seguimiento_carga = {
   async preload() {
     try {
       const cols = 'nombre_cliente,id_cliente,direccion,comuna,telefono,n_entrega,fecha_entrega';
-      const [dt, aj, cv, ct] = await Promise.all([fetchAllRows('v_abast_seguimiento_dt'), supabase.from('abast_seguimiento_dt_ajuste').select('camion_id,transporte,accion,creado_por,creado_en').limit(5000),
-        supabase.from('abast_venta_coordinacion').select('doc_ventas,' + cols).limit(5000), supabase.from('abast_traslado_coordinacion').select('doc_compr,' + cols).limit(5000)]);
+      const [dt, aj, cv, ct, cp4] = await Promise.all([fetchAllRows('v_abast_seguimiento_dt'), supabase.from('abast_seguimiento_dt_ajuste').select('camion_id,transporte,accion,creado_por,creado_en').limit(5000),
+        supabase.from('abast_venta_coordinacion').select('doc_ventas,' + cols).limit(5000), supabase.from('abast_traslado_coordinacion').select('doc_compr,' + cols).limit(5000),
+        supabase.from('abast_pv4000_coordinacion').select('documento,' + cols).limit(5000)]);
       // (12-oct-2026, Jordan) Datos del cliente de las coordinaciones CD-Cliente para el detalle
       const clientes = new Map();
       ((cv && cv.data) || []).forEach(x => clientes.set(String(x.doc_ventas ?? '').trim(), x));
       ((ct && ct.data) || []).forEach(x => clientes.set(String(x.doc_compr ?? '').trim(), x));
+      ((cp4 && cp4.data) || []).forEach(x => clientes.set(String(x.documento ?? '').trim(), x));   // (18-oct-2026) PV Stock 4000
       return { dt, ajustes: (aj && aj.data) || [], clientes };
     } catch (e) { console.warn('Seguimiento: DT no disponible', e); return { dt: [], ajustes: [], clientes: new Map() }; }
   },
@@ -5061,11 +5150,11 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610181555');
+    const m = await import('./ind-plan-carga.js?v=202610182320');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (currentSub === 'control_diferencias') {  // (11-oct-2026) Control de Diferencias del Plan de Carga
-    const m = await import('./control-diferencias.js?v=202610181555');
+    const m = await import('./control-diferencias.js?v=202610182320');
     await m.renderControlDiferencias(stage);
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
@@ -5861,15 +5950,18 @@ async function renderPlanCarga(stage, opts = {}) {
         g.items.push(...items);
       } else if (enPlan) { tonVentaCons += sumTon(items); det.ventaCons.push(...items); }
     }
-    // (18-oct-2026, Jordan) Pedidos de venta del Stock Almacén 4000 coordinados como venta directa.
+    // (18-oct-2026, Jordan) Pedidos de venta del Stock Almacén 4000 coordinados CONSOLIDABLE (Venta Directa del
+    // camión CD) o CD-CLIENTE (camión directo), con la leyenda «PEDIDO DE VENTA, EMITIR GUIA FACTURABLE».
     // Cantidad = unidades coordinadas (sin superar el libre utilización que trae hoy el SQVI); si el SQVI ya
     // no trae el pedido, se usa lo coordinado hasta su fecha de entrega. Lo cargado en un camión programado
     // de un plan anterior ya no vuelve.
     if (esCD1003) for (const [docP, co] of pv4000Coord.entries()) {
       if ((ceAltDe(co) || String(co.ce ?? '').trim()) !== ce) continue;
       const fc = parseISODate(co.fecha_entrega);
-      if (!(fc && fc.getTime() <= diaObjVentas.getTime())) continue;
+      if (!fc) continue;
       if (estaExcluido(exclusionesPlan, 'venta_1003', docP, null)) continue;
+      const enPlanP4 = fc.getTime() <= diaObjVentas.getTime();
+      if (!enPlanP4 && co.tipo_entrega !== 'CD-CLIENTE') continue;
       const vivos = pv4000Live.filter(x => String(x.documento ?? '').trim() === docP);
       if (!vivos.length && fc.getTime() < hoy00().getTime()) continue;   // ya no está en el SQVI y la fecha pasó
       const libre = new Map(); vivos.forEach(x => { const m = String(x.material ?? '').trim(); libre.set(m, (libre.get(m) || 0) + parseNum(x.libre_utiliz)); });
@@ -5889,7 +5981,17 @@ async function renderPlanCarga(stage, opts = {}) {
           idCliente: '', vendedor: '', _manual: 'CONSOLIDABLE', entrega: co.n_entrega || '', _guiaFact: true,
           _ceOrig: ceAltDe(co) && ceAltDe(co) !== String(co.ce ?? '').trim() ? String(co.ce ?? '').trim() : '' });
       });
-      if (its.length) { tonVentaCons += sumTon(its); det.ventaCons.push(...its); }
+      if (!its.length) continue;
+      if (!enPlanP4) { tonClienteDiferido += sumTon(its); continue; }   // CD-Cliente de otro día
+      // (18-oct-2026, Jordan) CD-CLIENTE: camión directo al cliente (agrupa por patente + fecha, como las NV).
+      if (co.tipo_entrega === 'CD-CLIENTE') {
+        its.forEach(d => { d._manual = 'CD-CLIENTE'; d.cliente = co.nombre_cliente || LEYENDA_PV4000; d.comuna = co.comuna || d.comuna; });
+        const pat = normPatente(co.patente_camion);
+        const gk = pat ? `PAT|${pat}|${co.fecha_entrega}` : `P4|${docP}`;
+        const g = (ventasCliPorGrupo[gk] = ventasCliPorGrupo[gk] || { items: [], clientes: new Set(), pat: pat ? String(co.patente_camion).toUpperCase().trim() : '', co });
+        g.clientes.add(co.nombre_cliente || ('PV ' + docP));
+        g.items.push(...its);
+      } else { tonVentaCons += sumTon(its); det.ventaCons.push(...its); }
     }
     // (4-oct-2026, Jordan) Pedidos de traslado (Crossdocking) coordinados como CD-CLIENTE:
     // mismo tratamiento que las NV CD-Cliente (camión directo, agrupado por patente+fecha).
