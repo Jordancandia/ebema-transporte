@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610191329';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610191329';
-import { getDatabase } from './data.js?v=202610191329';
+import { supabase } from './supabase-client.js?v=202610191926';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610191926';
+import { getDatabase } from './data.js?v=202610191926';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610191329';
-import { confirmar, pedirDato } from './confirmar.js?v=202610191329';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610191926';
+import { confirmar, pedirDato } from './confirmar.js?v=202610191926';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -4248,7 +4248,7 @@ function dtPorCamion(dtRows) {
   });
   return m;
 }
-function agruparSeguimiento(rows, dtRows, ajustes, clientes) {
+function agruparSeguimiento(rows, dtRows, ajustes, clientes, transp) {
   const dtMap = dtPorCamion(dtRows);
   const descartes = new Map();
   (ajustes || []).filter(a => a.accion === 'descartar').forEach(a => { const k = String(a.camion_id); if (!descartes.has(k)) descartes.set(k, []); descartes.get(k).push(String(a.transporte).trim()); });
@@ -4274,6 +4274,7 @@ function agruparSeguimiento(rows, dtRows, ajustes, clientes) {
     const kc = co ? `C|${r.tipo_camion}|${r.clave}` : `${r.tipo_camion}|${r.clave}`;
     if (!g._cams.has(kc)) g._cams.set(kc, { tipo: r.tipo_camion, clave: r.clave, coord: co, dir: !['Camión CD', '2º camión'].includes(r.tipo_camion),
       fecha_carga: r.fecha_carga, destino: r.destino, origen: r.origen, id_transporte: r.id_transporte, transportista: r.transportista,
+      transportista_rut: (transp && transp.get(String(r.id_transporte ?? '').trim())) || '',
       chofer_nombre: r.chofer_nombre, chofer_rut: r.chofer_rut, chofer_telefono: r.chofer_telefono, patente_camion: r.patente_camion, patente_carro: r.patente_carro,
       ton_camion: Number(r.ton_camion) || 0, pct: r.pct_camion, cap: Number(r.cap) || 0, programado_por: r.programado_por, programado_en: r.programado_en, lineas: [] });
     g._cams.get(kc).lineas.push(r);
@@ -4295,7 +4296,7 @@ function agruparSeguimiento(rows, dtRows, ajustes, clientes) {
       c.clientes = clientesCamionSeg(c, clientes);
       c.camionIds = [...new Set(c.lineas.map(x => x.camion_id))];
       c.descartados = [...new Set(c.camionIds.flatMap(id => descartes.get(String(id)) || []))];
-      c.lineas.forEach(x => { x._lbl = c.lbl; });
+      c.lineas.forEach(x => { x._lbl = c.lbl; x.transportista_rut = c.transportista_rut; });
     });
     g.dts = [...new Set(g.camiones.flatMap(c => c.dts.map(d => d.transporte)))];
     const fechas = [...new Set(g.camiones.map(c => c.fecha_carga).filter(Boolean))].sort();
@@ -4436,16 +4437,20 @@ VISTAS_TRONCAL.seguimiento_carga = {
       const [dt, aj, cv, ct, cp4] = await Promise.all([fetchAllRows('v_abast_seguimiento_dt'), supabase.from('abast_seguimiento_dt_ajuste').select('camion_id,transporte,accion,creado_por,creado_en').limit(5000),
         supabase.from('abast_venta_coordinacion').select('doc_ventas,' + cols).limit(5000), supabase.from('abast_traslado_coordinacion').select('doc_compr,' + cols).limit(5000),
         supabase.from('abast_pv4000_coordinacion').select('documento,' + cols).limit(5000)]);
+      // (19-oct-2026, Jordan) RUT del transportista (maestro transports) en los datos del transporte
+      const transp = new Map();
+      try { const { data: tr } = await supabase.from('transports').select('id,rut').limit(5000);
+        (tr || []).forEach(x => transp.set(String(x.id ?? '').trim(), String(x.rut ?? '').trim())); } catch (e2) { console.warn('Seguimiento: maestro de transportistas no disponible', e2); }
       // (12-oct-2026, Jordan) Datos del cliente de las coordinaciones CD-Cliente para el detalle
       const clientes = new Map();
       ((cv && cv.data) || []).forEach(x => clientes.set(String(x.doc_ventas ?? '').trim(), x));
       ((ct && ct.data) || []).forEach(x => clientes.set(String(x.doc_compr ?? '').trim(), x));
       ((cp4 && cp4.data) || []).forEach(x => clientes.set(String(x.documento ?? '').trim(), x));   // (18-oct-2026) PV Stock 4000
       await cargarAjustesCargaSeg();   // (19-oct-2026) historial de «Editar carga»
-      return { dt, ajustes: (aj && aj.data) || [], clientes };
-    } catch (e) { console.warn('Seguimiento: DT no disponible', e); return { dt: [], ajustes: [], clientes: new Map() }; }
+      return { dt, ajustes: (aj && aj.data) || [], clientes, transp };
+    } catch (e) { console.warn('Seguimiento: DT no disponible', e); return { dt: [], ajustes: [], clientes: new Map(), transp: new Map() }; }
   },
-  transform: (rows, ctx) => agruparSeguimiento(rows, ctx && ctx.dt, ctx && ctx.ajustes, ctx && ctx.clientes),
+  transform: (rows, ctx) => agruparSeguimiento(rows, ctx && ctx.dt, ctx && ctx.ajustes, ctx && ctx.clientes, ctx && ctx.transp),
   csvFilas: grupos => grupos.flatMap(g => g._lineas),
   columnas: [
     { key: 'fecha_plan', label: 'Fecha Planificación' }, { key: 'fecha_carga', label: 'Fecha Carga' },
@@ -4459,7 +4464,7 @@ VISTAS_TRONCAL.seguimiento_carga = {
     { key: 'pct_camion', label: '% Carga Camión', valueFn: r => r.pct_camion == null ? '' : r.pct_camion + '%' },
     { key: 'pedido_venta', label: 'Pedido de Venta' }, { key: 'ruta', label: 'Ruta' }, { key: 'comuna', label: 'Comuna' },
     { key: 'proveedor', label: 'Proveedor' }, { key: 'cliente', label: 'Cliente' },
-    { key: 'id_transporte', label: 'ID Transporte' }, { key: 'transportista', label: 'Transportista' },
+    { key: 'id_transporte', label: 'ID Transporte' }, { key: 'transportista', label: 'Transportista' }, { key: 'transportista_rut', label: 'RUT Transportista' },
     { key: 'chofer_nombre', label: 'Chofer' }, { key: 'chofer_rut', label: 'RUT Chofer' }, { key: 'chofer_telefono', label: 'Teléfono' },
     { key: 'patente_camion', label: 'Patente Camión' }, { key: 'patente_carro', label: 'Patente Carro' },
     { key: 'programado_por', label: 'Programado por' },
@@ -4533,7 +4538,7 @@ V2.seguimiento_carga = {
   docSearch: { ph: 'Pedido / OC / entrega / DT', of: r => r._lineas.map(x => `${x.documento || ''} ${x.n_entrega || ''} ${x.pedido_venta || ''}`).join(' ')
     + ' ' + r.camiones.flatMap(c => c.dts).map(d => `${d.transporte} ${d.lineas.map(x => x.entrega).join(' ')}`).join(' ') },
   fecha: { label: 'Carga', of: r => r.fecha_carga },
-  search: { ph: 'Buscar SKU, material, patente, transportista o tipo', of: r => r._nombreCe + ' ' + r.camiones.map(c => `${c.tipo} ${c.lbl} ${c.coord ? 'coordinado' : ''} ${c.patente_camion} ${c.transportista} ${c.id_transporte} ${c.chofer_nombre}`).join(' ')
+  search: { ph: 'Buscar SKU, material, patente, transportista o tipo', of: r => r._nombreCe + ' ' + r.camiones.map(c => `${c.tipo} ${c.lbl} ${c.coord ? 'coordinado' : ''} ${c.patente_camion} ${c.transportista} ${c.id_transporte} ${c.transportista_rut} ${c.chofer_nombre}`).join(' ')
     + ' ' + r._lineas.map(x => `${x.material} ${x.nombre} ${x.proveedor} ${x.cliente}`).join(' ') },
   kpis: [
     { key: 'all', label: 'Centros destino', color: C_INK, sub: 'con camiones programados' },
@@ -4557,7 +4562,7 @@ V2.seguimiento_carga = {
         ? c.dts.map(d => `<span class="sv-mono"><b>${escV2(d.transporte)}</b></span>${dtRevisar(d) ? ' ' + pill('Revisar', 'warn') : ''}`).join(' ') + (c.nSinDt ? ` <span class="sv-sub" style="margin:0;display:inline">${c.nSinDt} SKU sin DT</span>` : '')
         : (estadoCamSeg(r, c) === 'pendoc' ? PENDOC_HTML : '<span class="sv-muted" title="Este tipo no genera DT en SAP">No aplica</span>')}</div>`).join('') },
     { label: 'Transportista', html: r => r.camiones.map(c => `<div style="white-space:nowrap"><b>${escV2(c.transportista || c.id_transporte || '—')}</b>${c.patente_camion ? ` <span class="sv-mono">${escV2(c.patente_camion)}</span>` : ''}`
-        + `<div class="sv-sub" style="margin:0">${escV2([c.id_transporte, c.chofer_nombre ? 'Chofer ' + c.chofer_nombre : '', c.chofer_telefono].filter(Boolean).join(' · '))}</div></div>`).join('') },
+        + `<div class="sv-sub" style="margin:0">${escV2([c.id_transporte, c.transportista_rut ? 'RUT ' + c.transportista_rut : '', c.chofer_nombre ? 'Chofer ' + c.chofer_nombre : '', c.chofer_telefono].filter(Boolean).join(' · '))}</div></div>`).join('') },
   ],
   edge: r => r.camiones.length ? segColor(r.camiones[0]) : C_GREEN,
   // (8-oct-2026, Jordan) Detalle más ancho; Editar transporte y Anular coordinación en la fila principal.
@@ -5019,7 +5024,7 @@ function fichaTransporteSeg(r, c) {
   const trBox = `<div class="sv-segbox" style="--c:${col}">
       <div class="sv-segbox-k"><span class="material-symbols-outlined">local_shipping</span>Transporte</div>
       <div class="sv-segbox-t">${escV2(c.transportista || (c.id_transporte ? 'ID ' + c.id_transporte : 'Sin transportista'))}</div>
-      ${c.id_transporte && c.transportista ? `<div class="sv-segbox-l"><span class="sv-muted">ID</span> <span class="sv-mono">${escV2(c.id_transporte)}</span></div>` : ''}
+      ${c.id_transporte ? `<div class="sv-segbox-l">${c.transportista ? `<span class="sv-muted">ID</span> <span class="sv-mono">${escV2(c.id_transporte)}</span> · ` : ''}<span class="sv-muted">RUT</span> ${c.transportista_rut ? `<b class="sv-mono">${escV2(c.transportista_rut)}</b>` : pill('RUT pendiente en maestro', 'warn')}</div>` : ''}
       <div class="sv-segbox-l" style="margin-top:6px">${c.patente_camion ? `<span class="sv-segbox-pat">${escV2(c.patente_camion)}</span>` : pill('Patente pendiente', 'warn')}${c.patente_carro ? `<span class="sv-muted">carro</span> <span class="sv-mono">${escV2(c.patente_carro)}</span>` : ''}</div>
       <div class="sv-segbox-l" style="margin-top:6px"><span class="material-symbols-outlined" style="font-size:16px;vertical-align:-3px">badge</span> ${c.chofer_nombre ? `<b>${escV2(c.chofer_nombre)}</b>` : '<span class="sv-muted">Chofer pendiente</span>'}${c.chofer_rut ? ` · <span class="sv-mono">${escV2(c.chofer_rut)}</span>` : ''}</div>
       ${c.chofer_telefono ? `<div class="sv-segbox-l"><span class="material-symbols-outlined" style="font-size:16px;vertical-align:-3px">call</span> ${tel(c.chofer_telefono)}</div>` : ''}
@@ -5379,11 +5384,11 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610191329');
+    const m = await import('./ind-plan-carga.js?v=202610191926');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (currentSub === 'control_diferencias') {  // (11-oct-2026) Control de Diferencias del Plan de Carga
-    const m = await import('./control-diferencias.js?v=202610191329');
+    const m = await import('./control-diferencias.js?v=202610191926');
     await m.renderControlDiferencias(stage);
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
