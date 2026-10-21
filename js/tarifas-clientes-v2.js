@@ -15,11 +15,11 @@
 // tarifas a clientes y «Guardar y recalcular» escribe sólo client_tariff_config
 // (syncOnly) y, si cambió la asignación de clusters, cluster_rutas por centro.
 // ============================================================================
-import { saveDatabase, getOrigenGroups } from './data.js?v=202610191926';
-import { buildZcapMap } from './zcap.js?v=202610191926';
+import { saveDatabase, getOrigenGroups } from './data.js?v=202610210953';
+import { buildZcapMap } from './zcap.js?v=202610210953';
 import { showAlert } from './utils.js';
-import { can } from './permisos.js?v=202610191926';
-import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, setParamPill, clasifPill, pillHtml } from './tarifas-ui.js?v=202610191926';
+import { can } from './permisos.js?v=202610210953';
+import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, setParamPill, clasifPill, pillHtml } from './tarifas-ui.js?v=202610210953';
 
 const CAPS = [5, 10, 15, 28];
 const CAP_LBL = { 5: '5 t', 10: '10 t', 15: '15 t', 28: '28 t' };
@@ -301,8 +301,8 @@ function renderHistorico(container, ctx) {
           <div class="sv-tablewrap" style="max-height:520px"><table class="sv-table" style="min-width:1000px">
             <thead><tr><th>Fecha</th><th>Centro</th><th>Doc. transp.</th><th>Entrega</th><th>Ruta</th><th>Transportista</th><th class="r">Cap.</th><th class="r">Ton</th><th class="r">Gasto doc.</th><th>HES</th></tr></thead>
             <tbody>${pag.map(r => `<tr style="cursor:default"><td class="sv-mono">${esc(r.fecha)}</td><td>${esc(NG[ctx.grupoDe(r.oficina)] || ctx.grupoDe(r.oficina))}</td><td class="sv-mono">${esc(r.documento)}</td><td class="sv-mono">${esc(r.entrega || '')}</td>
-              <td><span class="sv-mono">${esc(r.idRuta)}</span></td><td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(r.transportista)}">${esc(r.transportista)}</td>
-              <td class="r">${CAP_LBL[ctx.getCapBucket(r.capTons)]}</td><td class="r">${fmt(r.ton, 2)}</td><td class="r">${clp(r.gasto)}</td>
+              <td><span class="sv-mono">${esc(r.idRuta)}</span>${r.idRutaSap && String(r.idRutaSap).toUpperCase() !== String(r.idRuta).toUpperCase() ? `<div class="sv-sub" title="ID de ruta en SAP">SAP ${esc(r.idRutaSap)}</div>` : ''}</td><td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(r.transportista)}">${esc(r.transportista)}</td>
+              <td class="r">${CAP_LBL[ctx.getCapBucket(r.capTons)]}</td><td class="r">${fmt(r.ton, 2)}</td><td class="r" title="Monto pagado de la fila (documento × entrega × ruta)">${clp(r.flete != null ? r.flete : r.gasto)}</td>
               <td>${r.hes ? pillHtml('Con HES', 'ok') : pillHtml('Pendiente', 'warn')}</td></tr>`).join('')}</tbody>
           </table></div>
           <div class="sv-tfoot"><span>${fmt(det.length)} entregas</span>${pager(det.length, HV.pagina, HIST_PAGE, 'data-hpag')}</div>

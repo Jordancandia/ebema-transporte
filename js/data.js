@@ -1,7 +1,7 @@
 // Capa de datos de SIT EBEMA
 // Fuente principal: Supabase (PostgreSQL compartido, protegido con RLS).
 // localStorage se mantiene como copia local de respaldo (modo sin conexión).
-import { supabase } from './supabase-client.js?v=202610191926';
+import { supabase } from './supabase-client.js?v=202610210953';
 
 const STORAGE_KEY = 'ebema_transporte_db';
 
@@ -284,6 +284,57 @@ const PAGE_SIZE = 1000;
 // Reemplaza la carga manual de CSV: una fila por documento de transporte × entrega × ruta,
 // centro = ID Expedición, toneladas = Σ Peso (Kg) / 1000. Se carga bajo demanda al abrir
 // Tarifas Transporte / Tarifas Clientes y queda cacheado en la sesión.
+// ── Normalización del ID de ruta del histórico (21-oct-2026, Jordan) ──
+// 1) Prefijos SAP antiguos: FDO### → RAN### (Rancagua), si la ruta RAN### existe.
+// 2) Sectores INACTIVOS → la ruta Comuna (activa) de su comuna, en el mismo Centro
+//    Origen (zona de transporte del sector → comuna). Los sectores activos se siguen
+//    resolviendo en el cálculo de participación como antes.
+// Si no hay equivalencia, se mantiene el ID original (idRutaSap guarda siempre el de SAP).
+export const HIST_ALIAS_PREFIJO = { FDO: 'RAN' };
+const _sinTilde = s => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase();
+export function crearNormalizadorRutaHist(db) {
+  const routes = (db && db.routes) || [];
+  if (!routes.length) return id => id;
+  const cdGrupo = new Map((db.logisticsCentres || []).map(c => [String(c.id), c.origen_grupo || String(c.id).toUpperCase()]));
+  const grupoDe = r => r.origen_grupo || cdGrupo.get(String(r.origenId)) || String(r.origenId || '');
+  const porCodigo = new Map();
+  routes.forEach(r => {
+    const k = String(r.codigo || '').toUpperCase();
+    if (!k) return;
+    const prev = porCodigo.get(k);
+    if (!prev || (!prev.activo && r.activo)) porCodigo.set(k, r);  // si hay duplicados, prioriza la activa
+  });
+  const zonas = new Map((db.transportZones || []).map(z => [String(z.zona), z]));
+  // grupo|comuna → código de la ruta Comuna activa
+  const comunaRuta = new Map();
+  routes.forEach(r => {
+    if (!r.activo || String(r.tipo || '').toLowerCase() !== 'comuna') return;
+    const k = grupoDe(r) + '|' + _sinTilde(r.comuna || r.destino);
+    const prev = comunaRuta.get(k);
+    if (!prev || (prev.clasificRuta !== 'Regional' && r.clasificRuta === 'Regional')) comunaRuta.set(k, r);
+  });
+  const memo = new Map();
+  return id => {
+    const k0 = String(id || '').toUpperCase().trim();
+    if (!k0) return id;
+    if (memo.has(k0)) return memo.get(k0);
+    let k = k0;
+    if (!porCodigo.has(k)) {
+      const alias = HIST_ALIAS_PREFIJO[k.slice(0, 3)];
+      if (alias && porCodigo.has(alias + k.slice(3))) k = alias + k.slice(3);
+    }
+    const r = porCodigo.get(k);
+    if (r && !r.activo && String(r.tipo || '').toLowerCase() === 'sector') {
+      const z = zonas.get(String(r.id_zona_transporte));
+      const destino = z ? comunaRuta.get(grupoDe(r) + '|' + _sinTilde(z.comuna)) : null;
+      if (destino) k = String(destino.codigo).toUpperCase();
+    }
+    const out = k === k0 ? id : k;
+    memo.set(k0, out);
+    return out;
+  };
+}
+
 let _histF360Loaded  = false;
 let _histF360Loading = null;
 export async function loadHistoricoFlete360(force = false) {
@@ -298,16 +349,26 @@ export async function loadHistoricoFlete360(force = false) {
   if (_histF360Loading && !force) return _histF360Loading;
   _histF360Loading = (async () => {
     try {
+      // (21-oct-2026) La vista trae el monto real pagado: flete (por documento × entrega × ruta)
+      // y flete_doc (total del documento, desde ind_flete_pagado.flete). "gasto" es sólo el
+      // número correlativo del gasto de transporte. Si la vista aún no tiene esas columnas,
+      // se usa la consulta anterior y el monto queda en 0.
+      const COLS_BASE = 'fecha,centro_expedicion,documento,entrega,id_ruta,gasto,hes,id_cliente,id_obra,id_transportista,transportista,cap_camion,ton';
       const _fetchHist = async () => {
+      let cols = COLS_BASE + ',flete,flete_doc';
       let from = 0, all = [];
       while (true) {
         const { data, error } = await supabase
           .from('v_hist_tarifas')
-          .select('fecha,centro_expedicion,documento,entrega,id_ruta,gasto,hes,id_cliente,id_obra,id_transportista,transportista,cap_camion,ton')
+          .select(cols)
           .order('documento', { ascending: true })
           .order('entrega',   { ascending: true })
           .order('id_ruta',   { ascending: true })
           .range(from, from + PAGE_SIZE - 1);
+        if (error && from === 0 && cols !== COLS_BASE) {
+          console.warn('v_hist_tarifas sin columnas flete/flete_doc; se carga sin monto:', error.message || error);
+          cols = COLS_BASE; continue;
+        }
         if (error) throw error;
         all = all.concat(data || []);
         if (!data || data.length < PAGE_SIZE) break;
@@ -318,21 +379,32 @@ export async function loadHistoricoFlete360(force = false) {
       const [versions, uid] = await Promise.all([_getRemoteVersions(), _cacheUid()]);
       // force=true (botón recargar) ignora la caché y la reescribe con datos frescos
       const all = await fetchCached('v_hist_tarifas', _fetchHist, versions, uid, force);
-      const rows = all.map(r => ({
-        fecha:           r.fecha || '',
-        oficina:         String(r.centro_expedicion || ''),
-        documento:       String(r.documento || ''),
-        gasto:           Number(r.gasto) || 0,
-        hes:             r.hes || '',
-        idCliente:       r.id_cliente || '',
-        idObra:          r.id_obra || '',
-        transportista:   r.transportista || '',
-        capTons:         Number(r.cap_camion) || 0,
-        entrega:         r.entrega || '',
-        idRuta:          r.id_ruta || '',
-        idTransportista: r.id_transportista || '',
-        ton:             Number(r.ton) || 0
-      })).filter(r => r.documento && r.idRuta);
+      // Rutas y zonas para normalizar el ID de ruta del histórico (FDO→RAN, sectores inactivos)
+      try { await loadRoutesData(); } catch (_e) { /* sin rutas: se usa el ID original */ }
+      const normRuta = crearNormalizadorRutaHist(memoryDb);
+      const rows = all.map(r => {
+        const idRutaSap = r.id_ruta || '';
+        return {
+          fecha:           r.fecha || '',
+          oficina:         String(r.centro_expedicion || ''),
+          documento:       String(r.documento || ''),
+          // Monto pagado del documento (se suma una vez por documento en las vistas)
+          gasto:           Number(r.flete_doc) || 0,
+          // Monto pagado de esta fila (documento × entrega × ruta)
+          flete:           Number(r.flete) || 0,
+          gastoId:         r.gasto != null ? String(r.gasto) : '',
+          hes:             r.hes || '',
+          idCliente:       r.id_cliente || '',
+          idObra:          r.id_obra || '',
+          transportista:   r.transportista || '',
+          capTons:         Number(r.cap_camion) || 0,
+          entrega:         r.entrega || '',
+          idRuta:          normRuta(idRutaSap),
+          idRutaSap,
+          idTransportista: r.id_transportista || '',
+          ton:             Number(r.ton) || 0
+        };
+      }).filter(r => r.documento && r.idRuta);
       const ccfg = getCcfg();
       if (ccfg && rows.length) {
         const d = new Date(); const pad = n => String(n).padStart(2, '0');

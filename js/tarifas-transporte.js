@@ -1,16 +1,16 @@
 // PANTALLA 1: Administrador de Tarifas Transporte — SIT EBEMA
 // Sub-módulos: Peajes, Combustibles y Rendimientos, Seguros y Permisos,
 // Variables Generales y Motor de Costo (ZCAP) con exportación CSV.
-import { getDatabase, saveDatabase, getCentreName, getTariffConfig, getClientTariffConfig, truckCapKg, getOrigenGroups, getGroupRepId, buildTruckTypes, TRUCK_BASE_TYPES, loadHistorico, loadHistoricoFlete360, deleteRow } from './data.js?v=202610191926';
-import { CAP_LIST, truckTypesWithCap, calcularMatrizCostos, calcularCostoRuta } from './tarifas-engine.js?v=202610191926';
+import { getDatabase, saveDatabase, getCentreName, getTariffConfig, getClientTariffConfig, truckCapKg, getOrigenGroups, getGroupRepId, buildTruckTypes, TRUCK_BASE_TYPES, loadHistorico, loadHistoricoFlete360, deleteRow } from './data.js?v=202610210953';
+import { CAP_LIST, truckTypesWithCap, calcularMatrizCostos, calcularCostoRuta } from './tarifas-engine.js?v=202610210953';
 import { formatCLP, parseCSV, showAlert, toCSV, downloadFile, escapeHtml } from './utils.js';
-import { supabase } from './supabase-client.js?v=202610191926';
-import { getField } from './zonas-transporte.js?v=202610191926';
-import { renderZcapView, calcZcapRow } from './zcap.js?v=202610191926';
-import { can } from './permisos.js?v=202610191926';
-import { renderPeajesV2, setPeajesTab, renderCombustiblesV2, renderSegurosV2, renderCostosExtrasV2, renderVariablesV2, renderMotorV2 } from './tarifas-insumos.js?v=202610191926';
-import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, textoImpacto, setParamPill, usuarioSesion } from './tarifas-ui.js?v=202610191926';
-import { confirmar } from './confirmar.js?v=202610191926';
+import { supabase } from './supabase-client.js?v=202610210953';
+import { getField } from './zonas-transporte.js?v=202610210953';
+import { renderZcapView, calcZcapRow } from './zcap.js?v=202610210953';
+import { can } from './permisos.js?v=202610210953';
+import { renderPeajesV2, setPeajesTab, renderCombustiblesV2, renderSegurosV2, renderCostosExtrasV2, renderVariablesV2, renderMotorV2 } from './tarifas-insumos.js?v=202610210953';
+import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, textoImpacto, setParamPill, usuarioSesion } from './tarifas-ui.js?v=202610210953';
+import { confirmar } from './confirmar.js?v=202610210953';
 
 // FIX: Escuchar errores de sincronización con Supabase y notificar al usuario
 window.addEventListener('db_sync_error', (e) => {
@@ -180,6 +180,14 @@ export function renderTariffTransportView(container) {
       case 'costos-extras': renderCostosExtrasV2(content, db, cfg); break;
       case 'variables':     renderVariablesV2(content, db, cfg); break;
       default:              renderMotorV2(content, db, cfg, { onActualizarPonderados: () => actualizarPonderados(db, cfg) }); // (5-oct-2026) SAN BERNARDO separado de SANTIAGO
+    }
+    // (21-oct-2026) Participación por comuna recalculada automáticamente desde el histórico:
+    // si cambió, se guarda, se actualizan los ponderados y se vuelve a dibujar la vista.
+    if (activeSub === 'camiones' || activeSub === 'resultados') {
+      const sub = activeSub;
+      asegurarParticipacion(db, cfg).then(cambio => {
+        if (cambio && activeSub === sub && container.isConnected) renderTariffTransportView(container);
+      }).catch(e => console.warn('Participación automática:', e.message || e));
     }
     return;
   }
@@ -1933,6 +1941,29 @@ function computeParticipacionFresh(db) {
 // solo recalcula ese Centro Origen; en caso contrario recalcula todos.
 // Devuelve un Set con los ids de tipos de camión que sí tienen rutas activas
 // (y por tanto valor ZCAP vigente).
+// (21-oct-2026, Jordan) La participación identifica, en las rutas regionales, dónde está
+// el mayor movimiento en toneladas a nivel de COMUNA (no por camión). Se recalcula sola
+// desde el histórico FLETE 360 cada vez que se abre Tarifas por Camión o el Motor de
+// Costos; si difiere de la guardada, se reemplaza y se recalculan los ponderados.
+// Devuelve true si hubo cambios.
+async function asegurarParticipacion(db, cfg) {
+  const ccfg = getClientTariffConfig(db);
+  if (!ccfg.historico?.length) {
+    const fresh = await loadHistoricoFlete360();
+    if (fresh?.length) ccfg.historico = fresh;
+  }
+  const nueva = computeParticipacionFresh(db);
+  if (!nueva || !Object.keys(nueva).length) return false;
+  const actual = cfg.participacionRutas || {};
+  const kN = Object.keys(nueva), kA = Object.keys(actual);
+  const igual = kN.length === kA.length && kN.every(k => actual[k] && Math.abs(Number(actual[k].pct) - nueva[k].pct) < 0.005);
+  if (igual) return false;
+  cfg.participacionRutas = nueva;
+  if (can('editar')) saveDatabase(db, { syncOnly: ['tariffConfig'] });
+  syncTarifasZcap(db, cfg, '');
+  return true;
+}
+
 // «Actualizar ponderados» del Motor de Costos (misma lógica que el antiguo
 // botón «Actualizar Tarifas»): recalcula el peso de cada ruta desde el
 // histórico y los ponderados por camión. Guarda sólo tariff_config y truck_types.

@@ -18,11 +18,11 @@
 //     calculado; el calculado queda en tariff_config.peajesOriginal)
 //   · costos extra → extra_costs (se siguen aplicando por EJES)
 // ============================================================================
-import { saveDatabase, getOrigenGroups, getCentreName, deleteRow } from './data.js?v=202610191926';
-import { CAP_LIST, truckTypesWithCap, calcularCostoRuta } from './tarifas-engine.js?v=202610191926';
+import { saveDatabase, getOrigenGroups, getCentreName, deleteRow } from './data.js?v=202610210953';
+import { CAP_LIST, truckTypesWithCap, calcularCostoRuta } from './tarifas-engine.js?v=202610210953';
 import { showAlert } from './utils.js';
-import { can } from './permisos.js?v=202610191926';
-import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, textoImpacto, setParamPill, usuarioSesion, clasifPill, carPill, pillHtml } from './tarifas-ui.js?v=202610191926';
+import { can } from './permisos.js?v=202610210953';
+import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, textoImpacto, setParamPill, usuarioSesion, clasifPill, carPill, pillHtml } from './tarifas-ui.js?v=202610210953';
 
 // ── Utilidades ──────────────────────────────────────────────────────────────
 function getPath(obj, path) {
@@ -1140,7 +1140,7 @@ export function renderMotorV2(container, db, cfg, helpers = {}) {
   }
 
   function desglose(m, cfgX, idx) {
-    const r = m.ruta, km = num(m.km), cap = m.capKg;
+    const r = m.ruta, km = num(m.km), cap = m.capKg, kmRec = num(m.kmRecorrido) || km * 2;
     const rep = (grupos.find(g => g.grupo === r.origen_grupo) || grupos.find(g => g.centroIds.includes(r.origenId)))?.repId || r.origenId;
     const kmKey = `${rep}|${cap}`;
     const rend = (cfgX.rendimientos || {})[String(cap)] || {};
@@ -1163,11 +1163,11 @@ export function renderMotorV2(container, db, cfg, helpers = {}) {
       ['1', 'Peajes', m.item1_peajes, `ida ${clp(m.peajeIda)} + vuelta ${clp(m.peajeVuelta)} · ${m.ejes} ejes`, 'peajes', 'Peajes'],
       ['1b', 'Costos extra', m.item1b_costosExtra, extras.length ? extras.map(c => `${c.item} ${clp(num(c.costo_ida) + num(c.costo_vuelta))}`).join(' · ') : 'sin ítems para la zona y ejes', 'costos-extras', 'Costos extras'],
       ['2', 'Combustible', m.item2_combustible, `${fmt(km)} km ÷ ${fmt(num(rend.cargado), 1)} km/l + ${fmt(km)} km ÷ ${fmt(num(rend.vacio), 1)} km/l · ${clp(neto)}/l neto`, 'combustibles', 'Combustibles'],
-      ['3', 'SOAP y permiso', m.item3_soapKm, kmMes ? `(SOAP ${clp(m.soapAnual)} + permiso ${clp(m.permisoAnual)}) ÷ ${fmt(kmMes * 12)} km/año × ${fmt(km)} km` : 'sin km ofrecidos', 'seguros', 'Seguros'],
-      ['4', 'Seguro de carga', m.item4_seguroKm, `${fmt(num((cfgX.seguros || {})[rep]), 1)} UF × ${clp(uf)} ÷ ${fmt(kmMes)} km/mes × ${fmt(km)} km`, 'seguros', 'Seguros'],
-      ['5', 'Mantención', m.item5_mantKm, `${clp((v.mantencion?.costos || {})[kmKey])} cada ${fmt(num(v.mantencion?.ciclo) || 20000)} km × ${fmt(km)} km`, 'variables', 'Variables'],
-      ['6', 'Neumáticos', m.item6_neumKm, `${clp((v.neumaticos?.costos || {})[String(cap)])} cada ${fmt(num(v.neumaticos?.ciclo) || 50000)} km × ${fmt(km)} km`, 'variables', 'Variables'],
-      ['7', 'GPS / celular', m.item7_gpsKm, `${fmt(num(v.gps?.costoUF) || 0.45, 2)} UF × ${clp(uf)} ÷ ${fmt(kmMes)} km/mes × ${fmt(km)} km`, 'variables', 'Variables'],
+      ['3', 'SOAP y permiso', m.item3_soapKm, kmMes ? `(SOAP ${clp(m.soapAnual)} + permiso ${clp(m.permisoAnual)}) ÷ ${fmt(kmMes * 12)} km/año × ${fmt(kmRec)} km recorridos` : 'sin km ofrecidos', 'seguros', 'Seguros'],
+      ['4', 'Seguro de carga', m.item4_seguroKm, `${fmt(num((cfgX.seguros || {})[rep]), 1)} UF × ${clp(uf)} ÷ ${fmt(kmMes)} km/mes × ${fmt(kmRec)} km recorridos`, 'seguros', 'Seguros'],
+      ['5', 'Mantención', m.item5_mantKm, `${clp((v.mantencion?.costos || {})[kmKey])} cada ${fmt(num(v.mantencion?.ciclo) || 20000)} km × ${fmt(kmRec)} km recorridos`, 'variables', 'Variables'],
+      ['6', 'Neumáticos', m.item6_neumKm, `${clp((v.neumaticos?.costos || {})[String(cap)])} cada ${fmt(num(v.neumaticos?.ciclo) || 50000)} km × ${fmt(kmRec)} km recorridos`, 'variables', 'Variables'],
+      ['7', 'GPS / celular', m.item7_gpsKm, `${fmt(num(v.gps?.costoUF) || 0.45, 2)} UF × ${clp(uf)} ÷ ${fmt(kmMes)} km/mes × ${fmt(kmRec)} km recorridos`, 'variables', 'Variables'],
       ['8', 'Remuneración chofer', m.item8_choferBaseDiario, `${clp((v.chofer?.sueldoMinimo || {})[rep])} ÷ ${fmt(num(v.chofer?.diasHabiles) || 22)} días hábiles`, 'variables', 'Variables'],
       ['9', 'Variable chofer', m.item9_varChofer, `${fmt(num(v.chofer?.comisionPct), 1)}% sobre costos directos de ida`, 'variables', 'Variables'],
     ];

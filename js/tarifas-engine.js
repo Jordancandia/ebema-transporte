@@ -1,7 +1,7 @@
 // Motor Actuarial — Administrador de Tarifas Transporte (SIT EBEMA)
 // Implementa, ruta por ruta y tipo de camión por tipo de camión, el cálculo
 // de costos definido en "PANTALLA 1: ADMINISTRADOR DE TARIFAS TRANSPORTE".
-import { truckCapKg, getGroupRepId } from './data.js?v=202610191926';
+import { truckCapKg, getGroupRepId } from './data.js?v=202610210953';
 
 // Capacidades nominales soportadas (kg)
 export const CAP_LIST = [5000, 10000, 15000, 28000];
@@ -77,6 +77,11 @@ export function calcularCostoRuta(db, cfg, ruta, capKg, opciones = {}) {
   // KM mensuales/anuales ofrecidos (denominador de prorrateos)
   const kmMensual = Number(cfg.kmOfrecidos[kmKey]) || 0;
   const kmAnual = kmMensual * 12;
+  // (21-oct-2026, Jordan) Los prorrateos por km (SOAP+permiso, seguro, mantención,
+  // neumáticos y GPS) se cobran sobre los km RECORRIDOS: ida + vuelta (2 × km),
+  // igual que combustible y peajes. En troncales "solo ida" se recorre sólo el tramo de ida.
+  const kmRecorrido = soloIda ? km : km * 2;
+  const fraccionIda = kmRecorrido > 0 ? km / kmRecorrido : 1;
 
   // --- 3. SOAP + Permiso de circulación por KM (30-sep-2026) ---
   // SOAP anual por tipo de camión (cfg.soapTransversal, igual para todos los
@@ -86,27 +91,27 @@ export function calcularCostoRuta(db, cfg, ruta, capKg, opciones = {}) {
   const permisoSoap = (cfg.permisosSoap || {})[kmKey] || {};
   const soapAnual = Number((cfg.soapTransversal || {})[capKey]) || Number(permisoSoap.soap) || 0;
   const permisoAnual = Number(permisoSoap.permiso) || 0;
-  const item3_soapKm = kmAnual > 0 ? ((soapAnual + permisoAnual) / kmAnual) * km : 0;
+  const item3_soapKm = kmAnual > 0 ? ((soapAnual + permisoAnual) / kmAnual) * kmRecorrido : 0;
 
   // --- 4. Seguro de carga por KM ---
   const ufVal = Number(cfg.variables.valorUF) || 0;
   const seguroUFmensual = Number(cfg.seguros[cfgId]) || 0;
   const seguroCLPmensual = seguroUFmensual * ufVal;
-  const item4_seguroKm = kmMensual > 0 ? (seguroCLPmensual / kmMensual) * km : 0;
+  const item4_seguroKm = kmMensual > 0 ? (seguroCLPmensual / kmMensual) * kmRecorrido : 0;
 
   // --- 5. Mantención por KM ---
   const costoMantencion = Number((cfg.variables.mantencion.costos || {})[kmKey]) || 0;
   const cicloMantencion = Number(cfg.variables.mantencion.ciclo) || 20000;
-  const item5_mantKm = kmAnual > 0 ? ((kmAnual / cicloMantencion) * costoMantencion / kmAnual) * km : 0;
+  const item5_mantKm = kmAnual > 0 ? ((kmAnual / cicloMantencion) * costoMantencion / kmAnual) * kmRecorrido : 0;
 
   // --- 6. Neumáticos por KM ---
   const costoNeumaticos = Number((cfg.variables.neumaticos.costos || {})[capKey]) || 0;
   const cicloNeumaticos = Number(cfg.variables.neumaticos.ciclo) || 50000;
-  const item6_neumKm = kmAnual > 0 ? ((kmAnual / cicloNeumaticos) * costoNeumaticos / kmAnual) * km : 0;
+  const item6_neumKm = kmAnual > 0 ? ((kmAnual / cicloNeumaticos) * costoNeumaticos / kmAnual) * kmRecorrido : 0;
 
   // --- 7. GPS / Celular por KM (prorrateo justo) ---
   const gpsCostoUF = Number(cfg.variables.gps.costoUF) || 0.45;
-  const item7_gpsKm = kmMensual > 0 ? (((gpsCostoUF * ufVal) / kmMensual) * km) : 0;
+  const item7_gpsKm = kmMensual > 0 ? (((gpsCostoUF * ufVal) / kmMensual) * kmRecorrido) : 0;
 
   // --- 8. Chofer: base diaria ---
   const sueldoMin = Number((cfg.variables.chofer.sueldoMinimo || {})[cfgId]) || 0;
@@ -115,7 +120,10 @@ export function calcularCostoRuta(db, cfg, ruta, capKg, opciones = {}) {
 
   // --- 9. Variable Chofer (comisión sobre costos directos del tramo de ida) ---
   const comisionPct = Number(cfg.variables.chofer.comisionPct) || 0;
-  const baseComision = peajeIda + itemExtraIda + combIda + item3_soapKm + item4_seguroKm + item5_mantKm + item6_neumKm + item7_gpsKm;
+  // La comisión sigue calculándose sobre el tramo de IDA: de los prorrateos por km
+  // (que ahora cubren ida + vuelta) sólo entra la porción de ida.
+  const prorrateosIda = (item3_soapKm + item4_seguroKm + item5_mantKm + item6_neumKm + item7_gpsKm) * fraccionIda;
+  const baseComision = peajeIda + itemExtraIda + combIda + prorrateosIda;
   const item9_varChofer = baseComision * (comisionPct / 100);
 
   // --- 10. Costo Vuelta (Σ ítems × Factor Ruta geográfico) ---
@@ -146,7 +154,7 @@ export function calcularCostoRuta(db, cfg, ruta, capKg, opciones = {}) {
     factorRuta, costoVuelta, item10_costoRutaTotal, item11_costoKmFinal,
     zcap: item12_zcap,
     zcapConMargen: item12_zcap,
-    kmMensual, kmAnual
+    kmMensual, kmAnual, kmRecorrido
   };
 }
 
