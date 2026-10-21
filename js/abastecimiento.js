@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610210953';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610210953';
-import { getDatabase } from './data.js?v=202610210953';
+import { supabase } from './supabase-client.js?v=202610212022';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610212022';
+import { getDatabase } from './data.js?v=202610212022';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610210953';
-import { confirmar, pedirDato } from './confirmar.js?v=202610210953';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610212022';
+import { confirmar, pedirDato } from './confirmar.js?v=202610212022';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -1094,7 +1094,9 @@ function showCoordVentaModal(row, ctx) {
     const c = row._coord || {};
     const mc = row._mc || {};
     const editando = !!row._coord;
-    const puedeTipo = can('forzar_cd_cliente');
+    // (21-oct-2026) En un pedido manual también elige el tipo quien lo creó (acción venta_manual).
+    const puedeTipo = can('forzar_cd_cliente') || (!!row._nv_manual && can('venta_manual'));
+    const entregaOpc = !!row._nv_manual;   // pedido manual: puede no tener entrega SAP
     const feSap = parseDateSAP(row.fe_entrega);
     const st = {
       tipo: c.tipo_entrega || row._tipo_entrega || 'CONSOLIDABLE',
@@ -1150,7 +1152,7 @@ function showCoordVentaModal(row, ctx) {
     const faltantes = () => {
       const f = [];
       if (!st.fecha) f.push('fecha');
-      if (!st.entrega.trim()) f.push('entrega');
+      if (!st.entrega.trim() && !entregaOpc) f.push('entrega');
       if (!st.direccion.trim()) f.push('direccion');
       if (!st.telefono.trim()) f.push('telefono');
       if (esCli()) {
@@ -1231,8 +1233,8 @@ function showCoordVentaModal(row, ctx) {
           <div style="display:grid;grid-template-columns:220px 1fr;gap:12px;align-items:start">
             <div>${lbl('Fecha de entrega', 'fecha', true)}
               <label class="sv-inp" style="width:100%;box-sizing:border-box;min-width:0;${bad('fecha') ? 'border-color:#b5000b' : ''}"><span class="material-symbols-outlined">calendar_today</span><input type="date" data-k="fecha" data-redraw value="${escapeHtml(st.fecha)}" style="width:140px"></label></div>
-            <div>${lbl('N° de entrega', 'entrega', true)}
-              <label class="sv-inp" style="width:100%;box-sizing:border-box;min-width:0;${bad('entrega') ? 'border-color:#b5000b' : ''}"><span class="material-symbols-outlined">tag</span><input class="is-mono" data-k="entrega" value="${escapeHtml(st.entrega)}" placeholder="N° entrega SAP" style="width:100%"></label></div>
+            <div>${lbl(entregaOpc ? 'N° de entrega (opcional)' : 'N° de entrega', 'entrega', !entregaOpc)}
+              <label class="sv-inp" style="width:100%;box-sizing:border-box;min-width:0;${bad('entrega') ? 'border-color:#b5000b' : ''}"><span class="material-symbols-outlined">tag</span><input class="is-mono" data-k="entrega" value="${escapeHtml(st.entrega)}" placeholder="${entregaOpc ? 'Si ya existe en SAP' : 'N° entrega SAP'}" style="width:100%"></label></div>
           </div>
           <div class="sv-sub" data-plantxt style="margin-top:-10px;max-width:none">${escapeHtml(planTxt())}</div>
           <div class="sv-card" style="padding:14px 16px;display:flex;flex-direction:column;gap:10px">
@@ -1352,6 +1354,294 @@ function showCoordVentaModal(row, ctx) {
         showAlert((extrasG.length ? `${extrasG.length + 1} pedidos coordinados en el mismo camión` : `Pedido ${row.doc_ventas} coordinado`) + ` para el ${fmtFechaISO(st.fecha)}`
           + (pendV.length ? ` · pendiente: ${pendV.join(', ')}` : ''), 'success');
         fin(true);
+      });
+    }
+    draw();
+  });
+}
+// ── Pedidos de venta MANUALES (21-oct-2026, Jordan) ──────────────────────────────────
+// OWNER y Planner Distribución (acción «venta_manual») agregan a mano un pedido de venta en Ventas CD
+// con los mismos datos de una NV del SQVI (destino, ruta, cliente, vendedor, fechas y materiales) y lo
+// coordinan igual que cualquier otra NV. Tabla abast_venta_manual (una fila por posición); la vista
+// v_trc_sqvi_pedidos_venta_1003 la suma con formato SAP, así que vista, Plan de Carga y vistas de servidor
+// la tratan como una NV más. Si SAP trae el mismo N° de pedido prima SAP; la NV manual sale sola cuando
+// sus unidades viajan en un camión programado con fecha de carga pasada (si viajó parcial, queda el saldo).
+async function loadVentasManual() {
+  const { data, error } = await supabase.from('abast_venta_manual').select('*').eq('activo', true).order('doc_ventas').order('pos').limit(5000);
+  if (error) { console.warn('Ventas manuales no disponibles:', error.message); return new Map(); }
+  const m = new Map();
+  (data || []).forEach(r => {
+    const d = String(r.doc_ventas ?? '').trim();
+    if (!m.has(d)) m.set(d, { cab: r, lineas: [] });
+    m.get(d).lineas.push(r);
+  });
+  return m;
+}
+async function eliminarVentaManual(doc) {
+  const d = String(doc ?? '').trim();
+  const { error } = await supabase.from('abast_venta_manual').delete().eq('doc_ventas', d);
+  if (error) { showAlert('No se pudo eliminar el pedido manual: ' + error.message, 'error'); return false; }
+  return true;
+}
+let _rutasVM = null, _matsVM = null;
+async function rutasVentaManual() {
+  if (_rutasVM) return _rutasVM;
+  let rs = (getDatabase().routes || []);
+  if (!rs.length) { try { rs = await fetchAllRows('routes'); } catch (_) { rs = []; } }
+  const vistos = new Set();
+  _rutasVM = rs.filter(r => r.activo !== false && String(r.codigo ?? '').trim())
+    .filter(r => { const k = String(r.codigo).trim(); if (vistos.has(k)) return false; vistos.add(k); return true; })
+    .map(r => ({ codigo: String(r.codigo).trim(), comuna: r.comuna || '', region: r.region || '', destino: r.destino || r.denominacion || '' }))
+    .sort((a, b) => a.codigo.localeCompare(b.codigo));
+  return _rutasVM;
+}
+async function materialesVentaManual() {
+  if (_matsVM) return _matsVM;
+  let rs = [];
+  try { rs = await fetchAllRows('maestro_productos'); } catch (_) { rs = []; }
+  _matsVM = new Map((rs || []).filter(r => r.activo !== false && String(r.id_material ?? '').trim())
+    .map(r => [String(r.id_material).trim(), { id: String(r.id_material).trim(), nombre: r.nombre_material || '', peso: Number(r.peso_bruto) || 0, vol: Number(r.peso_volumetrico) || 0 }]));
+  return _matsVM;
+}
+const numVM = v => { const n = Number(String(v ?? '').trim().replace(/\s/g, '').replace(',', '.')); return Number.isFinite(n) ? n : NaN; };
+// Peso efectivo por unidad (kg): manda el Maestro de Productos; si no tiene peso, el ingresado a mano.
+function pesoLineaVM(l, mats) {
+  const mp = mats.get(String(l.material ?? '').trim());
+  const peso = mp && mp.peso > 0 ? mp.peso : (numVM(l.peso) > 0 ? numVM(l.peso) : 0);
+  const vol = mp && mp.vol > 0 ? mp.vol : 0;
+  return { kg: Math.max(peso, vol), maestro: !!(mp && mp.peso > 0) };
+}
+// existente: { cab, lineas } de loadVentasManual() → modo edición. Devuelve el N° de pedido guardado o null.
+function showVentaManualModal(ctx, existente) {
+  return new Promise(async resolve => {
+    const editando = !!existente;
+    const cab = (existente && existente.cab) || {};
+    const [rutas, mats, maestroCli] = await Promise.all([rutasVentaManual(), materialesVentaManual(), (ctx && ctx.maestro) ? Promise.resolve(ctx.maestro) : loadMaestroClientes()]);
+    const filas = [...(((ctx && ctx._rowsByDoc) || new Map()).values())];
+    // Vendedores y condiciones de expedición conocidos (de las NV vigentes) para autocompletar.
+    const vend = new Map();
+    filas.forEach(r => { const id = String(r.deudor ?? '').trim(); if (id && !vend.has(id)) vend.set(id, r._vendedor || ''); });
+    const conds = new Map();
+    Object.values((ctx && ctx.pvMap) || {}).forEach(p => { const d = String(p.denominacion ?? '').trim(); if (d) conds.set(d, (conds.get(d) || 0) + 1); });
+    const condOpts = [...conds.entries()].sort((a, b) => b[1] - a[1]).slice(0, 15).map(x => x[0]);
+    const clientes = [...maestroCli.values()].filter(c => String(c.id_cliente ?? '').trim());
+    const docsSap = new Set(filas.filter(r => !r._nv_manual).map(r => String(r.doc_ventas ?? '').trim()));
+    const docsMan = (ctx && ctx.manualMap) || new Map();
+    const hoyIso = isoLocal(hoy00());
+
+    const st = {
+      doc: cab.doc_ventas || '', ofvta: cab.ofvta || '', ruta: cab.ruta || '',
+      creado: cab.creado_el || hoyIso, fecha: cab.fe_entrega || '',
+      idCli: cab.id_cliente || '', nomCli: cab.nombre_cliente || '',
+      idVen: cab.id_vendedor || '', nomVen: cab.nombre_vendedor || '',
+      cond: cab.cond_expedicion || '', obs: cab.observacion || '',
+      lineas: existente ? existente.lineas.map(l => ({ material: l.material || '', nombre: l.denominacion || '', cant: String(l.cantidad ?? ''), um: l.um || '', peso: l.peso_unit_kg == null ? '' : String(l.peso_unit_kg) }))
+        : [{ material: '', nombre: '', cant: '', um: '', peso: '' }],
+      busRuta: { q: '', open: false }, err: false, errMsg: '',
+    };
+
+    const wrap = document.createElement('div');
+    wrap.innerHTML = '<div class="sv-dr-bg" style="z-index:120"></div><aside class="sv-dr" style="z-index:121;width:min(760px,100vw)" role="dialog" aria-label="Pedido de venta manual"></aside>';
+    document.body.appendChild(wrap);
+    const panel = wrap.querySelector('aside');
+    const fin = v => { wrap.remove(); document.removeEventListener('keydown', onKey, true); resolve(v); };
+    const onKey = e => { if (e.key === 'Escape' && !cerrarBuscadorAbierto(e)) { e.stopPropagation(); fin(null); } };
+    document.addEventListener('keydown', onKey, true);
+    wrap.querySelector('.sv-dr-bg').addEventListener('click', () => fin(null));
+
+    const lineaVacia = l => !String(l.material).trim() && !String(l.cant).trim();
+    const faltantes = () => {
+      const f = [];
+      if (!editando && !st.doc.trim()) f.push('doc');   // (21-oct-2026, Jordan) N° de pedido obligatorio
+      if (!st.ofvta) f.push('ofvta');
+      if (!st.ruta) f.push('ruta');
+      if (!st.fecha) f.push('fecha');
+      if (!st.creado) f.push('creado');
+      if (!st.idCli.trim()) f.push('idCli');
+      if (!st.nomCli.trim()) f.push('nomCli');
+      st.lineas.forEach((l, i) => {
+        if (lineaVacia(l)) return;
+        if (!String(l.material).trim()) f.push('mat_' + i);
+        if (!(numVM(l.cant) > 0)) f.push('cant_' + i);
+        if (!(pesoLineaVM(l, mats).kg > 0)) f.push('peso_' + i);
+      });
+      return f;
+    };
+    const bad = k => st.err && faltantes().includes(k);
+    const lbl = (t, k, req) => `<label class="sv-flbl" style="display:block;margin-bottom:6px;${bad(k) ? 'color:#b5000b' : ''}">${t}${req ? ' *' : ''}</label>`;
+    const inp = (k, ph, extra = '') => `<label class="sv-inp" style="width:100%;box-sizing:border-box;min-width:0;${bad(k) ? 'border-color:#b5000b' : ''}"><input data-k="${k}" value="${escapeHtml(st[k])}" placeholder="${escapeHtml(ph || '')}" style="width:100%" ${extra}></label>`;
+    const tonLinea = l => { const c = numVM(l.cant); return c > 0 ? pesoLineaVM(l, mats).kg * c / 1000 : 0; };
+    const tonTotal = () => st.lineas.reduce((s, l) => s + tonLinea(l), 0);
+    const rutaSel = () => rutas.find(r => r.codigo === st.ruta) || null;
+    const destinos = () => { const ds = destinosPlan().slice(); if (st.ofvta && !ds.includes(st.ofvta)) ds.unshift(st.ofvta); return ds; };
+
+    const lineaHtml = (l, i) => {
+      const mp = mats.get(String(l.material).trim());
+      const pm = pesoLineaVM(l, mats);
+      const cel = (k, html) => `<td style="vertical-align:top;padding:6px 4px">${html}</td>`;
+      const box = (k, v, ph, extra = '') => `<input data-l="${i}" data-lk="${k}" value="${escapeHtml(v)}" placeholder="${escapeHtml(ph)}" ${extra} style="width:100%;box-sizing:border-box;border:1px solid ${bad(k + '_' + i) ? '#b5000b' : '#c5c7c9'};border-radius:6px;padding:5px 7px;font:inherit">`;
+      return `<tr>
+        ${cel('mat', `<div data-lmat="${i}" style="min-width:120px"></div>`)}
+        ${cel('nom', box('nombre', l.nombre, mp ? mp.nombre : 'Descripción'))}
+        ${cel('cant', box('cant', l.cant, '0', 'inputmode="decimal" style="text-align:right"'))}
+        ${cel('um', box('um', l.um, 'UN'))}
+        ${cel('peso', pm.maestro ? `<div class="sv-sub" style="margin:6px 0 0;white-space:nowrap" title="Peso del Maestro de Productos">${fmtNum(pm.kg, pm.kg % 1 ? 3 : 0)} kg · maestro</div>`
+          : box('peso', l.peso, 'kg / unidad', 'inputmode="decimal" style="text-align:right"'))}
+        <td class="r" data-lton="${i}" style="vertical-align:top;padding:10px 4px;white-space:nowrap">${fmtNum(tonLinea(l), 3)}</td>
+        <td style="vertical-align:top;padding:4px"><button class="sv-iconbtn" data-ldel="${i}" title="Quitar material" ${st.lineas.length === 1 ? 'disabled' : ''}><span class="material-symbols-outlined">delete</span></button></td></tr>`;
+    };
+
+    function draw() {
+      const falt = st.err ? faltantes() : [];
+      const rs = rutaSel();
+      const retira = rs && /RETIRA/i.test(`${rs.codigo} ${rs.destino}`);
+      panel.innerHTML = `
+        <div class="sv-dr-h"><div style="flex:1;min-width:0">
+          <div class="sv-dr-k">${editando ? 'Editar pedido de venta manual' : 'Agregar pedido de venta manual'}</div>
+          <div class="sv-dr-t">${escapeHtml(st.doc || 'Nuevo pedido')}</div>
+          <div class="sv-dr-s">Ventas CD (1003) · queda «Sin coordinar» hasta que lo coordines, igual que una NV de SAP</div></div>
+          <button class="sv-iconbtn" data-cx title="Cerrar (Esc)"><span class="material-symbols-outlined">close</span></button></div>
+        <div class="sv-dr-b" style="gap:18px">
+          ${falt.length ? '<div class="sv-note-box" style="background:#ffdad6;color:#93000a;font-weight:700">Completa los campos obligatorios marcados en rojo (cada material necesita cantidad y peso).</div>' : ''}
+          ${st.errMsg ? `<div class="sv-note-box" style="background:#ffdad6;color:#93000a;font-weight:700">${escapeHtml(st.errMsg)}</div>` : ''}
+          <div class="sv-card" style="padding:14px 16px;display:flex;flex-direction:column;gap:10px">
+            <div class="sv-b" style="font-size:14px">Pedido</div>
+            <div style="display:grid;grid-template-columns:1.3fr 1fr 1fr;gap:10px">
+              <div>${lbl('N° pedido de venta', 'doc', true)}
+                <label class="sv-inp" style="width:100%;box-sizing:border-box;min-width:0;${bad('doc') ? 'border-color:#b5000b' : ''}"><span class="material-symbols-outlined">tag</span><input class="is-mono" data-k="doc" value="${escapeHtml(st.doc)}" ${editando ? 'disabled' : ''} placeholder="N° pedido de venta" style="width:100%"></label></div>
+              <div>${lbl('Fecha de creación', 'creado', true)}
+                <label class="sv-inp" style="width:100%;box-sizing:border-box;min-width:0;${bad('creado') ? 'border-color:#b5000b' : ''}"><input type="date" data-k="creado" value="${escapeHtml(st.creado)}" style="width:100%"></label></div>
+              <div>${lbl('Fecha de entrega', 'fecha', true)}
+                <label class="sv-inp" style="width:100%;box-sizing:border-box;min-width:0;${bad('fecha') ? 'border-color:#b5000b' : ''}"><input type="date" data-k="fecha" value="${escapeHtml(st.fecha)}" style="width:100%"></label></div>
+            </div>
+            <div class="sv-sub" style="margin:-4px 0 0;max-width:none">${editando ? 'El N° de pedido no se puede cambiar.' : 'Usa el N° real del pedido: cuando SAP lo traiga en el SQVI, prima el de SAP y el manual deja de mostrarse.'}</div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+              <div>${lbl('Oficina de ventas (centro destino)', 'ofvta', true)}
+                <label class="sv-inp" style="width:100%;box-sizing:border-box;min-width:0;${bad('ofvta') ? 'border-color:#b5000b' : ''}"><span class="material-symbols-outlined">warehouse</span>
+                  <select data-k="ofvta" style="border:none;background:transparent;width:100%;font:inherit;outline:none">
+                    <option value="">Elegir…</option>${destinos().map(c => `<option value="${escapeHtml(c)}" ${st.ofvta === c ? 'selected' : ''}>${escapeHtml(c)} · ${escapeHtml(getNombreCentro(c))}</option>`).join('')}
+                  </select></label></div>
+              <div>${lbl('Condición de expedición', 'cond', false)}
+                <label class="sv-inp" style="width:100%;box-sizing:border-box;min-width:0"><span class="material-symbols-outlined">local_shipping</span>
+                  <select data-k="cond" style="border:none;background:transparent;width:100%;font:inherit;outline:none">
+                    <option value="">Sin informar</option>${[...new Set([st.cond, ...condOpts].filter(Boolean))].map(c => `<option value="${escapeHtml(c)}" ${st.cond === c ? 'selected' : ''}>${escapeHtml(c)}</option>`).join('')}
+                  </select></label></div>
+            </div>
+            <div>${lbl('Ruta (comuna de destino)', 'ruta', true)}<div data-bus="ruta"></div>
+              ${retira ? '<div class="sv-sub" style="margin:4px 0 0;color:#b45309;max-width:none">Ruta RETIRA: el cliente retira, no entra al Plan de Carga.</div>' : ''}</div>
+          </div>
+          <div class="sv-card" style="padding:14px 16px;display:flex;flex-direction:column;gap:10px">
+            <div class="sv-b" style="font-size:14px">Cliente y vendedor</div>
+            <div style="display:grid;grid-template-columns:1fr 2fr;gap:10px">
+              <div>${lbl('ID cliente (Solic.)', 'idCli', true)}<div data-combo="idCli"></div></div>
+              <div>${lbl('Nombre cliente', 'nomCli', true)}${inp('nomCli', 'Razón social')}</div>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 2fr;gap:10px">
+              <div>${lbl('ID vendedor', 'idVen', false)}<div data-combo="idVen"></div></div>
+              <div>${lbl('Nombre vendedor', 'nomVen', false)}${inp('nomVen', 'Nombre')}</div>
+            </div>
+          </div>
+          <div class="sv-card" style="padding:14px 16px;display:flex;flex-direction:column;gap:10px">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+              <div><div class="sv-b" style="font-size:14px">Materiales</div>
+                <div class="sv-sub" style="margin:0;max-width:none">El peso sale del Maestro de Productos; si el material no lo tiene, ingrésalo en kg por unidad.</div></div>
+              <span class="sv-pill info" data-vm-ton><i></i>${fmtNum(tonTotal(), 2)} t</span></div>
+            <div style="overflow:auto"><table class="sv-table" style="min-width:640px"><thead><tr><th>Material *</th><th>Descripción</th><th class="r">Cantidad *</th><th>UM</th><th>Peso *</th><th class="r">Ton</th><th></th></tr></thead>
+              <tbody>${st.lineas.map(lineaHtml).join('')}</tbody></table></div>
+            <div><button class="sv-btn" data-ladd><span class="material-symbols-outlined">add</span>Agregar material</button></div>
+          </div>
+          <div>${lbl('Observación', 'obs', false)}${inp('obs', 'Motivo del ingreso manual, referencia, etc.')}</div>
+        </div>
+        <div class="sv-dr-f"><span class="sv-dr-note">* Obligatorio · después de guardar usa «Coordinar despacho» para que entre al Plan de Carga</span>
+          <div style="display:flex;gap:8px"><button class="sv-btn" data-cx>Cancelar</button>
+          <button class="sv-btn-p" data-ok><span class="material-symbols-outlined">${editando ? 'save' : 'add_circle'}</span>${editando ? 'Guardar cambios' : 'Agregar pedido'}</button></div></div>`;
+
+      panel.querySelectorAll('[data-cx]').forEach(b => b.addEventListener('click', () => fin(null)));
+      panel.querySelectorAll('[data-k]').forEach(i => i.addEventListener(i.tagName === 'SELECT' || i.type === 'date' ? 'change' : 'input', () => { st[i.dataset.k] = i.value; }));
+      montarBuscador(panel.querySelector('[data-bus="ruta"]'), {
+        estado: st.busRuta, items: rutas, id: r => r.codigo, selId: st.ruta, invalid: bad('ruta'),
+        placeholder: 'Buscar ruta por código o comuna', vacio: 'Sin rutas en el maestro.',
+        texto: r => `${r.codigo} ${r.comuna} ${r.region} ${r.destino}`,
+        fila: r => `<span class="sv-mono" style="min-width:72px;color:#5c5f61">${escapeHtml(r.codigo)}</span><span style="flex:1;min-width:0"><b>${escapeHtml(r.comuna || r.destino || '—')}</b> <span class="sv-sub" style="display:inline;margin:0">${escapeHtml(r.region)}</span></span>`,
+        tarjeta: r => `<span class="material-symbols-outlined" style="color:#15803d">route</span><span style="flex:1;min-width:0"><b class="sv-mono">${escapeHtml(r.codigo)}</b> · ${escapeHtml(r.comuna || r.destino || '')} <span class="sv-sub" style="display:inline;margin:0">${escapeHtml(r.region)}</span></span>`,
+        onPick: r => { st.ruta = r.codigo; draw(); },
+      });
+      montarComboLibre(panel.querySelector('[data-combo="idCli"]'), {
+        items: clientes, valor: st.idCli, placeholder: 'ID o nombre', invalid: bad('idCli'),
+        texto: c => `${c.id_cliente} ${c.nombre || ''}`,
+        fila: c => `<span class="sv-mono">${escapeHtml(c.id_cliente)}</span> · ${escapeHtml(c.nombre || '')}`,
+        onPick: c => { st.idCli = String(c.id_cliente).trim(); if (c.nombre) st.nomCli = c.nombre; draw(); },
+        onInput: v => { st.idCli = v; const c = maestroCli.get(v.trim()); if (c && c.nombre) { st.nomCli = c.nombre; const n = panel.querySelector('[data-k="nomCli"]'); if (n) n.value = c.nombre; } },
+      });
+      montarComboLibre(panel.querySelector('[data-combo="idVen"]'), {
+        items: [...vend.entries()].map(([id, nombre]) => ({ id, nombre })), valor: st.idVen, placeholder: 'ID vendedor',
+        texto: x => `${x.id} ${x.nombre}`,
+        fila: x => `<span class="sv-mono">${escapeHtml(x.id)}</span>${x.nombre ? ' · ' + escapeHtml(x.nombre) : ''}`,
+        onPick: x => { st.idVen = x.id; if (x.nombre) st.nomVen = x.nombre; draw(); },
+        onInput: v => { st.idVen = v; const n = vend.get(v.trim()); if (n) { st.nomVen = n; const e = panel.querySelector('[data-k="nomVen"]'); if (e) e.value = n; } },
+      });
+      const refrescarTon = () => {
+        st.lineas.forEach((l, i) => { const td = panel.querySelector(`[data-lton="${i}"]`); if (td) td.textContent = fmtNum(tonLinea(l), 3); });
+        const p = panel.querySelector('[data-vm-ton]'); if (p) p.innerHTML = `<i></i>${fmtNum(tonTotal(), 2)} t`;
+      };
+      const itemsMat = [...mats.values()];
+      st.lineas.forEach((l, i) => montarComboLibre(panel.querySelector(`[data-lmat="${i}"]`), {
+        items: itemsMat, valor: l.material, placeholder: 'Código', invalid: bad('mat_' + i),
+        texto: m => `${m.id} ${m.nombre}`,
+        fila: m => `<span class="sv-mono">${escapeHtml(m.id)}</span> · ${escapeHtml(m.nombre)}`,
+        onPick: m => { l.material = m.id; l.nombre = m.nombre || l.nombre; draw(); },
+        onInput: v => { const antes = !!mats.get(String(l.material).trim()); l.material = v.trim(); const m = mats.get(l.material);
+          if (m && !String(l.nombre).trim()) { l.nombre = m.nombre; const e = panel.querySelector(`[data-l="${i}"][data-lk="nombre"]`); if (e) e.value = m.nombre; }
+          if (!!m !== antes) { draw(); setTimeout(() => { const e = panel.querySelector(`[data-lmat="${i}"] input`); if (e) { e.focus(); e.setSelectionRange(e.value.length, e.value.length); } }, 0); return; }
+          refrescarTon(); },
+      }));
+      panel.querySelectorAll('[data-l]').forEach(e => e.addEventListener('input', () => { st.lineas[+e.dataset.l][e.dataset.lk] = e.value; refrescarTon(); }));
+      panel.querySelectorAll('[data-ldel]').forEach(b => b.addEventListener('click', () => { if (st.lineas.length > 1) { st.lineas.splice(+b.dataset.ldel, 1); draw(); } }));
+      panel.querySelector('[data-ladd]').addEventListener('click', () => { st.lineas.push({ material: '', nombre: '', cant: '', um: '', peso: '' }); draw(); });
+      panel.querySelector('[data-ok]').addEventListener('click', async e => {
+        st.errMsg = '';
+        const lineas = st.lineas.filter(l => !lineaVacia(l));
+        if (!lineas.length) { st.err = true; st.errMsg = 'Agrega al menos un material.'; draw(); return; }
+        if (faltantes().length) { st.err = true; draw(); return; }
+        const dup = lineas.map(l => String(l.material).trim()).find((m, i, a) => a.indexOf(m) !== i);
+        if (dup) { st.errMsg = `El material ${dup} está repetido: suma las cantidades en una sola línea.`; draw(); return; }
+        const doc = editando ? String(cab.doc_ventas).trim() : st.doc.trim();
+        if (!editando && (docsSap.has(doc) || docsMan.has(doc))) { st.errMsg = `El pedido ${doc} ya existe en Ventas CD.`; draw(); return; }
+        if (st.fecha < st.creado && !(await confirmar(`La fecha de entrega (${fmtFechaISO(st.fecha)}) es anterior a la de creación (${fmtFechaISO(st.creado)}).\n\n¿Guardar igual?`, { aceptar: 'Guardar igual', icono: 'warning' }))) return;
+        const btn = e.currentTarget; btn.disabled = true;
+        const email = await getUserEmail(), now = new Date().toISOString();
+        const base = {
+          doc_ventas: doc, ofvta: st.ofvta, ruta: st.ruta, creado_el: st.creado, fe_entrega: st.fecha,
+          id_vendedor: st.idVen.trim() || null, nombre_vendedor: st.nomVen.trim() || null,
+          id_cliente: st.idCli.trim(), nombre_cliente: st.nomCli.trim() || null,
+          cond_expedicion: st.cond || null, observacion: st.obs.trim() || null, activo: true,
+          created_at: cab.created_at || now, created_by: cab.created_by || email,
+          updated_at: editando ? now : null, updated_by: editando ? email : null,
+        };
+        const rows = lineas.map((l, i) => {
+          const mp = mats.get(String(l.material).trim());
+          return { ...base, pos: String((i + 1) * 10).padStart(6, '0'), material: String(l.material).trim(),
+            denominacion: String(l.nombre).trim() || (mp && mp.nombre) || null, cantidad: numVM(l.cant), um: String(l.um).trim().toUpperCase() || null,
+            peso_unit_kg: numVM(l.peso) > 0 ? numVM(l.peso) : null };
+        });
+        if (editando) {
+          const { error: eD } = await supabase.from('abast_venta_manual').delete().eq('doc_ventas', doc);
+          if (eD) { showAlert('No se pudo actualizar el pedido: ' + eD.message, 'error'); btn.disabled = false; return; }
+        }
+        const { error } = await supabase.from('abast_venta_manual').insert(rows);
+        if (error) {
+          // Edición fallida: se reponen las posiciones originales para no perder el pedido.
+          if (editando) { const orig = existente.lineas.map(({ id, ...x }) => x); const { error: eR } = await supabase.from('abast_venta_manual').insert(orig); if (eR) console.error('No se pudo reponer el pedido manual', eR); }
+          showAlert('No se pudo guardar el pedido manual: ' + error.message, 'error'); btn.disabled = false; return;
+        }
+        // Cliente nuevo → queda en el maestro de clientes (no se pisan datos existentes).
+        if (!maestroCli.has(base.id_cliente) && base.nombre_cliente) {
+          const { error: eC } = await supabase.from('abast_maestro_clientes').upsert({ id_cliente: base.id_cliente, nombre: base.nombre_cliente, updated_at: now, updated_by: email }, { onConflict: 'id_cliente', ignoreDuplicates: true });
+          if (eC) console.warn('Maestro de clientes no actualizado:', eC.message);
+        }
+        clearRawCache();
+        showAlert(`Pedido manual ${doc} ${editando ? 'actualizado' : 'agregado'} · ${fmtNum(rows.reduce((s, r, i) => s + tonLinea(lineas[i]), 0), 2)} t`, 'success');
+        fin(doc);
       });
     }
     draw();
@@ -3444,6 +3734,7 @@ async function evaluarPrioridad(tipo, doc, aceptar) {
   showAlert(aceptar ? `${d} aceptado como PRIORIDAD de carga` : `Prioridad de ${d} rechazada`, aceptar ? 'success' : 'info');
   return true;
 }
+let PV_CTX_VENTAS = null;   // contexto vigente de la vista Ventas CD (21-oct-2026)
 const V2_DEPS = {
   // (9-oct-2026, Jordan) Ventas CD: NV coordinadas se mantienen en la vista durante el día.
   augmentRaw: async (vista, rows) => { if (vista === 'v_trc_sqvi_pedidos_venta_1003') await reponerVentasCoordinadas(rows); },
@@ -3656,8 +3947,8 @@ const V2 = {
     titulo: 'Ventas CD (1003)',
     desc: 'Pedidos de ventas con centro expedición CDRM. Sólo los pedidos coordinados entran al Plan de Carga del día de su fecha de entrega.',
     async preload() {
-      const [pvMap, ventasDirectoManual, feriadosRows, coordMap, maestro, horizRows] = await Promise.all([
-        pvRefMap(), loadVentasDirectoManual(), fetchAllRows('abast_feriados'), loadCoordinacionesVenta(), loadMaestroClientes(), fetchAllRows('abast_horizonte_centro')]);
+      const [pvMap, ventasDirectoManual, feriadosRows, coordMap, maestro, horizRows, manualMap] = await Promise.all([
+        pvRefMap(), loadVentasDirectoManual(), fetchAllRows('abast_feriados'), loadCoordinacionesVenta(), loadMaestroClientes(), fetchAllRows('abast_horizonte_centro'), loadVentasManual()]);
       const feriadosSet = new Set((feriadosRows || []).map(r => String(r.fecha ?? '').trim()).filter(Boolean));
       const horiz = {};
       (horizRows || []).filter(r => String(r.centro_origen ?? '').trim() === '1003')
@@ -3667,13 +3958,15 @@ const V2 = {
       let saldoDocs = new Set();
       try { const { data } = await supabase.from('v_abast_saldo_activo').select('documento,tipo_carga').limit(2000);
         saldoDocs = new Set((data || []).filter(x => /venta/i.test(String(x.tipo_carga ?? ''))).map(x => String(x.documento ?? '').trim())); } catch (_) { /* opcional */ }
-      return { pvMap, ventasDirectoManual, feriadosSet, coordMap, maestro, saldoDocs, diaHabil2: d2, diaObj: ce => (horiz[String(ce ?? '').trim()] === 48 ? d2 : d1) };
+      return { pvMap, ventasDirectoManual, feriadosSet, coordMap, maestro, saldoDocs, manualMap, diaHabil2: d2, diaObj: ce => (horiz[String(ce ?? '').trim()] === 48 ? d2 : d1) };
     },
     enrich(rows, ctx) {
       ctx._rowsByDoc = new Map(rows.map(r => [String(r.doc_ventas ?? '').trim(), r]));
+      PV_CTX_VENTAS = ctx;   // (21-oct-2026) para el botón «Agregar pedido manual» del encabezado
       rows.forEach(r => {
         const doc = String(r.doc_ventas ?? '').trim();
         const pv = ctx.pvMap[doc] || {};
+        r._nv_manual = (ctx.manualMap && ctx.manualMap.get(doc)) || null;   // (21-oct-2026) pedido agregado a mano
         r._id_cliente = String(r.solicitante ?? '').trim();   // columna "Solic." del SQVI (30-sep-2026)
         r._mc = (ctx.maestro && ctx.maestro.get(r._id_cliente)) || null;
         r._cliente = (r._mc && r._mc.nombre) || pv.nombre_1 || (r._coord && r._coord.nombre_cliente) || '';
@@ -3705,6 +3998,11 @@ const V2 = {
     search: { ph: 'Buscar pedido o cliente', of: r => `${r.doc_ventas} ${r._cliente} ${r._id_cliente} ${r._vendedor} ${(r._coord && r._coord.n_entrega) || ''}` },
     docSearch: null,
     fecha: { label: 'Entrega', of: r => r._fecha_plan },
+    // (21-oct-2026, Jordan) OWNER y Planner Distribución agregan pedidos de venta a mano y los coordinan.
+    headBtns: [{ label: 'Agregar pedido manual', icon: 'add_circle', perm: 'venta_manual', run: async () => {
+      const doc = await showVentaManualModal(PV_CTX_VENTAS || {});
+      return doc ? { abrir: doc } : false;
+    } }],
     kpis: [
       { key: 'all', label: 'Pedidos', color: C_INK, sub: 'pendientes con ruta' },
       { key: 'sc', label: 'Sin coordinar', color: C_ORANGE, sub: 'no entran al plan', fn: r => !r._coord && !r._cargada },
@@ -3712,10 +4010,11 @@ const V2 = {
       { key: 'pl', label: 'En plan de carga', color: C_BLUE, sub: 'pedidos coordinados', fn: r => !!r._coord && !r._cargada },
       { key: 'cg', label: 'COORDINADO', color: C_SEC, sub: 'en camión programado · bloqueado', fn: r => !!r._cargada },
       { key: 'cd', label: 'CD-Cliente', color: '#7e22ce', sub: 'cliente ≥ 23,8 t o definido', fn: r => !!r._directo },
+      { key: 'mn', label: 'Manuales', color: '#0f766e', sub: 'agregados en la plataforma', fn: r => !!r._nv_manual },
       { key: 'at', label: 'Atrasados', color: C_RED, sub: 'fecha de entrega vencida', fn: r => r._al.k === 'Atrasado' },
     ],
     cols: [
-      { label: 'Pedido', html: r => mono(r.doc_ventas, r.creado_el ? 'creado ' + r.creado_el : '') },
+      { label: 'Pedido', html: r => mono(r.doc_ventas, r.creado_el ? 'creado ' + r.creado_el : '') + (r._nv_manual ? `<div style="margin-top:4px" title="Pedido agregado a mano por ${escV2(r._nv_manual.cab.created_by || '')}">${pill('Manual', 'warn')}</div>` : '') },
       { label: 'Cliente', html: r => txt(r._cliente || (r._id_cliente ? 'ID ' + r._id_cliente : '—'), [r._cliente && r._id_cliente ? 'ID ' + r._id_cliente : '', r._vendedor].filter(Boolean).join(' · '), true) },
       { label: 'Destino', html: r => sucHtml(r.ofvta) + (r._ce_alt && r._ce_alt !== String(r.ofvta ?? '').trim() ? `<div style="margin-top:4px" title="Centro alternativo: computa en el Plan de Carga de ${escV2(nombreCentro(r._ce_alt) || r._ce_alt)}">${pill('Plan → ' + (nombreCentro(r._ce_alt) || r._ce_alt), 'purple')}</div>` : '') },
       { label: 'Tipo entrega', html: r => pill(r._directo ? 'CD-Cliente' : 'Consolidable', r._directo ? 'purple' : 'info')
@@ -3755,7 +4054,9 @@ const V2 = {
         : r._plan === 'PROGRAMADO' ? `<b>Plan de carga:</b> pedido coordinado para el ${escV2(r._fecha_plan)}; entrará al plan cuyo día objetivo sea esa fecha.`
         : '<b>Plan de carga:</b> sin coordinar, no se considera. Usa «Coordinar despacho» para confirmar la fecha de entrega.';
       const acciones = [];
-      if (!k && can('coordinar_venta')) {
+      // (21-oct-2026) Un pedido manual también lo coordina quien puede agregarlos (Planner Distribución).
+      const puedeCoordV = can('coordinar_venta') || (!!r._nv_manual && can('venta_manual'));
+      if (!k && puedeCoordV) {
         acciones.push({ label: c ? 'Editar coordinación' : 'Coordinar despacho', icon: 'event_available', primary: true,
           run: async (row, ctx) => ((await showCoordVentaModal(row, ctx)) ? { recargar: true } : null) });
         if (c) acciones.push({ label: 'Anular coordinación', icon: 'event_busy', run: async row => {
@@ -3767,11 +4068,25 @@ const V2 = {
         if (!await confirmar(`¿Quitar el tipo de entrega manual del pedido ${row.doc_ventas}?\n\nVuelve a evaluarse con la regla de 23,8 t por cliente.`)) return null;
         return (await setVentaDirectoManual(row.doc_ventas, null)) ? (showAlert('Pedido vuelve a la regla automática', 'success'), { recargar: true }) : null;
       } });
+      if (!k && r._nv_manual && can('venta_manual')) {
+        acciones.push({ label: 'Editar pedido manual', icon: 'edit_note', run: async (row, ctx2) => ((await showVentaManualModal(ctx2 || PV_CTX_VENTAS || {}, row._nv_manual)) ? { recargar: true } : null) });
+        acciones.push({ label: 'Eliminar pedido manual', icon: 'delete', run: async row => {
+          if (!await confirmar(`¿Eliminar el pedido manual ${row.doc_ventas}?${row._coord ? '\n\nTambién se anula su coordinación y sale del Plan de Carga.' : ''}`, { aceptar: 'Eliminar', tono: 'peligro', icono: 'delete' })) return null;
+          if (row._coord && !(await anularCoordinacionVenta(row.doc_ventas))) return null;
+          if (!(await eliminarVentaManual(row.doc_ventas))) return null;
+          clearRawCache();
+          showAlert(`Pedido manual ${row.doc_ventas} eliminado`, 'success');
+          return { recargar: true };
+        } });
+      }
+      const vm = r._nv_manual && r._nv_manual.cab;
       return {
-        kind: 'Pedido de venta · CE CDRM', title: r.doc_ventas,
+        kind: vm ? 'Pedido de venta MANUAL · CE CDRM' : 'Pedido de venta · CE CDRM', title: r.doc_ventas,
         sub: `${r._cliente || (r._id_cliente ? 'Cliente ID ' + r._id_cliente : 'Cliente sin identificar')} → ${nombreCentro(r.ofvta) || r.ofvta}`,
         aviso,
         kv: [
+          vm ? ['Origen', `Pedido manual · ${vm.created_by || ''}${vm.created_at ? ' · ' + horaChile(vm.created_at) : ''}${vm.updated_by ? ' · editado por ' + vm.updated_by : ''}`] : null,
+          vm && vm.observacion ? ['Observación', vm.observacion] : null,
           ['Tipo de entrega', `${tipoLbl(r._tipo_entrega)} · ${origenLbl}`], ['Regla automática', reglaLbl],
           ['Estado', k ? pill('COORDINADO', 'info') : c ? pill('Pedido Coordinado', 'ok') : pill('Sin coordinar', 'mute'), true],
           ['Fecha entrega', c ? `${r._fecha_plan} (confirmada)` : `${r.fe_entrega || '—'} (SAP, por confirmar)`],
@@ -5384,11 +5699,11 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610210953');
+    const m = await import('./ind-plan-carga.js?v=202610212022');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (currentSub === 'control_diferencias') {  // (11-oct-2026) Control de Diferencias del Plan de Carga
-    const m = await import('./control-diferencias.js?v=202610210953');
+    const m = await import('./control-diferencias.js?v=202610212022');
     await m.renderControlDiferencias(stage);
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);

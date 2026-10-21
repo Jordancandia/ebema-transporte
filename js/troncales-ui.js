@@ -32,8 +32,8 @@ export function tonHtml(n) {
 }
 
 // Encabezado del shell: fecha y hora de la última actualización SAP de la vista
-import { confirmar } from './confirmar.js?v=202610210953';
-import { comentariosHabilitados, conteosComentarios, celdaComentarios, montarHilo, tomarFoco, abrirHiloSuelto } from './comentarios.js?v=202610210953';
+import { confirmar } from './confirmar.js?v=202610212022';
+import { comentariosHabilitados, conteosComentarios, celdaComentarios, montarHilo, tomarFoco, abrirHiloSuelto } from './comentarios.js?v=202610212022';
 export function setUltimaActualizacion(ts) {
   const el = document.getElementById('sv-upd');
   if (!el) return;
@@ -498,7 +498,8 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
     stage.querySelectorAll('[data-hbtn]').forEach(b => b.addEventListener('click', async () => {
       const hb = headBtns()[+b.dataset.hbtn]; if (!hb) return;
       b.disabled = true;
-      try { if (await hb.run()) { deps.clearRawCache(); renderTablaV2(stage, cfg, deps, viewKey); return; } } finally { b.disabled = false; }
+      // (21-oct-2026) run() puede devolver { abrir: rowId } para reabrir el detalle de esa fila tras recargar.
+      try { const res = await hb.run(); if (res) { if (res.abrir) st._reopen = String(res.abrir); deps.clearRawCache(); renderTablaV2(stage, cfg, deps, viewKey); return; } } finally { b.disabled = false; }
     }));
     stage.querySelector('[data-csv]')?.addEventListener('click', () => deps.exportarCSV(active, filt));
     const accFila = (sel, fn) => stage.querySelectorAll(sel).forEach(b => b.addEventListener('click', async e => {
