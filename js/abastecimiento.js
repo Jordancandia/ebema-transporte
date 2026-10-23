@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610231457';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610231457';
-import { getDatabase } from './data.js?v=202610231457';
+import { supabase } from './supabase-client.js?v=202610231507';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610231507';
+import { getDatabase } from './data.js?v=202610231507';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610231457';
-import { confirmar, pedirDato } from './confirmar.js?v=202610231457';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610231507';
+import { confirmar, pedirDato } from './confirmar.js?v=202610231507';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -5612,9 +5612,13 @@ function v2ModoEntregas(tipo) {
           r._cd_hoy = !!(f && ctx.diaObj && f.getTime() <= ctx.diaObj(r.ce).getTime());
         }
       });
-      if (esTr) aplicarEstadoPlanTraslados(rows, ctx.estadoPlan);
+      if (esTr) { marcarAjusteUnidades(rows, ctx.ajU); aplicarEstadoPlanTraslados(rows, ctx.estadoPlan); }
     },
-    async onPlanChange(rows, ctx) { if (esTr) { ctx.estadoPlan = await estadoPlanTraslados(); aplicarEstadoPlanTraslados(rows, ctx.estadoPlan); } },
+    async onPlanChange(rows, ctx) { if (esTr) {
+      const [ep, aj] = await Promise.all([estadoPlanTraslados(), loadAjustesUnidades()]);
+      ctx.estadoPlan = ep; ctx.ajU = mapaAjustesUnidades(aj);
+      marcarAjusteUnidades(rows, ctx.ajU); aplicarEstadoPlanTraslados(rows, ctx.estadoPlan);
+    } },
     rowId: r => `${r.entrega}|${r.pos_entrega}`,
     chip: { label: 'Destino', of: r => String(r.ce ?? '').trim() || 'Sin destino', name: v => nombreCentro(v) || v },
     docSearch: { ph: 'N° entrega o pedido', of: r => `${r.entrega} ${r.doc_compr}` },
@@ -5634,7 +5638,8 @@ function v2ModoEntregas(tipo) {
       { label: 'Pedido', html: r => mono(r.doc_compr, r.pos ? 'pos ' + r.pos : '') },
       { label: 'Destino', html: r => r.ce ? sucHtml(r.ce) + (r.destino_inferido ? '<div class="sv-sub" title="El reporte no trae Destinat.; se dedujo del pedido">deducido</div>' : '') : pill('Sin destino', 'bad') },
       { label: 'Material', html: r => matHtml(r.material, r.texto_breve) },
-      { label: 'Cantidad', al: 'r', html: r => mono(fmtNum(Number(r.cantidad) || 0, (Number(r.cantidad) % 1) ? 2 : 0)) + (r.um ? ` <span class="sv-muted">${escV2(r.um)}</span>` : '') },
+      { label: 'Cantidad', al: 'r', html: r => mono(fmtNum(Number(r.cantidad) || 0, (Number(r.cantidad) % 1) ? 2 : 0)) + (r.um ? ` <span class="sv-muted">${escV2(r.um)}</span>` : '')
+          + (r._ajU != null ? `<div class="sv-sub" style="color:#7e22ce;font-weight:700" title="Ajuste de unidades a cargar hoy (pedido + material)">${escV2(fmtNum(r._ajU, r._ajU % 1 ? 2 : 0))} a cargar hoy</div>` : '') },
       { label: 'Ton', al: 'r', html: r => `<span class="sv-ton">${tonHtml(r._ton_num)}</span>` + (r.kg_bruto == null && r.kg_vol == null ? '<div class="sv-sub" style="color:#b5000b">sin peso</div>' : '') },
       { label: 'Creación', html: r => mono(r.fecha_txt, r.origen_carga === 'MANUAL' ? 'Excel' : 'correo SAP') },
     ],
@@ -5669,6 +5674,16 @@ function v2ModoEntregas(tipo) {
           return (await anularCoordTraslados([row.doc_compr])) ? (showAlert('Pedido vuelve a Consolidable', 'success'), { recargar: true }) : null;
         } });
       }
+      // (23-oct-2026, Jordan) Cargar sólo parte del pedido hoy (p. ej. completar el camión CD con fierro).
+      if (esTr && can('incluir_plan') && r.ce && !r._dup && r._plan !== 'EXCLUIDO') {
+        acciones.push({ label: r._ajU != null ? 'Editar unidades a cargar hoy' : 'Ajustar unidades a cargar hoy', icon: 'tune', primary: true,
+          run: async (row, ctx) => ((await ajustarUnidadesTraslado(row, ctx)) ? { recargar: true } : null) });
+        if (r._ajU != null) acciones.push({ label: 'Quitar ajuste de unidades', icon: 'undo', run: async row => {
+          if (!await confirmar(`¿Quitar el ajuste de unidades del material ${row.material} (pedido ${row.doc_compr})?\n\nVuelve a cargarse todo lo disponible.`)) return null;
+          if (!(await quitarAjusteUnidades(row.doc_compr, row.material))) return null;
+          showAlert('Ajuste de unidades quitado', 'success'); return { recargar: true };
+        } });
+      }
       if (can('ajustar_plan')) acciones.push({ label: 'Descartar entrega', icon: 'block', run: async row => {
         if (!await confirmar(`¿Descartar la entrega ${row.entrega}?\n\nDeja de considerarse disponible para cargar y deja de descontarse del pedido ${row.doc_compr}. Úsalo si la entrega se anuló en SAP.`)) return null;
         const { error } = await supabase.rpc('fn_abast_descartar_entrega', { p_entrega: String(row.entrega) });
@@ -5683,6 +5698,7 @@ function v2ModoEntregas(tipo) {
           ['Entrega', `${r.entrega} · pos ${String(r.pos_entrega || '').replace(/^0+/, '')}`], ['Pedido (doc. modelo)', `${r.doc_compr} · pos ${r.pos || '—'}`],
           ['Centro expedición', r.cesu], ['Centro destino', r.ce ? `${r.ce}${nombreCentro(r.ce) ? ' · ' + nombreCentro(r.ce) : ''}${r.destino_inferido ? ' (deducido del pedido)' : ''}` : 'Sin destino'],
           ['Material', `${r.material} · ${r.texto_breve || ''}`], ['Cantidad', `${fmtNum(Number(r.cantidad) || 0, 2)} ${r.um || ''}`.trim()],
+          r._ajU != null ? ['Unidades a cargar hoy', `${fmtNum(r._ajU, r._ajU % 1 ? 2 : 0)} de ${fmtNum(r._ajPend, r._ajPend % 1 ? 2 : 0)} (${fmtNum(r._ajPend > 0 ? r._ajTon * r._ajU / r._ajPend : 0, 2)} t) · ajuste del pedido + material`] : null,
           ['Peso bruto unitario', r.kg_bruto != null ? `${fmtNum(Number(r.kg_bruto), 3)} kg` : '—'], ['Peso volumétrico unitario', r.kg_vol != null ? `${fmtNum(Number(r.kg_vol), 3)} kg` : '—'],
           ['Toneladas', tonHtml(r._ton_num), true], ['Fecha creación', r.fecha_txt], ['Creada por', r.creado_por_entrega],
           ['Usuario pedido', r.creado_por_pedido || '—'], ['Fecha entrega SAP (pedido)', r.fecha_sap || '—'],
@@ -5740,11 +5756,11 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610231457');
+    const m = await import('./ind-plan-carga.js?v=202610231507');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (currentSub === 'control_diferencias') {  // (11-oct-2026) Control de Diferencias del Plan de Carga
-    const m = await import('./control-diferencias.js?v=202610231457');
+    const m = await import('./control-diferencias.js?v=202610231507');
     await m.renderControlDiferencias(stage);
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
@@ -6106,11 +6122,13 @@ const PLAN_LINEA_V2 = {
   FUERA:        ['No considerada', 'mute'],
   SIN_ENTREGA:  ['Sin entrega', 'mute'],
 };
+// Cantidad de una fila: pendientes (texto SAP ctd_confirmada) o entregas (numérico `cantidad`).
+const cantFilaTr = x => (x.ctd_confirmada === undefined && x.ctd_pedido === undefined) ? (Number(x.cantidad) || 0) : parseNum(x.ctd_confirmada ?? x.ctd_pedido);
 // (23-oct-2026, Jordan) Marca en las filas de Pedidos de Traslados el ajuste de unidades de hoy (pedido + material).
 function marcarAjusteUnidades(rows, ajU) {
   const tot = new Map();
   (rows || []).forEach(r => { const k = `${String(r.ce ?? '').trim()}|${_keyInc(r.doc_compr, r.material)}`; const t = tot.get(k) || { pend: 0, ton: 0 };
-    t.pend += parseNum(r.ctd_confirmada ?? r.ctd_pedido); t.ton += r._ton_num || 0; tot.set(k, t); });
+    t.pend += cantFilaTr(r); t.ton += r._ton_num || 0; tot.set(k, t); });
   (rows || []).forEach(r => {
     const kl = _keyInc(r.doc_compr, r.material), t = tot.get(`${String(r.ce ?? '').trim()}|${kl}`) || { pend: 0, ton: 0 };
     r._ajU = ajU && ajU.has(kl) ? ajU.get(kl) : null; r._ajPend = t.pend; r._ajTon = t.ton;
@@ -6119,7 +6137,7 @@ function marcarAjusteUnidades(rows, ajU) {
 async function ajustarUnidadesTraslado(row, ctx) {
   const kl = _keyInc(row.doc_compr, row.material);
   const filas = ((ctx && ctx._rows) || [row]).filter(x => _keyInc(x.doc_compr, x.material) === kl && String(x.ce ?? '').trim() === String(row.ce ?? '').trim());
-  const pend = filas.reduce((s, x) => s + parseNum(x.ctd_confirmada ?? x.ctd_pedido), 0);
+  const pend = filas.reduce((s, x) => s + cantFilaTr(x), 0);
   const ton = filas.reduce((s, x) => s + (x._ton_num || 0), 0);
   const tonU = pend > 0 ? ton / pend : 0;
   const c = row._plan_centro;
