@@ -94,6 +94,7 @@ const CHAIN = {
     ['Análisis', [['historico', 'Histórico'], ['consolidacion', 'Consolidación'], ['densidad', 'Densidad'], ['especiales', 'Frecuencia'], ['cluster', 'Cluster']]],
     ['Tarifa por kilo', [['zfmp', '$/Kg (ZFMP)']]],
     ['Tarifa por pedido', [['zfmi', 'Min/Max (ZFMI)']]],
+    ['Tarifa retiro', [['retiro', 'Retiro Retorno']]],
   ],
 };
 const TAB = { transporte: 'tarifas-transporte', clientes: 'tarifas-clientes' };

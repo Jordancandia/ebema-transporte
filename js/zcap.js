@@ -2,13 +2,19 @@
 // Regional:       ZCAP = Costo Base + km × Tarifa/KM
 // Interregional:  ZCAP = item10_costoRutaTotal (motor completo)
 // Troncales:      ZCAP = motor completo para rutas definidas por el usuario
-import { getDatabase, saveDatabase, getTariffConfig, truckCapKg, getOrigenGroups, TRUCK_BASE_TYPES } from './data.js?v=202610231250';
-import { calcularCostoRuta } from './tarifas-engine.js?v=202610231250';
+import { getDatabase, saveDatabase, getTariffConfig, truckCapKg, getOrigenGroups, TRUCK_BASE_TYPES } from './data.js?v=202610231422';
+import { calcularCostoRuta } from './tarifas-engine.js?v=202610231422';
 import { showAlert } from './utils.js';
-import { can } from './permisos.js?v=202610231250';
-import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, textoImpacto, setParamPill, usuarioSesion, clasifPill, clasifTarifa, carPill } from './tarifas-ui.js?v=202610231250';
+import { can } from './permisos.js?v=202610231422';
+import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, textoImpacto, setParamPill, usuarioSesion, clasifPill, clasifTarifa, carPill } from './tarifas-ui.js?v=202610231422';
 
-const TRUCK_ORDER = ['Camión 5 Ton', 'Camión 10 Ton', 'Camión 15 Ton', 'Camión 28 Ton'];
+const TRUCK_ORDER = ['Camión 2 Ton', 'Camión 5 Ton', 'Camión 10 Ton', 'Camión 15 Ton', 'Camión 28 Ton'];
+
+// (23-oct-2026, Jordan) Camión 2 Ton habilitable en Tarifas por Camión: sin Motor de
+// Costos, su ZCAP sólo existe en rutas Regionales (b + c + máx(0, KM − a) × tarifa).
+// Alimenta Tarifas Rutas, Min/Max/Express y Retiro Retorno; NO entra a $/Kg, al
+// camión mínimo ni al Cotizador (buildZcapMap lo excluye salvo { incluir2t: true }).
+export const es2Ton = t => truckCapKg(t && typeof t === 'object' ? t.type : t) === 2000;
 
 // Grupos que comparten configuración de Tarifas por Camión con otro grupo.
 // La clave es el grupo origen de la ruta; el valor es el grupo cuya config se usa.
@@ -22,6 +28,23 @@ const GRUPO_TARIFF_SOURCE = {
 
 
 // ── Cálculo ZCAP ───────────────────────────────────────────────────────────
+// Componentes de la tarifa regional de un camión (Tarifas por Camión):
+//   a = KM base · b = Costo base (baseKM) · c = T. base KM (baseRate) · rate = tarifa km ajustada
+// (normal, o especial si la ruta es ISLA/EXTREMA). Lo usan el ZCAP regional y Retiro Retorno.
+export function componentesRegional(ruta, truck) {
+  const num = v => (v === null || v === undefined || v === '' ? null : Number(v));
+  const defaultBase = TRUCK_BASE_TYPES.find(b => b.type === truck.type)?.baseRate || 0;
+  const isExtrema = ['ISLA', 'EXTREMA'].includes((ruta.caracteristica || '').toUpperCase());
+  const rateNorm = num(truck.rateAjustNorm) || num(truck.ratePerKm) || 0;
+  return {
+    a: num(truck.Kmbase) ?? 0,
+    b: num(truck.baseKM) ?? 0,
+    c: num(truck.baseRate) ?? defaultBase,
+    rate: isExtrema ? (num(truck.rateAjustEsp) || num(truck.ratePerKmExtrema) || rateNorm) : rateNorm,
+    especial: isExtrema,
+  };
+}
+
 export function calcZcapRow(db, cfg, ruta, truck, troncalesSet) {
   const km        = Number(ruta.km) || 0;
   const esTroncal = troncalesSet.has(ruta.codigo);
@@ -78,6 +101,7 @@ function combosRuta(db, cfg, grupos, ruta, troncalesSet) {
   let trucks = (db.truckTypes || [])
     .filter(t => t.Id_centro === tariffGrupo.repId)
     .sort((a, b) => TRUCK_ORDER.indexOf(a.type) - TRUCK_ORDER.indexOf(b.type));
+  if (troncalesSet.has(ruta.codigo) || ruta.clasificRuta !== 'Regional') trucks = trucks.filter(t => !es2Ton(t));
   if (troncalesSet.has(ruta.codigo)) {
     const excluidas = new Set(cfg.variables?.troncalesExcluidas || []);
     trucks = trucks.filter(t => !excluidas.has(ruta.codigo + '||' + t.type));
@@ -87,7 +111,7 @@ function combosRuta(db, cfg, grupos, ruta, troncalesSet) {
 
 // ── Mapa ZCAP: "rutaCodigo||truckType" → { zcap (vigente), zcapCalculado, manual, truck, ruta }
 // Usado por Tarifas $/Kg, Min/Max y el Cotizador para leer el mismo valor sin recalcular.
-export function buildZcapMap(db, cfg) {
+export function buildZcapMap(db, cfg, { incluir2t = false } = {}) {
   const grupos       = getOrigenGroups(db);
   // Fix 27-sep-2026: la lista de troncales se guarda en troncalesRoutes.
   const troncalesSet = new Set(cfg.variables?.troncalesRoutes || []);
@@ -97,6 +121,7 @@ export function buildZcapMap(db, cfg) {
     const c = combosRuta(db, cfg, grupos, ruta, troncalesSet);
     if (!c) return;
     c.trucks.forEach(truck => {
+      if (!incluir2t && es2Ton(truck)) return;
       const key  = zcapKey(ruta, truck);
       const calc = calcZcapRow(db, cfg, ruta, truck, troncalesSet);
       const man  = zcapManualValor(cfg, key);

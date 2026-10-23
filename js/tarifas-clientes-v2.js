@@ -2,7 +2,7 @@
 // TARIFAS CLIENTES — rediseño v2 (30-sep-2026)
 // ----------------------------------------------------------------------------
 // Histórico (6M) · Consolidación · Densidad Logística · Frecuencia y Especiales
-// · Cluster · Tarifas $/Kg (ZFMP) · Tarifa Min/Max (ZFMI).
+// · Cluster · Tarifas $/Kg (ZFMP) · Tarifa Min/Max (ZFMI) · Retiro Retorno.
 //
 // Los cálculos son los mismos de tarifas-clientes.js (se reciben por `ctx`):
 //   ZFMP        = ZCAP ÷ (capacidad × objetivo de consolidación del centro/camión)
@@ -15,11 +15,11 @@
 // tarifas a clientes y «Guardar y recalcular» escribe sólo client_tariff_config
 // (syncOnly) y, si cambió la asignación de clusters, cluster_rutas por centro.
 // ============================================================================
-import { saveDatabase, getOrigenGroups } from './data.js?v=202610231250';
-import { buildZcapMap } from './zcap.js?v=202610231250';
+import { saveDatabase, getOrigenGroups } from './data.js?v=202610231422';
+import { buildZcapMap, es2Ton, componentesRegional } from './zcap.js?v=202610231422';
 import { showAlert } from './utils.js';
-import { can } from './permisos.js?v=202610231250';
-import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, setParamPill, clasifPill, clasifTarifa, pillHtml } from './tarifas-ui.js?v=202610231250';
+import { can } from './permisos.js?v=202610231422';
+import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, setParamPill, clasifPill, clasifTarifa, pillHtml } from './tarifas-ui.js?v=202610231422';
 
 const CAPS = [5, 10, 15, 28];
 const CAP_LBL = { 5: '5 t', 10: '10 t', 15: '15 t', 28: '28 t' };
@@ -37,6 +37,7 @@ function partes(c) {
     recargoExclusividad: (c.especiales || {}).recargoExclusividad || {},
     comunaCluster: c.comunaCluster || {},
     camion2t: c.camion2t || {},
+    retiroRetorno: c.retiroRetorno || {},
   };
 }
 function initDraft(ccfg) {
@@ -48,6 +49,7 @@ function initDraft(ccfg) {
 function base() { return JSON.parse(CC.baseJson); }
 function ccEff(ccfg, w = CC.work) {
   return { ...ccfg, clusters: w.clusters, consolidacionObjetivo: w.consolidacionObjetivo, comunaCluster: w.comunaCluster, camion2t: w.camion2t || {},
+    retiroRetorno: w.retiroRetorno || {},
     especiales: { ...(ccfg.especiales || {}), recargoExclusividad: w.recargoExclusividad } };
 }
 function hojas(o, p = '', out = {}) {
@@ -73,6 +75,7 @@ function contarCambios(db) {
   n += diffHojas(b.consolidacionObjetivo, w.consolidacionObjetivo);
   n += diffHojas(b.recargoExclusividad, w.recargoExclusividad);
   n += diffHojas(b.camion2t || {}, w.camion2t || {});
+  n += diffHojas(b.retiroRetorno || {}, w.retiroRetorno || {});
   n += rutasReasignadas(db).length;
   return n;
 }
@@ -84,7 +87,7 @@ function asignarCluster(ruta, key) {
 
 // ── Cálculo de tarifas a clientes (misma lógica que las vistas PRD) ────────
 function zcapVivo(ctx) {
-  if (!CC.zmap) CC.zmap = buildZcapMap(ctx.db, ctx.cfg);
+  if (!CC.zmap) CC.zmap = buildZcapMap(ctx.db, ctx.cfg, { incluir2t: true });
   return CC.zmap;
 }
 function capKgDe(truck) {
@@ -113,9 +116,58 @@ export function costoRuta2t(ccfgX, grupo, km) {
   if (!c.activo) return null;
   return Math.max(num(km) * c.valorKm, c.costoMin);
 }
+// ── Tarifas Retiro Retorno (23-oct-2026, Jordan) ─────────────────────────────
+// Rutas Regionales (Comuna o Sector) de cada centro × camiones habilitados:
+//   28 t        → costo íntegro de la ruta (ZCAP vigente)
+//   2 a 15 t, centro CON T. base KM (c > 0, ej. Santiago 1000/1003/1005):
+//                 KM ≤ a: 50% × (b + c) · KM > a: b + 50% × (KM − a) × tarifa km
+//   2 a 15 t, centro SIN T. base KM (c = 0, regiones): 50% × KM × tarifa km
+//                 y nunca bajo el mínimo del centro (client_tariff_config.data.retiroRetorno)
+// a, b, c y tarifa km son los de Tarifas por Camión (los mismos del ZCAP regional).
+const RR_PCT = 0.5;
+function minimoRetiro(ccfgX, grupo) {
+  const t = ccfgX.retiroRetorno || {};
+  const v = t[String(grupo).replace(/\s/g, '_')] ?? t[grupo];
+  return num(v && typeof v === 'object' ? v.minimo : v);
+}
+function calcRetiro(ctx, ccfgX, zOver = null) {
+  const zmap = zcapVivo(ctx);
+  const troncales = new Set(ctx.cfg.variables?.troncalesRoutes || []);
+  const rows = [];
+  zmap.forEach((v, key) => {
+    const { truck, ruta } = v;
+    const tipo = String(ruta.tipo || '').toLowerCase();
+    if (ruta.clasificRuta !== 'Regional' || troncales.has(ruta.codigo) || (tipo !== 'comuna' && tipo !== 'sector')) return;
+    const zcap = num(zOver && zOver.has(key) ? zOver.get(key) : v.zcap);
+    if (!(zcap > 0)) return;                                   // camión sin tarifa configurada
+    const capKg = capKgDe(truck), grupo = ruta.origen_grupo || '', km = num(ruta.km);
+    const k = componentesRegional(ruta, truck);
+    const minimo = minimoRetiro(ccfgX, grupo);
+    let calc, retiro, regla;
+    if (capKg >= 28000) { calc = zcap; retiro = zcap; regla = 'Ruta íntegra'; }
+    else {
+      // (23-oct-2026, Jordan) Sólo los centros con T. base KM (c) usan KM base y costo base;
+      // sin c, el retiro es el 50% del costo de los km de la ruta.
+      const conBase = k.c > 0;
+      const bajoBase = conBase && km <= k.a;
+      calc = !conBase ? RR_PCT * km * k.rate
+        : bajoBase ? RR_PCT * (k.b + k.c) : k.b + RR_PCT * (km - k.a) * k.rate;
+      retiro = Math.max(calc, minimo);
+      regla = retiro > calc ? 'Mínimo centro' : (!conBase ? '50% km ruta' : bajoBase ? 'Bajo KM base' : 'Sobre KM base');
+    }
+    rows.push({ key, ruta, truck, grupo, capKg, km, zcap, ...k, calc, minimo: capKg >= 28000 ? null : minimo, retiro, regla,
+      cod: ruta.codigo || String(ruta.id || ''), tipoRuta: tipo === 'sector' ? 'Sector' : 'Comuna' });
+  });
+  return rows;
+}
+
 // Devuelve una fila por ruta × camión con todas las tarifas. zOver: Map key → zcap (foto)
 function calcTarifas(ctx, ccfgX, zOver = null) {
-  const zmap = zcapVivo(ctx);
+  const zmapAll = zcapVivo(ctx);
+  // Camión 2 Ton de Tarifas por Camión (23-oct-2026): fuera de $/Kg y del camión mínimo
+  const zmap = new Map([...zmapAll].filter(([, v]) => !es2Ton(v.truck)));
+  const z2t = new Map();
+  zmapAll.forEach((v, key) => { if (es2Ton(v.truck)) z2t.set(v.ruta.codigo || String(v.ruta.id || ''), { key, v }); });
   const opMap = ctx.computeOpClusterMap(ctx.db, ccfgX);
   const { partPct, resolveGrupoKey } = ctx.computeConsolidacionStats();
   const minCap = new Map();
@@ -181,14 +233,18 @@ function calcTarifas(ctx, ccfgX, zOver = null) {
     centro.set(cod, t > 0 ? t : null);
   });
   rows.forEach(r => { r.kgCentro = centro.get(r.cod) ?? null; });
-  // Camión 2 Ton: una fila por ruta de los centros con el camión activo
+  // Camión 2 Ton: una fila por ruta de los centros con el camión activo.
+  // (23-oct-2026) Si el centro lo tiene en Tarifas por Camión, el costo ruta es su ZCAP
+  // (rutas regionales); si no, la tarifa plana de Frecuencia y Especiales.
   const vistos = new Set();
   rows.slice().forEach(r => {
     if (vistos.has(r.cod)) return;
     vistos.add(r.cod);
-    const costo = costoRuta2t(ccfgX, r.grupo, r.ruta.km);
+    const t2 = z2t.get(r.cod);
+    const zc2 = t2 ? num(zDe(t2.key, t2.v)) : 0;
+    const costo = zc2 > 0 ? zc2 : costoRuta2t(ccfgX, r.grupo, r.ruta.km);
     if (costo == null) return;
-    rows.push({ ...r, key: r.cod + '||' + T2_TIPO, truck: { type: T2_TIPO }, capKg: 2000, es2t: true,
+    rows.push({ ...r, key: r.cod + '||' + T2_TIPO, truck: t2 ? t2.v.truck : { type: T2_TIPO }, capKg: 2000, es2t: true, t2Zcap: zc2 > 0,
       zcap: costo, factorPct: null, kilos: null, zfmp: null, kgCentro: null, camionMin: '—',
       zfmi: costo, zfmx: costo, express: costo * (1 + r.recargo / 100), kilosTarifMin: null });
   });
@@ -197,10 +253,12 @@ function calcTarifas(ctx, ccfgX, zOver = null) {
 function impactoClientes(ctx) {
   const n = contarCambios(ctx.db);
   if (!n) return '';
-  const vals = rows => { const o = {}; rows.forEach(r => { o[r.key + '|p'] = r.zfmp || 0; o[r.key + '|i'] = r.zfmi || 0; o[r.key + '|e'] = r.express || 0; }); return o; };
-  if (!CC.memoBase) CC.memoBase = vals(calcTarifas(ctx, ccEff(ctx.ccfg, base())));
-  const a = CC.memoBase, d = vals(calcTarifas(ctx, ccEff(ctx.ccfg)));
-  const partes = [['p', '$/Kg'], ['i', 'mínimos'], ['e', 'express']].map(([m, lbl]) => {
+  const vals = (rows, ret) => { const o = {}; rows.forEach(r => { o[r.key + '|p'] = r.zfmp || 0; o[r.key + '|i'] = r.zfmi || 0; o[r.key + '|e'] = r.express || 0; });
+    ret.forEach(r => { o[r.key + '|r'] = r.retiro || 0; }); return o; };
+  const todo = w => vals(calcTarifas(ctx, ccEff(ctx.ccfg, w)), calcRetiro(ctx, ccEff(ctx.ccfg, w)));
+  if (!CC.memoBase) CC.memoBase = todo(base());
+  const a = CC.memoBase, d = todo(CC.work);
+  const partes = [['p', '$/Kg'], ['i', 'mínimos'], ['e', 'express'], ['r', 'retiros']].map(([m, lbl]) => {
     const ks = Object.keys(d).filter(k => k.endsWith('|' + m) && Math.abs((d[k] || 0) - (a[k] || 0)) > (m === 'p' ? 0.005 : 0.5));
     if (!ks.length) return null;
     const sa = ks.reduce((s, k) => s + (a[k] || 0), 0), sd = ks.reduce((s, k) => s + (d[k] || 0), 0);
@@ -224,6 +282,7 @@ async function guardar(ctx, render) {
   ccfg.especiales.recargoExclusividad = w.recargoExclusividad;
   ccfg.comunaCluster = w.comunaCluster;
   ccfg.camion2t = w.camion2t || {};
+  ccfg.retiroRetorno = w.retiroRetorno || {};
   CC.work = null;
   CC.memoBase = null;
   initDraft(ccfg);
@@ -588,7 +647,7 @@ function renderEspeciales(container, ctx) {
         </table></div>
       </div>
       <div class="sv-card" style="flex:1 1 100%">
-        <div class="tf-tabletitle"><div><h3>Camión 2 Ton</h3><small>Sólo Tarifa Min/Max y Express · costo ruta = máx(km ruta × valor km, costo mínimo) · sin valores = no se activa en el centro</small></div></div>
+        <div class="tf-tabletitle"><div><h3>Camión 2 Ton</h3><small>Sólo Tarifa Min/Max y Express · costo ruta = máx(km ruta × valor km, costo mínimo) · sin valores = no se activa en el centro · si el centro tiene Camión 2 Ton en Tarifas por Camión, en rutas regionales manda ese ZCAP</small></div></div>
         <div class="sv-tablewrap" style="max-height:none"><table class="sv-table" style="min-width:640px">
           <thead><tr><th>Centro logístico</th><th>Estado</th><th class="r">Costo mínimo</th><th class="r">Valor km</th><th class="r">Ejemplo 50 km</th></tr></thead>
           <tbody>${grupos.map(g => { const gk = g.grupo.replace(/\s/g, '_');
@@ -842,11 +901,11 @@ function renderTarifasCliente(container, ctx, modo) {
       thead = '<th>Centro origen</th><th>ID ruta</th><th>Destino</th><th>Tipo</th><th>Clasificación</th><th class="r">Dist. KM</th><th>Cluster</th><th>Tipo camión</th><th>Camión mínimo</th><th class="r">ZCAP</th><th class="r">ZFMI mín.</th><th class="r">ZFMX máx.</th><th class="r">Express</th><th class="r">Factor consol.</th><th class="r">Kilos a consolidar</th><th class="r">Kilos tarif. mín.</th>';
       filas = pag.map(r => `<tr style="cursor:default"><td><span class="sv-b">${esc(NG[r.grupo] || titulo(r.grupo))}</span><div class="sv-sub">${esc(r.ruta.origenId || '')}</div></td>
         <td><span class="sv-mono">${esc(r.cod)}</span></td><td><b>${esc(r.ruta.destino || '')}</b></td><td>${esc(r.ruta.tipo || '')}</td><td>${clasifPill(r.clasif)}</td><td class="r">${fmt(num(r.ruta.km))}</td>
-        <td>${clPill(r)}${r.clObj ? `<div class="sv-sub">${fmt(r.pedProm, 1)} ped. prom.</div>` : ''}</td><td style="white-space:nowrap">${esc(r.truck.type)}${r.es2t ? '<div class="sv-sub" style="color:#7e22ce">tarifa plana</div>' : ''}</td><td style="white-space:nowrap" class="sv-muted">${esc(r.camionMin)}</td>
+        <td>${clPill(r)}${r.clObj ? `<div class="sv-sub">${fmt(r.pedProm, 1)} ped. prom.</div>` : ''}</td><td style="white-space:nowrap">${esc(r.truck.type)}${r.es2t ? `<div class="sv-sub" style="color:#7e22ce">${r.t2Zcap ? 'ZCAP Tarifas por Camión' : 'tarifa plana'}</div>` : ''}</td><td style="white-space:nowrap" class="sv-muted">${esc(r.camionMin)}</td>
         <td class="r">${r.zcap > 0 ? clp(r.zcap) : '—'}</td><td class="r"><b style="color:#15803d">${r.zfmi != null ? clp(r.zfmi) : '—'}</b></td><td class="r"><b>${r.zfmx != null ? clp(r.zfmx) : '—'}</b></td>
         <td class="r"><b style="color:#7e22ce">${r.express != null ? clp(r.express) : '—'}</b>${r.recargo ? `<div class="sv-sub" style="text-align:right">+${fmt(r.recargo)}%</div>` : ''}</td>
         <td class="r">${r.factorPct != null ? fmt(r.factorPct, 1) + '%' : '—'}</td><td class="r">${r.kilos != null ? fmt(r.kilos) + ' kg' : '—'}</td><td class="r">${r.kilosTarifMin != null ? fmt(r.kilosTarifMin) + ' kg' : '—'}</td></tr>`).join('');
-      foot = '<span>ZFMI = $/kg del camión mínimo × (kilos a consolidar del camión mínimo ÷ pedidos promedio del cluster)</span><span>ZFMX = ZCAP del camión · Express = ZCAP × (1 + recargo)</span><span>Camión 2 Ton: ZFMI = ZFMX = máx(km × valor km, costo mínimo del centro) · Express = costo × (1 + recargo) — se configura en Frecuencia y Especiales</span>';
+      foot = '<span>ZFMI = $/kg del camión mínimo × (kilos a consolidar del camión mínimo ÷ pedidos promedio del cluster)</span><span>ZFMX = ZCAP del camión · Express = ZCAP × (1 + recargo)</span><span>Camión 2 Ton: ZFMI = ZFMX = ZCAP de Tarifas por Camión (rutas regionales) o, si el centro no lo tiene habilitado ahí, máx(km × valor km, costo mínimo) de Frecuencia y Especiales · Express = costo × (1 + recargo)</span>';
     }
     const cuerpo = `<div class="sv-kpis">${kpis}</div>${filtros}
       <div class="sv-card">
@@ -898,6 +957,130 @@ function renderTarifasCliente(container, ctx, modo) {
   render();
 }
 
+// ============================================================================
+// TARIFAS RETIRO RETORNO (23-oct-2026, Jordan)
+// ============================================================================
+const RV = { tipos: [], centro: 'all', trucks: [], q: '', pagina: 0 };
+const TIPOS_RR = [['comuna', 'Comunas'], ['sector', 'Sectores']];
+function renderRetiro(container, ctx) {
+  const { db } = ctx;
+  const editar = can('editar');
+  const NG = nombreGrupo(db);
+  const grupos = getOrigenGroups(db);
+  function render() {
+    const nStale = fotoZcap(ctx);
+    const todas = calcRetiro(ctx, ccEff(ctx.ccfg), CC.snap);
+    const b = base();
+    const centros = [...new Set(todas.map(r => r.grupo))].filter(Boolean).sort().map(g => [g, NG[g] || titulo(g)]);
+    const truckOpts = [...new Set(todas.map(r => r.capKg))].sort((x, y) => x - y).map(c => [String(c), fmt(c / 1000) + ' t']);
+    RV.trucks = RV.trucks.filter(k => truckOpts.some(([v]) => v === k));
+    const q = RV.q.trim().toLowerCase();
+    const pasa = r => (!RV.tipos.length || RV.tipos.includes(r.tipoRuta.toLowerCase())) && (RV.centro === 'all' || r.grupo === RV.centro)
+      && (!RV.trucks.length || RV.trucks.includes(String(r.capKg))) && (!q || `${r.cod} ${r.ruta.destino} ${r.ruta.comuna || ''}`.toLowerCase().includes(q));
+    const orden = (x, y) => (x.grupo || '').localeCompare(y.grupo || '') || x.cod.localeCompare(y.cod) || x.capKg - y.capKg;
+    const lista = todas.filter(pasa).sort(orden);
+    CC.rrRows = lista;
+    const pags = Math.max(1, Math.ceil(lista.length / ZPAGE));
+    if (RV.pagina >= pags) RV.pagina = pags - 1;
+    const pag = lista.slice(RV.pagina * ZPAGE, (RV.pagina + 1) * ZPAGE);
+    const n = lista.length || 1;
+    const nMin = lista.filter(r => r.regla === 'Mínimo centro').length;
+    const menores = lista.filter(r => r.capKg < 28000);
+
+    // Mínimo por centro (sólo centros con rutas regionales comuna/sector)
+    const gruposRR = grupos.filter(g => todas.some(r => r.grupo === g.grupo));
+    const tablaMin = `<div class="sv-card">
+      <div class="tf-tabletitle"><div><h3>Mínimo por centro</h3><small>Retiro de camiones de 2 a 15 t nunca menor a este valor · no aplica a 28 t</small></div></div>
+      <div class="sv-tablewrap" style="max-height:none"><table class="sv-table" style="min-width:620px">
+        <thead><tr><th>Centro logístico</th><th class="r">Mínimo retiro</th><th class="r">Combinaciones 2–15 t</th><th class="r">En mínimo</th></tr></thead>
+        <tbody>${gruposRR.map(g => {
+          const gk = g.grupo.replace(/\s/g, '_');
+          const v = minimoRetiro({ retiroRetorno: CC.work.retiroRetorno }, g.grupo), v0 = minimoRetiro({ retiroRetorno: b.retiroRetorno }, g.grupo);
+          const filas = todas.filter(r => r.grupo === g.grupo && r.capKg < 28000);
+          const enMin = filas.filter(r => r.regla === 'Mínimo centro').length;
+          return `<tr style="cursor:default"><td><span class="sv-b">${esc(g.nombre)}</span><div class="sv-sub">${esc(g.centroIds.join(' · '))}</div></td>
+            <td class="r">${numIn(`rr|${gk}`, v, { pre: '$', w: '130px', changed: v !== v0, disabled: !editar, label: 'Mínimo retiro ' + g.nombre })}</td>
+            <td class="r">${fmt(filas.length)}</td><td class="r">${enMin ? `<b>${fmt(enMin)}</b> <span class="sv-muted">(${fmt(filas.length ? enMin / filas.length * 100 : 0, 0)}%)</span>` : '<span class="sv-muted">0</span>'}</td></tr>`;
+        }).join('') || '<tr class="sv-empty"><td colspan="4">Sin rutas regionales activas.</td></tr>'}</tbody>
+      </table></div>
+    </div>`;
+
+    const acciones = `<button class="${nStale ? 'sv-btn-p' : 'sv-btn'}" id="rr-refresh" title="${nStale ? 'Tarifas Rutas cambió desde que se tomó la foto del ZCAP' : 'La foto del ZCAP coincide con Tarifas Rutas'}"><span class="material-symbols-outlined">${nStale ? 'refresh' : 'check'}</span>${nStale ? `Refrescar tarifas · ${fmt(nStale)} desactualizadas` : 'Tarifas al día'}</button>
+      <button class="sv-btn" data-csv id="rr-csv"><span class="material-symbols-outlined">download</span>Descargar CSV</button>`;
+    const filtros = `<div class="sv-filters">
+        <div class="sv-frow">${segMulti('data-rrtipo', RV.tipos, TIPOS_RR, 'Todas')}
+          ${segMulti('data-rrtruck', RV.trucks, truckOpts, 'Todos')}
+          <label class="sv-inp"><span class="material-symbols-outlined">search</span><input id="rr-q" placeholder="Código, destino o comuna" value="${esc(RV.q)}" style="width:220px"></label></div>
+        ${chips(centros, RV.centro, 'data-rrcentro')}
+      </div>`;
+    const kpis = kpiHtml(false, '', '', 'Combinaciones', fmt(lista.length), 'ruta × camión con el filtro', '#191c1d', false)
+      + kpiHtml(false, '', '', 'Retiro promedio', clp(lista.reduce((s, r) => s + r.retiro, 0) / n), 'tarifa retiro retorno', '#b5000b', false)
+      + kpiHtml(false, '', '', 'En mínimo', menores.length ? fmt(nMin / menores.length * 100, 0) + '%' : '—', `${fmt(nMin)} de ${fmt(menores.length)} combinaciones 2–15 t`, '#1d4ed8', false);
+    const tonoRegla = { 'Ruta íntegra': 'purple', 'Mínimo centro': 'orange', 'Bajo KM base': 'info', 'Sobre KM base': 'ok', '50% km ruta': 'ok' };
+    const filas = pag.map(r => `<tr style="cursor:default"><td><span class="sv-b">${esc(NG[r.grupo] || titulo(r.grupo))}</span><div class="sv-sub">${esc(r.ruta.origenId || '')}</div></td>
+      <td><span class="sv-mono">${esc(r.cod)}</span></td><td><b>${esc(r.ruta.destino || '')}</b>${r.especial ? `<div class="sv-sub" style="color:#713f12">${esc(String(r.ruta.caracteristica).toUpperCase())}</div>` : ''}</td>
+      <td>${pillHtml(r.tipoRuta, r.tipoRuta === 'Sector' ? 'ok' : 'info')}</td><td>${esc(r.ruta.comuna || r.ruta.destino || '')}</td><td class="r">${fmt(r.km)}</td>
+      <td style="white-space:nowrap">${esc(r.truck.type)}</td><td class="r">${clp(r.zcap)}</td>
+      <td class="r sv-muted">${r.capKg < 28000 ? fmt(r.a) : '—'}</td><td class="r sv-muted">${r.capKg < 28000 ? clp(r.b) : '—'}</td><td class="r sv-muted">${r.capKg < 28000 ? clp(r.c) : '—'}</td>
+      <td class="r sv-muted">${r.capKg < 28000 ? clp(r.rate) : '—'}</td>
+      <td class="r">${clp(r.calc)}</td><td class="r sv-muted">${r.minimo != null ? (r.minimo > 0 ? clp(r.minimo) : '—') : '—'}</td>
+      <td class="r"><b style="color:#b5000b">${clp(r.retiro)}</b></td><td>${pillHtml(r.regla, tonoRegla[r.regla])}</td></tr>`).join('');
+    const cuerpo = `${tablaMin}<div class="sv-kpis">${kpis}</div>${filtros}
+      <div class="sv-card">
+        <div class="sv-tablewrap" style="max-height:620px"><table class="sv-table" style="min-width:1700px"><thead><tr>
+          <th>Centro origen</th><th>ID ruta</th><th>Destino</th><th>Tipo</th><th>Comuna</th><th class="r">Dist. KM</th><th>Tipo camión</th><th class="r">Costo ruta</th>
+          <th class="r">a. KM base</th><th class="r">b. Costo base</th><th class="r">c. T. base KM</th><th class="r">Tarifa km</th>
+          <th class="r">Retiro calculado</th><th class="r">Mínimo centro</th><th class="r">Tarifa retiro</th><th>Regla</th></tr></thead>
+          <tbody>${filas || '<tr class="sv-empty"><td colspan="16">Sin combinaciones para los filtros.</td></tr>'}</tbody></table></div>
+        <div class="sv-tfoot"><span>${fmt(lista.length)} combinaciones ruta × camión</span>${pager(lista.length, RV.pagina, ZPAGE, 'data-rrpag')}</div>
+        <div class="tf-card-foot"><span>28 t = costo íntegro de la ruta (ZCAP vigente)</span><span>2 a 15 t con T. base KM (c): KM ≤ a → 50% × (b + c) · KM &gt; a → b + 50% × (KM − a) × tarifa km</span><span>2 a 15 t sin T. base KM: 50% × KM × tarifa km · en ambos casos nunca bajo el mínimo del centro</span><span>a, b, c y tarifa km vienen de Tarifas por Camión (tarifa especial en rutas isla / extrema)</span></div>
+      </div>`;
+    container.innerHTML = marco(ctx, { titulo: 'Tarifas Retiro Retorno', desc: 'Tarifa de retiro por ruta regional (comuna o sector) y tipo de camión habilitado en cada centro.', activo: 'retiro', acciones, cuerpo });
+    wire();
+  }
+  const recalc = debounce(() => rerenderKeepFocus(container, render), 250);
+  function wire() {
+    cablear(container, ctx, render);
+    container.querySelectorAll('[data-rrtipo]').forEach(b => b.addEventListener('click', () => { RV.tipos = toggleMulti(RV.tipos, b.dataset.rrtipo, TIPOS_RR.length); RV.pagina = 0; render(); }));
+    container.querySelectorAll('[data-rrtruck]').forEach(b => b.addEventListener('click', () => { RV.trucks = toggleMulti(RV.trucks, b.dataset.rrtruck, container.querySelectorAll('[data-rrtruck]').length - 1); RV.pagina = 0; render(); }));
+    container.querySelectorAll('[data-rrcentro]').forEach(b => b.addEventListener('click', () => { RV.centro = b.dataset.rrcentro; RV.pagina = 0; render(); }));
+    container.querySelectorAll('[data-rrpag]').forEach(b => b.addEventListener('click', () => { RV.pagina += Number(b.dataset.rrpag); render(); }));
+    const q = container.querySelector('#rr-q');
+    q?.addEventListener('input', debounce(() => { RV.q = q.value; RV.pagina = 0; const pos = q.selectionStart; render(); const n = container.querySelector('#rr-q'); n.focus(); n.setSelectionRange(pos, pos); }, 200));
+    wireNumIns(container, (key, val) => {
+      const [p, gk] = key.split('|');
+      if (p !== 'rr') return;
+      CC.work.retiroRetorno = CC.work.retiroRetorno || {};
+      const g = gk.replace(/_/g, ' ');
+      if (gk !== g) delete CC.work.retiroRetorno[g];
+      CC.work.retiroRetorno[gk] = { minimo: val };
+      recalc();
+    });
+    container.querySelector('#rr-refresh')?.addEventListener('click', () => {
+      CC.zmap = null; CC.snap = null; CC.memoBase = null;
+      fotoZcap(ctx);
+      showAlert('Tarifas recalculadas con el ZCAP vigente de Tarifas Rutas.', 'success');
+      render();
+    });
+    container.querySelector('#rr-csv')?.addEventListener('click', () => {
+      const sep = ';', qq = v => '"' + String(v ?? '').replace(/"/g, '""') + '"';
+      const ent = v => (v != null && !isNaN(v) ? Math.round(v) : '');
+      const menor = r => r.capKg < 28000;
+      const H = ['CENTRO ORIGEN', 'ID RUTA', 'DESTINO', 'TIPO', 'COMUNA', 'KM', 'TIPO DE CAMION', 'COSTO RUTA', 'KM BASE', 'COSTO BASE', 'T. BASE KM', 'TARIFA KM',
+        'RETIRO CALCULADO', 'MINIMO CENTRO', 'TARIFA RETIRO', 'REGLA'];
+      const R = (CC.rrRows || []).map(r => [NG[r.grupo] || titulo(r.grupo), r.cod, r.ruta.destino || '', r.tipoRuta, r.ruta.comuna || r.ruta.destino || '',
+        num(r.km), r.truck.type, ent(r.zcap), menor(r) ? ent(r.a) : '', menor(r) ? ent(r.b) : '', menor(r) ? ent(r.c) : '', menor(r) ? ent(r.rate) : '',
+        ent(r.calc), r.minimo != null ? ent(r.minimo) : '', ent(r.retiro), r.regla]);
+      const txt = [H.map(qq).join(sep), ...R.map(r => r.map(qq).join(sep))].join('\n');
+      const blob = new Blob(['﻿' + txt], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href = url; a.download = `tarifas_retiro_retorno_${new Date().toISOString().slice(0, 10)}.csv`;
+      document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+    });
+  }
+  render();
+}
+
 // ── Punto de entrada ────────────────────────────────────────────────────────
 export function renderClientesV2(container, sub, ctx) {
   initDraft(ctx.ccfg);
@@ -915,6 +1098,7 @@ export function renderClientesV2(container, sub, ctx) {
     case 'especiales':    renderEspeciales(container, ctx); break;
     case 'cluster':       renderCluster(container, ctx); break;
     case 'zfmi':          renderTarifasCliente(container, ctx, 'zfmi'); break;
+    case 'retiro':        renderRetiro(container, ctx); break;
     default:              renderTarifasCliente(container, ctx, 'zfmp');
   }
 }

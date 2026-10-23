@@ -1,7 +1,7 @@
 // Motor Actuarial — Administrador de Tarifas Transporte (SIT EBEMA)
 // Implementa, ruta por ruta y tipo de camión por tipo de camión, el cálculo
 // de costos definido en "PANTALLA 1: ADMINISTRADOR DE TARIFAS TRANSPORTE".
-import { truckCapKg, getGroupRepId } from './data.js?v=202610231250';
+import { truckCapKg, getGroupRepId } from './data.js?v=202610231422';
 
 // Capacidades nominales soportadas (kg)
 export const CAP_LIST = [5000, 10000, 15000, 28000];
@@ -13,7 +13,8 @@ export function truckTypesWithCap(db, centroId) {
   const tipos = cfgId
     ? db.truckTypes.filter(t => t.Id_centro === cfgId)
     : db.truckTypes;
-  return tipos.map(t => ({ ...t, capKg: truckCapKg(t.type) }));
+  // Camión 2 Ton (23-oct-2026): no se modela en el Motor de Costos (tarifa manual en Tarifas por Camión)
+  return tipos.map(t => ({ ...t, capKg: truckCapKg(t.type) })).filter(t => t.capKg !== 2000);
 }
 
 // Calcula el detalle completo de costos (12 pasos del motor actuarial) para

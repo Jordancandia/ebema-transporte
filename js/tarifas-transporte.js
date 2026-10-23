@@ -1,16 +1,16 @@
 // PANTALLA 1: Administrador de Tarifas Transporte — SIT EBEMA
 // Sub-módulos: Peajes, Combustibles y Rendimientos, Seguros y Permisos,
 // Variables Generales y Motor de Costo (ZCAP) con exportación CSV.
-import { getDatabase, saveDatabase, getCentreName, getTariffConfig, getClientTariffConfig, truckCapKg, getOrigenGroups, getGroupRepId, buildTruckTypes, TRUCK_BASE_TYPES, loadHistorico, loadHistoricoFlete360, deleteRow } from './data.js?v=202610231250';
-import { CAP_LIST, truckTypesWithCap, calcularMatrizCostos, calcularCostoRuta } from './tarifas-engine.js?v=202610231250';
+import { getDatabase, saveDatabase, getCentreName, getTariffConfig, getClientTariffConfig, truckCapKg, getOrigenGroups, getGroupRepId, buildTruckTypes, TRUCK_BASE_TYPES, loadHistorico, loadHistoricoFlete360, deleteRow } from './data.js?v=202610231422';
+import { CAP_LIST, truckTypesWithCap, calcularMatrizCostos, calcularCostoRuta } from './tarifas-engine.js?v=202610231422';
 import { formatCLP, parseCSV, showAlert, toCSV, downloadFile, escapeHtml } from './utils.js';
-import { supabase } from './supabase-client.js?v=202610231250';
-import { getField } from './zonas-transporte.js?v=202610231250';
-import { renderZcapView, calcZcapRow } from './zcap.js?v=202610231250';
-import { can } from './permisos.js?v=202610231250';
-import { renderPeajesV2, setPeajesTab, renderCombustiblesV2, renderSegurosV2, renderCostosExtrasV2, renderVariablesV2, renderMotorV2 } from './tarifas-insumos.js?v=202610231250';
-import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, textoImpacto, setParamPill, usuarioSesion } from './tarifas-ui.js?v=202610231250';
-import { confirmar } from './confirmar.js?v=202610231250';
+import { supabase } from './supabase-client.js?v=202610231422';
+import { getField } from './zonas-transporte.js?v=202610231422';
+import { renderZcapView, calcZcapRow } from './zcap.js?v=202610231422';
+import { can } from './permisos.js?v=202610231422';
+import { renderPeajesV2, setPeajesTab, renderCombustiblesV2, renderSegurosV2, renderCostosExtrasV2, renderVariablesV2, renderMotorV2 } from './tarifas-insumos.js?v=202610231422';
+import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, textoImpacto, setParamPill, usuarioSesion } from './tarifas-ui.js?v=202610231422';
+import { confirmar } from './confirmar.js?v=202610231422';
 
 // FIX: Escuchar errores de sincronización con Supabase y notificar al usuario
 window.addEventListener('db_sync_error', (e) => {
@@ -2179,7 +2179,7 @@ function tcAjusteMotor(db, cfg) {
     if (!rutas.length) return;
     (db.truckTypes || []).filter(t => t.Id_centro === g.repId).forEach(t => {
       const cap = truckCapKg(t.type);
-      if (!cap) return;
+      if (!cap || cap === 2000) return; // Camión 2 Ton: sin Motor de Costos, tarifa manual
       const a = tcValor(t, 'Kmbase'), c = tcValor(t, 'baseRate');
       const pts = rutas.map(r => ({ x: Math.max(0, Number(r.km) - a), y: calcularCostoRuta(db, cfg, r, cap).zcap || 0, e: esEspecial(r) })).filter(p => p.y > 0);
       const nor = pts.filter(p => !p.e), esp = pts.filter(p => p.e);
@@ -2257,6 +2257,7 @@ function renderTarifasCamion(content, db, cfg) {
     const hasEsp = rutas.some(esEspecial);
     const kms = rutas.map(r => Number(r.km) || 0).filter(k => k > 0);
     const trucks = (db.truckTypes || []).filter(t => t.Id_centro === g.repId).sort((a, b) => truckCapKg(a.type) - truckCapKg(b.type));
+    const tiene2t = trucks.some(t => truckCapKg(t.type) === 2000);
     // Santiago + San Bernardo: el ponderado es el promedio de ambos centros → mostrar cada uno
     const det = (t, k) => {
       const d = TC_DETALLE[t.id];
@@ -2268,18 +2269,23 @@ function renderTarifasCamion(content, db, cfg) {
     const cols = ['Tipo camión', 'Cap.', 'a. KM base', 'b. Costo base', 'c. T. base KM', 'd. Normal pond.'].concat(hasEsp ? ['e. Esp. pond.'] : []).concat([`${hasEsp ? 'f' : 'e'}. Ajust. normal`]).concat(hasEsp ? ['g. Ajust. especial'] : []);
     return `<div class="sv-card">
       <div class="tf-tabletitle"><h3>${esc(g.nombreTabla)} <span class="sv-mono" style="color:#5c5f61;font-size:12px">${esc(g.ids.join(', '))}</span></h3>
-        <small>${fmt(rutas.length)} rutas regionales${kms.length ? ` · KM entre ${fmt(Math.min(...kms))} y ${fmt(Math.max(...kms))}` : ''}${hasEsp ? ' · con rutas especiales (isla / extrema)' : ''}</small></div>
+        <small>${fmt(rutas.length)} rutas regionales${kms.length ? ` · KM entre ${fmt(Math.min(...kms))} y ${fmt(Math.max(...kms))}` : ''}${hasEsp ? ' · con rutas especiales (isla / extrema)' : ''}</small>
+        ${editar && trucks.length && !tiene2t ? `<button class="sv-btn" data-chip data-tc2t="${esc(g.repId)}" style="margin-left:auto" title="Agrega el Camión 2 Ton a este centro: ZCAP en rutas regionales, Min/Max y Retiro Retorno"><span class="material-symbols-outlined">add</span>Habilitar Camión 2 Ton</button>` : ''}</div>
       <div style="overflow:auto"><table class="sv-table" style="min-width:${hasEsp ? 1060 : 860}px">
         <thead><tr>${cols.map((c, i) => `<th class="${i ? 'r' : ''}">${esc(c)}</th>`).join('')}</tr></thead>
         <tbody>${trucks.length ? trucks.map(t => {
           const pn = t.ratePerKmPond || 0, pe = t.ratePerKmExtrPond || 0;
-          return `<tr style="cursor:default"><td class="sv-b" style="white-space:nowrap">${esc(t.type)}</td>
+          const es2 = truckCapKg(t.type) === 2000;
+          const ponds = es2
+            ? `<td class="r sv-muted" ${hasEsp ? 'colspan="2"' : ''}>Sin motor · tarifa manual</td>`
+            : `<td class="r" style="color:#1e3a8a">${conZcap.has(t.id) ? clp(pn) + '/km' + det(t, 'norm') : '<span class="sv-muted">Sin rutas</span>'}</td>
+            ${hasEsp ? `<td class="r" style="color:#713f12">${pe > 0 ? clp(pe) + '/km' + det(t, 'esp') : '—'}</td>` : ''}`;
+          return `<tr style="cursor:default"><td class="sv-b" style="white-space:nowrap">${esc(t.type)}${es2 && editar ? ` <button class="tf-actbtn" data-chip data-tc2tdel="${esc(t.id)}" title="Deshabilitar Camión 2 Ton en este centro"><span class="material-symbols-outlined">delete</span></button>` : ''}</td>
             <td class="r">${fmt(truckCapKg(t.type))} kg</td>
             <td class="r">${inp(t, 'Kmbase', 'km', '96px')}</td>
             <td class="r">${inp(t, 'baseKM', 'CLP', '130px')}</td>
             <td class="r">${inp(t, 'baseRate', 'CLP', '120px')}</td>
-            <td class="r" style="color:#1e3a8a">${conZcap.has(t.id) ? clp(pn) + '/km' + det(t, 'norm') : '<span class="sv-muted">Sin rutas</span>'}</td>
-            ${hasEsp ? `<td class="r" style="color:#713f12">${pe > 0 ? clp(pe) + '/km' + det(t, 'esp') : '—'}</td>` : ''}
+            ${ponds}
             <td class="r">${inp(t, 'rateAjustNorm', '$/km', '116px')}</td>
             ${hasEsp ? `<td class="r">${inp(t, 'rateAjustEsp', '$/km', '116px')}</td>` : ''}</tr>`;
         }).join('') : `<tr class="sv-empty"><td colspan="${cols.length}">Sin tipos de camión para este centro.
@@ -2311,6 +2317,28 @@ function renderTarifasCamion(content, db, cfg) {
       render();
       showAlert(n ? `Propuesta ajustada al Motor de Costos: ${n} valor(es) cambian. Revisa el impacto y guarda para aplicarla.` : 'Las tarifas ya están ajustadas al Motor de Costos.', 'success');
     });
+    // (23-oct-2026, Jordan) Camión 2 Ton por centro: fila manual en truck_types (sin Motor de Costos)
+    content.querySelectorAll('[data-tc2t]').forEach(btn => btn.addEventListener('click', () => {
+      const repId = btn.dataset.tc2t;
+      if ((db.truckTypes || []).some(t => t.Id_centro === repId && truckCapKg(t.type) === 2000)) return;
+      db.truckTypes = db.truckTypes || [];
+      db.truckTypes.push({ id: `${repId}-2`, Id_centro: repId, type: 'Camión 2 Ton', capacityTons: 'Hasta 2 Tons',
+        baseRate: 0, ratePerKm: 0, Kmbase: 0, baseKM: 0, rateAjustNorm: 0, updated_by: usuarioSesion(), updated_at: new Date().toISOString() });
+      saveDatabase(db, { syncOnly: ['truckTypes'] });
+      showAlert('Camión 2 Ton habilitado. Ingresa KM base, costo base y tarifa ajustada, y guarda.', 'success');
+      render();
+    }));
+    content.querySelectorAll('[data-tc2tdel]').forEach(btn => btn.addEventListener('click', async () => {
+      const id = btn.dataset.tc2tdel;
+      if (!await confirmar('¿Deshabilitar Camión 2 Ton en este centro?\n\nSale de Tarifas Rutas, Min/Max y Retiro Retorno. Si el centro tiene Camión 2 Ton en Frecuencia y Especiales, Min/Max vuelve a usar esa tarifa.', { aceptar: 'Deshabilitar' })) return;
+      try {
+        await deleteRow('truckTypes', id);
+        db.truckTypes = (db.truckTypes || []).filter(t => t.id !== id);
+        delete TC.draft[id];
+        showAlert('Camión 2 Ton deshabilitado.', 'success');
+        render();
+      } catch (e) { showAlert('No se pudo deshabilitar: ' + (e.message || e), 'error'); }
+    }));
     content.querySelectorAll('[data-tcadd]').forEach(btn => btn.addEventListener('click', () => {
       const grupo = getOrigenGroups(db).find(g => g.grupo === btn.dataset.tcadd);
       const centro = grupo && (db.logisticsCentres || []).find(c => c.id === grupo.repId);
