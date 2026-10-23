@@ -15,11 +15,11 @@
 // tarifas a clientes y «Guardar y recalcular» escribe sólo client_tariff_config
 // (syncOnly) y, si cambió la asignación de clusters, cluster_rutas por centro.
 // ============================================================================
-import { saveDatabase, getOrigenGroups } from './data.js?v=202610230025';
-import { buildZcapMap } from './zcap.js?v=202610230025';
+import { saveDatabase, getOrigenGroups } from './data.js?v=202610230925';
+import { buildZcapMap } from './zcap.js?v=202610230925';
 import { showAlert } from './utils.js';
-import { can } from './permisos.js?v=202610230025';
-import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, setParamPill, clasifPill, clasifTarifa, pillHtml } from './tarifas-ui.js?v=202610230025';
+import { can } from './permisos.js?v=202610230925';
+import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, setParamPill, clasifPill, clasifTarifa, pillHtml } from './tarifas-ui.js?v=202610230925';
 
 const CAPS = [5, 10, 15, 28];
 const CAP_LBL = { 5: '5 t', 10: '10 t', 15: '15 t', 28: '28 t' };
@@ -902,6 +902,10 @@ function renderTarifasCliente(container, ctx, modo) {
 export function renderClientesV2(container, sub, ctx) {
   initDraft(ctx.ccfg);
   CC.zmap = null;           // el ZCAP vivo se recalcula al entrar (Tarifas Rutas pudo cambiar)
+  // (23-oct-2026, Jordan) La foto del ZCAP se retoma al entrar: los ajustes guardados en
+  // Tarifas por Camión / Tarifas Rutas / Motor de Costos se reflejan de inmediato en
+  // $/Kg, Min/Max, Express y el CSV, sin depender de «Refrescar tarifas».
+  CC.snap = null;
   CC.memoBase = null;
   setParamPill(ctx.cfg);
   switch (sub) {
