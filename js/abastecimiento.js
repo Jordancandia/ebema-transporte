@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610231721';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610231721';
-import { getDatabase } from './data.js?v=202610231721';
+import { supabase } from './supabase-client.js?v=202610231725';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610231725';
+import { getDatabase } from './data.js?v=202610231725';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610231721';
-import { confirmar, pedirDato } from './confirmar.js?v=202610231721';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610231725';
+import { confirmar, pedirDato } from './confirmar.js?v=202610231725';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -5910,11 +5910,11 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610231721');
+    const m = await import('./ind-plan-carga.js?v=202610231725');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (currentSub === 'control_diferencias') {  // (11-oct-2026) Control de Diferencias del Plan de Carga
-    const m = await import('./control-diferencias.js?v=202610231721');
+    const m = await import('./control-diferencias.js?v=202610231725');
     await m.renderControlDiferencias(stage);
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
@@ -7434,6 +7434,8 @@ async function renderPlanCarga(stage, opts = {}) {
       coordMap = new Map((data || []).map(x => [`${String(x.ce ?? '').trim()}|${x.camion}`, x]));
     } catch (_e) { coordMap = new Map(); }
   }
+  // (23-oct-2026, Jordan) Ocultar la etiqueta de diferencias en la fila de cada sucursal (true para volver a mostrarla).
+  const MOSTRAR_TAG_DIFERENCIAS = false;
   // (11-oct-2026) Diferencias abiertas por centro destino (Control de Diferencias) → tag en la fila del centro.
   // (18-oct-2026, Jordan) Se detalla cada diferencia del centro en el panel (pestaña «Diferencias»).
   let difMap = new Map(), difCat = new Map();
@@ -7867,7 +7869,8 @@ async function renderPlanCarga(stage, opts = {}) {
       }
     }
     // (11-oct-2026) Diferencias abiertas del centro (Gestión Troncales → Control de Diferencias).
-    const dif = difMap.get(String(r.ce));
+    // (23-oct-2026, Jordan) Etiqueta oculta en la fila del Plan de Carga (el detalle sigue en Control de Diferencias).
+    const dif = MOSTRAR_TAG_DIFERENCIAS ? difMap.get(String(r.ce)) : null;
     if (dif && dif.n) t.push(TAG('rule', `${dif.n} diferencia${dif.n > 1 ? 's' : ''}`, `${dif.n} diferencia(s) abierta(s) en Control de Diferencias${dif.bloq ? ` · ${dif.bloq} bloquean líneas` : ''}: clic para ver el detalle`, 'baja')
       .replace('<span class="pc-tag', `<span data-dif-open="${escapeHtml(r.ce)}" style="cursor:pointer" class="pc-tag`));
     return t.join('');
