@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610231519';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610231519';
-import { getDatabase } from './data.js?v=202610231519';
+import { supabase } from './supabase-client.js?v=202610231521';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610231521';
+import { getDatabase } from './data.js?v=202610231521';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610231519';
-import { confirmar, pedirDato } from './confirmar.js?v=202610231519';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610231521';
+import { confirmar, pedirDato } from './confirmar.js?v=202610231521';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -845,6 +845,12 @@ const sapNum = n => String(Math.round(n * 1000) / 1000).replace('.', ',');
 // Cuando llega la entrega SAP del pedido + material, la entrega la reemplaza (no se duplica). Tabla
 // abast_carga_manual_traslado; en el servidor v_trc_plan_carga_manual_lineas (prio_orden -200 = orden 0).
 const MARCA_PEND_ENTREGA = 'PENDIENTE DE RECEPCIÓN Y CREACIÓN DE ENTREGA';
+// (23-oct-2026, Jordan) Línea que sube con MENOS unidades que su entrega (ajuste de unidades / saldo):
+// la entrega SAP se debe ajustar a lo cargado y el resto queda como saldo.
+const MARCA_AJ_SALDO = 'ENTREGA AJUSTAR SALDO';
+// También los saldos activados en Seguimiento de Carga (nombre «SALDO · …») que vuelven a subir a un camión.
+const esAjSaldo = d => !!d && !d._cargaManual && (!!d._ajSaldo || !!d._ajustada || String(d.nombre ?? '').startsWith('SALDO · '));
+const marcasLinea = d => [d && d._cargaManual ? MARCA_PEND_ENTREGA : '', esAjSaldo(d) ? MARCA_AJ_SALDO : ''].filter(Boolean);
 async function loadCargaManualTr() {
   try {
     const { data, error } = await supabase.from('abast_carga_manual_traslado').select('*');
@@ -5898,11 +5904,11 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610231519');
+    const m = await import('./ind-plan-carga.js?v=202610231521');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (currentSub === 'control_diferencias') {  // (11-oct-2026) Control de Diferencias del Plan de Carga
-    const m = await import('./control-diferencias.js?v=202610231519');
+    const m = await import('./control-diferencias.js?v=202610231521');
     await m.renderControlDiferencias(stage);
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
@@ -6109,7 +6115,7 @@ let PRIO_DOCS = new Set();
 // (15-oct-2026, Jordan) Columna «Prioridad de carga» en los CSV: la posición se carga como prioritaria.
 const PRIO_CSV_TXT = 'PRIORIDAD DE CARGA';
 const esPrioCarga = d => !!d && PRIO_DOCS.has(String(d.pt ?? d.oc ?? d.pv ?? '').trim());
-const prioCsv = d => (d && d._cargaManual ? 'PENDIENTE DE RECEPCIÓN Y CREACIÓN DE ENTREGA' + (esPrioCarga(d) ? ' · ' : '') : '') + (esPrioCarga(d) ? PRIO_CSV_TXT : '');
+const prioCsv = d => [...marcasLinea(d), esPrioCarga(d) ? PRIO_CSV_TXT : ''].filter(Boolean).join(' · ');
 // (23-oct-2026, Jordan) Elige, dentro de un nivel de prioridad, las líneas que más llenan `rem` toneladas
 // (mochila 0/1 a 0,1 t); desempate: más posiciones y luego el orden de prioridad. Igual que
 // fn_abast_llenar_nivel en la foto del servidor. Devuelve los índices elegidos.
@@ -6653,7 +6659,7 @@ async function renderPlanCarga(stage, opts = {}) {
       const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), r.ctd_confirmada);
       const tonBruto = calcTon(parseNum(r.peso_neto), r.ctd_confirmada);
       const tonVol = calcTon(parseNum(r.tamano_dimens), r.ctd_confirmada);
-      det.quiebre.push({ ...itemT(r, t), _motivo: prio.motivo, _orden: forz ? -100 : prio.orden, _forzadoPlan: !!forz, tonBruto, tonVol });
+      det.quiebre.push({ ...itemT(r, t), _motivo: prio.motivo, _orden: forz ? -100 : prio.orden, _forzadoPlan: !!forz, tonBruto, tonVol, _ajSaldo: !!r._ajUnid });
       return sum + t;
     }, 0);
 
@@ -6666,7 +6672,7 @@ async function renderPlanCarga(stage, opts = {}) {
       const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), r.ctd_confirmada);
       const tonBruto = calcTon(parseNum(r.peso_neto), r.ctd_confirmada);
       const tonVol = calcTon(parseNum(r.tamano_dimens), r.ctd_confirmada);
-      det.stock.push({ ...itemT(r, t), _motivo: prio.motivo, _orden: forz ? -100 : prio.orden, _forzadoPlan: !!forz, tonBruto, tonVol });
+      det.stock.push({ ...itemT(r, t), _motivo: prio.motivo, _orden: forz ? -100 : prio.orden, _forzadoPlan: !!forz, tonBruto, tonVol, _ajSaldo: !!r._ajUnid });
       return sum + t;
     }, 0);
 
@@ -6861,7 +6867,8 @@ async function renderPlanCarga(stage, opts = {}) {
         const doc = String(r.doc_compr ?? '').trim();
         (porDoc[doc] = porDoc[doc] || { co, items: [] }).items.push({ pv: doc, material: r.material, nombre: r.texto_breve, cant: pend, ruta: '', comuna: co.comuna || '', region: '',
           fecha: fmtFechaISO(co.fecha_entrega), ton: t, tonBruto: calcTon(parseNum(r.peso_neto), pend), tonVol: calcTon(parseNum(r.tamano_dimens), pend),
-          tipoExp: 'Crossdocking CD-Cliente', cliente: co.nombre_cliente || '', idCliente: '', vendedor: '', _manual: 'CD-CLIENTE', entrega: co.n_entrega || '' });
+          tipoExp: 'Crossdocking CD-Cliente', cliente: co.nombre_cliente || '', idCliente: '', vendedor: '', _manual: 'CD-CLIENTE', entrega: co.n_entrega || '',
+          _ajSaldo: r._pendSapX != null && pend < r._pendSapX - 1e-9 });
       });
       for (const [doc, { co, items }] of Object.entries(porDoc)) {
         const fc = parseISODate(co.fecha_entrega);
@@ -7814,6 +7821,9 @@ async function renderPlanCarga(stage, opts = {}) {
     // (23-oct-2026, Jordan) Camión CD con carga manual sin entrega SAP.
     if (Object.values(r.det || {}).some(a => (a || []).some(d => d._cargaManual && (d._enCamion || d._camion2))))
       t.push(TAG('inventory_2', 'Pend. recepción y entrega', MARCA_PEND_ENTREGA + ': lleva carga manual sin entrega SAP', 'baja'));
+    // (23-oct-2026, Jordan) Camión CD que lleva saldos (líneas con menos unidades que su entrega).
+    if (Object.values(r.det || {}).some(a => (a || []).some(d => esAjSaldo(d) && (d._enCamion || d._camion2))))
+      t.push(TAG('content_cut', 'Entrega ajustar saldo', MARCA_AJ_SALDO + ': lleva líneas con menos unidades que su entrega SAP (ajustar la entrega a lo cargado)', 'baja'));
     if (r.enCalendario) t.push(TAG('calendar_today', 'Agenda', 'En calendario de despacho', 'agenda'));
     if (!r.enCalendario && r.pct >= 70) t.push(TAG('add_circle', 'Cupo extra', 'Fuera de agenda con carga ≥70%', 'extra'));
     if (r.enCalendario && r.pct < 70) t.push(TAG('warning', 'Carga baja', 'En calendario con carga <70%', 'baja'));
@@ -7871,7 +7881,8 @@ async function renderPlanCarga(stage, opts = {}) {
       const cams = r[t.lista]; const ton = cams.reduce((s, c) => s + c.ton, 0);
       const man = cams.some(c => c.manualId);
       const pendCM = cams.some(c => (c.items || []).some(d => d._cargaManual));
-      return `<span class="pc-dir" title="${escapeHtml(t.tip)}${man ? ' · armado a mano' : ''}${pendCM ? ' · ' + MARCA_PEND_ENTREGA : ''}"><span class="material-symbols-outlined" style="color:${t.color}">local_shipping</span>${escapeHtml(t.lbl)}${man ? ' (manual)' : ''} · ${t1(ton)} t${cams.length > 1 ? `<em style="background:${t.color}" title="Se requieren ${cams.length} camiones">X${cams.length}</em>` : ''}${pendCM ? ' <b style="color:#b45309">· PEND. RECEPCIÓN Y ENTREGA</b>' : ''}</span>`;
+      const ajS = cams.some(c => (c.items || []).some(esAjSaldo));
+      return `<span class="pc-dir" title="${escapeHtml(t.tip)}${man ? ' · armado a mano' : ''}${pendCM ? ' · ' + MARCA_PEND_ENTREGA : ''}"><span class="material-symbols-outlined" style="color:${t.color}">local_shipping</span>${escapeHtml(t.lbl)}${man ? ' (manual)' : ''} · ${t1(ton)} t${cams.length > 1 ? `<em style="background:${t.color}" title="Se requieren ${cams.length} camiones">X${cams.length}</em>` : ''}${pendCM ? ' <b style="color:#b45309">· PEND. RECEPCIÓN Y ENTREGA</b>' : ''}${ajS ? ` <b style="color:#b45309" title="${MARCA_AJ_SALDO}">· AJUSTAR SALDO</b>` : ''}</span>`;
     });
     const pc = DIR_V2.flatMap(t => r[t.lista] || []).filter(porConfirmar);
     if (pc.length) chips.push(`<button class="pc-dir" data-trconf="${escapeHtml(r.ce)}" title="Camiones directos coordinados con un transportista BLOQUEADO en el maestro: completa sus datos para confirmarlos (hasta entonces no entran a la foto, correo ni Seguimiento)" style="border-color:#f59e0b;background:#fef3c7;color:#713f12;cursor:pointer"><span class="material-symbols-outlined" style="color:#b45309">pending_actions</span>Transporte por confirmar · ${pc.length}</button>`);
@@ -8191,7 +8202,7 @@ async function renderPlanCarga(stage, opts = {}) {
     cant: r4(tipo === 'X' ? d.ctdPend : parseNum(tipo === 'T' ? d.ctd : d.cant)), ton: r4(d.ton), fecha: d.fecha || '',
     pv: tipo === 'V' ? '' : String(d.pv ?? ''), prov: d.prov || '', cliente: d.cliente || '', entrega_entrante: d.entrega_entrante || d.entrega || '',
     ruta: d.ruta || '', comuna: d.comuna || '', ton_bruto: d.tonBruto == null ? null : r4(d.tonBruto), ton_vol: d.tonVol == null ? null : r4(d.tonVol),
-    ...(d._cargaManual ? { marca: MARCA_PEND_ENTREGA } : {}) });
+    ...(marcasLinea(d).length ? { marca: marcasLinea(d).join(' · ') } : {}) });
   function estadoCorreoFila(r) {
     marcarCapacidadCD(r);
     const lineasDe = pred => { const out = []; CAT_V2.forEach((c, i) => (r.det[c.k] || []).forEach(d => { if (pred(d)) out.push(lineaCorreo(CAT_CSV[i], c.tipo, d)); })); return out; };
