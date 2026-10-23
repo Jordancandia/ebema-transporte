@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610231438';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610231438';
-import { getDatabase } from './data.js?v=202610231438';
+import { supabase } from './supabase-client.js?v=202610231457';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610231457';
+import { getDatabase } from './data.js?v=202610231457';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610231438';
-import { confirmar, pedirDato } from './confirmar.js?v=202610231438';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610231457';
+import { confirmar, pedirDato } from './confirmar.js?v=202610231457';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -813,6 +813,31 @@ async function quitarInclusionPlan(doc, material) {
   return true;
 }
 const _keyInc = (doc, mat) => `${String(doc ?? '').trim()}|${String(mat ?? '').trim()}`;
+// ── Ajuste de unidades a cargar (23-oct-2026, Jordan) ──────────────────────
+// Pedidos de Traslados: unidades (doc + material) que suben al camión en el plan de HOY, p. ej.
+// completar el camión CD con parte del fierro. Se descuentan de las entregas del pedido en orden
+// (entrega, fecha) sin superar lo confirmado. Igual que v_trc_plan_traslados_prio (foto del servidor).
+async function loadAjustesUnidades() {
+  try {
+    const { data, error } = await supabase.from('abast_plan_ajuste_unidades').select('*').eq('tipo', 'traslados_1003');
+    if (error) throw error;
+    return (data || []).filter(e => esExclusionVigenteHoy(e.created_at));
+  } catch (e) { console.warn('Ajustes de unidades no disponibles', e); return []; }
+}
+const mapaAjustesUnidades = lista => new Map((lista || []).map(e => [_keyInc(e.doc, e.material), Number(e.cantidad) || 0]));
+async function guardarAjusteUnidades(doc, material, cantidad) {
+  const payload = { tipo: 'traslados_1003', doc: String(doc).trim(), material: String(material).trim(), cantidad,
+    motivo: 'Unidades a cargar (Pedidos de Traslados)', created_by: await getUserEmail(), created_at: new Date().toISOString() };
+  const { error } = await supabase.from('abast_plan_ajuste_unidades').upsert(payload, { onConflict: 'tipo,doc,material' });
+  if (error) { showAlert('Error al guardar el ajuste: ' + error.message, 'error'); return false; }
+  return true;
+}
+async function quitarAjusteUnidades(doc, material) {
+  const { error } = await supabase.from('abast_plan_ajuste_unidades').delete().eq('tipo', 'traslados_1003').eq('doc', String(doc).trim()).eq('material', String(material).trim());
+  if (error) { showAlert('Error al quitar el ajuste: ' + error.message, 'error'); return false; }
+  return true;
+}
+const sapNum = n => String(Math.round(n * 1000) / 1000).replace('.', ',');
 
 // ── Ajustes manuales del Plan de Carga (1-oct-2026, pedido Jordan) ──────────
 // abast_plan_linea_camion: línea (doc+material) asignada a mano al camión CD (1), al
@@ -4344,15 +4369,20 @@ const V2 = {
     prioridad: { tipo: 'traslado', doc: r => r.doc_compr ?? r.oc ?? r.pt, centro: r => r.ce },   // (15-oct-2026) check PRIORIDAD
     desc: 'Pedidos de traslados desde centros de distribución a sucursales',
     origen: { of: r => r.cesu, opciones: ORIGENES_CD },
-    async preload() { return { estadoPlan: await estadoPlanTraslados() }; },
+    async preload() { const [estadoPlan, aj] = await Promise.all([estadoPlanTraslados(), loadAjustesUnidades()]); return { estadoPlan, ajU: mapaAjustesUnidades(aj) }; },
     enrich(rows, ctx) {
       rows.forEach(r => { r._al = alertaV2(r.fecha_confirmada, 7); r._pr = PRIO_V2[r._prioridad_grupo] || PRIO_V2.E; r._q = grupoQuiebre(r._sd); });
       ctx._rows = rows;
+      marcarAjusteUnidades(rows, ctx.ajU);
       aplicarEstadoPlanTraslados(rows, ctx.estadoPlan);
       marcarSinEntrega(rows);
     },
-    // Tras excluir/reactivar/incluir: recalcula el plan y el estado de cada línea.
-    async onPlanChange(rows, ctx) { ctx.estadoPlan = await estadoPlanTraslados(); aplicarEstadoPlanTraslados(rows, ctx.estadoPlan); marcarSinEntrega(rows); },
+    // Tras excluir/reactivar/incluir/ajustar: recalcula el plan y el estado de cada línea.
+    async onPlanChange(rows, ctx) {
+      const [ep, aj] = await Promise.all([estadoPlanTraslados(), loadAjustesUnidades()]);
+      ctx.estadoPlan = ep; ctx.ajU = mapaAjustesUnidades(aj);
+      marcarAjusteUnidades(rows, ctx.ajU); aplicarEstadoPlanTraslados(rows, ctx.estadoPlan); marcarSinEntrega(rows);
+    },
     chip: { label: 'Destino', of: r => String(r.ce ?? '').trim(), name: v => nombreCentro(v) || v },
     docSearch: { ph: 'N° pedido de traslado', of: r => r.doc_compr },
     fecha: { label: 'Entrega', of: r => r.fecha_confirmada },
@@ -4372,7 +4402,9 @@ const V2 = {
       { label: 'Material', html: r => matHtml(r.material, r.texto_breve) },
       { label: 'ABC', html: r => mono(r._clasificacion_abc === 'SIN CLASIFICACIÓN' ? '' : r._clasificacion_abc) },
       // (4-oct-2026, Jordan) Prioridad pasa al detalle; en la fila va la cantidad.
-      { label: 'Cantidad', al: 'r', html: r => mono(fmtNum(parseNum(r.ctd_confirmada ?? r.ctd_pedido), 1)) },
+      { label: 'Cantidad', al: 'r', html: r => r._ajU != null
+          ? `<b title="Unidades a cargar hoy (ajuste)">${escV2(fmtNum(r._ajU, r._ajU % 1 ? 2 : 0))}</b><div class="sv-sub">a cargar hoy · de ${escV2(fmtNum(r._ajPend, r._ajPend % 1 ? 2 : 0))}</div>`
+          : mono(fmtNum(parseNum(r.ctd_confirmada ?? r.ctd_pedido), 1)) },
       { label: 'Ton', al: 'r', html: r => `<span class="sv-ton">${tonHtml(r._ton_num)}</span>` },
       { label: 'Fecha entrega', html: r => mono(r.fecha_confirmada) },
       { label: 'Alerta', html: r => pill(r._al.k, r._al.tone) },
@@ -4413,6 +4445,14 @@ const V2 = {
           showAlert('Línea incluida en el Plan de Carga', 'success'); return recalcular(row, ctx);
         } },
       ] : [];
+      // (23-oct-2026, Jordan) Ajustar las unidades que suben al camión hoy (p. ej. completar con fierro).
+      if (puede && r._plan !== 'EXCLUIDO' && r._plan !== 'SIN_ENTREGA') acciones.push({ label: r._ajU != null ? 'Editar unidades a cargar hoy' : 'Ajustar unidades a cargar hoy', icon: 'tune',
+        run: async (row, ctx) => ((await ajustarUnidadesTraslado(row, ctx)) ? recalcular(row, ctx) : null) });
+      if (puede && r._ajU != null) acciones.push({ label: 'Quitar ajuste de unidades', icon: 'undo', run: async (row, ctx) => {
+        if (!await confirmar(`¿Quitar el ajuste de unidades del material ${row.material} (pedido ${row.doc_compr})?\n\nVuelve a cargarse todo lo confirmado.`)) return null;
+        if (!(await quitarAjusteUnidades(row.doc_compr, row.material))) return null;
+        showAlert('Ajuste de unidades quitado', 'success'); return recalcular(row, ctx);
+      } });
       return {
       kind: 'Pedido de traslado · origen ' + r.cesu, title: r.doc_compr,
       aviso: `<b>Plan de carga:</b> ${escV2(p[0])}${r._plan_inc ? ' (incluida manual)' : ''}. ${escV2(expl)}${c ? ` Camión CD ${escV2(nombreCentro(r.ce) || r.ce)}: ${escV2(fmtNum(c.total, 1))} t · ${escV2(c.pct)}% · ${escV2(c.status)}.` : ''}`,
@@ -4422,6 +4462,7 @@ const V2 = {
         ['Clase ABC', r._clasificacion_abc], ['Días de stock', r._sd == null ? 'Sin dato en SLIM' : `${r._sd} · ${r._q.lbl}`],
         ['Creado por', r._usuario], ['Fecha creación', r.creado_el],
         ['Material', r.material], ['Cantidad confirmada', fmtNum(parseNum(r.ctd_confirmada ?? r.ctd_pedido), 1)],
+        r._ajU != null ? ['Unidades a cargar hoy', `${fmtNum(r._ajU, r._ajU % 1 ? 2 : 0)} de ${fmtNum(r._ajPend, r._ajPend % 1 ? 2 : 0)} (${fmtNum(r._ajPend > 0 ? r._ajTon * r._ajU / r._ajPend : 0, 2)} t) · ajuste del pedido + material`] : null,
         ['Cantidad pedido', fmtNum(parseNum(r.ctd_pedido), 1)],
         ['Toneladas', tonHtml(r._ton_num), true], ['Fecha entrega', r.fecha_confirmada],
         ['Almacén destino', r.alm], ['Alerta', pill(r._al.k, r._al.tone), true],
@@ -5699,11 +5740,11 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610231438');
+    const m = await import('./ind-plan-carga.js?v=202610231457');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (currentSub === 'control_diferencias') {  // (11-oct-2026) Control de Diferencias del Plan de Carga
-    const m = await import('./control-diferencias.js?v=202610231438');
+    const m = await import('./control-diferencias.js?v=202610231457');
     await m.renderControlDiferencias(stage);
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
@@ -6046,7 +6087,7 @@ async function estadoPlanTraslados() {
       res.resultadoTodos.forEach(r => {
         const kc = `${orig}|${r.ce}`;
         const acept = seg.has(kc);
-        centros[kc] = { pct: r.pct, status: r.status, cap: r.cap, total: r.total, enCalendario: r.enCalendario, acept };
+        centros[kc] = { pct: r.pct, status: r.status, cap: r.cap, total: r.total, cargado: r.cargadoCD || 0, enCalendario: r.enCalendario, acept };
         [...(r.det.quiebre || []), ...(r.det.stock || [])].forEach(d => {
           const est = d._enCamion ? 'EN_CAMION' : d._camion2 ? (acept ? 'CAMION2' : 'CAMION2_PROP') : 'NO_CABE';
           lineas.set(`${kc}|${_keyInc(d.pt, d.material)}`, est);
@@ -6065,6 +6106,43 @@ const PLAN_LINEA_V2 = {
   FUERA:        ['No considerada', 'mute'],
   SIN_ENTREGA:  ['Sin entrega', 'mute'],
 };
+// (23-oct-2026, Jordan) Marca en las filas de Pedidos de Traslados el ajuste de unidades de hoy (pedido + material).
+function marcarAjusteUnidades(rows, ajU) {
+  const tot = new Map();
+  (rows || []).forEach(r => { const k = `${String(r.ce ?? '').trim()}|${_keyInc(r.doc_compr, r.material)}`; const t = tot.get(k) || { pend: 0, ton: 0 };
+    t.pend += parseNum(r.ctd_confirmada ?? r.ctd_pedido); t.ton += r._ton_num || 0; tot.set(k, t); });
+  (rows || []).forEach(r => {
+    const kl = _keyInc(r.doc_compr, r.material), t = tot.get(`${String(r.ce ?? '').trim()}|${kl}`) || { pend: 0, ton: 0 };
+    r._ajU = ajU && ajU.has(kl) ? ajU.get(kl) : null; r._ajPend = t.pend; r._ajTon = t.ton;
+  });
+}
+async function ajustarUnidadesTraslado(row, ctx) {
+  const kl = _keyInc(row.doc_compr, row.material);
+  const filas = ((ctx && ctx._rows) || [row]).filter(x => _keyInc(x.doc_compr, x.material) === kl && String(x.ce ?? '').trim() === String(row.ce ?? '').trim());
+  const pend = filas.reduce((s, x) => s + parseNum(x.ctd_confirmada ?? x.ctd_pedido), 0);
+  const ton = filas.reduce((s, x) => s + (x._ton_num || 0), 0);
+  const tonU = pend > 0 ? ton / pend : 0;
+  const c = row._plan_centro;
+  const yaEnCamion = row._plan === 'EN_CAMION';
+  const libre = c && c.cap ? Math.max(0, c.cap - (c.cargado || 0)) : null;
+  // Sugerencia: lo que cabe en el espacio libre del camión CD (más lo que ya lleva esta línea, si va en él).
+  const actual = row._ajU != null ? row._ajU : pend;
+  // Margen de 0,2 t: el llenado redondea cada línea hacia arriba a 0,1 t.
+  const sug = libre != null && tonU > 0 ? Math.max(0, Math.min(pend, Math.floor((libre - 0.2 + (yaEnCamion ? actual * tonU : 0)) / tonU + 1e-9))) : null;
+  const dec = n => fmtNum(n, n % 1 ? 2 : 0);
+  const txt = `Unidades a cargar hoy · ${row.material}\n\nPedido ${row.doc_compr} · ${row.texto_breve || ''}\n`
+    + `Confirmado: ${dec(pend)} u. · ${fmtNum(ton, 2)} t (${fmtNum(tonU * 1000, 3)} kg por unidad).\n`
+    + (libre != null ? `Camión CD ${nombreCentro(row.ce) || row.ce}: ${fmtNum(c.cargado || 0, 2)} de ${fmtNum(c.cap, 0)} t · libre ${fmtNum(libre, 2)} t${sug != null ? ` → caben ≈ ${dec(sug)} u.` : ''}\n` : '')
+    + `\nVale sólo para el Plan de Carga de hoy; el saldo queda pendiente. Ajusta la entrega en SAP a lo cargado.`;
+  const v = await pedirDato(txt, { valor: row._ajU != null ? sapNum(row._ajU) : (sug != null ? sapNum(sug) : ''), placeholder: 'Unidades (coma para decimales)',
+    icono: 'tune', patron: /^\d+(,\d+)?$/, error: 'Ingresa las unidades: sólo números, con coma para decimales (sin puntos de miles)', aceptar: 'Guardar ajuste' });
+  if (v == null) return false;
+  const q = Number(v.replace(',', '.'));
+  if (!(q >= 0) || q > pend + 1e-9) { showAlert(`Las unidades deben estar entre 0 y ${dec(pend)}`, 'error'); return false; }
+  if (!(await guardarAjusteUnidades(row.doc_compr, row.material, q))) return false;
+  showAlert(`Pedido ${row.doc_compr} · ${row.material}: ${dec(q)} u. (${fmtNum(q * tonU, 2)} t) a cargar hoy`, 'success');
+  return true;
+}
 function aplicarEstadoPlanTraslados(rows, ep) {
   if (!ep) return;
   const incSet = new Set((ep.inclusiones || []).map(e => _keyInc(e.doc, e.material)));
@@ -6103,7 +6181,8 @@ async function renderPlanCarga(stage, opts = {}) {
     fetchAllRows('abast_feriados'),
     fetchAllRows('abast_horizonte_centro'),
   ]);
-  const [ventasDirectoManual, inclusionesPlan, asigLineas, camManuales, coordVentas, coordTraslados] = await Promise.all([loadVentasDirectoManual(), loadInclusionesPlan(), loadAsignacionLineas(), loadCamionesManuales(), loadCoordinacionesVenta(), loadCoordTraslados()]);
+  const [ventasDirectoManual, inclusionesPlan, asigLineas, camManuales, coordVentas, coordTraslados, ajustesUnidades] = await Promise.all([loadVentasDirectoManual(), loadInclusionesPlan(), loadAsignacionLineas(), loadCamionesManuales(), loadCoordinacionesVenta(), loadCoordTraslados(), loadAjustesUnidades()]);
+  const ajUMap = mapaAjustesUnidades(ajustesUnidades);
   // (18-oct-2026, Jordan) Pedidos de venta del Stock Almacén 4000 coordinados como venta directa
   // («PEDIDO DE VENTA, EMITIR GUIA FACTURABLE»): entran como Venta Directa del centro (o del alternativo).
   let pv4000Coord = new Map(), pv4000Live = [], pv4000Cargados = new Set();
@@ -6375,11 +6454,24 @@ async function renderPlanCarga(stage, opts = {}) {
     //    clasificación). Excluye líneas con ctd_confirmada = 0 → ya entregadas.
     // (AJUSTE 24-sep-2026, pedido Jordan) Ventana -10/+7 en DÍAS HÁBILES, igual
     // criterio que Ventas 1003.
+    const presupAjU = new Map();
+    const _cmpAj = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
     const baseTraslados = traslados
       .filter(r => String(r.ce ?? '').trim() === ce)
       .filter(r => fechaEnRangoHabil(r.fecha_confirmada, 10, 7, feriadosSet) || incSet.has(_keyInc(r.doc_compr, r.material)))
       .filter(r => parseNum(r.ctd_confirmada) > 0)
       .filter(r => !estaExcluido(exclusionesPlan, 'traslados_1003', r.doc_compr, r.material) && !excluidaEntrega(exclusionesPlan, 'traslados_1003', r.entrega, r.material))
+      // (23-oct-2026, Jordan) Unidades a cargar ajustadas hoy (Pedidos de Traslados).
+      .sort((a, b) => _cmpAj(String(a.entrega ?? ''), String(b.entrega ?? '')) || _cmpAj(String(a.fecha_confirmada ?? ''), String(b.fecha_confirmada ?? '')))
+      .map(r => {
+        const k = _keyInc(r.doc_compr, r.material);
+        if (!ajUMap.has(k)) return r;
+        if (!presupAjU.has(k)) presupAjU.set(k, ajUMap.get(k));
+        const p0 = parseNum(r.ctd_confirmada), q = Math.max(0, Math.min(p0, presupAjU.get(k)));
+        presupAjU.set(k, presupAjU.get(k) - q);
+        return { ...r, ctd_confirmada: sapNum(q), _ctdSap: p0, _ajUnid: true };
+      })
+      .filter(r => parseNum(r.ctd_confirmada) > 0)
       .map(r => ({ r, prio: clasificaTraslado(r), forz: incSet.has(_keyInc(r.doc_compr, r.material)) }));
 
     // (AJUSTE 30-sep-2026) Empates: documento y material (mismo orden que la foto del servidor).
