@@ -15,11 +15,11 @@
 // tarifas a clientes y «Guardar y recalcular» escribe sólo client_tariff_config
 // (syncOnly) y, si cambió la asignación de clusters, cluster_rutas por centro.
 // ============================================================================
-import { saveDatabase, getOrigenGroups } from './data.js?v=202610230001';
-import { buildZcapMap } from './zcap.js?v=202610230001';
+import { saveDatabase, getOrigenGroups } from './data.js?v=202610230017';
+import { buildZcapMap } from './zcap.js?v=202610230017';
 import { showAlert } from './utils.js';
-import { can } from './permisos.js?v=202610230001';
-import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, setParamPill, clasifPill, clasifTarifa, pillHtml } from './tarifas-ui.js?v=202610230001';
+import { can } from './permisos.js?v=202610230017';
+import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, setParamPill, clasifPill, clasifTarifa, pillHtml } from './tarifas-ui.js?v=202610230017';
 
 const CAPS = [5, 10, 15, 28];
 const CAP_LBL = { 5: '5 t', 10: '10 t', 15: '15 t', 28: '28 t' };
@@ -783,12 +783,16 @@ function renderTarifasCliente(container, ctx, modo) {
   const NG = nombreGrupo(ctx.db);
   function render() {
     const nStale = fotoZcap(ctx);
-    const todas = calcTarifas(ctx, ccEff(ctx.ccfg), CC.snap).filter(r => modo !== 'zfmp' || !r.es2t);
+    const todasT = calcTarifas(ctx, ccEff(ctx.ccfg), CC.snap);              // incluye camión 2 Ton
+    const todas = todasT.filter(r => modo !== 'zfmp' || !r.es2t);
     const centros = [...new Set(todas.map(r => r.grupo))].filter(Boolean).sort().map(g => [g, NG[g] || titulo(g)]);
     const q = S.q.trim().toLowerCase();
-    const lista = todas.filter(r => (S.tipo === 'todas' || (r.clasif || '').toLowerCase() === S.tipo) && (S.centro === 'all' || r.grupo === S.centro)
-      && (S.truck === 'all' || String(r.capKg) === S.truck) && (!q || `${r.cod} ${r.ruta.destino}`.toLowerCase().includes(q)))
-      .sort((a, b) => (a.grupo || '').localeCompare(b.grupo || '') || a.cod.localeCompare(b.cod) || a.capKg - b.capKg);
+    const pasa = r => (S.tipo === 'todas' || (r.clasif || '').toLowerCase() === S.tipo) && (S.centro === 'all' || r.grupo === S.centro)
+      && (S.truck === 'all' || String(r.capKg) === S.truck) && (!q || `${r.cod} ${r.ruta.destino}`.toLowerCase().includes(q));
+    const orden = (a, b) => (a.grupo || '').localeCompare(b.grupo || '') || a.cod.localeCompare(b.cod) || a.capKg - b.capKg;
+    const lista = todas.filter(pasa).sort(orden);
+    // CSV único de Tarifas $/Kg y Min/Max (23-oct-2026): mismas columnas en ambas vistas, con los filtros activos y el camión 2 Ton
+    CC.csvRows = todasT.filter(pasa).sort(orden);
     const n = lista.length || 1;
     const pags = Math.max(1, Math.ceil(lista.length / ZPAGE));
     if (S.pagina >= pags) S.pagina = pags - 1;
@@ -858,18 +862,21 @@ function renderTarifasCliente(container, ctx, modo) {
     });
     container.querySelector('#t-csv')?.addEventListener('click', () => {
       const sep = ';', qq = v => '"' + String(v ?? '').replace(/"/g, '""') + '"';
-      let H, R;
-      if (modo === 'zfmp') {
-        H = ['Centro Origen', 'ID Ruta', 'Destino', 'Tipo', 'Clasificacion', 'Dist KM', 'Cluster', 'Tipo Camion', 'ZCAP', 'Factor Consolidacion %', 'Kilos a Consolidar', 'ZFMP $/kg', 'Tarifa Centro'];
-        R = lista.map(r => [r.grupo, r.cod, r.ruta.destino || '', r.ruta.tipo || '', r.clasif || '', num(r.ruta.km), r.clusterOp || '', r.truck.type, r.zcap != null ? Math.round(r.zcap) : '', fmt(r.factorPct, 1), Math.round(r.kilos), r.zfmp != null ? fmt(r.zfmp, 4) : '', r.kgCentro != null ? fmt(r.kgCentro, 4) : '']);
-      } else {
-        H = ['Centro Origen', 'ID Ruta', 'Destino', 'Tipo', 'Clasificacion', 'Dist KM', 'Cluster', 'Tipo Camion', 'Camion Minimo', 'ZCAP', 'ZFMI Min', 'ZFMX Max', 'Express', 'Factor Consolidacion %', 'Kilos a Consolidar', 'Kilos Tarif.Min'];
-        R = lista.map(r => [r.grupo, r.cod, r.ruta.destino || '', r.ruta.tipo || '', r.clasif || '', num(r.ruta.km), r.clusterOp || '', r.truck.type, r.camionMin, r.zcap != null ? Math.round(r.zcap) : '', r.zfmi != null ? Math.round(r.zfmi) : '', r.zfmx != null ? Math.round(r.zfmx) : '', r.express != null ? Math.round(r.express) : '', r.factorPct != null ? fmt(r.factorPct, 1) : '', r.kilos != null ? Math.round(r.kilos) : '', r.kilosTarifMin != null ? Math.round(r.kilosTarifMin) : '']);
-      }
+      const ent = v => (v != null && !isNaN(v) ? Math.round(v) : '');
+      const H = ['CENTRO ORIGEN', 'ID RUTA', 'DESTINO', 'TIPO', 'CLASIFICACION', 'COMUNA', 'KM', 'TIPO DE CAMION', 'COSTO RUTA',
+        'TARIFA MINIMA', 'TARIFA MAXIMA', 'TARIFA $/KG', 'TARIFA EXPRESS', 'KILOS MINIMOS', 'CLUSTER'];
+      const R = (CC.csvRows || []).map(r => [
+        NG[r.grupo] || titulo(r.grupo), r.cod, r.ruta.destino || '',
+        r.ruta.clasificRuta || '',                                   // Regional / Interregional
+        titulo(r.ruta.tipo || ''),                                    // Comuna / Sector
+        r.ruta.comuna || r.ruta.destino || '',                        // comuna asociada a la ruta
+        num(r.ruta.km), r.truck.type, ent(r.zcap), ent(r.zfmi), ent(r.zfmx),
+        r.zfmp != null ? fmt(r.zfmp, 2) : '', ent(r.express),
+        r.kilosTarifMin != null ? Math.round(r.kilosTarifMin) : '', r.clusterOp || '']);
       const txt = [H.map(qq).join(sep), ...R.map(r => r.map(qq).join(sep))].join('\n');
-      const blob = new Blob(['﻿' + txt], { type: 'text/csv;charset=utf-8;' });
+      const blob = new Blob(['\ufeff' + txt], { type: 'text/csv;charset=utf-8;' });
       const url = URL.createObjectURL(blob);
-      const a = document.createElement('a'); a.href = url; a.download = `${modo === 'zfmp' ? 'tarifas_kg' : 'tarifa_minmax'}_${new Date().toISOString().slice(0, 10)}.csv`;
+      const a = document.createElement('a'); a.href = url; a.download = `tarifas_clientes_${new Date().toISOString().slice(0, 10)}.csv`;
       document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
     });
   }
