@@ -14,9 +14,9 @@
 //  Acceso: sólo OWNER (o vista extra 'porteria' asignada por OWNER).
 //  SQL: supabase/sql/2026-10-18_porteria_reloj_control.sql
 // ============================================================================
-import { supabase } from './supabase-client.js?v=202610232040';
+import { supabase } from './supabase-client.js?v=202610232049';
 import { escapeHtml as esc, showAlert, toCSV, downloadFile } from './utils.js';
-import { confirmar, pedirDato } from './confirmar.js?v=202610232040';
+import { confirmar, pedirDato } from './confirmar.js?v=202610232049';
 
 const CENTRO = '1003';
 const TZ = 'America/Santiago';

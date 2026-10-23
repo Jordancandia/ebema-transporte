@@ -15,11 +15,11 @@
 // tarifas a clientes y «Guardar y recalcular» escribe sólo client_tariff_config
 // (syncOnly) y, si cambió la asignación de clusters, cluster_rutas por centro.
 // ============================================================================
-import { saveDatabase, getOrigenGroups } from './data.js?v=202610232040';
-import { buildZcapMap, es2Ton, componentesRegional } from './zcap.js?v=202610232040';
+import { saveDatabase, getOrigenGroups } from './data.js?v=202610232049';
+import { buildZcapMap, es2Ton, componentesRegional } from './zcap.js?v=202610232049';
 import { showAlert } from './utils.js';
-import { can } from './permisos.js?v=202610232040';
-import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, setParamPill, clasifPill, clasifTarifa, pillHtml } from './tarifas-ui.js?v=202610232040';
+import { can } from './permisos.js?v=202610232049';
+import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, setParamPill, clasifPill, clasifTarifa, pillHtml } from './tarifas-ui.js?v=202610232049';
 
 const CAPS = [5, 10, 15, 28];
 const CAP_LBL = { 5: '5 t', 10: '10 t', 15: '15 t', 28: '28 t' };
@@ -81,18 +81,13 @@ function contarCambios(db) {
   n += rutasReasignadas(db).length;
   return n;
 }
-// EbemaClick: cambios por centro (activo/margen/ticket), por cluster y por ruta reasignada
+// EbemaClick: cambios por centro (activo/margen/ticket) y cierre del umbral
 function ecCambios(b, w) {
-  let n = num(b.redondeo) !== num(w.redondeo) && (b.redondeo != null || w.redondeo != null) ? 1 : 0;
+  let n = (b.redondeo != null || w.redondeo != null) && num(b.redondeo) !== num(w.redondeo) ? 1 : 0;
   const bc = b.centros || {}, wc = w.centros || {};
   new Set([...Object.keys(bc), ...Object.keys(wc)]).forEach(g => {
-    const x = bc[g] || {}, y = wc[g] || {};
-    ['activo', 'margen', 'ticket'].forEach(f => { if (String(x[f] ?? '') !== String(y[f] ?? '')) n++; });
-    const kx = new Map((x.clusters || []).map(c => [c.key, JSON.stringify(c)])), ky = new Map((y.clusters || []).map(c => [c.key, JSON.stringify(c)]));
-    new Set([...kx.keys(), ...ky.keys()]).forEach(k => { if (kx.get(k) !== ky.get(k)) n++; });
+    ['activo', 'margen', 'ticket'].forEach(f => { if (String((bc[g] || {})[f] ?? '') !== String((wc[g] || {})[f] ?? '')) n++; });
   });
-  const mb = b.comunaCluster || {}, mw = w.comunaCluster || {};
-  n += Math.ceil([...new Set([...Object.keys(mb), ...Object.keys(mw)])].filter(k => (mb[k] || '') !== (mw[k] || '')).length / 2);
   return n;
 }
 function asignarCluster(ruta, key) {
@@ -287,41 +282,23 @@ function calcTarifas(ctx, ccfgX, zOver = null) {
 // ============================================================================
 // EBEMACLICK (23-oct-2026, Jordan) — base: Tarifas_EbemaClick_27.05.2026.xlsx
 // ----------------------------------------------------------------------------
-// client_tariff_config.data.ebemaclick = {
-//   redondeo,                                   // cierre del umbral (ej. $10.000)
-//   centros: { GRUPO_KEY: { activo, margen %, ticket $, clusters: [{ key, pedidos, dias:[L,M,Mi,J,V], spot }] } },
-//   comunaCluster: { rutaId|codigo: clusterKey } // sólo rutas Comuna; el Sector toma el de su comuna
-// }
+// Usa los MISMOS clusters de las rutas a clientes (vista Cluster): cluster de la
+// comuna, pedidos promedio y frecuencia de Frecuencia y Especiales. El Sector toma
+// el cluster de su comuna. Configuración propia sólo por centro en
+// client_tariff_config.data.ebemaclick = { redondeo, centros: { GRUPO_KEY: { activo, margen %, ticket $ } } }
 // Por ruta regional (comuna o sector) × camión habilitado del centro:
 //   kilos a consolidar = capacidad × factor de consolidación del centro (80% por defecto)
 //   $/kg               = ZCAP ÷ kilos a consolidar
-//   tarifa mínima      = ZCAP ÷ pedidos por viaje del cluster · kg mínimos = kilos a consolidar ÷ pedidos
+//   tarifa mínima      = ZCAP ÷ pedidos promedio del cluster · kg mínimos = kilos a consolidar ÷ pedidos
 //   umbral por margen  = tarifa mínima ÷ margen del centro
 //   umbral despacho    = redondeo hacia arriba de máx(umbral por margen, ticket promedio) · SPOT sin umbral
 // ============================================================================
-const DIAS_EC = ['L', 'M', 'Mi', 'J', 'V'];
-const EC_COL = ['#16a34a', '#f59e0b', '#3b82f6', '#a855f7', '#ef4444', '#0891b2', '#ca8a04', '#db2777'];
 const ecGk = g => String(g || '').replace(/\s/g, '_');
 const ecCfg = c => (c && c.ebemaclick) || {};
 const ecCentro = (c, g) => (ecCfg(c).centros || {})[ecGk(g)] || null;
 const ecActivo = (c, g) => !!ecCentro(c, g)?.activo;
 const ecRedondeo = c => num(ecCfg(c).redondeo) || 10000;
-function ecClusterKey(c, ruta) {
-  const m = ecCfg(c).comunaCluster || {};
-  return ruta ? (m[String(ruta.id || '')] || m[String(ruta.codigo || '')] || '') : '';
-}
-function ecColor(cen, key) {
-  const cl = cen?.clusters || [];
-  const i = cl.findIndex(x => x.key === key);
-  if (i < 0) return '#d1d5db';
-  return cl[i].spot ? '#6b7280' : EC_COL[i % EC_COL.length];
-}
-function ecFrec(cl) {
-  if (!cl) return { n: null, txt: '—' };
-  if (cl.spot) return { n: 0, txt: '48 h desde el pedido' };
-  const d = DIAS_EC.filter((_, i) => (cl.dias || [])[i]);
-  return { n: d.length, txt: d.length ? d.join(' · ') : 'sin días' };
-}
+const ecEsSpot = (key, cl) => String(key || '').toLowerCase() === 'spot' || /spot/i.test(cl?.nombre || '');
 // filasT: filas de calcTarifas ya calculadas (evita recalcular)
 function calcEbemaclick(ctx, ccfgX, zOver = null, filasT = null) {
   const red = ecRedondeo(ccfgX);
@@ -332,107 +309,62 @@ function calcEbemaclick(ctx, ccfgX, zOver = null, filasT = null) {
       && (tipo === 'comuna' || tipo === 'sector') && r.zcap > 0;
   }).map(r => {
     const cen = ecCentro(ccfgX, r.grupo);
-    const ecKey = ecClusterKey(ccfgX, r.rc);
-    const cl = ecKey ? ((cen.clusters || []).find(c => c.key === ecKey) || null) : null;
-    const fr = ecFrec(cl);
+    const cl = r.clObj || null, ecKey = cl ? r.clusterKey : '';
+    const spot = cl ? ecEsSpot(ecKey, cl) : false;
     const factorEc = r.factorPct != null ? r.factorPct : ctx.objetivoConsol(ccfgX, ecGk(r.grupo), r.capKg / 1000);
     const kilosEc = r.capKg * factorEc / 100;
-    const pedidos = cl ? (num(cl.pedidos) || 1) : null;
+    const pedidos = cl ? (num(cl.nv) || 1) : null;
     const kgEc = kilosEc > 0 ? r.zcap / kilosEc : null;
     const tarifaMin = pedidos ? r.zcap / pedidos : null;
     const kgMin = pedidos ? kilosEc / pedidos : null;
-    const margen = num(cen.margen), ticket = num(cen.ticket), spot = !!cl?.spot;
+    const margen = num(cen.margen), ticket = num(cen.ticket);
     const umbralMargen = (tarifaMin != null && margen > 0 && !spot) ? tarifaMin / (margen / 100) : null;
     const umbral = umbralMargen != null ? Math.ceil(Math.max(umbralMargen, ticket) / red - 1e-9) * red : null;
     const reglaU = !cl ? 'Sin cluster' : spot ? 'SPOT' : !(margen > 0) ? 'Sin margen' : umbralMargen >= ticket ? 'Por margen' : 'Por ticket';
-    return { ...r, ecKey, ecCl: cl, ecColor: ecColor(cen, ecKey), frecN: fr.n, frecTxt: fr.txt, factorEc, kilosEc, kgEc,
-      pedidos, tarifaMin, kgMin, margen, ticket, spot, umbralMargen, umbral, reglaU };
+    return { ...r, ecKey, ecCl: cl, ecNombre: cl ? (cl.nombre || ecKey) : '', ecColor: cl?.color || '#9ca3af', frecTxt: cl ? (cl.frecuencia || (spot ? '48 h desde el pedido' : '—')) : '—',
+      factorEc, kilosEc, kgEc, pedidos, tarifaMin, kgMin, margen, ticket, spot, umbralMargen, umbral, reglaU };
   });
 }
-// ── Borrador EbemaClick (Frecuencia y Especiales / Cluster) ──
+// ── Borrador EbemaClick (Frecuencia y Especiales) ──
 function ecWork() {
   const w = CC.work;
   if (!w.ebemaclick || typeof w.ebemaclick !== 'object') w.ebemaclick = {};
-  const e = w.ebemaclick;
-  if (!e.centros) e.centros = {};
-  if (!e.comunaCluster) e.comunaCluster = {};
-  return e;
-}
-function ecPrefijo(db, grupo) {
-  const r = (db.routes || []).find(x => x.origen_grupo === grupo && x.codigo);
-  return (String(r?.codigo || '').match(/^[A-Za-z]+/)?.[0] || 'C').toUpperCase();
-}
-function ecIdsGrupo(db, grupo) {
-  const s = new Set();
-  (db.routes || []).forEach(r => { if (r.origen_grupo === grupo) { if (r.id) s.add(String(r.id)); if (r.codigo) s.add(String(r.codigo)); } });
-  return s;
-}
-function ecRutasDe(db, ec, grupo, key) {
-  const m = ec.comunaCluster || {};
-  return (db.routes || []).filter(r => r.activo && r.origen_grupo === grupo && String(r.tipo || '').toLowerCase() === 'comuna'
-    && r.clasificRuta === 'Regional' && (m[String(r.id)] || m[String(r.codigo)]) === key).length;
+  if (!w.ebemaclick.centros) w.ebemaclick.centros = {};
+  return w.ebemaclick;
 }
 function ecEspecialesHtml(ctx, editar, grupos) {
   const { db } = ctx;
   const ec = ecWork(), b = base().ebemaclick || {};
   const bc = b.centros || {};
   const red = ecRedondeo({ ebemaclick: ec }), red0 = ecRedondeo({ ebemaclick: b });
-  const tabla = `<div class="sv-card" style="flex:1 1 100%">
-    <div class="tf-tabletitle"><div><h3>EbemaClick · centros habilitados</h3><small>Las rutas regionales (comuna y sector) de los centros activos aparecen en Tarifas EbemaClick · margen y ticket promedio definen el umbral de despacho</small></div>
+  const troncales = new Set(ctx.cfg.variables?.troncalesRoutes || []);
+  const nRutas = g => (db.routes || []).filter(r => r.activo && r.origen_grupo === g && r.clasificRuta === 'Regional' && !troncales.has(r.codigo)
+    && ['comuna', 'sector'].includes(String(r.tipo || '').toLowerCase())).length;
+  return `<div class="sv-card" style="flex:1 1 100%">
+    <div class="tf-tabletitle"><div><h3>EbemaClick · centros habilitados</h3><small>Las rutas regionales (comuna y sector) de los centros activos aparecen en Tarifas EbemaClick con el cluster de clientes · margen y ticket promedio definen el umbral de despacho</small></div>
       <div style="display:flex;align-items:center;gap:8px"><span class="sv-muted" style="font-size:12px;white-space:nowrap">Cerrar umbral a</span>${numIn('ecr', red, { pre: '$', w: '120px', changed: red !== red0, disabled: !editar, label: 'Redondeo umbral EbemaClick' })}</div></div>
-    <div class="sv-tablewrap" style="max-height:none"><table class="sv-table" style="min-width:820px">
-      <thead><tr><th>Centro logístico</th><th style="text-align:center">EbemaClick</th><th class="r">Margen ajustado</th><th class="r">Ticket promedio</th><th class="r">Clusters</th><th class="r">Comunas asignadas</th></tr></thead>
+    <div class="sv-tablewrap" style="max-height:none"><table class="sv-table" style="min-width:760px">
+      <thead><tr><th>Centro logístico</th><th style="text-align:center">EbemaClick</th><th class="r">Margen ajustado</th><th class="r">Ticket promedio</th><th class="r">Rutas regionales</th></tr></thead>
       <tbody>${grupos.map(g => {
         const gk = ecGk(g.grupo), c = ec.centros[gk] || {}, c0 = bc[gk] || {}, on = !!c.activo;
-        const asig = on ? (c.clusters || []).reduce((s, cl) => s + ecRutasDe(db, ec, g.grupo, cl.key), 0) : 0;
         const dash = '<span class="sv-muted">—</span>';
         return `<tr style="cursor:default"><td><span class="sv-b">${esc(g.nombre)}</span><div class="sv-sub">${esc(g.centroIds.join(' · '))}</div></td>
           <td style="text-align:center"><button class="tf-sw ${on ? 'is-on' : ''}" data-chip data-ectog="${esc(gk)}" ${editar ? '' : 'disabled'} title="Habilitar EbemaClick" aria-label="EbemaClick ${esc(g.nombre)}"></button></td>
           <td class="r">${on ? numIn(`ecm|${gk}`, num(c.margen), { unit: '%', w: '96px', changed: num(c.margen) !== num(c0.margen), disabled: !editar, label: 'Margen EbemaClick ' + g.nombre }) : dash}</td>
           <td class="r">${on ? numIn(`ect|${gk}`, num(c.ticket), { pre: '$', w: '130px', changed: num(c.ticket) !== num(c0.ticket), disabled: !editar, label: 'Ticket promedio EbemaClick ' + g.nombre }) : dash}</td>
-          <td class="r">${on ? fmt((c.clusters || []).length) : dash}</td>
-          <td class="r">${on ? fmt(asig) : dash}</td></tr>`; }).join('')}</tbody>
+          <td class="r">${on ? fmt(nRutas(g.grupo)) : dash}</td></tr>`; }).join('')}</tbody>
     </table></div>
-    <div class="tf-card-foot"><span>Umbral despacho = máx(tarifa mínima ÷ margen, ticket promedio) cerrado hacia arriba al múltiplo indicado</span><span>Cada comuna se asigna a su cluster EbemaClick en la vista Cluster; los sectores toman el de su comuna</span></div>
+    <div class="tf-card-foot"><span>Umbral despacho = máx(tarifa mínima ÷ margen, ticket promedio) cerrado hacia arriba al múltiplo indicado</span><span>Cluster, pedidos promedio y frecuencia: los mismos de las rutas a clientes (vista Cluster y tabla de frecuencias de arriba)</span></div>
   </div>`;
-  const activos = grupos.filter(g => ec.centros[ecGk(g.grupo)]?.activo);
-  const clusters = activos.map(g => {
-    const gk = ecGk(g.grupo), c = ec.centros[gk], c0 = bc[gk] || {};
-    const cl0 = new Map((c0.clusters || []).map(x => [x.key, x]));
-    return `<div class="sv-card" style="flex:1 1 520px">
-      <div class="tf-tabletitle"><div><h3>Clusters EbemaClick · ${esc(g.nombre)}</h3><small>Pedidos por viaje dividen el costo de la ruta (tarifa mínima) · días con despacho definen la frecuencia</small></div>
-        ${editar ? `<button class="sv-btn" data-chip data-ecadd="${esc(gk)}"><span class="material-symbols-outlined">add</span>Agregar cluster</button>` : ''}</div>
-      <div class="sv-tablewrap" style="max-height:none"><table class="sv-table" style="min-width:600px">
-        <thead><tr><th>Cluster</th><th class="r">Ped. por viaje</th><th>Días de despacho</th><th style="text-align:center">SPOT</th><th class="r">Comunas</th><th></th></tr></thead>
-        <tbody>${(c.clusters || []).map((x, i) => {
-          const o = cl0.get(x.key), fr = ecFrec(x);
-          const diasCh = !o || JSON.stringify(o.dias || []) !== JSON.stringify(x.dias || []) || !!o.spot !== !!x.spot;
-          return `<tr class="${!o ? 'tf-row-new' : ''}" style="cursor:default">
-            <td><div style="display:flex;align-items:center;gap:6px"><i style="width:10px;height:10px;border-radius:50%;background:${ecColor(c, x.key)};flex:none"></i><label class="tf-in is-txt" style="--w:110px"><input data-eckey="${esc(gk)}|${i}" value="${esc(x.key)}" ${editar ? '' : 'disabled'} aria-label="Clave del cluster"></label></div></td>
-            <td class="r">${numIn(`ecp|${gk}|${i}`, num(x.pedidos), { unit: 'ped.', w: '92px', changed: !o || num(o.pedidos) !== num(x.pedidos), disabled: !editar, label: 'Pedidos por viaje ' + x.key })}</td>
-            <td>${x.spot ? `<span class="sv-muted">${esc(fr.txt)}</span>` : `<div class="sv-seg" style="${diasCh ? 'outline:1px solid #ca8a04;border-radius:8px' : ''}">${DIAS_EC.map((d, j) => `<button data-chip data-ecdia="${esc(gk)}|${i}|${j}" class="${(x.dias || [])[j] ? 'is-on' : ''}" ${editar ? '' : 'disabled'}>${d}</button>`).join('')}</div><div class="sv-sub">${fmt(fr.n)} días/semana</div>`}</td>
-            <td style="text-align:center"><button class="tf-sw ${x.spot ? 'is-on' : ''}" data-chip data-ecspot="${esc(gk)}|${i}" ${editar ? '' : 'disabled'} aria-label="SPOT ${esc(x.key)}"></button></td>
-            <td class="r sv-muted">${fmt(ecRutasDe(db, ec, g.grupo, x.key))}</td>
-            <td style="text-align:center">${editar ? `<button class="tf-actbtn" data-chip data-ecdel="${esc(gk)}|${i}" title="Eliminar cluster"><span class="material-symbols-outlined">delete</span></button>` : ''}</td></tr>`;
-        }).join('') || '<tr class="sv-empty"><td colspan="6">Sin clusters.</td></tr>'}</tbody>
-      </table></div>
-      <div class="tf-card-foot"><span>SPOT: despacho 48 h desde el pedido, sin umbral</span><span>Comunas eliminadas de un cluster quedan sin cluster EbemaClick</span></div>
-    </div>`;
-  }).join('');
-  return tabla + clusters;
 }
 // Inputs numéricos EbemaClick de Frecuencia y Especiales → true si los manejó
 function ecNumIn(p, val) {
   const e = ecWork();
   if (p[0] === 'ecr') { e.redondeo = val; return true; }
   if (p[0] === 'ecm' || p[0] === 'ect') { const c = e.centros[p[1]] || (e.centros[p[1]] = {}); c[p[0] === 'ecm' ? 'margen' : 'ticket'] = val; return true; }
-  if (p[0] === 'ecp') { const x = e.centros[p[1]]?.clusters?.[Number(p[2])]; if (x) x.pedidos = val; return true; }
   return false;
 }
 function wireEcEspeciales(container, ctx, render) {
-  const { db } = ctx;
-  const cen = gk => ecWork().centros[gk];
-  const grupoDe = gk => gk.replace(/_/g, ' ');
   container.querySelectorAll('[data-ectog]').forEach(b => b.addEventListener('click', () => {
     const gk = b.dataset.ectog, e = ecWork();
     const c = e.centros[gk] || (e.centros[gk] = {});
@@ -441,71 +373,9 @@ function wireEcEspeciales(container, ctx, render) {
       const otro = Object.values(e.centros).find(x => x !== c && x.activo);
       if (c.margen == null) c.margen = otro ? num(otro.margen) : 0;
       if (c.ticket == null) c.ticket = otro ? num(otro.ticket) : 0;
-      if (!Array.isArray(c.clusters) || !c.clusters.length) {
-        const p = ecPrefijo(db, grupoDe(gk));
-        c.clusters = [{ key: p + '-1', pedidos: 3.5, dias: [1, 1, 1, 1, 1], spot: false }, { key: 'SPOT', pedidos: 1, dias: [0, 0, 0, 0, 0], spot: true }];
-      }
     }
     render();
   }));
-  container.querySelectorAll('[data-eckey]').forEach(inp => inp.addEventListener('change', () => {
-    const [gk, i] = inp.dataset.eckey.split('|');
-    const c = cen(gk), x = c?.clusters?.[Number(i)];
-    if (!x) return;
-    const nuevo = inp.value.trim().toUpperCase();
-    if (!nuevo || nuevo === x.key) { inp.value = x.key; return; }
-    if (c.clusters.some(y => y !== x && y.key === nuevo)) { showAlert(`Ya existe el cluster ${nuevo} en este centro.`, 'error'); inp.value = x.key; return; }
-    const m = ecWork().comunaCluster, ids = ecIdsGrupo(db, grupoDe(gk));
-    Object.keys(m).forEach(k => { if (m[k] === x.key && ids.has(k)) m[k] = nuevo; });
-    x.key = nuevo;
-    render();
-  }));
-  container.querySelectorAll('[data-ecdia]').forEach(b => b.addEventListener('click', () => {
-    const [gk, i, j] = b.dataset.ecdia.split('|');
-    const x = cen(gk)?.clusters?.[Number(i)];
-    if (!x) return;
-    x.dias = DIAS_EC.map((_, k) => ((x.dias || [])[k] ? 1 : 0));
-    x.dias[Number(j)] = x.dias[Number(j)] ? 0 : 1;
-    render();
-  }));
-  container.querySelectorAll('[data-ecspot]').forEach(b => b.addEventListener('click', () => {
-    const [gk, i] = b.dataset.ecspot.split('|');
-    const x = cen(gk)?.clusters?.[Number(i)];
-    if (!x) return;
-    x.spot = !x.spot;
-    if (x.spot) x.pedidos = 1;
-    render();
-  }));
-  container.querySelectorAll('[data-ecdel]').forEach(b => b.addEventListener('click', () => {
-    const [gk, i] = b.dataset.ecdel.split('|');
-    const c = cen(gk);
-    if (!c?.clusters) return;
-    const [del] = c.clusters.splice(Number(i), 1);
-    const m = ecWork().comunaCluster, ids = ecIdsGrupo(db, grupoDe(gk));
-    Object.keys(m).forEach(k => { if (m[k] === del.key && ids.has(k)) delete m[k]; });
-    render();
-  }));
-  container.querySelectorAll('[data-ecadd]').forEach(b => b.addEventListener('click', () => {
-    const gk = b.dataset.ecadd, c = cen(gk);
-    if (!c) return;
-    c.clusters = c.clusters || [];
-    const p = ecPrefijo(db, grupoDe(gk));
-    let n = c.clusters.filter(x => !x.spot).length + 1;
-    while (c.clusters.some(x => x.key === `${p}-${n}`)) n++;
-    const iSpot = c.clusters.findIndex(x => x.spot);
-    const nuevo = { key: `${p}-${n}`, pedidos: 2.5, dias: [0, 0, 0, 0, 0], spot: false };
-    if (iSpot >= 0) c.clusters.splice(iSpot, 0, nuevo); else c.clusters.push(nuevo);
-    render();
-  }));
-}
-// Celda «Cluster EbemaClick» de la vista Cluster (sólo centros con EbemaClick activo)
-function ecCeldaCluster(ccX, cd, r, editar) {
-  const cen = ecCentro(ccX, cd.grupo);
-  if (!cen?.activo) return '<td class="sv-muted">—</td>';
-  const key = ecClusterKey(ccX, r.route);
-  const ch = key !== ecClusterKey({ ebemaclick: base().ebemaclick || {} }, r.route);
-  return `<td><div style="display:flex;align-items:center;gap:6px"><i style="width:10px;height:10px;border-radius:50%;background:${ecColor(cen, key)};flex:none"></i>
-    <select class="tf-sel" data-ecasig="${esc(r.rutaId)}" ${editar ? '' : 'disabled'} style="${ch ? 'border-color:#ca8a04;background:#fffbeb' : ''}"><option value="">— Sin cluster —</option>${(cen.clusters || []).map(c => `<option value="${esc(c.key)}" ${key === c.key ? 'selected' : ''}>${esc(c.key)}${c.spot ? ' · 48 h' : ` · ${fmt(ecFrec(c).n)} d/sem`}</option>`).join('')}</select></div></td>`;
 }
 
 function impactoClientes(ctx) {
@@ -1049,7 +919,6 @@ function renderCluster(container, ctx) {
     else if (!datos.length) cuerpo = noData('No se encontraron rutas tipo Comuna + Regional.');
     else {
       const cls = ccX.clusters;
-      const ecAny = datos.some(cd => ecActivo(ccX, cd.grupo));
       const colorDe = k => cls.find(c => c.key === k)?.color || '#d1d5db';
       const nomDe = k => cls.find(c => c.key === k)?.nombre || (k ? k : 'Sin cluster');
       const vis = datos.filter(cd => KV.centro === 'all' || cd.grupo === KV.centro);
@@ -1066,8 +935,8 @@ function renderCluster(container, ctx) {
           ${chips(datos.map(cd => [cd.grupo, cd.nombre]), KV.centro, 'data-kcentro')}
         </div>
         <div class="sv-card">
-          <div class="sv-tablewrap" style="max-height:620px"><table class="sv-table" style="min-width:${ecAny ? 1380 : 1180}px">
-            <thead><tr><th>Centro</th><th>Cód. ruta</th><th>Destino</th><th>Zona</th><th class="r">Densidad</th><th>Cluster</th>${ecAny ? '<th>Cluster EbemaClick</th>' : ''}<th>Eje vial</th><th>Cluster op.</th><th>Frecuencia</th><th>Flota sugerida</th></tr></thead>
+          <div class="sv-tablewrap" style="max-height:620px"><table class="sv-table" style="min-width:1180px">
+            <thead><tr><th>Centro</th><th>Cód. ruta</th><th>Destino</th><th>Zona</th><th class="r">Densidad</th><th>Cluster</th><th>Eje vial</th><th>Cluster op.</th><th>Frecuencia</th><th>Flota sugerida</th></tr></thead>
             <tbody>${filas.map(({ cd, r }) => {
               const anchors = cd._anch || (cd._anch = ctx.anchorsOpFor(cd));
               const op = ctx.clusterOpDe(r.eje, r.cluster, { lat: r.lat, lon: r.lon, anchors });
@@ -1078,8 +947,8 @@ function renderCluster(container, ctx) {
                 <td class="sv-mono">${esc(r.zona)}</td><td class="r"><b>${fmt(r.densidad, 2)}%</b></td>
                 <td><div style="display:flex;align-items:center;gap:6px"><i style="width:10px;height:10px;border-radius:50%;background:${colorDe(r.cluster)};flex:none"></i>
                   <select class="tf-sel" data-kasig="${esc(r.rutaId)}" ${editar ? '' : 'disabled'} style="${ch ? 'border-color:#ca8a04;background:#fffbeb' : ''}"><option value="">— Sin cluster —</option>${cls.map(c => `<option value="${esc(c.key)}" ${r.cluster === c.key ? 'selected' : ''}>${esc(c.nombre)}</option>`).join('')}</select></div></td>
-                ${ecAny ? ecCeldaCluster(ccX, cd, r, editar) : ''}<td title="${esc(r.ejeAlias || '')}">${esc(r.eje || '—')}</td><td class="sv-mono"><b>${esc(op.cluster)}</b></td><td>${esc(op.frecuencia)}</td><td>${esc(op.flota)}</td></tr>`;
-            }).join('') || `<tr class="sv-empty"><td colspan="${ecAny ? 11 : 10}">Sin rutas para el filtro.</td></tr>`}</tbody>
+                <td title="${esc(r.ejeAlias || '')}">${esc(r.eje || '—')}</td><td class="sv-mono"><b>${esc(op.cluster)}</b></td><td>${esc(op.frecuencia)}</td><td>${esc(op.flota)}</td></tr>`;
+            }).join('') || '<tr class="sv-empty"><td colspan="10">Sin rutas para el filtro.</td></tr>'}</tbody>
           </table></div>
           <div class="sv-tfoot"><span>${fmt(filas.length)} rutas · ${nomDe(KV.kpi === 'all' ? '' : KV.kpi) && KV.kpi !== 'all' ? esc(nomDe(KV.kpi)) : 'todos los clusters'}</span><span>Al guardar se actualiza cluster_rutas (cluster operativo) de los centros cambiados</span></div>
         </div>`;
@@ -1093,14 +962,6 @@ function renderCluster(container, ctx) {
     container.querySelectorAll('[data-kkpi]').forEach(b => b.addEventListener('click', () => { const k = b.dataset.kkpi; KV.kpi = KV.kpi === k ? 'all' : k; render(); }));
     const q = container.querySelector('#k-q');
     q?.addEventListener('input', () => { KV.q = q.value; const pos = q.selectionStart; render(); const n = container.querySelector('#k-q'); n.focus(); n.setSelectionRange(pos, pos); });
-    container.querySelectorAll('[data-ecasig]').forEach(s => s.addEventListener('change', () => {
-      const ruta = (ctx.db.routes || []).find(r => String(r.id) === s.dataset.ecasig);
-      if (ruta) {
-        const m = ecWork().comunaCluster;
-        [ruta.id, ruta.codigo].filter(Boolean).forEach(k => { if (s.value) m[String(k)] = s.value; else delete m[String(k)]; });
-      }
-      render();
-    }));
     container.querySelectorAll('[data-kasig]').forEach(s => s.addEventListener('change', () => {
       const ruta = (ctx.db.routes || []).find(r => String(r.id) === s.dataset.kasig);
       if (ruta) asignarCluster(ruta, s.value);
@@ -1373,8 +1234,9 @@ function renderEbemaclick(container, ctx) {
     // Camiones habilitados en el centro seleccionado (Tarifas por Camión + Camión 2 Ton)
     const truckOpts = [...new Set(delCentro.map(r => r.capKg))].sort((a, b) => a - b).map(c => [String(c), fmt(c / 1000) + ' t']);
     EV.trucks = EV.trucks.filter(k => truckOpts.some(([v]) => v === k));
-    const cen = EV.centro !== 'all' ? ecCentro(ccX, EV.centro) : null;
-    const clOpts = cen ? [...(cen.clusters || []).map(c => [c.key, c.key]), ['_none', 'Sin cluster']] : [];
+    // Clusters de clientes presentes en las rutas del filtro de centro
+    const clUsados = new Set(delCentro.map(r => r.ecKey || '_none'));
+    const clOpts = [...(ccX.clusters || []).filter(c => clUsados.has(c.key)).map(c => [c.key, c.nombre.split(/\s[—-]\s/)[0].trim()]), ...(clUsados.has('_none') ? [['_none', 'Sin cluster']] : [])];
     EV.cls = EV.cls.filter(k => clOpts.some(([v]) => v === k));
     const q = EV.q.trim().toLowerCase();
     const pasa = r => (!EV.tipos.length || EV.tipos.includes(String(r.ruta.tipo || '').toLowerCase()))
@@ -1391,7 +1253,7 @@ function renderEbemaclick(container, ctx) {
     const conMin = lista.filter(r => r.tarifaMin != null), conU = lista.filter(r => r.umbral != null);
     const sinCl = lista.filter(r => !r.ecCl).length;
     const kpis = kpiHtml(false, '', '', 'Combinaciones', fmt(lista.length), 'ruta × camión con el filtro', '#191c1d', false)
-      + kpiHtml(false, '', '', 'Tarifa mínima promedio', conMin.length ? clp(prom(conMin, 'tarifaMin')) : '—', 'costo ruta ÷ pedidos por viaje', '#15803d', false)
+      + kpiHtml(false, '', '', 'Tarifa mínima promedio', conMin.length ? clp(prom(conMin, 'tarifaMin')) : '—', 'costo ruta ÷ pedidos promedio', '#15803d', false)
       + kpiHtml(false, '', '', 'Umbral despacho promedio', conU.length ? clp(prom(conU, 'umbral')) : '—', `cerrado a ${clp(ecRedondeo(ccX))}`, '#b5000b', false)
       + kpiHtml(false, '', '', 'Sin cluster', fmt(sinCl), sinCl ? 'asignar en la vista Cluster' : 'todas las rutas con cluster', sinCl ? '#ca8a04' : '#9ca3af', false);
     const filtros = `<div class="sv-filters">
@@ -1399,20 +1261,20 @@ function renderEbemaclick(container, ctx) {
           <span class="sv-flbl">Camión</span>${segMulti('data-ectruck', EV.trucks, truckOpts, 'Todos')}
           <label class="sv-inp"><span class="material-symbols-outlined">search</span><input id="ec-q" placeholder="Código, destino o comuna" value="${esc(EV.q)}" style="width:220px"></label></div>
         ${chips(centros, EV.centro, 'data-eccentro')}
-        ${clOpts.length ? `<div class="sv-frow"><span class="sv-flbl">Cluster EbemaClick</span>${segMulti('data-eccl', EV.cls, clOpts, 'Todos')}</div>` : ''}
+        ${clOpts.length > 1 ? `<div class="sv-frow"><span class="sv-flbl">Cluster</span>${segMulti('data-eccl', EV.cls, clOpts, 'Todos')}</div>` : ''}
       </div>`;
     const tonoU = { 'Por margen': 'ok', 'Por ticket': 'info', SPOT: 'mute', 'Sin cluster': 'orange', 'Sin margen': 'orange' };
     const dash = '<span class="sv-muted">—</span>';
     const filas = pag.map(r => {
       const sector = String(r.ruta.tipo || '').toLowerCase() === 'sector';
       const clCell = r.ecCl
-        ? `<span class="sv-pill mute"><i style="background:${r.ecColor}"></i>${esc(r.ecKey)}</span>${r.clusterDe ? `<div class="sv-sub">de comuna ${esc(r.clusterDe)}</div>` : ''}`
+        ? `<span class="sv-pill mute"><i style="background:${r.ecColor}"></i>${esc(r.ecNombre.split(/\s[—-]\s/)[0].trim())}</span>${r.clusterOp ? `<div class="sv-sub">op. ${esc(r.clusterOp)}</div>` : ''}${r.clusterDe ? `<div class="sv-sub">de comuna ${esc(r.clusterDe)}</div>` : ''}`
         : `<span class="sv-sub" style="color:#b5000b">${sector && !r.clusterDe ? 'sin ruta comuna' : 'sin cluster'}</span>`;
       return `<tr style="cursor:default"><td><span class="sv-b">${esc(NG[r.grupo] || titulo(r.grupo))}</span><div class="sv-sub">${esc(r.ruta.origenId || '')}</div></td>
         <td><span class="sv-mono">${esc(r.cod)}</span></td><td><b>${esc(r.ruta.destino || '')}</b>${sector ? `<div class="sv-sub">${esc(r.ruta.comuna || '')}</div>` : ''}</td>
         <td>${pillHtml(sector ? 'Sector' : 'Comuna', sector ? 'ok' : 'info')}</td><td class="r">${fmt(num(r.ruta.km))}</td>
         <td>${clCell}</td>
-        <td>${r.ecCl ? (r.spot ? `<span class="sv-muted">${esc(r.frecTxt)}</span>` : `<b>${fmt(r.frecN)}</b> d/sem<div class="sv-sub">${esc(r.frecTxt)}</div>`) : dash}</td>
+        <td>${r.ecCl ? esc(r.frecTxt) : dash}</td>
         <td style="white-space:nowrap">${esc(r.truck.type)}${r.es2t ? `<div class="sv-sub" style="color:#7e22ce">${r.t2Zcap ? 'ZCAP Tarifas por Camión' : 'tarifa plana'}</div>` : ''}</td>
         <td class="r">${clp(r.zcap)}</td><td class="r sv-muted">${fmt(r.factorEc, 1)}%</td><td class="r">${fmt(r.kilosEc)} kg</td><td class="r">${r.kgEc != null ? kg$(r.kgEc) : '—'}</td>
         <td class="r">${r.pedidos != null ? fmt(r.pedidos, 1) : dash}</td>
@@ -1426,12 +1288,12 @@ function renderEbemaclick(container, ctx) {
     const cuerpo = `<div class="sv-kpis">${kpis}</div>${filtros}
       <div class="sv-card">
         <div class="sv-tablewrap" style="max-height:620px"><table class="sv-table" style="min-width:2050px"><thead><tr>
-          <th>Centro origen</th><th>ID ruta</th><th>Destino</th><th>Tipo</th><th class="r">Dist. KM</th><th>Cluster EbemaClick</th><th>Frecuencia</th><th>Tipo camión</th>
-          <th class="r">Costo ruta (ZCAP)</th><th class="r">Factor consol.</th><th class="r">Kilos a consolidar</th><th class="r">$/kg</th><th class="r">Ped. por viaje</th>
+          <th>Centro origen</th><th>ID ruta</th><th>Destino</th><th>Tipo</th><th class="r">Dist. KM</th><th>Cluster</th><th>Frecuencia</th><th>Tipo camión</th>
+          <th class="r">Costo ruta (ZCAP)</th><th class="r">Factor consol.</th><th class="r">Kilos a consolidar</th><th class="r">$/kg</th><th class="r">Ped. promedio</th>
           <th class="r">Tarifa mínima</th><th class="r">Kilos mínimos</th><th class="r">Margen</th><th class="r">Umbral por margen</th><th class="r">Ticket promedio</th><th class="r">Umbral despacho</th></tr></thead>
           <tbody>${filas || '<tr class="sv-empty"><td colspan="19">Sin combinaciones para los filtros.</td></tr>'}</tbody></table></div>
         <div class="sv-tfoot"><span>${fmt(lista.length)} combinaciones ruta × camión</span>${pager(lista.length, EV.pagina, ZPAGE, 'data-ecpag')}</div>
-        <div class="tf-card-foot"><span>Kilos a consolidar = capacidad × factor de consolidación del centro · $/kg = ZCAP ÷ kilos a consolidar</span><span>Tarifa mínima = ZCAP ÷ pedidos por viaje del cluster · Kilos mínimos = kilos a consolidar ÷ pedidos por viaje</span><span>Umbral por margen = tarifa mínima ÷ margen · Umbral despacho = máx(umbral por margen, ticket promedio) cerrado hacia arriba a ${clp(ecRedondeo(ccX))} · SPOT sin umbral</span><span>Sectores toman el cluster de su comuna · centros, margen, ticket y clusters en Frecuencia y Especiales; asignación de comunas en Cluster</span></div>
+        <div class="tf-card-foot"><span>Kilos a consolidar = capacidad × factor de consolidación del centro · $/kg = ZCAP ÷ kilos a consolidar</span><span>Tarifa mínima = ZCAP ÷ pedidos promedio del cluster · Kilos mínimos = kilos a consolidar ÷ pedidos promedio</span><span>Umbral por margen = tarifa mínima ÷ margen · Umbral despacho = máx(umbral por margen, ticket promedio) cerrado hacia arriba a ${clp(ecRedondeo(ccX))} · SPOT sin umbral</span><span>Cluster, pedidos promedio y frecuencia = los de las rutas a clientes (Cluster · Frecuencia y Especiales) · sectores toman el cluster de su comuna · centros, margen, ticket y cierre del umbral en Frecuencia y Especiales</span></div>
       </div>`;
     container.innerHTML = marco(ctx, { titulo: 'Tarifas EbemaClick', desc: 'Tarifa mínima, kilos mínimos y umbral de despacho EbemaClick por ruta regional y tipo de camión habilitado en cada centro.', activo: 'ebemaclick', acciones, cuerpo });
     wire();
@@ -1455,11 +1317,11 @@ function renderEbemaclick(container, ctx) {
       const sep = ';', qq = v => '"' + String(v ?? '').replace(/"/g, '""') + '"';
       const ent = v => (v != null && !isNaN(v) ? Math.round(v) : '');
       const dec = (v, d) => (v != null && !isNaN(v) ? fmt(v, d) : '');
-      const H = ['CENTRO ORIGEN', 'ID RUTA', 'DESTINO', 'TIPO', 'COMUNA', 'KM', 'CLUSTER EBEMACLICK', 'FRECUENCIA DIAS/SEM', 'DIAS DESPACHO', 'TIPO DE CAMION',
-        'COSTO RUTA', 'FACTOR CONSOLIDACION %', 'KILOS A CONSOLIDAR', 'TARIFA $/KG', 'PEDIDOS POR VIAJE', 'TARIFA MINIMA', 'KILOS MINIMOS',
+      const H = ['CENTRO ORIGEN', 'ID RUTA', 'DESTINO', 'TIPO', 'COMUNA', 'KM', 'CLUSTER', 'CLUSTER OPERATIVO', 'FRECUENCIA', 'TIPO DE CAMION',
+        'COSTO RUTA', 'FACTOR CONSOLIDACION %', 'KILOS A CONSOLIDAR', 'TARIFA $/KG', 'PEDIDOS PROMEDIO', 'TARIFA MINIMA', 'KILOS MINIMOS',
         'MARGEN %', 'UMBRAL POR MARGEN', 'TICKET PROMEDIO', 'UMBRAL DESPACHO', 'REGLA UMBRAL'];
       const R = (CC.ecRows || []).map(r => [NG[r.grupo] || titulo(r.grupo), r.cod, r.ruta.destino || '', titulo(r.ruta.tipo || ''), r.ruta.comuna || r.ruta.destino || '',
-        num(r.ruta.km), r.ecKey || '', r.frecN ?? '', r.ecCl ? r.frecTxt : '', r.truck.type, ent(r.zcap), dec(r.factorEc, 1), ent(r.kilosEc), dec(r.kgEc, 2),
+        num(r.ruta.km), r.ecNombre || '', r.clusterOp || '', r.ecCl ? r.frecTxt : '', r.truck.type, ent(r.zcap), dec(r.factorEc, 1), ent(r.kilosEc), dec(r.kgEc, 2),
         r.pedidos != null ? dec(r.pedidos, 1) : '', ent(r.tarifaMin), ent(r.kgMin), r.margen > 0 ? dec(r.margen, 2) : '', ent(r.umbralMargen),
         r.ticket > 0 ? ent(r.ticket) : '', ent(r.umbral), r.reglaU]);
       const txt = [H.map(qq).join(sep), ...R.map(r => r.map(qq).join(sep))].join('\n');
