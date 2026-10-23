@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610231717';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610231717';
-import { getDatabase } from './data.js?v=202610231717';
+import { supabase } from './supabase-client.js?v=202610231721';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610231721';
+import { getDatabase } from './data.js?v=202610231721';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610231717';
-import { confirmar, pedirDato } from './confirmar.js?v=202610231717';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610231721';
+import { confirmar, pedirDato } from './confirmar.js?v=202610231721';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -1321,6 +1321,8 @@ function showCoordVentaModal(row, ctx) {
       if (!st.telefono.trim()) f.push('telefono');
       if (esCli()) {
         if (!st.idTrans.trim()) f.push('idTrans');   // (5-oct-2026) chofer, RUT, teléfono y patente pueden quedar pendientes
+        if (String(st.patCamion ?? '').trim() && !String(st.patCarro ?? '').trim()) f.push('patCarro');   // (23-oct-2026, Jordan) carro obligatorio con patente camión
+
         st.extras.forEach((e, d) => ['entrega', 'direccion', 'telefono'].forEach(k => { if (!String(e[k] ?? '').trim()) f.push(`x_${k}_${d}`); }));
       }
       return f;
@@ -1430,7 +1432,7 @@ function showCoordVentaModal(row, ctx) {
             </div>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
               <div>${lbl('Patente camión', 'patCamion', false)}${inp('patCamion', 'Pendiente', 'list="dl-pat-cam" autocomplete="off"')}</div>
-              <div>${lbl('Patente carro (opcional)', 'patCarro', false)}${inp('patCarro', 'Rampla / carro')}</div>
+              <div>${lbl('Patente carro' + (String(st.patCamion ?? '').trim() ? ' *' : ''), 'patCarro', false)}${inp('patCarro', 'Rampla / carro')}</div>
             </div>
             ${notaPendTransp(st, 'el pedido')}
             <datalist id="dl-pat-cam">${camList().map(x => `<option value="${escapeHtml(x.id_camion)}">${escapeHtml([x.modelo, x.capacidad_ton ? x.capacidad_ton + ' t' : ''].filter(Boolean).join(' · '))}</option>`).join('')}</datalist>
@@ -2012,6 +2014,7 @@ function showCoordRetiroModal(row, ctx) {
       if (!lineasOk(MAIN)) f.push('lineas_' + MAIN);
       if (!rm()) return f;
       if (!st.fecha) f.push('fecha');
+      if (String(st.patCamion ?? '').trim() && !String(st.patCarro ?? '').trim()) f.push('patCarro');   // (23-oct-2026, Jordan) carro obligatorio con patente camión
       if (!dirMain()) f.push('dir');
       if (!st.comuna.trim()) f.push('comuna');
       if (!st.contacto.trim()) f.push('contacto');
@@ -2120,7 +2123,7 @@ function showCoordRetiroModal(row, ctx) {
             </div>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
               <div>${lbl('Patente camión', 'patCamion', false)}${inp('patCamion', 'Pendiente', 'list="dl-pat-ret" autocomplete="off"')}</div>
-              <div>${lbl('Patente carro (opcional)', 'patCarro', false)}${inp('patCarro', 'Rampla / carro')}</div>
+              <div>${lbl('Patente carro' + (String(st.patCamion ?? '').trim() ? ' *' : ''), 'patCarro', false)}${inp('patCarro', 'Rampla / carro')}</div>
             </div>
             ${(() => { const pd = pendTranspRetiro({ chofer_nombre: st.choferNombre, chofer_rut: st.choferRut, chofer_telefono: st.choferTel, patente_camion: st.patCamion });
               return pd.length ? `<div class="sv-note-box" style="background:#fef3c7;color:#713f12"><b>Pendiente:</b> ${escapeHtml(pd.join(', '))}. Puedes coordinar igual; la OC queda marcada <b>«Chofer/patente pendiente»</b> y se completa después con «Editar coordinación».${pd.includes('patente') ? ' Sin patente, el camión directo aún no queda programado en el Plan de Carga.' : ''}</div>` : ''; })()}
@@ -2381,7 +2384,7 @@ function showTransporteCamionModal({ titulo, sub, ini = {}, otros = [], fechaDef
     const sel = () => transDe(st.idTrans);
     const faltanSel = () => { const t = sel(); return t ? faltan(t) : []; };
     const campoMaestro = { RUT: 'mRut', 'teléfono': 'mTel', correo: 'mEmail' };
-    const REQ = ['fechaCarga', 'choferNombre', 'choferRut', 'choferTel', 'patCamion'];
+    const REQ = ['fechaCarga', 'choferNombre', 'choferRut', 'choferTel', 'patCamion', 'patCarro'];   // (23-oct-2026, Jordan) carro obligatorio
     const faltantes = () => {
       const f = REQ.filter(k => !String(st[k]).trim());
       if (!sel()) f.unshift('idTrans');
@@ -2469,7 +2472,7 @@ function showTransporteCamionModal({ titulo, sub, ini = {}, otros = [], fechaDef
           </div>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
             <div>${lbl('Patente camión', 'patCamion', true)}${inp('patCamion', 'AB-CD-12', 'list="dl-pat-prog" autocomplete="off"')}</div>
-            <div>${lbl('Patente carro (opcional)', 'patCarro', false)}${inp('patCarro', 'Rampla / carro')}</div>
+            <div>${lbl('Patente carro', 'patCarro', true)}${inp('patCarro', 'Rampla / carro')}</div>
           </div>
           <datalist id="dl-pat-prog">${camList().map(x => `<option value="${escapeHtml(x.id_camion)}">${escapeHtml([x.modelo, x.capacidad_ton ? x.capacidad_ton + ' t' : ''].filter(Boolean).join(' · '))}</option>`).join('')}</datalist>
         </div>
@@ -2599,6 +2602,7 @@ function showCoordPv4000Modal(row, ctx) {
       const f = [];
       if (!st.fecha) f.push('fecha');
       if (esCli()) ['direccion', 'telefono', 'idTrans'].forEach(k => { if (!String(st[k] ?? '').trim()) f.push(k); });
+      if (String(st.patCamion ?? '').trim() && !String(st.patCarro ?? '').trim()) f.push('patCarro');   // (23-oct-2026, Jordan) carro obligatorio con patente camión
       return f;
     };
     const bad = k => st.err && faltantes().includes(k);
@@ -2656,7 +2660,7 @@ function showCoordPv4000Modal(row, ctx) {
               <div>${lbl('Teléfono', 'choferTel', false)}${inp('choferTel', '+56 9…')}</div></div>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
               <div>${lbl('Patente camión', 'patCamion', false)}${inp('patCamion', 'Pendiente', 'list="dl-pat-p4" autocomplete="off"')}</div>
-              <div>${lbl('Patente carro (opcional)', 'patCarro', false)}${inp('patCarro', 'Rampla / carro')}</div></div>
+              <div>${lbl('Patente carro' + (String(st.patCamion ?? '').trim() ? ' *' : ''), 'patCarro', false)}${inp('patCarro', 'Rampla / carro')}</div></div>
             ${notaPendTransp(st, 'el pedido')}
             <datalist id="dl-pat-p4">${camList().map(x => `<option value="${escapeHtml(x.id_camion)}"></option>`).join('')}</datalist>
           </div>` : ''}
@@ -2821,6 +2825,7 @@ function showCoordTrasladoModal(row, ctx) {
     const faltantes = () => {
       const f = REQ.filter(k => !String(st[k]).trim());
       st.entregas.forEach((v, d) => { if (!String(v).trim()) f.push('ent_' + d); });
+      if (String(st.patCamion ?? '').trim() && !String(st.patCarro ?? '').trim()) f.push('patCarro');   // (23-oct-2026, Jordan) carro obligatorio con patente camión
       return f;
     };
     const bad = k => st.err && faltantes().includes(k);
@@ -2883,7 +2888,7 @@ function showCoordTrasladoModal(row, ctx) {
               <div>${lbl('Teléfono', 'choferTel', false)}${inp('choferTel', '+56 9…')}</div></div>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
               <div>${lbl('Patente camión', 'patCamion', false)}${inp('patCamion', 'Pendiente', 'list="dl-pat-tr" autocomplete="off"')}</div>
-              <div>${lbl('Patente carro (opcional)', 'patCarro', false)}${inp('patCarro', 'Rampla / carro')}</div></div>
+              <div>${lbl('Patente carro' + (String(st.patCamion ?? '').trim() ? ' *' : ''), 'patCarro', false)}${inp('patCarro', 'Rampla / carro')}</div></div>
             ${notaPendTransp(st, 'el pedido')}
             <datalist id="dl-pat-tr">${camList().map(x => `<option value="${escapeHtml(x.id_camion)}"></option>`).join('')}</datalist>
           </div>
@@ -5905,11 +5910,11 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610231717');
+    const m = await import('./ind-plan-carga.js?v=202610231721');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (currentSub === 'control_diferencias') {  // (11-oct-2026) Control de Diferencias del Plan de Carga
-    const m = await import('./control-diferencias.js?v=202610231717');
+    const m = await import('./control-diferencias.js?v=202610231721');
     await m.renderControlDiferencias(stage);
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
