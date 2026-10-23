@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610231652';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610231652';
-import { getDatabase } from './data.js?v=202610231652';
+import { supabase } from './supabase-client.js?v=202610231709';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610231709';
+import { getDatabase } from './data.js?v=202610231709';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610231652';
-import { confirmar, pedirDato } from './confirmar.js?v=202610231652';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610231709';
+import { confirmar, pedirDato } from './confirmar.js?v=202610231709';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -5905,11 +5905,11 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610231652');
+    const m = await import('./ind-plan-carga.js?v=202610231709');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (currentSub === 'control_diferencias') {  // (11-oct-2026) Control de Diferencias del Plan de Carga
-    const m = await import('./control-diferencias.js?v=202610231652');
+    const m = await import('./control-diferencias.js?v=202610231709');
     await m.renderControlDiferencias(stage);
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
@@ -6728,18 +6728,10 @@ async function renderPlanCarga(stage, opts = {}) {
         det.cross.push({ entrega_entrante: r.entrega || '', pt: r.doc_compr, origen: String(r.cesu ?? '').trim(), ceDestino: ceO, almDestino: String(r.alm ?? '').trim(), material: r.material, nombre: r.texto_breve, fecha: r.fe_entrega, ctdPend: pend, ton: t, pv: r.documento, tonBruto, tonVol,
           _ceOrig: ceO !== ce ? ceO : '', _ajustada: pend < r._pendSapX - 1e-9, _pendSap: r._pendSapX }); return sum + t; }, 0);
 
-    // (23-oct-2026, Jordan) Carga manual CONSOLIDADO del día (sin entrega SAP): va primero en el camión CD.
+    // (23-oct-2026, Jordan) Carga manual: las CONSOLIDADO se agregan más abajo, con el día de carga del plan ya
+    // resuelto (horizonte efectivo); las CD-CLIENTE salen el día hábil siguiente (como todo camión directo).
     let tonManCx = 0, tonManTr = 0;
-    const diaCargaCM = isoLocal(getHorizonte(ce) === 48 ? diaHabil2 : diaHabil1);
-    const cmCe = cmHoy.filter(m => String(m.ce ?? '').trim() === ce && String(m.fecha_carga ?? '') === diaCargaCM);
-    cmCe.filter(m => m.modo === 'CONSOLIDADO').forEach(m => lineasCargaManual(m).forEach(l => {
-      const docM = String(m.doc_compr ?? '').trim();
-      if (conEntregaCM.has(_keyInc(docM, l.material))) return;
-      const base = { pt: docM, material: l.material, nombre: l.nombre, fecha: fmtFechaISO(m.fecha_carga), ton: l.ton, tonBruto: l.tonBruto, tonVol: l.tonVol,
-        pv: '', entrega_entrante: '', _cargaManual: true, _orden: -200 };
-      if (m.tipo === 'CROSSDOCK') { det.cross.push({ ...base, origen: planOrigen, ceDestino: ce, ctdPend: l.cant }); tonManCx += l.ton; }
-      else { det.quiebre.push({ ...base, ctd: sapNum(l.cant), usuario: 'CARGA MANUAL', _motivo: 'CARGA MANUAL · ' + MARCA_PEND_ENTREGA }); tonManTr += l.ton; }
-    }));
+    const cmCe = cmHoy.filter(m => String(m.ce ?? '').trim() === ce);
 
     // 5. Notas de Venta 1003 (ofvta = centro): requiere ruta, excluye RETIRA.
     //    >26T  ⇒ CAMIÓN CLIENTE (directo al cliente, no se consolida). Fecha -3/+3.
@@ -6888,7 +6880,7 @@ async function renderPlanCarga(stage, opts = {}) {
       }
     }
     // (23-oct-2026, Jordan) Carga manual CD-CLIENTE del día: un camión directo por pedido (patente se programa en el plan).
-    cmCe.filter(m => m.modo === 'CD-CLIENTE').forEach(m => {
+    cmCe.filter(m => m.modo === 'CD-CLIENTE' && String(m.fecha_carga ?? '') === isoLocal(diaHabil1)).forEach(m => {
       const docM = String(m.doc_compr ?? '').trim();
       const items = lineasCargaManual(m).filter(l => !conEntregaCM.has(_keyInc(docM, l.material))).map(l => ({ pv: docM, material: l.material, nombre: l.nombre, cant: l.cant,
         ruta: '', comuna: m.comuna || '', region: '', fecha: fmtFechaISO(m.fecha_carga), ton: l.ton, tonBruto: l.tonBruto, tonVol: l.tonVol,
@@ -7049,7 +7041,7 @@ async function renderPlanCarga(stage, opts = {}) {
     // evalúa de nuevo cada vez que se renderiza el plan — si hoy no alcanza,
     // sigue esperando a 48h; si al día siguiente llegó más carga y entre lo
     // nuevo y lo antiguo ya se completa, se adelanta ese día.
-    const totalSinRetiroCd = tonRevex + tonVentaCons + tonCross + tonQuiebre + tonStock + tonManCx + tonManTr;
+    const totalSinRetiroCd = tonRevex + tonVentaCons + tonCross + tonQuiebre + tonStock;
     function capParaTotal(t) {
       return CENTROS_CAMION_REDUCIDO.includes(ce) ? (t >= CAP_CAMION_DEFAULT ? CAP_CAMION_DEFAULT : CAP_CAMION_REDUCIDO) : CAP_CAMION_DEFAULT;
     }
@@ -7061,13 +7053,24 @@ async function renderPlanCarga(stage, opts = {}) {
     // umbral UMBRAL_PROMOCION_24H; no cambia con el 85% de camiones directos).
     const promovido24 = horizonteConfig === 48 && total24 > cap24 * UMBRAL_PROMOCION_24H;
     const horizonteEfectivo = promovido24 ? 24 : horizonteConfig;
+    // (23-oct-2026, Jordan) Carga manual CONSOLIDADO (sin entrega SAP): entra al plan cuyo día de carga
+    // (día objetivo efectivo del centro) es el elegido, y va primero en el camión CD. Igual que el servidor.
+    const diaCargaCM = isoLocal(horizonteEfectivo === 48 ? diaHabil2 : diaHabil1);
+    cmCe.filter(m => m.modo === 'CONSOLIDADO' && String(m.fecha_carga ?? '') === diaCargaCM).forEach(m => lineasCargaManual(m).forEach(l => {
+      const docM = String(m.doc_compr ?? '').trim();
+      if (conEntregaCM.has(_keyInc(docM, l.material))) return;
+      const base = { pt: docM, material: l.material, nombre: l.nombre, fecha: fmtFechaISO(m.fecha_carga), ton: l.ton, tonBruto: l.tonBruto, tonVol: l.tonVol,
+        pv: '', entrega_entrante: '', _cargaManual: true, _orden: -200 };
+      if (m.tipo === 'CROSSDOCK') { det.cross.push({ ...base, origen: planOrigen, ceDestino: ce, ctdPend: l.cant }); tonManCx += l.ton; }
+      else { det.quiebre.push({ ...base, ctd: sapNum(l.cant), usuario: 'CARGA MANUAL', _motivo: 'CARGA MANUAL · ' + MARCA_PEND_ENTREGA }); tonManTr += l.ton; }
+    }));
     const { sum: tonRetiro, items: retiroItems } = horizonteEfectivo === 24 ? retiro24 : retiro48;
     det.retiro.push(...retiroItems);
 
     // Total del CAMIÓN CD (consolidado). Orden de prioridad con que se llena el
     // camión: REVEX → Venta 1003 consolidable → Retiro CD → Crossdocking →
     // Traslados Quiebre → Traslados Abastecimiento.
-    const total = totalSinRetiroCd + tonRetiro;
+    const total = totalSinRetiroCd + tonRetiro + tonManCx + tonManTr;
 
     // Capacidad efectiva del CD. La Calera (1050) y San Bernardo (1005) usan un
     // camión de 15 T si en el corte no alcanzan a llenar uno de 28 T.
