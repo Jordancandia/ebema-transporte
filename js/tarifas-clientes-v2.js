@@ -15,11 +15,11 @@
 // tarifas a clientes y «Guardar y recalcular» escribe sólo client_tariff_config
 // (syncOnly) y, si cambió la asignación de clusters, cluster_rutas por centro.
 // ============================================================================
-import { saveDatabase, getOrigenGroups } from './data.js?v=202610231425';
-import { buildZcapMap, es2Ton, componentesRegional } from './zcap.js?v=202610231425';
+import { saveDatabase, getOrigenGroups } from './data.js?v=202610231434';
+import { buildZcapMap, es2Ton, componentesRegional } from './zcap.js?v=202610231434';
 import { showAlert } from './utils.js';
-import { can } from './permisos.js?v=202610231425';
-import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, setParamPill, clasifPill, clasifTarifa, pillHtml } from './tarifas-ui.js?v=202610231425';
+import { can } from './permisos.js?v=202610231434';
+import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, setParamPill, clasifPill, clasifTarifa, pillHtml } from './tarifas-ui.js?v=202610231434';
 
 const CAPS = [5, 10, 15, 28];
 const CAP_LBL = { 5: '5 t', 10: '10 t', 15: '15 t', 28: '28 t' };
@@ -157,6 +157,24 @@ function calcRetiro(ctx, ccfgX, zOver = null) {
     }
     rows.push({ key, ruta, truck, grupo, capKg, km, zcap, ...k, calc, minimo: capKg >= 28000 ? null : minimo, retiro, regla,
       cod: ruta.codigo || String(ruta.id || ''), tipoRuta: tipo === 'sector' ? 'Sector' : 'Comuna' });
+  });
+  // (23-oct-2026, Jordan) Camión 2 Ton de Frecuencia y Especiales (centros sin 2 Ton en
+  // Tarifas por Camión): costo ruta = máx(km × valor km, costo mínimo); sin T. base KM →
+  // retiro = 50% × km × valor km, nunca bajo el mínimo del centro.
+  const con2t = new Set(rows.filter(r => r.capKg === 2000).map(r => r.cod));
+  const vistas = new Set();
+  rows.slice().forEach(r => {
+    if (con2t.has(r.cod) || vistas.has(r.cod)) return;
+    vistas.add(r.cod);
+    const c2 = cfg2t(ccfgX, r.grupo);
+    if (!c2.activo) return;
+    const costo = costoRuta2t(ccfgX, r.grupo, r.km);
+    const calc = RR_PCT * r.km * c2.valorKm;
+    const minimo = minimoRetiro(ccfgX, r.grupo);
+    const retiro = Math.max(calc, minimo);
+    rows.push({ ...r, key: r.cod + '||' + T2_TIPO, truck: { type: T2_TIPO }, capKg: 2000, zcap: costo,
+      a: 0, b: 0, c: 0, rate: c2.valorKm, especial: false, calc, minimo, retiro,
+      regla: retiro > calc ? 'Mínimo centro' : '50% km ruta', t2Especiales: true });
   });
   return rows;
 }
@@ -1024,7 +1042,7 @@ function renderRetiro(container, ctx) {
     const filas = pag.map(r => `<tr style="cursor:default"><td><span class="sv-b">${esc(NG[r.grupo] || titulo(r.grupo))}</span><div class="sv-sub">${esc(r.ruta.origenId || '')}</div></td>
       <td><span class="sv-mono">${esc(r.cod)}</span></td><td><b>${esc(r.ruta.destino || '')}</b>${r.especial ? `<div class="sv-sub" style="color:#713f12">${esc(String(r.ruta.caracteristica).toUpperCase())}</div>` : ''}</td>
       <td>${pillHtml(r.tipoRuta, r.tipoRuta === 'Sector' ? 'ok' : 'info')}</td><td>${esc(r.ruta.comuna || r.ruta.destino || '')}</td><td class="r">${fmt(r.km)}</td>
-      <td style="white-space:nowrap">${esc(r.truck.type)}</td><td class="r">${clp(r.zcap)}</td>
+      <td style="white-space:nowrap">${esc(r.truck.type)}${r.t2Especiales ? '<div class="sv-sub" style="color:#7e22ce">Frecuencia y Especiales</div>' : ''}</td><td class="r">${clp(r.zcap)}</td>
       <td class="r sv-muted">${r.capKg < 28000 ? fmt(r.a) : '—'}</td><td class="r sv-muted">${r.capKg < 28000 ? clp(r.b) : '—'}</td><td class="r sv-muted">${r.capKg < 28000 ? clp(r.c) : '—'}</td>
       <td class="r sv-muted">${r.capKg < 28000 ? clp(r.rate) : '—'}</td>
       <td class="r">${clp(r.calc)}</td><td class="r sv-muted">${r.minimo != null ? (r.minimo > 0 ? clp(r.minimo) : '—') : '—'}</td>
@@ -1037,7 +1055,7 @@ function renderRetiro(container, ctx) {
           <th class="r">Retiro calculado</th><th class="r">Mínimo centro</th><th class="r">Tarifa retiro</th><th>Regla</th></tr></thead>
           <tbody>${filas || '<tr class="sv-empty"><td colspan="16">Sin combinaciones para los filtros.</td></tr>'}</tbody></table></div>
         <div class="sv-tfoot"><span>${fmt(lista.length)} combinaciones ruta × camión</span>${pager(lista.length, RV.pagina, ZPAGE, 'data-rrpag')}</div>
-        <div class="tf-card-foot"><span>28 t = costo íntegro de la ruta (ZCAP vigente)</span><span>2 a 15 t con T. base KM (c): KM ≤ a → 50% × (b + c) · KM &gt; a → b + 50% × (KM − a) × tarifa km</span><span>2 a 15 t sin T. base KM: 50% × KM × tarifa km · en ambos casos nunca bajo el mínimo del centro</span><span>a, b, c y tarifa km vienen de Tarifas por Camión (tarifa especial en rutas isla / extrema) · el mínimo por centro se configura en Frecuencia y Especiales</span></div>
+        <div class="tf-card-foot"><span>28 t = costo íntegro de la ruta (ZCAP vigente)</span><span>2 a 15 t con T. base KM (c): KM ≤ a → 50% × (b + c) · KM &gt; a → b + 50% × (KM − a) × tarifa km</span><span>2 a 15 t sin T. base KM: 50% × KM × tarifa km · en ambos casos nunca bajo el mínimo del centro</span><span>a, b, c y tarifa km vienen de Tarifas por Camión (tarifa especial en rutas isla / extrema) · el mínimo por centro se configura en Frecuencia y Especiales</span><span>Camión 2 Ton de Frecuencia y Especiales: costo ruta = máx(km × valor km, costo mínimo) · retiro = 50% × km × valor km</span></div>
       </div>`;
     container.innerHTML = marco(ctx, { titulo: 'Tarifas Retiro Retorno', desc: 'Tarifa de retiro por ruta regional (comuna o sector) y tipo de camión habilitado en cada centro.', activo: 'retiro', acciones, cuerpo });
     wire();
