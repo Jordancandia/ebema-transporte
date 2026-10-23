@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610231521';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610231521';
-import { getDatabase } from './data.js?v=202610231521';
+import { supabase } from './supabase-client.js?v=202610231648';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610231648';
+import { getDatabase } from './data.js?v=202610231648';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610231521';
-import { confirmar, pedirDato } from './confirmar.js?v=202610231521';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610231648';
+import { confirmar, pedirDato } from './confirmar.js?v=202610231648';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -5904,11 +5904,11 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610231521');
+    const m = await import('./ind-plan-carga.js?v=202610231648');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (currentSub === 'control_diferencias') {  // (11-oct-2026) Control de Diferencias del Plan de Carga
-    const m = await import('./control-diferencias.js?v=202610231521');
+    const m = await import('./control-diferencias.js?v=202610231648');
     await m.renderControlDiferencias(stage);
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
@@ -6175,12 +6175,16 @@ function asignarCamionesCD(r) {
   // Primero se ubican las líneas asignadas; el resto se llena en el orden de prioridad (igual que la foto 15:35).
   const asig = r.asig || new Map();
   let acc = 0;
+  // (23-oct-2026, Jordan) TOPE 100%: lo asignado/priorizado a mano también respeta la capacidad. Entra en
+  // orden de prioridad mientras quepa; lo que no cabe queda fuera (puede ir al 2º camión) y el resto de la
+  // carga se ajusta para completar el camión sin pasar el 100%.
   orden.forEach(d => {
     const v = asig.get(`${doc(d)}|${mat(d)}`);
     d._manual = v === undefined || v === null ? null : Number(v);
-    d._camion2 = false;
-    d._enCamion = d._manual === 1;
-    if (d._enCamion) acc += d.ton || 0;
+    d._camion2 = false; d._enCamion = false; d._manualExcede = false;
+    if (d._manual !== 1) return;
+    if (acc + (d.ton || 0) <= r.cap + 1e-9) { d._enCamion = true; acc += d.ton || 0; }
+    else d._manualExcede = true;
   });
   // (23-oct-2026, Jordan) Se llena por niveles de prioridad (categoría → PRIORIDAD → orden); dentro de un
   // mismo nivel se elige la combinación de líneas que más llena el espacio libre y, a igual tonelaje, la
@@ -6190,8 +6194,8 @@ function asignarCamionesCD(r) {
   const manual2 = orden.some(d => d._manual === 2);
   let segundoPropuesto = manual2 || (excedente > 0 && excedente >= r.cap * UMBRAL_SEGUNDO_CAMION);
   let acc2 = 0;
-  orden.forEach(d => { if (d._manual === 2) { d._camion2 = true; acc2 += d.ton || 0; } });
-  if (segundoPropuesto) acc2 += llenarPorNivelesCD(orden.filter(d => d._manual === null && !d._enCamion), r.cap - acc2, d => { d._camion2 = true; });
+  orden.forEach(d => { if (d._manual === 2) { if (acc2 + (d.ton || 0) <= r.cap + 1e-9) { d._camion2 = true; acc2 += d.ton || 0; } else d._manualExcede = true; } });
+  if (segundoPropuesto) acc2 += llenarPorNivelesCD(orden.filter(d => (d._manual === null || d._manualExcede) && !d._enCamion && !d._camion2), r.cap - acc2, d => { d._camion2 = true; });
   // (16-oct-2026) Si el excedente es una línea que por sí sola supera la capacidad (p.ej. peso
   // volumétrico erróneo), no cabe en ningún camión: no se propone un 2º camión vacío (0 t).
   if (segundoPropuesto && !manual2 && acc2 <= 1e-9) segundoPropuesto = false;
