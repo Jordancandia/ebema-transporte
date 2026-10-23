@@ -172,8 +172,16 @@ export function usuarioSesion() {
 export function pillHtml(label, tone = 'mute') {
   return label ? `<span class="sv-pill ${tone}"><i></i>${esc(label)}</span>` : '';
 }
+// Categoría tarifaria de la ruta (22-oct-2026, Jordan): Regional · Interregional · Sector
+// (rutas tipo «Sector» asociadas a cada centro) · Troncal (si se pasa el set de troncales).
+// El cálculo del ZCAP sigue usando clasificRuta (Regional = fórmula regional; resto = motor).
+export function clasifTarifa(ruta, troncalesSet = null) {
+  if (troncalesSet && troncalesSet.has(ruta?.codigo)) return 'Troncal';
+  if (String(ruta?.tipo || '').toLowerCase() === 'sector') return 'Sector';
+  return ruta?.clasificRuta || '';
+}
 export function clasifPill(clasif) {
-  const t = { Regional: 'info', Interregional: 'purple', Troncal: 'orange' }[clasif] || 'mute';
+  const t = { Regional: 'info', Interregional: 'purple', Sector: 'ok', Troncal: 'orange' }[clasif] || 'mute';
   return pillHtml(clasif === 'Interregional' ? 'Interregional' : clasif, t);
 }
 export function carPill(car) {

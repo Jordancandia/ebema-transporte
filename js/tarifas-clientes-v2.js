@@ -15,11 +15,11 @@
 // tarifas a clientes y «Guardar y recalcular» escribe sólo client_tariff_config
 // (syncOnly) y, si cambió la asignación de clusters, cluster_rutas por centro.
 // ============================================================================
-import { saveDatabase, getOrigenGroups } from './data.js?v=202610212022';
-import { buildZcapMap } from './zcap.js?v=202610212022';
+import { saveDatabase, getOrigenGroups } from './data.js?v=202610222351';
+import { buildZcapMap } from './zcap.js?v=202610222351';
 import { showAlert } from './utils.js';
-import { can } from './permisos.js?v=202610212022';
-import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, setParamPill, clasifPill, pillHtml } from './tarifas-ui.js?v=202610212022';
+import { can } from './permisos.js?v=202610222351';
+import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, setParamPill, clasifPill, clasifTarifa, pillHtml } from './tarifas-ui.js?v=202610222351';
 
 const CAPS = [5, 10, 15, 28];
 const CAP_LBL = { 5: '5 t', 10: '10 t', 15: '15 t', 28: '28 t' };
@@ -36,6 +36,7 @@ function partes(c) {
     consolidacionObjetivo: c.consolidacionObjetivo || {},
     recargoExclusividad: (c.especiales || {}).recargoExclusividad || {},
     comunaCluster: c.comunaCluster || {},
+    camion2t: c.camion2t || {},
   };
 }
 function initDraft(ccfg) {
@@ -46,7 +47,7 @@ function initDraft(ccfg) {
 }
 function base() { return JSON.parse(CC.baseJson); }
 function ccEff(ccfg, w = CC.work) {
-  return { ...ccfg, clusters: w.clusters, consolidacionObjetivo: w.consolidacionObjetivo, comunaCluster: w.comunaCluster,
+  return { ...ccfg, clusters: w.clusters, consolidacionObjetivo: w.consolidacionObjetivo, comunaCluster: w.comunaCluster, camion2t: w.camion2t || {},
     especiales: { ...(ccfg.especiales || {}), recargoExclusividad: w.recargoExclusividad } };
 }
 function hojas(o, p = '', out = {}) {
@@ -71,6 +72,7 @@ function contarCambios(db) {
   new Set([...bk.keys(), ...wk.keys()]).forEach(k => { if (bk.get(k) !== wk.get(k)) n++; });
   n += diffHojas(b.consolidacionObjetivo, w.consolidacionObjetivo);
   n += diffHojas(b.recargoExclusividad, w.recargoExclusividad);
+  n += diffHojas(b.camion2t || {}, w.camion2t || {});
   n += rutasReasignadas(db).length;
   return n;
 }
@@ -93,6 +95,22 @@ function recargoDe(ccfgX, grupo) {
   const v = t[String(grupo).replace(/\s/g, '_')] ?? t[grupo];
   return (v && typeof v === 'object') ? (v.activo === false ? 0 : num(v.pct)) : num(v);
 }
+// ── Camión 2 Ton (22-oct-2026, Jordan) ───────────────────────────────────────
+// Sólo Tarifa Min/Max y Express. Costo ruta = máx(km ruta × valor km del centro,
+// costo mínimo del centro). ZFMI = ZFMX = costo ruta; Express = costo × (1 + recargo).
+// No usa factor de consolidación ni ZCAP, no entra a $/Kg y no es camión mínimo.
+// Config en client_tariff_config.data.camion2t = { GRUPO_KEY: { activo, costoMin, valorKm } }.
+const T2_TIPO = 'Camión 2 Ton';
+function cfg2t(ccfgX, grupo) {
+  const t = ccfgX.camion2t || {};
+  const v = t[String(grupo).replace(/\s/g, '_')] || t[grupo] || {};
+  return { activo: v.activo === true, costoMin: num(v.costoMin), valorKm: num(v.valorKm) };
+}
+export function costoRuta2t(ccfgX, grupo, km) {
+  const c = cfg2t(ccfgX, grupo);
+  if (!c.activo || (c.costoMin <= 0 && c.valorKm <= 0)) return null;
+  return Math.max(num(km) * c.valorKm, c.costoMin);
+}
 // Devuelve una fila por ruta × camión con todas las tarifas. zOver: Map key → zcap (foto)
 function calcTarifas(ctx, ccfgX, zOver = null) {
   const zmap = zcapVivo(ctx);
@@ -113,9 +131,23 @@ function calcTarifas(ctx, ccfgX, zOver = null) {
     const f = ctx.objetivoConsol(ccfgX, g.replace(/\s/g, '_'), c / 1000);
     minPorRuta.set(cod, { tipo: v.truck.type || (c / 1000 + 'T'), zcap: zDe(key, v), kilos: c * f / 100 });
   });
+  // (22-oct-2026, Jordan) Las rutas Sector heredan el cluster de la ruta Comuna
+  // activa de su misma comuna y centro origen (se prefiere la Regional).
+  const normCom = t => String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+  const padreComuna = new Map();
+  (ctx.db.routes || []).forEach(r => {
+    if (!r.activo || String(r.tipo || '').toLowerCase() !== 'comuna') return;
+    const k = (r.origen_grupo || '') + '|' + normCom(r.comuna || r.destino);
+    const prev = padreComuna.get(k);
+    if (!prev || (prev.clasificRuta !== 'Regional' && r.clasificRuta === 'Regional')) padreComuna.set(k, r);
+  });
+  const rutaCluster = ruta => (String(ruta.tipo || '').toLowerCase() === 'sector'
+    ? padreComuna.get((ruta.origen_grupo || '') + '|' + normCom(ruta.comuna)) || null : null);
   const rows = [];
   zmap.forEach((v, key) => {
     const { truck, ruta } = v;
+    const padre = rutaCluster(ruta);
+    const rc = padre || ruta;
     const grupo = ruta.origen_grupo || '', gk = grupo.replace(/\s/g, '_');
     const capKg = capKgDe(truck), bkt = capKg / 1000;
     const zcap = zDe(key, v);
@@ -123,7 +155,7 @@ function calcTarifas(ctx, ccfgX, zOver = null) {
     const kilos = capKg * factorPct / 100;
     const zfmp = (zcap > 0 && kilos > 0) ? zcap / kilos : null;
     const cod = ruta.codigo || String(ruta.id || '');
-    const clusterKey = ccfgX.comunaCluster[String(ruta.id || '')] || ccfgX.comunaCluster[String(ruta.codigo || '')] || '';
+    const clusterKey = ccfgX.comunaCluster[String(rc.id || '')] || ccfgX.comunaCluster[String(rc.codigo || '')] || '';
     const clObj = (ccfgX.clusters || []).find(c => c.key === clusterKey);
     const pedProm = clObj?.nv || 1;
     const mn = minPorRuta.get(cod);
@@ -133,8 +165,8 @@ function calcTarifas(ctx, ccfgX, zOver = null) {
     // Regla Jordan 12-oct-2026: camión 28 t a clientes → tarifa mínima = máxima (ZCAP)
     if (bkt >= 28 && zcap > 0) zfmi = zcap;
     const rec = recargoDe(ccfgX, grupo);
-    rows.push({ key, ruta, truck, grupo, capKg, zcap, factorPct, kilos, zfmp, cod,
-      clusterKey, clObj, clusterOp: opMap.get(String(ruta.id || '')) || opMap.get(String(ruta.codigo || '')) || '',
+    rows.push({ key, ruta, truck, grupo, capKg, zcap, clasif: clasifTarifa(ruta), factorPct, kilos, zfmp, cod,
+      clusterKey, clObj, clusterOp: opMap.get(String(rc.id || '')) || opMap.get(String(rc.codigo || '')) || '', clusterDe: padre ? (padre.codigo || '') : '',
       camionMin: mn?.tipo || '—', zfmi, zfmx: zcap > 0 ? zcap : null, express: zcap > 0 ? zcap * (1 + rec / 100) : null, kilosTarifMin, pedProm, recargo: rec });
   });
   // $/kg centro por ruta
@@ -147,6 +179,17 @@ function calcTarifas(ctx, ccfgX, zOver = null) {
     centro.set(cod, t > 0 ? t : null);
   });
   rows.forEach(r => { r.kgCentro = centro.get(r.cod) ?? null; });
+  // Camión 2 Ton: una fila por ruta de los centros con el camión activo
+  const vistos = new Set();
+  rows.slice().forEach(r => {
+    if (vistos.has(r.cod)) return;
+    vistos.add(r.cod);
+    const costo = costoRuta2t(ccfgX, r.grupo, r.ruta.km);
+    if (costo == null) return;
+    rows.push({ ...r, key: r.cod + '||' + T2_TIPO, truck: { type: T2_TIPO }, capKg: 2000, es2t: true,
+      zcap: costo, factorPct: null, kilos: null, zfmp: null, kgCentro: null, camionMin: '—',
+      zfmi: costo, zfmx: costo, express: costo * (1 + r.recargo / 100), kilosTarifMin: null });
+  });
   return rows;
 }
 function impactoClientes(ctx) {
@@ -178,6 +221,7 @@ async function guardar(ctx, render) {
   ccfg.especiales = ccfg.especiales || {};
   ccfg.especiales.recargoExclusividad = w.recargoExclusividad;
   ccfg.comunaCluster = w.comunaCluster;
+  ccfg.camion2t = w.camion2t || {};
   CC.work = null;
   CC.memoBase = null;
   initDraft(ccfg);
@@ -541,8 +585,22 @@ function renderEspeciales(container, ctx) {
               <td class="r">${numIn(`fr|${gk}`, v, { unit: '%', w: '86px', changed: v !== v0, disabled: !editar, label: 'Recargo ' + g.nombre })}</td></tr>`; }).join('')}</tbody>
         </table></div>
       </div>
+      <div class="sv-card" style="flex:1 1 100%">
+        <div class="tf-tabletitle"><div><h3>Camión 2 Ton</h3><small>Sólo Tarifa Min/Max y Express · costo ruta = máx(km ruta × valor km, costo mínimo) · no es camión mínimo ni entra a $/Kg</small></div></div>
+        <div class="sv-tablewrap" style="max-height:none"><table class="sv-table" style="min-width:640px">
+          <thead><tr><th>Centro logístico</th><th style="text-align:center">Activo</th><th class="r">Costo mínimo</th><th class="r">Valor km</th><th class="r">Ejemplo 50 km</th></tr></thead>
+          <tbody>${grupos.map(g => { const gk = g.grupo.replace(/\s/g, '_');
+            const c = cfg2t({ camion2t: w.camion2t }, g.grupo), c0 = cfg2t({ camion2t: b.camion2t }, g.grupo);
+            const ej = costoRuta2t({ camion2t: w.camion2t }, g.grupo, 50);
+            return `<tr style="cursor:default"><td><span class="sv-b">${esc(g.nombre)}</span><div class="sv-sub">${esc(g.centroIds.join(' · '))}</div></td>
+              <td style="text-align:center"><button class="tf-sw ${c.activo ? 'is-on' : ''}" data-chip data-t2tog="${esc(gk)}" ${editar ? '' : 'disabled'} title="Activar camión 2 Ton" aria-label="Activar camión 2 Ton ${esc(g.nombre)}"></button></td>
+              <td class="r">${numIn(`t2|${gk}|costoMin`, c.costoMin, { pre: '$', w: '120px', changed: c.costoMin !== c0.costoMin, disabled: !editar, label: 'Costo mínimo 2 Ton ' + g.nombre })}</td>
+              <td class="r">${numIn(`t2|${gk}|valorKm`, c.valorKm, { pre: '$', unit: '/km', w: '120px', changed: c.valorKm !== c0.valorKm, disabled: !editar, label: 'Valor km 2 Ton ' + g.nombre })}</td>
+              <td class="r sv-muted">${ej != null ? clp(ej) : '—'}</td></tr>`; }).join('')}</tbody>
+        </table></div>
+      </div>
     </div>`;
-    container.innerHTML = marco(ctx, { titulo: 'Frecuencia y Especiales', desc: 'Clusters de frecuencia (pedidos promedio por visita) y recargo por exclusividad de cada centro.', activo: 'especiales', cuerpo });
+    container.innerHTML = marco(ctx, { titulo: 'Frecuencia y Especiales', desc: 'Clusters de frecuencia (pedidos promedio por visita), recargo por exclusividad y camión 2 Ton de cada centro.', activo: 'especiales', cuerpo });
     wire();
   }
   const recalc = debounce(() => rerenderKeepFocus(container, render), 250);
@@ -553,6 +611,12 @@ function renderEspeciales(container, ctx) {
       const [i, f] = inp.dataset.ftxt.split('|');
       w.clusters[Number(i)][f] = inp.value;
       recalc();
+    }));
+    container.querySelectorAll('[data-t2tog]').forEach(b => b.addEventListener('click', () => {
+      w.camion2t = w.camion2t || {};
+      const gk = b.dataset.t2tog;
+      w.camion2t[gk] = { ...(w.camion2t[gk] || {}), activo: !(w.camion2t[gk] || {}).activo };
+      render();
     }));
     container.querySelectorAll('[data-fcolor]').forEach(inp => inp.addEventListener('change', () => { w.clusters[Number(inp.dataset.fcolor)].color = inp.value; render(); }));
     container.querySelectorAll('[data-ftog]').forEach(b => b.addEventListener('click', () => { const c = w.clusters[Number(b.dataset.ftog)]; c.tipo0000Habilitado = c.tipo0000Habilitado === false; render(); }));
@@ -573,6 +637,10 @@ function renderEspeciales(container, ctx) {
     wireNumIns(container, (key, val) => {
       const p = key.split('|');
       if (p[0] === 'fn') w.clusters[Number(p[1])][p[2]] = val;
+      else if (p[0] === 't2') {
+        w.camion2t = w.camion2t || {};
+        w.camion2t[p[1]] = { ...(w.camion2t[p[1]] || {}), [p[2]]: val };
+      }
       else if (p[0] === 'fr') {
         const gk = p[1], g = gk.replace(/_/g, ' ');
         const t = w.recargoExclusividad;
@@ -718,10 +786,10 @@ function renderTarifasCliente(container, ctx, modo) {
   const NG = nombreGrupo(ctx.db);
   function render() {
     const nStale = fotoZcap(ctx);
-    const todas = calcTarifas(ctx, ccEff(ctx.ccfg), CC.snap);
+    const todas = calcTarifas(ctx, ccEff(ctx.ccfg), CC.snap).filter(r => modo !== 'zfmp' || !r.es2t);
     const centros = [...new Set(todas.map(r => r.grupo))].filter(Boolean).sort().map(g => [g, NG[g] || titulo(g)]);
     const q = S.q.trim().toLowerCase();
-    const lista = todas.filter(r => (S.tipo === 'todas' || (r.ruta.clasificRuta || '').toLowerCase() === S.tipo) && (S.centro === 'all' || r.grupo === S.centro)
+    const lista = todas.filter(r => (S.tipo === 'todas' || (r.clasif || '').toLowerCase() === S.tipo) && (S.centro === 'all' || r.grupo === S.centro)
       && (S.truck === 'all' || String(r.capKg) === S.truck) && (!q || `${r.cod} ${r.ruta.destino}`.toLowerCase().includes(q)))
       .sort((a, b) => (a.grupo || '').localeCompare(b.grupo || '') || a.cod.localeCompare(b.cod) || a.capKg - b.capKg);
     const n = lista.length || 1;
@@ -732,12 +800,13 @@ function renderTarifasCliente(container, ctx, modo) {
     const acciones = `<button class="${nStale ? 'sv-btn-p' : 'sv-btn'}" data-refrescar id="t-refresh" title="${nStale ? 'Tarifas Rutas cambió desde que se tomó la foto del ZCAP' : 'La foto del ZCAP coincide con Tarifas Rutas'}"><span class="material-symbols-outlined">${nStale ? 'refresh' : 'check'}</span>${nStale ? `Refrescar tarifas · ${fmt(nStale)} desactualizadas` : 'Tarifas al día'}</button>
       <button class="sv-btn" data-csv id="t-csv"><span class="material-symbols-outlined">download</span>Descargar CSV</button>`;
     const filtros = `<div class="sv-filters">
-        <div class="sv-frow">${seg('data-ttipo', S.tipo, [['todas', 'Todas'], ['regional', 'Regionales'], ['interregional', 'Interregionales']])}
-          ${seg('data-ttruck', S.truck, [['all', 'Todos'], ...CAPS.map(k => [String(k * 1000), CAP_LBL[k]])])}
+        <div class="sv-frow">${seg('data-ttipo', S.tipo, [['todas', 'Todas'], ['regional', 'Regionales'], ['interregional', 'Interregionales'], ['sector', 'Sectores']])}
+          ${seg('data-ttruck', S.truck, [['all', 'Todos'], ...(modo === 'zfmp' ? [] : [['2000', '2 t']]), ...CAPS.map(k => [String(k * 1000), CAP_LBL[k]])])}
           <label class="sv-inp"><span class="material-symbols-outlined">search</span><input id="t-q" placeholder="Código o destino" value="${esc(S.q)}" style="width:200px"></label></div>
         ${chips(centros, S.centro, 'data-tcentro')}
       </div>`;
-    const clPill = r => r.clusterOp ? `<span class="sv-pill mute"><i style="background:${r.clObj?.color || '#9ca3af'}"></i>${esc(r.clusterOp)}</span>` : '<span class="sv-muted">—</span>';
+    const clPill = r => (r.clusterOp ? `<span class="sv-pill mute"><i style="background:${r.clObj?.color || '#9ca3af'}"></i>${esc(r.clusterOp)}</span>` : '<span class="sv-muted">—</span>')
+      + (r.clusterDe ? `<div class="sv-sub">de comuna ${esc(r.clusterDe)}</div>` : (r.clasif === 'Sector' ? '<div class="sv-sub" style="color:#b5000b">sin ruta comuna</div>' : ''));
     let kpis, thead, filas, foot, minW;
     if (modo === 'zfmp') {
       kpis = kpiHtml(false, '', '', 'Combinaciones', fmt(lista.length), 'ruta × camión con el filtro', '#191c1d', false)
@@ -746,7 +815,7 @@ function renderTarifasCliente(container, ctx, modo) {
       minW = 1300;
       thead = '<th>Centro origen</th><th>ID ruta</th><th>Destino</th><th>Clasificación</th><th class="r">Distancia KM</th><th>Cluster</th><th>Tipo camión</th><th class="r">ZCAP</th><th class="r">Factor consol.</th><th class="r">Kilos a consolidar</th><th class="r">ZFMP $/kg</th><th class="r">$/kg centro</th>';
       filas = pag.map(r => `<tr style="cursor:default"><td><span class="sv-b">${esc(NG[r.grupo] || titulo(r.grupo))}</span><div class="sv-sub">${esc(r.ruta.origenId || '')}</div></td>
-        <td><span class="sv-mono">${esc(r.cod)}</span></td><td><b>${esc(r.ruta.destino || '')}</b></td><td>${clasifPill(r.ruta.clasificRuta)}</td><td class="r">${fmt(num(r.ruta.km))}</td>
+        <td><span class="sv-mono">${esc(r.cod)}</span></td><td><b>${esc(r.ruta.destino || '')}</b></td><td>${clasifPill(r.clasif)}</td><td class="r">${fmt(num(r.ruta.km))}</td>
         <td>${clPill(r)}</td><td style="white-space:nowrap">${esc(r.truck.type)}</td><td class="r">${r.zcap > 0 ? clp(r.zcap) : '—'}</td><td class="r">${fmt(r.factorPct, 1)}%</td>
         <td class="r">${fmt(r.kilos)} kg</td><td class="r"><b style="color:#b5000b">${kg$(r.zfmp)}</b></td><td class="r"><b>${kg$(r.kgCentro)}</b></td></tr>`).join('');
       foot = '<span>ZFMP = ZCAP ÷ (capacidad × factor de consolidación del centro)</span><span>$/kg centro = Σ ZFMP de cada camión × su participación en toneladas del centro</span>';
@@ -757,12 +826,12 @@ function renderTarifasCliente(container, ctx, modo) {
       minW = 1760;
       thead = '<th>Centro origen</th><th>ID ruta</th><th>Destino</th><th>Tipo</th><th>Clasificación</th><th class="r">Dist. KM</th><th>Cluster</th><th>Tipo camión</th><th>Camión mínimo</th><th class="r">ZCAP</th><th class="r">ZFMI mín.</th><th class="r">ZFMX máx.</th><th class="r">Express</th><th class="r">Factor consol.</th><th class="r">Kilos a consolidar</th><th class="r">Kilos tarif. mín.</th>';
       filas = pag.map(r => `<tr style="cursor:default"><td><span class="sv-b">${esc(NG[r.grupo] || titulo(r.grupo))}</span><div class="sv-sub">${esc(r.ruta.origenId || '')}</div></td>
-        <td><span class="sv-mono">${esc(r.cod)}</span></td><td><b>${esc(r.ruta.destino || '')}</b></td><td>${esc(r.ruta.tipo || '')}</td><td>${clasifPill(r.ruta.clasificRuta)}</td><td class="r">${fmt(num(r.ruta.km))}</td>
-        <td>${clPill(r)}${r.clObj ? `<div class="sv-sub">${fmt(r.pedProm, 1)} ped. prom.</div>` : ''}</td><td style="white-space:nowrap">${esc(r.truck.type)}</td><td style="white-space:nowrap" class="sv-muted">${esc(r.camionMin)}</td>
+        <td><span class="sv-mono">${esc(r.cod)}</span></td><td><b>${esc(r.ruta.destino || '')}</b></td><td>${esc(r.ruta.tipo || '')}</td><td>${clasifPill(r.clasif)}</td><td class="r">${fmt(num(r.ruta.km))}</td>
+        <td>${clPill(r)}${r.clObj ? `<div class="sv-sub">${fmt(r.pedProm, 1)} ped. prom.</div>` : ''}</td><td style="white-space:nowrap">${esc(r.truck.type)}${r.es2t ? '<div class="sv-sub" style="color:#7e22ce">tarifa plana</div>' : ''}</td><td style="white-space:nowrap" class="sv-muted">${esc(r.camionMin)}</td>
         <td class="r">${r.zcap > 0 ? clp(r.zcap) : '—'}</td><td class="r"><b style="color:#15803d">${r.zfmi != null ? clp(r.zfmi) : '—'}</b></td><td class="r"><b>${r.zfmx != null ? clp(r.zfmx) : '—'}</b></td>
         <td class="r"><b style="color:#7e22ce">${r.express != null ? clp(r.express) : '—'}</b>${r.recargo ? `<div class="sv-sub" style="text-align:right">+${fmt(r.recargo)}%</div>` : ''}</td>
-        <td class="r">${fmt(r.factorPct, 1)}%</td><td class="r">${fmt(r.kilos)} kg</td><td class="r">${r.kilosTarifMin != null ? fmt(r.kilosTarifMin) + ' kg' : '—'}</td></tr>`).join('');
-      foot = '<span>ZFMI = $/kg del camión mínimo × (kilos a consolidar del camión mínimo ÷ pedidos promedio del cluster)</span><span>ZFMX = ZCAP del camión · Express = ZCAP × (1 + recargo)</span>';
+        <td class="r">${r.factorPct != null ? fmt(r.factorPct, 1) + '%' : '—'}</td><td class="r">${r.kilos != null ? fmt(r.kilos) + ' kg' : '—'}</td><td class="r">${r.kilosTarifMin != null ? fmt(r.kilosTarifMin) + ' kg' : '—'}</td></tr>`).join('');
+      foot = '<span>ZFMI = $/kg del camión mínimo × (kilos a consolidar del camión mínimo ÷ pedidos promedio del cluster)</span><span>ZFMX = ZCAP del camión · Express = ZCAP × (1 + recargo)</span><span>Camión 2 Ton: ZFMI = ZFMX = máx(km × valor km, costo mínimo del centro) · Express = costo × (1 + recargo) — se configura en Frecuencia y Especiales</span>';
     }
     const cuerpo = `<div class="sv-kpis">${kpis}</div>${filtros}
       <div class="sv-card">
@@ -795,10 +864,10 @@ function renderTarifasCliente(container, ctx, modo) {
       let H, R;
       if (modo === 'zfmp') {
         H = ['Centro Origen', 'ID Ruta', 'Destino', 'Tipo', 'Clasificacion', 'Dist KM', 'Cluster', 'Tipo Camion', 'ZCAP', 'Factor Consolidacion %', 'Kilos a Consolidar', 'ZFMP $/kg', 'Tarifa Centro'];
-        R = lista.map(r => [r.grupo, r.cod, r.ruta.destino || '', r.ruta.tipo || '', r.ruta.clasificRuta || '', num(r.ruta.km), r.clusterOp || '', r.truck.type, r.zcap != null ? Math.round(r.zcap) : '', fmt(r.factorPct, 1), Math.round(r.kilos), r.zfmp != null ? fmt(r.zfmp, 4) : '', r.kgCentro != null ? fmt(r.kgCentro, 4) : '']);
+        R = lista.map(r => [r.grupo, r.cod, r.ruta.destino || '', r.ruta.tipo || '', r.clasif || '', num(r.ruta.km), r.clusterOp || '', r.truck.type, r.zcap != null ? Math.round(r.zcap) : '', fmt(r.factorPct, 1), Math.round(r.kilos), r.zfmp != null ? fmt(r.zfmp, 4) : '', r.kgCentro != null ? fmt(r.kgCentro, 4) : '']);
       } else {
         H = ['Centro Origen', 'ID Ruta', 'Destino', 'Tipo', 'Clasificacion', 'Dist KM', 'Cluster', 'Tipo Camion', 'Camion Minimo', 'ZCAP', 'ZFMI Min', 'ZFMX Max', 'Express', 'Factor Consolidacion %', 'Kilos a Consolidar', 'Kilos Tarif.Min'];
-        R = lista.map(r => [r.grupo, r.cod, r.ruta.destino || '', r.ruta.tipo || '', r.ruta.clasificRuta || '', num(r.ruta.km), r.clusterOp || '', r.truck.type, r.camionMin, r.zcap != null ? Math.round(r.zcap) : '', r.zfmi != null ? Math.round(r.zfmi) : '', r.zfmx != null ? Math.round(r.zfmx) : '', r.express != null ? Math.round(r.express) : '', fmt(r.factorPct, 1), Math.round(r.kilos), r.kilosTarifMin != null ? Math.round(r.kilosTarifMin) : '']);
+        R = lista.map(r => [r.grupo, r.cod, r.ruta.destino || '', r.ruta.tipo || '', r.clasif || '', num(r.ruta.km), r.clusterOp || '', r.truck.type, r.camionMin, r.zcap != null ? Math.round(r.zcap) : '', r.zfmi != null ? Math.round(r.zfmi) : '', r.zfmx != null ? Math.round(r.zfmx) : '', r.express != null ? Math.round(r.express) : '', r.factorPct != null ? fmt(r.factorPct, 1) : '', r.kilos != null ? Math.round(r.kilos) : '', r.kilosTarifMin != null ? Math.round(r.kilosTarifMin) : '']);
       }
       const txt = [H.map(qq).join(sep), ...R.map(r => r.map(qq).join(sep))].join('\n');
       const blob = new Blob(['﻿' + txt], { type: 'text/csv;charset=utf-8;' });

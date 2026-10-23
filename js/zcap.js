@@ -2,11 +2,11 @@
 // Regional:       ZCAP = Costo Base + km × Tarifa/KM
 // Interregional:  ZCAP = item10_costoRutaTotal (motor completo)
 // Troncales:      ZCAP = motor completo para rutas definidas por el usuario
-import { getDatabase, saveDatabase, getTariffConfig, truckCapKg, getOrigenGroups, TRUCK_BASE_TYPES } from './data.js?v=202610212022';
-import { calcularCostoRuta } from './tarifas-engine.js?v=202610212022';
+import { getDatabase, saveDatabase, getTariffConfig, truckCapKg, getOrigenGroups, TRUCK_BASE_TYPES } from './data.js?v=202610222351';
+import { calcularCostoRuta } from './tarifas-engine.js?v=202610222351';
 import { showAlert } from './utils.js';
-import { can } from './permisos.js?v=202610212022';
-import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, textoImpacto, setParamPill, usuarioSesion, clasifPill, carPill } from './tarifas-ui.js?v=202610212022';
+import { can } from './permisos.js?v=202610222351';
+import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, textoImpacto, setParamPill, usuarioSesion, clasifPill, clasifTarifa, carPill } from './tarifas-ui.js?v=202610222351';
 
 const TRUCK_ORDER = ['Camión 5 Ton', 'Camión 10 Ton', 'Camión 15 Ton', 'Camión 28 Ton'];
 
@@ -109,7 +109,7 @@ export function buildZcapMap(db, cfg) {
 // ── Vista Tarifas Rutas (ZCAP) v2 ──────────────────────────────────────────
 const ZV = { tipo: 'todas', centro: 'all', truck: 'all', q: '', kpi: 'all', pagina: 0, draft: {}, guardando: false };
 const PAGE = 50;
-const TIPO_LBL = { todas: 'Todas', regional: 'Regionales', interregional: 'Interregionales', troncales: 'Troncales' };
+const TIPO_LBL = { todas: 'Todas', regional: 'Regionales', interregional: 'Interregionales', sector: 'Sectores', troncales: 'Troncales' };
 
 export function renderZcapView(container) {
   const db  = getDatabase();
@@ -131,7 +131,7 @@ export function renderZcapView(container) {
     (db.routes || []).filter(r => r.activo).sort((a, b) => (a.codigo || '').localeCompare(b.codigo || '')).forEach(ruta => {
       const c = combosRuta(db, cfg, grupos, ruta, troncalesSet);
       if (!c) return;
-      const clasif = troncalesSet.has(ruta.codigo) ? 'Troncal' : (ruta.clasificRuta || '');
+      const clasif = clasifTarifa(ruta, troncalesSet);
       c.trucks.forEach(truck => combos.push({
         key: zcapKey(ruta, truck), ruta, truck, grupo: c.grupo, clasif,
         calc: calcZcapRow(db, cfg, ruta, truck, troncalesSet),
@@ -150,6 +150,7 @@ export function renderZcapView(container) {
     return combos.filter(x => {
       if (ZV.tipo === 'regional' && x.clasif !== 'Regional') return false;
       if (ZV.tipo === 'interregional' && x.clasif !== 'Interregional') return false;
+      if (ZV.tipo === 'sector' && x.clasif !== 'Sector') return false;
       if (ZV.tipo === 'troncales' && x.clasif !== 'Troncal') return false;
       if (ZV.centro !== 'all' && x.grupo.grupo !== ZV.centro) return false;
       if (ZV.truck !== 'all' && x.truck.type !== ZV.truck) return false;
