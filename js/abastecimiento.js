@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610231507';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610231507';
-import { getDatabase } from './data.js?v=202610231507';
+import { supabase } from './supabase-client.js?v=202610231519';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610231519';
+import { getDatabase } from './data.js?v=202610231519';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610231507';
-import { confirmar, pedirDato } from './confirmar.js?v=202610231507';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610231519';
+import { confirmar, pedirDato } from './confirmar.js?v=202610231519';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -838,6 +838,138 @@ async function quitarAjusteUnidades(doc, material) {
   return true;
 }
 const sapNum = n => String(Math.round(n * 1000) / 1000).replace('.', ',');
+// ── Carga manual de pedidos de traslado sin entrega SAP (23-oct-2026, Jordan) ──
+// Pedidos de Traslados (1003/1081) y Crossdocking (4000): se suben a un camión CONSOLIDADO (camión CD del
+// centro) o CD-CLIENTE (camión directo) eligiendo el día de carga y las unidades. Entran SÓLO al Plan de
+// Carga de ese día, con prioridad sobre el resto, con la marca «PENDIENTE DE RECEPCIÓN Y CREACIÓN DE ENTREGA».
+// Cuando llega la entrega SAP del pedido + material, la entrega la reemplaza (no se duplica). Tabla
+// abast_carga_manual_traslado; en el servidor v_trc_plan_carga_manual_lineas (prio_orden -200 = orden 0).
+const MARCA_PEND_ENTREGA = 'PENDIENTE DE RECEPCIÓN Y CREACIÓN DE ENTREGA';
+async function loadCargaManualTr() {
+  try {
+    const { data, error } = await supabase.from('abast_carga_manual_traslado').select('*');
+    if (error) throw error;
+    return data || [];
+  } catch (e) { console.warn('Cargas manuales no disponibles', e); return []; }
+}
+const mapaCargaManualTr = (lista, tipo) => new Map((lista || []).filter(m => m.tipo === tipo).map(m => [String(m.doc_compr ?? '').trim(), m]));
+const lineasCargaManual = m => (Array.isArray(m && m.lineas) ? m.lineas : []).map(l => {
+  const cant = Number(l.cantidad) || 0, kb = Number(l.kg_bruto) || 0, kv = Number(l.kg_vol) || 0;
+  return { material: String(l.material ?? '').trim(), nombre: l.nombre || '', cant, um: l.um || '', ton: Math.max(kb, kv) * cant / 1000, tonBruto: kb * cant / 1000, tonVol: kv * cant / 1000 };
+}).filter(l => l.cant > 0);
+const cargaManualVigente = m => !!m && String(m.fecha_carga ?? '') >= isoLocal(hoy00());
+function cargaManualPill(m) {
+  if (!m) return '';
+  const vig = cargaManualVigente(m);
+  return `<div style="margin-top:4px" title="${escapeHtml(vig ? MARCA_PEND_ENTREGA : 'Carga manual vencida: edita el día de carga o quítala')}">${pill(`Carga manual ${m.modo === 'CD-CLIENTE' ? 'CD-Cliente' : 'Consolidado'} · ${fmtFechaISO(m.fecha_carga)}`, vig ? 'purple' : 'mute')}</div>`;
+}
+// tipo: 'TRASLADO' (Pedidos de Traslados, pendientes) | 'CROSSDOCK' (Crossdocking, pendientes)
+function showCargaManualModal(row, ctx, tipo) {
+  return new Promise(resolve => {
+    const doc = String(row.doc_compr ?? '').trim(), ce = String(row.ce ?? '').trim();
+    const cesu = tipo === 'CROSSDOCK' ? '1003' : (String(row.cesu ?? '').trim() || '1003');
+    const m0 = (ctx && ctx.cmMap && ctx.cmMap.get(doc)) || null;
+    const qty = x => tipo === 'CROSSDOCK' ? (Number(x._pend_num) || 0) : parseNum(x.ctd_confirmada ?? x.ctd_pedido);
+    const porMat = new Map();
+    ((ctx && ctx._rows) || [row]).filter(x => String(x.doc_compr ?? '').trim() === doc && String(x.ce ?? '').trim() === ce).forEach(x => {
+      const mat = String(x.material ?? '').trim(), q = qty(x);
+      const it = porMat.get(mat) || { material: mat, nombre: x.texto_breve || '', pend: 0, ton: 0, kgB: Number(x._kg_bruto) || 0, kgV: Number(x._kg_vol) || 0, um: x.ump || x.um || '' };
+      it.pend += q > 0 ? q : 0; it.ton += x._ton_num || 0; porMat.set(mat, it);
+    });
+    const items = [...porMat.values()].map(it => {
+      const pend = Math.round(it.pend * 1000) / 1000;
+      // Peso unitario: el del SQVI (bruto / volumétrico); si no viene, se deduce de las toneladas.
+      const kgU = Math.max(it.kgB, it.kgV) || (pend > 0 ? it.ton * 1000 / pend : 0);
+      return { ...it, pend, kgB: it.kgB || kgU, kgV: it.kgV, kgU };
+    });
+    const prev = new Map(lineasCargaManual(m0).map(l => [l.material, l.cant]));
+    const st = { modo: m0 ? m0.modo : 'CONSOLIDADO', fecha: m0 ? String(m0.fecha_carga) : isoLocal(hoy00()),
+      cant: new Map(items.map(it => [it.material, prev.has(it.material) ? prev.get(it.material) : it.pend])),
+      cliente: m0?.cliente || row._cliente || '', comuna: m0?.comuna || row._comuna || '', direccion: m0?.direccion || '', err: '' };
+    const wrap = document.createElement('div');
+    wrap.id = 'coord-modal-bg';
+    wrap.innerHTML = '<div class="sv-dr-bg" style="z-index:120"></div><aside class="sv-dr" style="z-index:121;width:min(640px,100vw)" role="dialog" aria-label="Carga manual"></aside>';
+    document.body.appendChild(wrap);
+    const panel = wrap.querySelector('aside');
+    const fin = v => { wrap.remove(); document.removeEventListener('keydown', onKey, true); resolve(v); };
+    const onKey = e => { if (e.key === 'Escape' && !document.querySelector('.sv-cf-bg')) { e.stopPropagation(); fin(false); } };
+    document.addEventListener('keydown', onKey, true);
+    wrap.querySelector('.sv-dr-bg').addEventListener('click', () => fin(false));
+    const dec = n => fmtNum(n, n % 1 ? 2 : 0);
+    const tonTot = () => items.reduce((s, it) => s + (st.cant.get(it.material) || 0) * it.kgU / 1000, 0);
+    const inp = 'padding:6px 8px;border:1px solid var(--sv-line);border-radius:4px;font:inherit';
+    function draw() {
+      panel.innerHTML = `
+        <div class="sv-dr-h"><div style="flex:1;min-width:0">
+          <div class="sv-dr-k">Carga manual · ${tipo === 'CROSSDOCK' ? 'Crossdocking' : 'Pedido de traslado'}</div>
+          <div class="sv-dr-t">${escapeHtml(doc)}</div>
+          <div class="sv-dr-s">${escapeHtml(getNombreCentro(cesu))} → ${escapeHtml(getNombreCentro(ce))} · sin entrega SAP</div></div>
+          <button class="sv-iconbtn" data-cx title="Cerrar (Esc)"><span class="material-symbols-outlined">close</span></button></div>
+        <div class="sv-dr-b" style="gap:14px">
+          <div class="sv-note-box">Entra sólo al <b>Plan de Carga del día de carga</b>, con prioridad sobre el resto, y el camión queda marcado <b>${MARCA_PEND_ENTREGA}</b>. Cuando llega la entrega SAP, la reemplaza.</div>
+          <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-end">
+            <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;font-weight:700">Camión
+              <span style="display:flex;gap:12px;font-weight:400;font-size:13px">
+                <label><input type="radio" name="cm-modo" value="CONSOLIDADO" ${st.modo === 'CONSOLIDADO' ? 'checked' : ''}> Consolidado (camión CD)</label>
+                <label><input type="radio" name="cm-modo" value="CD-CLIENTE" ${st.modo === 'CD-CLIENTE' ? 'checked' : ''}> CD-Cliente (directo)</label></span></label>
+            <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;font-weight:700">Día de carga
+              <input type="date" data-cm-fecha value="${escapeHtml(st.fecha)}" min="${isoLocal(hoy00())}" style="${inp}"></label>
+          </div>
+          ${st.modo === 'CD-CLIENTE' ? `<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+            <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;font-weight:700">Cliente / destino<input data-cm-f="cliente" value="${escapeHtml(st.cliente)}" style="${inp}"></label>
+            <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;font-weight:700">Comuna<input data-cm-f="comuna" value="${escapeHtml(st.comuna)}" style="${inp}"></label>
+            <label style="grid-column:1/-1;display:flex;flex-direction:column;gap:4px;font-size:12px;font-weight:700">Dirección<input data-cm-f="direccion" value="${escapeHtml(st.direccion)}" style="${inp}"></label></div>` : ''}
+          <table class="sv-tbl" style="width:100%;font-size:13px"><thead><tr><th style="text-align:left">Material</th><th style="text-align:right">Pendiente</th><th style="text-align:right">Unidades a cargar</th><th style="text-align:right">Ton</th></tr></thead>
+            <tbody>${items.map(it => `<tr><td><b>${escapeHtml(it.material)}</b><div class="sv-sub">${escapeHtml(it.nombre)}</div></td>
+              <td style="text-align:right">${dec(it.pend)} ${escapeHtml(it.um)}</td>
+              <td style="text-align:right"><input data-cm-q="${escapeHtml(it.material)}" inputmode="decimal" value="${escapeHtml(sapNum(st.cant.get(it.material) || 0))}" style="${inp};width:110px;text-align:right"></td>
+              <td style="text-align:right" data-cm-t="${escapeHtml(it.material)}">${fmtNum((st.cant.get(it.material) || 0) * it.kgU / 1000, 2)}</td></tr>`).join('')}</tbody>
+            <tfoot><tr><td colspan="3" style="text-align:right;font-weight:700">Total</td><td style="text-align:right;font-weight:700" data-cm-tot>${fmtNum(tonTot(), 2)} t</td></tr></tfoot></table>
+          ${st.err ? `<div style="color:#b91c1c;font-size:12px">${escapeHtml(st.err)}</div>` : ''}
+        </div>
+        <div class="sv-dr-f"><span class="sv-dr-note">Unidades: números con coma para decimales, sin puntos de miles</span>
+          <div style="display:flex;gap:8px">${m0 ? '<button class="sv-btn" data-del><span class="material-symbols-outlined">delete</span>Quitar carga manual</button>' : ''}<button class="sv-btn" data-cx>Cancelar</button>
+          <button class="sv-btn-p" data-ok><span class="material-symbols-outlined">local_shipping</span>Subir al camión</button></div></div>`;
+      panel.querySelectorAll('[data-cx]').forEach(b => b.addEventListener('click', () => fin(false)));
+      panel.querySelectorAll('input[name="cm-modo"]').forEach(b => b.addEventListener('change', () => { st.modo = b.value; draw(); }));
+      panel.querySelector('[data-cm-fecha]').addEventListener('change', e => { st.fecha = e.target.value; });
+      panel.querySelectorAll('[data-cm-f]').forEach(i => i.addEventListener('input', () => { st[i.dataset.cmF] = i.value; }));
+      panel.querySelectorAll('[data-cm-q]').forEach(i => i.addEventListener('input', () => {
+        const it = items.find(x => x.material === i.dataset.cmQ), v = String(i.value).trim();
+        st.cant.set(it.material, /^\d+(,\d+)?$/.test(v) ? Number(v.replace(',', '.')) : NaN);
+        const q = st.cant.get(it.material);
+        panel.querySelector(`[data-cm-t="${CSS.escape(it.material)}"]`).textContent = isNaN(q) ? '—' : fmtNum(q * it.kgU / 1000, 2);
+        panel.querySelector('[data-cm-tot]').textContent = fmtNum(tonTot() || 0, 2) + ' t';
+      }));
+      panel.querySelector('[data-del]')?.addEventListener('click', async () => {
+        if (!await confirmar(`¿Quitar la carga manual del pedido ${doc}?\n\nSale del Plan de Carga del ${fmtFechaISO(m0.fecha_carga)}.`)) return;
+        const { error } = await supabase.from('abast_carga_manual_traslado').delete().eq('tipo', tipo).eq('doc_compr', doc);
+        if (error) { showAlert('Error al quitar: ' + error.message, 'error'); return; }
+        showAlert(`Carga manual del pedido ${doc} quitada`, 'success'); fin(true);
+      });
+      panel.querySelector('[data-ok]').addEventListener('click', guardar);
+    }
+    async function guardar() {
+      if (!st.fecha || st.fecha < isoLocal(hoy00())) { st.err = 'Elige un día de carga desde hoy en adelante.'; draw(); return; }
+      const lineas = [];
+      for (const it of items) {
+        const q = st.cant.get(it.material);
+        if (isNaN(q) || q < 0 || q > it.pend + 1e-9) { st.err = `Unidades del material ${it.material}: entre 0 y ${dec(it.pend)}.`; draw(); return; }
+        if (q > 0) lineas.push({ material: it.material, nombre: it.nombre, cantidad: q, um: it.um, kg_bruto: Math.round(it.kgB * 1e6) / 1e6, kg_vol: Math.round(it.kgV * 1e6) / 1e6 });
+      }
+      if (!lineas.length) { st.err = 'Debe quedar al menos un material con unidades a cargar.'; draw(); return; }
+      const email = await getUserEmail(), now = new Date().toISOString();
+      const payload = { tipo, doc_compr: doc, cesu, ce, modo: st.modo, fecha_carga: st.fecha, lineas,
+        cliente: st.modo === 'CD-CLIENTE' ? (st.cliente || null) : null, comuna: st.modo === 'CD-CLIENTE' ? (st.comuna || null) : null,
+        direccion: st.modo === 'CD-CLIENTE' ? (st.direccion || null) : null, updated_at: now, updated_by: email, ...(m0 ? {} : { created_at: now, created_by: email }) };
+      const { error } = await supabase.from('abast_carga_manual_traslado').upsert(payload, { onConflict: 'tipo,doc_compr' });
+      if (error) { st.err = 'Error al guardar: ' + error.message; draw(); return; }
+      showAlert(`Pedido ${doc} sube al camión ${st.modo === 'CD-CLIENTE' ? 'CD-Cliente' : 'CD (consolidado)'} el ${fmtFechaISO(st.fecha)} · ${fmtNum(tonTot(), 2)} t · ${MARCA_PEND_ENTREGA}`, 'success');
+      fin(true);
+    }
+    draw();
+  });
+}
 
 // ── Ajustes manuales del Plan de Carga (1-oct-2026, pedido Jordan) ──────────
 // abast_plan_linea_camion: línea (doc+material) asignada a mano al camión CD (1), al
@@ -3266,6 +3398,7 @@ const VISTAS_TRONCAL = {
           doc_compr: String(r.doc_compr ?? '').trim(),
           cesu: r.cesu, ce: r.ce, alm: r.alm, pos: r.pos, creado_el: r.creado_el,
           _sd: info ? info.sd : null, _ton_num: t, _motivo_prio: prio.motivo,
+          _kg_bruto: parseNum(r.peso_neto), _kg_vol: parseNum(r.tamano_dimens), ump: r.ump || r.ump_2 || '',   // (23-oct-2026) carga manual
           material: r.material, texto_breve: r.texto_breve,
           fecha_confirmada: r.fecha_confirmada,
           ctd_pedido: r.ctd_pedido, ctd_confirmada: r.ctd_confirmada,
@@ -3474,6 +3607,7 @@ const VISTAS_TRONCAL = {
           texto_breve: r.texto_breve,
           _ctd_pend: fmtNum(pend, 1),
           ctd_pedido: r.ctd_pedido, ctd_entregada: r.ctd_entregada, _pend_num: pend,   // (18-oct-2026) ajuste de unidades
+          _kg_bruto: parseNum(r.peso_neto), _kg_vol: parseNum(r.tamano_dimens), ump: r.ump || '',   // (23-oct-2026) carga manual
           _ton_sku: fmtNum(t, 4),
           documento: r.documento,
           _origen: origen,
@@ -4267,13 +4401,13 @@ const V2 = {
     desc: 'Traslados desde Almacén 4000 (CD Quilicura) a sucursales. Por defecto entran al Plan de Carga como Consolidable (camión CD).',
     rowId: r => `${r.doc_compr}|${r._pos || r.material}`,
     async preload() {
-      const [coordMap, feriadosRows, horizRows] = await Promise.all([loadCoordTraslados(), fetchAllRows('abast_feriados'), fetchAllRows('abast_horizonte_centro')]);
+      const [coordMap, feriadosRows, horizRows, cm] = await Promise.all([loadCoordTraslados(), fetchAllRows('abast_feriados'), fetchAllRows('abast_horizonte_centro'), loadCargaManualTr()]);
       const feriadosSet = new Set((feriadosRows || []).map(r => String(r.fecha ?? '').trim()).filter(Boolean));
       const horiz = {};
       (horizRows || []).filter(r => String(r.centro_origen ?? '').trim() === '1003')
         .forEach(r => { horiz[String(r.centro_destino ?? '').trim()] = Number(r.horizonte_horas) === 48 ? 48 : 24; });
       const d1 = addBusinessDays(hoy00(), 1, feriadosSet), d2 = addBusinessDays(hoy00(), 2, feriadosSet);
-      return { coordMap, diaObj: ce => (horiz[String(ce ?? '').trim()] === 48 ? d2 : d1) };
+      return { coordMap, cmMap: mapaCargaManualTr(cm, 'CROSSDOCK'), diaObj: ce => (horiz[String(ce ?? '').trim()] === 48 ? d2 : d1) };
     },
     enrich(rows, ctx) {
       ctx._rows = rows;
@@ -4281,6 +4415,7 @@ const V2 = {
         r._al = alertaV2(r.fe_entrega, 5); r._pv = r._origen === 'PEDIDO DE VENTAS';
         r._coord = ctx.coordMap.get(String(r.doc_compr).trim()) || null;
         r._cdcli = !!(r._coord && r._coord.tipo_entrega === 'CD-CLIENTE');
+        r._cm = (ctx.cmMap && ctx.cmMap.get(String(r.doc_compr ?? '').trim())) || null;   // (23-oct-2026) carga manual
         // (18-oct-2026, Jordan) Centro alternativo y unidades editadas (Ajustar carga).
         r._ce_alt = ceAltDe(r._coord);
         r._lineas_aj = !!(r._coord && r._coord.lineas && typeof r._coord.lineas === 'object');
@@ -4316,9 +4451,9 @@ const V2 = {
     ],
     excluirEnFila: true,
     permisoExcluir: 'ajustar_plan',
-    planEstado: (r, excluida) => excluida ? pill('Excluida hoy', 'bad')
+    planEstado: (r, excluida) => (excluida ? pill('Excluida hoy', 'bad')
       : r._cdcli ? pill(r._cd_hoy ? 'En plan · CD-Cliente' : 'CD-Cliente', 'purple') + `<div class="sv-sub">día ${escV2(fmtFechaISO(r._coord.fecha_entrega))}</div>`
-      : pill('Sin entrega', 'mute'),
+      : pill('Sin entrega', 'mute')) + cargaManualPill(r._cm),
     edge: r => r._cdcli ? '#7e22ce' : (r._al.k === 'Atrasado' ? C_RED : null),
     note: 'Consolidable: va en el camión CD (4º en el orden de llenado) · CD-Cliente: camión directo coordinado, sale el día de su fecha de entrega',
     minW: '1180px',
@@ -4332,6 +4467,9 @@ const V2 = {
         { label: 'Ajustar unidades / centro destino', icon: 'tune',
           run: async (row, ctx) => ((await showAjusteCrossModal(row, ctx)) ? { recargar: true } : null) },
       ];
+      // (23-oct-2026, Jordan) Carga manual sin entrega SAP: subir el pedido a un camión eligiendo día y unidades.
+      if (can('incluir_plan')) acciones.push({ label: r._cm ? 'Editar carga manual (camión)' : 'Subir a camión (carga manual)', icon: 'local_shipping',
+        run: async (row, ctx) => ((await showCargaManualModal(row, ctx, 'CROSSDOCK')) ? { recargar: true } : null) });
       if (puede && r._cdcli) acciones.push({ label: 'Volver a Consolidable', icon: 'undo', run: async row => {
         if (!await confirmar(`¿Quitar el camión directo CD-Cliente del pedido ${row.doc_compr}?\n\nVuelve a Consolidable y entra al camión CD.`)) return null;
         return (await volverConsolidableTraslado(row.doc_compr, row._coord)) ? (showAlert('Pedido vuelve a Consolidable', 'success'), { recargar: true }) : null;
@@ -4369,9 +4507,10 @@ const V2 = {
     prioridad: { tipo: 'traslado', doc: r => r.doc_compr ?? r.oc ?? r.pt, centro: r => r.ce },   // (15-oct-2026) check PRIORIDAD
     desc: 'Pedidos de traslados desde centros de distribución a sucursales',
     origen: { of: r => r.cesu, opciones: ORIGENES_CD },
-    async preload() { const [estadoPlan, aj] = await Promise.all([estadoPlanTraslados(), loadAjustesUnidades()]); return { estadoPlan, ajU: mapaAjustesUnidades(aj) }; },
+    async preload() { const [estadoPlan, aj, cm] = await Promise.all([estadoPlanTraslados(), loadAjustesUnidades(), loadCargaManualTr()]); return { estadoPlan, ajU: mapaAjustesUnidades(aj), cmMap: mapaCargaManualTr(cm, 'TRASLADO') }; },
     enrich(rows, ctx) {
-      rows.forEach(r => { r._al = alertaV2(r.fecha_confirmada, 7); r._pr = PRIO_V2[r._prioridad_grupo] || PRIO_V2.E; r._q = grupoQuiebre(r._sd); });
+      rows.forEach(r => { r._al = alertaV2(r.fecha_confirmada, 7); r._pr = PRIO_V2[r._prioridad_grupo] || PRIO_V2.E; r._q = grupoQuiebre(r._sd);
+        r._cm = (ctx.cmMap && ctx.cmMap.get(String(r.doc_compr ?? '').trim())) || null; });
       ctx._rows = rows;
       marcarAjusteUnidades(rows, ctx.ajU);
       aplicarEstadoPlanTraslados(rows, ctx.estadoPlan);
@@ -4414,7 +4553,7 @@ const V2 = {
     rowId: r => `${r.doc_compr}|${String(r.pos ?? '').trim() || r.material}`,
     excluirEnFila: true,
     permisoExcluir: 'ajustar_plan',
-    planEstado: (r, excluida) => { if (excluida) return pill('Excluida hoy', 'bad'); const p = PLAN_LINEA_V2[r._plan] || PLAN_LINEA_V2.FUERA; return pill(p[0], p[1]) + (r._plan_inc ? ` ${pill('Manual', 'purple')}` : ''); },
+    planEstado: (r, excluida) => { if (excluida) return pill('Excluida hoy', 'bad'); const p = PLAN_LINEA_V2[r._plan] || PLAN_LINEA_V2.FUERA; return pill(p[0], p[1]) + (r._plan_inc ? ` ${pill('Manual', 'purple')}` : '') + cargaManualPill(r._cm); },
     edge: r => r._en_plan ? C_GREEN : (r._al.k === 'Atrasado' ? C_RED : null),
     note: 'Borde verde: línea que va en el camión CD del plan de hoy · Usuario, AA y Quiebre van en «Quiebre y priorizado» (5º); el resto en «Abastecimiento» (6º)',
     minW: '1080px',
@@ -4445,6 +4584,9 @@ const V2 = {
           showAlert('Línea incluida en el Plan de Carga', 'success'); return recalcular(row, ctx);
         } },
       ] : [];
+      // (23-oct-2026, Jordan) Carga manual sin entrega SAP: subir el pedido a un camión eligiendo día y unidades.
+      if (puede && r._plan === 'SIN_ENTREGA') acciones.unshift({ label: r._cm ? 'Editar carga manual (camión)' : 'Subir a camión (carga manual)', icon: 'local_shipping', primary: true,
+        run: async (row, ctx) => ((await showCargaManualModal(row, ctx, 'TRASLADO')) ? { recargar: true } : null) });
       // (23-oct-2026, Jordan) Ajustar las unidades que suben al camión hoy (p. ej. completar con fierro).
       if (puede && r._plan !== 'EXCLUIDO' && r._plan !== 'SIN_ENTREGA') acciones.push({ label: r._ajU != null ? 'Editar unidades a cargar hoy' : 'Ajustar unidades a cargar hoy', icon: 'tune',
         run: async (row, ctx) => ((await ajustarUnidadesTraslado(row, ctx)) ? recalcular(row, ctx) : null) });
@@ -5756,11 +5898,11 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610231507');
+    const m = await import('./ind-plan-carga.js?v=202610231519');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (currentSub === 'control_diferencias') {  // (11-oct-2026) Control de Diferencias del Plan de Carga
-    const m = await import('./control-diferencias.js?v=202610231507');
+    const m = await import('./control-diferencias.js?v=202610231519');
     await m.renderControlDiferencias(stage);
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
@@ -5967,7 +6109,7 @@ let PRIO_DOCS = new Set();
 // (15-oct-2026, Jordan) Columna «Prioridad de carga» en los CSV: la posición se carga como prioritaria.
 const PRIO_CSV_TXT = 'PRIORIDAD DE CARGA';
 const esPrioCarga = d => !!d && PRIO_DOCS.has(String(d.pt ?? d.oc ?? d.pv ?? '').trim());
-const prioCsv = d => esPrioCarga(d) ? PRIO_CSV_TXT : '';
+const prioCsv = d => (d && d._cargaManual ? 'PENDIENTE DE RECEPCIÓN Y CREACIÓN DE ENTREGA' + (esPrioCarga(d) ? ' · ' : '') : '') + (esPrioCarga(d) ? PRIO_CSV_TXT : '');
 // (23-oct-2026, Jordan) Elige, dentro de un nivel de prioridad, las líneas que más llenan `rem` toneladas
 // (mochila 0/1 a 0,1 t); desempate: más posiciones y luego el orden de prioridad. Igual que
 // fn_abast_llenar_nivel en la foto del servidor. Devuelve los índices elegidos.
@@ -6012,8 +6154,11 @@ function asignarCamionesCD(r) {
   // documento con más posiciones en el camión CD del centro (igual que la foto del servidor, npos desc).
   const npos = new Map();
   [r.det.revex, r.det.ventaCons, r.det.retiro, r.det.cross, r.det.quiebre, r.det.stock].forEach(arr => (arr || []).forEach(d => npos.set(doc(d), (npos.get(doc(d)) || 0) + 1)));
-  [r.det.revex, r.det.ventaCons, r.det.retiro, r.det.cross, forz,
-   (r.det.quiebre || []).filter(d => !d._forzadoPlan), (r.det.stock || []).filter(d => !d._forzadoPlan)].forEach((arr, ai) => {
+  // (23-oct-2026, Jordan) La carga manual (gestión manual, sin entrega SAP) tiene prioridad: va primero.
+  const esCM = d => !!d._cargaManual;
+  const manualesCM = [...(r.det.cross || []), ...(r.det.quiebre || []), ...(r.det.stock || [])].filter(esCM);
+  [manualesCM, r.det.revex, r.det.ventaCons, r.det.retiro, (r.det.cross || []).filter(d => !esCM(d)), forz.filter(d => !esCM(d)),
+   (r.det.quiebre || []).filter(d => !d._forzadoPlan && !esCM(d)), (r.det.stock || []).filter(d => !d._forzadoPlan && !esCM(d))].forEach((arr, ai) => {
     (arr || []).forEach(d => { d._prio = PRIO_DOCS.has(doc(d)); d._niv = `${ai}|${d._prio ? 1 : 0}|${d._orden ?? 0}`; });
     (arr || []).slice()
       // (15-oct-2026) PRIORIDAD primero dentro de su categoría (no salta categorías).
@@ -6199,8 +6344,10 @@ async function renderPlanCarga(stage, opts = {}) {
     fetchAllRows('abast_feriados'),
     fetchAllRows('abast_horizonte_centro'),
   ]);
-  const [ventasDirectoManual, inclusionesPlan, asigLineas, camManuales, coordVentas, coordTraslados, ajustesUnidades] = await Promise.all([loadVentasDirectoManual(), loadInclusionesPlan(), loadAsignacionLineas(), loadCamionesManuales(), loadCoordinacionesVenta(), loadCoordTraslados(), loadAjustesUnidades()]);
+  const [ventasDirectoManual, inclusionesPlan, asigLineas, camManuales, coordVentas, coordTraslados, ajustesUnidades, cargasManualTr] = await Promise.all([loadVentasDirectoManual(), loadInclusionesPlan(), loadAsignacionLineas(), loadCamionesManuales(), loadCoordinacionesVenta(), loadCoordTraslados(), loadAjustesUnidades(), loadCargaManualTr()]);
   const ajUMap = mapaAjustesUnidades(ajustesUnidades);
+  // (23-oct-2026, Jordan) Cargas manuales (sin entrega SAP) con día de carga = hoy, de este CD origen.
+  const cmHoy = (cargasManualTr || []).filter(m => String(m.cesu ?? '').trim() === planOrigen && String(m.fecha_carga ?? '') === isoLocal(hoy00()));
   // (18-oct-2026, Jordan) Pedidos de venta del Stock Almacén 4000 coordinados como venta directa
   // («PEDIDO DE VENTA, EMITIR GUIA FACTURABLE»): entran como Venta Directa del centro (o del alternativo).
   let pv4000Coord = new Map(), pv4000Live = [], pv4000Cargados = new Set();
@@ -6433,6 +6580,8 @@ async function renderPlanCarga(stage, opts = {}) {
     }
   });
   const t4000 = Array.from(_t4000Map.values());
+  // (23-oct-2026) Pedido + material con entrega SAP disponible: la entrega reemplaza a la carga manual.
+  const conEntregaCM = new Set([...traslados, ...t4000].map(r => _keyInc(r.doc_compr, r.material)));
 
   const destinosOrigen = (CALENDARIOS[planOrigen] && CALENDARIOS[planOrigen].destinos) || CENTROS_QUIEBRES;
   const centrosSet = new Set(destinosOrigen);
@@ -6566,6 +6715,18 @@ async function renderPlanCarga(stage, opts = {}) {
         const ceO = String(r.ce ?? '').trim();
         det.cross.push({ entrega_entrante: r.entrega || '', pt: r.doc_compr, origen: String(r.cesu ?? '').trim(), ceDestino: ceO, almDestino: String(r.alm ?? '').trim(), material: r.material, nombre: r.texto_breve, fecha: r.fe_entrega, ctdPend: pend, ton: t, pv: r.documento, tonBruto, tonVol,
           _ceOrig: ceO !== ce ? ceO : '', _ajustada: pend < r._pendSapX - 1e-9, _pendSap: r._pendSapX }); return sum + t; }, 0);
+
+    // (23-oct-2026, Jordan) Carga manual CONSOLIDADO del día (sin entrega SAP): va primero en el camión CD.
+    let tonManCx = 0, tonManTr = 0;
+    const cmCe = cmHoy.filter(m => String(m.ce ?? '').trim() === ce);
+    cmCe.filter(m => m.modo === 'CONSOLIDADO').forEach(m => lineasCargaManual(m).forEach(l => {
+      const docM = String(m.doc_compr ?? '').trim();
+      if (conEntregaCM.has(_keyInc(docM, l.material))) return;
+      const base = { pt: docM, material: l.material, nombre: l.nombre, fecha: fmtFechaISO(m.fecha_carga), ton: l.ton, tonBruto: l.tonBruto, tonVol: l.tonVol,
+        pv: '', entrega_entrante: '', _cargaManual: true, _orden: -200 };
+      if (m.tipo === 'CROSSDOCK') { det.cross.push({ ...base, origen: planOrigen, ceDestino: ce, ctdPend: l.cant }); tonManCx += l.ton; }
+      else { det.quiebre.push({ ...base, ctd: sapNum(l.cant), usuario: 'CARGA MANUAL', _motivo: 'CARGA MANUAL · ' + MARCA_PEND_ENTREGA }); tonManTr += l.ton; }
+    }));
 
     // 5. Notas de Venta 1003 (ofvta = centro): requiere ruta, excluye RETIRA.
     //    >26T  ⇒ CAMIÓN CLIENTE (directo al cliente, no se consolida). Fecha -3/+3.
@@ -6712,6 +6873,16 @@ async function renderPlanCarga(stage, opts = {}) {
         g.items.push(...items);
       }
     }
+    // (23-oct-2026, Jordan) Carga manual CD-CLIENTE del día: un camión directo por pedido (patente se programa en el plan).
+    cmCe.filter(m => m.modo === 'CD-CLIENTE').forEach(m => {
+      const docM = String(m.doc_compr ?? '').trim();
+      const items = lineasCargaManual(m).filter(l => !conEntregaCM.has(_keyInc(docM, l.material))).map(l => ({ pv: docM, material: l.material, nombre: l.nombre, cant: l.cant,
+        ruta: '', comuna: m.comuna || '', region: '', fecha: fmtFechaISO(m.fecha_carga), ton: l.ton, tonBruto: l.tonBruto, tonVol: l.tonVol,
+        tipoExp: 'Carga manual · ' + MARCA_PEND_ENTREGA, cliente: m.cliente || '', idCliente: '', vendedor: '', _manual: 'CD-CLIENTE', entrega: '', _cargaManual: true }));
+      if (!items.length) return;
+      ventasCliPorGrupo[`MAN|${m.tipo}|${docM}`] = { items, clientes: new Set([m.cliente || ('Traslado ' + docM)]), pat: '', grp: true,
+        co: { fecha_entrega: m.fecha_carga, nombre_cliente: m.cliente || '', comuna: m.comuna || '', direccion: m.direccion || '', patente_carro: '' } };
+    });
     // (AJUSTE 30-sep-2026, Jordan) % de ocupación de camiones directos siempre sobre camión de 28 t.
     Object.values(ventasCliPorGrupo).forEach(g => {
       const nombres = [...g.clientes].join(' + ');
@@ -6864,7 +7035,7 @@ async function renderPlanCarga(stage, opts = {}) {
     // evalúa de nuevo cada vez que se renderiza el plan — si hoy no alcanza,
     // sigue esperando a 48h; si al día siguiente llegó más carga y entre lo
     // nuevo y lo antiguo ya se completa, se adelanta ese día.
-    const totalSinRetiroCd = tonRevex + tonVentaCons + tonCross + tonQuiebre + tonStock;
+    const totalSinRetiroCd = tonRevex + tonVentaCons + tonCross + tonQuiebre + tonStock + tonManCx + tonManTr;
     function capParaTotal(t) {
       return CENTROS_CAMION_REDUCIDO.includes(ce) ? (t >= CAP_CAMION_DEFAULT ? CAP_CAMION_DEFAULT : CAP_CAMION_REDUCIDO) : CAP_CAMION_DEFAULT;
     }
@@ -6910,7 +7081,7 @@ async function renderPlanCarga(stage, opts = {}) {
 
     const out = {
       ce, nombre: getNombreCentro(ce), cap,
-      tonQuiebre, tonStock, tonRevex, tonCross, tonVentaCons, tonVentaCliente, tonRetiro, tonFabSuc, tonFabCli,
+      tonQuiebre: tonQuiebre + tonManTr, tonStock, tonRevex, tonCross: tonCross + tonManCx, tonVentaCons, tonVentaCliente, tonRetiro, tonFabSuc, tonFabCli,
       total, faltan, sobrecarga, pct, status, statusCls, obs, enCalendario,
       horizonte: horizonteEfectivo, horizonteConfig, promovido24,
       camionCliente: tonVentaCliente > 0, camionFabSuc: tonFabSuc > 0, camionFabCli: tonFabCli > 0,
@@ -7640,6 +7811,9 @@ async function renderPlanCarga(stage, opts = {}) {
     const t = [];
     const pg = progMap.get(`${r.ce}|1`);
     if (pg) t.push(TAG('task_alt', 'Programado', `Camión CD programado · patente ${pg.patente_camion} · ${pg.transportista || pg.id_transporte}`, 'seg-ok'));
+    // (23-oct-2026, Jordan) Camión CD con carga manual sin entrega SAP.
+    if (Object.values(r.det || {}).some(a => (a || []).some(d => d._cargaManual && (d._enCamion || d._camion2))))
+      t.push(TAG('inventory_2', 'Pend. recepción y entrega', MARCA_PEND_ENTREGA + ': lleva carga manual sin entrega SAP', 'baja'));
     if (r.enCalendario) t.push(TAG('calendar_today', 'Agenda', 'En calendario de despacho', 'agenda'));
     if (!r.enCalendario && r.pct >= 70) t.push(TAG('add_circle', 'Cupo extra', 'Fuera de agenda con carga ≥70%', 'extra'));
     if (r.enCalendario && r.pct < 70) t.push(TAG('warning', 'Carga baja', 'En calendario con carga <70%', 'baja'));
@@ -7696,7 +7870,8 @@ async function renderPlanCarga(stage, opts = {}) {
     const chips = DIR_V2.filter(t => (r[t.lista] || []).length).map(t => {
       const cams = r[t.lista]; const ton = cams.reduce((s, c) => s + c.ton, 0);
       const man = cams.some(c => c.manualId);
-      return `<span class="pc-dir" title="${escapeHtml(t.tip)}${man ? ' · armado a mano' : ''}"><span class="material-symbols-outlined" style="color:${t.color}">local_shipping</span>${escapeHtml(t.lbl)}${man ? ' (manual)' : ''} · ${t1(ton)} t${cams.length > 1 ? `<em style="background:${t.color}" title="Se requieren ${cams.length} camiones">X${cams.length}</em>` : ''}</span>`;
+      const pendCM = cams.some(c => (c.items || []).some(d => d._cargaManual));
+      return `<span class="pc-dir" title="${escapeHtml(t.tip)}${man ? ' · armado a mano' : ''}${pendCM ? ' · ' + MARCA_PEND_ENTREGA : ''}"><span class="material-symbols-outlined" style="color:${t.color}">local_shipping</span>${escapeHtml(t.lbl)}${man ? ' (manual)' : ''} · ${t1(ton)} t${cams.length > 1 ? `<em style="background:${t.color}" title="Se requieren ${cams.length} camiones">X${cams.length}</em>` : ''}${pendCM ? ' <b style="color:#b45309">· PEND. RECEPCIÓN Y ENTREGA</b>' : ''}</span>`;
     });
     const pc = DIR_V2.flatMap(t => r[t.lista] || []).filter(porConfirmar);
     if (pc.length) chips.push(`<button class="pc-dir" data-trconf="${escapeHtml(r.ce)}" title="Camiones directos coordinados con un transportista BLOQUEADO en el maestro: completa sus datos para confirmarlos (hasta entonces no entran a la foto, correo ni Seguimiento)" style="border-color:#f59e0b;background:#fef3c7;color:#713f12;cursor:pointer"><span class="material-symbols-outlined" style="color:#b45309">pending_actions</span>Transporte por confirmar · ${pc.length}</button>`);
@@ -8015,7 +8190,8 @@ async function renderPlanCarga(stage, opts = {}) {
   const lineaCorreo = (cat, tipo, d) => ({ cat, doc: String((tipo === 'V' ? d.pv : tipo === 'R' ? d.oc : d.pt) ?? '').trim(), material: String(d.material ?? ''), nombre: d.nombre || '',
     cant: r4(tipo === 'X' ? d.ctdPend : parseNum(tipo === 'T' ? d.ctd : d.cant)), ton: r4(d.ton), fecha: d.fecha || '',
     pv: tipo === 'V' ? '' : String(d.pv ?? ''), prov: d.prov || '', cliente: d.cliente || '', entrega_entrante: d.entrega_entrante || d.entrega || '',
-    ruta: d.ruta || '', comuna: d.comuna || '', ton_bruto: d.tonBruto == null ? null : r4(d.tonBruto), ton_vol: d.tonVol == null ? null : r4(d.tonVol) });
+    ruta: d.ruta || '', comuna: d.comuna || '', ton_bruto: d.tonBruto == null ? null : r4(d.tonBruto), ton_vol: d.tonVol == null ? null : r4(d.tonVol),
+    ...(d._cargaManual ? { marca: MARCA_PEND_ENTREGA } : {}) });
   function estadoCorreoFila(r) {
     marcarCapacidadCD(r);
     const lineasDe = pred => { const out = []; CAT_V2.forEach((c, i) => (r.det[c.k] || []).forEach(d => { if (pred(d)) out.push(lineaCorreo(CAT_CSV[i], c.tipo, d)); })); return out; };
