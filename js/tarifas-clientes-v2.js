@@ -15,11 +15,11 @@
 // tarifas a clientes y «Guardar y recalcular» escribe sólo client_tariff_config
 // (syncOnly) y, si cambió la asignación de clusters, cluster_rutas por centro.
 // ============================================================================
-import { saveDatabase, getOrigenGroups } from './data.js?v=202610222359';
-import { buildZcapMap } from './zcap.js?v=202610222359';
+import { saveDatabase, getOrigenGroups } from './data.js?v=202610230001';
+import { buildZcapMap } from './zcap.js?v=202610230001';
 import { showAlert } from './utils.js';
-import { can } from './permisos.js?v=202610222359';
-import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, setParamPill, clasifPill, clasifTarifa, pillHtml } from './tarifas-ui.js?v=202610222359';
+import { can } from './permisos.js?v=202610230001';
+import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, setParamPill, clasifPill, clasifTarifa, pillHtml } from './tarifas-ui.js?v=202610230001';
 
 const CAPS = [5, 10, 15, 28];
 const CAP_LBL = { 5: '5 t', 10: '10 t', 15: '15 t', 28: '28 t' };
@@ -99,16 +99,18 @@ function recargoDe(ccfgX, grupo) {
 // Sólo Tarifa Min/Max y Express. Costo ruta = máx(km ruta × valor km del centro,
 // costo mínimo del centro). ZFMI = ZFMX = costo ruta; Express = costo × (1 + recargo).
 // No usa factor de consolidación ni ZCAP, no entra a $/Kg y no es camión mínimo.
-// Config en client_tariff_config.data.camion2t = { GRUPO_KEY: { activo, costoMin, valorKm } }.
+// Config en client_tariff_config.data.camion2t = { GRUPO_KEY: { costoMin, valorKm } }.
+// (23-oct-2026, Jordan) Sin costo mínimo ni valor km → el camión no se activa en ese centro.
 const T2_TIPO = 'Camión 2 Ton';
 function cfg2t(ccfgX, grupo) {
   const t = ccfgX.camion2t || {};
   const v = t[String(grupo).replace(/\s/g, '_')] || t[grupo] || {};
-  return { activo: v.activo === true, costoMin: num(v.costoMin), valorKm: num(v.valorKm) };
+  const costoMin = num(v.costoMin), valorKm = num(v.valorKm);
+  return { activo: costoMin > 0 || valorKm > 0, costoMin, valorKm };
 }
 export function costoRuta2t(ccfgX, grupo, km) {
   const c = cfg2t(ccfgX, grupo);
-  if (!c.activo || (c.costoMin <= 0 && c.valorKm <= 0)) return null;
+  if (!c.activo) return null;
   return Math.max(num(km) * c.valorKm, c.costoMin);
 }
 // Devuelve una fila por ruta × camión con todas las tarifas. zOver: Map key → zcap (foto)
@@ -586,14 +588,14 @@ function renderEspeciales(container, ctx) {
         </table></div>
       </div>
       <div class="sv-card" style="flex:1 1 100%">
-        <div class="tf-tabletitle"><div><h3>Camión 2 Ton</h3><small>Sólo Tarifa Min/Max y Express · costo ruta = máx(km ruta × valor km, costo mínimo) · no es camión mínimo ni entra a $/Kg</small></div></div>
+        <div class="tf-tabletitle"><div><h3>Camión 2 Ton</h3><small>Sólo Tarifa Min/Max y Express · costo ruta = máx(km ruta × valor km, costo mínimo) · sin valores = no se activa en el centro</small></div></div>
         <div class="sv-tablewrap" style="max-height:none"><table class="sv-table" style="min-width:640px">
-          <thead><tr><th>Centro logístico</th><th style="text-align:center">Activo</th><th class="r">Costo mínimo</th><th class="r">Valor km</th><th class="r">Ejemplo 50 km</th></tr></thead>
+          <thead><tr><th>Centro logístico</th><th>Estado</th><th class="r">Costo mínimo</th><th class="r">Valor km</th><th class="r">Ejemplo 50 km</th></tr></thead>
           <tbody>${grupos.map(g => { const gk = g.grupo.replace(/\s/g, '_');
             const c = cfg2t({ camion2t: w.camion2t }, g.grupo), c0 = cfg2t({ camion2t: b.camion2t }, g.grupo);
             const ej = costoRuta2t({ camion2t: w.camion2t }, g.grupo, 50);
             return `<tr style="cursor:default"><td><span class="sv-b">${esc(g.nombre)}</span><div class="sv-sub">${esc(g.centroIds.join(' · '))}</div></td>
-              <td style="text-align:center"><button class="tf-sw ${c.activo ? 'is-on' : ''}" data-chip data-t2tog="${esc(gk)}" ${editar ? '' : 'disabled'} title="Activar camión 2 Ton" aria-label="Activar camión 2 Ton ${esc(g.nombre)}"></button></td>
+              <td>${c.activo ? pillHtml('Activo', 'ok') : pillHtml('No activo', 'mute')}</td>
               <td class="r">${numIn(`t2|${gk}|costoMin`, c.costoMin, { pre: '$', w: '120px', changed: c.costoMin !== c0.costoMin, disabled: !editar, label: 'Costo mínimo 2 Ton ' + g.nombre })}</td>
               <td class="r">${numIn(`t2|${gk}|valorKm`, c.valorKm, { pre: '$', unit: '/km', w: '120px', changed: c.valorKm !== c0.valorKm, disabled: !editar, label: 'Valor km 2 Ton ' + g.nombre })}</td>
               <td class="r sv-muted">${ej != null ? clp(ej) : '—'}</td></tr>`; }).join('')}</tbody>
@@ -611,12 +613,6 @@ function renderEspeciales(container, ctx) {
       const [i, f] = inp.dataset.ftxt.split('|');
       w.clusters[Number(i)][f] = inp.value;
       recalc();
-    }));
-    container.querySelectorAll('[data-t2tog]').forEach(b => b.addEventListener('click', () => {
-      w.camion2t = w.camion2t || {};
-      const gk = b.dataset.t2tog;
-      w.camion2t[gk] = { ...(w.camion2t[gk] || {}), activo: !(w.camion2t[gk] || {}).activo };
-      render();
     }));
     container.querySelectorAll('[data-fcolor]').forEach(inp => inp.addEventListener('change', () => { w.clusters[Number(inp.dataset.fcolor)].color = inp.value; render(); }));
     container.querySelectorAll('[data-ftog]').forEach(b => b.addEventListener('click', () => { const c = w.clusters[Number(b.dataset.ftog)]; c.tipo0000Habilitado = c.tipo0000Habilitado === false; render(); }));
@@ -639,7 +635,8 @@ function renderEspeciales(container, ctx) {
       if (p[0] === 'fn') w.clusters[Number(p[1])][p[2]] = val;
       else if (p[0] === 't2') {
         w.camion2t = w.camion2t || {};
-        w.camion2t[p[1]] = { ...(w.camion2t[p[1]] || {}), [p[2]]: val };
+        const { activo: _a, ...prev } = w.camion2t[p[1]] || {};
+        w.camion2t[p[1]] = { ...prev, [p[2]]: val };
       }
       else if (p[0] === 'fr') {
         const gk = p[1], g = gk.replace(/_/g, ' ');
