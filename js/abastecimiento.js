@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610230925';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610230925';
-import { getDatabase } from './data.js?v=202610230925';
+import { supabase } from './supabase-client.js?v=202610231210';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610231210';
+import { getDatabase } from './data.js?v=202610231210';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610230925';
-import { confirmar, pedirDato } from './confirmar.js?v=202610230925';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610231210';
+import { confirmar, pedirDato } from './confirmar.js?v=202610231210';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -5699,11 +5699,11 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610230925');
+    const m = await import('./ind-plan-carga.js?v=202610231210');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (currentSub === 'control_diferencias') {  // (11-oct-2026) Control de Diferencias del Plan de Carga
-    const m = await import('./control-diferencias.js?v=202610230925');
+    const m = await import('./control-diferencias.js?v=202610231210');
     await m.renderControlDiferencias(stage);
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
@@ -5966,7 +5966,11 @@ function recalcCargaCD(r) {
   const tot = Math.max(0, r.totalBruto - (f.tonNoCarga || 0));
   const cap = CENTROS_CAMION_REDUCIDO.includes(r.ce) ? (tot >= CAP_CAMION_DEFAULT ? CAP_CAMION_DEFAULT : CAP_CAMION_REDUCIDO) : CAP_CAMION_DEFAULT;
   if (cap !== r.cap) { r.cap = cap; f = asignarCamionesCD(r); }
-  const pct = cap > 0 ? Math.round(tot / cap * 100) : 0;
+  // (23-oct-2026, Jordan) %, estado y faltan se miden sobre lo que REALMENTE va en el camión CD
+  // (líneas completas asignadas, igual que la barra), no sobre la demanda total: una línea que no
+  // cabe en el espacio libre (OC de retiro, entrega grande) no se divide y deja el camión a medias.
+  const cargado = f.cargado || 0;
+  const pct = cap > 0 ? Math.round(cargado / cap * 100) : 0;
   let status, statusCls;
   if (pct >= PCT_PROGRAMAR_CD) { status = 'PROGRAMAR'; statusCls = 'bg-green-700 text-white'; }
   else if (pct >= 70) { status = 'REVISAR'; statusCls = 'bg-yellow-600 text-white'; }
@@ -5981,7 +5985,7 @@ function recalcCargaCD(r) {
   const noCat = {};
   Object.entries(r.det || {}).forEach(([k, arr]) => { noCat[k] = (arr || []).filter(d => d._manual === 0).reduce((s, d) => s + (d.ton || 0), 0); });
   r._noCargaCat = noCat;
-  Object.assign(r, { total: tot, cap, pct, sobrecarga: Math.max(0, tot - cap), faltan: Math.max(0, cap - tot), status, statusCls, obs, tonNoCarga: f.tonNoCarga || 0,
+  Object.assign(r, { total: tot, cap, pct, sobrecarga: f.excedente || 0, faltan: Math.max(0, cap - cargado), status, statusCls, obs, tonNoCarga: f.tonNoCarga || 0,
     cargadoCD: f.cargado, excedente: f.excedente, segundoPropuesto: f.segundoPropuesto, tonSegundo: f.tonSegundo });
   return f;
 }
@@ -7567,12 +7571,15 @@ async function renderPlanCarga(stage, opts = {}) {
   function filaV2(r) {
     const e = estadoV2(r);
     const pctC = r.pct >= PCT_PROGRAMAR_CD ? '#15803d' : r.pct >= 70 ? '#a16207' : '#b5000b';
-    const fs = r.sobrecarga > 0 ? `<span style="color:#15803d">Sobran ${t1(r.sobrecarga)} t</span>` : `<span style="color:${r.pct < 70 ? '#b5000b' : '#5c5f61'}">Faltan ${t1(r.faltan)} t</span>`;
+    // (23-oct-2026) Con espacio libre y líneas que no caben (no se dividen) se muestran ambos datos.
+    const noCabe = r.sobrecarga > 0.05 && r.faltan > 0.05;
+    const fs = r.faltan <= 0.05 && r.sobrecarga > 0.05 ? `<span style="color:#15803d">Sobran ${t1(r.sobrecarga)} t</span>`
+      : `<span style="color:${r.pct < 70 ? '#b5000b' : '#5c5f61'}">Faltan ${t1(r.faltan)} t</span>${noCabe ? `<span style="color:#a16207" title="Líneas pendientes más grandes que el espacio libre: no se dividen. Baja una línea del camión, ajusta la OC o usa el 2º camión.">No caben ${t1(r.sobrecarga)} t</span>` : ''}`;
     return `<div class="pc-row ${r.enCalendario && r.pct >= 70 ? 'is-agenda' : ''} ${st.drawer === r.ce ? 'is-sel' : ''}" role="button" tabindex="0" data-chip data-suc="${escapeHtml(r.ce)}">
       <div class="pc-suc"><div><b>${escapeHtml(r.nombre)}</b><span class="sv-mono">${escapeHtml(r.ce)}</span></div><div class="pc-tags">${tagsV2(r)}</div></div>
       <div class="pc-carga">${r.total > 0 ? camionHtml(r) : '<div class="pc-truckw"><span class="sv-muted">Sin carga para el camión CD</span></div>'}</div>
       <div class="pc-estado">
-        <div class="pc-pct"><b style="color:${pctC}">${Math.min(r.pct, 100)}%</b><small>${t1(Math.min(r.total, r.cap))} / ${fmtNum(r.cap, 0)} t</small></div>
+        <div class="pc-pct"><b style="color:${pctC}">${Math.min(r.pct, 100)}%</b><small>${t1(Math.min(r.cargadoCD || 0, r.cap))} / ${fmtNum(r.cap, 0)} t</small></div>
         <div class="pc-est-r">${pillEstado(e)}${fs}${r.segundoPropuesto ? segChip(r) : ''}</div>
       </div>
       <div class="pc-dirs"><span class="pc-lbl">Camiones directos</span>${directosV2(r)}</div>
@@ -7661,7 +7668,8 @@ async function renderPlanCarga(stage, opts = {}) {
       const e = estadoV2(r);
       return kv([
           ['Capacidad', `${fmtNum(r.cap, 0)} t`], ['Cargado', `${t1(fill.cargado)} t · ${Math.min(r.pct, 100)}%`],
-          r.sobrecarga > 0 ? ['Sobra', `<span style="color:#15803d">+${t1(r.sobrecarga)} t</span>`] : ['Faltan', `<span style="color:${r.pct < 70 ? '#b5000b' : 'inherit'}">${t1(r.faltan)} t</span>`],
+          r.faltan <= 0.05 && r.sobrecarga > 0.05 ? ['Sobra', `<span style="color:#15803d">+${t1(r.sobrecarga)} t</span>`] : ['Faltan', `<span style="color:${r.pct < 70 ? '#b5000b' : 'inherit'}">${t1(r.faltan)} t</span>`],
+          r.faltan > 0.05 && r.sobrecarga > 0.05 ? ['No caben', `<span style="color:#a16207">${t1(r.sobrecarga)} t · líneas más grandes que el espacio libre (no se dividen)</span>`] : null,
           ['Estado', pillEstado(e)],
           ['Horizonte', `${r.horizonte}h${r.promovido24 ? ' (adelantado desde 48h)' : ''}`], ['Día objetivo', escapeHtml(cap1(diaCorto(diaObj(r))))],
           ['Agenda', r.enCalendario ? 'En calendario del día' : 'Fuera de agenda'],
