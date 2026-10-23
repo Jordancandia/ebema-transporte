@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610231434';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610231434';
-import { getDatabase } from './data.js?v=202610231434';
+import { supabase } from './supabase-client.js?v=202610231438';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610231438';
+import { getDatabase } from './data.js?v=202610231438';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610231434';
-import { confirmar, pedirDato } from './confirmar.js?v=202610231434';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610231438';
+import { confirmar, pedirDato } from './confirmar.js?v=202610231438';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -5699,11 +5699,11 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610231434');
+    const m = await import('./ind-plan-carga.js?v=202610231438');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (currentSub === 'control_diferencias') {  // (11-oct-2026) Control de Diferencias del Plan de Carga
-    const m = await import('./control-diferencias.js?v=202610231434');
+    const m = await import('./control-diferencias.js?v=202610231438');
     await m.renderControlDiferencias(stage);
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
@@ -5911,6 +5911,38 @@ let PRIO_DOCS = new Set();
 const PRIO_CSV_TXT = 'PRIORIDAD DE CARGA';
 const esPrioCarga = d => !!d && PRIO_DOCS.has(String(d.pt ?? d.oc ?? d.pv ?? '').trim());
 const prioCsv = d => esPrioCarga(d) ? PRIO_CSV_TXT : '';
+// (23-oct-2026, Jordan) Elige, dentro de un nivel de prioridad, las líneas que más llenan `rem` toneladas
+// (mochila 0/1 a 0,1 t); desempate: más posiciones y luego el orden de prioridad. Igual que
+// fn_abast_llenar_nivel en la foto del servidor. Devuelve los índices elegidos.
+function elegirNivelCD(tons, rem) {
+  const n = tons.length, C = Math.floor(rem * 10 + 1e-6);
+  if (!n || C < 0) return [];
+  const W = C + 1;
+  if (n * W > 5e6) { let a = 0; return tons.map((t, i) => (a + t <= rem + 1e-9 ? (a += t, i) : -1)).filter(i => i >= 0); }
+  const w = tons.map(t => Math.max(0, Math.ceil((t || 0) * 10 - 1e-6)));
+  const L = new Int32Array(W), N = new Int32Array(W), P = new Float64Array(W), take = new Uint8Array(n * W);
+  for (let i = 0; i < n; i++) {
+    const wi = w[i];
+    if (wi > C) continue;
+    for (let c = C; c >= wi; c--) {
+      const cl = L[c - wi] + wi, cn = N[c - wi] + 1, cp = P[c - wi] + (n - i);
+      if (cl > L[c] || (cl === L[c] && (cn > N[c] || (cn === N[c] && cp > P[c])))) { L[c] = cl; N[c] = cn; P[c] = cp; take[i * W + c] = 1; }
+    }
+  }
+  const sel = [];
+  for (let i = n - 1, c = C; i >= 0; i--) if (take[i * W + c]) { sel.push(i); c -= w[i]; }
+  return sel;
+}
+function llenarPorNivelesCD(lineas, rem, marcar) {
+  let usado = 0, i = 0;
+  while (i < lineas.length) {
+    let j = i; while (j < lineas.length && lineas[j]._niv === lineas[i]._niv) j++;
+    const grupo = lineas.slice(i, j);
+    elegirNivelCD(grupo.map(d => d.ton || 0), rem - usado).forEach(k => { marcar(grupo[k]); usado += grupo[k].ton || 0; });
+    i = j;
+  }
+  return usado;
+}
 function asignarCamionesCD(r) {
   const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
   const doc = d => String(d.pt ?? d.oc ?? d.pv ?? '').trim();
@@ -5924,8 +5956,8 @@ function asignarCamionesCD(r) {
   const npos = new Map();
   [r.det.revex, r.det.ventaCons, r.det.retiro, r.det.cross, r.det.quiebre, r.det.stock].forEach(arr => (arr || []).forEach(d => npos.set(doc(d), (npos.get(doc(d)) || 0) + 1)));
   [r.det.revex, r.det.ventaCons, r.det.retiro, r.det.cross, forz,
-   (r.det.quiebre || []).filter(d => !d._forzadoPlan), (r.det.stock || []).filter(d => !d._forzadoPlan)].forEach(arr => {
-    (arr || []).forEach(d => { d._prio = PRIO_DOCS.has(doc(d)); });
+   (r.det.quiebre || []).filter(d => !d._forzadoPlan), (r.det.stock || []).filter(d => !d._forzadoPlan)].forEach((arr, ai) => {
+    (arr || []).forEach(d => { d._prio = PRIO_DOCS.has(doc(d)); d._niv = `${ai}|${d._prio ? 1 : 0}|${d._orden ?? 0}`; });
     (arr || []).slice()
       // (15-oct-2026) PRIORIDAD primero dentro de su categoría (no salta categorías).
       .sort((a, b) => ((b._prio ? 1 : 0) - (a._prio ? 1 : 0)) || ((a._orden ?? 0) - (b._orden ?? 0)) || ((npos.get(doc(b)) || 0) - (npos.get(doc(a)) || 0)) || cmp(doc(a), doc(b)) || cmp(mat(a), mat(b)))
@@ -5942,18 +5974,16 @@ function asignarCamionesCD(r) {
     d._enCamion = d._manual === 1;
     if (d._enCamion) acc += d.ton || 0;
   });
-  orden.forEach(d => {
-    if (d._manual !== null) return;
-    if (acc + (d.ton || 0) <= r.cap + 1e-9) { d._enCamion = true; acc += d.ton || 0; }
-  });
+  // (23-oct-2026, Jordan) Se llena por niveles de prioridad (categoría → PRIORIDAD → orden); dentro de un
+  // mismo nivel se elige la combinación de líneas que más llena el espacio libre y, a igual tonelaje, la
+  // que sube más posiciones. Un nivel nunca cede espacio a uno de menor prioridad.
+  acc += llenarPorNivelesCD(orden.filter(d => d._manual === null), r.cap - acc, d => { d._enCamion = true; });
   const excedente = orden.filter(d => !d._enCamion && d._manual !== 0).reduce((s, d) => s + (d.ton || 0), 0);
   const manual2 = orden.some(d => d._manual === 2);
   let segundoPropuesto = manual2 || (excedente > 0 && excedente >= r.cap * UMBRAL_SEGUNDO_CAMION);
   let acc2 = 0;
   orden.forEach(d => { if (d._manual === 2) { d._camion2 = true; acc2 += d.ton || 0; } });
-  if (segundoPropuesto) orden.forEach(d => {
-    if (d._manual === null && !d._enCamion && acc2 + (d.ton || 0) <= r.cap + 1e-9) { d._camion2 = true; acc2 += d.ton || 0; }
-  });
+  if (segundoPropuesto) acc2 += llenarPorNivelesCD(orden.filter(d => d._manual === null && !d._enCamion), r.cap - acc2, d => { d._camion2 = true; });
   // (16-oct-2026) Si el excedente es una línea que por sí sola supera la capacidad (p.ej. peso
   // volumétrico erróneo), no cabe en ningún camión: no se propone un 2º camión vacío (0 t).
   if (segundoPropuesto && !manual2 && acc2 <= 1e-9) segundoPropuesto = false;
