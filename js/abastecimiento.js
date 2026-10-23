@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610231210';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610231210';
-import { getDatabase } from './data.js?v=202610231210';
+import { supabase } from './supabase-client.js?v=202610231218';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610231218';
+import { getDatabase } from './data.js?v=202610231218';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610231210';
-import { confirmar, pedirDato } from './confirmar.js?v=202610231210';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610231218';
+import { confirmar, pedirDato } from './confirmar.js?v=202610231218';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -5699,11 +5699,11 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610231210');
+    const m = await import('./ind-plan-carga.js?v=202610231218');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (currentSub === 'control_diferencias') {  // (11-oct-2026) Control de Diferencias del Plan de Carga
-    const m = await import('./control-diferencias.js?v=202610231210');
+    const m = await import('./control-diferencias.js?v=202610231218');
     await m.renderControlDiferencias(stage);
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
@@ -5911,6 +5911,43 @@ let PRIO_DOCS = new Set();
 const PRIO_CSV_TXT = 'PRIORIDAD DE CARGA';
 const esPrioCarga = d => !!d && PRIO_DOCS.has(String(d.pt ?? d.oc ?? d.pv ?? '').trim());
 const prioCsv = d => esPrioCarga(d) ? PRIO_CSV_TXT : '';
+// (23-oct-2026, Jordan) El llenado por prioridad con líneas indivisibles podía dejar el camión CD a
+// medias (p. ej. 15 t cargadas y 12,7 t libres) mientras líneas grandes se iban al 2º camión. Si quedan
+// líneas automáticas fuera y el camión tiene espacio, se busca la combinación de líneas que más llena
+// el camión CD (mochila 0/1, resolución 0,1 t); a igual tonelaje gana la de mayor prioridad. Las líneas
+// asignadas a mano y las marcadas PRIORIDAD que ya entraron quedan fijas. Sólo se aplica si mejora
+// el llenado en más de 0,5 t; si no, se mantiene el orden de prioridad puro.
+const MEJORA_MIN_LLENADO_T = 0.5;
+function optimizarLlenadoCD(r, orden, acc) {
+  const cap = Number(r.cap) || 0;
+  if (cap <= 0 || cap - acc <= MEJORA_MIN_LLENADO_T) return acc;
+  const auto = orden.filter(d => d._manual === null);
+  if (!auto.some(d => !d._enCamion && (d.ton || 0) > 0)) return acc;
+  const fijas = auto.filter(d => d._enCamion && d._prio);
+  const fijo = orden.filter(d => d._manual === 1).reduce((s, d) => s + (d.ton || 0), 0) + fijas.reduce((s, d) => s + (d.ton || 0), 0);
+  const cand = auto.filter(d => !(d._enCamion && d._prio) && (d.ton || 0) <= cap - fijo + 1e-9);
+  const C = Math.floor((cap - fijo) * 10 + 1e-6);
+  if (C <= 0 || !cand.length || cand.length * (C + 1) > 3e6) return acc;
+  const n = cand.length, W = 1 + C;
+  const pos = new Map(orden.map((d, i) => [d, i]));
+  const w = cand.map(d => Math.max(0, Math.ceil((d.ton || 0) * 10 - 1e-6)));
+  const pr = cand.map(d => orden.length - pos.get(d));
+  const L = new Int32Array(W), P = new Float64Array(W), take = new Uint8Array(n * W);
+  for (let i = 0; i < n; i++) {
+    const wi = w[i];
+    for (let c = C; c >= wi; c--) {
+      const cl = L[c - wi] + wi, cp = P[c - wi] + pr[i];
+      if (cl > L[c] || (cl === L[c] && cp > P[c])) { L[c] = cl; P[c] = cp; take[i * W + c] = 1; }
+    }
+  }
+  const sel = new Set();
+  for (let i = n - 1, c = C; i >= 0; i--) if (take[i * W + c]) { sel.add(cand[i]); c -= w[i]; }
+  const tonSel = [...sel].reduce((s, d) => s + (d.ton || 0), 0);
+  const tonAntes = cand.filter(d => d._enCamion).reduce((s, d) => s + (d.ton || 0), 0);
+  if (tonSel <= tonAntes + MEJORA_MIN_LLENADO_T || fijo + tonSel > cap + 1e-9) return acc;
+  cand.forEach(d => { d._enCamion = sel.has(d); });
+  return fijo + tonSel;
+}
 function asignarCamionesCD(r) {
   const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
   const doc = d => String(d.pt ?? d.oc ?? d.pv ?? '').trim();
@@ -5942,6 +5979,7 @@ function asignarCamionesCD(r) {
     if (d._manual !== null) return;
     if (acc + (d.ton || 0) <= r.cap + 1e-9) { d._enCamion = true; acc += d.ton || 0; }
   });
+  acc = optimizarLlenadoCD(r, orden, acc);
   const excedente = orden.filter(d => !d._enCamion && d._manual !== 0).reduce((s, d) => s + (d.ton || 0), 0);
   const manual2 = orden.some(d => d._manual === 2);
   let segundoPropuesto = manual2 || (excedente > 0 && excedente >= r.cap * UMBRAL_SEGUNDO_CAMION);
