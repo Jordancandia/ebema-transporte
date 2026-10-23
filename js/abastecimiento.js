@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610231709';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610231709';
-import { getDatabase } from './data.js?v=202610231709';
+import { supabase } from './supabase-client.js?v=202610231717';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610231717';
+import { getDatabase } from './data.js?v=202610231717';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610231709';
-import { confirmar, pedirDato } from './confirmar.js?v=202610231709';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610231717';
+import { confirmar, pedirDato } from './confirmar.js?v=202610231717';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -5905,11 +5905,11 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610231709');
+    const m = await import('./ind-plan-carga.js?v=202610231717');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (currentSub === 'control_diferencias') {  // (11-oct-2026) Control de Diferencias del Plan de Carga
-    const m = await import('./control-diferencias.js?v=202610231709');
+    const m = await import('./control-diferencias.js?v=202610231717');
     await m.renderControlDiferencias(stage);
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
@@ -6775,6 +6775,10 @@ async function renderPlanCarga(stage, opts = {}) {
     const diaObjVentas = getHorizonte(ce) === 48 ? diaHabil2 : diaHabil1;
     const camionesCliente = [];
     let tonClienteDiferido = 0;
+    // (23-oct-2026, Jordan) Camión directo CD-Cliente ya programado (con transporte) cuyo día de carga es ANTERIOR
+    // al día de carga de este plan: ya salió en un plan anterior → no vuelve a aparecer en el plan de hoy.
+    const cdCliYaCargado = (co, fc) => !!fc && fc.getTime() < diaHabil1.getTime()
+      && !!(String(co.patente_camion ?? '').trim() || String(co.id_transporte ?? '').trim() || String(co.transportista ?? '').trim());
     const ventasCliPorGrupo = {};
     for (const [doc, rowsDoc] of Object.entries(ventasPorDoc)) {
       const co = coordVentas.get(doc);
@@ -6799,6 +6803,7 @@ async function renderPlanCarga(stage, opts = {}) {
       const enPlan = fc && fc.getTime() <= diaObjVentas.getTime();
       if (co.tipo_entrega === 'CD-CLIENTE') {
         if (!enPlan) { tonClienteDiferido += sumTon(items); continue; }   // camión exclusivo de otro día
+        if (cdCliYaCargado(co, fc)) continue;                              // (23-oct-2026) ya cargó en un plan anterior
         // (2-oct-2026, Jordan) El camión lo define la PATENTE: NV CD-Cliente con la misma patente
         // camión y la misma fecha forman un solo despacho (aunque sean de clientes distintos).
         // Sin patente → agrupación automática por cliente.
@@ -6872,6 +6877,7 @@ async function renderPlanCarga(stage, opts = {}) {
       for (const [doc, { co, items }] of Object.entries(porDoc)) {
         const fc = parseISODate(co.fecha_entrega);
         if (!(fc && fc.getTime() <= diaObjVentas.getTime())) { tonClienteDiferido += sumTon(items); continue; }
+        if (cdCliYaCargado(co, fc)) continue;   // (23-oct-2026) ya cargó en un plan anterior
         const pat = normPatente(co.patente_camion);
         const gk = pat ? `PAT|${pat}|${co.fecha_entrega}` : `TRS|${doc}`;
         const g = (ventasCliPorGrupo[gk] = ventasCliPorGrupo[gk] || { items: [], clientes: new Set(), pat: pat ? String(co.patente_camion).toUpperCase().trim() : '', co });
