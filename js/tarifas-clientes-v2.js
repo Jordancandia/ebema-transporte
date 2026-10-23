@@ -15,11 +15,11 @@
 // tarifas a clientes y «Guardar y recalcular» escribe sólo client_tariff_config
 // (syncOnly) y, si cambió la asignación de clusters, cluster_rutas por centro.
 // ============================================================================
-import { saveDatabase, getOrigenGroups } from './data.js?v=202610230017';
-import { buildZcapMap } from './zcap.js?v=202610230017';
+import { saveDatabase, getOrigenGroups } from './data.js?v=202610230023';
+import { buildZcapMap } from './zcap.js?v=202610230023';
 import { showAlert } from './utils.js';
-import { can } from './permisos.js?v=202610230017';
-import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, setParamPill, clasifPill, clasifTarifa, pillHtml } from './tarifas-ui.js?v=202610230017';
+import { can } from './permisos.js?v=202610230023';
+import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, setParamPill, clasifPill, clasifTarifa, pillHtml } from './tarifas-ui.js?v=202610230023';
 
 const CAPS = [5, 10, 15, 28];
 const CAP_LBL = { 5: '5 t', 10: '10 t', 15: '15 t', 28: '28 t' };
@@ -768,9 +768,10 @@ function renderCluster(container, ctx) {
 // ============================================================================
 // TARIFAS $/KG (ZFMP) y TARIFA MIN/MAX (ZFMI)
 // ============================================================================
-const ZP = { tipo: 'todas', centro: 'all', truck: 'all', q: '', pagina: 0 };
-const ZI = { tipo: 'todas', centro: 'all', truck: 'all', q: '', pagina: 0 };
+const ZP = { tipos: [], centro: 'all', truck: 'all', q: '', pagina: 0 };
+const ZI = { tipos: [], centro: 'all', truck: 'all', q: '', pagina: 0 };
 const ZPAGE = 50;
+const TIPOS_T = [['regional', 'Regionales'], ['interregional', 'Interregionales'], ['sector', 'Sectores']];
 function fotoZcap(ctx) {
   const vivo = zcapVivo(ctx);
   if (!CC.snap) CC.snap = new Map([...vivo].map(([k, v]) => [k, v.zcap]));
@@ -787,7 +788,7 @@ function renderTarifasCliente(container, ctx, modo) {
     const todas = todasT.filter(r => modo !== 'zfmp' || !r.es2t);
     const centros = [...new Set(todas.map(r => r.grupo))].filter(Boolean).sort().map(g => [g, NG[g] || titulo(g)]);
     const q = S.q.trim().toLowerCase();
-    const pasa = r => (S.tipo === 'todas' || (r.clasif || '').toLowerCase() === S.tipo) && (S.centro === 'all' || r.grupo === S.centro)
+    const pasa = r => (!S.tipos.length || S.tipos.includes((r.clasif || '').toLowerCase())) && (S.centro === 'all' || r.grupo === S.centro)
       && (S.truck === 'all' || String(r.capKg) === S.truck) && (!q || `${r.cod} ${r.ruta.destino}`.toLowerCase().includes(q));
     const orden = (a, b) => (a.grupo || '').localeCompare(b.grupo || '') || a.cod.localeCompare(b.cod) || a.capKg - b.capKg;
     const lista = todas.filter(pasa).sort(orden);
@@ -801,7 +802,9 @@ function renderTarifasCliente(container, ctx, modo) {
     const acciones = `<button class="${nStale ? 'sv-btn-p' : 'sv-btn'}" data-refrescar id="t-refresh" title="${nStale ? 'Tarifas Rutas cambió desde que se tomó la foto del ZCAP' : 'La foto del ZCAP coincide con Tarifas Rutas'}"><span class="material-symbols-outlined">${nStale ? 'refresh' : 'check'}</span>${nStale ? `Refrescar tarifas · ${fmt(nStale)} desactualizadas` : 'Tarifas al día'}</button>
       <button class="sv-btn" data-csv id="t-csv"><span class="material-symbols-outlined">download</span>Descargar CSV</button>`;
     const filtros = `<div class="sv-filters">
-        <div class="sv-frow">${seg('data-ttipo', S.tipo, [['todas', 'Todas'], ['regional', 'Regionales'], ['interregional', 'Interregionales'], ['sector', 'Sectores']])}
+        <div class="sv-frow"><div class="sv-seg" title="Selección múltiple: combina los tipos que quieras ver y descargar">${[['todas', 'Todas'], ...TIPOS_T].map(([k, l]) => {
+            const on = k === 'todas' ? !S.tipos.length : S.tipos.includes(k);
+            return `<button data-chip data-ttipo="${k}" class="${on ? 'is-on' : ''}" aria-pressed="${on}">${k !== 'todas' && on ? '<span class="material-symbols-outlined" style="font-size:14px;vertical-align:-2px">check</span> ' : ''}${esc(l)}</button>`; }).join('')}</div>
           ${seg('data-ttruck', S.truck, [['all', 'Todos'], ...(modo === 'zfmp' ? [] : [['2000', '2 t']]), ...CAPS.map(k => [String(k * 1000), CAP_LBL[k]])])}
           <label class="sv-inp"><span class="material-symbols-outlined">search</span><input id="t-q" placeholder="Código o destino" value="${esc(S.q)}" style="width:200px"></label></div>
         ${chips(centros, S.centro, 'data-tcentro')}
@@ -848,7 +851,14 @@ function renderTarifasCliente(container, ctx, modo) {
   }
   function wire(lista) {
     cablear(container, ctx, render);
-    container.querySelectorAll('[data-ttipo]').forEach(b => b.addEventListener('click', () => { S.tipo = b.dataset.ttipo; S.pagina = 0; render(); }));
+    container.querySelectorAll('[data-ttipo]').forEach(b => b.addEventListener('click', () => {
+      // (23-oct-2026, Jordan) Tipos con selección múltiple: Regionales + Sectores, etc. «Todas» limpia la selección.
+      const k = b.dataset.ttipo;
+      if (k === 'todas') S.tipos = [];
+      else S.tipos = S.tipos.includes(k) ? S.tipos.filter(x => x !== k) : [...S.tipos, k];
+      if (S.tipos.length === TIPOS_T.length) S.tipos = [];
+      S.pagina = 0; render();
+    }));
     container.querySelectorAll('[data-ttruck]').forEach(b => b.addEventListener('click', () => { S.truck = b.dataset.ttruck; S.pagina = 0; render(); }));
     container.querySelectorAll('[data-tcentro]').forEach(b => b.addEventListener('click', () => { S.centro = b.dataset.tcentro; S.pagina = 0; render(); }));
     container.querySelectorAll('[data-tpag]').forEach(b => b.addEventListener('click', () => { S.pagina += Number(b.dataset.tpag); render(); }));
