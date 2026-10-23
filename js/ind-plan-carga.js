@@ -18,11 +18,11 @@
 // Tailwind del sitio está compilado y no incluye clases nuevas.
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610231218';
-import { filtrarPorCentro, rolClase } from './permisos.js?v=202610231218';
+import { supabase } from './supabase-client.js?v=202610231250';
+import { filtrarPorCentro, rolClase } from './permisos.js?v=202610231250';
 import { showAlert, escapeHtml } from './utils.js';
-import { getDatabase } from './data.js?v=202610231218';
-import { truckGauge } from './troncales-ui.js?v=202610231218';
+import { getDatabase } from './data.js?v=202610231250';
+import { truckGauge } from './troncales-ui.js?v=202610231250';
 
 const META_CONS = 85;   // % consolidación objetivo por viaje
 const META_EFEC = 90;   // % efectividad objetivo del Plan de Carga
