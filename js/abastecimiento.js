@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610231648';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610231648';
-import { getDatabase } from './data.js?v=202610231648';
+import { supabase } from './supabase-client.js?v=202610231652';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610231652';
+import { getDatabase } from './data.js?v=202610231652';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610231648';
-import { confirmar, pedirDato } from './confirmar.js?v=202610231648';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610231652';
+import { confirmar, pedirDato } from './confirmar.js?v=202610231652';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -889,7 +889,8 @@ function showCargaManualModal(row, ctx, tipo) {
       return { ...it, pend, kgB: it.kgB || kgU, kgV: it.kgV, kgU };
     });
     const prev = new Map(lineasCargaManual(m0).map(l => [l.material, l.cant]));
-    const st = { modo: m0 ? m0.modo : 'CONSOLIDADO', fecha: m0 ? String(m0.fecha_carga) : isoLocal(hoy00()),
+    const sigHabil = (() => { const d = hoy00(); do { d.setDate(d.getDate() + 1); } while (d.getDay() === 0 || d.getDay() === 6); return isoLocal(d); })();
+    const st = { modo: m0 ? m0.modo : 'CONSOLIDADO', fecha: m0 ? String(m0.fecha_carga) : sigHabil,
       cant: new Map(items.map(it => [it.material, prev.has(it.material) ? prev.get(it.material) : it.pend])),
       cliente: m0?.cliente || row._cliente || '', comuna: m0?.comuna || row._comuna || '', direccion: m0?.direccion || '', err: '' };
     const wrap = document.createElement('div');
@@ -912,7 +913,7 @@ function showCargaManualModal(row, ctx, tipo) {
           <div class="sv-dr-s">${escapeHtml(getNombreCentro(cesu))} → ${escapeHtml(getNombreCentro(ce))} · sin entrega SAP</div></div>
           <button class="sv-iconbtn" data-cx title="Cerrar (Esc)"><span class="material-symbols-outlined">close</span></button></div>
         <div class="sv-dr-b" style="gap:14px">
-          <div class="sv-note-box">Entra sólo al <b>Plan de Carga del día de carga</b>, con prioridad sobre el resto, y el camión queda marcado <b>${MARCA_PEND_ENTREGA}</b>. Cuando llega la entrega SAP, la reemplaza.</div>
+          <div class="sv-note-box">Entra al <b>Plan de Carga cuyo día de carga es el elegido</b> (el plan de hoy carga el próximo día hábil; los centros a 48h, el subsiguiente), con prioridad sobre el resto, y el camión queda marcado <b>${MARCA_PEND_ENTREGA}</b>. Cuando llega la entrega SAP, la reemplaza.</div>
           <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-end">
             <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;font-weight:700">Camión
               <span style="display:flex;gap:12px;font-weight:400;font-size:13px">
@@ -5904,11 +5905,11 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610231648');
+    const m = await import('./ind-plan-carga.js?v=202610231652');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (currentSub === 'control_diferencias') {  // (11-oct-2026) Control de Diferencias del Plan de Carga
-    const m = await import('./control-diferencias.js?v=202610231648');
+    const m = await import('./control-diferencias.js?v=202610231652');
     await m.renderControlDiferencias(stage);
   }
   else if (VISTAS_TRONCAL[currentSub]?.v2)   await renderTablaV2(stage, VISTAS_TRONCAL[currentSub], V2_DEPS, currentSub);
@@ -6356,8 +6357,9 @@ async function renderPlanCarga(stage, opts = {}) {
   ]);
   const [ventasDirectoManual, inclusionesPlan, asigLineas, camManuales, coordVentas, coordTraslados, ajustesUnidades, cargasManualTr] = await Promise.all([loadVentasDirectoManual(), loadInclusionesPlan(), loadAsignacionLineas(), loadCamionesManuales(), loadCoordinacionesVenta(), loadCoordTraslados(), loadAjustesUnidades(), loadCargaManualTr()]);
   const ajUMap = mapaAjustesUnidades(ajustesUnidades);
-  // (23-oct-2026, Jordan) Cargas manuales (sin entrega SAP) con día de carga = hoy, de este CD origen.
-  const cmHoy = (cargasManualTr || []).filter(m => String(m.cesu ?? '').trim() === planOrigen && String(m.fecha_carga ?? '') === isoLocal(hoy00()));
+  // (23-oct-2026, Jordan) Cargas manuales (sin entrega SAP) de este CD origen. Entran al plan cuyo DÍA DE CARGA
+  // (día objetivo del centro: día hábil 1 si es 24h, 2 si es 48h) coincide con el día elegido.
+  const cmHoy = (cargasManualTr || []).filter(m => String(m.cesu ?? '').trim() === planOrigen);
   // (18-oct-2026, Jordan) Pedidos de venta del Stock Almacén 4000 coordinados como venta directa
   // («PEDIDO DE VENTA, EMITIR GUIA FACTURABLE»): entran como Venta Directa del centro (o del alternativo).
   let pv4000Coord = new Map(), pv4000Live = [], pv4000Cargados = new Set();
@@ -6728,7 +6730,8 @@ async function renderPlanCarga(stage, opts = {}) {
 
     // (23-oct-2026, Jordan) Carga manual CONSOLIDADO del día (sin entrega SAP): va primero en el camión CD.
     let tonManCx = 0, tonManTr = 0;
-    const cmCe = cmHoy.filter(m => String(m.ce ?? '').trim() === ce);
+    const diaCargaCM = isoLocal(getHorizonte(ce) === 48 ? diaHabil2 : diaHabil1);
+    const cmCe = cmHoy.filter(m => String(m.ce ?? '').trim() === ce && String(m.fecha_carga ?? '') === diaCargaCM);
     cmCe.filter(m => m.modo === 'CONSOLIDADO').forEach(m => lineasCargaManual(m).forEach(l => {
       const docM = String(m.doc_compr ?? '').trim();
       if (conEntregaCM.has(_keyInc(docM, l.material))) return;
