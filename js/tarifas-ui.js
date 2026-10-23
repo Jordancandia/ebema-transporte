@@ -95,6 +95,7 @@ const CHAIN = {
     ['Tarifa por kilo', [['zfmp', '$/Kg (ZFMP)']]],
     ['Tarifa por pedido', [['zfmi', 'Min/Max (ZFMI)']]],
     ['Tarifa retiro', [['retiro', 'Retiro Retorno']]],
+    ['Tarifa EbemaClick', [['ebemaclick', 'EbemaClick']]],
   ],
 };
 const TAB = { transporte: 'tarifas-transporte', clientes: 'tarifas-clientes' };
