@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610241624';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610241624';
-import { getDatabase } from './data.js?v=202610241624';
+import { supabase } from './supabase-client.js?v=202610241631';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610241631';
+import { getDatabase } from './data.js?v=202610241631';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610241624';
-import { confirmar, pedirDato } from './confirmar.js?v=202610241624';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610241631';
+import { confirmar, pedirDato } from './confirmar.js?v=202610241631';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -6032,7 +6032,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610241624');
+    const m = await import('./ind-plan-carga.js?v=202610241631');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -7601,7 +7601,7 @@ async function renderPlanCarga(stage, opts = {}) {
     const f = faltanTransp(t);
     return f.length ? { t, f } : null;
   };
-  await Promise.all([leerFotoCierre(), leerSegundos(), leerProgramados(), leerMaestroTr(), leerCoordinados()]   // (24-oct-2026) sin leerDiferencias: vista deshabilitada);
+  await Promise.all([leerFotoCierre(), leerSegundos(), leerProgramados(), leerMaestroTr(), leerCoordinados()]);   // (24-oct-2026) sin leerDiferencias: vista deshabilitada
   const otrosProgramados = (ce, cam) => [...progMap.values()]
     .filter(x => !(String(x.ce).trim() === ce && Number(x.camion) === cam))
     .map(x => ({ lbl: `${x.camion === 2 ? '2º camión' : 'camión CD'} ${getNombreCentro(x.ce)}`, patente_camion: x.patente_camion, chofer_rut: x.chofer_rut }));
