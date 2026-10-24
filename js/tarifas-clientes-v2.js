@@ -15,11 +15,11 @@
 // tarifas a clientes y «Guardar y recalcular» escribe sólo client_tariff_config
 // (syncOnly) y, si cambió la asignación de clusters, cluster_rutas por centro.
 // ============================================================================
-import { saveDatabase, getOrigenGroups } from './data.js?v=202610232049';
-import { buildZcapMap, es2Ton, componentesRegional } from './zcap.js?v=202610232049';
+import { saveDatabase, getOrigenGroups } from './data.js?v=202610232102';
+import { buildZcapMap, es2Ton, componentesRegional } from './zcap.js?v=202610232102';
 import { showAlert } from './utils.js';
-import { can } from './permisos.js?v=202610232049';
-import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, setParamPill, clasifPill, clasifTarifa, pillHtml } from './tarifas-ui.js?v=202610232049';
+import { can } from './permisos.js?v=202610232102';
+import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, setParamPill, clasifPill, clasifTarifa, pillHtml } from './tarifas-ui.js?v=202610232102';
 
 const CAPS = [5, 10, 15, 28];
 const CAP_LBL = { 5: '5 t', 10: '10 t', 15: '15 t', 28: '28 t' };
@@ -1317,13 +1317,12 @@ function renderEbemaclick(container, ctx) {
       const sep = ';', qq = v => '"' + String(v ?? '').replace(/"/g, '""') + '"';
       const ent = v => (v != null && !isNaN(v) ? Math.round(v) : '');
       const dec = (v, d) => (v != null && !isNaN(v) ? fmt(v, d) : '');
+      // (23-oct-2026, Jordan) Reporte EbemaClick sólo con las columnas de negocio
       const H = ['CENTRO ORIGEN', 'ID RUTA', 'DESTINO', 'TIPO', 'COMUNA', 'KM', 'CLUSTER', 'CLUSTER OPERATIVO', 'FRECUENCIA', 'TIPO DE CAMION',
-        'COSTO RUTA', 'FACTOR CONSOLIDACION %', 'KILOS A CONSOLIDAR', 'TARIFA $/KG', 'PEDIDOS PROMEDIO', 'TARIFA MINIMA', 'KILOS MINIMOS',
-        'MARGEN %', 'UMBRAL POR MARGEN', 'TICKET PROMEDIO', 'UMBRAL DESPACHO', 'REGLA UMBRAL'];
+        'COSTO RUTA', 'TARIFA $/KG', 'TARIFA MINIMA', 'KILOS MINIMOS', 'UMBRAL DESPACHO'];
       const R = (CC.ecRows || []).map(r => [NG[r.grupo] || titulo(r.grupo), r.cod, r.ruta.destino || '', titulo(r.ruta.tipo || ''), r.ruta.comuna || r.ruta.destino || '',
-        num(r.ruta.km), r.ecNombre || '', r.clusterOp || '', r.ecCl ? r.frecTxt : '', r.truck.type, ent(r.zcap), dec(r.factorEc, 1), ent(r.kilosEc), dec(r.kgEc, 2),
-        r.pedidos != null ? dec(r.pedidos, 1) : '', ent(r.tarifaMin), ent(r.kgMin), r.margen > 0 ? dec(r.margen, 2) : '', ent(r.umbralMargen),
-        r.ticket > 0 ? ent(r.ticket) : '', ent(r.umbral), r.reglaU]);
+        num(r.ruta.km), r.ecNombre || '', r.clusterOp || '', r.ecCl ? r.frecTxt : '', r.truck.type, ent(r.zcap), dec(r.kgEc, 2),
+        ent(r.tarifaMin), ent(r.kgMin), ent(r.umbral)]);
       const txt = [H.map(qq).join(sep), ...R.map(r => r.map(qq).join(sep))].join('\n');
       const blob = new Blob(['﻿' + txt], { type: 'text/csv;charset=utf-8;' });
       const url = URL.createObjectURL(blob);
