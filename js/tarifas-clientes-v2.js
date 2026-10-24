@@ -15,11 +15,11 @@
 // tarifas a clientes y «Guardar y recalcular» escribe sólo client_tariff_config
 // (syncOnly) y, si cambió la asignación de clusters, cluster_rutas por centro.
 // ============================================================================
-import { saveDatabase, getOrigenGroups } from './data.js?v=202610232102';
-import { buildZcapMap, es2Ton, componentesRegional } from './zcap.js?v=202610232102';
+import { saveDatabase, getOrigenGroups } from './data.js?v=202610241624';
+import { buildZcapMap, es2Ton, componentesRegional } from './zcap.js?v=202610241624';
 import { showAlert } from './utils.js';
-import { can } from './permisos.js?v=202610232102';
-import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, setParamPill, clasifPill, clasifTarifa, pillHtml } from './tarifas-ui.js?v=202610232102';
+import { can } from './permisos.js?v=202610241624';
+import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, setParamPill, clasifPill, clasifTarifa, pillHtml } from './tarifas-ui.js?v=202610241624';
 
 const CAPS = [5, 10, 15, 28];
 const CAP_LBL = { 5: '5 t', 10: '10 t', 15: '15 t', 28: '28 t' };
@@ -39,6 +39,7 @@ function partes(c) {
     camion2t: c.camion2t || {},
     retiroRetorno: c.retiroRetorno || {},
     ebemaclick: c.ebemaclick || {},
+    diasDespacho: c.diasDespacho || {},
   };
 }
 function initDraft(ccfg) {
@@ -50,7 +51,7 @@ function initDraft(ccfg) {
 function base() { return JSON.parse(CC.baseJson); }
 function ccEff(ccfg, w = CC.work) {
   return { ...ccfg, clusters: w.clusters, consolidacionObjetivo: w.consolidacionObjetivo, comunaCluster: w.comunaCluster, camion2t: w.camion2t || {},
-    retiroRetorno: w.retiroRetorno || {}, ebemaclick: w.ebemaclick || {},
+    retiroRetorno: w.retiroRetorno || {}, ebemaclick: w.ebemaclick || {}, diasDespacho: w.diasDespacho || {},
     especiales: { ...(ccfg.especiales || {}), recargoExclusividad: w.recargoExclusividad } };
 }
 function hojas(o, p = '', out = {}) {
@@ -78,6 +79,7 @@ function contarCambios(db) {
   n += diffHojas(b.camion2t || {}, w.camion2t || {});
   n += diffHojas(b.retiroRetorno || {}, w.retiroRetorno || {});
   n += ecCambios(b.ebemaclick || {}, w.ebemaclick || {});
+  n += diasCambios(b.diasDespacho || {}, w.diasDespacho || {});
   n += rutasReasignadas(db).length;
   return n;
 }
@@ -89,6 +91,24 @@ function ecCambios(b, w) {
     ['activo', 'margen', 'ticket'].forEach(f => { if (String((bc[g] || {})[f] ?? '') !== String((wc[g] || {})[f] ?? '')) n++; });
   });
   return n;
+}
+// ── Días de despacho por ruta (23-oct-2026, Jordan) ─────────────────────────
+// client_tariff_config.data.diasDespacho = { rutaId|codigo: [L, M, Mi, J, V] } (sólo rutas Comuna;
+// el Sector usa los de su comuna). Se marcan en la vista Cluster y alimentan la frecuencia de EbemaClick.
+const DIAS_D = ['L', 'M', 'Mi', 'J', 'V'];
+function diasDe(ccfgX, ruta) {
+  const m = (ccfgX && ccfgX.diasDespacho) || {};
+  const v = ruta ? (m[String(ruta.id || '')] || m[String(ruta.codigo || '')]) : null;
+  return Array.isArray(v) && v.some(Boolean) ? DIAS_D.map((_, i) => (v[i] ? 1 : 0)) : null;
+}
+const diasTxt = d => (d ? DIAS_D.filter((_, i) => d[i]).join(' · ') : '');
+function diasCambios(b, w) {
+  const k = [...new Set([...Object.keys(b), ...Object.keys(w)])].filter(x => JSON.stringify(b[x] || null) !== JSON.stringify(w[x] || null));
+  return Math.ceil(k.length / 2);
+}
+function setDias(ruta, dias) {
+  const m = CC.work.diasDespacho || (CC.work.diasDespacho = {});
+  [ruta.id, ruta.codigo].filter(Boolean).forEach(k => { if (dias && dias.some(Boolean)) m[String(k)] = dias; else delete m[String(k)]; });
 }
 function asignarCluster(ruta, key) {
   const cc = CC.work.comunaCluster;
@@ -249,7 +269,7 @@ function calcTarifas(ctx, ccfgX, zOver = null) {
     if (bkt >= 28 && zcap > 0) zfmi = zcap;
     const rec = recargoDe(ccfgX, grupo);
     rows.push({ key, ruta, rc, truck, grupo, capKg, zcap, clasif: clasifTarifa(ruta), factorPct, kilos, zfmp, cod,
-      clusterKey, clObj, clusterOp: opMap.get(String(rc.id || '')) || opMap.get(String(rc.codigo || '')) || '', clusterDe: padre ? (padre.codigo || '') : '',
+      dias: diasDe(ccfgX, rc), clusterKey, clObj, clusterOp: opMap.get(String(rc.id || '')) || opMap.get(String(rc.codigo || '')) || '', clusterDe: padre ? (padre.codigo || '') : '',
       camionMin: mn?.tipo || '—', zfmi, zfmx: zcap > 0 ? zcap : null, express: zcap > 0 ? zcap * (1 + rec / 100) : null, kilosTarifMin, pedProm, recargo: rec });
   });
   // $/kg centro por ruta
@@ -321,7 +341,8 @@ function calcEbemaclick(ctx, ccfgX, zOver = null, filasT = null) {
     const umbralMargen = (tarifaMin != null && margen > 0 && !spot) ? tarifaMin / (margen / 100) : null;
     const umbral = umbralMargen != null ? Math.ceil(Math.max(umbralMargen, ticket) / red - 1e-9) * red : null;
     const reglaU = !cl ? 'Sin cluster' : spot ? 'SPOT' : !(margen > 0) ? 'Sin margen' : umbralMargen >= ticket ? 'Por margen' : 'Por ticket';
-    return { ...r, ecKey, ecCl: cl, ecNombre: cl ? (cl.nombre || ecKey) : '', ecColor: cl?.color || '#9ca3af', frecTxt: cl ? (cl.frecuencia || (spot ? '48 h desde el pedido' : '—')) : '—',
+    return { ...r, ecKey, ecCl: cl, ecNombre: cl ? (cl.nombre || ecKey) : '', ecColor: cl?.color || '#9ca3af', frecN: r.dias ? r.dias.filter(Boolean).length : null, frecDias: diasTxt(r.dias),
+      frecTxt: r.dias ? `${r.dias.filter(Boolean).length} d/sem · ${diasTxt(r.dias)}` : cl ? (cl.frecuencia || (spot ? '48 h desde el pedido' : '—')) : '—',
       factorEc, kilosEc, kgEc, pedidos, tarifaMin, kgMin, margen, ticket, spot, umbralMargen, umbral, reglaU };
   });
 }
@@ -412,6 +433,7 @@ async function guardar(ctx, render) {
   ccfg.camion2t = w.camion2t || {};
   ccfg.retiroRetorno = w.retiroRetorno || {};
   ccfg.ebemaclick = w.ebemaclick || {};
+  ccfg.diasDespacho = w.diasDespacho || {};
   CC.work = null;
   CC.memoBase = null;
   initDraft(ccfg);
@@ -935,25 +957,28 @@ function renderCluster(container, ctx) {
           ${chips(datos.map(cd => [cd.grupo, cd.nombre]), KV.centro, 'data-kcentro')}
         </div>
         <div class="sv-card">
-          <div class="sv-tablewrap" style="max-height:620px"><table class="sv-table" style="min-width:1180px">
-            <thead><tr><th>Centro</th><th>Cód. ruta</th><th>Destino</th><th>Zona</th><th class="r">Densidad</th><th>Cluster</th><th>Eje vial</th><th>Cluster op.</th><th>Frecuencia</th><th>Flota sugerida</th></tr></thead>
+          <div class="sv-tablewrap" style="max-height:620px"><table class="sv-table" style="min-width:1400px">
+            <thead><tr><th>Centro</th><th>Cód. ruta</th><th>Destino</th><th>Zona</th><th class="r">Densidad</th><th>Cluster</th><th>Días de despacho</th><th>Eje vial</th><th>Cluster op.</th><th>Frecuencia</th><th>Flota sugerida</th></tr></thead>
             <tbody>${filas.map(({ cd, r }) => {
               const anchors = cd._anch || (cd._anch = ctx.anchorsOpFor(cd));
               const op = ctx.clusterOpDe(r.eje, r.cluster, { lat: r.lat, lon: r.lon, anchors });
               const ch = String(b[r.rutaId] ?? b[r.rutaCodigo] ?? '') !== String(r.cluster || '');
-              return `<tr class="${ch ? 'tf-row-ed' : ''}" style="cursor:default">
+              const dias = diasDe(ccX, r.route), dias0 = diasDe({ diasDespacho: base().diasDespacho || {} }, r.route);
+              const chD = JSON.stringify(dias) !== JSON.stringify(dias0);
+              const diasCell = `<td style="white-space:nowrap"><div class="sv-seg" style="${chD ? 'outline:1px solid #ca8a04;border-radius:8px' : ''}">${DIAS_D.map((d, j) => `<button data-chip data-kdia="${esc(r.rutaId)}|${j}" class="${dias && dias[j] ? 'is-on' : ''}" ${editar ? '' : 'disabled'} title="${['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes'][j]}">${d}</button>`).join('')}</div><div class="sv-sub">${dias ? fmt(dias.filter(Boolean).length) + ' d/sem' : 'sin días'}</div></td>`;
+              return `<tr class="${ch || chD ? 'tf-row-ed' : ''}" style="cursor:default">
                 <td><span class="sv-b">${esc(cd.nombre)}</span></td><td><span class="sv-mono">${esc(r.rutaCodigo)}</span></td>
                 <td><b>${esc(r.destino)}</b>${['ISLA', 'EXTREMA'].includes(r.caracteristica) ? ' ' + pillHtml(titulo(r.caracteristica), r.caracteristica === 'ISLA' ? 'purple' : 'orange') : ''}</td>
                 <td class="sv-mono">${esc(r.zona)}</td><td class="r"><b>${fmt(r.densidad, 2)}%</b></td>
                 <td><div style="display:flex;align-items:center;gap:6px"><i style="width:10px;height:10px;border-radius:50%;background:${colorDe(r.cluster)};flex:none"></i>
                   <select class="tf-sel" data-kasig="${esc(r.rutaId)}" ${editar ? '' : 'disabled'} style="${ch ? 'border-color:#ca8a04;background:#fffbeb' : ''}"><option value="">— Sin cluster —</option>${cls.map(c => `<option value="${esc(c.key)}" ${r.cluster === c.key ? 'selected' : ''}>${esc(c.nombre)}</option>`).join('')}</select></div></td>
-                <td title="${esc(r.ejeAlias || '')}">${esc(r.eje || '—')}</td><td class="sv-mono"><b>${esc(op.cluster)}</b></td><td>${esc(op.frecuencia)}</td><td>${esc(op.flota)}</td></tr>`;
-            }).join('') || '<tr class="sv-empty"><td colspan="10">Sin rutas para el filtro.</td></tr>'}</tbody>
+                ${diasCell}<td title="${esc(r.ejeAlias || '')}">${esc(r.eje || '—')}</td><td class="sv-mono"><b>${esc(op.cluster)}</b></td><td>${esc(op.frecuencia)}</td><td>${esc(op.flota)}</td></tr>`;
+            }).join('') || '<tr class="sv-empty"><td colspan="11">Sin rutas para el filtro.</td></tr>'}</tbody>
           </table></div>
           <div class="sv-tfoot"><span>${fmt(filas.length)} rutas · ${nomDe(KV.kpi === 'all' ? '' : KV.kpi) && KV.kpi !== 'all' ? esc(nomDe(KV.kpi)) : 'todos los clusters'}</span><span>Al guardar se actualiza cluster_rutas (cluster operativo) de los centros cambiados</span></div>
         </div>`;
     }
-    container.innerHTML = marco(ctx, { titulo: 'Cluster', desc: 'Cluster de densidad por ruta comuna regional y su cluster operativo (eje vial, frecuencia y flota).', activo: 'cluster', cuerpo });
+    container.innerHTML = marco(ctx, { titulo: 'Cluster', desc: 'Cluster de densidad por ruta comuna regional, días de despacho y su cluster operativo (eje vial, frecuencia y flota). Los sectores toman cluster y días de su comuna.', activo: 'cluster', cuerpo });
     wire(datos);
   }
   function wire(datos) {
@@ -962,6 +987,15 @@ function renderCluster(container, ctx) {
     container.querySelectorAll('[data-kkpi]').forEach(b => b.addEventListener('click', () => { const k = b.dataset.kkpi; KV.kpi = KV.kpi === k ? 'all' : k; render(); }));
     const q = container.querySelector('#k-q');
     q?.addEventListener('input', () => { KV.q = q.value; const pos = q.selectionStart; render(); const n = container.querySelector('#k-q'); n.focus(); n.setSelectionRange(pos, pos); });
+    container.querySelectorAll('[data-kdia]').forEach(btn => btn.addEventListener('click', () => {
+      const [id, j] = btn.dataset.kdia.split('|');
+      const ruta = (ctx.db.routes || []).find(r => String(r.id) === id);
+      if (!ruta) return;
+      const d = diasDe(ccEff(ctx.ccfg), ruta) || [0, 0, 0, 0, 0];
+      d[Number(j)] = d[Number(j)] ? 0 : 1;
+      setDias(ruta, d);
+      render();
+    }));
     container.querySelectorAll('[data-kasig]').forEach(s => s.addEventListener('change', () => {
       const ruta = (ctx.db.routes || []).find(r => String(r.id) === s.dataset.kasig);
       if (ruta) asignarCluster(ruta, s.value);
@@ -1274,7 +1308,7 @@ function renderEbemaclick(container, ctx) {
         <td><span class="sv-mono">${esc(r.cod)}</span></td><td><b>${esc(r.ruta.destino || '')}</b>${sector ? `<div class="sv-sub">${esc(r.ruta.comuna || '')}</div>` : ''}</td>
         <td>${pillHtml(sector ? 'Sector' : 'Comuna', sector ? 'ok' : 'info')}</td><td class="r">${fmt(num(r.ruta.km))}</td>
         <td>${clCell}</td>
-        <td>${r.ecCl ? esc(r.frecTxt) : dash}</td>
+        <td>${r.frecN ? `<b>${fmt(r.frecN)}</b> d/sem<div class="sv-sub">${esc(r.frecDias)}</div>` : r.ecCl ? `<span class="sv-muted">${esc(r.frecTxt)}</span>` : dash}</td>
         <td style="white-space:nowrap">${esc(r.truck.type)}${r.es2t ? `<div class="sv-sub" style="color:#7e22ce">${r.t2Zcap ? 'ZCAP Tarifas por Camión' : 'tarifa plana'}</div>` : ''}</td>
         <td class="r">${clp(r.zcap)}</td><td class="r sv-muted">${fmt(r.factorEc, 1)}%</td><td class="r">${fmt(r.kilosEc)} kg</td><td class="r">${r.kgEc != null ? kg$(r.kgEc) : '—'}</td>
         <td class="r">${r.pedidos != null ? fmt(r.pedidos, 1) : dash}</td>
@@ -1321,7 +1355,7 @@ function renderEbemaclick(container, ctx) {
       const H = ['CENTRO ORIGEN', 'ID RUTA', 'DESTINO', 'TIPO', 'COMUNA', 'KM', 'CLUSTER', 'CLUSTER OPERATIVO', 'FRECUENCIA', 'TIPO DE CAMION',
         'COSTO RUTA', 'TARIFA $/KG', 'TARIFA MINIMA', 'KILOS MINIMOS', 'UMBRAL DESPACHO'];
       const R = (CC.ecRows || []).map(r => [NG[r.grupo] || titulo(r.grupo), r.cod, r.ruta.destino || '', titulo(r.ruta.tipo || ''), r.ruta.comuna || r.ruta.destino || '',
-        num(r.ruta.km), r.ecNombre || '', r.clusterOp || '', r.ecCl ? r.frecTxt : '', r.truck.type, ent(r.zcap), dec(r.kgEc, 2),
+        num(r.ruta.km), r.ecNombre || '', r.clusterOp || '', r.frecN || r.ecCl ? r.frecTxt : '', r.truck.type, ent(r.zcap), dec(r.kgEc, 2),
         ent(r.tarifaMin), ent(r.kgMin), ent(r.umbral)]);
       const txt = [H.map(qq).join(sep), ...R.map(r => r.map(qq).join(sep))].join('\n');
       const blob = new Blob(['﻿' + txt], { type: 'text/csv;charset=utf-8;' });

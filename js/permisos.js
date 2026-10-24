@@ -24,7 +24,7 @@ const TRONCALES_ORDEN = [
 ];
 const TRONCALES_PLANIF = [
   'abastecimiento:plan_carga', 'abastecimiento:seguimiento_carga',
-  'abastecimiento:control_diferencias', 'abastecimiento:ind_plan_carga',
+  'abastecimiento:ind_plan_carga',   // (24-oct-2026) control_diferencias deshabilitada
 ];
 const TRONCALES = [...TRONCALES_CONFIG, ...TRONCALES_ORDEN, ...TRONCALES_PLANIF];
 const MAESTROS = ['proveedores', 'rutas', 'productos'];
@@ -218,7 +218,7 @@ export const VISTAS_CATALOGO = [
   { modulo: 'General', items: [['home', 'Home'], ['rates', 'Cotizador Despacho']] },
   { modulo: 'Gestión Troncales · Configuraciones', items: [['abastecimiento:calendario', 'Calendario Sucursales'], ['abastecimiento:stock_almacen', 'Stock Almacén 4000']] },
   { modulo: 'Gestión Troncales · Orden de Carga', items: [['abastecimiento:pedidos_traslados_revex', 'Revex'], ['abastecimiento:pedidos_venta', 'Ventas CD (1003)'], ['abastecimiento:retiros', 'Retiros de Fábrica'], ['abastecimiento:pedidos_traslados_4000', 'Crossdocking'], ['abastecimiento:pedidos_traslados', 'Pedidos de Traslados']] },
-  { modulo: 'Gestión Troncales · Planificación', items: [['abastecimiento:plan_carga', 'Plan de Carga'], ['abastecimiento:seguimiento_carga', 'Seguimiento de Carga'], ['abastecimiento:control_diferencias', 'Control de Diferencias'], ['abastecimiento:ind_plan_carga', 'Indicadores Plan de Carga']] },
+  { modulo: 'Gestión Troncales · Planificación', items: [['abastecimiento:plan_carga', 'Plan de Carga'], ['abastecimiento:seguimiento_carga', 'Seguimiento de Carga'], ['abastecimiento:ind_plan_carga', 'Indicadores Plan de Carga']] },
   { modulo: 'Flete Tercero / Indicadores', items: [['flete-tercero', 'Flete Tercero (Seguimiento)'], ['indicadores', 'Indicadores (Reportes)']] },
   { modulo: 'Tarifas', items: [['tarifas-transporte', 'Tarifas Transporte'], ['tarifas-clientes', 'Tarifas Clientes']] },
   { modulo: 'Maestros', items: [['proveedores', 'Proveedores'], ['rutas', 'Rutas'], ['productos', 'Productos']] },

@@ -1,6 +1,6 @@
-import { getDatabase, saveDatabase, initDatabase, loadRoutesData, loadHistoricoFlete360 } from './data.js?v=202610232102';
-import { supabase } from './supabase-client.js?v=202610232102';
-import { setSesionPermisos, puedeVerMenu, can, esSoloLectura, PERFILES, normalizarPerfil } from './permisos.js?v=202610232102';
+import { getDatabase, saveDatabase, initDatabase, loadRoutesData, loadHistoricoFlete360 } from './data.js?v=202610241624';
+import { supabase } from './supabase-client.js?v=202610241624';
+import { setSesionPermisos, puedeVerMenu, can, esSoloLectura, PERFILES, normalizarPerfil } from './permisos.js?v=202610241624';
 // ── Módulos cargados bajo demanda (lazy) — se cachean tras la primera carga ──
 const _mod = {};
 async function loadMod(key, modPath) {
@@ -9,9 +9,9 @@ async function loadMod(key, modPath) {
 }
 // Pre-warm: carga indicadores y abastecimiento en background tras login
 function prewarmMods() {
-  setTimeout(() => loadMod('ind',   './indicadores.js?v=202610232102'), 600);
+  setTimeout(() => loadMod('ind',   './indicadores.js?v=202610241624'), 600);
   setTimeout(() => loadRoutesData(), 800);  // pre-fetch tablas pesadas en background
-  setTimeout(() => loadMod('abast', './abastecimiento.js?v=202610232102'), 2000);
+  setTimeout(() => loadMod('abast', './abastecimiento.js?v=202610241624'), 2000);
 }
 import { showAlert, formatRut, validateRut, formatPhone } from './utils.js';
 
@@ -270,7 +270,7 @@ function renderApp() {
   if (!currentSession) {
     renderAuthView();
   } else if (currentSession.tipo === 'proveedor') {
-    import('./provider-portal.js?v=202610232102').then(m => m.renderProviderShell(currentSession, handleLogout));
+    import('./provider-portal.js?v=202610241624').then(m => m.renderProviderShell(currentSession, handleLogout));
   } else {
     renderDashboardShell();
   }
@@ -1259,7 +1259,8 @@ const SIDEBAR_MENU = [
       // { tab: 'abastecimiento', sub: 'documentos_transporte',  icon: 'description',                label: 'Documentos de Transporte' },
       { tab: 'abastecimiento', sub: 'seguimiento_carga',      icon: 'fact_check',                 label: 'Seguimiento de Carga' },
       { tab: 'abastecimiento', sub: 'ind_plan_carga',         icon: 'insights',                   label: 'Indicadores Plan de Carga' },
-      { tab: 'abastecimiento', sub: 'control_diferencias',    icon: 'rule',                       label: 'Control de Diferencias' },
+      // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
+      // { tab: 'abastecimiento', sub: 'control_diferencias',    icon: 'rule',                       label: 'Control de Diferencias' },
     ]
   },
   {
@@ -1309,7 +1310,7 @@ const NAV_LAYOUT = [
     // (30-sep-2026, Jordan) Orden: Configuraciones · Orden de Carga · Planificación
     { label: 'Configuraciones', group: 'abastecimiento', collapsible: true, subs: ['calendario', 'stock_almacen'] },
     { label: 'Orden de Carga', group: 'abastecimiento', subs: ['pedidos_traslados_revex', 'pedidos_venta', 'retiros', 'pedidos_traslados_4000', 'pedidos_traslados'] },
-    { label: 'Planificación', group: 'abastecimiento', subs: ['plan_carga', 'seguimiento_carga', 'control_diferencias', 'ind_plan_carga'] },
+    { label: 'Planificación', group: 'abastecimiento', subs: ['plan_carga', 'seguimiento_carga', 'ind_plan_carga'] },
   ] },
   { key: 'porteria', icon: 'door_front', label: 'Portería', sections: [{ label: 'CD Quilicura', group: 'porteria' }] },
   { key: 'flete', icon: 'local_shipping', label: 'Flete Tercero', sections: [{ label: 'Seguimiento', group: 'flete-tercero' }] },
@@ -1703,7 +1704,7 @@ function renderDashboardShell() {
   document.getElementById('sv-goto').addEventListener('click', openGotoPalette);
   bindPaletteKey();
   // (12-oct-2026) Campana de notificaciones (menciones, respuestas y me gusta en comentarios de Orden de Carga)
-  import('./comentarios.js?v=202610232102')
+  import('./comentarios.js?v=202610241624')
     .then(m => m.initCampana(document.getElementById('sv-notif-slot'), { navegar: sub => switchTab('abastecimiento', sub) }))
     .catch(e => console.warn('notificaciones:', e));
   wireSidebar();
@@ -1792,37 +1793,37 @@ async function switchTab(tabName, subName = null) {
   _stageSpinner(stage);
   switch (tabName) {
     case 'home': {
-      const m = await loadMod('ind', './indicadores.js?v=202610232102');
+      const m = await loadMod('ind', './indicadores.js?v=202610241624');
       m.renderIndicadoresHome(stage);
       break;
     }
     case 'rates': {
       await loadRoutesData();
-      const m = await loadMod('rates', './rates.js?v=202610232102');
+      const m = await loadMod('rates', './rates.js?v=202610241624');
       m.renderRatesView(stage);
       break;
     }
     case 'transports': {
-      const m = await loadMod('trans', './transports.js?v=202610232102');
+      const m = await loadMod('trans', './transports.js?v=202610241624');
       m.renderTransportsView(stage);
       break;
     }
     case 'routes': {
       await loadRoutesData();
-      const m = await loadMod('routes', './routes.js?v=202610232102');
+      const m = await loadMod('routes', './routes.js?v=202610241624');
       if (alias) m.setRoutesSubTab(alias);
       m.renderRoutesView(stage);
       break;
     }
     case 'roles': {
-      const m = await loadMod('roles', './roles.js?v=202610232102');
+      const m = await loadMod('roles', './roles.js?v=202610241624');
       m.renderRolesView(stage);
       break;
     }
     case 'tarifas-transporte': {
       await loadRoutesData();
       await loadHistoricoFlete360();
-      const m = await loadMod('tt', './tarifas-transporte.js?v=202610232102');
+      const m = await loadMod('tt', './tarifas-transporte.js?v=202610241624');
       if (alias) m.setActiveSub(alias);
       m.renderTariffTransportView(stage);
       break;
@@ -1830,37 +1831,37 @@ async function switchTab(tabName, subName = null) {
     case 'tarifas-clientes': {
       await loadRoutesData();
       await loadHistoricoFlete360();
-      const m = await loadMod('tc', './tarifas-clientes.js?v=202610232102');
+      const m = await loadMod('tc', './tarifas-clientes.js?v=202610241624');
       if (alias) m.setActiveSubC(alias);
       m.renderClientTariffView(stage);
       break;
     }
     case 'abastecimiento': {
       await loadRoutesData();
-      const m = await loadMod('abast', './abastecimiento.js?v=202610232102');
+      const m = await loadMod('abast', './abastecimiento.js?v=202610241624');
       if (subName) m.setAbastSubTab(subName);
       m.renderAbastecimientoView(stage);
       break;
     }
     case 'indicadores': {
-      const m = await loadMod('ind', './indicadores.js?v=202610232102');
+      const m = await loadMod('ind', './indicadores.js?v=202610241624');
       if (subName) m.setIndicadoresSubTab(subName);
       m.renderIndicadoresView(stage);
       break;
     }
     case 'productos': {
-      const m = await loadMod('mprod', './maestro-productos.js?v=202610232102');
+      const m = await loadMod('mprod', './maestro-productos.js?v=202610241624');
       m.renderMaestroProductos(stage);
       break;
     }
     case 'porteria': {
-      const m = await loadMod('port', './porteria.js?v=202610232102');
+      const m = await loadMod('port', './porteria.js?v=202610241624');
       await m.renderPorteria(stage, subName || 'registro');
       break;
     }
     case 'flete-tercero': {
       await loadRoutesData();
-      const m = await loadMod('fter', './flete-tercero.js?v=202610232102');
+      const m = await loadMod('fter', './flete-tercero.js?v=202610241624');
       if (subName) m.setFleteTerceroSubTab(subName);
       m.renderFleteTerceroView(stage);
       break;

@@ -1,7 +1,7 @@
-import { getDatabase, saveDatabase, deleteRow } from './data.js?v=202610232102';
+import { getDatabase, saveDatabase, deleteRow } from './data.js?v=202610241624';
 import { parseCSV, showAlert, escapeHtml, toCSV, downloadFile } from './utils.js';
 import { REGIONES, COMUNAS_POR_REGION, TIPOS_ZONA, findRegionByComuna } from './chile-geo.js';
-import { confirmar } from './confirmar.js?v=202610232102';
+import { confirmar } from './confirmar.js?v=202610241624';
 
 let editingZonaId = null;
 let currentFiltroRegionZona = '';
