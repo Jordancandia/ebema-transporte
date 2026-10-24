@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610241631';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610241631';
-import { getDatabase } from './data.js?v=202610241631';
+import { supabase } from './supabase-client.js?v=202610241643';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610241643';
+import { getDatabase } from './data.js?v=202610241643';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610241631';
-import { confirmar, pedirDato } from './confirmar.js?v=202610241631';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610241643';
+import { confirmar, pedirDato } from './confirmar.js?v=202610241643';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -5153,6 +5153,30 @@ V2.seguimiento_carga = {
 //  1) ficha del transporte (transportista, chofer, patentes, día de carga) y si tiene documento de transporte;
 //  2) sin DT → productos del plan de carga con su detalle;
 //  3) con DT → cuadratura por SKU: coinciden plan y DT · en el DT y no en el plan · en el plan y no en el DT.
+// ── Indicadores Plan de Carga · Por centro destino (24-oct-2026, Jordan) ─────
+// Detalle de un despacho (fila de v_ind_plan_asert_resumen): planificado vs real por SKU y unidades,
+// con el mismo cruce plan / DT del Seguimiento de Carga (cuadroPlanCargadoSeg). null = sin detalle.
+const TIPO_IND_SEG = { 'CD': 'Camión CD', 'CD 2º': '2º camión', 'CD-CLIENTE': 'CD-Cliente', 'FÁBRICA-CLIENTE': 'Fáb-Cliente', 'FÁBRICA-SUCURSAL': 'Fáb-Sucursal' };
+let ajustesSegListos = false;
+async function detalleViajeIndicador(r) {
+  const tipo = TIPO_IND_SEG[String(r.camion ?? '').trim()];
+  if (!tipo || !r.fecha_plan) return null;
+  const { data: rows, error } = await supabase.from('v_abast_seguimiento_carga').select('*')
+    .eq('fecha_plan', String(r.fecha_plan).slice(0, 10)).eq('ce', String(r.ce ?? '').trim()).eq('tipo_camion', tipo).limit(5000);
+  if (error) { console.warn('Detalle viaje: seguimiento no disponible', error); return null; }
+  let sel = (rows || []).filter(x => !r.cd_origen || String(x.cd_origen ?? '').trim() === String(r.cd_origen).trim());
+  if (!sel.length) return null;
+  const fc = String(r.fecha_carga || '').slice(0, 10);
+  if (fc && sel.some(x => String(x.fecha_carga || '').slice(0, 10) === fc)) sel = sel.filter(x => String(x.fecha_carga || '').slice(0, 10) === fc);
+  const ids = [...new Set(sel.map(x => x.camion_id))];
+  const [dtRes] = await Promise.all([
+    supabase.from('v_abast_seguimiento_dt').select('*').in('camion_id', ids).limit(5000),
+    ajustesSegListos ? null : Promise.all([cargarAjustesCargaSeg(), cargarSaldosSeg()]).then(() => { ajustesSegListos = true; }),
+  ]);
+  const grupos = agruparSeguimiento(sel, (dtRes && dtRes.data) || [], [], new Map(), new Map());
+  const cams = grupos.flatMap(g => g.camiones.map(c => cuadroPlanCargadoSeg(g, c).html));
+  return cams.length ? cams.join('<div style="height:12px"></div>') : null;
+}
 // (24-oct-2026, Jordan) Primero «Planificado vs cargado» (lo que interesa al usuario), luego transporte / cliente.
 function detalleCamionSeg(r, c) {
   return [cuadroPlanCargadoSeg(r, c), fichaTransporteSeg(r, c)];
@@ -6032,8 +6056,8 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610241631');
-    await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx) });
+    const m = await import('./ind-plan-carga.js?v=202610241643');
+    await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
     stage.innerHTML = '<div class="sv-note-box" style="margin:24px">La vista <b>Control de Diferencias</b> fue deshabilitada. Para ver qué se planificó y qué se cargó en cada camión usa <b>Gestión Troncales → Seguimiento de Carga</b>.</div>';

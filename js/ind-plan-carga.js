@@ -18,11 +18,11 @@
 // Tailwind del sitio está compilado y no incluye clases nuevas.
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610241631';
-import { filtrarPorCentro, rolClase } from './permisos.js?v=202610241631';
+import { supabase } from './supabase-client.js?v=202610241643';
+import { filtrarPorCentro, rolClase } from './permisos.js?v=202610241643';
 import { showAlert, escapeHtml } from './utils.js';
-import { getDatabase } from './data.js?v=202610241631';
-import { truckGauge } from './troncales-ui.js?v=202610241631';
+import { getDatabase } from './data.js?v=202610241643';
+import { truckGauge } from './troncales-ui.js?v=202610241643';
 
 const META_CONS = 85;   // % consolidación objetivo por viaje
 const META_EFEC = 90;   // % efectividad objetivo del Plan de Carga
@@ -42,7 +42,7 @@ const ESTADOS = [
 // ── estado ─────────────────────────────────────────────────────────────────
 const S = {
   desde: '', hasta: '', usuario: 'all', centro: 'all', tipo: 'all', cd: 'all', soloAlcance: true,
-  cons: [], asert: [], usuarios: [], abiertos: new Set(), skuCache: new Map(), canEdit: false, vista: 'dash', detalleModo: 0, modo: 'cons',
+  cons: [], asert: [], usuarios: [], abiertos: new Set(), skuCache: new Map(), canEdit: false, cenAbiertos: new Set(), viajes: new Set(), viajeCache: new Map(), ordCen: 'asert', vista: 'dash', detalleModo: 0, modo: 'cons',
 };
 let root = null, opts = {}, resizeT = null, onResize = null;
 
@@ -95,6 +95,7 @@ async function cargar() {
   S.cons = filtrarPorCentro(cons, 'centro_expedicion');
   S.asert = filtrarPorCentro(efec, 'ce');
   S.skuCache.clear();
+  S.viajeCache.clear();
   S.usuarios = usr.data || [];
 }
 
@@ -114,7 +115,31 @@ function asertFiltrado() {
 }
 const pctA = r => r.pct_asertividad == null ? null : Number(r.pct_asertividad) * 100;
 const pctC = r => r.pct_consolidacion == null ? null : Number(r.pct_consolidacion) * 100;
-const medido = r => r.estado !== 'EN CURSO';
+// (24-oct-2026, Jordan) Estado de medición de cada camión del plan:
+//  · con DT cruzado → se mide (asertividad y consolidación);
+//  · sin DT y carga de hoy o futura → PENDIENTE hasta que se cruce el DT (no se mide);
+//  · sin DT y carga pasada → FALTA DT PARA VALIDAR: alerta, y no entra a los promedios.
+const hoyIso = () => iso(new Date());
+const conDt = r => !!String(r.transportes ?? '').trim();
+const estadoMed = r => conDt(r) ? 'medido' : String(r.fecha_carga || '').slice(0, 10) < hoyIso() ? 'faltadt' : 'pendiente';
+const medido = r => estadoMed(r) === 'medido';
+const faltaDt = r => estadoMed(r) === 'faltadt';
+const pendienteDt = r => estadoMed(r) === 'pendiente';
+const TAG_FALTA_DT = '<span class="ipc-tag bad" title="Carga pasada sin documento de transporte: falta el DT para validar">⚠ falta DT para validar</span>';
+const TAG_PEND_DT = '<span class="ipc-tag warn" title="Se mide cuando se cruce el DT">pendiente DT</span>';
+function estTagMed(r) {
+  const e = estadoMed(r);
+  return e === 'faltadt' ? TAG_FALTA_DT : e === 'pendiente' ? TAG_PEND_DT : r.historico ? '<span class="ipc-tag">semana cerrada</span>' : '<span class="ipc-tag ok">con DT</span>';
+}
+// Aviso con los despachos pasados sin DT (falta el DT para validar)
+function alertaFaltaDt(rows) {
+  const f = rows.filter(faltaDt);
+  if (!f.length) return '';
+  const lst = f.slice().sort((a, b) => String(b.fecha_carga).localeCompare(String(a.fecha_carga))).slice(0, 12)
+    .map(r => `${ddmmyy(r.fecha_carga)} · ${esc(nombreCentro(r.ce))} · ${esc(r.camion)}`).join('<br>');
+  return `<div class="ipc-alert" data-tt="${esc(lst + (f.length > 12 ? '<br>…' : ''))}"><span class="material-symbols-outlined">warning</span>
+    <span><b>${f.length} ${f.length === 1 ? 'despacho pasado sin DT' : 'despachos pasados sin DT'}</b>: falta el documento de transporte para validar. ${f.length === 1 ? 'No entra' : 'No entran'} al promedio hasta que se cruce el DT.</span></div>`;
+}
 const pctRow = r => r.pct_consolidacion == null ? null : Number(r.pct_consolidacion) * 100;
 
 function enlazar(box) {
@@ -166,7 +191,8 @@ function pintar() {
     <div class="sv-actions">
       ${S.vista === 'dash' ? `<div class="sv-seg" role="group" aria-label="Indicador">
         <button data-chip data-modo-ipc="cons" class="${cons ? 'is-on' : ''}"><span class="material-symbols-outlined">local_shipping</span>Consolidación</button>
-        <button data-chip data-modo-ipc="efec" class="${!cons ? 'is-on' : ''}"><span class="material-symbols-outlined">task_alt</span>Asertividad del plan</button></div>` : ''}
+        <button data-chip data-modo-ipc="efec" class="${S.modo === 'efec' ? 'is-on' : ''}"><span class="material-symbols-outlined">task_alt</span>Asertividad del plan</button>
+        <button data-chip data-modo-ipc="centro" class="${S.modo === 'centro' ? 'is-on' : ''}"><span class="material-symbols-outlined">location_on</span>Por centro destino</button></div>` : ''}
       ${S.canEdit ? '<button class="sv-btn" data-chip data-act="usuarios"><span class="material-symbols-outlined">group</span>Usuarios</button>' : ''}
       <button class="sv-btn" data-chip data-act="vista"><span class="material-symbols-outlined">${S.vista === 'dash' ? 'table_view' : 'insights'}</span>${S.vista === 'dash' ? 'Ver detalle' : 'Ver dashboard'}</button>
     </div>
@@ -194,7 +220,12 @@ function pintar() {
   </div>
   <section class="sv-card ipc-card"><h3>Viajes bajo meta <small>DT con menor consolidación en el período</small></h3><div data-ch="bajo"></div></section>
   <p class="ipc-note">Capacidad = GeEs del DT; si viene vacía en un traslado se usa 28 t (15 t a 1050/1005) y el DT se marca <i>estimada</i>.
-  Ton por línea = máx(peso bruto, peso volumétrico) × cantidad; tope 100% por DT.</p>` : `
+  Ton por línea = máx(peso bruto, peso volumétrico) × cantidad; tope 100% por DT.</p>` : S.modo === 'centro' ? `
+  <div data-ch="alertaDt"></div>
+  <section class="sv-card ipc-card"><h3>Asertividad y consolidación por centro destino <small>clic en un centro para ver sus despachos · clic en un despacho para ver planificado vs real por SKU y unidades</small></h3><div data-ch="centros"></div></section>
+  <p class="ipc-note">Asertividad y consolidación oficiales: foto del cierre del plan vs Documento de Transporte del día de carga, promedio por camión (metas ${META_EFEC}% y ${META_CONS}%). Cargas de hoy o futuras quedan <b>pendientes</b> hasta que se cruce el DT; cargas pasadas sin DT se alertan como <b>falta DT para validar</b> y no entran al promedio.
+  El detalle de cada despacho compara lo planificado en el camión (Seguimiento de Carga) con lo cargado según el DT de SAP, cruzado por entrega y SKU: SKU completos, parciales, no cargados, con más cantidad y no planificados.</p>` : `
+  <div data-ch="alertaDt"></div>
   <section class="sv-card ipc-card"><h3>Asertividad diaria del despacho <small>por día de carga · sólo camiones programados · meta ${META_EFEC}%</small></h3><div class="ipc-chart" data-ch="diariaAsert"></div></section>
   <section class="sv-card ipc-card"><h3>Camiones programados por día de carga <small>abra un camión para ver el detalle por SKU</small></h3><div data-ch="camiones"></div></section>
   <p class="ipc-note">Foto del cierre del plan (15:30): sólo camiones en estado Programar (y 2º camión aceptado / camiones directos) y sólo productos incluidos; los que exceden no se consideran.
@@ -206,7 +237,7 @@ function pintar() {
   enlazar(box);
   box.querySelectorAll('[data-modo-ipc]').forEach(b => b.onclick = () => { if (S.modo === b.dataset.modoIpc) return; S.modo = b.dataset.modoIpc; pintar(); });
   if (S.vista === 'dash') { pintarKpis(); pintarGraficos(); }
-  else if (opts.renderDetalle) opts.renderDetalle(box.querySelector('.ipc-detalle'), S.modo === 'efec' ? 1 : S.detalleModo);
+  else if (opts.renderDetalle) opts.renderDetalle(box.querySelector('.ipc-detalle'), S.modo !== 'cons' ? 1 : S.detalleModo);
 }
 
 // ── KPIs ───────────────────────────────────────────────────────────────────
@@ -243,7 +274,7 @@ function pintarKpis() {
     root.querySelector('.ipc-kpis').innerHTML =
       tile('Asertividad del despacho', pct(asert), `<span style="color:${col};font-weight:700">${semaforoTxt(asert, META_EFEC, 75)}</span> · promedio por camión`, C.ink, meter(asert, META_EFEC, col))
       + tile('Consolidación camiones', pct(consV), `<span style="color:${colC};font-weight:700">${semaforoTxt(consV, META_CONS, 70)}</span> · DT de los camiones programados`, C.ink2, meter(consV, META_CONS, colC))
-      + tile('Camiones medidos', fmt(med.length, 0), `${fmt(rows.length - med.length, 0)} en curso (aún sin DT)`, C.ink2)
+      + tile('Camiones medidos', fmt(med.length, 0), `${(np => `${np} ${np === 1 ? 'pendiente' : 'pendientes'} de DT`)(rows.filter(pendienteDt).length)}${rows.some(faltaDt) ? ` · <b style="color:${C.bad}">${fmt(rows.filter(faltaDt).length, 0)} con falta de DT</b>` : ''}`, C.ink2)
       + tile('SKU acertados', `${fmt(nOk, 0)} de ${fmt(nSku, 0)}`, nSku ? `${pct(nOk / nSku * 100, 0)} de los SKU planificados` : 'sin SKU medidos', C.good);
   }
 }
@@ -260,8 +291,9 @@ function pintarGraficos() {
     tablaBajo(q('bajo'), rows);
   } else {
     const rows = asertFiltrado();
-    chDiariaAsert(q('diariaAsert'), rows);
-    tablaCamiones(q('camiones'), rows);
+    q('alertaDt').innerHTML = alertaFaltaDt(rows);   // (24-oct-2026, Jordan) planes pasados sin DT
+    if (S.modo === 'centro') tablaCentros(q('centros'), rows);
+    else { chDiariaAsert(q('diariaAsert'), rows); tablaCamiones(q('camiones'), rows); }
   }
   tooltips();
 }
@@ -291,8 +323,8 @@ function barrasDiarias(el, pts, meta, ttFn) {
       s += `<path d="M${x(i) - bw / 2},${m.t + ih} v${-Math.max(0, h - 3)} q0,-3 3,-3 h${bw - 6} q3,0 3,3 v${Math.max(0, h - 3)} z" fill="${p.v >= meta ? C.good : C.warn}"/>`;
       if (step > 30) s += `<text x="${x(i)}" y="${top - 5}" text-anchor="middle" class="ipc-val">${fmt(p.v, 0)}</text>`;
     } else if (p.plazo) {
-      s += `<rect x="${x(i) - bw / 2}" y="${m.t + ih - 14}" width="${bw}" height="14" rx="3" fill="#e7e8e9"/>`;
-      if (step > 30) s += `<text x="${x(i)}" y="${m.t + ih - 20}" text-anchor="middle" class="ipc-ax">en plazo</text>`;
+      s += `<rect x="${x(i) - bw / 2}" y="${m.t + ih - 14}" width="${bw}" height="14" rx="3" fill="${p.lbl === 'falta DT' ? '#fde2e2' : '#e7e8e9'}"/>`;
+      if (step > 30) s += `<text x="${x(i)}" y="${m.t + ih - 20}" text-anchor="middle" class="ipc-ax"${p.lbl === 'falta DT' ? ` style="fill:${C.bad};font-weight:700"` : ''}>${p.lbl || 'en plazo'}</text>`;
     }
     if (i % every === 0) s += `<text x="${x(i)}" y="${H - 6}" text-anchor="middle" class="ipc-ax">${ddmm(p.f)}</text>`;
     s += `<rect x="${x(i) - step / 2}" y="${m.t}" width="${step}" height="${ih}" fill="transparent" data-tt="${esc(ttFn(p))}"/>`;
@@ -319,9 +351,9 @@ function chDiariaAsert(el, rows) {
   rows.forEach(r => { const f = String(r.fecha_carga).slice(0, 10); (g.get(f) || g.set(f, []).get(f)).push(r); });
   const pts = [...g.keys()].sort().map(f => {
     const rs = g.get(f), med = rs.filter(medido);
-    return { f, v: avg(med.map(pctA).filter(v => v != null)), c: avg(med.map(pctC).filter(v => v != null)), plazo: !med.length, n: rs.length, med: med.length };
+    return { f, v: avg(med.map(pctA).filter(v => v != null)), c: avg(med.map(pctC).filter(v => v != null)), plazo: !med.length, lbl: f < hoyIso() ? 'falta DT' : 'pendiente', falta: rs.filter(faltaDt).length, n: rs.length, med: med.length };
   });
-  barrasDiarias(el, pts, META_EFEC, p => `<b>Carga ${ddmmyy(p.f)}</b><br>${p.v == null ? 'En curso (aún sin DT)' : `Asertividad: <b>${pct(p.v)}</b><br>Consolidación: <b>${pct(p.c)}</b>`}<br>Camiones: ${p.n} · medidos ${p.med}`);
+  barrasDiarias(el, pts, META_EFEC, p => `<b>Carga ${ddmmyy(p.f)}</b><br>${p.v == null ? (p.lbl === 'falta DT' ? '<b>Falta DT para validar</b>' : 'Pendiente: se mide al cruzar el DT') : `Asertividad: <b>${pct(p.v)}</b><br>Consolidación: <b>${pct(p.c)}</b>`}<br>Camiones: ${p.n} · medidos ${p.med}${p.falta ? ` · <b>${p.falta} sin DT</b>` : ''}`);
 }
 
 const keyCam = r => [r.fecha_plan, r.cd_origen, r.ce, r.camion].join('|');
@@ -332,9 +364,7 @@ function tablaCamiones(el, rows) {
   if (!rows.length) return vacio(el);
   const dias = new Map();
   rows.forEach(r => { const f = String(r.fecha_carga).slice(0, 10); (dias.get(f) || dias.set(f, []).get(f)).push(r); });
-  const estTag = r => r.historico ? '<span class="ipc-tag">histórico</span>'
-    : r.estado === 'EN CURSO' ? '<span class="ipc-tag warn">en curso</span>'
-    : r.estado === 'SIN DT' ? '<span class="ipc-tag bad">sin DT</span>' : '<span class="ipc-tag ok">con DT</span>';
+  const estTag = estTagMed;   // (24-oct-2026) pendiente DT / falta DT para validar
   const html = [...dias.keys()].sort().reverse().map(f => {
     const rs = dias.get(f).sort((a, b) => String(a.cd_origen).localeCompare(String(b.cd_origen)) || String(a.ce).localeCompare(String(b.ce)) || String(a.camion).localeCompare(String(b.camion)));
     const med = rs.filter(medido);
@@ -353,7 +383,7 @@ function tablaCamiones(el, rows) {
         ${open ? `<tr class="ipc-det"><td colspan="9"><div data-sku="${esc(k)}"><div class="ipc-load">Cargando detalle…</div></div></td></tr>` : ''}`;
     }).join('');
     return `<div class="ipc-dia"><div class="ipc-diah"><b>Carga día ${ddmmyy(f)}</b><span class="ipc-etq">${etiquetas.map(esc).join(' · ')}</span>
-        <span class="ipc-diak">Asertividad <b style="color:${semaforo(vA, META_EFEC, 75)}">${pct(vA, 0)}</b> · Consolidación <b style="color:${semaforo(vC, META_CONS, 70)}">${pct(vC, 0)}</b> · ${rs.length} camiones</span></div>
+        <span class="ipc-diak">Asertividad <b style="color:${semaforo(vA, META_EFEC, 75)}">${pct(vA, 0)}</b> · Consolidación <b style="color:${semaforo(vC, META_CONS, 70)}">${pct(vC, 0)}</b> · ${rs.length} ${rs.length === 1 ? 'camión' : 'camiones'}</span></div>
       <div class="ipc-scroll"><table class="ipc-tbl"><thead><tr><th>Centro</th><th>Origen</th><th>Camión</th><th class="r">Carga plan</th><th class="r">SKU OK</th><th>Asertividad</th><th>Consolidación</th><th>Doc. transporte</th><th>Estado</th></tr></thead>
       <tbody>${filas}</tbody></table></div></div>`;
   }).join('');
@@ -384,6 +414,83 @@ async function detalleSku(box, k) {
       <td class="r">${r.pct_consolidacion == null ? '—' : pct(Number(r.pct_consolidacion) * 100, 1)}</td>
       <td><span class="ipc-dot" style="background:${est[r.estado] || C.neutral}"></span>${esc(r.estado)}</td></tr>`).join('')}
   </tbody></table>`;
+}
+
+// ── POR CENTRO DESTINO (24-oct-2026, Jordan) ────────────────────────────────
+// Asertividad y consolidación (oficiales, foto de cierre vs DT) por centro destino.
+// Clic en un centro → todos sus despachos del período; clic en un despacho → planificado vs real
+// por SKU y unidades (mismo cruce plan / DT del Seguimiento de Carga, opts.detalleViaje).
+const TIPO_CAM = { 'CD': 'Camión CD', 'CD 2º': 'Camión extra (2º)', 'CD-CLIENTE': 'CD-Cliente', 'FÁBRICA-CLIENTE': 'Fábrica-Cliente', 'FÁBRICA-SUCURSAL': 'Fábrica-Sucursal' };
+const keyViaje = r => keyCam(r) + '|' + String(r.fecha_carga || '').slice(0, 10);
+// Despacho medido: con resultado (no «en curso») y con fecha de carga ya ocurrida (no cuenta cargas futuras ya planificadas).
+const medidoC = medido;
+const estTagCam = estTagMed;
+function tablaCentros(el, rows) {
+  if (!rows.length) return vacio(el);
+  const g = new Map();
+  rows.forEach(r => { const k = String(r.ce ?? '').trim(); (g.get(k) || g.set(k, []).get(k)).push(r); });
+  const items = [...g.entries()].map(([k, rs]) => {
+    const med = rs.filter(medidoC);
+    return { k, rs, n: rs.length, med: med.length, falta: rs.filter(faltaDt).length, pend: rs.filter(pendienteDt).length,
+      a: avg(med.map(pctA).filter(v => v != null)), c: avg(med.map(pctC).filter(v => v != null)),
+      ton: rs.reduce((s, r) => s + (Number(r.ton_plan) || 0), 0),
+      sku: med.reduce((s, r) => s + (Number(r.n_sku) || 0), 0), ok: med.reduce((s, r) => s + (Number(r.n_acierto) || 0), 0) };
+  });
+  const ord = S.ordCen;
+  items.sort((x, y) => ord === 'nombre' ? nombreCentro(x.k).localeCompare(nombreCentro(y.k))
+    : ord === 'cons' ? (x.c ?? 999) - (y.c ?? 999) : (x.a ?? 999) - (y.a ?? 999));
+  const porKey = new Map();
+  const viajes = rs => {
+    const lst = rs.slice().sort((a, b) => String(b.fecha_carga).localeCompare(String(a.fecha_carga)) || String(a.camion).localeCompare(String(b.camion)));
+    return `<table class="ipc-tbl ipc-sku ipc-viajes"><thead><tr><th>Fecha carga</th><th>Origen</th><th>Camión</th><th>Doc. transporte</th><th class="r">Carga plan</th><th class="r">SKU OK</th><th>Asertividad</th><th>Consolidación</th><th>Estado</th></tr></thead><tbody>
+      ${lst.map(r => {
+        const k = keyViaje(r), open = S.viajes.has(k); porKey.set(k, r);
+        return `<tr class="ipc-cam is-click" data-viaje="${esc(k)}">
+          <td><span class="material-symbols-outlined ipc-chev">${open ? 'expand_more' : 'chevron_right'}</span><b>${ddmmyy(r.fecha_carga)}</b> <span class="sv-muted">plan ${ddmm(r.fecha_plan)}</span></td>
+          <td>CD ${esc(r.cd_origen)}</td><td>${esc(TIPO_CAM[r.camion] || r.camion)}</td><td>${esc(r.transportes || '—')}</td>
+          <td class="r">${fmt(r.ton_plan, 1)} t</td><td class="r">${r.n_acierto ?? 0} / ${r.n_sku ?? 0}</td>
+          <td>${medidoC(r) ? celdaPct(pctA(r), META_EFEC, 75) : '<span class="sv-muted">—</span>'}</td><td>${celdaPct(pctC(r), META_CONS, 70)}</td><td>${estTagCam(r)}</td></tr>
+          ${open ? `<tr class="ipc-det ipc-det2"><td colspan="9"><div data-viaje-box="${esc(k)}"><div class="ipc-load">Cargando planificado vs real…</div></div></td></tr>` : ''}`;
+      }).join('')}</tbody></table>`;
+  };
+  const ordChip = (v, l) => `<button class="sv-chip ${ord === v ? 'is-on' : ''}" data-chip data-ordcen="${v}">${l}</button>`;
+  el.innerHTML = `<div class="ipc-ord"><span class="sv-flbl">Ordenar</span>${ordChip('asert', 'Menor asertividad')}${ordChip('cons', 'Menor consolidación')}${ordChip('nombre', 'Nombre')}</div>
+  <div class="ipc-scroll"><table class="ipc-tbl ipc-centros"><thead><tr><th>Centro destino</th><th class="r">Despachos</th><th class="r">Toneladas plan</th><th>Asertividad</th><th>Consolidación</th><th class="r">SKU acertados</th></tr></thead><tbody>
+    ${items.map(it => { const open = S.cenAbiertos.has(it.k);
+      return `<tr class="ipc-cam is-click ipc-cenrow" data-cenx="${esc(it.k)}">
+        <td><span class="material-symbols-outlined ipc-chev">${open ? 'expand_more' : 'chevron_right'}</span><span class="sv-b">${esc(nombreCentro(it.k))}</span> <span class="sv-sub" style="display:inline">${esc(it.k)}</span></td>
+        <td class="r"><b>${it.n}</b>${it.pend ? ` <span class="sv-muted">(${it.pend} pendiente${it.pend === 1 ? '' : 's'})</span>` : ''}${it.falta ? `<div><span class="ipc-tag bad">⚠ ${it.falta} sin DT</span></div>` : ''}</td>
+        <td class="r">${fmt(it.ton, 1)} t</td>
+        <td>${celdaPct(it.a, META_EFEC, 75)} <span class="ipc-sem" style="color:${semaforo(it.a, META_EFEC, 75)}">${semaforoTxt(it.a, META_EFEC, 75)}</span></td>
+        <td>${celdaPct(it.c, META_CONS, 70)} <span class="ipc-sem" style="color:${semaforo(it.c, META_CONS, 70)}">${semaforoTxt(it.c, META_CONS, 70)}</span></td>
+        <td class="r">${fmt(it.ok, 0)} / ${fmt(it.sku, 0)}${it.sku ? ` <span class="sv-muted">(${pct(it.ok / it.sku * 100, 0)})</span>` : ''}</td></tr>
+        ${open ? `<tr class="ipc-det"><td colspan="6">${viajes(it.rs)}</td></tr>` : ''}`; }).join('')}
+  </tbody></table></div>`;
+  el.querySelectorAll('[data-ordcen]').forEach(b => b.onclick = () => { S.ordCen = b.dataset.ordcen; tablaCentros(el, rows); tooltips(); });
+  el.querySelectorAll('[data-cenx]').forEach(tr => tr.onclick = () => {
+    const k = tr.dataset.cenx; S.cenAbiertos.has(k) ? S.cenAbiertos.delete(k) : S.cenAbiertos.add(k);
+    tablaCentros(el, rows); tooltips();
+  });
+  el.querySelectorAll('[data-viaje]').forEach(tr => tr.onclick = e => {
+    e.stopPropagation();
+    const k = tr.dataset.viaje; S.viajes.has(k) ? S.viajes.delete(k) : S.viajes.add(k);
+    tablaCentros(el, rows); tooltips();
+  });
+  el.querySelectorAll('[data-viaje-box]').forEach(d => { const r = porKey.get(d.dataset.viajeBox); if (r) cargarViaje(d, r); });
+}
+async function cargarViaje(box, r) {
+  const k = keyViaje(r);
+  const ofi = `<div class="ipc-ofi"><span class="material-symbols-outlined">verified</span><span>Indicador oficial (foto de cierre vs DT): asertividad <b>${medido(r) ? pct(pctA(r), 0) : '—'}</b> · consolidación <b>${pct(pctC(r), 0)}</b> · SKU acertados <b>${r.n_acierto ?? 0} de ${r.n_sku ?? 0}</b>${r.transportes ? ` · DT <b>${esc(r.transportes)}</b>` : ''}</span></div>`;
+  let html = S.viajeCache.get(k);
+  if (html === undefined) {
+    try { html = opts.detalleViaje ? await opts.detalleViaje(r) : null; } catch (e) { console.warn('Detalle del viaje', e); html = null; }
+    S.viajeCache.set(k, html);
+  }
+  if (!box.isConnected) return;
+  if (html) { box.innerHTML = ofi + html; return; }
+  if (r.historico) { box.innerHTML = ofi + '<div class="ipc-empty">Sin detalle por SKU guardado para este despacho (semana cerrada y anterior al Seguimiento de Carga).</div>'; return; }
+  box.innerHTML = ofi + '<div data-sku-f><div class="ipc-load">Cargando detalle…</div></div>';
+  detalleSku(box.querySelector('[data-sku-f]'), keyCam(r));
 }
 
 function nombreCentro(id) {
@@ -652,5 +759,14 @@ function css() {
   .ipc-bin{display:inline-block;min-width:22px;text-align:center;font-weight:800;border-radius:3px;padding:1px 6px;background:#fde2e2;color:${C.bad}}
   .ipc-bin.ok{background:#dcfce7;color:${C.good}}
   .ipc-tag.ok{background:#dcfce7;color:#14532d}.ipc-tag.bad{background:#fde2e2;color:#7f1d1d}
+  .ipc-ord{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:0 0 10px}
+  .ipc-centros .ipc-cenrow td{padding:11px 10px;font-size:13.5px}
+  .ipc-sem{font-size:11px;font-weight:700;margin-left:4px}
+  .ipc-viajes{margin:4px 0}
+  .ipc-det2>td{background:#f3f4f5;padding:10px 12px 14px 12px}
+  .ipc-ofi{display:flex;align-items:center;gap:8px;font-size:12.5px;color:${C.ink2};background:#fff;border:1px solid #e1e3e4;border-radius:8px;padding:8px 12px;margin-bottom:10px;white-space:normal}
+  .ipc-ofi .material-symbols-outlined{font-size:18px;color:${C.info}}.ipc-ofi b{color:${C.ink}}
+  .ipc-alert{display:flex;align-items:center;gap:10px;background:#fde2e2;color:#7f1d1d;border:1px solid #fca5a5;border-radius:8px;padding:10px 14px;font-size:13px;cursor:default}
+  .ipc-alert .material-symbols-outlined{font-size:22px;color:${C.bad}}
   </style>`;
 }
