@@ -15,11 +15,11 @@
 // tarifas a clientes y «Guardar y recalcular» escribe sólo client_tariff_config
 // (syncOnly) y, si cambió la asignación de clusters, cluster_rutas por centro.
 // ============================================================================
-import { saveDatabase, getOrigenGroups } from './data.js?v=202610241927';
-import { buildZcapMap, es2Ton, componentesRegional } from './zcap.js?v=202610241927';
+import { saveDatabase, getOrigenGroups } from './data.js?v=202610242031';
+import { buildZcapMap, es2Ton, componentesRegional } from './zcap.js?v=202610242031';
 import { showAlert } from './utils.js';
-import { can } from './permisos.js?v=202610241927';
-import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, setParamPill, clasifPill, clasifTarifa, pillHtml } from './tarifas-ui.js?v=202610241927';
+import { can } from './permisos.js?v=202610242031';
+import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, setParamPill, clasifPill, clasifTarifa, pillHtml } from './tarifas-ui.js?v=202610242031';
 
 const CAPS = [5, 10, 15, 28];
 const CAP_LBL = { 5: '5 t', 10: '10 t', 15: '15 t', 28: '28 t' };
@@ -135,12 +135,17 @@ function recargoDe(ccfgX, grupo) {
 // No usa factor de consolidación ni ZCAP, no entra a $/Kg y no es camión mínimo.
 // Config en client_tariff_config.data.camion2t = { GRUPO_KEY: { costoMin, valorKm } }.
 // (23-oct-2026, Jordan) Sin costo mínimo ni valor km → el camión no se activa en ese centro.
+// (24-oct-2026, Jordan) Capacidad SAP del camión chico por centro: 2 t (defecto) o 3 t
+// (camion2t[GRUPO].capTon). Mismo costo; en la carga SAP el camión sale como "3" y el
+// ZFMP = costo ÷ 3.000 kg, para que SAP cotice hasta 3 t en ese camión y no salte al de 5 t.
 const T2_TIPO = 'Camión 2 Ton';
+const T2_CAPS = [2, 3];
 function cfg2t(ccfgX, grupo) {
   const t = ccfgX.camion2t || {};
   const v = t[String(grupo).replace(/\s/g, '_')] || t[grupo] || {};
   const costoMin = num(v.costoMin), valorKm = num(v.valorKm);
-  return { activo: costoMin > 0 || valorKm > 0, costoMin, valorKm };
+  const capTon = T2_CAPS.includes(num(v.capTon)) ? num(v.capTon) : 2;
+  return { activo: costoMin > 0 || valorKm > 0, costoMin, valorKm, capTon };
 }
 export function costoRuta2t(ccfgX, grupo, km) {
   const c = cfg2t(ccfgX, grupo);
@@ -294,6 +299,7 @@ function calcTarifas(ctx, ccfgX, zOver = null) {
     const costo = zc2 > 0 ? zc2 : costoRuta2t(ccfgX, r.grupo, r.ruta.km);
     if (costo == null) return;
     rows.push({ ...r, key: r.cod + '||' + T2_TIPO, truck: t2 ? t2.v.truck : { type: T2_TIPO }, capKg: 2000, es2t: true, t2Zcap: zc2 > 0,
+      capSapKg: cfg2t(ccfgX, r.grupo).capTon * 1000,
       zcap: costo, factorPct: null, kilos: null, zfmp: null, kgCentro: null, camionMin: '—',
       zfmi: costo, zfmx: costo, express: costo * (1 + r.recargo / 100), kilosTarifMin: null });
   });
@@ -800,14 +806,17 @@ function renderEspeciales(container, ctx) {
         </table></div>
       </div>
       <div class="sv-card" style="flex:1 1 100%">
-        <div class="tf-tabletitle"><div><h3>Camión 2 Ton</h3><small>Sólo Tarifa Min/Max y Express · costo ruta = máx(km ruta × valor km, costo mínimo) · sin valores = no se activa en el centro · si el centro tiene Camión 2 Ton en Tarifas por Camión, en rutas regionales manda ese ZCAP</small></div></div>
+        <div class="tf-tabletitle"><div><h3>Camión 2 Ton</h3><small>Sólo Tarifa Min/Max y Express · camión activo SAP 2 t o 3 t (mismo costo; en la carga SAP sale como ese camión) · costo ruta = máx(km ruta × valor km, costo mínimo) · sin valores = no se activa en el centro · si el centro tiene Camión 2 Ton en Tarifas por Camión, en rutas regionales manda ese ZCAP</small></div></div>
         <div class="sv-tablewrap" style="max-height:none"><table class="sv-table" style="min-width:640px">
-          <thead><tr><th>Centro logístico</th><th>Estado</th><th class="r">Costo mínimo</th><th class="r">Valor km</th><th class="r">Ejemplo 50 km</th></tr></thead>
+          <thead><tr><th>Centro logístico</th><th>Estado</th><th>Camión activo (SAP)</th><th class="r">Costo mínimo</th><th class="r">Valor km</th><th class="r">Ejemplo 50 km</th></tr></thead>
           <tbody>${grupos.map(g => { const gk = g.grupo.replace(/\s/g, '_');
             const c = cfg2t({ camion2t: w.camion2t }, g.grupo), c0 = cfg2t({ camion2t: b.camion2t }, g.grupo);
             const ej = costoRuta2t({ camion2t: w.camion2t }, g.grupo, 50);
             return `<tr style="cursor:default"><td><span class="sv-b">${esc(g.nombre)}</span><div class="sv-sub">${esc(g.centroIds.join(' · '))}</div></td>
               <td>${c.activo ? pillHtml('Activo', 'ok') : pillHtml('No activo', 'mute')}</td>
+              <td style="white-space:nowrap">${T2_CAPS.map(t => `<button type="button" class="sv-btn" data-t2cap="${gk}|${t}" ${editar ? '' : 'disabled'}
+                  style="padding:3px 10px;margin-right:4px;${c.capTon === t ? 'background:#7e22ce;color:#fff;border-color:#7e22ce;' : ''}${c.capTon !== c0.capTon && c.capTon === t ? 'box-shadow:0 0 0 2px #f59e0b;' : ''}"
+                  title="En la carga SAP el camión sale como ${t} t (SAP cotiza hasta ${t.toLocaleString('es-CL')}.000 kg con este costo)">${t} t</button>`).join('')}</td>
               <td class="r">${numIn(`t2|${gk}|costoMin`, c.costoMin, { pre: '$', w: '120px', changed: c.costoMin !== c0.costoMin, disabled: !editar, label: 'Costo mínimo 2 Ton ' + g.nombre })}</td>
               <td class="r">${numIn(`t2|${gk}|valorKm`, c.valorKm, { pre: '$', unit: '/km', w: '120px', changed: c.valorKm !== c0.valorKm, disabled: !editar, label: 'Valor km 2 Ton ' + g.nombre })}</td>
               <td class="r sv-muted">${ej != null ? clp(ej) : '—'}</td></tr>`; }).join('')}</tbody>
@@ -843,6 +852,13 @@ function renderEspeciales(container, ctx) {
       recalc();
     }));
     container.querySelectorAll('[data-fcolor]').forEach(inp => inp.addEventListener('change', () => { w.clusters[Number(inp.dataset.fcolor)].color = inp.value; render(); }));
+    container.querySelectorAll('[data-t2cap]').forEach(b => b.addEventListener('click', () => {
+      const [gk, t] = b.dataset.t2cap.split('|');
+      w.camion2t = w.camion2t || {};
+      const { activo: _a, ...prev } = w.camion2t[gk] || {};
+      w.camion2t[gk] = { ...prev, capTon: Number(t) };
+      render();
+    }));
     container.querySelectorAll('[data-ftog]').forEach(b => b.addEventListener('click', () => { const c = w.clusters[Number(b.dataset.ftog)]; c.tipo0000Habilitado = c.tipo0000Habilitado === false; render(); }));
     container.querySelectorAll('[data-fdel]').forEach(b => b.addEventListener('click', () => {
       const i = Number(b.dataset.fdel);
@@ -1045,7 +1061,8 @@ function fotoZcap(ctx) {
 // Importes enteros, sin separador de miles. Válido de = día de descarga (DD.MM.AAAA), Validez a = 31.12.2999.
 // Centros: Santiago → 1000, 1001, 1002, 1003 · Concepción → 1080, 1081 · resto su centro.
 // Todas las rutas (Regionales, Interregionales y Sectores) con ZCAP > 0.
-//   ZFMP  (0) camión     = $/kg del camión (ZFMP plataforma) · Camión 2 Ton = costo ruta ÷ 2.000 kg
+//   ZFMP  (0) camión     = $/kg del camión (ZFMP plataforma) · Camión 2 Ton = costo ruta ÷ capacidad SAP (2.000 o 3.000 kg)
+//   Camión 2 Ton sale con código SAP "2" o "3" según la capacidad SAP del centro (Frecuencia y Especiales)
 //   ZFMP  (0) 9999       = ZFMP del camión más grande de la ruta × 1,3
 //   ZFMP  (1) 9999       = ZFMP 9999 × 1,2
 //   ZFMI  (0) camión     = tarifa mínima de la plataforma
@@ -1083,13 +1100,14 @@ export function construirCargaSap(rows, hoy = new Date()) {
     const r0 = lst[0], ruta = r0.cod, centros = sapCentrosDe(r0);
     const base = lst.filter(r => !r.es2t);
     const mayor = (base.length ? base : lst).reduce((a, b) => (b.capKg > a.capKg ? b : a));
-    const zpMayor = mayor.es2t ? mayor.zcap / mayor.capKg : mayor.zfmp;
+    const capSap = r => (r.es2t && r.capSapKg) || r.capKg;
+    const zpMayor = mayor.es2t ? mayor.zcap / capSap(mayor) : mayor.zfmp;
     const cl = r0.clObj;
     const t0000 = cl && cl.tipo0000Habilitado ? Number(cl.tipo0000) || 0 : 0;
     centros.forEach(ce => {
       lst.forEach(r => {
-        const cam = String(Math.round(r.capKg / 1000));
-        const zp = r.es2t ? r.zcap / r.capKg : r.zfmp;
+        const cam = String(Math.round(capSap(r) / 1000));
+        const zp = r.es2t ? r.zcap / capSap(r) : r.zfmp;
         if (ok(zp)) add('ZFMP', ce, ruta, '0', cam, zp); else if (ce === centros[0]) omit.sinZfmp++;
         if (ok(r.zfmi)) add('ZFMI', ce, ruta, '0', cam, r.zfmi); else if (ce === centros[0]) omit.sinZfmi++;
         add('ZFMI', ce, ruta, '1', cam, r.express);
@@ -1180,7 +1198,7 @@ function renderTarifasCliente(container, ctx, modo) {
       thead = '<th>Centro origen</th><th>ID ruta</th><th>Destino</th><th>Tipo</th><th>Clasificación</th><th class="r">Dist. KM</th><th>Cluster</th><th>Tipo camión</th><th>Camión mínimo</th><th class="r">ZCAP</th><th class="r">ZFMI mín.</th><th class="r">ZFMX máx.</th><th class="r">Express</th><th class="r">Factor consol.</th><th class="r">Kilos a consolidar</th><th class="r">Kilos tarif. mín.</th>';
       filas = pag.map(r => `<tr style="cursor:default"><td><span class="sv-b">${esc(NG[r.grupo] || titulo(r.grupo))}</span><div class="sv-sub">${esc(r.ruta.origenId || '')}</div></td>
         <td><span class="sv-mono">${esc(r.cod)}</span></td><td><b>${esc(r.ruta.destino || '')}</b></td><td>${esc(r.ruta.tipo || '')}</td><td>${clasifPill(r.clasif)}</td><td class="r">${fmt(num(r.ruta.km))}</td>
-        <td>${clPill(r)}${r.clObj ? `<div class="sv-sub">${fmt(r.pedProm, 1)} ped. prom.</div>` : ''}</td><td style="white-space:nowrap">${esc(r.truck.type)}${r.es2t ? `<div class="sv-sub" style="color:#7e22ce">${r.t2Zcap ? 'ZCAP Tarifas por Camión' : 'tarifa plana'}</div>` : ''}</td><td style="white-space:nowrap" class="sv-muted">${esc(r.camionMin)}</td>
+        <td>${clPill(r)}${r.clObj ? `<div class="sv-sub">${fmt(r.pedProm, 1)} ped. prom.</div>` : ''}</td><td style="white-space:nowrap">${esc(r.truck.type)}${r.es2t ? `<div class="sv-sub" style="color:#7e22ce">${r.t2Zcap ? 'ZCAP Tarifas por Camión' : 'tarifa plana'} · SAP ${(r.capSapKg || 2000) / 1000} t</div>` : ''}</td><td style="white-space:nowrap" class="sv-muted">${esc(r.camionMin)}</td>
         <td class="r">${r.zcap > 0 ? clp(r.zcap) : '—'}</td><td class="r"><b style="color:#15803d">${r.zfmi != null ? clp(r.zfmi) : '—'}</b></td><td class="r"><b>${r.zfmx != null ? clp(r.zfmx) : '—'}</b></td>
         <td class="r"><b style="color:#7e22ce">${r.express != null ? clp(r.express) : '—'}</b>${r.recargo ? `<div class="sv-sub" style="text-align:right">+${fmt(r.recargo)}%</div>` : ''}</td>
         <td class="r">${r.factorPct != null ? fmt(r.factorPct, 1) + '%' : '—'}</td><td class="r">${r.kilos != null ? fmt(r.kilos) + ' kg' : '—'}</td><td class="r">${r.kilosTarifMin != null ? fmt(r.kilosTarifMin) + ' kg' : '—'}</td></tr>`).join('');
