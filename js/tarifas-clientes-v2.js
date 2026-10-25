@@ -15,11 +15,11 @@
 // tarifas a clientes y «Guardar y recalcular» escribe sólo client_tariff_config
 // (syncOnly) y, si cambió la asignación de clusters, cluster_rutas por centro.
 // ============================================================================
-import { saveDatabase, getOrigenGroups } from './data.js?v=202610250957';
-import { buildZcapMap, es2Ton, componentesRegional } from './zcap.js?v=202610250957';
+import { saveDatabase, getOrigenGroups } from './data.js?v=202610251511';
+import { buildZcapMap, es2Ton, componentesRegional } from './zcap.js?v=202610251511';
 import { showAlert } from './utils.js';
-import { can } from './permisos.js?v=202610250957';
-import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, setParamPill, clasifPill, clasifTarifa, pillHtml } from './tarifas-ui.js?v=202610250957';
+import { can } from './permisos.js?v=202610251511';
+import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, setParamPill, clasifPill, clasifTarifa, pillHtml } from './tarifas-ui.js?v=202610251511';
 
 const CAPS = [5, 10, 15, 28];
 const CAP_LBL = { 5: '5 t', 10: '10 t', 15: '15 t', 28: '28 t' };
@@ -1057,7 +1057,8 @@ function fotoZcap(ctx) {
 // ARCHIVO DE CARGA SAP — ZFMP y ZFMI_ZFMX (24-oct-2026, Jordan)
 // ----------------------------------------------------------------------------
 // Base: "Archivo de carga de tarifas.docx" + descarga SAP «Tarifas de Cobro de Flete a Cliente».
-// Columnas iguales a la descarga SAP: ClCd;Ce.;Ruta;Transporte Exclusivo;Camión;Importe;Un.;Un.;por;UM;Válido de;Validez a
+// Columnas ZFMP: ClCd;Ce.;Ruta;Transporte Exclusivo;Camión;Importe;Un.;por;UM;Válido de;Validez a
+// Columnas ZFMI_ZFMX: ClCd;Ce.;Ruta;Transporte Exclusivo;Camión;Importe;Un.;Válido de;Validez a
 // Importes enteros, sin separador de miles. Válido de = día de descarga (DD.MM.AAAA), Validez a = 31.12.2999.
 // Centros: Santiago → 1000, 1001, 1002, 1003 · Concepción → 1080, 1081 · resto su centro.
 // Todas las rutas (Regionales, Interregionales y Sectores) con ZCAP > 0.
@@ -1066,13 +1067,16 @@ function fotoZcap(ctx) {
 //   ZFMP  (0) 9999       = ZFMP del camión más grande de la ruta × 1,3
 //   ZFMP  (1) 9999       = ZFMP 9999 × 1,2
 //   ZFMI  (0) camión     = tarifa mínima de la plataforma
+//   ZFMI  (0) 2 / 3 t    = tarifa mínima del camión mínimo normal de la ruta (25-oct-2026, Jordan), sin superar el ZFMX del 2 / 3 t
 //   ZFMI  (0) 0000       = tarifa del cluster (tipo 0000 habilitado en la vista Cluster)
 //   ZFMI  (1) camión     = Express del motor (ZCAP × (1 + recargo del centro); recargo 0 → ZCAP)
 //   ZFMI  (1) 9999       = Express del camión más grande × 1,2
 //   ZFMX  (0) camión     = ZCAP · 0000 = tarifa del cluster · 9999 = 10.000.000 (ZFMX sin exclusivo)
 // ============================================================================
 const SAP_CENTROS = { SANTIAGO: ['1000', '1001', '1002', '1003'], CONCEPCION: ['1080', '1081'] };
-const SAP_HDR = ['ClCd', 'Ce.', 'Ruta', 'Transporte Exclusivo', 'Camión', 'Importe', 'Un.', 'Un.', 'por', 'UM', 'Válido de', 'Validez a'];
+// (25-oct-2026, Jordan) ZFMP sin la 1ª columna Un. (vacía) · ZFMI_ZFMX sin Un. vacía, por y UM
+const SAP_HDR_ZFMP = ['ClCd', 'Ce.', 'Ruta', 'Transporte Exclusivo', 'Camión', 'Importe', 'Un.', 'por', 'UM', 'Válido de', 'Validez a'];
+const SAP_HDR_ZFMI = ['ClCd', 'Ce.', 'Ruta', 'Transporte Exclusivo', 'Camión', 'Importe', 'Un.', 'Válido de', 'Validez a'];
 const SAP_F9999_P = 1.3, SAP_F9999_X = 1.2, SAP_ZFMX_9999 = 10000000;
 function sapCentrosDe(r) {
   const g = String(r.grupo || '').toUpperCase().replace(/_/g, ' ').trim();
@@ -1102,6 +1106,10 @@ export function construirCargaSap(rows, hoy = new Date()) {
     const mayor = (base.length ? base : lst).reduce((a, b) => (b.capKg > a.capKg ? b : a));
     const capSap = r => (r.es2t && r.capSapKg) || r.capKg;
     const zpMayor = mayor.es2t ? mayor.zcap / capSap(mayor) : mayor.zfmp;
+    // (25-oct-2026, Jordan) Camión 2/3 t: la tarifa mínima sin exclusivo es la del camión mínimo normal de la ruta
+    const minimo = base.length ? base.reduce((a, b) => (b.capKg < a.capKg ? b : a)) : null;
+    const zfmiMin = minimo && ok(minimo.zfmi) ? minimo.zfmi : null;
+    const zfmiDe = r => (r.es2t && zfmiMin != null ? Math.min(zfmiMin, r.zcap) : r.zfmi);
     const cl = r0.clObj;
     const t0000 = cl && cl.tipo0000Habilitado ? Number(cl.tipo0000) || 0 : 0;
     centros.forEach(ce => {
@@ -1109,7 +1117,8 @@ export function construirCargaSap(rows, hoy = new Date()) {
         const cam = String(Math.round(capSap(r) / 1000));
         const zp = r.es2t ? r.zcap / capSap(r) : r.zfmp;
         if (ok(zp)) add('ZFMP', ce, ruta, '0', cam, zp); else if (ce === centros[0]) omit.sinZfmp++;
-        if (ok(r.zfmi)) add('ZFMI', ce, ruta, '0', cam, r.zfmi); else if (ce === centros[0]) omit.sinZfmi++;
+        const zi = zfmiDe(r);
+        if (ok(zi)) add('ZFMI', ce, ruta, '0', cam, zi); else if (ce === centros[0]) omit.sinZfmi++;
         add('ZFMI', ce, ruta, '1', cam, r.express);
         add('ZFMX', ce, ruta, '0', cam, r.zcap);
       });
@@ -1125,13 +1134,15 @@ export function construirCargaSap(rows, hoy = new Date()) {
   const camOrd = c => (c === '0000' ? -1 : Number(c));
   const ord = (a, b) => a.ce.localeCompare(b.ce) || a.ruta.localeCompare(b.ruta) || a.exc.localeCompare(b.exc) || camOrd(a.cam) - camOrd(b.cam);
   const all = [...out.values()];
-  const fila = x => [x.cond, x.ce, x.ruta, x.exc, x.cam, x.imp, '', 'CLP', x.cond === 'ZFMP' ? 1 : 0, x.cond === 'ZFMP' ? 'KG' : '', vde, va].join(';');
-  const txt = lst => [SAP_HDR.join(';'), ...lst.map(fila)].join('\r\n') + '\r\n';
+  const fila = x => (x.cond === 'ZFMP'
+    ? [x.cond, x.ce, x.ruta, x.exc, x.cam, x.imp, 'CLP', 1, 'KG', vde, va]
+    : [x.cond, x.ce, x.ruta, x.exc, x.cam, x.imp, 'CLP', vde, va]).join(';');
+  const txt = (hdr, lst) => [hdr.join(';'), ...lst.map(fila)].join('\r\n') + '\r\n';
   const zfmp = all.filter(x => x.cond === 'ZFMP').sort(ord);
   const zfmi = all.filter(x => x.cond === 'ZFMI').sort(ord);
   const zfmx = all.filter(x => x.cond === 'ZFMX').sort(ord);
   return {
-    zfmpTxt: txt(zfmp), zfmiZfmxTxt: txt([...zfmi, ...zfmx]),
+    zfmpTxt: txt(SAP_HDR_ZFMP, zfmp), zfmiZfmxTxt: txt(SAP_HDR_ZFMI, [...zfmi, ...zfmx]),
     n: { zfmp: zfmp.length, zfmi: zfmi.length, zfmx: zfmx.length, rutas: porRuta.size }, omit,
   };
 }
