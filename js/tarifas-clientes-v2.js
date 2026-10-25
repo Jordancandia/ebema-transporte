@@ -15,11 +15,11 @@
 // tarifas a clientes y «Guardar y recalcular» escribe sólo client_tariff_config
 // (syncOnly) y, si cambió la asignación de clusters, cluster_rutas por centro.
 // ============================================================================
-import { saveDatabase, getOrigenGroups } from './data.js?v=202610242031';
-import { buildZcapMap, es2Ton, componentesRegional } from './zcap.js?v=202610242031';
+import { saveDatabase, getOrigenGroups } from './data.js?v=202610250957';
+import { buildZcapMap, es2Ton, componentesRegional } from './zcap.js?v=202610250957';
 import { showAlert } from './utils.js';
-import { can } from './permisos.js?v=202610242031';
-import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, setParamPill, clasifPill, clasifTarifa, pillHtml } from './tarifas-ui.js?v=202610242031';
+import { can } from './permisos.js?v=202610250957';
+import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, setParamPill, clasifPill, clasifTarifa, pillHtml } from './tarifas-ui.js?v=202610250957';
 
 const CAPS = [5, 10, 15, 28];
 const CAP_LBL = { 5: '5 t', 10: '10 t', 15: '15 t', 28: '28 t' };
@@ -1135,6 +1135,69 @@ export function construirCargaSap(rows, hoy = new Date()) {
     n: { zfmp: zfmp.length, zfmi: zfmi.length, zfmx: zfmx.length, rutas: porRuta.size }, omit,
   };
 }
+// ============================================================================
+// ARCHIVO DE CARGA SAP — RANGO CAMIONES y CAMIÓN MIN/MAX (25-oct-2026, Jordan)
+// ----------------------------------------------------------------------------
+// Base: descargas SAP «Rango_camiones» y «Camion_MinMax». Mismas rutas, centros y camiones que la Carga SAP ZFMP/ZFMI.
+// Rango camiones (Ce.;Ruta;GeEs;Cap.Desde;Cap.Hasta) — camiones habilitados de la ruta encadenados por capacidad:
+//   0000 = 0,1 a 100 kg (sólo si la ruta tiene tarifa 0000 habilitada en Cluster, igual que ZFMI 0000)
+//   1er camión desde 100,1 (o 0,1 si no hay 0000) · cada camión desde (capacidad anterior + 0,1) hasta su capacidad
+//   Camión 2 Ton con su capacidad SAP (2.000 o 3.000 kg) · 9999 = sobre el camión más grande hasta 999.999.999
+// Camión MinMax (Ce.;Ruta;Material;FleteMin;FleteMax), sin 0000 ni 9999:
+//   fila base (Material vacío) = camión menor / mayor habilitado de la ruta
+//   materiales con camión mínimo forzado: centros 1000, 1001, 1003 → 15 a 28 · resto de centros → 28 a 28
+// ============================================================================
+const SAP_MAT_CAMION_MIN = [
+  '100086', '100098', '100118', '100150', '100165', '100170', '100174', '100178', '100186', '100190',
+  '100194', '100198', '100202', '100206', '100214', '100218', '100222', '100226', '100230', '100234',
+  '100241', '100242', '100246', '100250', '100254', '100257', '100258', '100262', '100263', '100270',
+  '100274', '100278', '100282', '100286', '100289', '100290', '100297', '100298', '100302', '100303',
+  '100306', '100307', '100310', '100314', '100318', '100325', '100326', '100330', '100334', '100350',
+];
+const SAP_MAT_CENTROS_15 = ['1000', '1001', '1003'];
+const SAP_HDR_RANGO = ['Ce.', 'Ruta', 'GeEs', 'Cap.Desde', 'Cap.Hasta'];
+const SAP_HDR_MINMAX = ['Ce.', 'Ruta', 'Material', 'FleteMin', 'FleteMax'];
+export function construirCargaSapCamiones(rows) {
+  const ok = v => v != null && isFinite(v) && v > 0;
+  const dec = v => String(Math.round(v * 10) / 10).replace('.', ',');
+  const porRuta = new Map();
+  rows.forEach(r => {
+    if (!ok(r.zcap)) return;
+    const k = (r.grupo || '') + '|' + r.cod;
+    if (!porRuta.has(k)) porRuta.set(k, []);
+    porRuta.get(k).push(r);
+  });
+  const rango = [], minmax = [];
+  const aviso = { matSobreMax: 0 };                          // ce × ruta cuyo camión mayor es menor al FleteMax de materiales
+  porRuta.forEach(lst => {
+    const r0 = lst[0], ruta = r0.cod, centros = sapCentrosDe(r0);
+    const capSap = r => (r.es2t && r.capSapKg) || r.capKg;
+    const caps = [...new Set(lst.map(capSap).filter(ok))].sort((a, b) => a - b);
+    if (!caps.length) return;
+    const cl = r0.clObj;
+    const con0000 = !!(cl && cl.tipo0000Habilitado && Number(cl.tipo0000) > 0);
+    const tramos = [];
+    let desde = 0.1;
+    if (con0000) { tramos.push(['0000', 0.1, 100]); desde = 100.1; }
+    caps.forEach(c => { tramos.push([String(Math.round(c / 1000)), desde, c]); desde = c + 0.1; });
+    tramos.push(['9999', desde, 999999999]);
+    const camMin = Math.round(caps[0] / 1000), camMax = Math.round(caps[caps.length - 1] / 1000);
+    centros.forEach(ce => {
+      tramos.forEach(([g, d, h]) => rango.push([ce, ruta, g, dec(d), dec(h)]));
+      minmax.push([ce, ruta, '', camMin, camMax]);
+      const [mn, mx] = SAP_MAT_CENTROS_15.includes(ce) ? [15, 28] : [28, 28];
+      if (camMax < mx) aviso.matSobreMax++;
+      SAP_MAT_CAMION_MIN.forEach(m => minmax.push([ce, ruta, m, mn, mx]));
+    });
+  });
+  const ord = (a, b) => a[0].localeCompare(b[0]) || a[1].localeCompare(b[1]);
+  rango.sort(ord); minmax.sort((a, b) => ord(a, b) || String(a[2]).localeCompare(String(b[2])));
+  const txt = (hdr, lst) => [hdr.join(';'), ...lst.map(x => x.join(';'))].join('\r\n') + '\r\n';
+  return {
+    rangoTxt: txt(SAP_HDR_RANGO, rango), minmaxTxt: txt(SAP_HDR_MINMAX, minmax),
+    n: { rutas: porRuta.size, rango: rango.length, minmax: minmax.length }, aviso,
+  };
+}
 function descargarTxt(nombre, txt) {
   const blob = new Blob([txt], { type: 'text/csv;charset=utf-8;' });
   const url = URL.createObjectURL(blob);
@@ -1169,7 +1232,8 @@ function renderTarifasCliente(container, ctx, modo) {
     const prom = f => lista.reduce((s, r) => s + num(r[f]), 0) / n;
     const acciones = `<button class="${nStale ? 'sv-btn-p' : 'sv-btn'}" data-refrescar id="t-refresh" title="${nStale ? 'Tarifas Rutas cambió desde que se tomó la foto del ZCAP' : 'La foto del ZCAP coincide con Tarifas Rutas'}"><span class="material-symbols-outlined">${nStale ? 'refresh' : 'check'}</span>${nStale ? `Refrescar tarifas · ${fmt(nStale)} desactualizadas` : 'Tarifas al día'}</button>
       <button class="sv-btn" data-csv id="t-csv"><span class="material-symbols-outlined">download</span>Descargar CSV</button>
-      <button class="sv-btn" data-sap id="t-sap" title="Descarga ZFMP.csv y ZFMI_ZFMX.csv listos para cargar en SAP (centro y tipo de ruta del filtro, todos los camiones)"><span class="material-symbols-outlined">upload_file</span>Carga SAP</button>`;
+      <button class="sv-btn" data-sap id="t-sap" title="Descarga ZFMP.csv y ZFMI_ZFMX.csv listos para cargar en SAP (centro y tipo de ruta del filtro, todos los camiones)"><span class="material-symbols-outlined">upload_file</span>Carga SAP</button>
+      <button class="sv-btn" data-sapcam id="t-sapcam" title="Descarga Rango_camiones.csv y Camion_MinMax.csv listos para cargar en SAP (centro y tipo de ruta del filtro, camiones habilitados por ruta)"><span class="material-symbols-outlined">local_shipping</span>Camiones SAP</button>`;
     const filtros = `<div class="sv-filters">
         <div class="sv-frow">${segMulti('data-ttipo', S.tipos, TIPOS_T, 'Todas')}
           ${segMulti('data-ttruck', S.trucks, truckOpts, 'Todos')}
@@ -1239,6 +1303,15 @@ function renderTarifasCliente(container, ctx, modo) {
       setTimeout(() => descargarTxt(`ZFMI_ZFMX_${f}.csv`, res.zfmiZfmxTxt), 600);
       const om = res.omit.sinZfmp || res.omit.sinZfmi ? ` · sin ZFMP: ${fmt(res.omit.sinZfmp)} · sin ZFMI: ${fmt(res.omit.sinZfmi)} (ruta × camión)` : '';
       showAlert(`Carga SAP: ${fmt(res.n.rutas)} rutas · ZFMP ${fmt(res.n.zfmp)} · ZFMI ${fmt(res.n.zfmi)} · ZFMX ${fmt(res.n.zfmx)} filas${om}.`, 'success');
+    });
+    container.querySelector('#t-sapcam')?.addEventListener('click', () => {
+      const res = construirCargaSapCamiones(CC.sapRows || []);
+      if (!res.n.rutas) { showAlert('Sin rutas con ZCAP para el filtro actual.', 'error'); return; }
+      const f = new Date().toISOString().slice(0, 10);
+      descargarTxt(`Rango_camiones_${f}.csv`, res.rangoTxt);
+      setTimeout(() => descargarTxt(`Camion_MinMax_${f}.csv`, res.minmaxTxt), 600);
+      const av = res.aviso.matSobreMax ? ` · ${fmt(res.aviso.matSobreMax)} centro × ruta con camión mayor bajo el FleteMax de materiales (28)` : '';
+      showAlert(`Camiones SAP: ${fmt(res.n.rutas)} rutas · Rango ${fmt(res.n.rango)} · MinMax ${fmt(res.n.minmax)} filas${av}.`, 'success');
     });
     container.querySelector('#t-csv')?.addEventListener('click', () => {
       const sep = ';', qq = v => '"' + String(v ?? '').replace(/"/g, '""') + '"';
