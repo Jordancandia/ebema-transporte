@@ -88,7 +88,7 @@ const CHAIN = {
   transporte: [
     ['Insumos', [['peajes', 'Peajes'], ['combustibles', 'Combustibles'], ['seguros', 'Seguros'], ['costos-extras', 'Extras'], ['variables', 'Variables']]],
     ['Cálculo', [['resultados', 'Motor de Costos']]],
-    ['Tarifas transportista', [['camiones', 'Por camión'], ['zcap', 'Rutas (ZCAP)']]],
+    ['Tarifas transportista', [['reajuste', 'Reajuste'], ['camiones', 'Por camión'], ['zcap', 'Rutas (ZCAP)']]],
     ['Variación', [['variacion', 'Variación Tarifa']]],
   ],
   clientes: [

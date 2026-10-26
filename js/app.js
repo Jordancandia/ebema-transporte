@@ -1,6 +1,6 @@
-import { getDatabase, saveDatabase, initDatabase, loadRoutesData, loadHistoricoFlete360 } from './data.js?v=202610252129';
-import { supabase } from './supabase-client.js?v=202610252129';
-import { setSesionPermisos, puedeVerMenu, can, esSoloLectura, PERFILES, normalizarPerfil } from './permisos.js?v=202610252129';
+import { getDatabase, saveDatabase, initDatabase, loadRoutesData, loadHistoricoFlete360 } from './data.js?v=202610261052';
+import { supabase } from './supabase-client.js?v=202610261052';
+import { setSesionPermisos, puedeVerMenu, can, esSoloLectura, PERFILES, normalizarPerfil } from './permisos.js?v=202610261052';
 // ── Módulos cargados bajo demanda (lazy) — se cachean tras la primera carga ──
 const _mod = {};
 async function loadMod(key, modPath) {
@@ -9,9 +9,9 @@ async function loadMod(key, modPath) {
 }
 // Pre-warm: carga indicadores y abastecimiento en background tras login
 function prewarmMods() {
-  setTimeout(() => loadMod('ind',   './indicadores.js?v=202610252129'), 600);
+  setTimeout(() => loadMod('ind',   './indicadores.js?v=202610261052'), 600);
   setTimeout(() => loadRoutesData(), 800);  // pre-fetch tablas pesadas en background
-  setTimeout(() => loadMod('abast', './abastecimiento.js?v=202610252129'), 2000);
+  setTimeout(() => loadMod('abast', './abastecimiento.js?v=202610261052'), 2000);
 }
 import { showAlert, formatRut, validateRut, formatPhone } from './utils.js';
 
@@ -45,7 +45,52 @@ document.addEventListener('DOMContentLoaded', async () => {
   await checkSession();
   renderApp();
   vigilarSesion();
+  vigilarVersion();
 });
+
+// (26-oct-2026, Jordan) Pestañas abiertas por días (equipo suspendido, fin de semana) seguían corriendo
+// el código viejo: el versionado A-07 sólo actúa al recargar. Caso jvallejos/rquiroz (Jefe Sucursal sin
+// Plan de Carga). Ahora se compara la versión cargada con la publicada en index.html: al volver a la
+// pestaña con una versión nueva se recarga sola; si está en uso, se muestra un aviso para actualizar.
+const VERSION_CARGADA = (() => { try { return (new URL(import.meta.url).searchParams.get('v')) || ''; } catch (_e) { return ''; } })();
+let _versionNueva = '';
+async function versionPublicada() {
+  try {
+    const r = await fetch('index.html?_=' + Date.now(), { cache: 'no-store' });
+    if (!r.ok) return '';
+    const m = (await r.text()).match(/js\/app\.js\?v=([0-9a-z]+)/i);
+    return m ? m[1] : '';
+  } catch (_e) { return ''; }
+}
+function avisoVersionNueva() {
+  if (document.getElementById('aviso-version-nueva')) return;
+  const d = document.createElement('div');
+  d.id = 'aviso-version-nueva';
+  d.style.cssText = 'position:fixed;left:50%;bottom:20px;transform:translateX(-50%);z-index:99999;background:#1f2937;color:#fff;'
+    + 'padding:12px 16px;border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.25);display:flex;gap:12px;align-items:center;'
+    + 'font:500 14px/1.3 system-ui,sans-serif;max-width:calc(100vw - 32px)';
+  d.innerHTML = '<span>Hay una nueva versión de SIT EBEMA.</span>'
+    + '<button type="button" style="background:#dc2626;color:#fff;border:0;border-radius:6px;padding:6px 12px;font-weight:600;cursor:pointer">Actualizar</button>';
+  d.querySelector('button').addEventListener('click', () => location.reload());
+  document.body.appendChild(d);
+}
+function vigilarVersion() {
+  if (!VERSION_CARGADA) return;
+  let oculto_desde = 0;
+  const revisar = async (alVolver) => {
+    const v = _versionNueva || await versionPublicada();
+    if (!v || v === VERSION_CARGADA) return;
+    _versionNueva = v;
+    // Volviendo a una pestaña que estuvo oculta > 2 min: recargar directo (no hay trabajo en curso a la vista).
+    if (alVolver) { location.reload(); return; }
+    avisoVersionNueva();
+  };
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') { oculto_desde = Date.now(); return; }
+    revisar(oculto_desde && (Date.now() - oculto_desde) > 2 * 60 * 1000);
+  });
+  setInterval(() => revisar(false), 10 * 60 * 1000);
+}
 
 // (23-oct-2026) Sesión vencida: si la sesión de Supabase se pierde con la página abierta (equipo suspendido,
 // token sin renovar), las consultas salían como anónimas y las vistas (p. ej. Plan de Carga) quedaban vacías
@@ -270,7 +315,7 @@ function renderApp() {
   if (!currentSession) {
     renderAuthView();
   } else if (currentSession.tipo === 'proveedor') {
-    import('./provider-portal.js?v=202610252129').then(m => m.renderProviderShell(currentSession, handleLogout));
+    import('./provider-portal.js?v=202610261052').then(m => m.renderProviderShell(currentSession, handleLogout));
   } else {
     renderDashboardShell();
   }
@@ -1225,6 +1270,8 @@ const SIDEBAR_MENU = [
       { tab: 'tarifas-transporte', sub: 'costos-extras', icon: 'add_circle',        label: 'Costos Extras' },
       { tab: 'tarifas-transporte', sub: 'variables',     icon: 'tune',              label: 'Variables Generales' },
       { tab: 'tarifas-transporte', sub: 'resultados',    icon: 'speed',             label: 'Motor de Costos' },
+      // (26-oct-2026, Jordan) Reajuste Polinómico: diésel, dólar, IPC e IMM con ponderadores editables
+      { tab: 'tarifas-transporte', sub: 'reajuste',      icon: 'percent',           label: 'Reajuste Polinómico' },
       { tab: 'tarifas-transporte', sub: 'camiones',      icon: 'local_shipping',    label: 'Tarifas por Camion' },
       { tab: 'tarifas-transporte', sub: 'zcap',          icon: 'table_chart',       label: 'Tarifas Rutas' },
       // (25-oct-2026, Jordan) Variación Tarifa: tarifa vigente vs actual (transportistas, clientes y troncales)
@@ -1706,7 +1753,7 @@ function renderDashboardShell() {
   document.getElementById('sv-goto').addEventListener('click', openGotoPalette);
   bindPaletteKey();
   // (12-oct-2026) Campana de notificaciones (menciones, respuestas y me gusta en comentarios de Orden de Carga)
-  import('./comentarios.js?v=202610252129')
+  import('./comentarios.js?v=202610261052')
     .then(m => m.initCampana(document.getElementById('sv-notif-slot'), { navegar: sub => switchTab('abastecimiento', sub) }))
     .catch(e => console.warn('notificaciones:', e));
   wireSidebar();
@@ -1795,37 +1842,37 @@ async function switchTab(tabName, subName = null) {
   _stageSpinner(stage);
   switch (tabName) {
     case 'home': {
-      const m = await loadMod('ind', './indicadores.js?v=202610252129');
+      const m = await loadMod('ind', './indicadores.js?v=202610261052');
       m.renderIndicadoresHome(stage);
       break;
     }
     case 'rates': {
       await loadRoutesData();
-      const m = await loadMod('rates', './rates.js?v=202610252129');
+      const m = await loadMod('rates', './rates.js?v=202610261052');
       m.renderRatesView(stage);
       break;
     }
     case 'transports': {
-      const m = await loadMod('trans', './transports.js?v=202610252129');
+      const m = await loadMod('trans', './transports.js?v=202610261052');
       m.renderTransportsView(stage);
       break;
     }
     case 'routes': {
       await loadRoutesData();
-      const m = await loadMod('routes', './routes.js?v=202610252129');
+      const m = await loadMod('routes', './routes.js?v=202610261052');
       if (alias) m.setRoutesSubTab(alias);
       m.renderRoutesView(stage);
       break;
     }
     case 'roles': {
-      const m = await loadMod('roles', './roles.js?v=202610252129');
+      const m = await loadMod('roles', './roles.js?v=202610261052');
       m.renderRolesView(stage);
       break;
     }
     case 'tarifas-transporte': {
       await loadRoutesData();
       await loadHistoricoFlete360();
-      const m = await loadMod('tt', './tarifas-transporte.js?v=202610252129');
+      const m = await loadMod('tt', './tarifas-transporte.js?v=202610261052');
       if (alias) m.setActiveSub(alias);
       m.renderTariffTransportView(stage);
       break;
@@ -1833,37 +1880,37 @@ async function switchTab(tabName, subName = null) {
     case 'tarifas-clientes': {
       await loadRoutesData();
       await loadHistoricoFlete360();
-      const m = await loadMod('tc', './tarifas-clientes.js?v=202610252129');
+      const m = await loadMod('tc', './tarifas-clientes.js?v=202610261052');
       if (alias) m.setActiveSubC(alias);
       m.renderClientTariffView(stage);
       break;
     }
     case 'abastecimiento': {
       await loadRoutesData();
-      const m = await loadMod('abast', './abastecimiento.js?v=202610252129');
+      const m = await loadMod('abast', './abastecimiento.js?v=202610261052');
       if (subName) m.setAbastSubTab(subName);
       m.renderAbastecimientoView(stage);
       break;
     }
     case 'indicadores': {
-      const m = await loadMod('ind', './indicadores.js?v=202610252129');
+      const m = await loadMod('ind', './indicadores.js?v=202610261052');
       if (subName) m.setIndicadoresSubTab(subName);
       m.renderIndicadoresView(stage);
       break;
     }
     case 'productos': {
-      const m = await loadMod('mprod', './maestro-productos.js?v=202610252129');
+      const m = await loadMod('mprod', './maestro-productos.js?v=202610261052');
       m.renderMaestroProductos(stage);
       break;
     }
     case 'porteria': {
-      const m = await loadMod('port', './porteria.js?v=202610252129');
+      const m = await loadMod('port', './porteria.js?v=202610261052');
       await m.renderPorteria(stage, subName || 'registro');
       break;
     }
     case 'flete-tercero': {
       await loadRoutesData();
-      const m = await loadMod('fter', './flete-tercero.js?v=202610252129');
+      const m = await loadMod('fter', './flete-tercero.js?v=202610261052');
       if (subName) m.setFleteTerceroSubTab(subName);
       m.renderFleteTerceroView(stage);
       break;
