@@ -1,12 +1,13 @@
 // MÓDULO: Administrador de Tarifas Clientes — SIT EBEMA v2.1
 // Vistas: Histórico (6M) | Consolidación | Densidad Logística | Frecuencia y Especiales | Cluster | Resultados
-import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig, saveHistorico, loadHistorico, saveHistoricoGlobal, getOrigenGroups, loadHistoricoFlete360 } from './data.js?v=202610251511';
-import { CAP_LIST, truckTypesWithCap, calcularCostoRuta } from './tarifas-engine.js?v=202610251511';
-import { buildZcapMap } from './zcap.js?v=202610251511';
+import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig, saveHistorico, loadHistorico, saveHistoricoGlobal, getOrigenGroups, loadHistoricoFlete360 } from './data.js?v=202610252129';
+import { CAP_LIST, truckTypesWithCap, calcularCostoRuta } from './tarifas-engine.js?v=202610252129';
+import { buildZcapMap } from './zcap.js?v=202610252129';
 import { formatCLP, showAlert, toCSV, downloadFile, formatDateDDMMYYYY, escapeHtml } from './utils.js';
-import { supabase } from './supabase-client.js?v=202610251511';
-import { renderClientesV2 } from './tarifas-clientes-v2.js?v=202610251511';
-import { confirmar } from './confirmar.js?v=202610251511';
+import { supabase } from './supabase-client.js?v=202610252129';
+import { renderClientesV2 } from './tarifas-clientes-v2.js?v=202610252129';
+import { confirmar } from './confirmar.js?v=202610252129';
+import { asegurarVigente } from './tarifa-vigente.js?v=202610252129';
 
 // ─────────────────────────────────────────────────────────────
 // ESTADO DE MÓDULO
@@ -253,11 +254,32 @@ function statCard(label, value, icon, valueClass = 'text-primary') {
 // ─────────────────────────────────────────────────────────────
 // VISTA PRINCIPAL
 // ─────────────────────────────────────────────────────────────
+// (25-oct-2026, Jordan) Contexto de cálculo de Tarifas Clientes sin dibujar la vista
+// (lo usa Variación Tarifa para calcular $/Kg, Min/Max y Express de dos escenarios).
+export function contextoTarifasClientes() {
+  const db   = getDatabase();
+  const cfg  = getTariffConfig(db);
+  const ccfg = getClientTariffConfig(db);
+  ensureCcfg(ccfg);
+  if (ccfg.historico && ccfg.historico.length && histData !== ccfg.historico) {
+    histData = ccfg.historico;
+    oficinaToGrupo = computeOficinaGrupos(db, histData);
+  }
+  return {
+    db, cfg, ccfg, ensureCcfg,
+    hist: () => histData,
+    grupoDe: getCentroGroup, getCapBucket, computeConsolidacionStats, objetivoConsol, computeOpClusterMap,
+    clusterOpDe, anchorsOpFor, persistClusterOpDB, asignarClustersCentro, clOpAzimut, ejeOpDe, EJES_OP, EJES_OP_DEFAULT,
+  };
+}
+
 export function renderClientTariffView(container) {
   const db   = getDatabase();
   const cfg  = getTariffConfig(db);
   const ccfg = getClientTariffConfig(db);
   ensureCcfg(ccfg);
+  // (25-oct-2026) Variación Tarifa: registra la tarifa vigente antes del primer ajuste
+  asegurarVigente(db).catch(e => console.warn('Tarifa vigente:', e.message || e));
 
   // Restaurar datos históricos desde IndexedDB si no vienen de Supabase
   if (ccfg.historico && ccfg.historico.length) {

@@ -1,16 +1,17 @@
 // PANTALLA 1: Administrador de Tarifas Transporte — SIT EBEMA
 // Sub-módulos: Peajes, Combustibles y Rendimientos, Seguros y Permisos,
 // Variables Generales y Motor de Costo (ZCAP) con exportación CSV.
-import { getDatabase, saveDatabase, getCentreName, getTariffConfig, getClientTariffConfig, truckCapKg, getOrigenGroups, getGroupRepId, buildTruckTypes, TRUCK_BASE_TYPES, loadHistorico, loadHistoricoFlete360, deleteRow } from './data.js?v=202610251511';
-import { CAP_LIST, truckTypesWithCap, calcularMatrizCostos, calcularCostoRuta } from './tarifas-engine.js?v=202610251511';
+import { getDatabase, saveDatabase, getCentreName, getTariffConfig, getClientTariffConfig, truckCapKg, getOrigenGroups, getGroupRepId, buildTruckTypes, TRUCK_BASE_TYPES, loadHistorico, loadHistoricoFlete360, deleteRow } from './data.js?v=202610252129';
+import { CAP_LIST, truckTypesWithCap, calcularMatrizCostos, calcularCostoRuta } from './tarifas-engine.js?v=202610252129';
 import { formatCLP, parseCSV, showAlert, toCSV, downloadFile, escapeHtml } from './utils.js';
-import { supabase } from './supabase-client.js?v=202610251511';
-import { getField } from './zonas-transporte.js?v=202610251511';
-import { renderZcapView, calcZcapRow } from './zcap.js?v=202610251511';
-import { can } from './permisos.js?v=202610251511';
-import { renderPeajesV2, setPeajesTab, renderCombustiblesV2, renderSegurosV2, renderCostosExtrasV2, renderVariablesV2, renderMotorV2 } from './tarifas-insumos.js?v=202610251511';
-import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, textoImpacto, setParamPill, usuarioSesion } from './tarifas-ui.js?v=202610251511';
-import { confirmar } from './confirmar.js?v=202610251511';
+import { supabase } from './supabase-client.js?v=202610252129';
+import { getField } from './zonas-transporte.js?v=202610252129';
+import { renderZcapView, calcZcapRow } from './zcap.js?v=202610252129';
+import { can } from './permisos.js?v=202610252129';
+import { renderPeajesV2, setPeajesTab, renderCombustiblesV2, renderSegurosV2, renderCostosExtrasV2, renderVariablesV2, renderMotorV2 } from './tarifas-insumos.js?v=202610252129';
+import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, textoImpacto, setParamPill, usuarioSesion } from './tarifas-ui.js?v=202610252129';
+import { confirmar } from './confirmar.js?v=202610252129';
+import { cargarVigente, vigenteCache, onVigente, asegurarVigente, avisoCamionesHtml, wireAvisoCamiones, valorParam, ultimaActualizacion, fechaHora, usuarioCorto, estilosVigente } from './tarifa-vigente.js?v=202610252129';
 
 // FIX: Escuchar errores de sincronización con Supabase y notificar al usuario
 window.addEventListener('db_sync_error', (e) => {
@@ -165,13 +166,19 @@ export function renderTariffTransportView(container) {
 
   const inPeajes = PEAJES_SUBS.includes(activeSub);
   // Vistas rediseñadas (v2, 29-sep-2026) dibujan su propio encabezado
-  const V2_SUBS = ['camiones', 'zcap', 'peajes', 'peajes-inter', 'concesiones', 'combustibles', 'seguros', 'costos-extras', 'variables', 'resultados', 'resultados-inter'];
+  const V2_SUBS = ['camiones', 'zcap', 'peajes', 'peajes-inter', 'concesiones', 'combustibles', 'seguros', 'costos-extras', 'variables', 'resultados', 'resultados-inter', 'variacion'];
+  // (25-oct-2026, Jordan) Variación Tarifa: registra la tarifa vigente antes del primer ajuste
+  asegurarVigente(db).catch(e => console.warn('Tarifa vigente:', e.message || e));
   if (V2_SUBS.includes(activeSub)) {
     container.innerHTML = '<div id="tt-content"></div>';
     const content = document.getElementById('tt-content');
     switch (activeSub) {
       case 'camiones':      renderTarifasCamion(content, db, cfg); break;
       case 'zcap':          renderZcapView(content); break;
+      case 'variacion':     // (25-oct-2026, Jordan) Variación Tarifa: tarifa vigente vs actual por centro
+        import('./variacion-tarifa.js?v=202610252129').then(m => m.renderVariacionTarifa(content))
+          .catch(e => { console.error(e); content.innerHTML = `<div class="sv-card" style="padding:32px;color:#b5000b">No se pudo cargar Variación Tarifa: ${escapeHtml(e.message || String(e))}</div>`; });
+        break;
       case 'peajes':        renderPeajesV2(content, db, cfg); break;
       case 'peajes-inter':  setPeajesTab('inter'); renderPeajesV2(content, db, cfg); break;
       case 'concesiones':   setPeajesTab('conc'); renderPeajesV2(content, db, cfg); break;
@@ -2230,12 +2237,17 @@ function renderTarifasCamion(content, db, cfg) {
   const editar = can('editar');
   const grupos = tcGrupos(db);
   setParamPill(cfg);
+  estilosVigente();
+  // (25-oct-2026, Jordan) Aviso de tarifas actualizadas vs tarifa vigente + marca de fecha
+  const offVig = onVigente(() => { if (!content.isConnected) { offVig(); return; } rerenderKeepFocus(content, render); });
+  if (vigenteCache() === undefined) cargarVigente().catch(e => console.warn('Tarifa vigente:', e.message || e));
 
   function render() {
     const ch = tcCambios(db);
     const lista = TC.centro === 'all' ? grupos : grupos.filter(g => g.grupo === TC.centro);
     content.innerHTML = `<div class="sv-view">
       ${changesBarHtml(ch.length, tcImpacto(db, cfg), TC.guardando)}
+      ${avisoCamionesHtml(db, editar)}
       <div class="sv-vhead">
         <div style="min-width:0"><h1 class="sv-h1">Tarifas por Camión</h1>
           <div class="sv-desc">Tarifas km por centro. Definen el ZCAP de las rutas regionales.</div></div>
@@ -2265,11 +2277,24 @@ function renderTarifasCamion(content, db, cfg) {
       const st = d.SANTIAGO?.[k], sb = d['SAN BERNARDO']?.[k];
       return `<div class="sv-sub" style="font-size:10.5px;color:#5c5f61">Stgo ${st > 0 ? clp(st) : '—'} · SB ${sb > 0 ? clp(sb) : '—'}</div>`;
     };
-    const inp = (t, campo, unit, w) => numIn(`${t.id}|${campo}`, tcValor(t, campo), { changed: Number(tcValor(t, campo)) !== Number(tcGuardado(t, campo)), unit, w, disabled: !editar, label: `${t.type} ${campo}` });
+    // (25-oct-2026) Valor de la tarifa vigente bajo el input cuando el guardado difiere
+    const vig = vigenteCache();
+    const vigT = id => (vig && vig.data ? (vig.data.truckTypes || []).find(x => x.id === id) : null);
+    const was = (t, campo, unit) => {
+      if (!vig) return '';
+      const a = vigT(t.id);
+      if (!a) return '<div class="vt-was">nuevo vs vigente</div>';
+      const va = valorParam(a, campo);
+      if (va === valorParam(t, campo)) return '';
+      return `<div class="vt-was" title="Tarifa vigente del ${fechaHora(vig.fijada_at)}">vigente ${unit === 'km' ? fmt(va) + ' km' : clp(va)}</div>`;
+    };
+    const inp = (t, campo, unit, w) => numIn(`${t.id}|${campo}`, tcValor(t, campo), { changed: Number(tcValor(t, campo)) !== Number(tcGuardado(t, campo)), unit, w, disabled: !editar, label: `${t.type} ${campo}` }) + was(t, campo, unit);
+    const ult = ultimaActualizacion(db, g.repId);
     const cols = ['Tipo camión', 'Cap.', 'a. KM base', 'b. Costo base', 'c. T. base KM', 'd. Normal pond.'].concat(hasEsp ? ['e. Esp. pond.'] : []).concat([`${hasEsp ? 'f' : 'e'}. Ajust. normal`]).concat(hasEsp ? ['g. Ajust. especial'] : []);
     return `<div class="sv-card">
       <div class="tf-tabletitle"><h3>${esc(g.nombreTabla)} <span class="sv-mono" style="color:#5c5f61;font-size:12px">${esc(g.ids.join(', '))}</span></h3>
         <small>${fmt(rutas.length)} rutas regionales${kms.length ? ` · KM entre ${fmt(Math.min(...kms))} y ${fmt(Math.max(...kms))}` : ''}${hasEsp ? ' · con rutas especiales (isla / extrema)' : ''}</small>
+        ${ult.at ? `<span class="vt-upd" title="Última actualización de las tarifas de este centro"><span class="material-symbols-outlined">update</span> Actualizado ${fechaHora(ult.at)} · ${esc(usuarioCorto(ult.by))}</span>` : ''}
         ${editar && trucks.length && !tiene2t ? `<button class="sv-btn" data-chip data-tc2t="${esc(g.repId)}" style="margin-left:auto" title="Agrega el Camión 2 Ton a este centro: ZCAP en rutas regionales, Min/Max y Retiro Retorno"><span class="material-symbols-outlined">add</span>Habilitar Camión 2 Ton</button>` : ''}</div>
       <div style="overflow:auto"><table class="sv-table" style="min-width:${hasEsp ? 1060 : 860}px">
         <thead><tr>${cols.map((c, i) => `<th class="${i ? 'r' : ''}">${esc(c)}</th>`).join('')}</tr></thead>
@@ -2280,7 +2305,9 @@ function renderTarifasCamion(content, db, cfg) {
             ? `<td class="r sv-muted" ${hasEsp ? 'colspan="2"' : ''}>Sin motor · tarifa manual</td>`
             : `<td class="r" style="color:#1e3a8a">${conZcap.has(t.id) ? clp(pn) + '/km' + det(t, 'norm') : '<span class="sv-muted">Sin rutas</span>'}</td>
             ${hasEsp ? `<td class="r" style="color:#713f12">${pe > 0 ? clp(pe) + '/km' + det(t, 'esp') : '—'}</td>` : ''}`;
-          return `<tr style="cursor:default"><td class="sv-b" style="white-space:nowrap">${esc(t.type)}${es2 && editar ? ` <button class="tf-actbtn" data-chip data-tc2tdel="${esc(t.id)}" title="Deshabilitar Camión 2 Ton en este centro"><span class="material-symbols-outlined">delete</span></button>` : ''}</td>
+          const posterior = vig && t.updated_at && t.updated_at > vig.fijada_at;
+          return `<tr style="cursor:default"><td class="sv-b" style="white-space:nowrap">${esc(t.type)}${es2 && editar ? ` <button class="tf-actbtn" data-chip data-tc2tdel="${esc(t.id)}" title="Deshabilitar Camión 2 Ton en este centro"><span class="material-symbols-outlined">delete</span></button>` : ''}
+              ${t.updated_at ? `<div class="sv-sub" style="font-weight:500;${posterior ? 'color:#c2410c' : ''}" title="Actualizado por ${esc(t.updated_by || '—')}">act. ${fechaHora(t.updated_at, false)}</div>` : ''}</td>
             <td class="r">${fmt(truckCapKg(t.type))} kg</td>
             <td class="r">${inp(t, 'Kmbase', 'km', '96px')}</td>
             <td class="r">${inp(t, 'baseKM', 'CLP', '130px')}</td>
@@ -2299,6 +2326,7 @@ function renderTarifasCamion(content, db, cfg) {
 
   function wire() {
     wireChain(content);
+    wireAvisoCamiones(content, db, render);
     content.querySelectorAll('[data-tccentro]').forEach(b => b.addEventListener('click', () => { TC.centro = b.dataset.tccentro; render(); }));
     wireNumIns(content, (key, val) => {
       const [id, campo] = key.split('|');
@@ -2318,9 +2346,10 @@ function renderTarifasCamion(content, db, cfg) {
       showAlert(n ? `Propuesta ajustada al Motor de Costos: ${n} valor(es) cambian. Revisa el impacto y guarda para aplicarla.` : 'Las tarifas ya están ajustadas al Motor de Costos.', 'success');
     });
     // (23-oct-2026, Jordan) Camión 2 Ton por centro: fila manual en truck_types (sin Motor de Costos)
-    content.querySelectorAll('[data-tc2t]').forEach(btn => btn.addEventListener('click', () => {
+    content.querySelectorAll('[data-tc2t]').forEach(btn => btn.addEventListener('click', async () => {
       const repId = btn.dataset.tc2t;
       if ((db.truckTypes || []).some(t => t.Id_centro === repId && truckCapKg(t.type) === 2000)) return;
+      try { await asegurarVigente(db); } catch (e) { console.warn('Tarifa vigente:', e.message || e); }
       db.truckTypes = db.truckTypes || [];
       db.truckTypes.push({ id: `${repId}-2`, Id_centro: repId, type: 'Camión 2 Ton', capacityTons: 'Hasta 2 Tons',
         baseRate: 0, ratePerKm: 0, Kmbase: 0, baseKM: 0, rateAjustNorm: 0, updated_by: usuarioSesion(), updated_at: new Date().toISOString() });
@@ -2352,14 +2381,27 @@ function renderTarifasCamion(content, db, cfg) {
     }));
   }
 
-  function guardar() {
+  // (25-oct-2026, Jordan) Advertencia antes de actualizar tarifas + marca de fecha de actualización.
+  // La tarifa previa queda como vigente (si no había) para medir la variación en Variación Tarifa.
+  async function guardar() {
     const ch = tcCambios(db);
-    if (!ch.length) return;
+    if (!ch.length || TC.guardando) return;
+    const nCam = new Set(ch.map(x => x.t.id)).size;
+    const centros = [...new Set(ch.map(x => x.t.Id_centro))];
+    const imp = tcImpacto(db, cfg);
+    const ok = await confirmar(`Actualizar tarifas de transportistas\n\nCambian ${ch.length} ${ch.length === 1 ? 'valor' : 'valores'} de ${nCam} ${nCam === 1 ? 'camión' : 'camiones'} (centros ${centros.join(', ')}).${imp ? ' ' + imp + '.' : ''}\n\nEl ajuste se aplica de inmediato a Tarifas Rutas (ZCAP), Tarifas Clientes ($/Kg, Min/Max, Express), Retiro Retorno, EbemaClick y el Cotizador. Queda registrada la fecha de actualización y la variación contra la tarifa vigente en Variación Tarifa.`,
+      { aceptar: 'Actualizar tarifas', icono: 'warning' });
+    if (!ok) return;
+    TC.guardando = true;
+    try { await asegurarVigente(db); } catch (e) {
+      console.warn('Tarifa vigente:', e.message || e);
+      showAlert('Aviso: no se pudo registrar la tarifa vigente previa (' + (e.message || e) + '). Los cambios se guardan igual.', 'error');
+    }
     const by = usuarioSesion(), at = new Date().toISOString();
     ch.forEach(({ t, c, v }) => { t[c] = Number(v) || 0; t.updated_by = by; t.updated_at = at; });
-    TC.draft = {}; TC.refrescado = false;
+    TC.draft = {}; TC.refrescado = false; TC.guardando = false;
     saveDatabase(db, { syncOnly: ['truckTypes'] });
-    showAlert(`Tarifas por camión guardadas (${ch.length} ${ch.length === 1 ? 'valor' : 'valores'}). Los ZCAP regionales ya usan los nuevos valores.`, 'success');
+    showAlert(`Tarifas actualizadas el ${fechaHora(at)} (${ch.length} ${ch.length === 1 ? 'valor' : 'valores'}). Revisa el impacto por centro en Variación Tarifa.`, 'success');
     render();
   }
 

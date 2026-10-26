@@ -15,11 +15,11 @@
 // tarifas a clientes y «Guardar y recalcular» escribe sólo client_tariff_config
 // (syncOnly) y, si cambió la asignación de clusters, cluster_rutas por centro.
 // ============================================================================
-import { saveDatabase, getOrigenGroups } from './data.js?v=202610251511';
-import { buildZcapMap, es2Ton, componentesRegional } from './zcap.js?v=202610251511';
+import { saveDatabase, getOrigenGroups } from './data.js?v=202610252129';
+import { buildZcapMap, es2Ton, componentesRegional } from './zcap.js?v=202610252129';
 import { showAlert } from './utils.js';
-import { can } from './permisos.js?v=202610251511';
-import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, setParamPill, clasifPill, clasifTarifa, pillHtml } from './tarifas-ui.js?v=202610251511';
+import { can } from './permisos.js?v=202610252129';
+import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, setParamPill, clasifPill, clasifTarifa, pillHtml } from './tarifas-ui.js?v=202610252129';
 
 const CAPS = [5, 10, 15, 28];
 const CAP_LBL = { 5: '5 t', 10: '10 t', 15: '15 t', 28: '28 t' };
@@ -216,8 +216,9 @@ function calcRetiro(ctx, ccfgX, zOver = null) {
 }
 
 // Devuelve una fila por ruta × camión con todas las tarifas. zOver: Map key → zcap (foto)
-function calcTarifas(ctx, ccfgX, zOver = null) {
-  const zmapAll = zcapVivo(ctx);
+// zmapIn (25-oct-2026, Variación Tarifa): mapa ZCAP de otro escenario (tarifa vigente vs actual)
+function calcTarifas(ctx, ccfgX, zOver = null, zmapIn = null) {
+  const zmapAll = zmapIn || zcapVivo(ctx);
   // Camión 2 Ton de Tarifas por Camión (23-oct-2026): fuera de $/Kg y del camión mínimo
   const zmap = new Map([...zmapAll].filter(([, v]) => !es2Ton(v.truck)));
   const z2t = new Map();
@@ -304,6 +305,11 @@ function calcTarifas(ctx, ccfgX, zOver = null) {
       zfmi: costo, zfmx: costo, express: costo * (1 + r.recargo / 100), kilosTarifMin: null });
   });
   return rows;
+}
+// (25-oct-2026, Jordan) Variación Tarifa: tarifas a clientes ($/Kg, mínima, máxima, express)
+// de un escenario cualquiera (tarifa vigente o actual) a partir de su mapa ZCAP.
+export function calcTarifasEscenario(ctx, ccfgX, zmapAll) {
+  return calcTarifas(ctx, ccfgX, null, zmapAll);
 }
 // ============================================================================
 // EBEMACLICK (23-oct-2026, Jordan) — base: Tarifas_EbemaClick_27.05.2026.xlsx
