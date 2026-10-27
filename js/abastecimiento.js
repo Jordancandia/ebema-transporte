@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610261052';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610261052';
-import { getDatabase } from './data.js?v=202610261052';
+import { supabase } from './supabase-client.js?v=202610271534';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610271534';
+import { getDatabase } from './data.js?v=202610271534';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610261052';
-import { confirmar, pedirDato } from './confirmar.js?v=202610261052';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610271534';
+import { confirmar, pedirDato } from './confirmar.js?v=202610271534';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -6056,7 +6056,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610261052');
+    const m = await import('./ind-plan-carga.js?v=202610271534');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -6165,6 +6165,12 @@ function evalCdCliente(ce, ton) {
   const red = CENTROS_CAMION_REDUCIDO.includes(String(ce ?? '').trim());
   if (red && ton < LIMITE_CAMION_REDUCIDO) return { directo: ton > CAP_CAMION_REDUCIDO * UMBRAL_CD_CLIENTE, cap: LIMITE_CAMION_REDUCIDO, camion: CAP_CAMION_REDUCIDO };
   return { directo: ton > CAP_CAMION_DEFAULT * UMBRAL_CD_CLIENTE, cap: CAP_CAMION_DEFAULT, camion: CAP_CAMION_DEFAULT };
+}
+// (27-oct-2026, Jordan) Camión CD de La Calera / San Bernardo: con carga ≥ 20 t se arma camión de 28 t
+// (antes exigía ≥ 28 t: con 27,99 t daba camión de 15 t y ~13 t sobrantes). Bajo 20 t → camión de 15 t.
+function capCamionCD(ce, ton) {
+  const red = CENTROS_CAMION_REDUCIDO.includes(String(ce ?? '').trim());
+  return red && ton < LIMITE_CAMION_REDUCIDO ? CAP_CAMION_REDUCIDO : CAP_CAMION_DEFAULT;
 }
 function getCapacidadCamion(centroId) {
   return CENTROS_CAMION_REDUCIDO.includes(String(centroId)) ? CAP_CAMION_REDUCIDO : CAP_CAMION_DEFAULT;
@@ -6361,7 +6367,7 @@ function recalcCargaCD(r) {
   if (r.totalBruto === undefined) r.totalBruto = r.total;
   let f = asignarCamionesCD(r);
   const tot = Math.max(0, r.totalBruto - (f.tonNoCarga || 0));
-  const cap = CENTROS_CAMION_REDUCIDO.includes(r.ce) ? (tot >= CAP_CAMION_DEFAULT ? CAP_CAMION_DEFAULT : CAP_CAMION_REDUCIDO) : CAP_CAMION_DEFAULT;
+  const cap = capCamionCD(r.ce, tot);
   if (cap !== r.cap) { r.cap = cap; f = asignarCamionesCD(r); }
   // (23-oct-2026, Jordan) %, estado y faltan se miden sobre lo que REALMENTE va en el camión CD
   // (líneas completas asignadas, igual que la barra), no sobre la demanda total: una línea que no
@@ -6764,7 +6770,7 @@ async function renderPlanCarga(stage, opts = {}) {
   const resultadoTodos = Array.from(centrosSet).map(ce => {
     // Capacidad de referencia (camión lleno) para los umbrales de camión
     // cliente (80%) y fábrica (85%). La capacidad efectiva del CD se calcula
-    // más abajo (La Calera/San Bernardo usan 15 T si no alcanzan a llenar 28 T).
+    // más abajo (La Calera/San Bernardo usan 15 T con carga bajo 20 T).
     const capRef = CAP_CAMION_DEFAULT;
     const skuInfoCe = skuInfoByCentro[ce] || {};
     const det = { quiebre: [], stock: [], revex: [], cross: [], ventaCons: [], retiro: [], cliente: [], fabSuc: [], fabCli: [] };
@@ -7199,7 +7205,7 @@ async function renderPlanCarga(stage, opts = {}) {
     // nuevo y lo antiguo ya se completa, se adelanta ese día.
     const totalSinRetiroCd = tonRevex + tonVentaCons + tonCross + tonQuiebre + tonStock;
     function capParaTotal(t) {
-      return CENTROS_CAMION_REDUCIDO.includes(ce) ? (t >= CAP_CAMION_DEFAULT ? CAP_CAMION_DEFAULT : CAP_CAMION_REDUCIDO) : CAP_CAMION_DEFAULT;
+      return capCamionCD(ce, t);
     }
     const total24 = totalSinRetiroCd + retiro24.sum;
     const cap24 = capParaTotal(total24);
@@ -7229,7 +7235,7 @@ async function renderPlanCarga(stage, opts = {}) {
     const total = totalSinRetiroCd + tonRetiro + tonManCx + tonManTr;
 
     // Capacidad efectiva del CD. La Calera (1050) y San Bernardo (1005) usan un
-    // camión de 15 T si en el corte no alcanzan a llenar uno de 28 T.
+    // camión de 15 T si en el corte la carga es menor a 20 T (27-oct-2026).
     const cap = capParaTotal(total);
 
     const pct = cap > 0 ? Math.round(total / cap * 100) : 0;
@@ -8559,7 +8565,7 @@ async function renderPlanCarga(stage, opts = {}) {
         ${!resultado.length ? '<div class="sv-card pc-empty"><span class="material-symbols-outlined">inventory_2</span>Sin carga para este origen.</div>'
           : filas.length ? filas.map(filaV2).join('') : '<div class="sv-card pc-empty">Ninguna sucursal con ese estado. Haz clic de nuevo en la tarjeta para quitar el filtro.</div>'}
       </div>
-      <div class="sv-dr-note">Capacidad 28 t (15 t La Calera / San Bernardo si no alcanzan 28 t) · Camiones directos: grupo &gt;85% de la capacidad, 28 t, no suman al camión CD · X2/X3 = camiones requeridos</div>
+      <div class="sv-dr-note">Capacidad 28 t (15 t La Calera / San Bernardo con carga bajo 20 t) · Camiones directos: grupo &gt;85% de la capacidad, 28 t, no suman al camión CD · X2/X3 = camiones requeridos</div>
       <div data-drawer-slot>${st.drawer && resultado.find(x => x.ce === st.drawer) ? drawerHtml(resultado.find(x => x.ce === st.drawer)) : ''}</div>
     </div>`;
 
