@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610271536';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610271536';
-import { getDatabase } from './data.js?v=202610271536';
+import { supabase } from './supabase-client.js?v=202610271604';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610271604';
+import { getDatabase } from './data.js?v=202610271604';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610271536';
-import { confirmar, pedirDato } from './confirmar.js?v=202610271536';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610271604';
+import { confirmar, pedirDato } from './confirmar.js?v=202610271604';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -1549,7 +1549,8 @@ function showCoordVentaModal(row, ctx) {
 // con los mismos datos de una NV del SQVI (destino, ruta, cliente, vendedor, fechas y materiales) y lo
 // coordinan igual que cualquier otra NV. Tabla abast_venta_manual (una fila por posición); la vista
 // v_trc_sqvi_pedidos_venta_1003 la suma con formato SAP, así que vista, Plan de Carga y vistas de servidor
-// la tratan como una NV más. Si SAP trae el mismo N° de pedido prima SAP; la NV manual sale sola cuando
+// la tratan como una NV más. Si SAP trae el mismo N° de pedido prima SAP (27-oct: sólo si trae alguna posición con MR vacío y
+// confirmada > entregada; rechazada/bloqueada o sin confirmar → sigue el manual); la NV manual sale sola cuando
 // sus unidades viajan en un camión programado con fecha de carga pasada (si viajó parcial, queda el saldo).
 async function loadVentasManual() {
   const { data, error } = await supabase.from('abast_venta_manual').select('*').eq('activo', true).order('doc_ventas').order('pos').limit(5000);
@@ -1699,7 +1700,7 @@ function showVentaManualModal(ctx, existente) {
               <div>${lbl('Fecha de entrega', 'fecha', true)}
                 <label class="sv-inp" style="width:100%;box-sizing:border-box;min-width:0;${bad('fecha') ? 'border-color:#b5000b' : ''}"><input type="date" data-k="fecha" value="${escapeHtml(st.fecha)}" style="width:100%"></label></div>
             </div>
-            <div class="sv-sub" style="margin:-4px 0 0;max-width:none">${editando ? 'El N° de pedido no se puede cambiar.' : 'Usa el N° real del pedido: cuando SAP lo traiga en el SQVI, prima el de SAP y el manual deja de mostrarse.'}</div>
+            <div class="sv-sub" style="margin:-4px 0 0;max-width:none">${editando ? 'El N° de pedido no se puede cambiar.' : 'Usa el N° real del pedido: cuando SAP lo traiga en el SQVI con cantidad confirmada y sin motivo de rechazo, prima el de SAP y el manual deja de mostrarse.'}</div>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
               <div>${lbl('Oficina de ventas (centro destino)', 'ofvta', true)}
                 <label class="sv-inp" style="width:100%;box-sizing:border-box;min-width:0;${bad('ofvta') ? 'border-color:#b5000b' : ''}"><span class="material-symbols-outlined">warehouse</span>
@@ -6103,7 +6104,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610271536');
+    const m = await import('./ind-plan-carga.js?v=202610271604');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
