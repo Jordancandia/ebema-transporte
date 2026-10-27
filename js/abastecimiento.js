@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610271534';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610271534';
-import { getDatabase } from './data.js?v=202610271534';
+import { supabase } from './supabase-client.js?v=202610271536';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610271536';
+import { getDatabase } from './data.js?v=202610271536';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610271534';
-import { confirmar, pedirDato } from './confirmar.js?v=202610271534';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610271536';
+import { confirmar, pedirDato } from './confirmar.js?v=202610271536';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -507,6 +507,23 @@ async function quitarSeguimientoCoord(docs) {
     for (const x of data || []) await supabase.rpc('fn_abast_quitar_seguimiento', { p_fecha: x.fecha_plan, p_cd: x.cd_origen, p_ce: x.ce, p_tipo: x.tipo_camion, p_clave: x.clave });
   } catch (e) { console.warn('Seguimiento de Carga: no se pudo quitar la coordinación', e); }
 }
+// (27-oct-2026, Jordan) Al anular un CD-Cliente también sale el camión CD-Cliente que el Plan de Carga
+// registró en Seguimiento de Carga (clave «patente|n», no «COORD|») con ese documento. Si el camión llevaba
+// otros pedidos del mismo cliente, el Plan de Carga lo vuelve a registrar sólo con los que siguen coordinados.
+async function quitarSeguimientoDirectoDocs(docs) {
+  try {
+    const ds = (docs || []).map(d => String(d ?? '').trim()).filter(Boolean);
+    if (!ds.length) return;
+    const { data: cams } = await supabase.from('abast_seguimiento_camion').select('id,fecha_plan,cd_origen,ce,tipo_camion,clave')
+      .eq('tipo_camion', 'CD-Cliente').gte('fecha_plan', isoLocal(hoy00())).not('clave', 'like', 'COORD|%');
+    const ids = (cams || []).map(c => c.id);
+    if (!ids.length) return;
+    const { data: lin } = await supabase.from('abast_seguimiento_carga').select('camion_id,documento,pedido_venta').in('camion_id', ids).limit(5000);
+    const set = new Set(ds), hit = new Set((lin || []).filter(l => set.has(String(l.documento ?? '').trim()) || set.has(String(l.pedido_venta ?? '').trim())).map(l => l.camion_id));
+    for (const c of (cams || []).filter(c => hit.has(c.id)))
+      await supabase.rpc('fn_abast_quitar_seguimiento', { p_fecha: c.fecha_plan, p_cd: c.cd_origen, p_ce: c.ce, p_tipo: c.tipo_camion, p_clave: c.clave });
+  } catch (e) { console.warn('Seguimiento de Carga: no se pudo quitar el camión CD-Cliente', e); }
+}
 // regs: [{ doc, tipo: 'CD-CLIENTE'|'FAB-CLTE'|'FAB-SUC'|'FAB-CD', ce, fechaCarga, origen, destino, transp, lineas }]
 async function registrarSeguimientoCoord(regs) {
   try {
@@ -535,6 +552,8 @@ async function anularCoordinacionVenta(doc) {
   // (18-oct-2026) El pedido puede ser un PV del Stock 4000 coordinado CD-Cliente (desde Seguimiento de Carga).
   try { await supabase.from('abast_pv4000_coordinacion').delete().eq('documento', String(doc ?? '').trim()); } catch (_) { /* opcional */ }
   await quitarSeguimientoCoord([doc]);
+  await quitarSeguimientoDirectoDocs([doc]);
+  VENTAS_PROGRAMADAS.delete(String(doc ?? '').trim());
   return true;
 }
 async function loadTransportistasCoord() {
@@ -2557,6 +2576,7 @@ async function anularCoordTraslados(docs) {
   const { error } = await supabase.from('abast_traslado_coordinacion').delete().in('doc_compr', docs.map(d => String(d).trim()));
   if (error) { showAlert('Error: ' + error.message, 'error'); return false; }
   await quitarSeguimientoCoord(docs);
+  await quitarSeguimientoDirectoDocs(docs);
   return true;
 }
 // (18-oct-2026, Jordan) Stock Almacén 4000: un pedido de venta con stock en el almacén 4000 se puede
@@ -4235,6 +4255,13 @@ const V2 = {
           return (await anularCoordinacionVenta(row.doc_ventas)) ? (showAlert('Coordinación anulada', 'success'), { recargar: true }) : null;
         } });
       }
+      // (27-oct-2026, Jordan) CD-Cliente con transporte: el «camión programado» es su propio camión directo,
+      // así que se puede anular la coordinación (el bloqueo del 14-oct aplica a NV que van en el camión CD consolidado).
+      if (k && c && c.tipo_entrega === 'CD-CLIENTE' && puedeCoordV) acciones.push({ label: 'Anular coordinación CD-Cliente', icon: 'event_busy', run: async row => {
+        if (!await confirmar(`¿Anular la coordinación CD-Cliente del pedido ${row.doc_ventas}?\n\nVuelve a «Sin coordinar», sale del Plan de Carga y el camión CD-Cliente sale de Seguimiento de Carga.`,
+          { aceptar: 'Anular coordinación', tono: 'peligro', icono: 'event_busy' })) return null;
+        return (await anularCoordinacionVenta(row.doc_ventas)) ? (clearRawCache(), showAlert('Coordinación CD-Cliente anulada', 'success'), { recargar: true }) : null;
+      } });
       if (!k && r._manual && !c && can('forzar_cd_cliente')) acciones.push({ label: 'Volver a regla automática', icon: 'undo', run: async row => {
         if (!await confirmar(`¿Quitar el tipo de entrega manual del pedido ${row.doc_ventas}?\n\nVuelve a evaluarse con la regla de 23,8 t por cliente.`)) return null;
         return (await setVentaDirectoManual(row.doc_ventas, null)) ? (showAlert('Pedido vuelve a la regla automática', 'success'), { recargar: true }) : null;
@@ -4920,6 +4947,22 @@ async function anularProgramacionSeguimiento(r, c) {
   showAlert(`Programación del ${c.tipo} de ${r.ce} anulada.`, 'success');
   return { recargar: true };
 }
+async function anularCdClienteSeguimiento(r, c) {
+  const docs = [...new Set((c.lineas || []).map(x => String(x.documento ?? '').trim() || String(x.pedido_venta ?? '').trim()).filter(Boolean))];
+  if (!docs.length) { showAlert('El camión no tiene pedidos para anular', 'error'); return null; }
+  const tras = docs.filter(esTrasladoDoc), ven = docs.filter(d => !esTrasladoDoc(d));
+  if (tras.length && !can('ajustar_plan')) { showAlert('Sin permiso para anular pedidos de traslado', 'error'); return null; }
+  if (ven.length && !can('coordinar_venta')) { showAlert('Sin permiso para anular pedidos de venta', 'error'); return null; }
+  if (!await confirmar(`¿Anular la coordinación CD-Cliente a ${r.ce} ${nombreCentro(r.ce) || ''}?\n\nPedidos: ${docs.join(', ')}\nPatente ${c.patente_camion || '—'} · carga ${fmtFechaISO(String(c.fecha_carga || r.fecha_carga || '').slice(0, 10))}.\nVuelven a «Sin coordinar», salen del Plan de Carga y de Seguimiento de Carga.`,
+    { aceptar: 'Anular coordinación', tono: 'peligro', icono: 'event_busy' })) return null;
+  for (const d of ven) if (!(await anularCoordinacionVenta(d))) return null;
+  if (tras.length && !(await anularCoordTraslados(tras))) return null;
+  const x = (c.lineas || [])[0] || {};
+  await supabase.rpc('fn_abast_quitar_seguimiento', { p_fecha: r.fecha_plan, p_cd: x.cd_origen || r.cd_origen, p_ce: r.ce, p_tipo: c.tipo, p_clave: c.clave });
+  clearRawCache();
+  showAlert(`Coordinación CD-Cliente anulada (${docs.length} ${docs.length === 1 ? 'pedido' : 'pedidos'})`, 'success');
+  return { recargar: true };
+}
 async function anularCoordDesdeSeguimiento(r) {
   const doc = r._coordDoc, tipo = r._coordTipo;
   const que = tipo === 'CD-Cliente' ? (esTrasladoDoc(doc) ? 'pedido de traslado' : 'pedido de venta') : 'OC de retiro';
@@ -5085,6 +5128,10 @@ V2.seguimiento_carga = {
     r.camiones.forEach(c => { if (puedeEditarTranspSeg(r, c)) acc.push({ label: r.camiones.length > 1 ? `Editar transporte · ${c.lbl}` : 'Editar transporte', icon: 'edit',
       title: 'Editar datos del transporte y día de carga', run: async row => editarTransporteSeguimiento(row, c) }); });
     if (puedeAnularCoordSeg(r)) acc.push({ label: 'Anular coordinación', icon: 'event_busy', tono: 'peligro', run: async row => anularCoordDesdeSeguimiento(row) });
+    // (27-oct-2026, Jordan) Camión CD-Cliente armado por el Plan de Carga: anular la coordinación de sus pedidos.
+    r.camiones.forEach(c => { if (!c.coord && c.tipo === 'CD-Cliente' && (can('coordinar_venta') || can('ajustar_plan')))
+      acc.push({ label: r.camiones.length > 1 ? `Anular coordinación · ${c.lbl}` : 'Anular coordinación CD-Cliente', icon: 'event_busy', tono: 'peligro',
+        title: 'Anula la coordinación de los pedidos de este camión CD-Cliente', run: async row => anularCdClienteSeguimiento(row, c) }); });
     r.camiones.forEach(c => { if (!c.coord && ['Camión CD', '2º camión'].includes(c.tipo) && can('programar_transporte'))
       acc.push({ label: r.camiones.length > 1 ? `Anular programación · ${c.lbl}` : 'Anular programación', icon: 'event_busy', tono: 'peligro',
         title: 'Quitar los datos de transporte: el camión deja de estar programado', run: async row => anularProgramacionSeguimiento(row, c) }); });
@@ -6056,7 +6103,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610271534');
+    const m = await import('./ind-plan-carga.js?v=202610271536');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
