@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610281051';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610281051';
-import { getDatabase } from './data.js?v=202610281051';
+import { supabase } from './supabase-client.js?v=202610281103';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610281103';
+import { getDatabase } from './data.js?v=202610281103';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610281051';
-import { confirmar, pedirDato } from './confirmar.js?v=202610281051';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610281103';
+import { confirmar, pedirDato } from './confirmar.js?v=202610281103';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -503,7 +503,10 @@ async function quitarSeguimientoCoord(docs) {
   try {
     const claves = (docs || []).map(segClaveCoord);
     if (!claves.length) return;
-    const { data } = await supabase.from('abast_seguimiento_camion').select('fecha_plan,cd_origen,ce,tipo_camion,clave').in('clave', claves).gte('fecha_plan', isoLocal(hoy00()));
+    // (28-oct-2026, Jordan) También la coordinación de un plan anterior cuya carga aún no ocurre: al cambiar el día
+    // de carga (p.ej. Coquimbo de hoy a mañana) no debe quedar el registro viejo en Seguimiento.
+    const h = isoLocal(hoy00());
+    const { data } = await supabase.from('abast_seguimiento_camion').select('fecha_plan,cd_origen,ce,tipo_camion,clave').in('clave', claves).or(`fecha_plan.gte.${h},fecha_carga.gte.${h}`);
     for (const x of data || []) await supabase.rpc('fn_abast_quitar_seguimiento', { p_fecha: x.fecha_plan, p_cd: x.cd_origen, p_ce: x.ce, p_tipo: x.tipo_camion, p_clave: x.clave });
   } catch (e) { console.warn('Seguimiento de Carga: no se pudo quitar la coordinación', e); }
 }
@@ -515,7 +518,7 @@ async function quitarSeguimientoDirectoDocs(docs) {
     const ds = (docs || []).map(d => String(d ?? '').trim()).filter(Boolean);
     if (!ds.length) return;
     const { data: cams } = await supabase.from('abast_seguimiento_camion').select('id,fecha_plan,cd_origen,ce,tipo_camion,clave')
-      .eq('tipo_camion', 'CD-Cliente').gte('fecha_plan', isoLocal(hoy00())).not('clave', 'like', 'COORD|%');
+      .eq('tipo_camion', 'CD-Cliente').or(`fecha_plan.gte.${isoLocal(hoy00())},fecha_carga.gte.${isoLocal(hoy00())}`).not('clave', 'like', 'COORD|%');
     const ids = (cams || []).map(c => c.id);
     if (!ids.length) return;
     const { data: lin } = await supabase.from('abast_seguimiento_carga').select('camion_id,documento,pedido_venta').in('camion_id', ids).limit(5000);
@@ -6104,7 +6107,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610281051');
+    const m = await import('./ind-plan-carga.js?v=202610281103');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -8587,8 +8590,17 @@ async function renderPlanCarga(stage, opts = {}) {
       { key: 'dir', label: 'Directos', color: '#1d4ed8', sub: 'camiones cliente / fábrica', valor: l => l.reduce((s, r) => s + nDirectos(r), 0) },
       { key: 'ton', label: 'Toneladas CD', color: '#191c1d', sub: 'en camiones consolidados', valor: l => fmtNum(l.reduce((s, r) => s + r.total, 0), 0) },
     ];
+    // (28-oct-2026, Jordan) Camión CD programado con día de carga HOY (o antes): sale de la lista del plan y queda
+    // en Seguimiento de Carga. Sólo es visual: sigue en la foto 16:30, el correo de cierre y los indicadores.
+    // Si tiene un 2º camión aceptado sin programar, se mantiene en la lista.
+    const hoyIsoV = isoLocal(hoy00());
+    const cargaHoy = r => { const p = progMap.get(`${r.ce}|1`);
+      return !!p && !!String(p.patente_camion ?? '').trim() && !!p.fecha_carga && String(p.fecha_carga).slice(0, 10) <= hoyIsoV
+        && !(segAcept.has(r.ce) && !progMap.get(`${r.ce}|2`)); };
+    const enCargaHoy = resultado.filter(cargaHoy);
+    const vigentes = resultado.filter(r => !cargaHoy(r));
     const kf = (kpiDef.find(k => k.key === st.kpi) || {}).fn;
-    const filas = kf ? resultado.filter(kf) : resultado;
+    const filas = kf ? vigentes.filter(kf) : vigentes;
     const cierre = estadoCierre();
 
     stage.innerHTML = `<div class="sv-view">
@@ -8605,7 +8617,7 @@ async function renderPlanCarga(stage, opts = {}) {
         </div></div>
       <div class="sv-kpis pc-kpis">${kpiDef.map(k => {
         const on = st.kpi === k.key;
-        const val = k.valor ? k.valor(resultado) : resultado.filter(k.fn).length;
+        const val = k.valor ? k.valor(vigentes) : vigentes.filter(k.fn).length;
         return `<button class="sv-kpi ${on ? 'is-on' : ''} ${k.fn ? '' : 'is-info'}" ${k.fn ? `data-chip data-kpi="${k.key}"` : 'data-chip disabled tabindex="-1"'} style="${on ? `box-shadow:inset 0 -3px 0 ${k.color}` : ''}">
           <div class="sv-kpi-l"><i style="background:${k.color}"></i>${escapeHtml(k.label)}</div><div class="sv-kpi-v">${escapeHtml(String(val))}</div><div class="sv-kpi-s">${escapeHtml(k.sub)}</div></button>`;
       }).join('')}</div>
@@ -8613,12 +8625,19 @@ async function renderPlanCarga(stage, opts = {}) {
         <span class="pc-sep"></span>${DIR_V2.map(t => `<span><span class="material-symbols-outlined" style="color:${t.color};font-size:16px">local_shipping</span>${escapeHtml(t.lbl)}</span>`).join('')}</div>
       <div class="pc-list">
         ${!resultado.length ? '<div class="sv-card pc-empty"><span class="material-symbols-outlined">inventory_2</span>Sin carga para este origen.</div>'
-          : filas.length ? filas.map(filaV2).join('') : '<div class="sv-card pc-empty">Ninguna sucursal con ese estado. Haz clic de nuevo en la tarjeta para quitar el filtro.</div>'}
+          : filas.length ? filas.map(filaV2).join('') : vigentes.length ? '<div class="sv-card pc-empty">Ninguna sucursal con ese estado. Haz clic de nuevo en la tarjeta para quitar el filtro.</div>'
+          : '<div class="sv-card pc-empty"><span class="material-symbols-outlined">inventory_2</span>Todas las sucursales con carga ya tienen camión cargando hoy.</div>'}
       </div>
+      ${enCargaHoy.length ? `<details class="pc-cargando-hoy" style="margin-top:12px"${st.vercargaHoy ? ' open' : ''} data-cargahoy>
+        <summary style="cursor:pointer;font-weight:600;padding:8px 2px"><span class="material-symbols-outlined" style="vertical-align:-5px;font-size:20px;color:#15803d">local_shipping</span>
+          Cargando hoy · en Seguimiento de Carga (${enCargaHoy.length}): ${escapeHtml(enCargaHoy.map(r => nombreCentro(r.ce) || r.ce).join(', '))}
+          <span class="sv-sub" style="font-weight:400"> · fuera del plan, pero cuentan en la foto 16:30, el correo de cierre y los indicadores</span></summary>
+        <div class="pc-list">${enCargaHoy.map(filaV2).join('')}</div></details>` : ''}
       <div class="sv-dr-note">Capacidad 28 t (15 t La Calera / San Bernardo con carga bajo 20 t) · Camiones directos: grupo &gt;85% de la capacidad, 28 t, no suman al camión CD · X2/X3 = camiones requeridos</div>
       <div data-drawer-slot>${st.drawer && resultado.find(x => x.ce === st.drawer) ? drawerHtml(resultado.find(x => x.ce === st.drawer)) : ''}</div>
     </div>`;
 
+    stage.querySelector('[data-cargahoy]')?.addEventListener('toggle', e => { st.vercargaHoy = e.currentTarget.open; });
     stage.querySelector('[data-refrescar]')?.addEventListener('click', () => { clearRawCache(); renderPlanCarga(stage); });
     stage.querySelectorAll('[data-origen]').forEach(btn => btn.addEventListener('click', () => {
       if (planOrigen === btn.dataset.origen) return;
