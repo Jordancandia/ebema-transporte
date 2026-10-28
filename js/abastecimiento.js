@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610271604';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610271604';
-import { getDatabase } from './data.js?v=202610271604';
+import { supabase } from './supabase-client.js?v=202610281051';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610281051';
+import { getDatabase } from './data.js?v=202610281051';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610271604';
-import { confirmar, pedirDato } from './confirmar.js?v=202610271604';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610281051';
+import { confirmar, pedirDato } from './confirmar.js?v=202610281051';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -6104,7 +6104,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610271604');
+    const m = await import('./ind-plan-carga.js?v=202610281051');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -6592,10 +6592,12 @@ async function renderPlanCarga(stage, opts = {}) {
     const bkPorDoc = new Map();
     bkVen.forEach(r => { const d = tx(r.doc_ventas); if (!bkPorDoc.has(d)) bkPorDoc.set(d, []); bkPorDoc.get(d).push(r); });
     const usarBk = new Set([...bkPorDoc.keys()].filter(d => { const co = coordVentas.get(d); return !!co && !(co.n_entrega && conDt.has(tx(co.n_entrega))); }));
+    const lin = ventasCoordLin(coordVentas, conDt);
     if (usarBk.size) {
-      for (let i = ventasRaw.length - 1; i >= 0; i--) if (usarBk.has(tx(ventasRaw[i].doc_ventas))) ventasRaw.splice(i, 1);
+      for (let i = ventasRaw.length - 1; i >= 0; i--) { const d = tx(ventasRaw[i].doc_ventas); if (usarBk.has(d) && !lin.has(d)) ventasRaw.splice(i, 1); }
       usarBk.forEach(d => bkPorDoc.get(d).forEach(r => ventasRaw.push({ ...r, _respaldo: true })));
     }
+    aplicarVentasCoordLin(ventasRaw, lin);
   } catch (e) { console.warn('Plan de carga: respaldo de coordinaciones no disponible', e); }
   // (15-oct-2026, Jordan) OC calzada con centro 1003 cuyo pedido de venta es de una sucursal: el plan
   // usa la oficina de ventas (ofvta) de la NV como centro destino → entra como Retiro CD de esa sucursal.
@@ -8775,10 +8777,28 @@ async function reponerVentasCoordinadas(ventasRaw) {
     const despachada = d => { const p = VENTAS_PROGRAMADAS.get(d); return !!p && String(p.fecha_carga || '').slice(0, 10) < hoyIso && sinPendVivo(d); };
     const usarBk = new Set([...bkPorDoc.keys()].filter(d => { const co = coordVentas.get(d); return !!co && !(co.n_entrega && conDt.has(tx(co.n_entrega)))
       && !(VENTAS_PROGRAMADAS.has(d) && !docsLive.has(d)) && !despachada(d); }));
-    if (!usarBk.size) return;
-    for (let i = ventasRaw.length - 1; i >= 0; i--) if (usarBk.has(tx(ventasRaw[i].doc_ventas))) ventasRaw.splice(i, 1);
+    const lin = ventasCoordLin(coordVentas, conDt);
+    for (let i = ventasRaw.length - 1; i >= 0; i--) { const d = tx(ventasRaw[i].doc_ventas); if (usarBk.has(d) && !lin.has(d)) ventasRaw.splice(i, 1); }
     usarBk.forEach(d => bkPorDoc.get(d).forEach(r => ventasRaw.push({ ...r, _respaldo: true })));
+    aplicarVentasCoordLin(ventasRaw, lin);
   } catch (e) { console.warn('Ventas CD: respaldo de NV coordinadas no disponible', e); }
+}
+// (28-oct-2026, Jordan) NV coordinada con UNIDADES EDITADAS (lineas) cuya entrega coordinada aún no tiene DT:
+// SAP crea la entrega por esas unidades y el pendiente del SQVI baja (p.ej. 1060015: 11.813 de 14.000 → quedaban
+// 2.186 en el plan). Se cargan las unidades coordinadas con tope en la cantidad CONFIRMADA (no en el pendiente),
+// usando líneas vivas (incluido el pedido manual) + respaldo. Mismo criterio que v_trc_plan_carga_ventas_lineas.
+function ventasCoordLin(coordVentas, conDt) {
+  const tx = v => String(v ?? '').trim(), out = new Set();
+  (coordVentas || new Map()).forEach((co, d) => {
+    const l = co && co.lineas;
+    if (l && typeof l === 'object' && !Array.isArray(l) && !(tx(co.n_entrega) && conDt && conDt.has(tx(co.n_entrega)))) out.add(tx(d));
+  });
+  return out;
+}
+function aplicarVentasCoordLin(ventasRaw, lin) {
+  if (!lin || !lin.size) return;
+  for (let i = 0; i < ventasRaw.length; i++) if (lin.has(String(ventasRaw[i].doc_ventas ?? '').trim()))
+    ventasRaw[i] = { ...ventasRaw[i], cantidad_entrg: '0', _coordLin: true };
 }
 
 async function renderVistaTabla(stage, cfg, modeIdx = 0) {
