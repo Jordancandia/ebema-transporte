@@ -1,9 +1,9 @@
-import { getDatabase, saveDatabase, getCentreName, deleteRow } from './data.js?v=202610281439';
+import { getDatabase, saveDatabase, getCentreName, deleteRow } from './data.js?v=202610281447';
 import { generateSapCode, parseCSV, showAlert, geocodeAddress, escapeHtml, toCSV, downloadFile } from './utils.js';
-import { renderLogisticsView } from './logistics.js?v=202610281439';
-import { renderZonasView, getField, normalizeRegionName, standardizeComuna } from './zonas-transporte.js?v=202610281439';
+import { renderLogisticsView } from './logistics.js?v=202610281447';
+import { renderZonasView, getField, normalizeRegionName, standardizeComuna } from './zonas-transporte.js?v=202610281447';
 import { REGIONES, COMUNAS_POR_REGION, TIPOS_ZONA, GRUPOS_ORIGEN, findRegionByComuna } from './chile-geo.js';
-import { confirmar } from './confirmar.js?v=202610281439';
+import { confirmar } from './confirmar.js?v=202610281447';
 
 // Estilos de la característica especial de la ruta (usada por el motor de tarifas)
 const CARACT_STYLES = {
