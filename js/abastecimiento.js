@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610281222';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610281222';
-import { getDatabase } from './data.js?v=202610281222';
+import { supabase } from './supabase-client.js?v=202610281232';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610281232';
+import { getDatabase } from './data.js?v=202610281232';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610281222';
-import { confirmar, pedirDato } from './confirmar.js?v=202610281222';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610281232';
+import { confirmar, pedirDato } from './confirmar.js?v=202610281232';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -799,7 +799,11 @@ function clasificarTipoEntregaNV(filas, ctx) {
     (grupos[gk] = grupos[gk] || []).push(r);
   });
   Object.values(grupos).forEach(g => {
-    const ev = g.filter(r => r._tipo_fijo !== 'CONSOLIDABLE');
+    // (28-oct-2026, Jordan) Un camión adicional de una NV («NV-2», «NV-3»…) es parte de esa misma NV: no se
+    // vuelve a sumar al cliente (la NV ya trae todas sus unidades pendientes).
+    const docsG = new Set(g.map(r => String(r.doc_ventas ?? '').trim()));
+    const esExtra = r => { const m = RX_CAMION_NV.exec(String(r.doc_ventas ?? '').trim()); return !!(m && docsG.has(m[1])); };
+    const ev = g.filter(r => r._tipo_fijo !== 'CONSOLIDABLE' && !esExtra(r));
     const tonG = ev.reduce((s, r) => s + (r._ton_num || 0), 0);
     const auto = tonG >= lim - 1e-9 ? 'CD-CLIENTE' : 'CONSOLIDABLE';
     g.forEach(r => {
@@ -6217,7 +6221,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610281222');
+    const m = await import('./ind-plan-carga.js?v=202610281232');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
