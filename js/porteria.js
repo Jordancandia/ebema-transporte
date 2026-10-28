@@ -14,9 +14,9 @@
 //  Acceso: sólo OWNER (o vista extra 'porteria' asignada por OWNER).
 //  SQL: supabase/sql/2026-10-18_porteria_reloj_control.sql
 // ============================================================================
-import { supabase } from './supabase-client.js?v=202610281447';
+import { supabase } from './supabase-client.js?v=202610281701';
 import { escapeHtml as esc, showAlert, toCSV, downloadFile } from './utils.js';
-import { confirmar, pedirDato } from './confirmar.js?v=202610281447';
+import { confirmar, pedirDato } from './confirmar.js?v=202610281701';
 
 const CENTRO = '1003';
 const TZ = 'America/Santiago';
@@ -83,6 +83,41 @@ const pill = (txt, cls) => `<span class="sv-pill ${cls}"><i></i>${esc(txt)}</spa
 const tipoPill = t => pill(TIPOS[t]?.label || t, TIPOS[t]?.pill || 'mute');
 const estadoPill = e => pill((ESTADOS[e] || [e])[0], (ESTADOS[e] || [e, 'mute'])[1]);
 const docsTxt = docs => (Array.isArray(docs) ? docs : []).map(d => `${d.tipo} ${d.numero}`).join(' · ');
+// ── Horario de presentación solicitado (28-oct-2026, Jordan) ────────────────
+// Troncal (camión CD / 2º camión): bloque de presentación (ej. 07:00–11:00). CD-Cliente: hora de citación.
+// La llegada (hito Presentación) se compara contra la citación: dentro del bloque / hasta TOL_CITA_MIN min
+// después de la hora = «En horario»; antes = «Anticipado»; después = «Atrasado».
+const TOL_CITA_MIN = 15;
+const hmMin = t => { const m = /^(\d{1,2}):(\d{2})/.exec(String(t || '')); return m ? Number(m[1]) * 60 + Number(m[2]) : null; };
+const esCdCliente = x => x && x.subtipo === 'CD_CLIENTE';
+const subtipoTag = x => esCdCliente(x) ? '<div class="sv-tags"><span class="sv-tag" style="background:#f3e8ff;color:#6b21a8">CD-Cliente</span></div>' : '';
+function citaDe(x) {
+  const r = (x && x.plan_ref) || {};
+  const desde = x.hora_presentacion || r.hora_presentacion || (x.hora_agenda ? hhmm(x.hora_agenda) : '');
+  const hasta = x.hora_hasta || r.hora_hasta || '';
+  const bloque = x.bloque || r.bloque || null;
+  return desde ? { desde, hasta, bloque, txt: hasta ? `${desde}–${hasta}` : desde } : null;
+}
+// Hora de la citación como Date (el navegador opera en hora de Chile, igual que fromLocalInput).
+const horaEn = (fechaIso, min) => new Date(`${fechaIso}T${String(Math.floor(min / 60)).padStart(2, '0')}:${String(min % 60).padStart(2, '0')}:00`);
+// Límite de la citación: fin del bloque, o la hora + tolerancia (CD-Cliente).
+const limiteCita = (c, fechaIso) => horaEn(fechaIso, hmMin(c.hasta) ?? ((hmMin(c.desde) ?? 0) + TOL_CITA_MIN));
+const inicioCita = (c, fechaIso) => horaEn(fechaIso, hmMin(c.desde) ?? 0);
+// { txt, cls } del cumplimiento de la citación para una visita registrada
+function cumpleCita(v) {
+  const c = citaDe(v);
+  if (!c || !v.t_presentacion) return null;
+  const lleg = new Date(v.t_presentacion), ini = inicioCita(c, v.fecha), lim = limiteCita(c, v.fecha);
+  if (lleg < ini) return { txt: `Anticipado ${fmtMin((ini - lleg) / 60000)}`, cls: 'info' };
+  if (lleg <= lim) return { txt: 'En horario', cls: 'ok' };
+  return { txt: `Atrasado ${fmtMin((lleg - (c.hasta ? lim : ini)) / 60000)}`, cls: 'bad' };
+}
+function celdaCita(v) {
+  const c = citaDe(v);
+  if (!c) return '';
+  const k = cumpleCita(v);
+  return `<div class="pt-sub">Citación ${esc(c.txt)}</div>${k ? `<div style="margin-top:2px">${pill(k.txt, k.cls)}</div>` : ''}`;
+}
 function errMsg(e) {
   const m = e?.message || String(e);
   if (/chk_pv_ingreso/.test(m)) return 'El ingreso no puede ser anterior a la presentación.';
@@ -237,6 +272,7 @@ function kpisRegistro() {
     ${k('En ruta', c('EN_RUTA'), '#7e22ce', 'despachos Ebema fuera')}
     ${k('Finalizados', c('FINALIZADO'), '#15803d', 'ciclo completo')}
     ${k('Esperados pendientes', pend, '#b5000b', 'desde Plan de Carga y Retiros')}
+    ${k('Atrasados vs citación', v.filter(x => cumpleCita(x)?.cls === 'bad').length, '#9a3412', 'llegada después del horario solicitado')}
   </div>`;
 }
 
@@ -277,11 +313,18 @@ function tablaEsperados() {
   const pend = E.filter(e => !e.visita_id).length;
   const filas = E.length ? E.map((e, i) => {
     const ocs = (e.retiros || []).map(r => `<span class="sv-tag mute" title="${esc(r.proveedor || '')}">OC ${esc(r.doc_compr)}</span>`).join('');
-    const dest = e.tipo === 'TRONCAL'
+    const dest = esCdCliente(e)
+      ? `${esc(e.contraparte || '')}<div class="pt-sub">Despacho directo · ${nf(e.plan_ref?.ton, 1)} t${(e.plan_ref?.docs || []).length ? ' · ' + esc([...new Set(e.plan_ref.docs.map(d => d.pedido_venta || d.documento).filter(Boolean))].join(', ')) : ''}</div>`
+      : e.tipo === 'TRONCAL'
       ? `${esc(e.contraparte || e.ce || '')}<div class="pt-sub">Camión ${esc(e.plan_ref?.camion ?? '')} · ${nf(e.plan_ref?.ton, 1)} t · ${nf(e.plan_ref?.pct)}%</div>`
       : esc(e.contraparte || '');
+    const c = citaDe(e), vis = e.visita_id ? S.visitas.find(x => x.id === e.visita_id) : null, kc = vis ? cumpleCita(vis) : null;
+    const tarde = !e.visita_id && c && S.fecha === hoy() && new Date() > limiteCita(c, S.fecha);
+    const cita = c ? `<span class="pt-time" style="font-weight:700">${esc(c.txt)}</span>${c.bloque ? `<div class="pt-sub">Bloque ${esc(c.bloque)}</div>` : ''}${kc ? `<div style="margin-top:2px">${pill(kc.txt, kc.cls)}</div>` : tarde ? `<div style="margin-top:2px">${pill('Sin llegar · fuera de horario', 'bad')}</div>` : ''}`
+      : (e.tipo === 'PROVEEDOR' ? '<span class="pt-na">—</span>' : pill('Sin horario', 'warn'));
     return `<tr>
-      <td>${tipoPill(e.tipo)}${e.consolida_retiro ? '<div class="sv-tags"><span class="sv-tag seg" title="Mismo camión y chofer que un retiro FAB-CD del día"><span class="material-symbols-outlined">merge</span>Consolida retiro</span></div>' : ''}</td>
+      <td>${tipoPill(e.tipo)}${subtipoTag(e)}${e.consolida_retiro ? '<div class="sv-tags"><span class="sv-tag seg" title="Mismo camión y chofer que un retiro FAB-CD del día"><span class="material-symbols-outlined">merge</span>Consolida retiro</span></div>' : ''}</td>
+      <td>${cita}</td>
       <td><span class="pt-mono">${esc(e.patente || '— sin patente')}</span>${e.patente_carro ? `<div class="pt-sub pt-mono">Carro ${esc(e.patente_carro)}</div>` : ''}</td>
       <td>${esc(e.chofer_nombre || '—')}<div class="pt-sub">${esc(e.transportista || '')}</div></td>
       <td>${dest}</td>
@@ -290,11 +333,11 @@ function tablaEsperados() {
         ? `${pill('Registrado', 'ok')}<button class="sv-btn" data-espver="${e.visita_id}">Ver</button>`
         : `<button class="sv-btn-p" data-esp="${i}" ${S.fecha === hoy() ? '' : 'disabled title="Sólo se registra la llegada del día de hoy"'}><span class="material-symbols-outlined">login</span>Llegó</button>`}</td>
     </tr>`;
-  }).join('') : '<tr class="sv-empty"><td colspan="6">Sin troncales programados ni retiros FAB-CD para esta fecha.</td></tr>';
+  }).join('') : '<tr class="sv-empty"><td colspan="7">Sin troncales programados, CD-Cliente ni retiros FAB-CD para esta fecha.</td></tr>';
   return `<div class="sv-card">
-    <div class="pt-ch"><h2><span class="material-symbols-outlined">schedule</span>Esperados del día <small>${pend} pendiente${pend === 1 ? '' : 's'} de ${E.length} · Plan de Carga y Retiros de Fábrica</small></h2></div>
+    <div class="pt-ch"><h2><span class="material-symbols-outlined">schedule</span>Esperados del día <small>${pend} pendiente${pend === 1 ? '' : 's'} de ${E.length} · Plan de Carga (troncales y CD-Cliente) y Retiros de Fábrica · ordenados por horario</small></h2></div>
     <div class="sv-tablewrap" style="max-height:360px"><table class="sv-table">
-      <thead><tr><th>Tipo</th><th>Patente</th><th>Chofer / Transportista</th><th>Destino / Proveedor</th><th>Retiros (OC)</th><th></th></tr></thead>
+      <thead><tr><th>Tipo</th><th>Presentación solicitada</th><th>Patente</th><th>Chofer / Transportista</th><th>Destino / Cliente / Proveedor</th><th>Retiros (OC)</th><th></th></tr></thead>
       <tbody>${filas}</tbody></table></div></div>`;
 }
 
@@ -342,11 +385,11 @@ function tablaMovimientos() {
     const nx = proximoHito(v);
     const otroDia = v.fecha !== S.fecha;
     return `<tr data-id="${v.id}" class="${v.estado === 'ANULADO' ? 'tf-row-off' : ''}" style="${v.estado === 'ANULADO' ? 'opacity:.5' : ''}">
-      <td>${tipoPill(v.tipo)}${v.subtipo === 'FIERRO' ? '<div class="sv-tags"><span class="sv-tag mute">Fierro</span></div>' : ''}${v.consolida_retiro ? '<div class="sv-tags"><span class="sv-tag seg"><span class="material-symbols-outlined">merge</span>Consolida retiro</span></div>' : ''}</td>
+      <td>${tipoPill(v.tipo)}${subtipoTag(v)}${v.subtipo === 'FIERRO' ? '<div class="sv-tags"><span class="sv-tag mute">Fierro</span></div>' : ''}${v.consolida_retiro ? '<div class="sv-tags"><span class="sv-tag seg"><span class="material-symbols-outlined">merge</span>Consolida retiro</span></div>' : ''}</td>
       <td><span class="pt-mono">${esc(v.patente || '—')}</span><div class="pt-sub">${esc(v.chofer_nombre || '')}</div></td>
       <td>${esc(v.contraparte || '—')}<div class="pt-sub">${esc(v.transportista || '')}${otroDia ? ` · desde ${fechaCorta(v.fecha)}` : ''}</div></td>
       <td><div class="pt-sub" style="margin:0;max-width:200px">${esc(docsTxt(v.documentos)) || '<span class="pt-na">—</span>'}</div></td>
-      <td>${celdaHito(v, 'presentacion')}</td><td>${celdaHito(v, 'ingreso')}</td><td>${celdaHito(v, 'salida')}</td><td>${celdaHito(v, 'regreso')}</td>
+      <td>${celdaHito(v, 'presentacion')}${celdaCita(v)}</td><td>${celdaHito(v, 'ingreso')}</td><td>${celdaHito(v, 'salida')}</td><td>${celdaHito(v, 'regreso')}</td>
       <td>${celdaTiempo(v)}</td>
       <td class="r">${celdaRomana(v)}</td>
       <td>${estadoPill(v.estado)}</td>
@@ -420,8 +463,13 @@ function payloadDesdeEsperado(e) {
     if (r.doc_compr) docs.push({ tipo: 'OC', numero: String(r.doc_compr) });
     if (r.entrega_entrante) docs.push({ tipo: 'ENTREGA', numero: String(r.entrega_entrante) });
   });
+  // (28-oct-2026) CD-Cliente: pedidos de venta y entregas del camión
+  const ya = new Set();
+  const addDoc = (tipo, n) => { const k = tipo + '|' + n; if (n && !ya.has(k)) { ya.add(k); docs.push({ tipo, numero: String(n) }); } };
+  (e.plan_ref?.docs || []).forEach(d => { addDoc('NV', d.pedido_venta); addDoc('ENTREGA', d.n_entrega); });
   return {
-    tipo: e.tipo, patente: e.patente, patente_carro: e.patente_carro, chofer_nombre: e.chofer_nombre, chofer_rut: e.chofer_rut,
+    tipo: e.tipo, subtipo: e.subtipo || null, hora_agenda: e.hora_agenda || null,
+    patente: e.patente, patente_carro: e.patente_carro, chofer_nombre: e.chofer_nombre, chofer_rut: e.chofer_rut,
     chofer_telefono: e.chofer_telefono, id_transporte: e.id_transporte, transportista: e.transportista,
     contraparte: e.contraparte, ce: e.ce, documentos: docs, clave_esperado: e.clave, plan_ref: e.plan_ref, retiros: e.retiros || [],
     consolida_retiro: !!e.consolida_retiro,
@@ -498,7 +546,8 @@ async function abrirForm(v) {
             ${f.tipo === 'TRONCAL'
               ? `<label class="pt-f full"><span>${T.contra}</span><select id="f-ce"><option value="">— Seleccionar —</option>${(S.centros || []).map(c => `<option value="${esc(c.id)}" ${f.ce === c.id ? 'selected' : ''}>${esc(c.nombre)} (${esc(c.id)})</option>`).join('')}</select></label>`
               : `${fld(T.contra, 'f-contra', f.contraparte, `list="pt-dl" autocomplete="off"`, f.tipo === 'PROVEEDOR' ? '' : 'full')}<datalist id="pt-dl">${listaContra.map(x => `<option value="${esc(x)}">`).join('')}</datalist>`}
-            ${f.tipo === 'PROVEEDOR' ? fld('Hora agenda', 'f-agenda', f.hora_agenda ? toLocalInput(f.hora_agenda).slice(11) : '', 'type="time"') : ''}
+            ${['PROVEEDOR', 'TRONCAL'].includes(f.tipo) ? fld(f.tipo === 'TRONCAL' ? 'Hora citación (presentación)' : 'Hora agenda', 'f-agenda', f.hora_agenda ? toLocalInput(f.hora_agenda).slice(11) : '', 'type="time"') : ''}
+            ${f.tipo === 'TRONCAL' && citaDe(f)?.hasta ? `<div class="pt-f"><span>Bloque solicitado</span><div class="pt-calc" style="padding:8px 0"><b>${esc(citaDe(f).txt)}</b></div></div>` : ''}
             <div class="pt-f full"><span>Guías / OC / NV / Entregas / DT</span>
               <div class="pt-docs" id="f-docs">${(f.documentos || []).map((d, i) => `<span class="pt-doc"><b>${esc(d.tipo)}</b>${esc(d.numero)}<button type="button" data-deldoc="${i}" title="Quitar"><span class="material-symbols-outlined">close</span></button></span>`).join('') || '<span class="pt-sub">Sin documentos.</span>'}</div>
               <div class="pt-docadd"><select id="f-doctipo">${DOC_TIPOS.map(t => `<option ${t === (desp ? 'GUIA' : f.tipo === 'PROVEEDOR' ? 'OC' : f.tipo === 'RETIRO_CLIENTE' ? 'NV' : 'GUIA') ? 'selected' : ''}>${t}</option>`).join('')}</select>
@@ -550,7 +599,8 @@ async function abrirForm(v) {
     if (f.tipo === 'TRONCAL') {
       const ce = val('f-ce');
       f.ce = ce || null;
-      f.contraparte = ce ? (S.centros.find(c => c.id === ce)?.nombre || ce) : (f.contraparte || null);
+      // (28-oct-2026) CD-Cliente: la contraparte es el cliente, no la sucursal
+      f.contraparte = esCdCliente(f) ? (f.contraparte || null) : ce ? (S.centros.find(c => c.id === ce)?.nombre || ce) : (f.contraparte || null);
     } else if (dr.querySelector('#f-contra')) { f.contraparte = val('f-contra') || null; }
     if (dr.querySelector('#f-agenda')) {
       const h = val('f-agenda');
@@ -614,7 +664,7 @@ async function abrirForm(v) {
 
   const bind = () => {
     dr.querySelectorAll('[data-x]').forEach(b => b.addEventListener('click', cerrar));
-    dr.querySelectorAll('[data-tipo]').forEach(b => b.addEventListener('click', () => { leer(); f.tipo = b.dataset.tipo; if (f.tipo !== 'DESPACHO_EBEMA') f.subtipo = null; draw(); }));
+    dr.querySelectorAll('[data-tipo]').forEach(b => b.addEventListener('click', () => { leer(); f.tipo = b.dataset.tipo; if (f.tipo !== 'DESPACHO_EBEMA' && !(f.tipo === 'TRONCAL' && esCdCliente(f))) f.subtipo = null; draw(); }));
     dr.querySelectorAll('[data-sub]').forEach(b => b.addEventListener('click', () => { leer(); f.subtipo = b.dataset.sub; draw(); }));
     dr.querySelector('#f-patente').addEventListener('change', () => buscarPatente(true));
     ['f-tara', 'f-bruto', 'f-guias'].forEach(id => dr.querySelector('#' + id)?.addEventListener('input', calc));
@@ -643,7 +693,7 @@ async function abrirForm(v) {
     btn.disabled = true;
     if (nuevo) {
       const p = {
-        tipo: f.tipo, subtipo: f.tipo === 'DESPACHO_EBEMA' ? (f.subtipo || 'GENERAL') : null, fecha: S.fecha,
+        tipo: f.tipo, subtipo: f.tipo === 'DESPACHO_EBEMA' ? (f.subtipo || 'GENERAL') : (f.tipo === 'TRONCAL' && esCdCliente(f) ? 'CD_CLIENTE' : null), fecha: S.fecha,
         patente: f.patente, patente_carro: f.patente_carro, chofer_nombre: f.chofer_nombre, chofer_rut: f.chofer_rut, chofer_telefono: f.chofer_telefono,
         id_transporte: f.id_transporte || null, transportista: f.transportista, contraparte: f.contraparte, ce: f.ce || null,
         documentos: f.documentos || [], hora_agenda: f.hora_agenda, tara_kg: f.tara_kg, bruto_kg: f.bruto_kg, peso_guias_kg: f.peso_guias_kg, obs: f.obs,
@@ -659,7 +709,7 @@ async function abrirForm(v) {
       showAlert(modo ? `${HITO_LBL[modo]} registrada ${hhmm(data['t_' + modo])} · ${data.patente}` : 'Camión registrado');
     } else {
       const upd = {
-        tipo: f.tipo, subtipo: f.tipo === 'DESPACHO_EBEMA' ? (f.subtipo || 'GENERAL') : null,
+        tipo: f.tipo, subtipo: f.tipo === 'DESPACHO_EBEMA' ? (f.subtipo || 'GENERAL') : (f.tipo === 'TRONCAL' && esCdCliente(f) ? 'CD_CLIENTE' : null),
         patente: f.patente, patente_carro: f.patente_carro, chofer_nombre: f.chofer_nombre, chofer_rut: f.chofer_rut, chofer_telefono: f.chofer_telefono,
         transportista: f.transportista, contraparte: f.contraparte, ce: f.ce || null, documentos: f.documentos || [], hora_agenda: f.hora_agenda,
         tara_kg: f.tara_kg, bruto_kg: f.bruto_kg, peso_guias_kg: f.peso_guias_kg, obs: f.obs,
@@ -798,12 +848,12 @@ async function descargarCSV() {
     v.fecha, TIPOS[v.tipo]?.label || v.tipo, v.subtipo || '', (ESTADOS[v.estado] || [v.estado])[0], v.patente || '', v.patente_carro || '',
     v.chofer_nombre || '', v.chofer_rut || '', v.transportista || '', v.contraparte || '', docsTxt(v.documentos),
     (v.retiros || []).map(r => r.doc_compr).join(' '), v.consolida_retiro ? 'SI' : '',
-    f(v.hora_agenda), f(v.t_presentacion), f(v.t_ingreso), f(v.t_salida), f(v.t_regreso),
+    f(v.hora_agenda), citaDe(v)?.txt || '', cumpleCita(v)?.txt || '', f(v.t_presentacion), f(v.t_ingreso), f(v.t_salida), f(v.t_regreso),
     m(v.t_presentacion, v.t_ingreso), m(v.t_ingreso, v.t_salida), m(v.t_presentacion, v.t_salida), m(v.t_salida, v.t_regreso),
     kg(v.tara_kg), kg(v.bruto_kg), kg(v.neto_kg), kg(v.peso_guias_kg), v.origen || '', v.obs || '',
   ]);
   const head = ['Fecha', 'Tipo', 'Subtipo', 'Estado', 'Patente', 'Patente carro', 'Chofer', 'RUT chofer', 'Transportista', 'Contraparte', 'Documentos',
-    'OC retiro', 'Consolida retiro', 'Hora agenda', 'Presentación', 'Ingreso', 'Salida', 'Regreso',
+    'OC retiro', 'Consolida retiro', 'Hora agenda', 'Horario solicitado', 'Cumplimiento citación', 'Presentación', 'Ingreso', 'Salida', 'Regreso',
     'Espera (min)', 'Permanencia (min)', 'Total (min)', 'Ruta (min)', 'Peso entrada/regreso (kg)', 'Peso salida (kg)', 'Neto (kg)', 'Peso guías (kg)', 'Origen', 'Observaciones'];
   downloadFile(`reloj_control_${S.desde}_${S.hasta}.csv`, toCSV(head, rows));
 }

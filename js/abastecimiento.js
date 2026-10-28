@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610281447';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610281447';
-import { getDatabase } from './data.js?v=202610281447';
+import { supabase } from './supabase-client.js?v=202610281701';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610281701';
+import { getDatabase } from './data.js?v=202610281701';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610281447';
-import { confirmar, pedirDato } from './confirmar.js?v=202610281447';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610281701';
+import { confirmar, pedirDato } from './confirmar.js?v=202610281701';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -540,7 +540,8 @@ async function registrarSeguimientoCoord(regs) {
         tipo_camion: SEG_TIPO_COORD[r.tipo] || r.tipo, clave: segClaveCoord(r.doc), origen: r.origen || '', destino: r.destino || '',
         ton: r4s(ton), cap: CAP_CAMION_DIRECTO, pct: Math.round(ton / CAP_CAMION_DIRECTO * 100),
         id_transporte: t.id_transporte || '', transportista: t.transportista || '', chofer_nombre: t.chofer_nombre || '', chofer_rut: t.chofer_rut || '',
-        chofer_telefono: t.chofer_telefono || '', patente_camion: t.patente_camion || '', patente_carro: t.patente_carro || '' };
+        chofer_telefono: t.chofer_telefono || '', patente_camion: t.patente_camion || '', patente_carro: t.patente_carro || '',
+        bloque_presentacion: null, hora_presentacion: r.tipo === 'CD-CLIENTE' ? (t.hora_presentacion || null) : null };
       const { error } = await supabase.rpc('fn_abast_guardar_seguimiento', { p_cab: cab, p_lineas: r.lineas });
       if (error) console.warn('Seguimiento de Carga: no se pudo registrar la coordinación', error.message);
     }
@@ -1298,6 +1299,7 @@ function showCoordVentaModal(row, ctx) {
       idTrans: c.id_transporte || '', transportista: c.transportista || '',
       choferNombre: c.chofer_nombre || '', choferRut: c.chofer_rut || '', choferTel: c.chofer_telefono || '',
       patCamion: c.patente_camion || '', patCarro: c.patente_carro || '',
+      horaPres: c.hora_presentacion || '',   // (28-oct-2026, Jordan) CD-Cliente: hora de presentación en CD
       err: false,
     };
     // (18-oct-2026, Jordan) Unidades a cargar por material y centro destino alternativo del Plan de Carga.
@@ -1352,6 +1354,7 @@ function showCoordVentaModal(row, ctx) {
       if (!st.telefono.trim()) f.push('telefono');
       if (esCli()) {
         if (!st.idTrans.trim()) f.push('idTrans');   // (5-oct-2026) chofer, RUT, teléfono y patente pueden quedar pendientes
+        if (!horaValida(st.horaPres)) f.push('horaPres');   // (28-oct-2026, Jordan) hora de presentación obligatoria
         if (String(st.patCamion ?? '').trim() && !String(st.patCarro ?? '').trim()) f.push('patCarro');   // (23-oct-2026, Jordan) carro obligatorio con patente camión
 
         st.extras.forEach((e, d) => ['entrega', 'direccion', 'telefono'].forEach(k => { if (!String(e[k] ?? '').trim()) f.push(`x_${k}_${d}`); }));
@@ -1447,6 +1450,7 @@ function showCoordVentaModal(row, ctx) {
           ${esCli() ? `
           <div class="sv-card" style="padding:14px 16px;display:flex;flex-direction:column;gap:10px">
             <div class="sv-b" style="font-size:14px">Datos del transporte (CD-Cliente)</div>
+            ${campoHoraPres(st, bad('horaPres'))}
             <div>${lbl('Transportista (ID y nombre)', 'idTrans', true)}
               <div data-bus="trans"></div></div>
             ${notaTranspBloq(tr.trans.find(t => String(t.id) === st.idTrans))}
@@ -1520,6 +1524,7 @@ function showCoordVentaModal(row, ctx) {
           id_transporte: cli ? st.idTrans.trim() : null, transportista: cli ? (st.transportista || null) : null,
           chofer_nombre: cli ? (st.choferNombre.trim() || null) : null, chofer_rut: cli ? (st.choferRut.trim() || null) : null, chofer_telefono: cli ? (st.choferTel.trim() || null) : null,
           patente_camion: cli ? (fmtPatente(st.patCamion) || null) : null, patente_carro: cli ? (fmtPatente(st.patCarro) || null) : null,
+          hora_presentacion: cli ? st.horaPres.trim() : null,
         };
         const ok = await guardarCoordinacionVenta({
           doc_ventas: MAIN, n_entrega: entregaHdr, id_cliente: row._id_cliente || null, nombre_cliente: row._cliente || null,
@@ -1546,7 +1551,7 @@ function showCoordVentaModal(row, ctx) {
           }
         }
         const transpSeg = { id_transporte: st.idTrans.trim(), transportista: st.transportista, chofer_nombre: st.choferNombre.trim(), chofer_rut: st.choferRut.trim(),
-          chofer_telefono: st.choferTel.trim(), patente_camion: fmtPatente(st.patCamion), patente_carro: fmtPatente(st.patCarro) };
+          chofer_telefono: st.choferTel.trim(), patente_camion: fmtPatente(st.patCamion), patente_carro: fmtPatente(st.patCarro), hora_presentacion: st.horaPres.trim() };
         const coAj = x => (x === row ? { lineas: lc.lineas } : x._coord);
         const coMain = { n_entrega: entregaHdr, entregas: entregasV };
         const regSeg = (x, docX, entregaX) => ({ doc: docX, tipo: 'CD-CLIENTE', ce: x === row ? (st.ceAlt || st.ceOrig) : ceEfV(x), fechaCarga: st.fecha, origen: '1003 CD Quilicura',
@@ -2516,12 +2521,43 @@ function showCoordRetiroModal(row, ctx) {
     draw();
   });
 }
+// ── Horario de presentación para carga en CD (28-oct-2026, Jordan) ──────────────
+// Consolidados (camión CD / 2º camión): 3 bloques y máximo 2 camiones por bloque (día de carga + CD origen;
+// cuentan programados y coordinados). CD-Cliente: sin bloque, pero con hora de presentación obligatoria.
+// El horario viaja a Seguimiento de Carga, al reporte/correo y a Portería (esperados del día).
+const BLOQUES_PRES = [{ bloque: 1, desde: '07:00', hasta: '11:00' }, { bloque: 2, desde: '11:30', hasta: '15:00' }, { bloque: 3, desde: '15:30', hasta: '18:00' }];
+const CUPO_BLOQUE_PRES = 2;
+const bloquePres = b => BLOQUES_PRES.find(x => x.bloque === Number(b)) || null;
+const horaValida = h => /^([01]\d|2[0-3]):[0-5]\d$/.test(String(h ?? '').trim());
+function txtPresentacion(o) {
+  if (!o) return '';
+  const b = bloquePres(o.bloque_presentacion);
+  if (b) return `Bloque ${b.bloque} · ${b.desde} a ${b.hasta} hrs`;
+  const h = String(o.hora_presentacion ?? '').trim();
+  return h ? `${h} hrs` : '';
+}
+async function cuposPresentacion(fecha, cd) {
+  const { data, error } = await supabase.rpc('fn_abast_cupos_presentacion', { p_fecha: fecha, p_cd: String(cd || '1003') });
+  if (error) throw error;
+  return (data || []).map(x => ({ ...x, bloque: Number(x.bloque), cupo: Number(x.cupo) || CUPO_BLOQUE_PRES, camiones: Array.isArray(x.camiones) ? x.camiones : [] }));
+}
+const msgCupo = e => String((e && e.message) || e || '').replace(/^CUPO_BLOQUE:\s*/, '');
+// Campo «Hora de presentación» para coordinaciones CD-Cliente (input data-k="horaPres").
+function campoHoraPres(st, bad) {
+  return `<div style="max-width:260px"><label class="sv-flbl" style="display:block;margin-bottom:6px;${bad ? 'color:#b5000b' : ''}">Hora de presentación en CD *</label>
+    <label class="sv-inp" style="width:100%;box-sizing:border-box;min-width:0;${bad ? 'border-color:#b5000b' : ''}"><span class="material-symbols-outlined">schedule</span>
+      <input type="time" data-k="horaPres" value="${escapeHtml(st.horaPres || '')}" style="width:100%;border:none;background:transparent;font:inherit;outline:none"></label>
+    <div class="sv-sub" style="margin:4px 0 0;max-width:none">Citación del camión en portería. CD-Cliente no ocupa bloque.</div></div>`;
+}
 // ── Datos de transporte para programar un camión del Plan de Carga (3-oct-2026) ──
 // ini: datos actuales; otros: [{ lbl, patente_camion, chofer_rut }] camiones ya programados hoy
 // (para el aviso de choque). Devuelve el objeto de transporte o null si se cancela.
 // (12-oct-2026) modo 'coordinar': guarda los datos del transporte SIN programar (la carga sigue actualizándose).
-function showTransporteCamionModal({ titulo, sub, ini = {}, otros = [], fechaDef = '', modo = 'programar' }) {
+// (28-oct-2026) presentacion: { modo: 'bloque', cd, self: { fecha, ce, camion } } (camión CD / 2º camión)
+//   o { modo: 'hora' } (CD-Cliente). Sin presentacion no se pide horario (retiros, fábrica).
+function showTransporteCamionModal({ titulo, sub, ini = {}, otros = [], fechaDef = '', modo = 'programar', presentacion = null }) {
   const COORD = modo === 'coordinar';
+  const PRES = presentacion && presentacion.modo;
   return new Promise(async resolve => {
     let tr = { trans: [], transTodos: [], choferes: [], camiones: [] };
     try { tr = await loadTransportistasCoord(); } catch (_) { /* sin maestro */ }
@@ -2536,7 +2572,22 @@ function showTransporteCamionModal({ titulo, sub, ini = {}, otros = [], fechaDef
       q: '', open: false, mRut: '', mTel: '', mEmail: '',
       // (8-oct-2026, Jordan) Día de carga: se elige y se confirma al programar.
       fechaCarga: String(ini.fecha_carga || fechaDef || '').slice(0, 10),
+      // (28-oct-2026, Jordan) Horario de presentación para carga
+      bloque: bloquePres(ini.bloque_presentacion) ? Number(ini.bloque_presentacion) : null, horaPres: String(ini.hora_presentacion || ''), cupos: null, cuposErr: '',
     };
+    async function cargarCupos() {
+      if (PRES !== 'bloque' || !st.fechaCarga) { st.cupos = null; return; }
+      try { st.cupos = await cuposPresentacion(st.fechaCarga, presentacion.cd); st.cuposErr = ''; }
+      catch (e) { st.cupos = null; st.cuposErr = e.message || String(e); }
+    }
+    const usadosB = b => {
+      const c = (st.cupos || []).find(x => x.bloque === b);
+      if (!c) return { n: 0, cupo: CUPO_BLOQUE_PRES, cams: [] };
+      const me = (presentacion && presentacion.self) || {};
+      const cams = c.camiones.filter(x => !(String(x.fecha) === String(me.fecha) && String(x.ce ?? '').trim() === String(me.ce ?? '').trim() && Number(x.camion) === Number(me.camion)));
+      return { n: cams.length, cupo: c.cupo, cams };
+    };
+    const llenoB = b => !!st.cupos && usadosB(b).n >= usadosB(b).cupo;
     const wrap = document.createElement('div');
     wrap.id = 'coord-modal-bg';
     wrap.innerHTML = '<div class="sv-dr-bg" style="z-index:120"></div><aside class="sv-dr" style="z-index:121;width:min(600px,100vw)" role="dialog" aria-label="Programar camión"></aside>';
@@ -2557,6 +2608,8 @@ function showTransporteCamionModal({ titulo, sub, ini = {}, otros = [], fechaDef
     const faltantes = () => {
       const f = REQ.filter(k => !String(st[k]).trim());
       if (!sel()) f.unshift('idTrans');
+      if (PRES === 'bloque' && (!st.bloque || llenoB(st.bloque))) f.push('pres');
+      if (PRES === 'hora' && !horaValida(st.horaPres)) f.push('pres');
       faltanSel().forEach(x => { if (!String(st[campoMaestro[x]]).trim()) f.push(campoMaestro[x]); });
       return f;
     };
@@ -2603,6 +2656,26 @@ function showTransporteCamionModal({ titulo, sub, ini = {}, otros = [], fechaDef
             ${f.includes('correo') ? `<div>${lbl('Correo', 'mEmail', true)}${inp('mEmail', 'contacto@empresa.cl', 'type="email"')}</div>` : ''}
           </div>` : ''}`;
     }
+    function presHtml() {
+      if (!PRES) return '';
+      if (PRES === 'hora') return `<div style="max-width:260px">${lbl('Hora de presentación en CD', 'pres', true)}
+          <label class="sv-inp" style="width:100%;box-sizing:border-box;${bad('pres') ? 'border-color:#b5000b' : ''}"><span class="material-symbols-outlined">schedule</span>
+            <input type="time" data-k="horaPres" value="${escapeHtml(st.horaPres)}" style="width:100%;border:none;background:transparent;font:inherit;outline:none"></label>
+          <div class="sv-sub" style="margin:4px 0 0;max-width:none">CD-Cliente: no ocupa bloque, pero se indica la hora de citación.</div></div>`;
+      const cards = BLOQUES_PRES.map(b => {
+        const u = usadosB(b.bloque), on = st.bloque === b.bloque, lleno = llenoB(b.bloque);
+        const est = !st.cupos ? '' : `<span class="sv-pill ${lleno ? 'bad' : u.n ? 'warn' : 'ok'}" style="margin-top:4px"><i></i>${lleno ? 'Sin cupo' : `${u.cupo - u.n} de ${u.cupo} libre${u.cupo - u.n === 1 ? '' : 's'}`}</span>`;
+        const quien = u.cams.length ? `<small style="color:#5c5f61;margin-top:4px;line-height:1.3">${u.cams.map(x => escapeHtml(`${x.nombre || x.ce}${Number(x.camion) === 2 ? ' (2º)' : ''}${x.patente ? ' · ' + x.patente : ''}${x.estado === 'coordinado' ? ' · coord.' : ''}`)).join('<br>')}</small>` : '';
+        return `<button type="button" class="sv-opt ${on ? 'is-on' : ''}" data-bloque="${b.bloque}" ${lleno && !on ? 'disabled' : ''} style="flex-direction:column;align-items:flex-start;gap:2px;${lleno && !on ? 'opacity:.55;cursor:not-allowed' : ''}">
+            <span class="sv-sub" style="margin:0">Bloque ${b.bloque}</span><b style="font-size:15px">${b.desde} – ${b.hasta}</b>${est}${quien}</button>`;
+      }).join('');
+      const nota = st.cuposErr ? `<span style="color:#b45309">No se pudo leer el cupo de los bloques (${escapeHtml(st.cuposErr)}); se valida al guardar.</span>`
+        : !st.fechaCarga ? 'Elige el día de carga para ver el cupo de cada bloque.'
+        : `Máximo ${CUPO_BLOQUE_PRES} camiones por bloque el ${escapeHtml(fmtFechaISO(st.fechaCarga))} en ${escapeHtml(presentacion.cd || '')} (programados y coordinados).`;
+      return `<div>${lbl('Horario de presentación para carga', 'pres', true)}
+          <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px">${cards}</div>
+          <div class="sv-sub" style="margin:6px 0 0;max-width:none">${nota}</div></div>`;
+    }
     function draw() {
       const falt = st.err ? faltantes() : [];
       const t = sel();
@@ -2619,6 +2692,7 @@ function showTransporteCamionModal({ titulo, sub, ini = {}, otros = [], fechaDef
             <label class="sv-inp" style="width:100%;box-sizing:border-box;${bad('fechaCarga') ? 'border-color:#b5000b' : ''}"><span class="material-symbols-outlined">event</span>
               <input type="date" data-k="fechaCarga" value="${escapeHtml(st.fechaCarga)}" style="width:100%;border:none;background:transparent;font:inherit;outline:none"></label>
             ${fechaDef && st.fechaCarga && st.fechaCarga !== String(fechaDef).slice(0, 10) ? `<div class="sv-sub" style="margin:4px 0 0;color:#b45309">Distinto al día objetivo del plan (${escapeHtml(fmtFechaISO(fechaDef))}).</div>` : ''}</div>
+          ${presHtml()}
           <div>
             ${lbl('Transportista (maestro de transporte)', 'idTrans', true)}
             ${t && !st.open ? selHtml() : `
@@ -2650,7 +2724,8 @@ function showTransporteCamionModal({ titulo, sub, ini = {}, otros = [], fechaDef
           <button class="sv-btn-p" data-ok><span class="material-symbols-outlined">${COORD ? 'event_available' : 'local_shipping'}</span>${COORD ? 'Guardar coordinación' : 'Confirmar camión'}</button></div></div>`;
       panel.querySelectorAll('[data-cx]').forEach(b => b.addEventListener('click', () => fin(null)));
       panel.querySelectorAll('[data-k]').forEach(i => i.addEventListener('input', () => { st[i.dataset.k] = i.value; }));
-      panel.querySelector('[data-k="fechaCarga"]')?.addEventListener('change', e => { st.fechaCarga = e.target.value; draw(); });
+      panel.querySelector('[data-k="fechaCarga"]')?.addEventListener('change', async e => { st.fechaCarga = e.target.value; await cargarCupos(); draw(); });
+      panel.querySelectorAll('[data-bloque]').forEach(b => b.addEventListener('click', () => { if (b.disabled) return; st.bloque = Number(b.dataset.bloque); draw(); }));
       const wirePicks = () => panel.querySelectorAll('[data-tpick]').forEach(b => b.addEventListener('click', () => {
         const x = transDe(b.dataset.tpick);
         if (!x) return;
@@ -2673,7 +2748,12 @@ function showTransporteCamionModal({ titulo, sub, ini = {}, otros = [], fechaDef
         if (x) { st.choferNombre = [x.nombre, x.apellido].filter(Boolean).join(' '); st.choferRut = x.rut || ''; st.choferTel = x.telefono || st.choferTel; if (x.id_camion) st.patCamion = fmtPatente(x.id_camion); draw(); }
       });
       panel.querySelector('[data-ok]').addEventListener('click', async e => {
-        if (faltantes().length) { st.err = true; draw(); return; }
+        if (PRES === 'bloque') await cargarCupos();   // cupo al momento de confirmar
+        if (faltantes().length) {
+          st.err = true; draw();
+          if (PRES === 'bloque' && st.bloque && llenoB(st.bloque)) showAlert(`El bloque ${st.bloque} ya tiene ${CUPO_BLOQUE_PRES} camiones el ${fmtFechaISO(st.fechaCarga)}: elige otro bloque.`, 'error');
+          return;
+        }
         const tsel = sel();
         const pat = normPatente(st.patCamion), rut = normPatente(st.choferRut);
         const av = [];
@@ -2696,7 +2776,8 @@ function showTransporteCamionModal({ titulo, sub, ini = {}, otros = [], fechaDef
           showAlert(`Maestro actualizado: ${tsel.razonSocial} queda activo.`, 'success');
         }
         // (8-oct-2026, Jordan) Confirmar el camión con sus datos y el día de carga.
-        const okConf = await confirmar(`${COORD ? '¿Guardar la coordinación del transporte (sin programar)?' : '¿Confirmar el camión?'}\n\n${titulo}\nDía de carga: ${fmtFechaISO(st.fechaCarga)}\nTransportista: ${tsel.id} · ${tsel.razonSocial || st.transportista}\nChofer: ${st.choferNombre.trim()} · ${st.choferRut.trim()} · ${st.choferTel.trim()}\nPatente camión: ${fmtPatente(st.patCamion)}${st.patCarro.trim() ? ' · carro ' + fmtPatente(st.patCarro) : ''}`,
+        const presObj = PRES === 'bloque' ? { bloque_presentacion: st.bloque, hora_presentacion: bloquePres(st.bloque).desde } : PRES === 'hora' ? { hora_presentacion: st.horaPres.trim() } : {};
+        const okConf = await confirmar(`${COORD ? '¿Guardar la coordinación del transporte (sin programar)?' : '¿Confirmar el camión?'}\n\n${titulo}\nDía de carga: ${fmtFechaISO(st.fechaCarga)}${PRES ? `\nPresentación: ${txtPresentacion(presObj)}` : ''}\nTransportista: ${tsel.id} · ${tsel.razonSocial || st.transportista}\nChofer: ${st.choferNombre.trim()} · ${st.choferRut.trim()} · ${st.choferTel.trim()}\nPatente camión: ${fmtPatente(st.patCamion)}${st.patCarro.trim() ? ' · carro ' + fmtPatente(st.patCarro) : ''}`,
           { aceptar: COORD ? 'Guardar coordinación' : 'Confirmar camión', tono: 'normal', icono: COORD ? 'event_available' : 'local_shipping' });
         if (!okConf) { draw(); return; }
         fin({
@@ -2704,9 +2785,11 @@ function showTransporteCamionModal({ titulo, sub, ini = {}, otros = [], fechaDef
           id_transporte: String(tsel.id).trim(), transportista: String(tsel.razonSocial || st.transportista).trim(),
           chofer_nombre: st.choferNombre.trim(), chofer_rut: st.choferRut.trim(), chofer_telefono: st.choferTel.trim(),
           patente_camion: fmtPatente(st.patCamion), patente_carro: fmtPatente(st.patCarro) || null,
+          ...presObj,
         });
       });
     }
+    await cargarCupos();
     draw();
   });
 }
@@ -2755,7 +2838,7 @@ function showCoordPv4000Modal(row, ctx) {
       cliente: c.nombre_cliente || '', comuna: c.comuna || '', direccion: c.direccion || '', telefono: c.telefono || '',
       idTrans: c.id_transporte || '', transportista: c.transportista || '',
       choferNombre: c.chofer_nombre || '', choferRut: c.chofer_rut || '', choferTel: c.chofer_telefono || '',
-      patCamion: c.patente_camion || '', patCarro: c.patente_carro || '' };
+      patCamion: c.patente_camion || '', patCarro: c.patente_carro || '', horaPres: c.hora_presentacion || '' };
     let tr = { trans: [], choferes: [], camiones: [] };
     try { tr = await loadTransportistasCoord(); } catch (_) { /* sin maestro de transportistas */ }
     const wrap = document.createElement('div');
@@ -2772,6 +2855,7 @@ function showCoordPv4000Modal(row, ctx) {
       const f = [];
       if (!st.fecha) f.push('fecha');
       if (esCli()) ['direccion', 'telefono', 'idTrans'].forEach(k => { if (!String(st[k] ?? '').trim()) f.push(k); });
+      if (esCli() && !horaValida(st.horaPres)) f.push('horaPres');   // (28-oct-2026, Jordan)
       if (String(st.patCamion ?? '').trim() && !String(st.patCarro ?? '').trim()) f.push('patCarro');   // (23-oct-2026, Jordan) carro obligatorio con patente camión
       return f;
     };
@@ -2816,6 +2900,7 @@ function showCoordPv4000Modal(row, ctx) {
           </div>
           <div class="sv-card" style="padding:14px 16px;display:flex;flex-direction:column;gap:10px">
             <div class="sv-b" style="font-size:14px">Datos del transporte (CD-Cliente)</div>
+            ${campoHoraPres(st, bad('horaPres'))}
             <div>${lbl('Transportista (ID y nombre)', 'idTrans', true)}<div data-bus="trans"></div></div>
             ${notaTranspBloq(tr.trans.find(t => String(t.id) === st.idTrans))}
             ${chofList().length ? `<div>${lbl('Chofer del transportista', 'chof', false)}
@@ -2867,6 +2952,7 @@ function showCoordPv4000Modal(row, ctx) {
           id_transporte: cli ? st.idTrans.trim() : null, transportista: cli ? (st.transportista || null) : null,
           chofer_nombre: cli ? (st.choferNombre.trim() || null) : null, chofer_rut: cli ? (st.choferRut.trim() || null) : null, chofer_telefono: cli ? (st.choferTel.trim() || null) : null,
           patente_camion: cli ? (fmtPatente(st.patCamion) || null) : null, patente_carro: cli ? (fmtPatente(st.patCarro) || null) : null,
+          hora_presentacion: cli ? st.horaPres.trim() : null,
           lineas: items.filter(it => qty(it.material) > 0).map(it => ({ material: it.material, nombre: it.nombre, cantidad: qty(it.material), pos: it.pos,
             peso_bruto: it.peso_bruto, tamano_dimens: it.tamano_dimens, ruta: it.ruta })),
           updated_at: now, updated_by: email, ...(co ? {} : { created_at: now, created_by: email }) };
@@ -2976,6 +3062,7 @@ function showCoordTrasladoModal(row, ctx) {
       idTrans: c.id_transporte || '', transportista: c.transportista || '',
       choferNombre: c.chofer_nombre || '', choferRut: c.chofer_rut || '', choferTel: c.chofer_telefono || '',
       patCamion: c.patente_camion || '', patCarro: c.patente_carro || '', err: false,
+      horaPres: c.hora_presentacion || '',   // (28-oct-2026, Jordan) hora de presentación en CD
     };
     // Al editar, se precargan los pedidos coordinados en el mismo camión (misma patente y fecha).
     if (editando && c.patente_camion) pedidos.forEach(p => {
@@ -2994,6 +3081,7 @@ function showCoordTrasladoModal(row, ctx) {
     const REQ = ['fecha', 'direccion', 'telefono', 'idTrans'];
     const faltantes = () => {
       const f = REQ.filter(k => !String(st[k]).trim());
+      if (!horaValida(st.horaPres)) f.push('horaPres');   // (28-oct-2026, Jordan)
       st.entregas.forEach((v, d) => { if (!String(v).trim()) f.push('ent_' + d); });
       if (String(st.patCamion ?? '').trim() && !String(st.patCarro ?? '').trim()) f.push('patCarro');   // (23-oct-2026, Jordan) carro obligatorio con patente camión
       return f;
@@ -3043,6 +3131,7 @@ function showCoordTrasladoModal(row, ctx) {
           </div>
           <div class="sv-card" style="padding:14px 16px;display:flex;flex-direction:column;gap:10px">
             <div class="sv-b" style="font-size:14px">Datos del transporte</div>
+            ${campoHoraPres(st, bad('horaPres'))}
             <div>${lbl('Transportista (ID y nombre)', 'idTrans', true)}
               <div data-bus="trans"></div></div>
             ${notaTranspBloq(tr.trans.find(t => String(t.id) === st.idTrans))}
@@ -3100,6 +3189,7 @@ function showCoordTrasladoModal(row, ctx) {
           id_transporte: st.idTrans.trim(), transportista: st.transportista || null,
           chofer_nombre: st.choferNombre.trim() || null, chofer_rut: st.choferRut.trim() || null, chofer_telefono: st.choferTel.trim() || null,
           patente_camion: fmtPatente(st.patCamion) || null, patente_carro: fmtPatente(st.patCarro) || null,
+          hora_presentacion: st.horaPres.trim(),
           updated_at: now, updated_by: email, ...((pedidos.get(d) || {}).coord ? {} : { created_at: now, created_by: email }),
         }));
         const { error } = await supabase.from('abast_traslado_coordinacion').upsert(filas, { onConflict: 'doc_compr' });
@@ -4452,6 +4542,7 @@ const V2 = {
           c && c.tipo_entrega === 'CD-CLIENTE' ? ['Transporte', [c.id_transporte, c.transportista].filter(Boolean).join(' · ')] : null,
           c && c.tipo_entrega === 'CD-CLIENTE' ? ['Chofer', [c.chofer_nombre, c.chofer_rut, c.chofer_telefono].filter(Boolean).join(' · ')] : null,
           c && c.tipo_entrega === 'CD-CLIENTE' ? ['Patentes', [c.patente_camion ? 'Camión ' + c.patente_camion : '', c.patente_carro ? 'Carro ' + c.patente_carro : ''].filter(Boolean).join(' · ')] : null,
+          c && c.tipo_entrega === 'CD-CLIENTE' ? ['Presentación en CD', txtPresentacion(c) || 'Sin hora'] : null,
           r._grupo_docs && r._grupo_docs.length ? ['Mismo camión', r._grupo_docs.join(', ')] : null,
           ['Condición expedición', r._cond ? `${r._cond.lbl} (${r._cond.raw})` : '—'],
           ['Ruta', r._ruta], ['Oficina ventas', `${r.ofvta}${nombreCentro(r.ofvta) ? ' · ' + nombreCentro(r.ofvta) : ''}`],
@@ -4691,6 +4782,7 @@ const V2 = {
           c ? ['Transporte', [c.id_transporte, c.transportista].filter(Boolean).join(' · ')] : null,
           c ? ['Chofer', [c.chofer_nombre, c.chofer_rut, c.chofer_telefono].filter(Boolean).join(' · ')] : null,
           c ? ['Patentes', `Camión ${c.patente_camion || '—'}${c.patente_carro ? ' · Carro ' + c.patente_carro : ''}`] : null,
+          c && c.tipo_entrega === 'CD-CLIENTE' ? ['Presentación en CD', txtPresentacion(c) || 'Sin hora'] : null,
         ],
         nota: r._cdcli ? 'Camión directo CD-Cliente' : '4º en el orden de llenado',
         acciones,
@@ -4971,6 +5063,7 @@ function agruparSeguimiento(rows, dtRows, ajustes, clientes, transp) {
       fecha_carga: r.fecha_carga, destino: r.destino, origen: r.origen, id_transporte: r.id_transporte, transportista: r.transportista,
       transportista_rut: (transp && transp.get(String(r.id_transporte ?? '').trim())) || '',
       chofer_nombre: r.chofer_nombre, chofer_rut: r.chofer_rut, chofer_telefono: r.chofer_telefono, patente_camion: r.patente_camion, patente_carro: r.patente_carro,
+      bloque_presentacion: r.bloque_presentacion ?? null, hora_presentacion: r.hora_presentacion || '',
       ton_camion: Number(r.ton_camion) || 0, pct: r.pct_camion, cap: Number(r.cap) || 0, programado_por: r.programado_por, programado_en: r.programado_en, lineas: [] });
     g._cams.get(kc).lineas.push(r);
   });
@@ -5026,17 +5119,18 @@ function puedeEditarTranspSeg(r, c) {
 // (19-oct-2026, Jordan) Directo programado: actualiza el transporte (y día de carga) en la coordinación de
 // origen de cada pedido del camión y en sus registros COORD| del Seguimiento. El Plan de Carga del día
 // vuelve a armar el camión directo con la nueva patente al sincronizar.
-async function editarTranspDirectoSeg(c, tr, fecha, email, now) {
+// (28-oct-2026) extraCli: { hora_presentacion } sólo para las coordinaciones CD-Cliente (venta / traslado / PV 4000).
+async function editarTranspDirectoSeg(c, tr, fecha, email, now, extraCli = {}) {
   const tx = v => String(v ?? '').trim();
   const docs = new Map();
   (c.lineas || []).forEach(x => { const d = tx(x.documento); if (d && !docs.has(d)) docs.set(d, String(x.tipo_carga || '')); });
   for (const [doc, tipo] of docs) {
     let q;
     if (/retiro/i.test(tipo)) q = supabase.from('abast_retiro_estado').update({ ...tr, fecha_retiro: fecha, updated_by: email, updated_at: now }).eq('doc_compr', doc);
-    else if (esTrasladoDoc(doc)) q = supabase.from('abast_traslado_coordinacion').update({ ...tr, fecha_entrega: fecha, updated_by: email, updated_at: now }).eq('doc_compr', doc);
+    else if (esTrasladoDoc(doc)) q = supabase.from('abast_traslado_coordinacion').update({ ...tr, ...extraCli, fecha_entrega: fecha, updated_by: email, updated_at: now }).eq('doc_compr', doc);
     else {
-      q = supabase.from('abast_venta_coordinacion').update({ ...tr, fecha_entrega: fecha, updated_by: email, updated_at: now }).eq('doc_ventas', doc);
-      await supabase.from('abast_pv4000_coordinacion').update({ ...tr, fecha_entrega: fecha, updated_by: email, updated_at: now }).eq('documento', doc);
+      q = supabase.from('abast_venta_coordinacion').update({ ...tr, ...extraCli, fecha_entrega: fecha, updated_by: email, updated_at: now }).eq('doc_ventas', doc);
+      await supabase.from('abast_pv4000_coordinacion').update({ ...tr, ...extraCli, fecha_entrega: fecha, updated_by: email, updated_at: now }).eq('documento', doc);
     }
     const { error } = await q;
     if (error) return error;
@@ -5045,7 +5139,7 @@ async function editarTranspDirectoSeg(c, tr, fecha, email, now) {
   const { data: regs } = await supabase.from('abast_seguimiento_camion').select('*').in('clave', [...docs.keys()].map(d => 'COORD|' + d));
   for (const k of regs || []) {
     const cab = { fecha_plan: k.fecha_plan, fecha_carga: fecha, cd_origen: k.cd_origen, ce: k.ce, tipo_camion: k.tipo_camion, clave: k.clave,
-      origen: k.origen || '', destino: k.destino || '', ton: k.ton, cap: k.cap, pct: k.pct, ...tr, patente_carro: tr.patente_carro || '' };
+      origen: k.origen || '', destino: k.destino || '', ton: k.ton, cap: k.cap, pct: k.pct, ...tr, patente_carro: tr.patente_carro || '', ...extraCli };
     await supabase.rpc('fn_abast_guardar_seguimiento', { p_cab: cab, p_lineas: null });
   }
   return null;
@@ -5053,33 +5147,38 @@ async function editarTranspDirectoSeg(c, tr, fecha, email, now) {
 async function editarTransporteSeguimiento(r, c) {
   const x = c.lineas[0] || {};
   const cd = String(x.cd_origen || r.cd_origen || '').trim();
+  // (28-oct-2026, Jordan) Horario de presentación: bloque para camión CD / 2º camión, hora para CD-Cliente.
+  const esCons = ['Camión CD', '2º camión'].includes(c.tipo), esCli = c.tipo === 'CD-Cliente';
+  const pres = esCons ? { modo: 'bloque', cd, self: { fecha: r.fecha_plan, ce: r.ce, camion: c.tipo === '2º camión' ? 2 : 1 } } : esCli ? { modo: 'hora' } : null;
   const t = await showTransporteCamionModal({ titulo: `${c.tipo} → ${r.ce} ${nombreCentro(r.ce) || ''}`.trim(),
-    sub: `Editar datos del transporte · plan ${fmtFechaISO(r.fecha_plan)}`, ini: { ...c }, fechaDef: c.fecha_carga || '' });
+    sub: `Editar datos del transporte · plan ${fmtFechaISO(r.fecha_plan)}`, ini: { ...c }, fechaDef: c.fecha_carga || '', presentacion: pres });
   if (!t) return null;
   const email = await getUserEmail(), now = new Date().toISOString();
   const tr = { id_transporte: t.id_transporte, transportista: t.transportista, chofer_nombre: t.chofer_nombre, chofer_rut: t.chofer_rut,
     chofer_telefono: t.chofer_telefono, patente_camion: t.patente_camion, patente_carro: t.patente_carro };
+  const extraCli = esCli ? { hora_presentacion: t.hora_presentacion || null } : {};
+  const presCab = esCons ? { bloque_presentacion: t.bloque_presentacion ?? null, hora_presentacion: t.hora_presentacion || null } : esCli ? { bloque_presentacion: null, hora_presentacion: t.hora_presentacion || null } : {};
   let error = null;
   if (c.coord) {
     const doc = String(c.clave).slice(6);
     if (c.tipo === 'CD-Cliente') {
       const tabla = esTrasladoDoc(doc) ? 'abast_traslado_coordinacion' : 'abast_venta_coordinacion';
       const col = esTrasladoDoc(doc) ? 'doc_compr' : 'doc_ventas';
-      ({ error } = await supabase.from(tabla).update({ ...tr, fecha_entrega: t.fecha_carga, updated_by: email, updated_at: now }).eq(col, doc));
+      ({ error } = await supabase.from(tabla).update({ ...tr, ...extraCli, fecha_entrega: t.fecha_carga, updated_by: email, updated_at: now }).eq(col, doc));
       // (18-oct-2026) PV del Stock 4000 coordinado CD-Cliente: mismo cambio en su tabla.
-      if (!error && !esTrasladoDoc(doc)) await supabase.from('abast_pv4000_coordinacion').update({ ...tr, fecha_entrega: t.fecha_carga, updated_by: email, updated_at: now }).eq('documento', doc);
+      if (!error && !esTrasladoDoc(doc)) await supabase.from('abast_pv4000_coordinacion').update({ ...tr, ...extraCli, fecha_entrega: t.fecha_carga, updated_by: email, updated_at: now }).eq('documento', doc);
     } else {
       ({ error } = await supabase.from('abast_retiro_estado').update({ ...tr, fecha_retiro: t.fecha_carga, updated_by: email, updated_at: now }).eq('doc_compr', doc));
     }
   } else if (c.dir) {
-    error = await editarTranspDirectoSeg(c, tr, t.fecha_carga, email, now);
+    error = await editarTranspDirectoSeg(c, tr, t.fecha_carga, email, now, extraCli);
   } else {
-    ({ error } = await supabase.from('abast_plan_camion_programado').update({ ...tr, fecha_carga: t.fecha_carga, editado_por: email, editado_en: now })
+    ({ error } = await supabase.from('abast_plan_camion_programado').update({ ...tr, ...presCab, fecha_carga: t.fecha_carga, editado_por: email, editado_en: now })
       .eq('fecha', r.fecha_plan).eq('cd_origen', cd).eq('ce', r.ce).eq('camion', c.tipo === '2º camión' ? 2 : 1));
   }
-  if (error) { showAlert('No se pudo actualizar el transporte: ' + error.message, 'error'); return null; }
+  if (error) { showAlert('No se pudo actualizar el transporte: ' + msgCupo(error), 'error'); return null; }
   const cab = { fecha_plan: r.fecha_plan, fecha_carga: t.fecha_carga, cd_origen: cd, ce: r.ce, tipo_camion: c.tipo, clave: c.clave,
-    origen: c.origen || '', destino: c.destino || '', ton: r4s(c.ton), cap: c.cap, pct: c.pct, ...tr, patente_carro: t.patente_carro || '' };
+    origen: c.origen || '', destino: c.destino || '', ton: r4s(c.ton), cap: c.cap, pct: c.pct, ...tr, patente_carro: t.patente_carro || '', ...presCab };
   const { error: e2 } = await supabase.rpc('fn_abast_guardar_seguimiento', { p_cab: cab, p_lineas: null });
   if (e2) { showAlert('Transporte guardado, pero no se actualizó Seguimiento de Carga: ' + e2.message, 'error'); return { recargar: true }; }
   clearRawCache();
@@ -5180,6 +5279,7 @@ VISTAS_TRONCAL.seguimiento_carga = {
     { key: 'id_transporte', label: 'ID Transporte' }, { key: 'transportista', label: 'Transportista' }, { key: 'transportista_rut', label: 'RUT Transportista' },
     { key: 'chofer_nombre', label: 'Chofer' }, { key: 'chofer_rut', label: 'RUT Chofer' }, { key: 'chofer_telefono', label: 'Teléfono' },
     { key: 'patente_camion', label: 'Patente Camión' }, { key: 'patente_carro', label: 'Patente Carro' },
+    { key: 'horario_presentacion', label: 'Horario Presentación', valueFn: r => txtPresentacion(r) },
     { key: 'programado_por', label: 'Programado por' },
     { key: 'dt', label: 'Documento de Transporte' },
   ],
@@ -5772,6 +5872,7 @@ function fichaTransporteSeg(r, c) {
       <div class="sv-segbox-l" style="margin-top:6px"><span class="material-symbols-outlined" style="font-size:16px;vertical-align:-3px">badge</span> ${c.chofer_nombre ? `<b>${escV2(c.chofer_nombre)}</b>` : '<span class="sv-muted">Chofer pendiente</span>'}${c.chofer_rut ? ` · <span class="sv-mono">${escV2(c.chofer_rut)}</span>` : ''}</div>
       ${c.chofer_telefono ? `<div class="sv-segbox-l"><span class="material-symbols-outlined" style="font-size:16px;vertical-align:-3px">call</span> ${tel(c.chofer_telefono)}</div>` : ''}
       <div class="sv-segbox-l"><span class="material-symbols-outlined" style="font-size:16px;vertical-align:-3px">event</span> Carga <b>${escV2(fmtFechaISO(c.fecha_carga || r.fecha_carga))}</b></div>
+      ${['Camión CD', '2º camión', 'CD-Cliente'].includes(c.tipo) ? `<div class="sv-segbox-l"><span class="material-symbols-outlined" style="font-size:16px;vertical-align:-3px">schedule</span> Presentación ${txtPresentacion(c) ? `<b>${escV2(txtPresentacion(c))}</b>` : pill('Sin horario', 'warn')}</div>` : ''}
       <div class="sv-segbox-l"><span class="material-symbols-outlined" style="font-size:16px;vertical-align:-3px">person_check</span> ${c.programado_por ? `Programado por <b>${escV2(c.programado_por)}</b>${c.programado_en ? ` <span class="sv-muted">· ${escV2(progPorSeg({ programado_en: c.programado_en }))}</span>` : ''}` : '<span class="sv-muted">Sin usuario registrado</span>'}</div>
     </div>`;
   const html = `<div class="sv-card" style="padding:12px 14px;box-shadow:inset 4px 0 0 ${col}">
@@ -5963,7 +6064,7 @@ function cuadroPlanCargadoSeg(r, c) {
   };
   const html = `<div class="sc-wrap" style="--c:${col}">${radios}
     <div class="sc-head">${segTipo(c, true)}${c.patente_camion ? `<span class="sv-segbox-pat" style="margin:0">${escV2(c.patente_camion)}</span>` : ''}
-      <span class="sc-tr">${escV2(c.transportista || c.id_transporte || 'Sin transportista')} · carga <b>${escV2(fmtFechaISO(c.fecha_carga || r.fecha_carga) || '—')}</b></span>
+      <span class="sc-tr">${escV2(c.transportista || c.id_transporte || 'Sin transportista')} · carga <b>${escV2(fmtFechaISO(c.fecha_carga || r.fecha_carga) || '—')}</b>${txtPresentacion(c) ? ` · presentación <b>${escV2(txtPresentacion(c))}</b>` : ''}</span>
       <span class="sv-cdr-est" style="--c:${E.c};margin-left:auto">${escV2(E.l)}</span></div>
     <div class="sc-vs">${planBox}${mid}${cargBox}</div>
     <div class="sc-msg ${msg[0]}"><span class="material-symbols-outlined">${msg[1]}</span><span>${msg[2]}</span></div>
@@ -6261,7 +6362,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610281447');
+    const m = await import('./ind-plan-carga.js?v=202610281701');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -7266,6 +7367,7 @@ async function renderPlanCarga(stage, opts = {}) {
         const ton = sumTon(g.items);
         camionesCliente.push({ items: g.items, ton, grupo: `${g.pat ? 'Patente ' + g.pat : 'Camión compartido (patente pendiente)'} · ${nombres}`, cap: CAP_CAMION_DIRECTO,
           patente: g.pat, patenteCarro: g.co.patente_carro || '', idTrans: String(g.co.id_transporte ?? '').trim(), transportista: [g.co.id_transporte, g.co.transportista].filter(Boolean).join(' · '),
+          horaPres: String(g.co.hora_presentacion || '').trim(),
           chofer: [g.co.chofer_nombre, g.co.chofer_rut, g.co.chofer_telefono].filter(Boolean).join(' · ') });
       } else armarCamiones(g.items, CAP_CAMION_DIRECTO, d => d.pv).forEach(c => camionesCliente.push({ ...c, grupo: nombres, cap: CAP_CAMION_DIRECTO }));
     });
@@ -7846,7 +7948,7 @@ async function renderPlanCarga(stage, opts = {}) {
   async function guardarProgramado(ce, cam, t) {
     const { error } = await supabase.from('abast_plan_camion_programado').upsert({ fecha: hoyIsoPlanP(), cd_origen: planOrigen, ce, camion: cam, ...t,
       programado_por: await getUserEmail(), programado_en: new Date().toISOString() }, { onConflict: 'fecha,cd_origen,ce,camion' });
-    if (error) { showAlert('No se pudo programar el camión: ' + error.message, 'error'); return false; }
+    if (error) { showAlert('No se pudo programar el camión: ' + msgCupo(error), 'error'); return false; }
     // (12-oct-2026) Programado: la coordinación previa ya no aplica
     if (coordMap.has(`${ce}|${cam}`)) { await supabase.from('abast_plan_camion_coordinado').delete().eq('fecha', hoyIsoPlanP()).eq('cd_origen', planOrigen).eq('ce', ce).eq('camion', cam); coordMap.delete(`${ce}|${cam}`); }
     return true;
@@ -7858,11 +7960,11 @@ async function renderPlanCarga(stage, opts = {}) {
     if (!PUEDE_COORD) { showAlert('Tu perfil no puede coordinar transporte.', 'error'); return; }
     const nom = cam === 2 ? '2º camión' : 'Camión CD';
     const t = await showTransporteCamionModal({ titulo: `${nom} → ${r.nombre}`, sub: `Coordinar transporte (sin programar) · día objetivo ${diaCorto(diaObj(r))}`,
-      ini: coordMap.get(`${ce}|${cam}`) || {}, otros: otrosProgramados(ce, cam), fechaDef: isoLocal(diaObj(r)), modo: 'coordinar' });
+      ini: coordMap.get(`${ce}|${cam}`) || {}, otros: otrosProgramados(ce, cam), fechaDef: isoLocal(diaObj(r)), modo: 'coordinar', presentacion: presCam(ce, cam) });
     if (!t) return;
     const { error } = await supabase.from('abast_plan_camion_coordinado').upsert({ fecha: hoyIsoPlanP(), cd_origen: planOrigen, ce, camion: cam, ...t,
       coordinado_por: await getUserEmail(), coordinado_en: new Date().toISOString() }, { onConflict: 'fecha,cd_origen,ce,camion' });
-    if (error) { showAlert('No se pudo guardar la coordinación: ' + error.message, 'error'); return; }
+    if (error) { showAlert('No se pudo guardar la coordinación: ' + msgCupo(error), 'error'); return; }
     await leerCoordinados();
     showAlert(`Transporte del ${nom.toLowerCase()} de ${r.nombre} coordinado (${t.patente_camion}). Falta programarlo (Owner o Planner Distribución); la carga sigue actualizándose.`, 'success');
     draw();
@@ -7877,6 +7979,9 @@ async function renderPlanCarga(stage, opts = {}) {
     draw();
   }
   function hoyIsoPlanP() { return isoLocal(hoy00()); }
+  // (28-oct-2026, Jordan) Camión CD / 2º camión: horario de presentación por bloque (cupo 2 por bloque y CD).
+  function presCam(ce, cam, fechaPlan) { return { modo: 'bloque', cd: planOrigen, self: { fecha: fechaPlan || hoyIsoPlanP(), ce, camion: cam } }; }
+  const presLinea = o => { const t = txtPresentacion(o); return t ? ` · Presentación <b>${escapeHtml(t)}</b>` : ' · <span style="color:#b45309;font-weight:700">Sin horario de presentación</span>'; };
   const hoyIsoPlan = isoLocal(hoy00());
   const docLinea = d => String(d.pt ?? d.oc ?? d.pv ?? '').trim();
   const matLinea = d => String(d.material ?? '').trim();
@@ -7939,7 +8044,7 @@ async function renderPlanCarga(stage, opts = {}) {
     if (!PUEDE_TRANSPORTE) { showAlert('Sólo el perfil OWNER puede agregar o modificar los datos del transporte.', 'error'); return; }
     const f = refrescarFill(r);
     const t = await showTransporteCamionModal({ titulo: `Camión CD → ${r.nombre}`, sub: `${t1(f.cargado)} t de ${fmtNum(r.cap, 0)} t · día objetivo ${diaCorto(diaObj(r))}`,
-      ini: progMap.get(`${ce}|1`) || coordMap.get(`${ce}|1`) || {}, otros: otrosProgramados(ce, 1), fechaDef: isoLocal(diaObj(r)) });
+      ini: progMap.get(`${ce}|1`) || coordMap.get(`${ce}|1`) || {}, otros: otrosProgramados(ce, 1), fechaDef: isoLocal(diaObj(r)), presentacion: presCam(ce, 1) });
     if (!t) return;
     const quien = await getUserEmail();
     const filas = new Map();
@@ -7982,7 +8087,7 @@ async function renderPlanCarga(stage, opts = {}) {
     if (!PUEDE_TRANSPORTE) { showAlert('Sólo el perfil OWNER puede agregar o modificar los datos del transporte.', 'error'); return; }
     if (!segAcept.has(ce)) { showAlert('Primero acepta el 2º camión.', 'error'); return; }
     const t = await showTransporteCamionModal({ titulo: `2º camión → ${r.nombre}`, sub: `${t1(r.tonSegundo)} t de ${fmtNum(r.cap, 0)} t · día objetivo ${diaCorto(diaObj(r))}`,
-      ini: progMap.get(`${ce}|2`) || coordMap.get(`${ce}|2`) || {}, otros: otrosProgramados(ce, 2), fechaDef: isoLocal(diaObj(r)) });
+      ini: progMap.get(`${ce}|2`) || coordMap.get(`${ce}|2`) || {}, otros: otrosProgramados(ce, 2), fechaDef: isoLocal(diaObj(r)), presentacion: presCam(ce, 2) });
     if (!t) return;
     if (!(await guardarProgramado(ce, 2, t))) return;
     await leerProgramados();
@@ -8001,11 +8106,11 @@ async function renderPlanCarga(stage, opts = {}) {
     if (!PUEDE_TRANSPORTE) { showAlert('Sólo el perfil OWNER puede agregar o modificar los datos del transporte.', 'error'); return; }
     const t = await showTransporteCamionModal({ titulo: `${cam === 2 ? '2º camión' : 'Camión CD'} → ${r.nombre}`,
       sub: cerrado ? `Plan cerrado · edición OWNER` : `Editar datos del transporte · día objetivo ${diaCorto(diaObj(r))}`,
-      ini: p, otros: otrosProgramados(ce, cam), fechaDef: isoLocal(diaObj(r)) });
+      ini: p, otros: otrosProgramados(ce, cam), fechaDef: isoLocal(diaObj(r)), presentacion: presCam(ce, cam, p.fecha || hoyIsoPlan) });
     if (!t) return;
     const { error } = await supabase.from('abast_plan_camion_programado').update({ ...t, editado_por: await getUserEmail(), editado_en: new Date().toISOString() })
       .eq('fecha', p.fecha || hoyIsoPlan).eq('cd_origen', planOrigen).eq('ce', ce).eq('camion', cam);
-    if (error) { showAlert('No se pudo actualizar el transporte: ' + error.message, 'error'); return; }
+    if (error) { showAlert('No se pudo actualizar el transporte: ' + msgCupo(error), 'error'); return; }
     await leerProgramados();
     { const sg = segCamionCD(r, cam); if (sg) await guardarSeguimiento(sg, true); }   // (7-oct-2026) foto congelada: sólo cabecera
     showAlert(`Transporte del ${cam === 2 ? '2º camión' : 'camión CD'} de ${r.nombre} actualizado.`, 'success');
@@ -8023,7 +8128,7 @@ async function renderPlanCarga(stage, opts = {}) {
       if (PUEDE_TRANSPORTE)
         btns.push(`<button class="sv-btn" data-prog-quitar="${ceA}" data-prog-cam="${cam}"><span class="material-symbols-outlined">remove_circle</span>Quitar</button>`);
       const ed = p.editado_en ? `<br><small style="color:#5c5f61">Editado por ${escapeHtml(p.editado_por || '')} · ${escapeHtml(new Date(p.editado_en).toLocaleString('es-CL', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }))}</small>` : '';
-      return `<div class="pc-extra pc-seg2 is-ok"><span class="material-symbols-outlined">task_alt</span><div style="flex:1;min-width:0"><b>${nom} programado</b> · Carga ${escapeHtml(cap1(diaCorto(p.fecha_carga ? parseISODate(p.fecha_carga) : diaObj(r))))} · Patente ${escapeHtml(p.patente_camion)}${p.patente_carro ? ' · carro ' + escapeHtml(p.patente_carro) : ''}<br>
+      return `<div class="pc-extra pc-seg2 is-ok"><span class="material-symbols-outlined">task_alt</span><div style="flex:1;min-width:0"><b>${nom} programado</b> · Carga ${escapeHtml(cap1(diaCorto(p.fecha_carga ? parseISODate(p.fecha_carga) : diaObj(r))))}${presLinea(p)} · Patente ${escapeHtml(p.patente_camion)}${p.patente_carro ? ' · carro ' + escapeHtml(p.patente_carro) : ''}<br>
         ${escapeHtml([p.id_transporte, p.transportista].filter(Boolean).join(' · '))} · Chofer ${escapeHtml([p.chofer_nombre, p.chofer_rut, p.chofer_telefono].filter(Boolean).join(' · '))}${ed}</div>${btns.length ? `<div style="display:flex;gap:6px;flex-wrap:wrap">${btns.join('')}</div>` : ''}</div>`;
     }
     if (cam === 1) {
@@ -8039,7 +8144,7 @@ async function renderPlanCarga(stage, opts = {}) {
       if (PUEDE_TRANSPORTE) bt.push(`<button class="sv-btn-p" ${progAttr}="${ceA}" title="Programar con los datos coordinados (congela la carga, foto y Seguimiento)"><span class="material-symbols-outlined">task_alt</span>Programar</button>`);
       if (PUEDE_COORD) bt.push(`<button class="sv-btn" data-coord-tr="${ceA}" data-prog-cam="${cam}"><span class="material-symbols-outlined">edit</span>Editar coordinación</button>`);
       if (PUEDE_COORD) bt.push(`<button class="sv-btn" data-coord-quitar="${ceA}" data-prog-cam="${cam}"><span class="material-symbols-outlined">remove_circle</span>Quitar</button>`);
-      return `<div class="pc-extra pc-seg2" style="background:#eff6ff;border-color:#93c5fd"><span class="material-symbols-outlined" style="color:#1d4ed8">event_available</span><div style="flex:1;min-width:0"><b>${nom} · transporte coordinado, sin programar</b> · Carga ${escapeHtml(cap1(diaCorto(co.fecha_carga ? parseISODate(co.fecha_carga) : diaObj(r))))} · Patente ${escapeHtml(co.patente_camion || '—')}${co.patente_carro ? ' · carro ' + escapeHtml(co.patente_carro) : ''}<br>
+      return `<div class="pc-extra pc-seg2" style="background:#eff6ff;border-color:#93c5fd"><span class="material-symbols-outlined" style="color:#1d4ed8">event_available</span><div style="flex:1;min-width:0"><b>${nom} · transporte coordinado, sin programar</b> · Carga ${escapeHtml(cap1(diaCorto(co.fecha_carga ? parseISODate(co.fecha_carga) : diaObj(r))))}${presLinea(co)} · Patente ${escapeHtml(co.patente_camion || '—')}${co.patente_carro ? ' · carro ' + escapeHtml(co.patente_carro) : ''}<br>
         ${escapeHtml([co.id_transporte, co.transportista].filter(Boolean).join(' · '))} · Chofer ${escapeHtml([co.chofer_nombre, co.chofer_rut, co.chofer_telefono].filter(Boolean).join(' · '))}
         <br><small style="color:#5c5f61">Coordinado por ${escapeHtml(co.coordinado_por || '')} · la carga sigue actualizándose hasta que se programe (Owner o Planner Distribución).</small></div><div style="display:flex;gap:6px;flex-wrap:wrap">${bt.join('')}</div></div>`;
     }
@@ -8406,6 +8511,7 @@ async function renderPlanCarga(stage, opts = {}) {
     const pct = c.cap > 0 ? Math.round(c.ton / c.cap * 100) : 0;
     return kv([['Carga', `${t1(c.ton)} t · ${pct}%`], ['Capacidad', `${fmtNum(c.cap, 0)} t`], [c.manualId ? 'Unión manual' : (c.patente ? 'Despacho' : t.grupo), escapeHtml(c.grupo || '')], ['Camión', `${c.n} de ${lista.length}`],
         c.patente ? ['Patentes', escapeHtml(`Camión ${c.patente}${c.patenteCarro ? ' · Carro ' + String(c.patenteCarro).toUpperCase() : ''}`)] : null,
+        c.horaPres ? ['Presentación en CD', escapeHtml(`${c.horaPres} hrs`)] : null,
         c.transportista ? ['Transporte', escapeHtml(c.transportista)] : null,
         c.chofer ? ['Chofer', escapeHtml(c.chofer)] : null])
       + grupoHtml(t.color, `Contenido del camión ${c.n} de ${lista.length}`, c.items, t.tipo);
@@ -8440,7 +8546,7 @@ async function renderPlanCarga(stage, opts = {}) {
   // ── Descarga CSV (formato 4.8 + columnas de referencia) ─────────────────
   const CSV_V21 = ['Origen', 'Centro destino', 'Sucursal', 'Estado plan', 'Horizonte', 'Día objetivo', 'Camión', 'Categoría', 'Prioridad de carga', 'Documento', 'Material', 'Detalle', 'Fecha', 'Cantidad', 'Toneladas', 'En camión', '% carga camión', 'Estado sucursal',
     'Id Material', 'Pedido de Venta', 'Proveedor', 'N° Entrega', 'Ruta', 'Comuna', 'Tipo Expedición', 'Ton Bruto', 'Ton Vol', 'Usuario', 'Motivo Prioridad', 'Entra a indicador',
-    'Patente camión', 'Patente carro', 'Transporte', 'Chofer'];
+    'Patente camión', 'Patente carro', 'Transporte', 'Chofer', 'Horario presentación'];
   const CAT_CSV = ['REVEX', 'Venta directa', 'Retiro proveedor', 'Crossdocking', 'Quiebre y priorizado', 'Abastecimiento'];
   function filasCsvV21(r, cerrado) {
     marcarCapacidadCD(r);
@@ -8460,15 +8566,15 @@ async function renderPlanCarga(stage, opts = {}) {
     const acept = segAcept.has(r.ce);
     // (4-oct-2026, Jordan) El CSV trae todo: camión CD, 2º camión, directos y lo que queda fuera.
     const p1 = progMap.get(`${r.ce}|1`), p2 = progMap.get(`${r.ce}|2`);
-    const trp = p => p ? [p.patente_camion || '', p.patente_carro || '', [p.id_transporte, p.transportista].filter(Boolean).join(' · '), [p.chofer_nombre, p.chofer_rut, p.chofer_telefono].filter(Boolean).join(' · ')] : ['', '', '', ''];
+    const trp = p => p ? [p.patente_camion || '', p.patente_carro || '', [p.id_transporte, p.transportista].filter(Boolean).join(' · '), [p.chofer_nombre, p.chofer_rut, p.chofer_telefono].filter(Boolean).join(' · '), txtPresentacion(p)] : ['', '', '', '', ''];
     const camTxt = d => d._enCamion ? 'Camión CD' : d._camion2 ? '2º camión' : 'Fuera del camión';
     const enCamTxt = d => d._enCamion ? 'Sí' : d._camion2 ? (acept ? (p2 ? '2º camión (programado)' : '2º camión (aceptado, sin transporte)') : '2º camión (sugerido, sin aceptar)') : (d._manual === 0 ? 'No carga (manual)' : 'No cabe');
     const mide = d => (d._enCamion ? !!p1 : (d._camion2 && acept && !!p2)) ? 'Sí' : 'No';
     CAT_V2.forEach((c, i) => (r.det[c.k] || []).forEach(d => out.push(linea(camTxt(d), CAT_CSV[i], c.tipo, d, enCamTxt(d),
       d._camion2 ? (r.cap > 0 ? Math.round(r.tonSegundo / r.cap * 100) : 0) + '%' : d._enCamion ? pctCd : '', e).concat([mide(d)], trp(d._enCamion ? p1 : d._camion2 ? p2 : null)))));
     DIR_V2.forEach(t => (r[t.lista] || []).forEach(cm => cm.items.forEach(d => out.push(linea(`${t.csv} ${cm.n}`, t.csv, t.tipo, d, 'Sí', (cm.cap > 0 ? Math.round(cm.ton / cm.cap * 100) : 0) + '%', '').concat(['Sí'],
-      cm.patente ? [cm.patente, cm.patenteCarro || '', cm.transportista || '', cm.chofer || ''] : ['', '', '', ''])))));
-    (r.fabCandidatos || []).forEach(x => (x.items || []).forEach(d => out.push(linea('Directo sin camión', x.tipo === 'fabCli' ? 'Fáb-Cliente' : 'Fáb-Sucursal', 'R', d, 'No (sin camión)', '', '').concat(['No', '', '', '', '']))));
+      cm.patente ? [cm.patente, cm.patenteCarro || '', cm.transportista || '', cm.chofer || '', txtPresentacion({ hora_presentacion: cm.horaPres })] : ['', '', '', '', txtPresentacion({ hora_presentacion: cm.horaPres })])))));
+    (r.fabCandidatos || []).forEach(x => (x.items || []).forEach(d => out.push(linea('Directo sin camión', x.tipo === 'fabCli' ? 'Fáb-Cliente' : 'Fáb-Sucursal', 'R', d, 'No (sin camión)', '', '').concat(['No', '', '', '', '', '']))));
     return out;
   }
   function descargarCsvV21(lista, nombre) {
@@ -8591,7 +8697,7 @@ async function renderPlanCarga(stage, opts = {}) {
     const lineasDe = pred => { const out = []; CAT_V2.forEach((c, i) => (r.det[c.k] || []).forEach(d => { if (pred(d)) out.push(lineaCorreo(CAT_CSV[i], c.tipo, d)); })); return out; };
     const directos = [];
     DIR_V2.forEach(t => (r[t.lista] || []).forEach(cm => directos.push({ tipo: t.csv, n: cm.n, grupo: cm.grupo || '', ton: r4(cm.ton), cap: cm.cap,
-      pct: cm.cap > 0 ? Math.round(cm.ton / cm.cap * 100) : 0, patente: cm.patente || '', patente_carro: cm.patenteCarro || '',
+      pct: cm.cap > 0 ? Math.round(cm.ton / cm.cap * 100) : 0, patente: cm.patente || '', patente_carro: cm.patenteCarro || '', hora_presentacion: cm.horaPres || '',
       transportista: (cm.transportista || '') + (porConfirmar(cm) ? ' (POR CONFIRMAR)' : ''), chofer: cm.chofer || '', por_confirmar: !!porConfirmar(cm),
       lineas: cm.patente && !porConfirmar(cm) ? cm.items.map(d => lineaCorreo(t.csv, t.tipo, d)) : [] })));
     const fila = { fecha: hoyIsoPlan, cd_origen: planOrigen, ce: r.ce, nombre: r.nombre, horizonte: r.horizonte, dia_objetivo: isoLocal(diaObj(r)),
@@ -8628,7 +8734,8 @@ async function renderPlanCarga(stage, opts = {}) {
     return { cab: { fecha_plan: hoyIsoPlan, fecha_carga: p.fecha_carga || isoLocal(diaObj(r)), cd_origen: planOrigen, ce: r.ce, tipo_camion: cam === 2 ? '2º camión' : 'Camión CD', clave: cam === 2 ? '2' : 'CD',
       origen: orNomPlan(), destino: `${r.ce} ${r.nombre}`, ton: r4(ton), cap: r.cap, pct: r.cap > 0 ? Math.round(ton / r.cap * 100) : 0,
       id_transporte: p.id_transporte || '', transportista: p.transportista || '', chofer_nombre: p.chofer_nombre || '', chofer_rut: p.chofer_rut || '',
-      chofer_telefono: p.chofer_telefono || '', patente_camion: p.patente_camion || '', patente_carro: p.patente_carro || '' }, lineas };
+      chofer_telefono: p.chofer_telefono || '', patente_camion: p.patente_camion || '', patente_carro: p.patente_carro || '',
+      bloque_presentacion: p.bloque_presentacion ?? null, hora_presentacion: p.hora_presentacion || null }, lineas };
   }
   function segDirectos(r) {
     const out = [];
@@ -8645,7 +8752,8 @@ async function renderPlanCarga(stage, opts = {}) {
         ton: r4(cm.ton), cap: cm.cap, pct: cm.cap > 0 ? Math.round(cm.ton / cm.cap * 100) : 0,
         id_transporte: tp.length > 1 ? tp[0] : '', transportista: tp.length > 1 ? tp.slice(1).join(' · ') : (tp[0] || ''),
         chofer_nombre: ch[0] || '', chofer_rut: ch[1] || '', chofer_telefono: ch[2] || '',
-        patente_camion: cm.patente, patente_carro: cm.patenteCarro || '' }, lineas: items.map(d => lineaSeg(tc(d), t.tipo, d)) });
+        patente_camion: cm.patente, patente_carro: cm.patenteCarro || '',
+        ...(t.k === 'cliente' ? { bloque_presentacion: null, hora_presentacion: cm.horaPres || null } : {}) }, lineas: items.map(d => lineaSeg(tc(d), t.tipo, d)) });
     }));
     return out;
   }
