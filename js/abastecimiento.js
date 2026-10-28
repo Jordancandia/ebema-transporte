@@ -1629,10 +1629,12 @@ function showAgregarCamionNVModal(row, ctx) {
     const fin = v => { wrap.remove(); document.removeEventListener('keydown', onKey, true); resolve(v); };
     document.addEventListener('keydown', onKey, true);
     wrap.querySelector('.sv-dr-bg').addEventListener('click', () => fin(false));
-    const malos = () => items.map((x, i) => i).filter(i => { const v = num(st.cant.get(i)); return !isFinite(v) || v < 0 || v > items[i].disp + 1e-9; });
+    // (28-oct-2026, Jordan) Se pueden cargar más unidades que lo disponible (aviso naranjo + confirmación).
+    const malos = () => items.map((x, i) => i).filter(i => { const v = num(st.cant.get(i)); return !isFinite(v) || v < 0; });
+    const sobre = () => items.map((x, i) => i).filter(i => num(st.cant.get(i)) > items[i].disp + 1e-9);
     const tonTot = () => items.reduce((s, x, i) => s + (num(st.cant.get(i)) > 0 ? num(st.cant.get(i)) * x.kgU / 1000 : 0), 0);
     function draw() {
-      const bad = new Set(malos()), ton = tonTot();
+      const bad = new Set(malos()), sob = new Set(sobre()), ton = tonTot();
       panel.innerHTML = `
         <div class="sv-dr-h"><div style="flex:1;min-width:0">
           <div class="sv-dr-k">Agregar camión ${n} · NV ${escapeHtml(doc)}</div>
@@ -1640,7 +1642,7 @@ function showAgregarCamionNVModal(row, ctx) {
           <div class="sv-dr-s">→ ${escapeHtml(nombreCentro(row._ce_plan) || row._ce_plan || '')} · camión 1 coordinado ${escapeHtml(co.tipo_entrega === 'CD-CLIENTE' ? 'CD-Cliente' : 'Consolidable')} para el ${escapeHtml(fmtFechaISO(co.fecha_entrega) || '—')}${extras.length ? ` · ya hay ${extras.length} camión(es) adicional(es): ${escapeHtml(extras.map(e => e.doc).join(', '))}` : ''}</div></div>
           <button class="sv-iconbtn" data-cx title="Cerrar (Esc)"><span class="material-symbols-outlined">close</span></button></div>
         <div class="sv-dr-b" style="gap:12px">
-          <div class="sv-note-box">Indica las unidades que van en el <b>camión ${n}</b>. Se crea el pedido <b class="sv-mono">${escapeHtml(nuevoDoc)}</b> con esos materiales; después lo <b>coordinas</b> (CD-Cliente o Consolidable, fecha, transporte y N° de entrega SAP) como cualquier NV. <b>Disponible</b> = confirmado − lo del camión 1 − otros camiones adicionales.</div>
+          <div class="sv-note-box">Indica las unidades que van en el <b>camión ${n}</b>. Se crea el pedido <b class="sv-mono">${escapeHtml(nuevoDoc)}</b> con esos materiales; después lo <b>coordinas</b> (CD-Cliente o Consolidable, fecha, transporte y N° de entrega SAP) como cualquier NV. <b>Disponible</b> = confirmado − lo del camión 1 − otros camiones adicionales. Puedes cargar <b>más que lo disponible</b> (se marca en naranjo y se pide confirmar). Las <b>entregas SAP por posición</b> se ingresan al coordinar el pedido.</div>
           ${st.err ? `<div class="sv-note-box" style="background:#ffdad6;color:#93000a;font-weight:700">${escapeHtml(st.err)}</div>` : ''}
           <div class="pc-tbl" style="max-height:48vh;overflow:auto"><table class="sv-table"><thead><tr>
             <th>SKU · Nombre</th><th class="r">Confirmado</th><th class="r">Camión 1</th><th class="r">Otros camiones</th><th class="r">Disponible</th><th class="r">Camión ${n}</th><th class="r">Ton</th></tr></thead><tbody>
@@ -1648,7 +1650,7 @@ function showAgregarCamionNVModal(row, ctx) {
               <td><span class="sv-mono">${escapeHtml(x.material)}</span> <span class="sv-sub" style="display:inline;margin:0">${escapeHtml(x.nombre)}</span></td>
               <td class="r sv-mono">${fmtNum(x.conf, 1)}</td><td class="r sv-mono">${x.c1 ? fmtNum(x.c1, 1) : '—'}</td><td class="r sv-mono">${x.ex ? fmtNum(x.ex, 1) : '—'}</td>
               <td class="r sv-mono"><b>${fmtNum(x.disp, 1)}</b></td>
-              <td class="r">${x.disp > 0 ? `<label class="sv-inp" style="width:100px;${bad.has(i) ? 'border-color:#b5000b' : ''}"><input data-c="${i}" value="${escapeHtml(st.cant.get(i))}" inputmode="decimal" style="width:100%;text-align:right"></label>` : '<span class="sv-muted">—</span>'}</td>
+              <td class="r"><label class="sv-inp" style="width:100px;${bad.has(i) ? 'border-color:#b5000b' : sob.has(i) ? 'border-color:#c2410c' : ''}" title="${sob.has(i) ? 'Supera lo disponible' : ''}"><input data-c="${i}" value="${escapeHtml(st.cant.get(i))}" inputmode="decimal" placeholder="0" style="width:100%;text-align:right"></label></td>
               <td class="r sv-mono">${isFinite(v) && v > 0 ? fmtNum(v * x.kgU / 1000, 2) : '—'}</td></tr>`; }).join('')}
           </tbody></table></div>
           <div style="display:grid;grid-template-columns:220px 1fr;gap:12px;align-items:end">
@@ -1665,10 +1667,12 @@ function showAgregarCamionNVModal(row, ctx) {
       panel.querySelector('[data-f]')?.addEventListener('change', e => { st.fecha = e.target.value; });
       panel.querySelector('[data-ok]')?.addEventListener('click', async () => {
         const sel = items.map((x, i) => ({ x, q: num(st.cant.get(i)) })).filter(o => isFinite(o.q) && o.q > 0);
-        if (malos().length) { st.err = 'Revisa las unidades marcadas: deben estar entre 0 y lo disponible.'; draw(); return; }
+        if (malos().length) { st.err = 'Revisa las unidades marcadas: deben ser números mayores o iguales a 0.'; draw(); return; }
         if (!sel.length) { st.err = 'Indica al menos un material con unidades para el camión.'; draw(); return; }
         if (!st.fecha) { st.err = 'Indica la fecha de entrega del camión.'; draw(); return; }
         if (tonTot() > CAP_CAMION_DIRECTO + 1e-9) { st.err = `El camión supera ${CAP_CAMION_DIRECTO} t: baja unidades o crea otro camión.`; draw(); return; }
+        const sobreTxt = sobre().map(i => `• ${items[i].material}: ${fmtNum(num(st.cant.get(i)), 1)} (disponible ${fmtNum(items[i].disp, 1)})`);
+        if (sobreTxt.length && !await confirmar(`Unidades sobre lo disponible\n\n${sobreTxt.join('\n')}\n\n¿Cargar igual esas unidades en el camión ${n}?`, { aceptar: 'Cargar igual', icono: 'warning' })) return;
         if (!await confirmar(`¿Crear el camión ${n} de la NV ${doc}?\n\nPedido ${nuevoDoc} · ${fmtNum(tonTot(), 2)} t · entrega ${fmtFechaISO(st.fecha)}\n${sel.map(o => `• ${o.x.material}: ${fmtNum(o.q, 1)}`).join('\n')}\n\nDespués coordínalo con su transporte en Ventas CD.`, { aceptar: `Crear camión ${n}`, icono: 'local_shipping' })) return;
         st.saving = true; draw();
         const { data: ya } = await supabase.from('abast_venta_manual').select('doc_ventas').eq('doc_ventas', nuevoDoc).limit(1);
