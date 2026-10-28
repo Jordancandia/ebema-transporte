@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610281115';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610281115';
-import { getDatabase } from './data.js?v=202610281115';
+import { supabase } from './supabase-client.js?v=202610281222';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610281222';
+import { getDatabase } from './data.js?v=202610281222';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610281115';
-import { confirmar, pedirDato } from './confirmar.js?v=202610281115';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610281222';
+import { confirmar, pedirDato } from './confirmar.js?v=202610281222';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -1571,6 +1571,109 @@ async function eliminarVentaManual(doc) {
   const { error } = await supabase.from('abast_venta_manual').delete().eq('doc_ventas', d);
   if (error) { showAlert('No se pudo eliminar el pedido manual: ' + error.message, 'error'); return false; }
   return true;
+}
+// ── Camiones adicionales de una NV (28-oct-2026, Jordan) ─────────────────────
+// Una NV que no cabe en un camión se coordina por camiones: el camión 1 es la coordinación de la NV
+// (con unidades editadas) y cada camión adicional se guarda como pedido «NV-2», «NV-3»… en
+// abast_venta_manual (mismos datos de la NV, sólo los materiales/unidades de ese camión). Se coordina
+// aparte (fecha, CD-Cliente/Consolidable, transporte, N° de entrega) y entra al Plan de Carga, la foto y
+// Seguimiento de Carga como un pedido más. Sale solo cuando sus unidades viajan en un camión programado.
+const RX_CAMION_NV = /^(.+)-(\d+)$/;
+function camionesExtraNV(doc, manualMap) {
+  const d = String(doc ?? '').trim(), out = [];
+  (manualMap || new Map()).forEach((v, k) => { const m = RX_CAMION_NV.exec(k); if (m && m[1] === d) out.push({ doc: k, n: Number(m[2]), ...v }); });
+  return out.sort((a, b) => a.n - b.n);
+}
+const esCamionExtraNV = (doc, manualMap) => { const m = RX_CAMION_NV.exec(String(doc ?? '').trim()); return !!(m && manualMap && manualMap.has(String(doc).trim())); };
+function showAgregarCamionNVModal(row, ctx) {
+  const tx = v => String(v ?? '').trim();
+  const doc = tx(row.doc_ventas), co = row._coord;
+  const extras = camionesExtraNV(doc, (ctx && ctx.manualMap) || (PV_CTX_VENTAS && PV_CTX_VENTAS.manualMap));
+  const lin = (co && co.lineas && typeof co.lineas === 'object' && !Array.isArray(co.lineas)) ? co.lineas : null;
+  if (!lin) { showAlert('Primero edita la coordinación del pedido y deja en las unidades sólo lo que va en el camión 1; luego agrega los camiones adicionales.', 'error'); return Promise.resolve(false); }
+  const enExtras = m => extras.reduce((s, e) => s + (e.lineas || []).filter(l => tx(l.material) === m).reduce((s2, l) => s2 + (Number(l.cantidad) || 0), 0), 0);
+  const items = (row._detalle || []).map(d => {
+    const m = tx(d.material), conf = Number(d.conf) || 0, entreg = Number(d.entreg) || 0;
+    const c1 = Number(lin[m]) || 0, ex = enExtras(m);
+    const disp = Math.max(0, conf - Math.max(entreg, c1 + ex));
+    const kgU = d.pendiente > 0 ? (d.ton || 0) * 1000 / d.pendiente : 0;
+    return { material: m, nombre: d.nombre || '', conf, c1, ex, disp, kgU };
+  });
+  const n = extras.reduce((mx, e) => Math.max(mx, e.n), 1) + 1;
+  const nuevoDoc = `${doc}-${n}`;
+  const st = { cant: new Map(items.map((x, i) => [i, x.disp > 0 ? String(x.disp).replace('.', ',') : ''])), fecha: '', saving: false, err: '' };
+  const num = v => { let t = String(v ?? '').trim(); if (!t) return 0; if (t.includes(',')) t = t.replace(/\./g, '').replace(',', '.'); const x = Number(t); return isFinite(x) ? x : NaN; };
+  return new Promise(resolve => {
+    const wrap = document.createElement('div');
+    wrap.innerHTML = '<div class="sv-dr-bg" style="z-index:120"></div><aside class="sv-dr" style="z-index:121;width:min(900px,100vw)" role="dialog" aria-label="Agregar camión"></aside>';
+    document.body.appendChild(wrap);
+    const panel = wrap.querySelector('aside');
+    const onKey = e => { if (e.key === 'Escape' && !document.querySelector('.sv-cf-bg')) { e.stopPropagation(); fin(false); } };
+    const fin = v => { wrap.remove(); document.removeEventListener('keydown', onKey, true); resolve(v); };
+    document.addEventListener('keydown', onKey, true);
+    wrap.querySelector('.sv-dr-bg').addEventListener('click', () => fin(false));
+    const malos = () => items.map((x, i) => i).filter(i => { const v = num(st.cant.get(i)); return !isFinite(v) || v < 0 || v > items[i].disp + 1e-9; });
+    const tonTot = () => items.reduce((s, x, i) => s + (num(st.cant.get(i)) > 0 ? num(st.cant.get(i)) * x.kgU / 1000 : 0), 0);
+    function draw() {
+      const bad = new Set(malos()), ton = tonTot();
+      panel.innerHTML = `
+        <div class="sv-dr-h"><div style="flex:1;min-width:0">
+          <div class="sv-dr-k">Agregar camión ${n} · NV ${escapeHtml(doc)}</div>
+          <div class="sv-dr-t">${escapeHtml(row._cliente || 'Cliente ' + (row._id_cliente || ''))}</div>
+          <div class="sv-dr-s">→ ${escapeHtml(nombreCentro(row._ce_plan) || row._ce_plan || '')} · camión 1 coordinado ${escapeHtml(co.tipo_entrega === 'CD-CLIENTE' ? 'CD-Cliente' : 'Consolidable')} para el ${escapeHtml(fmtFechaISO(co.fecha_entrega) || '—')}${extras.length ? ` · ya hay ${extras.length} camión(es) adicional(es): ${escapeHtml(extras.map(e => e.doc).join(', '))}` : ''}</div></div>
+          <button class="sv-iconbtn" data-cx title="Cerrar (Esc)"><span class="material-symbols-outlined">close</span></button></div>
+        <div class="sv-dr-b" style="gap:12px">
+          <div class="sv-note-box">Indica las unidades que van en el <b>camión ${n}</b>. Se crea el pedido <b class="sv-mono">${escapeHtml(nuevoDoc)}</b> con esos materiales; después lo <b>coordinas</b> (CD-Cliente o Consolidable, fecha, transporte y N° de entrega SAP) como cualquier NV. <b>Disponible</b> = confirmado − lo del camión 1 − otros camiones adicionales.</div>
+          ${st.err ? `<div class="sv-note-box" style="background:#ffdad6;color:#93000a;font-weight:700">${escapeHtml(st.err)}</div>` : ''}
+          <div class="pc-tbl" style="max-height:48vh;overflow:auto"><table class="sv-table"><thead><tr>
+            <th>SKU · Nombre</th><th class="r">Confirmado</th><th class="r">Camión 1</th><th class="r">Otros camiones</th><th class="r">Disponible</th><th class="r">Camión ${n}</th><th class="r">Ton</th></tr></thead><tbody>
+            ${items.map((x, i) => { const v = num(st.cant.get(i)); return `<tr>
+              <td><span class="sv-mono">${escapeHtml(x.material)}</span> <span class="sv-sub" style="display:inline;margin:0">${escapeHtml(x.nombre)}</span></td>
+              <td class="r sv-mono">${fmtNum(x.conf, 1)}</td><td class="r sv-mono">${x.c1 ? fmtNum(x.c1, 1) : '—'}</td><td class="r sv-mono">${x.ex ? fmtNum(x.ex, 1) : '—'}</td>
+              <td class="r sv-mono"><b>${fmtNum(x.disp, 1)}</b></td>
+              <td class="r">${x.disp > 0 ? `<label class="sv-inp" style="width:100px;${bad.has(i) ? 'border-color:#b5000b' : ''}"><input data-c="${i}" value="${escapeHtml(st.cant.get(i))}" inputmode="decimal" style="width:100%;text-align:right"></label>` : '<span class="sv-muted">—</span>'}</td>
+              <td class="r sv-mono">${isFinite(v) && v > 0 ? fmtNum(v * x.kgU / 1000, 2) : '—'}</td></tr>`; }).join('')}
+          </tbody></table></div>
+          <div style="display:grid;grid-template-columns:220px 1fr;gap:12px;align-items:end">
+            <div><label class="sv-flbl" style="display:block;margin-bottom:6px">Fecha de entrega del camión ${n} *</label>
+              <label class="sv-inp" style="width:100%;box-sizing:border-box;${st.err && !st.fecha ? 'border-color:#b5000b' : ''}"><input type="date" data-f value="${escapeHtml(st.fecha)}" style="width:100%"></label></div>
+            <div class="sv-sub" style="margin:0">La fecha final, el tipo de entrega y el transporte se confirman al coordinar el pedido ${escapeHtml(nuevoDoc)}.</div>
+          </div>
+        </div>
+        <div class="sv-dr-f"><span class="sv-dr-note" style="${ton > CAP_CAMION_DIRECTO + 1e-9 ? 'color:#b5000b;font-weight:700' : ''}">Camión ${n}: ${fmtNum(ton, 2)} t de ${CAP_CAMION_DIRECTO} t${ton > CAP_CAMION_DIRECTO + 1e-9 ? ' · supera el camión: baja unidades' : ''}</span>
+          <div style="display:flex;gap:8px"><button class="sv-btn" data-cx>Cancelar</button>
+          <button class="sv-btn-p" data-ok ${st.saving ? 'disabled' : ''}><span class="material-symbols-outlined">local_shipping</span>Crear camión ${n}</button></div></div>`;
+      panel.querySelectorAll('[data-cx]').forEach(b => b.addEventListener('click', () => fin(false)));
+      panel.querySelectorAll('[data-c]').forEach(inp => inp.addEventListener('change', () => { st.cant.set(+inp.dataset.c, inp.value); st.err = ''; draw(); }));
+      panel.querySelector('[data-f]')?.addEventListener('change', e => { st.fecha = e.target.value; });
+      panel.querySelector('[data-ok]')?.addEventListener('click', async () => {
+        const sel = items.map((x, i) => ({ x, q: num(st.cant.get(i)) })).filter(o => isFinite(o.q) && o.q > 0);
+        if (malos().length) { st.err = 'Revisa las unidades marcadas: deben estar entre 0 y lo disponible.'; draw(); return; }
+        if (!sel.length) { st.err = 'Indica al menos un material con unidades para el camión.'; draw(); return; }
+        if (!st.fecha) { st.err = 'Indica la fecha de entrega del camión.'; draw(); return; }
+        if (tonTot() > CAP_CAMION_DIRECTO + 1e-9) { st.err = `El camión supera ${CAP_CAMION_DIRECTO} t: baja unidades o crea otro camión.`; draw(); return; }
+        if (!await confirmar(`¿Crear el camión ${n} de la NV ${doc}?\n\nPedido ${nuevoDoc} · ${fmtNum(tonTot(), 2)} t · entrega ${fmtFechaISO(st.fecha)}\n${sel.map(o => `• ${o.x.material}: ${fmtNum(o.q, 1)}`).join('\n')}\n\nDespués coordínalo con su transporte en Ventas CD.`, { aceptar: `Crear camión ${n}`, icono: 'local_shipping' })) return;
+        st.saving = true; draw();
+        const { data: ya } = await supabase.from('abast_venta_manual').select('doc_ventas').eq('doc_ventas', nuevoDoc).limit(1);
+        if ((ya || []).length) { st.saving = false; st.err = `El pedido ${nuevoDoc} ya existe: recarga la vista (otro usuario pudo crearlo).`; draw(); return; }
+        const email = await getUserEmail(), now = new Date().toISOString();
+        const vm = row._nv_manual && row._nv_manual.cab;
+        const creado = (() => { const d = parseDateSAP(row.creado_el); return d ? isoLocal(d) : isoLocal(hoy00()); })();
+        const base = { doc_ventas: nuevoDoc, ofvta: tx(row._ce_plan || row.ofvta), ruta: tx(row._ruta || (vm && vm.ruta)), creado_el: creado, fe_entrega: st.fecha,
+          id_vendedor: tx(row.deudor) || (vm && vm.id_vendedor) || null, nombre_vendedor: row._vendedor || (vm && vm.nombre_vendedor) || null,
+          id_cliente: tx(row._id_cliente), nombre_cliente: row._cliente || null, cond_expedicion: (vm && vm.cond_expedicion) || null,
+          observacion: `CAMIÓN ${n} DE NV ${doc}`, activo: true, created_at: now, created_by: email };
+        const rows = sel.map((o, i) => ({ ...base, pos: String((i + 1) * 10).padStart(6, '0'), material: o.x.material, denominacion: o.x.nombre || null,
+          cantidad: Math.round(o.q * 1000) / 1000, um: null, peso_unit_kg: o.x.kgU > 0 ? Math.round(o.x.kgU * 10000) / 10000 : null }));
+        const { error } = await supabase.from('abast_venta_manual').insert(rows);
+        if (error) { st.saving = false; st.err = 'No se pudo crear el camión: ' + error.message; draw(); return; }
+        clearRawCache();
+        showAlert(`Camión ${n} creado como pedido ${nuevoDoc}: coordínalo en Ventas CD con su transporte`, 'success');
+        fin(true);
+      });
+    }
+    draw();
+  });
 }
 let _rutasVM = null, _matsVM = null;
 async function rutasVentaManual() {
@@ -3322,7 +3425,7 @@ const VISTAS_TRONCAL = {
           const d = parseDateSAP(r.fe_entrega);
           if (d && (!fmax || d > fmax)) fmax = d;
           return { doc_ventas: doc, deudor: r.deudor, ruta: r.ruta, comuna: r._comuna, region: r._region,
-                   material: r.material, nombre: r.denominacion_de_posicion, pendiente: r._pend, ton: r._ton };
+                   material: r.material, nombre: r.denominacion_de_posicion, pendiente: r._pend, ton: r._ton, conf: r._conf, entreg: r._entreg };
         });
         const feLbl = fmax ? `${String(fmax.getDate()).padStart(2,'0')}.${String(fmax.getMonth()+1).padStart(2,'0')}.${fmax.getFullYear()}` : f.fe_entrega;
         const al = alertaFecha(feLbl, 5);
@@ -4266,6 +4369,9 @@ const V2 = {
           { aceptar: 'Anular coordinación', tono: 'peligro', icono: 'event_busy' })) return null;
         return (await anularCoordinacionVenta(row.doc_ventas)) ? (clearRawCache(), showAlert('Coordinación CD-Cliente anulada', 'success'), { recargar: true }) : null;
       } });
+      // (28-oct-2026, Jordan) NV en varios camiones: camión 1 = esta coordinación; los demás, pedidos «NV-2», «NV-3»…
+      if (c && can('venta_manual') && !esCamionExtraNV(r.doc_ventas, PV_CTX_VENTAS && PV_CTX_VENTAS.manualMap))
+        acciones.push({ label: 'Agregar camión', icon: 'add_road', run: async (row, ctx2) => ((await showAgregarCamionNVModal(row, ctx2 || PV_CTX_VENTAS || {})) ? { recargar: true } : null) });
       if (!k && r._manual && !c && can('forzar_cd_cliente')) acciones.push({ label: 'Volver a regla automática', icon: 'undo', run: async row => {
         if (!await confirmar(`¿Quitar el tipo de entrega manual del pedido ${row.doc_ventas}?\n\nVuelve a evaluarse con la regla de 23,8 t por cliente.`)) return null;
         return (await setVentaDirectoManual(row.doc_ventas, null)) ? (showAlert('Pedido vuelve a la regla automática', 'success'), { recargar: true }) : null;
@@ -4282,13 +4388,17 @@ const V2 = {
         } });
       }
       const vm = r._nv_manual && r._nv_manual.cab;
+      const mx = RX_CAMION_NV.exec(String(r.doc_ventas ?? '').trim());
+      const esExtra = !!(vm && mx && /^CAMIÓN \d+ DE NV /.test(String(vm.observacion || '')));
+      const extrasNV = camionesExtraNV(r.doc_ventas, PV_CTX_VENTAS && PV_CTX_VENTAS.manualMap);
       return {
-        kind: vm ? 'Pedido de venta MANUAL · CE CDRM' : 'Pedido de venta · CE CDRM', title: r.doc_ventas,
+        kind: esExtra ? `Camión ${mx[2]} de la NV ${mx[1]} · CE CDRM` : vm ? 'Pedido de venta MANUAL · CE CDRM' : 'Pedido de venta · CE CDRM', title: r.doc_ventas,
         sub: `${r._cliente || (r._id_cliente ? 'Cliente ID ' + r._id_cliente : 'Cliente sin identificar')} → ${nombreCentro(r.ofvta) || r.ofvta}`,
         aviso,
         kv: [
           vm ? ['Origen', `Pedido manual · ${vm.created_by || ''}${vm.created_at ? ' · ' + horaChile(vm.created_at) : ''}${vm.updated_by ? ' · editado por ' + vm.updated_by : ''}`] : null,
           vm && vm.observacion ? ['Observación', vm.observacion] : null,
+          extrasNV.length ? ['Camiones adicionales', extrasNV.map(e => `${e.doc} (${fmtNum((e.lineas || []).reduce((s, l) => s + (Number(l.cantidad) || 0), 0), 0)} u.)`).join(' · ')] : null,
           ['Tipo de entrega', `${tipoLbl(r._tipo_entrega)} · ${origenLbl}`], ['Regla automática', reglaLbl],
           ['Estado', k ? pill('COORDINADO', 'info') : c ? pill('Pedido Coordinado', 'ok') : pill('Sin coordinar', 'mute'), true],
           ['Fecha entrega', c ? `${r._fecha_plan} (confirmada)` : `${r.fe_entrega || '—'} (SAP, por confirmar)`],
@@ -6107,7 +6217,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610281115');
+    const m = await import('./ind-plan-carga.js?v=202610281222');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
