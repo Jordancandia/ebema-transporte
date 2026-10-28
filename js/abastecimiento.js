@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610281232';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610281232';
-import { getDatabase } from './data.js?v=202610281232';
+import { supabase } from './supabase-client.js?v=202610281439';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610281439';
+import { getDatabase } from './data.js?v=202610281439';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610281232';
-import { confirmar, pedirDato } from './confirmar.js?v=202610281232';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610281439';
+import { confirmar, pedirDato } from './confirmar.js?v=202610281439';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -1302,7 +1302,12 @@ function showCoordVentaModal(row, ctx) {
     };
     // (18-oct-2026, Jordan) Unidades a cargar por material y centro destino alternativo del Plan de Carga.
     const itemsNV = (row._detalle || []).map(d => ({ material: d.material, nombre: d.nombre, pend: Number(d.pendiente) || 0, tonU: d.pendiente > 0 ? (d.ton || 0) / d.pendiente : 0 }));
-    st.ceOrig = String(row.ofvta ?? '').trim(); st.ceAlt = ceAltDe(c); st.cant = editorCargaIni(itemsNV, c); st.errCarga = '';
+    st.ceOrig = String(row.ofvta ?? '').trim(); st.ceAlt = ceAltDe(c); st.errCarga = '';
+    // (28-oct-2026, Jordan) Unidades sin tope en el pendiente SAP y N° de entrega por posición.
+    st.cant = new Map(itemsNV.map(it => [String(it.material).trim(), String(Math.round(cantLineasV(c, it.material, it.pend) * 1000) / 1000)]));
+    st.ent = new Map(Object.entries((c.entregas && typeof c.entregas === 'object' && !Array.isArray(c.entregas)) ? c.entregas : {}).map(([k, v]) => [String(k).trim(), String(v ?? '').trim()]));
+    const cargaMat = m => Number(String(st.cant.get(m) ?? '').replace(',', '.')) > 0;
+    const todasConEntrega = () => itemsNV.filter(it => cargaMat(String(it.material).trim())).every(it => !!(st.ent.get(String(it.material).trim()) || '').trim());
     let tr = { trans: [], choferes: [], camiones: [] };
     try { tr = await loadTransportistasCoord(); } catch (_) { /* sin maestro de transportistas */ }
     // (7-oct-2026, Jordan) CD-CLIENTE: se pueden sumar otros pedidos de venta del MISMO centro destino
@@ -1342,7 +1347,7 @@ function showCoordVentaModal(row, ctx) {
     const faltantes = () => {
       const f = [];
       if (!st.fecha) f.push('fecha');
-      if (!st.entrega.trim() && !entregaOpc) f.push('entrega');
+      if (!st.entrega.trim() && !entregaOpc && !todasConEntrega()) f.push('entrega');
       if (!st.direccion.trim()) f.push('direccion');
       if (!st.telefono.trim()) f.push('telefono');
       if (esCli()) {
@@ -1438,7 +1443,7 @@ function showCoordVentaModal(row, ctx) {
             </div>
             <div style="max-width:260px">${lbl('Teléfono de contacto', 'telefono', true)}${inp('telefono', '+56 9…')}</div>
           </div>
-          ${editorCargaHtml(itemsNV, st)}
+          ${editorCargaHtml(itemsNV, st, { sinTope: true, conEntrega: true })}
           ${esCli() ? `
           <div class="sv-card" style="padding:14px 16px;display:flex;flex-direction:column;gap:10px">
             <div class="sv-b" style="font-size:14px">Datos del transporte (CD-Cliente)</div>
@@ -1477,7 +1482,7 @@ function showCoordVentaModal(row, ctx) {
       }));
       montarTransp(panel, st, tr, bad('idTrans'), draw);
       wirePatentes(panel, st, tr, draw);
-      wireEditorCarga(panel, st, itemsNV, draw);
+      wireEditorCarga(panel, st, itemsNV, draw, { sinTope: true });
       panel.querySelector('[data-sel="chof"]')?.addEventListener('change', e => {
         const x = chofList()[+e.target.value];
         if (x) { st.choferNombre = [x.nombre, x.apellido].filter(Boolean).join(' '); st.choferRut = x.rut || ''; st.choferTel = x.telefono || st.choferTel; if (x.id_camion) st.patCamion = fmtPatente(x.id_camion); draw(); }
@@ -1489,9 +1494,15 @@ function showCoordVentaModal(row, ctx) {
       wireCandsV();
       panel.querySelector('[data-ok]').addEventListener('click', async e => {
         if (faltantes().length) { st.err = true; draw(); return; }
-        const lc = lineasDesdeEditor(itemsNV, st);
+        const lc = lineasDesdeEditor(itemsNV, st, { sinTope: true });
         if (lc.err) { st.errCarga = lc.err; draw(); return; }
         st.errCarga = '';
+        if (lc.excede && lc.excede.length && !(await confirmar(`Unidades sobre el pendiente SAP\n\n${lc.excede.map(x => '• ' + x).join('\n')}\n\nSe cargan las unidades indicadas. ¿Guardar igual?`, { aceptar: 'Guardar igual', icono: 'warning' }))) return;
+        // N° de entrega por posición (sólo materiales que se cargan); el encabezado queda como entrega por defecto.
+        const entObj = {};
+        itemsNV.forEach(it => { const m = String(it.material).trim(), v = (st.ent.get(m) || '').trim(); if (v && cargaMat(m)) entObj[m] = v; });
+        const entregaHdr = st.entrega.trim() || Object.values(entObj)[0] || '';
+        const entregasV = Object.keys(entObj).length ? entObj : null;
         const btn = e.currentTarget; btn.disabled = true;
         const cli = esCli();
         // Aviso de choque (2-oct-2026): misma patente con otro transportista/chofer el mismo día,
@@ -1511,9 +1522,10 @@ function showCoordVentaModal(row, ctx) {
           patente_camion: cli ? (fmtPatente(st.patCamion) || null) : null, patente_carro: cli ? (fmtPatente(st.patCarro) || null) : null,
         };
         const ok = await guardarCoordinacionVenta({
-          doc_ventas: MAIN, n_entrega: st.entrega.trim(), id_cliente: row._id_cliente || null, nombre_cliente: row._cliente || null,
+          doc_ventas: MAIN, n_entrega: entregaHdr, id_cliente: row._id_cliente || null, nombre_cliente: row._cliente || null,
           comuna: st.comuna.trim() || null, direccion: st.direccion.trim(), telefono: st.telefono.trim(), ...baseCoord,
           ce_alternativo: st.ceAlt && st.ceAlt !== st.ceOrig ? st.ceAlt : null, lineas: lc.lineas,
+          ...((entregasV || (c.entregas && Object.keys(c.entregas).length)) ? { entregas: entregasV } : {}),
         }, !editando);
         if (!ok) { btn.disabled = false; return; }
         for (const [d, ex] of extrasG) {
@@ -1536,11 +1548,12 @@ function showCoordVentaModal(row, ctx) {
         const transpSeg = { id_transporte: st.idTrans.trim(), transportista: st.transportista, chofer_nombre: st.choferNombre.trim(), chofer_rut: st.choferRut.trim(),
           chofer_telefono: st.choferTel.trim(), patente_camion: fmtPatente(st.patCamion), patente_carro: fmtPatente(st.patCarro) };
         const coAj = x => (x === row ? { lineas: lc.lineas } : x._coord);
+        const coMain = { n_entrega: entregaHdr, entregas: entregasV };
         const regSeg = (x, docX, entregaX) => ({ doc: docX, tipo: 'CD-CLIENTE', ce: x === row ? (st.ceAlt || st.ceOrig) : ceEfV(x), fechaCarga: st.fecha, origen: '1003 CD Quilicura',
           destino: `Cliente: ${x._cliente || ('ID ' + (x._id_cliente || ''))}` + (grupo ? ` · camión compartido (${extrasG.length + 1} pedidos)` : ''), transp: transpSeg,
-          lineas: (x._detalle || []).map(d => { const q = cantAjustada(coAj(x), d.material, d.pendiente); return q > 0 ? lineaSegCoord({ tipo_carga: 'Pedidos de venta CD', documento: docX, n_entrega: entregaX, material: d.material, nombre: d.nombre,
+          lineas: (x._detalle || []).map(d => { const q = x === row ? cantLineasV(coAj(x), d.material, d.pendiente) : cantAjustada(coAj(x), d.material, d.pendiente); return q > 0 ? lineaSegCoord({ tipo_carga: 'Pedidos de venta CD', documento: docX, n_entrega: x === row ? entregaLineaV(coMain, d.material) : entregaX, material: d.material, nombre: d.nombre,
             cantidad: q, ton: d.pendiente > 0 ? d.ton * q / d.pendiente : 0, pedido_venta: docX, ruta: d.ruta, comuna: d.comuna, cliente: x._cliente || '' }) : null; }).filter(Boolean) });
-        if (cli) await registrarSeguimientoCoord([regSeg(row, MAIN, st.entrega.trim()), ...extrasG.map(([d, ex]) => regSeg(rowOfV(d), d, ex.entrega.trim()))]);
+        if (cli) await registrarSeguimientoCoord([regSeg(row, MAIN, entregaHdr), ...extrasG.map(([d, ex]) => regSeg(rowOfV(d), d, ex.entrega.trim()))]);
         else await quitarSeguimientoCoord([MAIN]);
         const pendV = cli ? pendTranspRetiro({ chofer_nombre: st.choferNombre, chofer_rut: st.choferRut, chofer_telefono: st.choferTel, patente_camion: st.patCamion }) : [];
         showAlert((extrasG.length ? `${extrasG.length + 1} pedidos coordinados en el mismo camión` : `Pedido ${row.doc_ventas} coordinado`) + ` para el ${fmtFechaISO(st.fecha)}`
@@ -1966,11 +1979,31 @@ function cantAjustada(co, material, pend) {
   const v = Number(l[String(material ?? '').trim()]);
   return Number.isFinite(v) && v > 0 ? Math.min(v, pend) : 0;
 }
+// (28-oct-2026, Jordan) NV coordinada: N° de entrega SAP por material (coordinacion.entregas = { material: entrega });
+// el material sin entrega propia usa la del encabezado (n_entrega). Una NV puede tener varias entregas.
+const entregaLineaV = (co, material) => { const e = co && co.entregas;
+  const v = e && typeof e === 'object' && !Array.isArray(e) ? String(e[String(material ?? '').trim()] ?? '').trim() : '';
+  return v || String((co && co.n_entrega) ?? '').trim(); };
+function entregasCoordV(co) {
+  const out = new Set(), h = String((co && co.n_entrega) ?? '').trim(), e = co && co.entregas;
+  if (h) out.add(h);
+  if (e && typeof e === 'object' && !Array.isArray(e)) Object.values(e).forEach(v => { const t = String(v ?? '').trim(); if (t) out.add(t); });
+  return [...out];
+}
+// Coordinación «despachada»: TODAS sus entregas tienen DT.
+const coordConDtV = (co, conDt) => { const es = entregasCoordV(co); return es.length > 0 && !!conDt && es.every(e => conDt.has(e)); };
+// (28-oct-2026, Jordan) Unidades editadas de una NV SIN tope en el pendiente SAP (pueden superar lo disponible).
+function cantLineasV(co, material, pend) {
+  const l = co && co.lineas;
+  if (!l || typeof l !== 'object' || Array.isArray(l)) return pend;
+  const v = Number(l[String(material ?? '').trim()]);
+  return Number.isFinite(v) && v > 0 ? v : 0;
+}
 // items: [{ material, nombre, pend, tonU }]  · st: { cant: Map(material → texto), ceAlt, ceOrig, errCarga }
 function editorCargaIni(items, co) {
   return new Map(items.map(it => [String(it.material).trim(), String(Math.round(cantAjustada(co, it.material, it.pend) * 1000) / 1000)]));
 }
-function editorCargaHtml(items, st, { titulo = 'Carga en el Plan de Carga', editable = true, conCentro = true } = {}) {
+function editorCargaHtml(items, st, { titulo = 'Carga en el Plan de Carga', editable = true, conCentro = true, sinTope = false, conEntrega = false } = {}) {
   const num = m => { const v = Number(String(st.cant.get(m) ?? '').replace(',', '.')); return Number.isFinite(v) ? v : NaN; };
   const tonTot = items.reduce((s, it) => { const v = num(String(it.material).trim()); return s + (v > 0 ? v * it.tonU : 0); }, 0);
   const tonPend = items.reduce((s, it) => s + it.pend * it.tonU, 0);
@@ -1979,29 +2012,31 @@ function editorCargaHtml(items, st, { titulo = 'Carga en el Plan de Carga', edit
   return `<div class="sv-card" style="padding:14px 16px;display:flex;flex-direction:column;gap:10px">
       <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
         <div><div class="sv-b" style="font-size:14px">${escapeHtml(titulo)}</div>
-          <div class="sv-sub" style="margin:0;max-width:none">Unidades a cargar por material (máximo el pendiente; 0 = no se carga).</div></div>
+          <div class="sv-sub" style="margin:0;max-width:none">${sinTope ? 'Unidades a cargar por material (pueden superar el pendiente SAP; 0 = no se carga).' : 'Unidades a cargar por material (máximo el pendiente; 0 = no se carga).'}${conEntrega ? ' Entrega: N° de entrega SAP de esa posición (vacío = la del encabezado).' : ''}</div></div>
         <span class="sv-pill info" data-ec-ton><i></i>${fmtNum(tonTot, 2)} t de ${fmtNum(tonPend, 2)} t</span></div>
       ${conCentro ? `<div><label class="sv-flbl" style="display:block;margin-bottom:6px">Centro destino en el Plan de Carga</label>
         <label class="sv-inp" style="width:100%;box-sizing:border-box;min-width:0"><span class="material-symbols-outlined">alt_route</span>
           <select data-ec-ce ${editable ? '' : 'disabled'} style="border:none;background:transparent;width:100%;font:inherit;outline:none">${conOrig}${opts}</select></label>
         <div class="sv-sub" style="margin:4px 0 0;max-width:none">${st.ceAlt && st.ceAlt !== st.ceOrig ? `Centro alternativo: la carga computa en el plan de <b>${escapeHtml(getNombreCentro(st.ceAlt))}</b> (original ${escapeHtml(getNombreCentro(st.ceOrig))}).` : 'Por defecto computa en su centro destino original.'}</div></div>` : ''}
       ${st.errCarga ? `<div class="sv-note-box" style="background:#ffdad6;color:#93000a;font-weight:700">${escapeHtml(st.errCarga)}</div>` : ''}
-      <div class="pc-tbl" style="max-height:260px;overflow:auto"><table class="sv-table"><thead><tr><th>Material</th><th class="r">Pendiente</th><th class="r">A cargar</th><th class="r">Ton</th></tr></thead><tbody>
-        ${items.map(it => { const m = String(it.material).trim(), v = num(m), mal = !(v >= 0) || v > it.pend + 1e-9;
+      <div class="pc-tbl" style="max-height:260px;overflow:auto"><table class="sv-table"><thead><tr><th>Material</th><th class="r">Pendiente</th><th class="r">A cargar</th>${conEntrega ? '<th>Entrega</th>' : ''}<th class="r">Ton</th></tr></thead><tbody>
+        ${items.map(it => { const m = String(it.material).trim(), v = num(m), mal = !(v >= 0) || (!sinTope && v > it.pend + 1e-9), sobre = sinTope && v > it.pend + 1e-9;
           return `<tr><td><div class="pc-mat"><b class="sv-mono">${escapeHtml(m)}</b><small>${escapeHtml(it.nombre || '')}</small></div></td>
           <td class="r">${fmtNum(it.pend, it.pend % 1 ? 2 : 0)}</td>
-          <td class="r"><input data-ec-mat="${escapeHtml(m)}" type="number" min="0" max="${it.pend}" step="any" value="${escapeHtml(st.cant.get(m) ?? '')}" ${editable ? '' : 'disabled'} style="width:90px;text-align:right;border:1px solid ${mal ? '#b5000b' : '#c5c7c9'};border-radius:6px;padding:3px 6px;font:inherit"></td>
+          <td class="r"><input data-ec-mat="${escapeHtml(m)}" type="number" min="0" ${sinTope ? '' : `max="${it.pend}"`} step="any" value="${escapeHtml(st.cant.get(m) ?? '')}" ${editable ? '' : 'disabled'} title="${sobre ? 'Supera el pendiente SAP' : ''}" style="width:90px;text-align:right;border:1px solid ${mal ? '#b5000b' : sobre ? '#c2410c' : '#c5c7c9'};border-radius:6px;padding:3px 6px;font:inherit"></td>
+          ${conEntrega ? `<td><input data-ec-ent="${escapeHtml(m)}" class="is-mono" value="${escapeHtml((st.ent && st.ent.get(m)) || '')}" placeholder="${escapeHtml(st.entrega || 'N° entrega')}" ${editable ? '' : 'disabled'} style="width:96px;border:1px solid #c5c7c9;border-radius:6px;padding:3px 6px;font:inherit"></td>` : ''}
           <td class="r" data-ec-t="${escapeHtml(m)}">${fmtNum(v > 0 ? v * it.tonU : 0, 3)}</td></tr>`; }).join('')}
       </tbody></table></div></div>`;
 }
-function wireEditorCarga(panel, st, items, redraw) {
+function wireEditorCarga(panel, st, items, redraw, { sinTope = false } = {}) {
+  panel.querySelectorAll('[data-ec-ent]').forEach(i => i.addEventListener('input', () => { if (!st.ent) st.ent = new Map(); st.ent.set(i.dataset.ecEnt, i.value.trim()); }));
   panel.querySelectorAll('[data-ec-mat]').forEach(i => i.addEventListener('input', () => {
     st.cant.set(i.dataset.ecMat, i.value);
     const it = items.find(x => String(x.material).trim() === i.dataset.ecMat);
     const v = Number(String(i.value).replace(',', '.'));
     const td = panel.querySelector(`[data-ec-t="${CSS.escape(i.dataset.ecMat)}"]`);
     if (td && it) td.textContent = fmtNum(v > 0 ? v * it.tonU : 0, 3);
-    i.style.borderColor = !(v >= 0) || (it && v > it.pend + 1e-9) ? '#b5000b' : '#c5c7c9';
+    i.style.borderColor = !(v >= 0) || (!sinTope && it && v > it.pend + 1e-9) ? '#b5000b' : (sinTope && it && v > it.pend + 1e-9) ? '#c2410c' : '#c5c7c9';
     const tot = items.reduce((s, x) => { const q = Number(String(st.cant.get(String(x.material).trim()) ?? '').replace(',', '.')); return s + (q > 0 ? q * x.tonU : 0); }, 0);
     const tp = items.reduce((s, x) => s + x.pend * x.tonU, 0);
     const pl = panel.querySelector('[data-ec-ton]'); if (pl) pl.innerHTML = `<i></i>${fmtNum(tot, 2)} t de ${fmtNum(tp, 2)} t`;
@@ -2009,18 +2044,18 @@ function wireEditorCarga(panel, st, items, redraw) {
   panel.querySelector('[data-ec-ce]')?.addEventListener('change', e => { st.ceAlt = e.target.value === st.ceOrig ? '' : e.target.value; redraw(); });
 }
 // → { lineas: {material: cant} | null (todo el pendiente), total, err }
-function lineasDesdeEditor(items, st) {
-  const out = {}; let todo = true, total = 0, n = 0;
+function lineasDesdeEditor(items, st, { sinTope = false } = {}) {
+  const out = {}; let todo = true, total = 0, n = 0; const excede = [];
   for (const it of items) {
     const m = String(it.material).trim();
     const v = Number(String(st.cant.get(m) ?? '').replace(',', '.'));
     if (!Number.isFinite(v) || v < 0) return { err: `Cantidad inválida en el material ${m}.` };
-    if (v > it.pend + 1e-9) return { err: `El material ${m} supera el pendiente (${fmtNum(it.pend, 2)}).` };
+    if (v > it.pend + 1e-9) { if (!sinTope) return { err: `El material ${m} supera el pendiente (${fmtNum(it.pend, 2)}).` }; excede.push(`${m}: ${fmtNum(v, 2)} (pendiente ${fmtNum(it.pend, 2)})`); }
     if (Math.abs(v - it.pend) > 1e-9) todo = false;
     if (v > 0) { out[m] = Math.round(v * 1000) / 1000; total += v * it.tonU; n++; }
   }
   if (!n) return { err: 'Debe quedar al menos un material con unidades a cargar.' };
-  return { lineas: todo ? null : out, total };
+  return { lineas: todo ? null : out, total, excede };
 }
 function cantRetiroLinea(e, material, pendiente) {
   const sel = e && e.lineas_retiro;
@@ -4281,7 +4316,7 @@ const V2 = {
         r._ce_alt = ceAltDe(r._coord);
         r._ce_plan = r._ce_alt || String(r.ofvta ?? '').trim();
         r._lineas_aj = !!(r._coord && r._coord.lineas && typeof r._coord.lineas === 'object');
-        r._ton_plan = (r._detalle || []).reduce((s, d) => s + (d.pendiente > 0 ? (d.ton || 0) * cantAjustada(r._coord, d.material, d.pendiente) / d.pendiente : 0), 0);
+        r._ton_plan = (r._detalle || []).reduce((s, d) => s + (d.pendiente > 0 ? (d.ton || 0) * cantLineasV(r._coord, d.material, d.pendiente) / d.pendiente : 0), 0);
         r._dia_obj = ctx.diaObj(r._ce_plan);
         const fp = parseDateSAP(r._fecha_plan);
         r._plan = !r._coord ? 'SIN_COORD' : (fp && fp.getTime() <= r._dia_obj.getTime() ? 'EN_PLAN' : 'PROGRAMADO');
@@ -4297,7 +4332,7 @@ const V2 = {
     },
     rowId: r => String(r.doc_ventas ?? '').trim(),
     chip: { label: 'Destino', of: r => String(r.ofvta ?? '').trim(), name: v => nombreCentro(v) || v },
-    search: { ph: 'Buscar pedido o cliente', of: r => `${r.doc_ventas} ${r._cliente} ${r._id_cliente} ${r._vendedor} ${(r._coord && r._coord.n_entrega) || ''}` },
+    search: { ph: 'Buscar pedido o cliente', of: r => `${r.doc_ventas} ${r._cliente} ${r._id_cliente} ${r._vendedor} ${entregasCoordV(r._coord).join(' ')}` },
     docSearch: null,
     fecha: { label: 'Entrega', of: r => r._fecha_plan },
     // (21-oct-2026, Jordan) OWNER y Planner Distribución agregan pedidos de venta a mano y los coordinan.
@@ -4327,7 +4362,7 @@ const V2 = {
       { label: 'Ton', al: 'r', html: r => `<span class="sv-ton">${tonHtml(r._ton_num)}</span>` + (r._lineas_aj ? `<div class="sv-sub" title="Unidades editadas al coordinar">a cargar ${escV2(fmtNum(r._ton_plan, 2))} t</div>` : '') + (r._n_pedidos_cliente > 1 ? `<div class="sv-sub">cliente ${escV2(fmtNum(r._ton_cliente, 1))} t</div>` : '') },
       { label: 'Fecha entrega', html: r => mono(r._fecha_plan, r._coord ? 'confirmada' : 'SAP · por confirmar') },
       { label: 'Coordinación', html: r => r._cargada ? pill('COORDINADO', 'info') + `<div class="sv-sub" title="Bloqueado: va en un camión programado">🔒 Camión ${escV2(r._cargada.patente || r._cargada.transportista || 'programado')} · carga ${escV2(fmtFechaISO(String(r._cargada.fecha_carga).slice(0, 10)))}</div>`
-        : r._coord ? pill('Pedido Coordinado', 'ok') + (r._coord.n_entrega ? `<div class="sv-sub">Entrega ${escV2(r._coord.n_entrega)}</div>` : '')
+        : r._coord ? pill('Pedido Coordinado', 'ok') + (entregasCoordV(r._coord).length ? `<div class="sv-sub">${entregasCoordV(r._coord).length > 1 ? 'Entregas' : 'Entrega'} ${escV2(entregasCoordV(r._coord).join(', '))}</div>` : '')
           + (r._coord.tipo_entrega === 'CD-CLIENTE' && pendTranspRetiro(r._coord).length ? `<div style="margin-top:4px" title="Pendiente: ${escV2(pendTranspRetiro(r._coord).join(', '))}">${pill('Chofer/patente pendiente', 'warn')}</div>` : '') : pill('Sin coordinar', 'mute') },
       { label: 'Alerta', html: r => pill(r._al.k, r._al.tone) + (r._estado ? ` ${pill('Parcial', 'warn')}` : '') },
     ],
@@ -4406,7 +4441,7 @@ const V2 = {
           ['Tipo de entrega', `${tipoLbl(r._tipo_entrega)} · ${origenLbl}`], ['Regla automática', reglaLbl],
           ['Estado', k ? pill('COORDINADO', 'info') : c ? pill('Pedido Coordinado', 'ok') : pill('Sin coordinar', 'mute'), true],
           ['Fecha entrega', c ? `${r._fecha_plan} (confirmada)` : `${r.fe_entrega || '—'} (SAP, por confirmar)`],
-          c ? ['N° de entrega', c.n_entrega] : null,
+          c ? ['N° de entrega', entregasCoordV(c).join(', ')] : null,
           ['ID cliente (Solic.)', r._id_cliente], ['Cliente', r._cliente],
           ['Comuna', (c && c.comuna) || r._comuna], c ? ['Dirección', c.direccion] : null,
           c ? ['Teléfono cliente', c.telefono] : null,
@@ -4427,8 +4462,9 @@ const V2 = {
         tabla: {
           titulo: `${(r._detalle || []).length} ${(r._detalle || []).length === 1 ? 'material pendiente' : 'materiales pendientes'}`,
           head: r._lineas_aj ? [['Material'], ['Descripción'], ['Pendiente', 'r'], ['A cargar', 'r'], ['Ton', 'r']] : [['Material'], ['Descripción'], ['Cantidad', 'r'], ['Ton', 'r']],
-          rows: (r._detalle || []).map(d => { const q = cantAjustada(r._coord, d.material, d.pendiente);
-            return r._lineas_aj ? [mono(d.material), escV2(d.nombre), escV2(fmtNum(d.pendiente, 0)), `<b>${escV2(fmtNum(q, q % 1 ? 2 : 0))}</b>`, `<span class="sv-ton">${tonHtml(d.pendiente > 0 ? d.ton * q / d.pendiente : 0)}</span>`]
+          rows: (r._detalle || []).map(d => { const q = cantLineasV(r._coord, d.material, d.pendiente);
+            const eL = r._coord && r._coord.entregas && r._coord.entregas[String(d.material).trim()] ? `<div class="sv-sub" style="margin:0">Ent. ${escV2(r._coord.entregas[String(d.material).trim()])}</div>` : '';
+            return r._lineas_aj ? [mono(d.material) + eL, escV2(d.nombre), escV2(fmtNum(d.pendiente, 0)), `<b>${escV2(fmtNum(q, q % 1 ? 2 : 0))}</b>`, `<span class="sv-ton">${tonHtml(d.pendiente > 0 ? d.ton * q / d.pendiente : 0)}</span>`]
               : [mono(d.material), escV2(d.nombre), escV2(fmtNum(d.pendiente, 0)), `<span class="sv-ton">${tonHtml(d.ton)}</span>`]; }),
         },
         nota: r._directo ? 'Camión directo al cliente (CD-Cliente)' : '2º en el orden de llenado del camión CD',
@@ -6221,7 +6257,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610281232');
+    const m = await import('./ind-plan-carga.js?v=202610281439');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -6703,12 +6739,12 @@ async function renderPlanCarga(stage, opts = {}) {
     // (abast_coord_sqvi), aunque la siguiente corrida SQVI —tras crear la entrega— la deje sin pendiente,
     // con repartos en 0 o la saque: se reemplazan TODAS sus líneas vivas por el respaldo hasta que la
     // entrega coordinada tenga DT (despachada). Mismo criterio que v_trc_plan_carga_ventas_lineas (foto).
-    const entCo = [...coordVentas.values()].map(c => tx(c.n_entrega)).filter(Boolean);
+    const entCo = [...new Set([...coordVentas.values()].flatMap(c => entregasCoordV(c)))];
     let conDt = new Set();
     if (entCo.length) { const { data } = await supabase.from('abast_dt_dia').select('entrega').in('entrega', entCo); conDt = new Set((data || []).map(x => tx(x.entrega))); }
     const bkPorDoc = new Map();
     bkVen.forEach(r => { const d = tx(r.doc_ventas); if (!bkPorDoc.has(d)) bkPorDoc.set(d, []); bkPorDoc.get(d).push(r); });
-    const usarBk = new Set([...bkPorDoc.keys()].filter(d => { const co = coordVentas.get(d); return !!co && !(co.n_entrega && conDt.has(tx(co.n_entrega))); }));
+    const usarBk = new Set([...bkPorDoc.keys()].filter(d => { const co = coordVentas.get(d); return !!co && !coordConDtV(co, conDt); }));
     const lin = ventasCoordLin(coordVentas, conDt);
     if (usarBk.size) {
       for (let i = ventasRaw.length - 1; i >= 0; i--) { const d = tx(ventasRaw[i].doc_ventas); if (usarBk.has(d) && !lin.has(d)) ventasRaw.splice(i, 1); }
@@ -6753,8 +6789,9 @@ async function renderPlanCarga(stage, opts = {}) {
     if (cargados.size || cargadosEnt.size) {
       // (11-oct-2026, Jordan) NV: se descuenta por la ENTREGA coordinada (una NV re-coordinada con entrega
       // nueva porque la anterior no viajó vuelve al plan); sin entrega coordinada, por documento+material.
-      const entCoord = d => tx((coordVentas.get(d) || {}).n_entrega);
-      for (let i = ventasRaw.length - 1; i >= 0; i--) { const d = tx(ventasRaw[i].doc_ventas), e = entCoord(d); if (e ? cargadosEnt.has(e) : cargados.has(`${d}|${tx(ventasRaw[i].material)}`)) ventasRaw.splice(i, 1); }
+      // (28-oct-2026) Con entrega por posición: se descuenta cada línea por SU entrega.
+      const entCoord = (d, m) => { const co = coordVentas.get(d); return co ? entregaLineaV(co, m) : ''; };
+      for (let i = ventasRaw.length - 1; i >= 0; i--) { const d = tx(ventasRaw[i].doc_ventas), m = tx(ventasRaw[i].material), e = entCoord(d, m); if (e ? cargadosEnt.has(e) : cargados.has(`${d}|${m}`)) ventasRaw.splice(i, 1); }
       for (let i = retirosRaw.length - 1; i >= 0; i--) if (cargados.has(`${tx(retirosRaw[i].doc_compr)}|${tx(retirosRaw[i].material)}`)) retirosRaw.splice(i, 1);
     }
   } catch (e) { console.warn('Plan de carga: no se pudo descontar lo ya programado en planes anteriores', e); }
@@ -7114,13 +7151,13 @@ async function renderPlanCarga(stage, opts = {}) {
       rowsDoc.forEach(r => {
         // (18-oct-2026, Jordan) Unidades editadas al coordinar (nunca más que el pendiente SAP).
         const pend0 = parseNum(r.ctd_confirmada) - parseNum(r.cantidad_entrg);
-        const pend = r._saldo ? pend0 : cantAjustada(co, r.material, pend0);
+        const pend = r._saldo ? pend0 : r._coordLin ? cantLineasV(co, r.material, pend0) : cantAjustada(co, r.material, pend0);
         if (pend <= 0) return;
         const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), pend);
         if (t <= 0) return;
         const tonBruto = calcTon(parseNum(r.peso_neto), pend), tonVol = calcTon(parseNum(r.tamano_dimens), pend);
         const rl = lookupRuta(r.ruta);
-        items.push({ pv: doc, material: r.material, nombre: r.denominacion_de_posicion, cant: pend, ruta: r.ruta, comuna: rl.comuna, region: rl.region, fecha: fechaTxt, ton: t, tonBruto, tonVol, tipoExp: pv.denominacion || '', cliente: pv.nombre_1 || co.nombre_cliente || (String(r.solicitante ?? '').trim() ? 'ID ' + String(r.solicitante).trim() : ''), idCliente: String(r.solicitante ?? '').trim(), vendedor: pv.nombre || '', _manual: co.tipo_entrega, entrega: co.n_entrega || '', _ceOrig: ceAltDe(co) ? String(r.ofvta ?? '').trim() : '', _ajustada: pend < pend0 - 1e-9, _pendSap: pend0 });
+        items.push({ pv: doc, material: r.material, nombre: r.denominacion_de_posicion, cant: pend, ruta: r.ruta, comuna: rl.comuna, region: rl.region, fecha: fechaTxt, ton: t, tonBruto, tonVol, tipoExp: pv.denominacion || '', cliente: pv.nombre_1 || co.nombre_cliente || (String(r.solicitante ?? '').trim() ? 'ID ' + String(r.solicitante).trim() : ''), idCliente: String(r.solicitante ?? '').trim(), vendedor: pv.nombre || '', _manual: co.tipo_entrega, entrega: entregaLineaV(co, r.material), _ceOrig: ceAltDe(co) ? String(r.ofvta ?? '').trim() : '', _ajustada: pend < pend0 - 1e-9, _pendSap: pend0 });
       });
       if (!items.length) continue;
       const enPlan = fc && fc.getTime() <= diaObjVentas.getTime();
@@ -8878,7 +8915,7 @@ async function reponerVentasCoordinadas(ventasRaw) {
     await supabase.rpc('fn_abast_respaldar_coord_sqvi');
     const [coordVentas, bkVen] = await Promise.all([loadCoordinacionesVenta(), fetchAllRows('v_abast_coord_sqvi_ventas')]);
     if (!coordVentas.size || !(bkVen || []).length) return;
-    const entCo = [...coordVentas.values()].map(c => tx(c.n_entrega)).filter(Boolean);
+    const entCo = [...new Set([...coordVentas.values()].flatMap(c => entregasCoordV(c)))];
     let conDt = new Set();
     if (entCo.length) { const { data } = await supabase.from('abast_dt_dia').select('entrega').in('entrega', entCo); conDt = new Set((data || []).map(x => tx(x.entrega))); }
     // (11-oct-2026, Jordan) NV coordinada: todas sus líneas vivas se reemplazan por el respaldo tomado al
@@ -8892,7 +8929,7 @@ async function reponerVentasCoordinadas(ventasRaw) {
     const sinPendVivo = d => { const ls = ventasRaw.filter(r => tx(r.doc_ventas) === d && !r._respaldo);
       return ls.length > 0 && ls.every(r => parseNum(r.ctd_confirmada) - parseNum(r.cantidad_entrg) <= 0); };
     const despachada = d => { const p = VENTAS_PROGRAMADAS.get(d); return !!p && String(p.fecha_carga || '').slice(0, 10) < hoyIso && sinPendVivo(d); };
-    const usarBk = new Set([...bkPorDoc.keys()].filter(d => { const co = coordVentas.get(d); return !!co && !(co.n_entrega && conDt.has(tx(co.n_entrega)))
+    const usarBk = new Set([...bkPorDoc.keys()].filter(d => { const co = coordVentas.get(d); return !!co && !coordConDtV(co, conDt)
       && !(VENTAS_PROGRAMADAS.has(d) && !docsLive.has(d)) && !despachada(d); }));
     const lin = ventasCoordLin(coordVentas, conDt);
     for (let i = ventasRaw.length - 1; i >= 0; i--) { const d = tx(ventasRaw[i].doc_ventas); if (usarBk.has(d) && !lin.has(d)) ventasRaw.splice(i, 1); }
@@ -8908,7 +8945,7 @@ function ventasCoordLin(coordVentas, conDt) {
   const tx = v => String(v ?? '').trim(), out = new Set();
   (coordVentas || new Map()).forEach((co, d) => {
     const l = co && co.lineas;
-    if (l && typeof l === 'object' && !Array.isArray(l) && !(tx(co.n_entrega) && conDt && conDt.has(tx(co.n_entrega)))) out.add(tx(d));
+    if (l && typeof l === 'object' && !Array.isArray(l) && !coordConDtV(co, conDt)) out.add(tx(d));
   });
   return out;
 }
