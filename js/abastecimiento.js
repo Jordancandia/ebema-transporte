@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610291519';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610291519';
-import { getDatabase } from './data.js?v=202610291519';
+import { supabase } from './supabase-client.js?v=202610291541';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610291541';
+import { getDatabase } from './data.js?v=202610291541';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610291519';
-import { confirmar, pedirDato } from './confirmar.js?v=202610291519';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610291541';
+import { confirmar, pedirDato } from './confirmar.js?v=202610291541';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -6473,7 +6473,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610291519');
+    const m = await import('./ind-plan-carga.js?v=202610291541');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -8396,13 +8396,23 @@ async function renderPlanCarga(stage, opts = {}) {
     if (!PUEDE_TRANSPORTE) { showAlert('Sólo Owner o Planner Distribución pueden armar el camión CD con un retiro.', 'error'); return; }
     if (bloqueadoPorCierre(true)) return;
     if (progMap.get(`${ce}|1`)) { showAlert('El camión CD ya está programado: quita la programación para cambiar su carga.', 'error'); return; }
-    // Retiro: el camión Fábrica-Sucursal elegido, o el ya unido (ajustar entregas)
-    let retItems;
-    if (n === 'unido') retItems = (r.retirosUnidos || []).map(x => x.item);
-    else { const c = (r.camionesFabSuc || []).find(x => String(x.n) === String(n)); retItems = c ? c.items : []; }
-    if (!retItems.length) { showAlert('No se encontró el retiro Fábrica-Sucursal.', 'error'); return; }
-    const ocs = [...new Set(retItems.map(d => String(d.oc ?? '').trim()))];
-    const tonRet = retItems.reduce((s2, d) => s2 + (d.ton || 0), 0);
+    // (29-oct-2026) Retiros Fábrica-Sucursal disponibles para la sucursal (fecha de retiro = día hábil siguiente):
+    // los ya unidos, los camiones Fábrica-Sucursal del plan y las OC «sin camión» (no llegan al 85%).
+    const retOpts = new Map();   // oc → { oc, prov, items, ton, origen }
+    const addRet = (d, origen) => { const oc = String(d.oc ?? '').trim(); if (!oc) return; const o = retOpts.get(oc) || { oc, prov: d.prov || '', items: [], ton: 0, origen }; o.items.push(d); o.ton += d.ton || 0; retOpts.set(oc, o); };
+    (r.retirosUnidos || []).forEach(x => addRet(x.item, 'unido'));
+    (r.camionesFabSuc || []).forEach(c => (c.items || []).forEach(d => addRet(d, c.patente ? 'Patente ' + c.patente : 'Camión Fáb-Sucursal ' + c.n)));
+    (r.fabCandidatos || []).filter(x => x.tipo === 'fabSuc').forEach(x => (x.items || []).forEach(d => addRet(d, 'OC sin camión')));
+    if (!retOpts.size) {
+      showAlert(`No hay retiros Fábrica-Sucursal para ${r.nombre} con retiro el ${diaCorto(diaHabil1)}. Coordínalo en Retiros de Fábrica como Retiro RM · FAB-SUC con esa fecha de retiro y vuelve a abrir el plan.`, 'error');
+      return;
+    }
+    const selRet = new Set();
+    if (n === 'unido') (r.retirosUnidos || []).forEach(x => selRet.add(String(x.item.oc ?? '').trim()));
+    else if (n && n !== 'elegir') { const c = (r.camionesFabSuc || []).find(x => String(x.n) === String(n)); (c ? c.items : []).forEach(d => selRet.add(String(d.oc ?? '').trim())); }
+    if (!selRet.size && retOpts.size === 1) selRet.add([...retOpts.keys()][0]);
+    const retSel = () => [...selRet].map(oc => retOpts.get(oc)).filter(Boolean);
+    const tonRetF = () => retSel().reduce((s2, o) => s2 + o.ton, 0);
     const f = refrescarFill(r);
     const catDe = new Map();
     CAT_V2.forEach((c, i) => (r.det[c.k] || []).forEach(d => catDe.set(d, CAT_LARGO[i])));
@@ -8419,7 +8429,10 @@ async function renderPlanCarga(stage, opts = {}) {
       document.addEventListener('keydown', onEsc, true);
       const pintar = () => {
         const tonSel = cand.filter((d, i) => sel.has(i)).reduce((a, d) => a + (d.ton || 0), 0);
-        const tot = tonRet + tonSel, pct = r.cap > 0 ? Math.round(tot / r.cap * 100) : 0, excede = tot > r.cap + 1e-6;
+        const tonRet = tonRetF(), ocs = [...selRet];
+        const tot = tonRet + tonSel, pct = r.cap > 0 ? Math.round(tot / r.cap * 100) : 0, excede = tot > r.cap + 1e-6, sinRet = !selRet.size;
+        const retFilas = [...retOpts.values()].map(o => `<tr><td><input type="checkbox" data-ur="${escapeHtml(o.oc)}" ${selRet.has(o.oc) ? 'checked' : ''}></td>
+            <td><span class="sv-mono">${escapeHtml(o.oc)}</span></td><td><b>${escapeHtml(o.prov)}</b></td><td>${escapeHtml(o.origen === 'unido' ? 'Unido al camión CD' : o.origen)}</td><td class="r"><b>${t1(o.ton)}</b></td></tr>`).join('');
         const filas = [...grupos.entries()].map(([k, idx]) => {
           const todos = idx.every(i => sel.has(i)), alguno = idx.some(i => sel.has(i));
           const tonG = idx.reduce((a, i) => a + (cand[i].ton || 0), 0);
@@ -8434,9 +8447,12 @@ async function renderPlanCarga(stage, opts = {}) {
         wrap.innerHTML = `<div class="sv-dr-bg" style="z-index:120" data-x></div><aside class="sv-dr" style="z-index:121;width:min(820px,100vw)" role="dialog" aria-label="Armar camión CD con retiro">
           <div class="sv-dr-h"><div style="flex:1;min-width:0"><div class="sv-dr-k">Camión CD con retiro Fábrica-Sucursal</div>
             <div class="sv-dr-t">${escapeHtml(r.nombre)} · pasa por CD</div>
-            <div class="sv-dr-s">Retiro OC ${ocs.map(escapeHtml).join(', ')} · ${t1(tonRet)} t (va primero)</div></div>
+            <div class="sv-dr-s">${ocs.length ? `Retiro OC ${ocs.map(escapeHtml).join(', ')} · ${t1(tonRet)} t (va primero)` : 'Elige el retiro de fábrica'}</div></div>
             <button class="sv-iconbtn" data-x title="Cerrar (Esc)"><span class="material-symbols-outlined">close</span></button></div>
           <div class="sv-dr-b" style="gap:12px">
+            <div class="sv-b" style="font-size:14px">1. Retiro de fábrica (Fábrica-Sucursal · retiro ${escapeHtml(diaCorto(diaHabil1))})</div>
+            <div class="pc-tbl"><table class="sv-table"><thead><tr><th style="width:28px"></th><th>Orden de compra</th><th>Proveedor</th><th>Hoy en el plan</th><th class="r">Ton</th></tr></thead><tbody>${retFilas}</tbody></table></div>
+            <div class="sv-b" style="font-size:14px">2. Entregas del CD</div>
             <div class="sv-note-box">Selecciona las entregas del Plan de Carga de ${escapeHtml(r.nombre)} que completan el camión. Lo no seleccionado queda <b>«No carga» hoy</b> y vuelve al plan del próximo día. El camión cuenta como <b>camión CD (consolidado)</b>.</div>
             <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
               <span class="sv-pill ${excede ? 'bad' : pct >= PCT_PROGRAMAR_CD ? 'ok' : 'warn'}"><i></i>${t1(tot)} t de ${fmtNum(r.cap, 0)} t · ${pct}%</span>
@@ -8447,18 +8463,23 @@ async function renderPlanCarga(stage, opts = {}) {
           </div>
           <div class="sv-dr-f"><span class="sv-dr-note">${sel.size} ${sel.size === 1 ? 'línea seleccionada' : 'líneas seleccionadas'}</span>
             <div style="display:flex;gap:8px"><button class="sv-btn" data-x>Cancelar</button>
-            <button class="sv-btn-p" data-guardar ${excede ? 'disabled' : ''}><span class="material-symbols-outlined">merge</span>Armar camión CD</button></div></div></aside>`;
+            <button class="sv-btn-p" data-guardar ${excede || sinRet ? 'disabled' : ''} title="${sinRet ? 'Elige al menos un retiro' : ''}"><span class="material-symbols-outlined">merge</span>Armar camión CD</button></div></div></aside>`;
         wrap.querySelectorAll('[data-x]').forEach(b => b.addEventListener('click', () => cerrar(false)));
         wrap.querySelectorAll('[data-ind]').forEach(b => { b.indeterminate = true; });
         wrap.querySelectorAll('[data-ug]').forEach(b => b.addEventListener('change', () => { (grupos.get(b.dataset.ug) || []).forEach(i => b.checked ? sel.add(i) : sel.delete(i)); pintar(); }));
         wrap.querySelectorAll('[data-ul]').forEach(b => b.addEventListener('change', () => { const i = Number(b.dataset.ul); b.checked ? sel.add(i) : sel.delete(i); pintar(); }));
+        wrap.querySelectorAll('[data-ur]').forEach(b => b.addEventListener('change', () => { b.checked ? selRet.add(b.dataset.ur) : selRet.delete(b.dataset.ur); pintar(); }));
         wrap.querySelector('[data-guardar]')?.addEventListener('click', () => cerrar(true));
       };
       document.body.appendChild(wrap);
       pintar();
     });
     if (!ok) return;
+    const retItems = retSel().flatMap(o => o.items), ocs = [...selRet];
     const quien = await getUserEmail(), ahora = new Date().toISOString();
+    // Retiros que se desmarcaron (ajustar): dejan de estar unidos
+    const quitar = (r.retirosUnidos || []).map(x => String(x.item.oc ?? '').trim()).filter(oc => !selRet.has(oc));
+    if (quitar.length) await supabase.from('abast_plan_camion_retiro_cd').delete().eq('fecha', hoyIsoPlan).eq('cd_origen', planOrigen).in('doc_compr', quitar);
     const { error: e1 } = await supabase.from('abast_plan_camion_retiro_cd').upsert(ocs.map(oc => ({ fecha: hoyIsoPlan, cd_origen: planOrigen, ce, doc_compr: oc, creado_por: quien, creado_en: ahora })),
       { onConflict: 'fecha,cd_origen,doc_compr' });
     if (e1) { showAlert('No se pudo unir el retiro al camión CD: ' + e1.message, 'error'); return; }
@@ -8754,7 +8775,15 @@ async function renderPlanCarga(stage, opts = {}) {
   // (29-oct-2026, Jordan) Aviso en el camión CD: incluye retiro(s) Fábrica-Sucursal unidos.
   function unidoCDHtml(r) {
     const ru = r.retirosUnidos || [];
-    if (!ru.length) return '';
+    if (!ru.length) {
+      // (29-oct-2026, Jordan) Armar el camión CD con un retiro Fábrica-Sucursal desde aquí (elige retiro y entregas).
+      if (!PUEDE_TRANSPORTE || progMap.get(`${r.ce}|1`)) return '';
+      const nRet = new Set([...(r.camionesFabSuc || []).flatMap(c => (c.items || []).map(d => d.oc)), ...(r.fabCandidatos || []).filter(x => x.tipo === 'fabSuc').map(x => x.oc)]).size;
+      return `<div class="pc-extra is-mute pc-seg2"><span class="material-symbols-outlined">alt_route</span>
+        <div style="flex:1;min-width:0"><b>Camión con retiro de fábrica</b> · arma el camión CD con un retiro Fábrica-Sucursal que pasa por el CD y elige las entregas que completan el camión.
+          <br><small style="color:#5c5f61">${nRet ? `${nRet} OC Fábrica-Sucursal con retiro ${escapeHtml(diaCorto(diaHabil1))} disponibles.` : `No hay retiros Fábrica-Sucursal con retiro ${escapeHtml(diaCorto(diaHabil1))}: primero coordínalo en Retiros de Fábrica (Retiro RM · FAB-SUC).`}</small></div>
+        <button class="sv-btn" data-unir-cd="${escapeHtml(r.ce)}" data-unir-n="elegir"><span class="material-symbols-outlined">merge</span>Armar con retiro</button></div>`;
+    }
     const ocs = [...new Set(ru.map(x => String(x.item.oc ?? '').trim()))], e = ru[0].e || {};
     const provs = [...new Set(ru.map(x => x.item.prov).filter(Boolean))].join(' + ');
     const ton = ru.reduce((s2, x) => s2 + (x.item.ton || 0), 0);
