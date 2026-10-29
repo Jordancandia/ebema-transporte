@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610282251';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610282251';
-import { getDatabase } from './data.js?v=202610282251';
+import { supabase } from './supabase-client.js?v=202610291519';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610291519';
+import { getDatabase } from './data.js?v=202610291519';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610282251';
-import { confirmar, pedirDato } from './confirmar.js?v=202610282251';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610291519';
+import { confirmar, pedirDato } from './confirmar.js?v=202610291519';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -877,7 +877,8 @@ const MARCA_PEND_ENTREGA = 'PENDIENTE DE RECEPCIÓN Y CREACIÓN DE ENTREGA';
 const MARCA_AJ_SALDO = 'ENTREGA AJUSTAR SALDO';
 // También los saldos activados en Seguimiento de Carga (nombre «SALDO · …») que vuelven a subir a un camión.
 const esAjSaldo = d => !!d && !d._cargaManual && (!!d._ajSaldo || !!d._ajustada || String(d.nombre ?? '').startsWith('SALDO · '));
-const marcasLinea = d => [d && d._cargaManual ? MARCA_PEND_ENTREGA : '', esAjSaldo(d) ? MARCA_AJ_SALDO : ''].filter(Boolean);
+const MARCA_RETIRO_CD = 'RETIRO FÁBRICA-SUCURSAL · PASA POR CD';   // (29-oct-2026, Jordan)
+const marcasLinea = d => [d && d._cargaManual ? MARCA_PEND_ENTREGA : '', esAjSaldo(d) ? MARCA_AJ_SALDO : '', d && d._unidoCD ? MARCA_RETIRO_CD : ''].filter(Boolean);
 async function loadCargaManualTr() {
   try {
     const { data, error } = await supabase.from('abast_carga_manual_traslado').select('*');
@@ -1015,6 +1016,13 @@ async function loadAsignacionLineas() {
     const { data, error } = await supabase.from('abast_plan_linea_camion').select('cd_origen,ce,documento,material,camion,origen').eq('fecha', isoLocal(hoy00()));
     if (error) throw error; return data || [];
   } catch (e) { console.error(e); return []; }
+}
+// (29-oct-2026, Jordan) Retiros Fábrica-Sucursal unidos al camión CD (pasan por el CD y completan con entregas).
+async function loadRetirosUnidosCD() {
+  try {
+    const { data, error } = await supabase.from('abast_plan_camion_retiro_cd').select('cd_origen,ce,doc_compr,creado_por').eq('fecha', isoLocal(hoy00()));
+    if (error) throw error; return data || [];
+  } catch (e) { console.warn('Retiros unidos al camión CD no disponibles', e); return []; }
 }
 async function loadCamionesManuales() {
   try {
@@ -1258,6 +1266,32 @@ function showCoordModal(row) {
 // ── Modal «Coordinar despacho» de un pedido de venta 1003 (2-oct-2026) ──────
 // Tipo de entrega (sólo OWNER puede cambiarlo), fecha de entrega confirmada, N° de
 // entrega, datos del cliente y, si es CD-CLIENTE, datos del transporte.
+// ── Una patente = una carga por día de carga (29-oct-2026, Jordan) ──────────
+// Un camión (patente) no puede tomar dos cargas el mismo día de carga. «Misma carga» = mismo camión
+// consolidado (clave CAM|cd|ce|camión) o CD-Cliente al mismo centro destino (clave CLI|ce, camión compartido).
+// (29-oct-2026) También Fábrica-Sucursal (FSUC|ce) y Fábrica-Cliente (FCLI|ce). Días distintos no se cruzan; retiros FAB-CD no participan.
+// clave: carga que se está agendando; docs: pedidos de esta misma coordinación (no se cruzan consigo mismos).
+async function validarPatenteDia({ patente, fecha, clave, docs = [] }) {
+  const pat = normPatente(patente), f = String(fecha || '').slice(0, 10);
+  if (!pat || !f) return true;
+  let rows = [];
+  try {
+    const { data, error } = await supabase.rpc('fn_abast_cargas_patente', { p_patente: pat, p_fecha: f });
+    if (error) throw error;
+    rows = data || [];
+  } catch (e) { console.warn('Validación de patente por día no disponible', e); return true; }
+  const self = new Set((docs || []).map(d => String(d ?? '').trim()).filter(Boolean));
+  // La carga a la que ya pertenecen estos documentos también es «esta carga» (p. ej. retiro unido al camión CD).
+  const selfClaves = new Set(rows.filter(x => x.documento && self.has(String(x.documento).trim())).map(x => x.clave));
+  const otras = rows.filter(x => x.clave !== clave && !selfClaves.has(x.clave) && !(x.documento && self.has(String(x.documento).trim())));
+  if (!otras.length) return true;
+  const grupos = new Map();
+  otras.forEach(x => { if (!grupos.has(x.clave)) grupos.set(x.clave, { tipo: x.tipo, ce: x.ce_nombre || x.ce, det: new Set() }); if (x.detalle) grupos.get(x.clave).det.add(x.detalle); });
+  const lineas = [...grupos.values()].map(g => `• ${g.tipo} → ${g.ce}${g.det.size ? ` (${[...g.det].join(', ')})` : ''}`);
+  await confirmar(`El camión ${fmtPatente(patente)} ya tiene otra carga el ${fmtFechaISO(f)}\n\n${lineas.join('\n')}\n\nUn camión sólo puede tomar una carga por día de carga. Usa otra patente o cambia el día de carga.`,
+    { aceptar: 'Entendido', cancelar: 'Cerrar', tono: 'peligro', icono: 'block' });
+  return false;
+}
 async function chequearChoquePatente(row, st, ctx, docsSel = []) {
   const doc = String(row.doc_ventas ?? '').trim();
   const pat = normPatente(st.patCamion), rut = normPatente(st.choferRut);
@@ -1509,6 +1543,8 @@ function showCoordVentaModal(row, ctx) {
         const entregasV = Object.keys(entObj).length ? entObj : null;
         const btn = e.currentTarget; btn.disabled = true;
         const cli = esCli();
+        // (29-oct-2026, Jordan) Restricción: la patente no puede tener otra carga el mismo día de carga.
+        if (cli && st.patCamion.trim() && !(await validarPatenteDia({ patente: st.patCamion, fecha: st.fecha, clave: `CLI|${st.ceAlt || st.ceOrig}`, docs: [MAIN, ...st.extras.keys()] }))) { btn.disabled = false; return; }
         // Aviso de choque (2-oct-2026): misma patente con otro transportista/chofer el mismo día,
         // misma patente en otra fecha, mismo chofer en otra patente el mismo día, o > 28 t por patente.
         if (cli && st.extras.size && tonSelV() > CAP_CAMION_DIRECTO + 1e-9 && !(st.patCamion.trim() || st.choferRut.trim())
@@ -2477,6 +2513,9 @@ function showCoordRetiroModal(row, ctx) {
             if (eLib) { showAlert('No se pudo liberar la OC del plan cerrado: ' + eLib.message, 'error'); btn.disabled = false; return; }
           }
         }
+        // (29-oct-2026, Jordan) Fábrica-Sucursal / Fábrica-Cliente: la patente no puede tener otra carga ese día (FAB-CD no aplica).
+        if (rm() && ['FAB-SUC', 'FAB-CLTE'].includes(st.tipo) && st.patCamion.trim() && !(await validarPatenteDia({ patente: st.patCamion, fecha: st.fecha,
+          clave: `${st.tipo === 'FAB-SUC' ? 'FSUC' : 'FCLI'}|${String(row.ce ?? '').trim()}`, docs }))) { btn.disabled = false; return; }
         if (rm() && (st.patCamion.trim() || st.choferRut.trim())) {
           st.tonSel = tonSel();
           const avisos = await chequearChoqueRetiro(docs, st, ctx);
@@ -2555,7 +2594,8 @@ function campoHoraPres(st, bad) {
 // (12-oct-2026) modo 'coordinar': guarda los datos del transporte SIN programar (la carga sigue actualizándose).
 // (28-oct-2026) presentacion: { modo: 'bloque', cd, self: { fecha, ce, camion } } (camión CD / 2º camión)
 //   o { modo: 'hora' } (CD-Cliente). Sin presentacion no se pide horario (retiros, fábrica).
-function showTransporteCamionModal({ titulo, sub, ini = {}, otros = [], fechaDef = '', modo = 'programar', presentacion = null }) {
+// (29-oct-2026) choque: { clave, docs } → bloquea si la patente ya tiene otra carga ese día de carga (validarPatenteDia).
+function showTransporteCamionModal({ titulo, sub, ini = {}, otros = [], fechaDef = '', modo = 'programar', presentacion = null, choque = null }) {
   const COORD = modo === 'coordinar';
   const PRES = presentacion && presentacion.modo;
   return new Promise(async resolve => {
@@ -2756,10 +2796,13 @@ function showTransporteCamionModal({ titulo, sub, ini = {}, otros = [], fechaDef
         }
         const tsel = sel();
         const pat = normPatente(st.patCamion), rut = normPatente(st.choferRut);
+        // (29-oct-2026, Jordan) Restricción: la patente no puede tener otra carga el mismo día de carga.
+        if (choque && !(await validarPatenteDia({ patente: st.patCamion, fecha: st.fechaCarga, ...choque }))) { draw(); return; }
         const av = [];
         otros.forEach(o => {
-          if (normPatente(o.patente_camion) === pat) av.push(`La patente ya está programada hoy en ${o.lbl}.`);
-          else if (rut && normPatente(o.chofer_rut) === rut) av.push(`El chofer ya está programado hoy en ${o.lbl} (patente ${o.patente_camion}).`);
+          const mismaPat = normPatente(o.patente_camion) === pat;
+          if (mismaPat && !choque) av.push(`La patente ya está programada hoy en ${o.lbl}.`);
+          else if (!mismaPat && rut && normPatente(o.chofer_rut) === rut) av.push(`El chofer ya está programado hoy en ${o.lbl} (patente ${o.patente_camion}).`);
         });
         if (av.length && !(await confirmar(`Posible choque con el camión ${fmtPatente(st.patCamion)}\n\n${av.map(a => '• ' + a).join('\n')}\n\n¿Programar igual?`, { aceptar: 'Programar igual', tono: 'peligro', icono: 'warning' }))) return;
         // Transportista bloqueado: se completan en el maestro los datos que faltaban.
@@ -2941,6 +2984,9 @@ function showCoordPv4000Modal(row, ctx) {
         if (lc.err) { st.errCarga = lc.err; draw(); return; }
         const btn = e.currentTarget; btn.disabled = true;
         const cli = esCli();
+        // (29-oct-2026, Jordan) Restricción: la patente no puede tener otra carga el mismo día de carga.
+        if (cli && String(st.patCamion ?? '').trim() && !(await validarPatenteDia({ patente: st.patCamion, fecha: st.fecha,
+          clave: `CLI|${st.ceAlt && st.ceAlt !== st.ceOrig ? st.ceAlt : st.ceOrig}`, docs: [doc] }))) { btn.disabled = false; return; }
         if (cli && lc.total > CAP_CAMION_DIRECTO + 1e-9 && !(await confirmar(`El pedido suma ${fmtNum(lc.total, 1)} t\n\nSupera la capacidad de ${CAP_CAMION_DIRECTO} t. ¿Guardar igual?`, { aceptar: 'Guardar igual', tono: 'peligro', icono: 'warning' }))) { btn.disabled = false; return; }
         const qty = m => { const v = Number(String(st.cant.get(m) ?? '').replace(',', '.')); return Math.round((v > 0 ? v : 0) * 1000) / 1000; };
         const email = await getUserEmail(), now = new Date().toISOString();
@@ -3169,6 +3215,9 @@ function showCoordTrasladoModal(row, ctx) {
       panel.querySelector('[data-ok]').addEventListener('click', async e => {
         if (faltantes().length) { st.err = true; draw(); return; }
         const btn = e.currentTarget; btn.disabled = true;
+        // (29-oct-2026, Jordan) Restricción: la patente no puede tener otra carga el mismo día de carga.
+        if (String(st.patCamion ?? '').trim() && !(await validarPatenteDia({ patente: st.patCamion, fecha: st.fecha,
+          clave: `CLI|${ceAltDe((pedidos.get(main) || {}).coord) || String(row.ce ?? '').trim()}`, docs: [...st.entregas.keys()] }))) { btn.disabled = false; return; }
         // Aviso de choque: misma patente o mismo chofer en otra coordinación (ventas o crossdocking).
         const pat = normPatente(st.patCamion), rut = normPatente(st.choferRut), av = [];
         let ventas = []; try { ventas = [...(await loadCoordinacionesVenta()).values()]; } catch (_) { /* */ }
@@ -5150,8 +5199,12 @@ async function editarTransporteSeguimiento(r, c) {
   // (28-oct-2026, Jordan) Horario de presentación: bloque para camión CD / 2º camión, hora para CD-Cliente.
   const esCons = ['Camión CD', '2º camión'].includes(c.tipo), esCli = c.tipo === 'CD-Cliente';
   const pres = esCons ? { modo: 'bloque', cd, self: { fecha: r.fecha_plan, ce: r.ce, camion: c.tipo === '2º camión' ? 2 : 1 } } : esCli ? { modo: 'hora' } : null;
+  // (29-oct-2026, Jordan) Una patente = una carga por día (camión CD / 2º camión / CD-Cliente).
+  const docsCam = [...new Set((c.lineas || []).flatMap(x => [x.documento, x.pedido_venta]).map(d => String(d ?? '').trim()).filter(Boolean))];
+  const choque = esCons ? { clave: `CAM|${cd}|${String(r.ce).trim()}|${c.tipo === '2º camión' ? 2 : 1}` } : esCli ? { clave: `CLI|${String(r.ce).trim()}`, docs: docsCam }
+    : c.tipo === 'Fáb-Sucursal' ? { clave: `FSUC|${String(r.ce).trim()}`, docs: docsCam } : c.tipo === 'Fáb-Cliente' ? { clave: `FCLI|${String(r.ce).trim()}`, docs: docsCam } : null;
   const t = await showTransporteCamionModal({ titulo: `${c.tipo} → ${r.ce} ${nombreCentro(r.ce) || ''}`.trim(),
-    sub: `Editar datos del transporte · plan ${fmtFechaISO(r.fecha_plan)}`, ini: { ...c }, fechaDef: c.fecha_carga || '', presentacion: pres });
+    sub: `Editar datos del transporte · plan ${fmtFechaISO(r.fecha_plan)}`, ini: { ...c }, fechaDef: c.fecha_carga || '', presentacion: pres, choque });
   if (!t) return null;
   const email = await getUserEmail(), now = new Date().toISOString();
   const tr = { id_transporte: t.id_transporte, transportista: t.transportista, chofer_nombre: t.chofer_nombre, chofer_rut: t.chofer_rut,
@@ -6420,7 +6473,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610282251');
+    const m = await import('./ind-plan-carga.js?v=202610291519');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -6684,7 +6737,9 @@ function asignarCamionesCD(r) {
   // (23-oct-2026, Jordan) La carga manual (gestión manual, sin entrega SAP) tiene prioridad: va primero.
   const esCM = d => !!d._cargaManual;
   const manualesCM = [...(r.det.cross || []), ...(r.det.quiebre || []), ...(r.det.stock || [])].filter(esCM);
-  [manualesCM, r.det.revex, r.det.ventaCons, r.det.retiro, (r.det.cross || []).filter(d => !esCM(d)), forz.filter(d => !esCM(d)),
+  // (29-oct-2026, Jordan) Retiro Fábrica-Sucursal unido al camión CD: ya viene arriba del camión, va primero.
+  const unidosCD = (r.det.retiro || []).filter(d => d._unidoCD);
+  [unidosCD, manualesCM, r.det.revex, r.det.ventaCons, (r.det.retiro || []).filter(d => !d._unidoCD), (r.det.cross || []).filter(d => !esCM(d)), forz.filter(d => !esCM(d)),
    (r.det.quiebre || []).filter(d => !d._forzadoPlan && !esCM(d)), (r.det.stock || []).filter(d => !d._forzadoPlan && !esCM(d))].forEach((arr, ai) => {
     (arr || []).forEach(d => { d._prio = PRIO_DOCS.has(doc(d)); d._niv = `${ai}|${d._prio ? 1 : 0}|${d._orden ?? 0}`; });
     (arr || []).slice()
@@ -6700,7 +6755,8 @@ function asignarCamionesCD(r) {
   // orden de prioridad mientras quepa; lo que no cabe queda fuera (puede ir al 2º camión) y el resto de la
   // carga se ajusta para completar el camión sin pasar el 100%.
   orden.forEach(d => {
-    const v = asig.get(`${doc(d)}|${mat(d)}`);
+    let v = asig.get(`${doc(d)}|${mat(d)}`);
+    if ((v === undefined || v === null) && d._unidoCD) v = 1;   // (29-oct-2026) retiro unido: siempre en el camión CD
     d._manual = v === undefined || v === null ? null : Number(v);
     d._camion2 = false; d._enCamion = false; d._manualExcede = false;
     if (d._manual !== 1) return;
@@ -6875,7 +6931,8 @@ async function renderPlanCarga(stage, opts = {}) {
     fetchAllRows('abast_feriados'),
     fetchAllRows('abast_horizonte_centro'),
   ]);
-  const [ventasDirectoManual, inclusionesPlan, asigLineas, camManuales, coordVentas, coordTraslados, ajustesUnidades, cargasManualTr] = await Promise.all([loadVentasDirectoManual(), loadInclusionesPlan(), loadAsignacionLineas(), loadCamionesManuales(), loadCoordinacionesVenta(), loadCoordTraslados(), loadAjustesUnidades(), loadCargaManualTr()]);
+  const [ventasDirectoManual, inclusionesPlan, asigLineas, camManuales, coordVentas, coordTraslados, ajustesUnidades, cargasManualTr, retirosUnidosCD] = await Promise.all([loadVentasDirectoManual(), loadInclusionesPlan(), loadAsignacionLineas(), loadCamionesManuales(), loadCoordinacionesVenta(), loadCoordTraslados(), loadAjustesUnidades(), loadCargaManualTr(), loadRetirosUnidosCD()]);
+  const unidoCD = new Map((retirosUnidosCD || []).filter(x => String(x.cd_origen ?? '').trim() === planOrigen).map(x => [String(x.doc_compr ?? '').trim(), x]));
   const ajUMap = mapaAjustesUnidades(ajustesUnidades);
   // (23-oct-2026, Jordan) Cargas manuales (sin entrega SAP) de este CD origen. Entran al plan cuyo DÍA DE CARGA
   // (día objetivo del centro: día hábil 1 si es 24h, 2 si es 48h) coincide con el día elegido.
@@ -7508,6 +7565,7 @@ async function renderPlanCarga(stage, opts = {}) {
     // (FAB-SUC → Fábrica-Sucursal, FAB-CLTE → Fábrica-Cliente) y las OC con la misma patente
     // camión forman un solo camión (aunque sean de proveedores distintos o no lleguen al 85%).
     const patBuckets = new Map();     // patente → { e, tipo, items }
+    const retUnidosCe = [];           // (29-oct-2026) Fábrica-Sucursal unidos al camión CD
     retirosFab.forEach(r => {
       const cant = r._saldo ? parseNum(r.ctd_pedido) : cantRetiroLinea(estadosRetiro[String(r.doc_compr ?? '').trim()], r.material, parseNum(r.ctd_pedido) - parseNum(r.ctd_entregada));
       const t = calcTon(maxPesoDim(r.peso_bruto, r.tamano_dimens), cant);
@@ -7517,6 +7575,12 @@ async function renderPlanCarga(stage, opts = {}) {
       const eR = estadosRetiro[String(r.doc_compr ?? '').trim()] || {};
       const tipoDir = eR.tipo_retiro === 'FAB-CLTE' ? 'fabCli' : 'fabSuc';
       item._tipoDir = tipoDir; item.cliente = pvR.nombre_1 || '';
+      // (29-oct-2026, Jordan) Retiro Fábrica-Sucursal unido al camión CD: va primero en el camión CD (pasa por el CD).
+      if (tipoDir === 'fabSuc' && unidoCD.has(String(r.doc_compr ?? '').trim())) {
+        item._unidoCD = true; item._orden = -300;
+        retUnidosCe.push({ item, e: eR });
+        return;
+      }
       const m = ocManual.get(String(r.doc_compr ?? '').trim());
       if (m) {
         if (!manBuckets.has(m.id)) manBuckets.set(m.id, { m, items: [] });
@@ -7594,8 +7658,9 @@ async function renderPlanCarga(stage, opts = {}) {
       if (m.tipo === 'CROSSDOCK') { det.cross.push({ ...base, origen: planOrigen, ceDestino: ce, ctdPend: l.cant }); tonManCx += l.ton; }
       else { det.quiebre.push({ ...base, ctd: sapNum(l.cant), usuario: 'CARGA MANUAL', _motivo: 'CARGA MANUAL · ' + MARCA_PEND_ENTREGA }); tonManTr += l.ton; }
     }));
-    const { sum: tonRetiro, items: retiroItems } = horizonteEfectivo === 24 ? retiro24 : retiro48;
-    det.retiro.push(...retiroItems);
+    const { sum: tonRetiro0, items: retiroItems } = horizonteEfectivo === 24 ? retiro24 : retiro48;
+    det.retiro.push(...retUnidosCe.map(x => x.item), ...retiroItems);
+    const tonRetiro = tonRetiro0 + retUnidosCe.reduce((s2, x) => s2 + (x.item.ton || 0), 0);
 
     // Total del CAMIÓN CD (consolidado). Orden de prioridad con que se llena el
     // camión: REVEX → Venta 1003 consolidable → Retiro CD → Crossdocking →
@@ -7634,6 +7699,7 @@ async function renderPlanCarga(stage, opts = {}) {
       camionCliente: tonVentaCliente > 0, camionFabSuc: tonFabSuc > 0, camionFabCli: tonFabCli > 0,
       camionesCliente, camionesFabSuc, camionesFabCli, tonClienteDiferido, fabCandidatos,
       det, asig: asigMap.get(`${planOrigen}|${ce}`) || new Map(),
+      retirosUnidos: retUnidosCe,   // (29-oct-2026) [{ item, e }] Fábrica-Sucursal que pasan por el CD
     };
     // (AJUSTE 30-sep-2026) Llenado del camión CD y propuesta de 2º camión (≥85% de la capacidad).
     // (9-oct-2026) recalcCargaCD descuenta las líneas «No carga» del total y del %.
@@ -8018,7 +8084,7 @@ async function renderPlanCarga(stage, opts = {}) {
     if (!PUEDE_COORD) { showAlert('Tu perfil no puede coordinar transporte.', 'error'); return; }
     const nom = cam === 2 ? '2º camión' : 'Camión CD';
     const t = await showTransporteCamionModal({ titulo: `${nom} → ${r.nombre}`, sub: `Coordinar transporte (sin programar) · día objetivo ${diaCorto(diaObj(r))}`,
-      ini: coordMap.get(`${ce}|${cam}`) || {}, otros: otrosProgramados(ce, cam), fechaDef: isoLocal(diaObj(r)), modo: 'coordinar', presentacion: presCam(ce, cam) });
+      ini: coordMap.get(`${ce}|${cam}`) || {}, otros: otrosProgramados(ce, cam), fechaDef: isoLocal(diaObj(r)), modo: 'coordinar', presentacion: presCam(ce, cam), choque: { clave: `CAM|${planOrigen}|${ce}|${cam}` } });
     if (!t) return;
     const { error } = await supabase.from('abast_plan_camion_coordinado').upsert({ fecha: hoyIsoPlanP(), cd_origen: planOrigen, ce, camion: cam, ...t,
       coordinado_por: await getUserEmail(), coordinado_en: new Date().toISOString() }, { onConflict: 'fecha,cd_origen,ce,camion' });
@@ -8101,8 +8167,13 @@ async function renderPlanCarga(stage, opts = {}) {
     if (!r) return;
     if (!PUEDE_TRANSPORTE) { showAlert('Sólo el perfil OWNER puede agregar o modificar los datos del transporte.', 'error'); return; }
     const f = refrescarFill(r);
-    const t = await showTransporteCamionModal({ titulo: `Camión CD → ${r.nombre}`, sub: `${t1(f.cargado)} t de ${fmtNum(r.cap, 0)} t · día objetivo ${diaCorto(diaObj(r))}`,
-      ini: progMap.get(`${ce}|1`) || coordMap.get(`${ce}|1`) || {}, otros: otrosProgramados(ce, 1), fechaDef: isoLocal(diaObj(r)), presentacion: presCam(ce, 1) });
+    // (29-oct-2026) Camión CD con retiro Fábrica-Sucursal unido: por defecto el transporte (y día) del retiro.
+    const ru = (r.retirosUnidos || [])[0], eRu = ru ? ru.e : null;
+    const iniRu = eRu ? { id_transporte: eRu.id_transporte, transportista: eRu.transportista, chofer_nombre: eRu.chofer_nombre, chofer_rut: eRu.chofer_rut,
+      chofer_telefono: eRu.chofer_telefono, patente_camion: eRu.patente_camion, patente_carro: eRu.patente_carro, fecha_carga: eRu.fecha_retiro } : {};
+    const docsRu = (r.retirosUnidos || []).map(x => String(x.item.oc ?? '').trim());
+    const t = await showTransporteCamionModal({ titulo: `Camión CD → ${r.nombre}`, sub: `${t1(f.cargado)} t de ${fmtNum(r.cap, 0)} t · día objetivo ${diaCorto(diaObj(r))}${eRu ? ' · incluye retiro Fábrica-Sucursal' : ''}`,
+      ini: progMap.get(`${ce}|1`) || coordMap.get(`${ce}|1`) || iniRu, otros: otrosProgramados(ce, 1), fechaDef: isoLocal(diaObj(r)), presentacion: presCam(ce, 1), choque: { clave: `CAM|${planOrigen}|${ce}|1`, docs: docsRu } });
     if (!t) return;
     const quien = await getUserEmail();
     const filas = new Map();
@@ -8145,7 +8216,7 @@ async function renderPlanCarga(stage, opts = {}) {
     if (!PUEDE_TRANSPORTE) { showAlert('Sólo el perfil OWNER puede agregar o modificar los datos del transporte.', 'error'); return; }
     if (!segAcept.has(ce)) { showAlert('Primero acepta el 2º camión.', 'error'); return; }
     const t = await showTransporteCamionModal({ titulo: `2º camión → ${r.nombre}`, sub: `${t1(r.tonSegundo)} t de ${fmtNum(r.cap, 0)} t · día objetivo ${diaCorto(diaObj(r))}`,
-      ini: progMap.get(`${ce}|2`) || coordMap.get(`${ce}|2`) || {}, otros: otrosProgramados(ce, 2), fechaDef: isoLocal(diaObj(r)), presentacion: presCam(ce, 2) });
+      ini: progMap.get(`${ce}|2`) || coordMap.get(`${ce}|2`) || {}, otros: otrosProgramados(ce, 2), fechaDef: isoLocal(diaObj(r)), presentacion: presCam(ce, 2), choque: { clave: `CAM|${planOrigen}|${ce}|2` } });
     if (!t) return;
     if (!(await guardarProgramado(ce, 2, t))) return;
     await leerProgramados();
@@ -8164,7 +8235,7 @@ async function renderPlanCarga(stage, opts = {}) {
     if (!PUEDE_TRANSPORTE) { showAlert('Sólo el perfil OWNER puede agregar o modificar los datos del transporte.', 'error'); return; }
     const t = await showTransporteCamionModal({ titulo: `${cam === 2 ? '2º camión' : 'Camión CD'} → ${r.nombre}`,
       sub: cerrado ? `Plan cerrado · edición OWNER` : `Editar datos del transporte · día objetivo ${diaCorto(diaObj(r))}`,
-      ini: p, otros: otrosProgramados(ce, cam), fechaDef: isoLocal(diaObj(r)), presentacion: presCam(ce, cam, p.fecha || hoyIsoPlan) });
+      ini: p, otros: otrosProgramados(ce, cam), fechaDef: isoLocal(diaObj(r)), presentacion: presCam(ce, cam, p.fecha || hoyIsoPlan), choque: { clave: `CAM|${planOrigen}|${ce}|${cam}` } });
     if (!t) return;
     const { error } = await supabase.from('abast_plan_camion_programado').update({ ...t, editado_por: await getUserEmail(), editado_en: new Date().toISOString() })
       .eq('fecha', p.fecha || hoyIsoPlan).eq('cd_origen', planOrigen).eq('ce', ce).eq('camion', cam);
@@ -8313,6 +8384,107 @@ async function renderPlanCarga(stage, opts = {}) {
     if (error) { showAlert('No se pudo armar el camión: ' + error.message, 'error'); return; }
     showAlert('Camión directo armado.', 'success');
     st.tab = 'cd';
+    renderPlanCarga(stage);
+  }
+  // ── Camión CD armado con un retiro Fábrica-Sucursal (29-oct-2026, Jordan) ──────────────────────
+  // El camión retira en fábrica, pasa por el CD y completa con las entregas que se seleccionan aquí.
+  // Cuenta como el camión CD (consolidado): retiro primero (abast_plan_camion_retiro_cd) y las entregas
+  // elegidas van al camión CD (abast_plan_linea_camion = 1); las no elegidas quedan «No carga» hoy.
+  async function armarCamionConRetiro(ce, n) {
+    const r = resultado.find(x => x.ce === ce);
+    if (!r) return;
+    if (!PUEDE_TRANSPORTE) { showAlert('Sólo Owner o Planner Distribución pueden armar el camión CD con un retiro.', 'error'); return; }
+    if (bloqueadoPorCierre(true)) return;
+    if (progMap.get(`${ce}|1`)) { showAlert('El camión CD ya está programado: quita la programación para cambiar su carga.', 'error'); return; }
+    // Retiro: el camión Fábrica-Sucursal elegido, o el ya unido (ajustar entregas)
+    let retItems;
+    if (n === 'unido') retItems = (r.retirosUnidos || []).map(x => x.item);
+    else { const c = (r.camionesFabSuc || []).find(x => String(x.n) === String(n)); retItems = c ? c.items : []; }
+    if (!retItems.length) { showAlert('No se encontró el retiro Fábrica-Sucursal.', 'error'); return; }
+    const ocs = [...new Set(retItems.map(d => String(d.oc ?? '').trim()))];
+    const tonRet = retItems.reduce((s2, d) => s2 + (d.ton || 0), 0);
+    const f = refrescarFill(r);
+    const catDe = new Map();
+    CAT_V2.forEach((c, i) => (r.det[c.k] || []).forEach(d => catDe.set(d, CAT_LARGO[i])));
+    const cand = (f.orden || []).filter(d => !d._unidoCD);
+    const sel = new Set(cand.filter(d => d._enCamion || (n === 'unido' && r.asig.get(`${docLinea(d)}|${matLinea(d)}`) === 1)).map(d => cand.indexOf(d)));
+    const entDe = d => String(d.entrega || d.entrega_entrante || '').trim();
+    const grupos = new Map();
+    cand.forEach((d, i) => { const k = entDe(d) ? 'E|' + entDe(d) : 'D|' + docLinea(d); if (!grupos.has(k)) grupos.set(k, []); grupos.get(k).push(i); });
+    const ok = await new Promise(resolve => {
+      const wrap = document.createElement('div');
+      wrap.id = 'excl-modal-bg';
+      const cerrar = v => { wrap.remove(); document.removeEventListener('keydown', onEsc, true); resolve(v); };
+      const onEsc = e => { if (e.key === 'Escape') { e.stopPropagation(); cerrar(false); } };
+      document.addEventListener('keydown', onEsc, true);
+      const pintar = () => {
+        const tonSel = cand.filter((d, i) => sel.has(i)).reduce((a, d) => a + (d.ton || 0), 0);
+        const tot = tonRet + tonSel, pct = r.cap > 0 ? Math.round(tot / r.cap * 100) : 0, excede = tot > r.cap + 1e-6;
+        const filas = [...grupos.entries()].map(([k, idx]) => {
+          const todos = idx.every(i => sel.has(i)), alguno = idx.some(i => sel.has(i));
+          const tonG = idx.reduce((a, i) => a + (cand[i].ton || 0), 0);
+          const titulo = k.startsWith('E|') ? `Entrega ${k.slice(2)}` : `Documento ${k.slice(2)} · sin entrega`;
+          return `<tr style="background:#f8fafc"><td><input type="checkbox" data-ug="${escapeHtml(k)}" ${todos ? 'checked' : ''} ${!todos && alguno ? 'data-ind="1"' : ''}></td>
+              <td colspan="4"><b class="sv-mono">${escapeHtml(titulo)}</b> <span class="sv-sub" style="display:inline;margin:0">${escapeHtml(catDe.get(cand[idx[0]]) || '')} · ${idx.length} ${idx.length === 1 ? 'línea' : 'líneas'}</span></td>
+              <td class="r"><b>${t1(tonG)}</b></td></tr>`
+            + idx.map(i => { const d = cand[i]; return `<tr><td></td><td><input type="checkbox" data-ul="${i}" ${sel.has(i) ? 'checked' : ''}></td>
+              <td><span class="sv-mono">${escapeHtml(docLinea(d))}</span></td><td><div class="pc-mat"><b>${escapeHtml(d.nombre || '')}</b><small>${escapeHtml(matLinea(d))}</small></div></td>
+              <td>${escapeHtml(d.fecha || '')}</td><td class="r">${t1(d.ton || 0)}</td></tr>`; }).join('');
+        }).join('');
+        wrap.innerHTML = `<div class="sv-dr-bg" style="z-index:120" data-x></div><aside class="sv-dr" style="z-index:121;width:min(820px,100vw)" role="dialog" aria-label="Armar camión CD con retiro">
+          <div class="sv-dr-h"><div style="flex:1;min-width:0"><div class="sv-dr-k">Camión CD con retiro Fábrica-Sucursal</div>
+            <div class="sv-dr-t">${escapeHtml(r.nombre)} · pasa por CD</div>
+            <div class="sv-dr-s">Retiro OC ${ocs.map(escapeHtml).join(', ')} · ${t1(tonRet)} t (va primero)</div></div>
+            <button class="sv-iconbtn" data-x title="Cerrar (Esc)"><span class="material-symbols-outlined">close</span></button></div>
+          <div class="sv-dr-b" style="gap:12px">
+            <div class="sv-note-box">Selecciona las entregas del Plan de Carga de ${escapeHtml(r.nombre)} que completan el camión. Lo no seleccionado queda <b>«No carga» hoy</b> y vuelve al plan del próximo día. El camión cuenta como <b>camión CD (consolidado)</b>.</div>
+            <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+              <span class="sv-pill ${excede ? 'bad' : pct >= PCT_PROGRAMAR_CD ? 'ok' : 'warn'}"><i></i>${t1(tot)} t de ${fmtNum(r.cap, 0)} t · ${pct}%</span>
+              <span class="sv-sub" style="margin:0">Retiro ${t1(tonRet)} t + entregas ${t1(tonSel)} t</span>
+              ${excede ? '<b style="color:#b5000b">Supera la capacidad del camión: quita entregas.</b>' : ''}</div>
+            <div class="pc-tbl"><table class="sv-table"><thead><tr><th style="width:28px"></th><th style="width:28px"></th><th>Documento</th><th>Material</th><th>Fecha</th><th class="r">Ton</th></tr></thead>
+              <tbody>${filas || '<tr><td colspan="6" class="sv-sub">No hay entregas en el plan de esta sucursal.</td></tr>'}</tbody></table></div>
+          </div>
+          <div class="sv-dr-f"><span class="sv-dr-note">${sel.size} ${sel.size === 1 ? 'línea seleccionada' : 'líneas seleccionadas'}</span>
+            <div style="display:flex;gap:8px"><button class="sv-btn" data-x>Cancelar</button>
+            <button class="sv-btn-p" data-guardar ${excede ? 'disabled' : ''}><span class="material-symbols-outlined">merge</span>Armar camión CD</button></div></div></aside>`;
+        wrap.querySelectorAll('[data-x]').forEach(b => b.addEventListener('click', () => cerrar(false)));
+        wrap.querySelectorAll('[data-ind]').forEach(b => { b.indeterminate = true; });
+        wrap.querySelectorAll('[data-ug]').forEach(b => b.addEventListener('change', () => { (grupos.get(b.dataset.ug) || []).forEach(i => b.checked ? sel.add(i) : sel.delete(i)); pintar(); }));
+        wrap.querySelectorAll('[data-ul]').forEach(b => b.addEventListener('change', () => { const i = Number(b.dataset.ul); b.checked ? sel.add(i) : sel.delete(i); pintar(); }));
+        wrap.querySelector('[data-guardar]')?.addEventListener('click', () => cerrar(true));
+      };
+      document.body.appendChild(wrap);
+      pintar();
+    });
+    if (!ok) return;
+    const quien = await getUserEmail(), ahora = new Date().toISOString();
+    const { error: e1 } = await supabase.from('abast_plan_camion_retiro_cd').upsert(ocs.map(oc => ({ fecha: hoyIsoPlan, cd_origen: planOrigen, ce, doc_compr: oc, creado_por: quien, creado_en: ahora })),
+      { onConflict: 'fecha,cd_origen,doc_compr' });
+    if (e1) { showAlert('No se pudo unir el retiro al camión CD: ' + e1.message, 'error'); return; }
+    const filas = new Map();
+    retItems.forEach(d => filas.set(`${docLinea(d)}|${matLinea(d)}`, { documento: docLinea(d), material: matLinea(d), camion: 1, origen: 'retiro_cd' }));
+    cand.forEach((d, i) => { const k = `${docLinea(d)}|${matLinea(d)}`; if (!filas.has(k)) filas.set(k, { documento: docLinea(d), material: matLinea(d), camion: sel.has(i) ? 1 : 0, origen: 'manual' }); });
+    const { error: e2 } = await supabase.from('abast_plan_linea_camion').upsert([...filas.values()].map(x => ({ fecha: hoyIsoPlan, cd_origen: planOrigen, ce, ...x, updated_by: quien, updated_at: ahora })),
+      { onConflict: 'fecha,cd_origen,ce,documento,material' });
+    if (e2) { showAlert('Retiro unido, pero no se pudieron fijar las entregas: ' + e2.message, 'error'); }
+    else showAlert(`Camión CD de ${r.nombre} armado con el retiro OC ${ocs.join(', ')} y ${sel.size} ${sel.size === 1 ? 'línea' : 'líneas'} de entregas. Falta programarlo con los datos del transporte.`, 'success');
+    st.drawer = ce; st.tab = 'cd';
+    renderPlanCarga(stage);
+  }
+  async function separarRetiroCD(ce) {
+    const r = resultado.find(x => x.ce === ce);
+    if (!r || !PUEDE_TRANSPORTE || bloqueadoPorCierre(true)) return;
+    if (progMap.get(`${ce}|1`)) { showAlert('El camión CD ya está programado: quita la programación antes de separar el retiro.', 'error'); return; }
+    const ocs = [...new Set((r.retirosUnidos || []).map(x => String(x.item.oc ?? '').trim()))];
+    if (!ocs.length) return;
+    if (!await confirmar(`¿Separar el retiro OC ${ocs.join(', ')} del camión CD de ${r.nombre}?\n\nEl retiro vuelve a ser un camión Fábrica-Sucursal y el camión CD vuelve al llenado automático.`,
+      { aceptar: 'Separar', tono: 'peligro', icono: 'call_split' })) return;
+    const { error } = await supabase.from('abast_plan_camion_retiro_cd').delete().eq('fecha', hoyIsoPlan).eq('cd_origen', planOrigen).in('doc_compr', ocs);
+    if (error) { showAlert('No se pudo separar: ' + error.message, 'error'); return; }
+    await supabase.from('abast_plan_linea_camion').delete().eq('fecha', hoyIsoPlan).eq('cd_origen', planOrigen).eq('ce', ce).in('origen', ['retiro_cd', 'manual']);
+    showAlert(`Retiro separado: ${r.nombre} vuelve a tener camión Fábrica-Sucursal y el camión CD automático.`, 'success');
+    st.drawer = ce; st.tab = 'cd';
     renderPlanCarga(stage);
   }
   async function deshacerManual(id) {
@@ -8551,6 +8723,7 @@ async function renderPlanCarga(stage, opts = {}) {
           ['Agenda', r.enCalendario ? 'En calendario del día' : 'Fuera de agenda'],
           r.tonClienteDiferido > 0 ? ['CD-Cliente próximo', `${t1(r.tonClienteDiferido)} t`] : null,
         ])
+        + unidoCDHtml(r)
         + progHtml(r, 1)
         + segundoHtml(r, fill)
         // (4-oct-2026, Jordan) Sólo lo que va en el camión; lo que queda fuera se ve en el CSV.
@@ -8572,7 +8745,25 @@ async function renderPlanCarga(stage, opts = {}) {
         c.horaPres ? ['Presentación en CD', escapeHtml(`${c.horaPres} hrs`)] : null,
         c.transportista ? ['Transporte', escapeHtml(c.transportista)] : null,
         c.chofer ? ['Chofer', escapeHtml(c.chofer)] : null])
+      // (29-oct-2026, Jordan) Fábrica-Sucursal que pasa por el CD y completa con entregas → camión CD.
+      + (tk === 'fabSuc' && PUEDE_TRANSPORTE && !progMap.get(`${r.ce}|1`) ? `<div class="pc-extra pc-seg2" style="background:#eff6ff;border-color:#93c5fd"><span class="material-symbols-outlined" style="color:#1d4ed8">alt_route</span>
+          <div style="flex:1;min-width:0"><b>¿Pasa por el CD?</b> Arma el camión CD de ${escapeHtml(r.nombre)} con este retiro y selecciona las entregas del plan que completan el camión. Cuenta como camión CD (consolidado).</div>
+          <button class="sv-btn-p" data-unir-cd="${escapeHtml(r.ce)}" data-unir-n="${escapeHtml(String(c.n))}"><span class="material-symbols-outlined">merge</span>Armar camión CD con este retiro</button></div>` : '')
       + grupoHtml(t.color, `Contenido del camión ${c.n} de ${lista.length}`, c.items, t.tipo);
+  }
+  // (29-oct-2026, Jordan) Aviso en el camión CD: incluye retiro(s) Fábrica-Sucursal unidos.
+  function unidoCDHtml(r) {
+    const ru = r.retirosUnidos || [];
+    if (!ru.length) return '';
+    const ocs = [...new Set(ru.map(x => String(x.item.oc ?? '').trim()))], e = ru[0].e || {};
+    const provs = [...new Set(ru.map(x => x.item.prov).filter(Boolean))].join(' + ');
+    const ton = ru.reduce((s2, x) => s2 + (x.item.ton || 0), 0);
+    const puede = PUEDE_TRANSPORTE;
+    return `<div class="pc-extra pc-seg2" style="background:#eff6ff;border-color:#93c5fd"><span class="material-symbols-outlined" style="color:#1d4ed8">alt_route</span>
+      <div style="flex:1;min-width:0"><b>Incluye retiro Fábrica-Sucursal · pasa por CD</b> · OC ${ocs.map(escapeHtml).join(', ')}${provs ? ' · ' + escapeHtml(provs) : ''} · ${t1(ton)} t${e.patente_camion ? ' · patente ' + escapeHtml(e.patente_camion) : ''}
+        <br><small style="color:#5c5f61">El retiro va primero; el resto del camión son las entregas seleccionadas.</small></div>
+      ${puede ? `<div style="display:flex;gap:6px;flex-wrap:wrap"><button class="sv-btn" data-unir-cd="${escapeHtml(r.ce)}" data-unir-n="unido"><span class="material-symbols-outlined">checklist</span>Ajustar entregas</button>
+        <button class="sv-btn" data-separar-cd="${escapeHtml(r.ce)}"><span class="material-symbols-outlined">call_split</span>Separar</button></div>` : ''}</div>`;
   }
   function drawerHtml(r) {
     const tabs = [{ k: 'cd', lbl: `Camión CD · ${Math.min(r.pct, 100)}%`, color: '#444749' }];
@@ -8985,6 +9176,8 @@ async function renderPlanCarga(stage, opts = {}) {
       if (ok) { await leerMaestroTr(); draw(); }
     }));
     stage.querySelectorAll('[data-dirman-open]').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); st.drawer = b.dataset.dirmanOpen; st.tab = 'dirman'; draw(); }));
+    stage.querySelectorAll('[data-unir-cd]').forEach(b => b.addEventListener('click', async e => { e.stopPropagation(); await armarCamionConRetiro(b.dataset.unirCd, b.dataset.unirN); }));
+    stage.querySelectorAll('[data-separar-cd]').forEach(b => b.addEventListener('click', async e => { e.stopPropagation(); await separarRetiroCD(b.dataset.separarCd); }));
     stage.querySelectorAll('[data-dif-open]').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); st.drawer = b.dataset.difOpen; st.tab = 'dif'; draw(); }));
     stage.querySelectorAll('[data-deshacer-man]').forEach(b => b.addEventListener('click', async e => { e.stopPropagation(); b.disabled = true; await deshacerManual(Number(b.dataset.deshacerMan)); }));
     const dmChecks = [...stage.querySelectorAll('[data-dm-oc]')];
