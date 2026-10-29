@@ -32,8 +32,8 @@ export function tonHtml(n) {
 }
 
 // Encabezado del shell: fecha y hora de la última actualización SAP de la vista
-import { confirmar } from './confirmar.js?v=202610281701';
-import { comentariosHabilitados, conteosComentarios, celdaComentarios, montarHilo, tomarFoco, abrirHiloSuelto } from './comentarios.js?v=202610281701';
+import { confirmar } from './confirmar.js?v=202610282243';
+import { comentariosHabilitados, conteosComentarios, celdaComentarios, montarHilo, tomarFoco, abrirHiloSuelto } from './comentarios.js?v=202610282243';
 export function setUltimaActualizacion(ts) {
   const el = document.getElementById('sv-upd');
   if (!el) return;
@@ -228,6 +228,7 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
   }
 
   // (7-oct-2026) Botones extra del encabezado por vista/modo: AV.headBtns = [{ label, icon, perm, run }]; run() → true recarga.
+  // (28-oct-2026) run(filas) recibe las filas filtradas en pantalla (p. ej. descargas).
   const headBtns = () => (AV.headBtns || []).filter(b => !b.perm || deps.can(b.perm));
   function headHTML() {
     const seg = AV.origen ? `<div class="sv-seg" role="group" aria-label="Centro de origen">${AV.origen.opciones.map(([v, l]) =>
@@ -499,7 +500,7 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
       const hb = headBtns()[+b.dataset.hbtn]; if (!hb) return;
       b.disabled = true;
       // (21-oct-2026) run() puede devolver { abrir: rowId } para reabrir el detalle de esa fila tras recargar.
-      try { const res = await hb.run(); if (res) { if (res.abrir) st._reopen = String(res.abrir); deps.clearRawCache(); renderTablaV2(stage, cfg, deps, viewKey); return; } } finally { b.disabled = false; }
+      try { const res = await hb.run(filt); if (res) { if (res.abrir) st._reopen = String(res.abrir); deps.clearRawCache(); renderTablaV2(stage, cfg, deps, viewKey); return; } } finally { b.disabled = false; }
     }));
     stage.querySelector('[data-csv]')?.addEventListener('click', () => deps.exportarCSV(active, filt));
     const accFila = (sel, fn) => stage.querySelectorAll(sel).forEach(b => b.addEventListener('click', async e => {

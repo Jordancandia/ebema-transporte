@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610281701';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610281701';
-import { getDatabase } from './data.js?v=202610281701';
+import { supabase } from './supabase-client.js?v=202610282243';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610282243';
+import { getDatabase } from './data.js?v=202610282243';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610281701';
-import { confirmar, pedirDato } from './confirmar.js?v=202610281701';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610282243';
+import { confirmar, pedirDato } from './confirmar.js?v=202610282243';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -5345,6 +5345,8 @@ V2.seguimiento_carga = {
     });
   },
   rowId: r => r.id,
+  // (28-oct-2026, Jordan) Descarga «Plan vs DT»: planificado, DT, cargado y diferencias por SKU (todos los usuarios con la vista).
+  headBtns: [{ label: 'Descargar plan vs DT', icon: 'difference', run: rows => descargarPlanVsDtSeg(rows) }],
   // (12-oct-2026, Jordan) Camiones por CD de origen: Quilicura (1003) y CD Biobío (1081)
   origen: { of: r => r.cd_origen, opciones: [['*', 'Todos los CD'], ['1003', 'CD Quilicura · 1003'], ['1081', 'CD Biobío · 1081']] },
   chip: { label: 'Destino', of: r => String(r.ce ?? '').trim(), name: v => nombreCentro(v) || v },
@@ -5986,6 +5988,53 @@ function resumenGrupoSeg(g) {
     pct: tonCarg != null && tonPlanCon > 0 ? Math.round(tonCarg / tonPlanCon * 100) : null,
     nDif: rs.reduce((s2, x) => s2 + (x.fuente === 'pend' ? 0 : x.nDif), 0) };
 }
+// ── Descarga «Planificado vs DT» (28-oct-2026, Jordan) ──────────────────────
+// Seguimiento de Carga: una fila por SKU de cada camión con lo planificado, su DT, lo cargado y la diferencia
+// (mismo cruce del detalle: cruceCargaSeg). Para todo usuario con acceso a la vista; respeta los filtros en pantalla.
+const CSV_PLAN_DT = ['Fecha planificación', 'Fecha carga', 'CD origen', 'Centro destino', 'Sucursal', 'Tipo de despacho', 'Camión', 'Patente', 'Transportista',
+  'Chofer', 'Horario presentación', 'Estado camión', 'DT camión', 'Fuente cargado', 'Tipo de carga', 'Pedido de traslado / OC', 'Pedido de venta',
+  'N° entrega plan', 'N° entrega DT', 'DT línea', 'SKU', 'Nombre material', 'Cliente / Proveedor', 'UM', 'Cant. planificada', 'Ton planificada',
+  'Cant. cargada', 'Ton cargada', 'Dif. cantidad', 'Dif. ton', '% cumplimiento', 'Estado línea', 'Con diferencia', 'Observación'];
+const FUENTE_PLAN_DT = { dt: 'DT SAP', pend: 'Esperando DT', coord: 'Coordinado (sin DT en SAP)' };
+function descargarPlanVsDtSeg(rows) {
+  const n = (v, d) => (v == null || isNaN(v)) ? '' : fmtNum(v, d);
+  const filas = [];
+  (rows || []).forEach(r => (r.camiones || []).forEach(c => {
+    const R = c.res;
+    if (!R) return;
+    const estCam = (SEG_EST[estadoCamSeg(r, c)] || {}).l || '';
+    const dtCam = (c.dts || []).map(d => d.transporte + (dtRevisar(d) ? ' (revisar)' : '')).join(' / ');
+    const cab = [fmtFechaISO(r.fecha_plan), fmtFechaISO(c.fecha_carga || r.fecha_carga), r.cd_origen || '', r.ce || '', r._nombreCe || nombreCentro(r.ce) || '',
+      c.lbl || '', c.tipo || '', c.patente_camion || '', [c.id_transporte, c.transportista].filter(Boolean).join(' · '),
+      [c.chofer_nombre, c.chofer_rut].filter(Boolean).join(' · '), txtPresentacion(c), estCam, dtCam, FUENTE_PLAN_DT[R.fuente] || R.fuente || ''];
+    R.items.forEach(i => {
+      const conCarg = i.carg != null;
+      const obs = [i.agregado ? 'Agregado con «Editar carga»' : '',
+        i.quitado ? `Bajado del camión${i.motivo ? ': ' + i.motivo : ''}${i.por ? ' (' + i.por + ')' : ''}` : '',
+        i.saldo ? `Saldo activado: viajó ${fmtNum(Number(i.saldo.cantidad_viajo) || 0, 1)}${i.saldo.motivo ? ' · ' + i.saldo.motivo : ''}` : ''].filter(Boolean).join(' · ');
+      filas.push([...cab, i.tipo || '', i.doc || '', i.pv || '', i.ent || '', [...(i.entsDt || [])].join(' / '), [...(i.dts || [])].join(' / '),
+        i.mat || '', i.nombre || '', i.quien || '', i.um || '',
+        i.extra ? '' : n(i.plan, 3), i.extra ? '' : n(i.tonPlan, 4),
+        conCarg ? n(i.carg, 3) : '', conCarg ? n(i.tonCarg || 0, 4) : '',
+        conCarg ? n(i.carg - i.plan, 3) : '', conCarg ? n((i.tonCarg || 0) - i.tonPlan, 4) : '',
+        conCarg && i.plan > 0 ? Math.round(i.carg / i.plan * 100) + '%' : '',
+        (SC_EST[i.est] || {}).l || i.est || '', SC_DIF.has(i.est) ? 'Sí' : 'No', obs]);
+    });
+  }));
+  if (!filas.length) { showAlert('No hay camiones para descargar con los filtros actuales.', 'error'); return false; }
+  const esc = v => { v = v == null ? '' : String(v); return /[;"\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
+  const lines = [CSV_PLAN_DT.join(';')].concat(filas.map(f => f.map(esc).join(';')));
+  const fechas = (rows || []).flatMap(r => r._fechasCarga && r._fechasCarga.length ? r._fechasCarga : [r.fecha_carga]).filter(Boolean).sort();
+  const rango = fechas.length ? (fechas[0] === fechas[fechas.length - 1] ? fechas[0] : `${fechas[0]}_a_${fechas[fechas.length - 1]}`) : isoLocal(hoy00());
+  const blob = new Blob(['\ufeff' + lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = `Seguimiento_Plan_vs_DT_${rango}.csv`;
+  document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+  const nDif = filas.filter(f => f[CSV_PLAN_DT.length - 2] === 'Sí').length;
+  showAlert(`Plan vs DT descargado: ${filas.length} líneas · ${nDif} con diferencia.`, 'success');
+  return false;
+}
 const scColorPct = p => p == null ? '#6b6f72' : p > 102 ? '#2563eb' : p >= 98 ? '#15803d' : p >= 90 ? '#d97706' : '#b91c1c';
 // Celda «Planificado → cargado» de la fila principal
 function planCargCeldaSeg(r) {
@@ -6362,7 +6411,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610281701');
+    const m = await import('./ind-plan-carga.js?v=202610282243');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
