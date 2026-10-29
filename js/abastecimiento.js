@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610291541';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610291541';
-import { getDatabase } from './data.js?v=202610291541';
+import { supabase } from './supabase-client.js?v=202610291554';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610291554';
+import { getDatabase } from './data.js?v=202610291554';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610291541';
-import { confirmar, pedirDato } from './confirmar.js?v=202610291541';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610291554';
+import { confirmar, pedirDato } from './confirmar.js?v=202610291554';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -6473,7 +6473,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610291541');
+    const m = await import('./ind-plan-carga.js?v=202610291554');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -8390,10 +8390,12 @@ async function renderPlanCarga(stage, opts = {}) {
   // El camión retira en fábrica, pasa por el CD y completa con las entregas que se seleccionan aquí.
   // Cuenta como el camión CD (consolidado): retiro primero (abast_plan_camion_retiro_cd) y las entregas
   // elegidas van al camión CD (abast_plan_linea_camion = 1); las no elegidas quedan «No carga» hoy.
+  // (29-oct-2026, Jordan) n = 'entregas': armar el camión CD sólo con entregas seleccionadas (traslados, crossdocking…), sin retiro.
   async function armarCamionConRetiro(ce, n) {
     const r = resultado.find(x => x.ce === ce);
     if (!r) return;
-    if (!PUEDE_TRANSPORTE) { showAlert('Sólo Owner o Planner Distribución pueden armar el camión CD con un retiro.', 'error'); return; }
+    const soloEnt = n === 'entregas';
+    if (soloEnt ? !(PUEDE_AJUSTAR || PUEDE_TRANSPORTE) : !PUEDE_TRANSPORTE) { showAlert(soloEnt ? 'Tu perfil no puede ajustar el camión CD.' : 'Sólo Owner o Planner Distribución pueden armar el camión CD con un retiro.', 'error'); return; }
     if (bloqueadoPorCierre(true)) return;
     if (progMap.get(`${ce}|1`)) { showAlert('El camión CD ya está programado: quita la programación para cambiar su carga.', 'error'); return; }
     // (29-oct-2026) Retiros Fábrica-Sucursal disponibles para la sucursal (fecha de retiro = día hábil siguiente):
@@ -8403,14 +8405,15 @@ async function renderPlanCarga(stage, opts = {}) {
     (r.retirosUnidos || []).forEach(x => addRet(x.item, 'unido'));
     (r.camionesFabSuc || []).forEach(c => (c.items || []).forEach(d => addRet(d, c.patente ? 'Patente ' + c.patente : 'Camión Fáb-Sucursal ' + c.n)));
     (r.fabCandidatos || []).filter(x => x.tipo === 'fabSuc').forEach(x => (x.items || []).forEach(d => addRet(d, 'OC sin camión')));
-    if (!retOpts.size) {
+    if (!retOpts.size && !soloEnt) {
       showAlert(`No hay retiros Fábrica-Sucursal para ${r.nombre} con retiro el ${diaCorto(diaHabil1)}. Coordínalo en Retiros de Fábrica como Retiro RM · FAB-SUC con esa fecha de retiro y vuelve a abrir el plan.`, 'error');
       return;
     }
     const selRet = new Set();
     if (n === 'unido') (r.retirosUnidos || []).forEach(x => selRet.add(String(x.item.oc ?? '').trim()));
     else if (n && n !== 'elegir') { const c = (r.camionesFabSuc || []).find(x => String(x.n) === String(n)); (c ? c.items : []).forEach(d => selRet.add(String(d.oc ?? '').trim())); }
-    if (!selRet.size && retOpts.size === 1) selRet.add([...retOpts.keys()][0]);
+    if (!soloEnt && !selRet.size && retOpts.size === 1) selRet.add([...retOpts.keys()][0]);
+    if (soloEnt) (r.retirosUnidos || []).forEach(x => selRet.add(String(x.item.oc ?? '').trim()));
     const retSel = () => [...selRet].map(oc => retOpts.get(oc)).filter(Boolean);
     const tonRetF = () => retSel().reduce((s2, o) => s2 + o.ton, 0);
     const f = refrescarFill(r);
@@ -8430,7 +8433,7 @@ async function renderPlanCarga(stage, opts = {}) {
       const pintar = () => {
         const tonSel = cand.filter((d, i) => sel.has(i)).reduce((a, d) => a + (d.ton || 0), 0);
         const tonRet = tonRetF(), ocs = [...selRet];
-        const tot = tonRet + tonSel, pct = r.cap > 0 ? Math.round(tot / r.cap * 100) : 0, excede = tot > r.cap + 1e-6, sinRet = !selRet.size;
+        const tot = tonRet + tonSel, pct = r.cap > 0 ? Math.round(tot / r.cap * 100) : 0, excede = tot > r.cap + 1e-6, sinRet = !soloEnt && !selRet.size;
         const retFilas = [...retOpts.values()].map(o => `<tr><td><input type="checkbox" data-ur="${escapeHtml(o.oc)}" ${selRet.has(o.oc) ? 'checked' : ''}></td>
             <td><span class="sv-mono">${escapeHtml(o.oc)}</span></td><td><b>${escapeHtml(o.prov)}</b></td><td>${escapeHtml(o.origen === 'unido' ? 'Unido al camión CD' : o.origen)}</td><td class="r"><b>${t1(o.ton)}</b></td></tr>`).join('');
         const filas = [...grupos.entries()].map(([k, idx]) => {
@@ -8445,25 +8448,25 @@ async function renderPlanCarga(stage, opts = {}) {
               <td>${escapeHtml(d.fecha || '')}</td><td class="r">${t1(d.ton || 0)}</td></tr>`; }).join('');
         }).join('');
         wrap.innerHTML = `<div class="sv-dr-bg" style="z-index:120" data-x></div><aside class="sv-dr" style="z-index:121;width:min(820px,100vw)" role="dialog" aria-label="Armar camión CD con retiro">
-          <div class="sv-dr-h"><div style="flex:1;min-width:0"><div class="sv-dr-k">Camión CD con retiro Fábrica-Sucursal</div>
-            <div class="sv-dr-t">${escapeHtml(r.nombre)} · pasa por CD</div>
-            <div class="sv-dr-s">${ocs.length ? `Retiro OC ${ocs.map(escapeHtml).join(', ')} · ${t1(tonRet)} t (va primero)` : 'Elige el retiro de fábrica'}</div></div>
+          <div class="sv-dr-h"><div style="flex:1;min-width:0"><div class="sv-dr-k">${soloEnt ? 'Camión CD · selección manual de entregas' : 'Camión CD con retiro Fábrica-Sucursal'}</div>
+            <div class="sv-dr-t">${escapeHtml(r.nombre)}${soloEnt ? '' : ' · pasa por CD'}</div>
+            <div class="sv-dr-s">${soloEnt ? 'Marca las entregas que van en el camión CD' : ocs.length ? `Retiro OC ${ocs.map(escapeHtml).join(', ')} · ${t1(tonRet)} t (va primero)` : 'Elige el retiro de fábrica'}</div></div>
             <button class="sv-iconbtn" data-x title="Cerrar (Esc)"><span class="material-symbols-outlined">close</span></button></div>
           <div class="sv-dr-b" style="gap:12px">
-            <div class="sv-b" style="font-size:14px">1. Retiro de fábrica (Fábrica-Sucursal · retiro ${escapeHtml(diaCorto(diaHabil1))})</div>
+            ${soloEnt ? '' : `<div class="sv-b" style="font-size:14px">1. Retiro de fábrica (Fábrica-Sucursal · retiro ${escapeHtml(diaCorto(diaHabil1))})</div>
             <div class="pc-tbl"><table class="sv-table"><thead><tr><th style="width:28px"></th><th>Orden de compra</th><th>Proveedor</th><th>Hoy en el plan</th><th class="r">Ton</th></tr></thead><tbody>${retFilas}</tbody></table></div>
-            <div class="sv-b" style="font-size:14px">2. Entregas del CD</div>
+            <div class="sv-b" style="font-size:14px">2. Entregas del CD</div>`}
             <div class="sv-note-box">Selecciona las entregas del Plan de Carga de ${escapeHtml(r.nombre)} que completan el camión. Lo no seleccionado queda <b>«No carga» hoy</b> y vuelve al plan del próximo día. El camión cuenta como <b>camión CD (consolidado)</b>.</div>
             <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
               <span class="sv-pill ${excede ? 'bad' : pct >= PCT_PROGRAMAR_CD ? 'ok' : 'warn'}"><i></i>${t1(tot)} t de ${fmtNum(r.cap, 0)} t · ${pct}%</span>
-              <span class="sv-sub" style="margin:0">Retiro ${t1(tonRet)} t + entregas ${t1(tonSel)} t</span>
+              <span class="sv-sub" style="margin:0">${soloEnt ? `${(r.retirosUnidos || []).length ? `Retiro unido ${t1(tonRetF())} t + ` : ''}Entregas ${t1(tonSel)} t` : `Retiro ${t1(tonRet)} t + entregas ${t1(tonSel)} t`}</span>
               ${excede ? '<b style="color:#b5000b">Supera la capacidad del camión: quita entregas.</b>' : ''}</div>
             <div class="pc-tbl"><table class="sv-table"><thead><tr><th style="width:28px"></th><th style="width:28px"></th><th>Documento</th><th>Material</th><th>Fecha</th><th class="r">Ton</th></tr></thead>
               <tbody>${filas || '<tr><td colspan="6" class="sv-sub">No hay entregas en el plan de esta sucursal.</td></tr>'}</tbody></table></div>
           </div>
           <div class="sv-dr-f"><span class="sv-dr-note">${sel.size} ${sel.size === 1 ? 'línea seleccionada' : 'líneas seleccionadas'}</span>
             <div style="display:flex;gap:8px"><button class="sv-btn" data-x>Cancelar</button>
-            <button class="sv-btn-p" data-guardar ${excede || sinRet ? 'disabled' : ''} title="${sinRet ? 'Elige al menos un retiro' : ''}"><span class="material-symbols-outlined">merge</span>Armar camión CD</button></div></div></aside>`;
+            <button class="sv-btn-p" data-guardar ${excede || sinRet ? 'disabled' : ''} title="${sinRet ? 'Elige al menos un retiro' : ''}"><span class="material-symbols-outlined">${soloEnt ? 'checklist' : 'merge'}</span>${soloEnt ? 'Guardar camión CD' : 'Armar camión CD'}</button></div></div></aside>`;
         wrap.querySelectorAll('[data-x]').forEach(b => b.addEventListener('click', () => cerrar(false)));
         wrap.querySelectorAll('[data-ind]').forEach(b => { b.indeterminate = true; });
         wrap.querySelectorAll('[data-ug]').forEach(b => b.addEventListener('change', () => { (grupos.get(b.dataset.ug) || []).forEach(i => b.checked ? sel.add(i) : sel.delete(i)); pintar(); }));
@@ -8478,9 +8481,9 @@ async function renderPlanCarga(stage, opts = {}) {
     const retItems = retSel().flatMap(o => o.items), ocs = [...selRet];
     const quien = await getUserEmail(), ahora = new Date().toISOString();
     // Retiros que se desmarcaron (ajustar): dejan de estar unidos
-    const quitar = (r.retirosUnidos || []).map(x => String(x.item.oc ?? '').trim()).filter(oc => !selRet.has(oc));
+    const quitar = soloEnt ? [] : (r.retirosUnidos || []).map(x => String(x.item.oc ?? '').trim()).filter(oc => !selRet.has(oc));
     if (quitar.length) await supabase.from('abast_plan_camion_retiro_cd').delete().eq('fecha', hoyIsoPlan).eq('cd_origen', planOrigen).in('doc_compr', quitar);
-    const { error: e1 } = await supabase.from('abast_plan_camion_retiro_cd').upsert(ocs.map(oc => ({ fecha: hoyIsoPlan, cd_origen: planOrigen, ce, doc_compr: oc, creado_por: quien, creado_en: ahora })),
+    const { error: e1 } = !ocs.length ? { error: null } : await supabase.from('abast_plan_camion_retiro_cd').upsert(ocs.map(oc => ({ fecha: hoyIsoPlan, cd_origen: planOrigen, ce, doc_compr: oc, creado_por: quien, creado_en: ahora })),
       { onConflict: 'fecha,cd_origen,doc_compr' });
     if (e1) { showAlert('No se pudo unir el retiro al camión CD: ' + e1.message, 'error'); return; }
     const filas = new Map();
@@ -8489,7 +8492,8 @@ async function renderPlanCarga(stage, opts = {}) {
     const { error: e2 } = await supabase.from('abast_plan_linea_camion').upsert([...filas.values()].map(x => ({ fecha: hoyIsoPlan, cd_origen: planOrigen, ce, ...x, updated_by: quien, updated_at: ahora })),
       { onConflict: 'fecha,cd_origen,ce,documento,material' });
     if (e2) { showAlert('Retiro unido, pero no se pudieron fijar las entregas: ' + e2.message, 'error'); }
-    else showAlert(`Camión CD de ${r.nombre} armado con el retiro OC ${ocs.join(', ')} y ${sel.size} ${sel.size === 1 ? 'línea' : 'líneas'} de entregas. Falta programarlo con los datos del transporte.`, 'success');
+    else showAlert(soloEnt ? `Camión CD de ${r.nombre}: ${sel.size} ${sel.size === 1 ? 'línea' : 'líneas'} de entregas seleccionadas a mano; el resto queda «No carga» hoy. Falta programarlo con los datos del transporte.`
+      : `Camión CD de ${r.nombre} armado con el retiro OC ${ocs.join(', ')} y ${sel.size} ${sel.size === 1 ? 'línea' : 'líneas'} de entregas. Falta programarlo con los datos del transporte.`, 'success');
     st.drawer = ce; st.tab = 'cd';
     renderPlanCarga(stage);
   }
@@ -8745,6 +8749,8 @@ async function renderPlanCarga(stage, opts = {}) {
           r.tonClienteDiferido > 0 ? ['CD-Cliente próximo', `${t1(r.tonClienteDiferido)} t`] : null,
         ])
         + unidoCDHtml(r)
+        // (29-oct-2026, Jordan) Elegir a mano las entregas (traslados / crossdocking…) del camión CD.
+        + ((PUEDE_AJUSTAR || PUEDE_TRANSPORTE) && !progMap.get(`${r.ce}|1`) ? `<div style="display:flex;justify-content:flex-end;margin:6px 0"><button class="sv-btn" data-unir-cd="${escapeHtml(r.ce)}" data-unir-n="entregas" title="Marca las entregas que van en el camión CD; el resto queda «No carga» hoy"><span class="material-symbols-outlined">checklist</span>Seleccionar entregas del camión</button></div>` : '')
         + progHtml(r, 1)
         + segundoHtml(r, fill)
         // (4-oct-2026, Jordan) Sólo lo que va en el camión; lo que queda fuera se ve en el CSV.
