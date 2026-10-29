@@ -5,8 +5,8 @@
 //  Lee en vivo las vistas v_ind_* de Supabase (RLS: usuario @ebema.cl con rol).
 //  Paleta alineada a las presentaciones (PPT) del Comité de Transporte.
 // ============================================================================
-import { supabase } from './supabase-client.js?v=202610282243';
-import { centrosAlcance } from './permisos.js?v=202610282243';
+import { supabase } from './supabase-client.js?v=202610282251';
+import { centrosAlcance } from './permisos.js?v=202610282251';
 
 // --- Paleta PPT -------------------------------------------------------------
 const C = {

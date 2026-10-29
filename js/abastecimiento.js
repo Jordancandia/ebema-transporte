@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610282243';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610282243';
-import { getDatabase } from './data.js?v=202610282243';
+import { supabase } from './supabase-client.js?v=202610282251';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610282251';
+import { getDatabase } from './data.js?v=202610282251';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610282243';
-import { confirmar, pedirDato } from './confirmar.js?v=202610282243';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610282251';
+import { confirmar, pedirDato } from './confirmar.js?v=202610282251';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -5452,7 +5452,7 @@ V2.seguimiento_carga = {
       ['Documento de transporte', r.dts.length ? r.dts.map(t => `<span class="sv-mono"><b>${escV2(t)}</b></span>`).join(' ') : '—', true],
     ],
     tablas: r.camiones.flatMap(c => [...detalleCamionSeg(r, c), ...historialCargaSeg(c)]),
-    acciones: [...accionesEditarCargaSeg(r), ...accionesSaldoSeg(r), ...accionesDtSeg(r)],
+    acciones: [...accionesDescargaSeg(r), ...accionesEditarCargaSeg(r), ...accionesSaldoSeg(r), ...accionesDtSeg(r)],
     nota: can('editar_dt_seguimiento') && r.camiones.some(c => c.dts.some(dtRevisar)) ? 'Hay DT por revisar: confírmalo, descártalo o asigna el correcto.' : '',
   }),
 };
@@ -5520,6 +5520,15 @@ async function cargarAjustesCargaSeg() {
   } catch (e) { AJUSTES_CARGA_SEG = new Map(); console.warn('Seguimiento: ajustes de carga no disponibles', e); }
 }
 const planCerradoSeg = r => String(r.fecha_plan || '') < isoLocal(hoy00());
+// (28-oct-2026, Jordan) Descarga «Plan vs DT» de cada camión desde su detalle (todos los usuarios con la vista).
+function accionesDescargaSeg(r) {
+  const varios = r.camiones.length > 1, f = v => String(v ?? '').replace(/[^\w-]+/g, '');
+  return r.camiones.filter(c => c.res).map(c => ({
+    label: `Descargar plan vs DT${varios ? ' · ' + c.lbl + (c.patente_camion ? ' ' + c.patente_camion : '') : ''}`, icon: 'difference',
+    title: 'CSV de este camión: planificado, DT, cargado y diferencias por SKU',
+    run: async () => { descargarPlanVsDtSeg([{ ...r, camiones: [c], _fechasCarga: [c.fecha_carga || r.fecha_carga].filter(Boolean) }],
+      `Plan_vs_DT_${f(r.ce)}_${f(c.tipo)}_${f(c.patente_camion || 'SINPATENTE')}_${f(c.fecha_carga || r.fecha_carga)}.csv`); return null; } }));
+}
 function accionesEditarCargaSeg(r) {
   if (!can('editar_carga_seguimiento') || !planCerradoSeg(r)) return [];
   const varios = r.camiones.length > 1;
@@ -5996,7 +6005,7 @@ const CSV_PLAN_DT = ['Fecha planificación', 'Fecha carga', 'CD origen', 'Centro
   'N° entrega plan', 'N° entrega DT', 'DT línea', 'SKU', 'Nombre material', 'Cliente / Proveedor', 'UM', 'Cant. planificada', 'Ton planificada',
   'Cant. cargada', 'Ton cargada', 'Dif. cantidad', 'Dif. ton', '% cumplimiento', 'Estado línea', 'Con diferencia', 'Observación'];
 const FUENTE_PLAN_DT = { dt: 'DT SAP', pend: 'Esperando DT', coord: 'Coordinado (sin DT en SAP)' };
-function descargarPlanVsDtSeg(rows) {
+function descargarPlanVsDtSeg(rows, nombre) {
   const n = (v, d) => (v == null || isNaN(v)) ? '' : fmtNum(v, d);
   const filas = [];
   (rows || []).forEach(r => (r.camiones || []).forEach(c => {
@@ -6029,7 +6038,7 @@ function descargarPlanVsDtSeg(rows) {
   const blob = new Blob(['\ufeff' + lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  a.href = url; a.download = `Seguimiento_Plan_vs_DT_${rango}.csv`;
+  a.href = url; a.download = nombre || `Seguimiento_Plan_vs_DT_${rango}.csv`;
   document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
   const nDif = filas.filter(f => f[CSV_PLAN_DT.length - 2] === 'Sí').length;
   showAlert(`Plan vs DT descargado: ${filas.length} líneas · ${nDif} con diferencia.`, 'success');
@@ -6411,7 +6420,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610282243');
+    const m = await import('./ind-plan-carga.js?v=202610282251');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.

@@ -10,8 +10,8 @@
 // puede subir (fn_abast_subir_exceso_entrega) y queda sujeto al llenado del camión.
 // CSS encapsulado (.cdf-*): el Tailwind del sitio está compilado.
 // ============================================================================
-import { supabase } from './supabase-client.js?v=202610282243';
-import { filtrarPorCentro, getRol, rolClase } from './permisos.js?v=202610282243';
+import { supabase } from './supabase-client.js?v=202610282251';
+import { filtrarPorCentro, getRol, rolClase } from './permisos.js?v=202610282251';
 import { showAlert, escapeHtml } from './utils.js';
 
 const C = { ink: '#191c1d', ink2: '#5c5f61', line: '#e1e3e4', soft: '#f8f9fa', red: '#b5000b', amber: '#ca8a04', green: '#15803d', blue: '#1d4ed8' };
