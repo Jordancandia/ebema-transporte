@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202610291554';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610291554';
-import { getDatabase } from './data.js?v=202610291554';
+import { supabase } from './supabase-client.js?v=202610300919';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202610300919';
+import { getDatabase } from './data.js?v=202610300919';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610291554';
-import { confirmar, pedirDato } from './confirmar.js?v=202610291554';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202610300919';
+import { confirmar, pedirDato } from './confirmar.js?v=202610300919';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -2001,6 +2001,181 @@ function showVentaManualModal(ctx, existente) {
     draw();
   });
 }
+
+// ── OC de retiro MANUALES (29-oct-2026, Jordan) ──────────────────────────────────────
+// Owner / Planner Distribución (acción «retiro_manual») agregan en Retiros de Fábrica una OC que aún no
+// viene en el SQVI (tabla abast_retiro_manual, una fila por material). La vista v_trc_sqvi_retiros_fabrica
+// la suma con formato SAP: se coordina como cualquier OC y entra al Plan de Carga, Seguimiento y Portería.
+// Si el SQVI trae la misma OC con pendiente prima SAP; sale sola cuando sus unidades viajan.
+let RET_ROWS_V2 = [];
+async function proveedoresRM() {
+  try { const { data } = await supabase.from('abast_proveedores').select('id,nombre,activo').limit(5000);
+    return (data || []).filter(p => p.activo !== false && String(p.id ?? '').trim()).map(p => ({ id: String(p.id).trim(), nombre: p.nombre || '' })); }
+  catch (_) { return []; }
+}
+// ocEditar: N° de OC manual a editar (o vacío para una nueva). Devuelve el N° de OC guardado o null.
+function showRetiroManualModal(ocEditar) {
+  return new Promise(async resolve => {
+    const editando = !!ocEditar;
+    const [provs, mats] = await Promise.all([proveedoresRM(), materialesVentaManual()]);
+    let exist = [];
+    if (editando) { const { data } = await supabase.from('abast_retiro_manual').select('*').eq('doc_compr', String(ocEditar).trim()).order('pos'); exist = data || []; }
+    const c0 = exist[0] || {};
+    const ocsSap = new Set((RET_ROWS_V2 || []).filter(r => !r._oc_manual).map(r => String(r.doc_compr ?? '').trim()));
+    const ocsMan = new Set((RET_ROWS_V2 || []).filter(r => r._oc_manual).map(r => String(r.doc_compr ?? '').trim()));
+    const st = {
+      oc: c0.doc_compr || '', idProv: c0.proveedor || '', nomProv: c0.nombre_proveedor || '', ce: c0.ce || '', fecha: c0.fe_entrega || '',
+      pv: c0.documento || '', obs: c0.observacion || '',
+      lineas: exist.length ? exist.map(l => ({ material: l.material || '', nombre: l.texto_breve || '', cant: String(l.cantidad ?? ''), um: l.ump || '', peso: l.peso_unit_kg == null ? '' : String(l.peso_unit_kg) }))
+        : [{ material: '', nombre: '', cant: '', um: '', peso: '' }],
+      err: false, errMsg: '',
+    };
+    const wrap = document.createElement('div');
+    wrap.innerHTML = '<div class="sv-dr-bg" style="z-index:120"></div><aside class="sv-dr" style="z-index:121;width:min(760px,100vw)" role="dialog" aria-label="OC de retiro manual"></aside>';
+    document.body.appendChild(wrap);
+    const panel = wrap.querySelector('aside');
+    const fin = v => { wrap.remove(); document.removeEventListener('keydown', onKey, true); resolve(v); };
+    const onKey = e => { if (e.key === 'Escape' && !cerrarBuscadorAbierto(e)) { e.stopPropagation(); fin(null); } };
+    document.addEventListener('keydown', onKey, true);
+    wrap.querySelector('.sv-dr-bg').addEventListener('click', () => fin(null));
+    const lineaVacia = l => !String(l.material).trim() && !String(l.cant).trim();
+    const faltantes = () => {
+      const f = [];
+      if (!editando && !st.oc.trim()) f.push('oc');
+      if (!st.nomProv.trim()) f.push('nomProv');
+      if (!st.ce) f.push('ce');
+      if (!st.fecha) f.push('fecha');
+      st.lineas.forEach((l, i) => {
+        if (lineaVacia(l)) return;
+        if (!String(l.material).trim()) f.push('mat_' + i);
+        if (!(numVM(l.cant) > 0)) f.push('cant_' + i);
+        if (!(pesoLineaVM(l, mats).kg > 0)) f.push('peso_' + i);
+      });
+      return f;
+    };
+    const bad = k => st.err && faltantes().includes(k);
+    const lbl = (t, k, req) => `<label class="sv-flbl" style="display:block;margin-bottom:6px;${bad(k) ? 'color:#b5000b' : ''}">${t}${req ? ' *' : ''}</label>`;
+    const inp = (k, ph, extra = '') => `<label class="sv-inp" style="width:100%;box-sizing:border-box;min-width:0;${bad(k) ? 'border-color:#b5000b' : ''}"><input data-k="${k}" value="${escapeHtml(st[k])}" placeholder="${escapeHtml(ph || '')}" style="width:100%" ${extra}></label>`;
+    const tonLinea = l => { const c = numVM(l.cant); return c > 0 ? pesoLineaVM(l, mats).kg * c / 1000 : 0; };
+    const tonTotal = () => st.lineas.reduce((s2, l) => s2 + tonLinea(l), 0);
+    const destinos = () => { const ds = destinosPlan().slice(); if (st.ce && !ds.includes(st.ce)) ds.unshift(st.ce); return ds; };
+    const lineaHtml = (l, i) => {
+      const mp = mats.get(String(l.material).trim()), pm = pesoLineaVM(l, mats);
+      const box = (k, v, ph, extra = '') => `<input data-l="${i}" data-lk="${k}" value="${escapeHtml(v)}" placeholder="${escapeHtml(ph)}" ${extra} style="width:100%;box-sizing:border-box;border:1px solid ${bad(k + '_' + i) ? '#b5000b' : '#c5c7c9'};border-radius:6px;padding:5px 7px;font:inherit">`;
+      return `<tr><td style="vertical-align:top;padding:6px 4px"><div data-lmat="${i}" style="min-width:120px"></div></td>
+        <td style="vertical-align:top;padding:6px 4px">${box('nombre', l.nombre, mp ? mp.nombre : 'Descripción')}</td>
+        <td style="vertical-align:top;padding:6px 4px">${box('cant', l.cant, '0', 'inputmode="decimal" style="text-align:right"')}</td>
+        <td style="vertical-align:top;padding:6px 4px">${box('um', l.um, 'UN')}</td>
+        <td style="vertical-align:top;padding:6px 4px">${pm.maestro ? `<div class="sv-sub" style="margin:6px 0 0;white-space:nowrap">${fmtNum(pm.kg, pm.kg % 1 ? 3 : 0)} kg · maestro</div>` : box('peso', l.peso, 'kg / unidad', 'inputmode="decimal" style="text-align:right"')}</td>
+        <td class="r" data-lton="${i}" style="vertical-align:top;padding:10px 4px;white-space:nowrap">${fmtNum(tonLinea(l), 3)}</td>
+        <td style="vertical-align:top;padding:4px"><button class="sv-iconbtn" data-ldel="${i}" title="Quitar material" ${st.lineas.length === 1 ? 'disabled' : ''}><span class="material-symbols-outlined">delete</span></button></td></tr>`;
+    };
+    function draw() {
+      const falt = st.err ? faltantes() : [];
+      panel.innerHTML = `
+        <div class="sv-dr-h"><div style="flex:1;min-width:0">
+          <div class="sv-dr-k">${editando ? 'Editar OC de retiro manual' : 'Agregar OC de retiro manual'}</div>
+          <div class="sv-dr-t">${escapeHtml(st.oc || 'Nueva OC')}</div>
+          <div class="sv-dr-s">Retiros de Fábrica · queda «Sin coordinar» hasta que la coordines, igual que una OC de SAP</div></div>
+          <button class="sv-iconbtn" data-cx title="Cerrar (Esc)"><span class="material-symbols-outlined">close</span></button></div>
+        <div class="sv-dr-b" style="gap:18px">
+          ${falt.length ? '<div class="sv-note-box" style="background:#ffdad6;color:#93000a;font-weight:700">Completa los campos obligatorios marcados en rojo (cada material necesita cantidad y peso).</div>' : ''}
+          ${st.errMsg ? `<div class="sv-note-box" style="background:#ffdad6;color:#93000a;font-weight:700">${escapeHtml(st.errMsg)}</div>` : ''}
+          <div class="sv-card" style="padding:14px 16px;display:flex;flex-direction:column;gap:10px">
+            <div class="sv-b" style="font-size:14px">Orden de compra</div>
+            <div style="display:grid;grid-template-columns:1.3fr 1fr 1fr;gap:10px">
+              <div>${lbl('N° orden de compra', 'oc', true)}
+                <label class="sv-inp" style="width:100%;box-sizing:border-box;min-width:0;${bad('oc') ? 'border-color:#b5000b' : ''}"><span class="material-symbols-outlined">tag</span><input class="is-mono" data-k="oc" value="${escapeHtml(st.oc)}" ${editando ? 'disabled' : ''} placeholder="45…" style="width:100%"></label></div>
+              <div>${lbl('Fecha de entrega', 'fecha', true)}
+                <label class="sv-inp" style="width:100%;box-sizing:border-box;min-width:0;${bad('fecha') ? 'border-color:#b5000b' : ''}"><input type="date" data-k="fecha" value="${escapeHtml(st.fecha)}" style="width:100%"></label></div>
+              <div>${lbl('Pedido de venta (calzada)', 'pv', false)}${inp('pv', 'Vacío = Stock', 'class="is-mono"')}</div>
+            </div>
+            <div class="sv-sub" style="margin:-4px 0 0;max-width:none">${editando ? 'El N° de OC no se puede cambiar.' : 'Usa el N° real de la OC: cuando SAP la traiga en el SQVI con pendiente, prima la de SAP y la manual deja de mostrarse.'}</div>
+            <div style="display:grid;grid-template-columns:1fr 2fr;gap:10px">
+              <div>${lbl('ID proveedor', 'idProv', false)}<div data-combo="prov"></div></div>
+              <div>${lbl('Nombre proveedor', 'nomProv', true)}${inp('nomProv', 'Razón social')}</div>
+            </div>
+            <div style="max-width:360px">${lbl('Centro destino', 'ce', true)}
+              <label class="sv-inp" style="width:100%;box-sizing:border-box;min-width:0;${bad('ce') ? 'border-color:#b5000b' : ''}"><span class="material-symbols-outlined">warehouse</span>
+                <select data-k="ce" style="border:none;background:transparent;width:100%;font:inherit;outline:none">
+                  <option value="">Elegir…</option>${destinos().map(c => `<option value="${escapeHtml(c)}" ${st.ce === c ? 'selected' : ''}>${escapeHtml(c)} · ${escapeHtml(getNombreCentro(c))}</option>`).join('')}
+                </select></label></div>
+          </div>
+          <div class="sv-card" style="padding:14px 16px;display:flex;flex-direction:column;gap:10px">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+              <div><div class="sv-b" style="font-size:14px">Materiales</div>
+                <div class="sv-sub" style="margin:0;max-width:none">El peso sale del Maestro de Productos; si el material no lo tiene, ingrésalo en kg por unidad.</div></div>
+              <span class="sv-pill info" data-rm-ton><i></i>${fmtNum(tonTotal(), 2)} t</span></div>
+            <div style="overflow:auto"><table class="sv-table" style="min-width:640px"><thead><tr><th>Material *</th><th>Descripción</th><th class="r">Cantidad *</th><th>UM</th><th>Peso *</th><th class="r">Ton</th><th></th></tr></thead>
+              <tbody>${st.lineas.map(lineaHtml).join('')}</tbody></table></div>
+            <div><button class="sv-btn" data-ladd><span class="material-symbols-outlined">add</span>Agregar material</button></div>
+          </div>
+          <div>${lbl('Observación', 'obs', false)}${inp('obs', 'Motivo del ingreso manual, referencia, etc.')}</div>
+        </div>
+        <div class="sv-dr-f"><span class="sv-dr-note">* Obligatorio · después de guardar usa «Coordinar retiro» para que entre al Plan de Carga</span>
+          <div style="display:flex;gap:8px"><button class="sv-btn" data-cx>Cancelar</button>
+          <button class="sv-btn-p" data-ok><span class="material-symbols-outlined">${editando ? 'save' : 'add_circle'}</span>${editando ? 'Guardar cambios' : 'Agregar OC'}</button></div></div>`;
+      panel.querySelectorAll('[data-cx]').forEach(b => b.addEventListener('click', () => fin(null)));
+      panel.querySelectorAll('[data-k]').forEach(i => i.addEventListener(i.tagName === 'SELECT' || i.type === 'date' ? 'change' : 'input', () => { st[i.dataset.k] = i.value; }));
+      montarComboLibre(panel.querySelector('[data-combo="prov"]'), {
+        items: provs, valor: st.idProv, placeholder: 'ID o nombre',
+        texto: p => `${p.id} ${p.nombre}`,
+        fila: p => `<span class="sv-mono">${escapeHtml(p.id)}</span> · ${escapeHtml(p.nombre)}`,
+        onPick: p => { st.idProv = p.id; if (p.nombre) st.nomProv = p.nombre; draw(); },
+        onInput: v => { st.idProv = v; const p = provs.find(x => x.id === v.trim()); if (p && p.nombre) { st.nomProv = p.nombre; const e = panel.querySelector('[data-k="nomProv"]'); if (e) e.value = p.nombre; } },
+      });
+      const refrescarTon = () => {
+        st.lineas.forEach((l, i) => { const td = panel.querySelector(`[data-lton="${i}"]`); if (td) td.textContent = fmtNum(tonLinea(l), 3); });
+        const p = panel.querySelector('[data-rm-ton]'); if (p) p.innerHTML = `<i></i>${fmtNum(tonTotal(), 2)} t`;
+      };
+      const itemsMat = [...mats.values()];
+      st.lineas.forEach((l, i) => montarComboLibre(panel.querySelector(`[data-lmat="${i}"]`), {
+        items: itemsMat, valor: l.material, placeholder: 'Código', invalid: bad('mat_' + i),
+        texto: m => `${m.id} ${m.nombre}`,
+        fila: m => `<span class="sv-mono">${escapeHtml(m.id)}</span> · ${escapeHtml(m.nombre)}`,
+        onPick: m => { l.material = m.id; l.nombre = m.nombre || l.nombre; draw(); },
+        onInput: v => { const antes = !!mats.get(String(l.material).trim()); l.material = v.trim(); const m = mats.get(l.material);
+          if (m && !String(l.nombre).trim()) { l.nombre = m.nombre; const e = panel.querySelector(`[data-l="${i}"][data-lk="nombre"]`); if (e) e.value = m.nombre; }
+          if (!!m !== antes) { draw(); setTimeout(() => { const e = panel.querySelector(`[data-lmat="${i}"] input`); if (e) { e.focus(); e.setSelectionRange(e.value.length, e.value.length); } }, 0); return; }
+          refrescarTon(); },
+      }));
+      panel.querySelectorAll('[data-l]').forEach(e => e.addEventListener('input', () => { st.lineas[+e.dataset.l][e.dataset.lk] = e.value; refrescarTon(); }));
+      panel.querySelectorAll('[data-ldel]').forEach(b => b.addEventListener('click', () => { if (st.lineas.length > 1) { st.lineas.splice(+b.dataset.ldel, 1); draw(); } }));
+      panel.querySelector('[data-ladd]').addEventListener('click', () => { st.lineas.push({ material: '', nombre: '', cant: '', um: '', peso: '' }); draw(); });
+      panel.querySelector('[data-ok]').addEventListener('click', async e => {
+        st.errMsg = '';
+        const lineas = st.lineas.filter(l => !lineaVacia(l));
+        if (!lineas.length) { st.err = true; st.errMsg = 'Agrega al menos un material.'; draw(); return; }
+        if (faltantes().length) { st.err = true; draw(); return; }
+        const dup = lineas.map(l => String(l.material).trim()).find((m, i, a) => a.indexOf(m) !== i);
+        if (dup) { st.errMsg = `El material ${dup} está repetido: suma las cantidades en una sola línea.`; draw(); return; }
+        const oc = editando ? String(ocEditar).trim() : st.oc.trim();
+        if (!editando && (ocsSap.has(oc) || ocsMan.has(oc))) { st.errMsg = `La OC ${oc} ya existe en Retiros de Fábrica.`; draw(); return; }
+        const btn = e.currentTarget; btn.disabled = true;
+        const email = await getUserEmail(), now = new Date().toISOString();
+        const base = { doc_compr: oc, proveedor: st.idProv.trim() || null, nombre_proveedor: st.nomProv.trim().toUpperCase(), ce: st.ce, alm: '4000',
+          fe_entrega: st.fecha, documento: st.pv.trim() || null, observacion: st.obs.trim() || null, activo: true,
+          created_at: c0.created_at || now, created_by: c0.created_by || email, updated_at: editando ? now : null, updated_by: editando ? email : null };
+        const rows = lineas.map((l, i) => { const mp = mats.get(String(l.material).trim());
+          return { ...base, pos: String((i + 1) * 10).padStart(5, '0'), material: String(l.material).trim(), texto_breve: String(l.nombre).trim() || (mp && mp.nombre) || null,
+            cantidad: numVM(l.cant), ump: String(l.um).trim().toUpperCase() || 'UN', peso_unit_kg: numVM(l.peso) > 0 ? numVM(l.peso) : null }; });
+        if (editando) {
+          const { error: eD } = await supabase.from('abast_retiro_manual').delete().eq('doc_compr', oc);
+          if (eD) { showAlert('No se pudo actualizar la OC: ' + eD.message, 'error'); btn.disabled = false; return; }
+        }
+        const { error } = await supabase.from('abast_retiro_manual').insert(rows);
+        if (error) {
+          if (editando && exist.length) { const orig = exist.map(({ id, ...x }) => x); const { error: eR } = await supabase.from('abast_retiro_manual').insert(orig); if (eR) console.error('No se pudo reponer la OC manual', eR); }
+          showAlert('No se pudo guardar la OC manual: ' + error.message, 'error'); btn.disabled = false; return;
+        }
+        clearRawCache();
+        showAlert(`OC manual ${oc} ${editando ? 'actualizada' : 'agregada'} · ${fmtNum(rows.reduce((s2, r, i) => s2 + tonLinea(lineas[i]), 0), 2)} t. Coordínala para que entre al Plan de Carga.`, 'success');
+        fin(oc);
+      });
+    }
+    draw();
+  });
+}
 // ── Coordinar retiro v3 (3-oct-2026, Jordan) ────────────────────────────────
 // Retiro RM (entra al plan, todo obligatorio + transporte) o Retiro local (no entra al plan,
 // datos opcionales, tipo FAB-SUC/FAB-CLTE). En Retiro RM se pueden sumar otras OC (mismo u
@@ -3468,6 +3643,7 @@ const VISTAS_TRONCAL = {
           ce: f.ce, _desc_centro: getNombreCentro(f.ce), alm: f.alm, documento: f.documento,
           fe_entrega: f.fe_entrega,
           _tipo_retiro: tipoRetiro, _tipo_auto: tipoAuto, _tipo_pedido: tipoPedido, _modo: modo,
+          _oc_manual: items.some(r => String(r.corrida ?? '') === 'MANUAL'),   // (29-oct-2026) OC agregada a mano
           _tipo_origen: modo && estObj.tipo_retiro ? 'COORDINACION' : 'REGLA',
           _transp: estObj,
           _cliente: tipoRetiro === 'FAB-CLTE',
@@ -4626,7 +4802,12 @@ const V2 = {
     prioridad: { tipo: 'retiro', doc: r => r.doc_compr ?? r.oc ?? r.pt, centro: r => r.ce },   // (15-oct-2026) check PRIORIDAD
     desc: 'Órdenes de compra con retiro a proveedor. Sólo los Retiro RM entran al Plan de Carga, el día de su fecha de retiro (día en que se carga).',
     rowId: r => String(r.doc_compr ?? '').trim(),
-    enrich(rows, ctx) { ctx._rows = rows; rows.forEach(r => { r._al = alertaV2(r.fe_entrega, 5); }); },
+    enrich(rows, ctx) { ctx._rows = rows; RET_ROWS_V2 = rows; rows.forEach(r => { r._al = alertaV2(r.fe_entrega, 5); }); },
+    // (29-oct-2026, Jordan) Agregar OC de retiro manual (aún no viene en el SQVI).
+    headBtns: [{ label: 'Agregar OC manual', icon: 'add_circle', perm: 'retiro_manual', run: async () => {
+      const oc = await showRetiroManualModal();
+      return oc ? { abrir: oc } : false;
+    } }],
     chips: [
       { key: 'tp', label: 'Tipo pedido', of: r => r._tipo_pedido },
       { key: 'sd', label: 'Saldo', of: r => r._revision_saldo ? 'Con saldo pendiente' : 'Sin entregas parciales' },
@@ -4642,9 +4823,10 @@ const V2 = {
       { key: 'lo', label: 'Retiro local', color: C_ORANGE, sub: 'gestiona la sucursal', fn: r => r._modo === 'LOCAL' },
       { key: 'at', label: 'Atrasadas', color: C_RED, sub: 'vencidas > 5 días, sin coordinar', fn: retiroAtrasado },
       { key: 'ee', label: 'Expedición errónea', color: '#7e22ce', sub: 'pedido de venta calzado', fn: r => !!r._exp_error },
+      { key: 'mn', label: 'Manuales', color: '#0f766e', sub: 'agregadas en la plataforma', fn: r => !!r._oc_manual },
     ],
     cols: [
-      { label: 'Orden de compra', html: r => mono(r.doc_compr, r.contr ? 'contrato ' + r.contr : '') },
+      { label: 'Orden de compra', html: r => mono(r.doc_compr, r.contr ? 'contrato ' + r.contr : '') + (r._oc_manual ? `<div style="margin-top:2px">${pill('Manual', 'info')}</div>` : '') },
       { label: 'Proveedor', html: r => txt(r.nombre_1, r.proveedor, true) },
       { label: 'Destino', html: r => sucHtml(r.ce) },
       { label: 'Tipo pedido', html: r => pill(r._tipo_pedido === 'CALZADA' ? 'Calzada' : 'Stock', r._tipo_pedido === 'CALZADA' ? 'info' : 'mute') + (r.documento ? `<div class="sv-sub">PV ${escV2(r.documento)}</div>` : '') + (esIngSum(r) ? `<div style="margin-top:4px">${ingSumPill(true)}</div>` : '') },
@@ -4678,6 +4860,19 @@ const V2 = {
         if (!await confirmar(`¿Anular la coordinación de la OC ${row.doc_compr}?\n\nVuelve a «Sin coordinar»: se limpian fecha, dirección, contacto y transporte, y sale del Plan de Carga.`)) return null;
         return (await anularCoordRetiro([row.doc_compr])) ? (showAlert('Coordinación anulada', 'success'), { recargar: true }) : null;
       } });
+      // (29-oct-2026, Jordan) OC manual: editar / eliminar.
+      if (r._oc_manual && can('retiro_manual')) {
+        acciones.push({ label: 'Editar OC manual', icon: 'edit_note', run: async row => ((await showRetiroManualModal(row.doc_compr)) ? { recargar: true } : null) });
+        acciones.push({ label: 'Eliminar OC manual', icon: 'delete', tono: 'peligro', run: async row => {
+          if (!await confirmar(`¿Eliminar la OC manual ${row.doc_compr}?${row._modo ? '\n\nTambién se anula su coordinación y sale del Plan de Carga.' : ''}`, { aceptar: 'Eliminar', tono: 'peligro', icono: 'delete' })) return null;
+          if (row._modo && !(await anularCoordRetiro([row.doc_compr]))) return null;
+          const { error } = await supabase.from('abast_retiro_manual').delete().eq('doc_compr', String(row.doc_compr).trim());
+          if (error) { showAlert('No se pudo eliminar la OC manual: ' + error.message, 'error'); return null; }
+          clearRawCache();
+          showAlert(`OC manual ${row.doc_compr} eliminada`, 'success');
+          return { recargar: true };
+        } });
+      }
       const diasV = diasVencida(r.fe_entrega);
       const avisos = [];
       if (retiroAtrasado(r)) avisos.push(`<b>Atrasada:</b> la fecha SAP venció hace ${diasV} días y la OC sigue sin coordinar.`);
@@ -6473,7 +6668,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202610291554');
+    const m = await import('./ind-plan-carga.js?v=202610300919');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.

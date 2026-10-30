@@ -41,7 +41,7 @@ const P_EDITAR = ['editar', 'descargar', 'excluir', 'incluir_plan', 'ajustar_pla
 const P_BORRAR = ['eliminar'];
 const P_INVITAR = ['invitar'];
 // Acciones operativas que por defecto sólo tiene OWNER (asignables como extra)
-const OWNER_EXTRA = ['coordinar_venta', 'coordinar_retiro', 'forzar_cd_cliente', 'programar_transporte', 'coordinar_transporte', 'editar_dt_seguimiento', 'descargar_bd', 'activar_saldo', 'editar_carga_seguimiento', 'marcar_prioridad', 'evaluar_prioridad', 'venta_manual'];
+const OWNER_EXTRA = ['coordinar_venta', 'coordinar_retiro', 'forzar_cd_cliente', 'programar_transporte', 'coordinar_transporte', 'editar_dt_seguimiento', 'descargar_bd', 'activar_saldo', 'editar_carga_seguimiento', 'marcar_prioridad', 'evaluar_prioridad', 'venta_manual', 'retiro_manual'];
 
 // clase = clase de seguridad en BD (app_role()); debe coincidir con la migración
 export const PERFILES = {
@@ -63,7 +63,8 @@ export const PERFILES = {
     // (15-oct-2026, Jordan) También activa saldos de camiones que viajaron parciales (Seguimiento de Carga).
     // (19-oct-2026, Jordan) Y edita la carga (quitar / agregar pedidos) de camiones de planes cerrados.
     // (21-oct-2026, Jordan) Agrega pedidos de venta manuales en Ventas CD y los coordina.
-    acciones: [...P_VISUALIZAR, ...P_COMENTAR, ...P_EDITAR, ...P_INVITAR, 'coordinar_transporte', 'programar_transporte', 'activar_saldo', 'editar_carga_seguimiento', 'venta_manual'],
+    // (29-oct-2026, Jordan) Y agrega OC de retiro manuales en Retiros de Fábrica.
+    acciones: [...P_VISUALIZAR, ...P_COMENTAR, ...P_EDITAR, ...P_INVITAR, 'coordinar_transporte', 'programar_transporte', 'activar_saldo', 'editar_carga_seguimiento', 'venta_manual', 'retiro_manual'],
   },
   JEFE_ABASTECIMIENTO: {
     label: 'Jefe Abastecimiento', clase: 'PLANNER_ABASTECIMIENTO', alcance: 'TODOS',
@@ -142,6 +143,7 @@ export const ACCIONES_EXTRA = [
   { key: 'activar_saldo',         label: 'Activar saldo de camión parcial (Seguimiento de Carga)', soloEditor: true },
   { key: 'editar_carga_seguimiento', label: 'Editar carga de camión de plan cerrado (Seguimiento de Carga)', soloEditor: true },
   { key: 'venta_manual',          label: 'Agregar y coordinar pedidos de venta manuales (Ventas CD)', soloEditor: true },
+  { key: 'retiro_manual',         label: 'Agregar OC de retiro manuales (Retiros de Fábrica)', soloEditor: true },
 ];
 
 // ── Sesión activa ───────────────────────────────────────────────────────────
