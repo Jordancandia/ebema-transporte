@@ -16,13 +16,13 @@
 //   { pesos:{diesel,dolar,ipc,imm,fijo}, pesosAt, pesosBy, pesosHist:[…],
 //     indices:{ 'AAAA-MM': {diesel,dolar,ipc,imm,at,by} }, base:'AAAA-MM', historial:[…] }
 // ============================================================================
-import { getDatabase, getTariffConfig, saveDatabase } from './data.js?v=202610300919';
+import { getDatabase, getTariffConfig, saveDatabase } from './data.js?v=202611011342';
 import { showAlert } from './utils.js';
-import { can, esOwner } from './permisos.js?v=202610300919';
-import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, setParamPill, usuarioSesion } from './tarifas-ui.js?v=202610300919';
-import { confirmar } from './confirmar.js?v=202610300919';
-import { fechaHora, usuarioCorto, estilosVigente } from './tarifa-vigente.js?v=202610300919';
-import { gruposReajuste, reajusteCamionesFilas, proponerReajusteCamiones } from './tarifas-transporte.js?v=202610300919';
+import { can, esOwner } from './permisos.js?v=202611011342';
+import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, setParamPill, usuarioSesion } from './tarifas-ui.js?v=202611011342';
+import { confirmar } from './confirmar.js?v=202611011342';
+import { fechaHora, usuarioCorto, estilosVigente } from './tarifa-vigente.js?v=202611011342';
+import { gruposReajuste, reajusteCamionesFilas, proponerReajusteCamiones } from './tarifas-transporte.js?v=202611011342';
 
 export const ITEMS = [
   { k: 'diesel', l: 'Petróleo diésel', u: '$/L', d: 2, fuente: 'ENAP / CNE · precio diésel, promedio del mes' },
