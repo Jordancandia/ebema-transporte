@@ -13,9 +13,10 @@
 //  SQL: supabase/sql/2026-10-18_porteria_reloj_control.sql
 //       supabase/sql/2026-11-01_porteria_v2_pestanas_alertas.sql
 // ============================================================================
-import { supabase } from './supabase-client.js?v=202611011513';
+import { supabase } from './supabase-client.js?v=202611011604';
 import { escapeHtml as esc, showAlert, toCSV, downloadFile } from './utils.js';
-import { confirmar, pedirDato } from './confirmar.js?v=202611011513';
+import { confirmar, pedirDato } from './confirmar.js?v=202611011604';
+import { getPerfil, PERFIL_UMBRALES } from './permisos.js?v=202611011604';
 
 const CENTRO = '1003';
 const TZ = 'America/Santiago';
@@ -1542,7 +1543,10 @@ async function renderAlertas() {
     </div>`;
   }).join('') : '<div class="sv-empty" style="padding:28px 16px;text-align:center">Sin alertas abiertas. Todos los camiones del día están dentro de los umbrales.</div>';
 
-  const inp = (id, v, w = 62) => `<input id="${id}" value="${v ?? ''}" inputmode="numeric" class="pt-mono" style="width:${w}px;text-align:right;border:1px solid var(--sv-line);border-radius:4px;padding:5px 7px">`;
+  const editaUmbrales = PERFIL_UMBRALES.includes(getPerfil());
+  const inp = (id, v, w = 62) => (editaUmbrales
+    ? `<input id="${id}" value="${v ?? ''}" inputmode="numeric" class="pt-mono" style="width:${w}px;text-align:right;border:1px solid var(--sv-line);border-radius:4px;padding:5px 7px">`
+    : `<span class="pt-mono" style="font-weight:700">${v ?? '—'}</span>`);
   const bloques = arr(A.bloques).map(b => `<div style="padding:12px 16px;border-bottom:1px solid var(--sv-line)">
     <div style="display:flex;justify-content:space-between;align-items:baseline;font-size:13px;font-weight:700">Bloque ${b.bloque}<span class="pt-sub pt-mono" style="margin:0">${esc(b.desde)}–${esc(b.hasta)}</span></div>
     <div style="display:flex;gap:4px;margin-top:8px">${Array.from({ length: Math.max(b.cupo, b.usados) }, (_, i) =>
@@ -1594,7 +1598,7 @@ async function renderAlertas() {
             <span>Finalizados hoy</span><span>${nf(T.finalizados || 0)} de ${nf(T.n || 0)}</span></div></div>
         </div>
         <div class="sv-card">
-          <div class="pt-ch"><h2><span class="material-symbols-outlined">tune</span>Umbrales de alerta</h2><button class="sv-btn-p" id="al-save">Guardar</button></div>
+          <div class="pt-ch"><h2><span class="material-symbols-outlined">tune</span>Umbrales de alerta</h2>${editaUmbrales ? '<button class="sv-btn-p" id="al-save">Guardar</button>' : '<span class="pt-sub" style="margin:0">Los edita el Jefe de Operaciones</span>'}</div>
           <div class="sv-tablewrap"><table class="sv-table">
             <thead><tr><th>Tipo de visita</th><th class="r">Sin atención</th><th class="r">Permanencia / ruta</th><th class="r">Tol. peso</th></tr></thead>
             <tbody>${Object.keys(TIPOS).map(k => {
@@ -1627,7 +1631,7 @@ async function renderAlertas() {
     showAlert('Andén asignado');
     renderAlertas();
   }));
-  $('#al-save').addEventListener('click', async () => {
+  $('#al-save')?.addEventListener('click', async () => {
     const val = id => num($('#' + id)?.value);
     const rows = Object.keys(TIPOS).map(k => ({
       tipo: k, meta_min: val('u-m-' + k), meta_espera_min: k === 'DESPACHO_EBEMA' ? null : val('u-e-' + k),

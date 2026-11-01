@@ -57,7 +57,7 @@ export const PERFILES = {
   },
   PLANNER_DISTRIBUCION: {
     label: 'Planner Distribución', clase: 'OWNER', alcance: 'TODOS',
-    menu: ['home', 'rates', ...TRONCALES, 'flete-tercero', 'indicadores', 'tarifas-transporte', 'tarifas-clientes', ...MAESTROS, 'roles'],
+    menu: ['home', 'rates', ...TRONCALES, 'flete-tercero', 'indicadores', 'tarifas-transporte', 'tarifas-clientes', ...MAESTROS, 'porteria', 'roles'],
     privilegios: ['COMENTAR', 'EDITAR', 'INVITAR'],
     // (12-oct-2026, Jordan) Coordina, programa y edita el transporte de los camiones del Plan de Carga.
     // (15-oct-2026, Jordan) También activa saldos de camiones que viajaron parciales (Seguimiento de Carga).
@@ -68,21 +68,21 @@ export const PERFILES = {
   },
   JEFE_ABASTECIMIENTO: {
     label: 'Jefe Abastecimiento', clase: 'PLANNER_ABASTECIMIENTO', alcance: 'TODOS',
-    menu: ['home', ...TRONCALES],
+    menu: ['home', ...TRONCALES, 'porteria'],
     privilegios: ['COMENTAR', 'EDITAR'],
     // (15-oct-2026, Jordan) Acepta o rechaza las PRIORIDADES de carga que marca Operaciones.
     acciones: [...P_VISUALIZAR, ...P_COMENTAR, ...P_EDITAR, 'marcar_prioridad', 'evaluar_prioridad'],
   },
   PLANNER_ABASTECIMIENTO: {
     label: 'Planner Abastecimiento', clase: 'PLANNER_ABASTECIMIENTO', alcance: 'TODOS',
-    menu: ['home', ...TRONCALES],
+    menu: ['home', ...TRONCALES, 'porteria'],
     privilegios: ['COMENTAR', 'EDITAR'],
     // (15-oct-2026, Jordan) Recibe la notificación y acepta o rechaza las PRIORIDADES de carga de Operaciones.
     acciones: [...P_VISUALIZAR, ...P_COMENTAR, ...P_EDITAR, 'marcar_prioridad', 'evaluar_prioridad'],
   },
   JEFE_OPERACIONES: {
     label: 'Jefe Operaciones', clase: 'ADMINISTRADOR_DEPOSITO', alcance: 'CENTROS',
-    menu: ['home', ...TRONCALES, 'flete-tercero', 'indicadores', 'tarifas-clientes'],
+    menu: ['home', ...TRONCALES, 'flete-tercero', 'indicadores', 'tarifas-clientes', 'porteria'],
     privilegios: ['COMENTAR'],
     // (15-oct-2026, Jordan) Marca PRIORIDAD de carga en Retiros, Crossdocking y Pedidos de Traslados (sus centros).
     // (1-nov-2026, Jordan) Y prioriza entregas (entrega + material) en las vistas Entregas de esas dos vistas.
@@ -90,7 +90,7 @@ export const PERFILES = {
   },
   PLANNER_OPERACIONES: {
     label: 'Planner Operaciones', clase: 'ADMINISTRADOR_DEPOSITO', alcance: 'CENTROS',
-    menu: ['home', 'rates', ...TRONCALES, 'flete-tercero', 'indicadores', 'tarifas-clientes'],
+    menu: ['home', 'rates', ...TRONCALES, 'flete-tercero', 'indicadores', 'tarifas-clientes', 'porteria'],
     privilegios: ['COMENTAR'],
     // (15-oct-2026, Jordan) Equipo de Operaciones de la sucursal: también marca PRIORIDAD de carga (sus centros).
     acciones: [...P_VISUALIZAR, ...P_COMENTAR, 'marcar_prioridad'],
@@ -193,12 +193,24 @@ function _match(m, grupoOTab, sub) {
 // (18-oct-2026, Jordan) Vistas sólo del perfil OWNER (ni Administrador ni Planner Distribución);
 // OWNER puede habilitarlas a un usuario como vista extra (p. ej. futuro perfil Portería).
 const SOLO_OWNER = ['porteria'];
-// (1-nov-2026, Jordan) Perfiles que traen Portería en su propio menú (ven sólo las pestañas que listan).
-const PERFIL_PORTERIA = ['CONTROL_PUERTA'];
+// (1-nov-2026, Jordan) Perfiles que traen Portería en su propio menú (ven las pestañas que listan;
+// Administrador tiene menu null, o sea todas). El resto sólo entra con vista extra del OWNER.
+const PERFIL_PORTERIA = ['CONTROL_PUERTA', 'ADMINISTRADOR', 'PLANNER_DISTRIBUCION', 'JEFE_ABASTECIMIENTO',
+  'PLANNER_ABASTECIMIENTO', 'JEFE_OPERACIONES', 'PLANNER_OPERACIONES'];
+// (1-nov-2026, Jordan) Editan los umbrales del Monitor de Operaciones; el resto los ve sin poder guardar.
+export const PERFIL_UMBRALES = ['OWNER', 'JEFE_OPERACIONES'];
+// Perfiles de alcance por CENTROS: entran a Portería sólo si tienen asignado el CD de la vista.
+const PERFIL_PORTERIA_CENTRO = ['CONTROL_PUERTA', 'JEFE_OPERACIONES', 'PLANNER_OPERACIONES'];
+const CENTRO_PORTERIA = '1003';
 export function puedeVerMenu(grupoOTab, sub = null) {
   if (SOLO_OWNER.includes(grupoOTab)) {
-    if (PERFIL_PORTERIA.includes(_role)) return _match(perfil().menu, grupoOTab, sub) || _match(_vistasExtra, grupoOTab, sub);
-    return _role === 'OWNER' || _match(_vistasExtra, grupoOTab, sub);
+    if (_role === 'OWNER') return true;
+    if (PERFIL_PORTERIA.includes(_role)) {
+      if (PERFIL_PORTERIA_CENTRO.includes(_role) && !enAlcance(CENTRO_PORTERIA)) return _match(_vistasExtra, grupoOTab, sub);
+      const mp = perfil().menu;
+      return mp === null || _match(mp, grupoOTab, sub) || _match(_vistasExtra, grupoOTab, sub);
+    }
+    return _match(_vistasExtra, grupoOTab, sub);
   }
   const m = perfil().menu;
   if (m === null) return true;
@@ -212,6 +224,7 @@ export function perfilVeMenu(role, key) {
     const r = normalizarPerfil(role);
     if (r === 'OWNER') return true;
     if (!PERFIL_PORTERIA.includes(r)) return false;
+    if (p.menu === null) return true;
     const [gp, sp] = key.split(':');
     return _match(p.menu, gp, sp ?? null);
   }
