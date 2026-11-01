@@ -13,15 +13,15 @@
 // calcTarifas de Tarifas Clientes) sobre las rutas e histórico de hoy.
 // Variación % = nuevo ÷ actual − 1 · promedios con suma de las rutas que tienen ambos valores.
 // ============================================================================
-import { getDatabase, getTariffConfig, getClientTariffConfig, getOrigenGroups, truckCapKg } from './data.js?v=202611011354';
-import { buildZcapMap } from './zcap.js?v=202611011354';
-import { calcTarifasEscenario } from './tarifas-clientes-v2.js?v=202611011354';
-import { contextoTarifasClientes } from './tarifas-clientes.js?v=202611011354';
+import { getDatabase, getTariffConfig, getClientTariffConfig, getOrigenGroups, truckCapKg } from './data.js?v=202611011513';
+import { buildZcapMap } from './zcap.js?v=202611011513';
+import { calcTarifasEscenario } from './tarifas-clientes-v2.js?v=202611011513';
+import { contextoTarifasClientes } from './tarifas-clientes.js?v=202611011513';
 import { showAlert } from './utils.js';
-import { can } from './permisos.js?v=202611011354';
-import { esc, fmt, clp, chainHtml, wireChain, setParamPill, carPill, debounce } from './tarifas-ui.js?v=202611011354';
+import { can } from './permisos.js?v=202611011513';
+import { esc, fmt, clp, chainHtml, wireChain, setParamPill, carPill, debounce } from './tarifas-ui.js?v=202611011513';
 import { cargarVigente, asegurarVigente, escenarioVigente, diffCamiones, PARAMS_CAMION, valorParam, ultimaActualizacion,
-  fechaHora, usuarioCorto, estilosVigente, confirmarFijar } from './tarifa-vigente.js?v=202611011354';
+  fechaHora, usuarioCorto, estilosVigente, confirmarFijar } from './tarifa-vigente.js?v=202611011513';
 
 const VT = { tab: 'transportistas', centro: 'all', tipo: 'comuna', metrica: 'zfmp', solo: false, q: '', calc: null, calcId: null };
 const TABS = [['transportistas', 'local_shipping', 'Transportistas'], ['clientes', 'request_quote', 'Clientes'], ['troncales', 'alt_route', 'Troncales']];

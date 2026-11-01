@@ -9,8 +9,8 @@
 // Permisos: ver = perfiles internos; comentar / responder / me gusta =
 // privilegio COMENTAR (can('comentar')); ocultar comentario = OWNER.
 // ============================================================================
-import { supabase } from './supabase-client.js?v=202611011354';
-import { can, esOwner, perfilVeMenu } from './permisos.js?v=202611011354';
+import { supabase } from './supabase-client.js?v=202611011513';
+import { can, esOwner, perfilVeMenu } from './permisos.js?v=202611011513';
 import { showAlert } from './utils.js';
 
 export const VISTAS_COMENTARIOS = {
@@ -403,7 +403,11 @@ export async function initCampana(slot, { navegar }) {
       const n = items.find(x => x.id === +b.dataset.n); if (!n) return;
       if (!n.leida) { await supabase.from('notificaciones').update({ leida: true }).eq('id', n.id); n.leida = true; }
       abierto = false; pintar(); contar();
-      setFoco({ vista: n.vista, clave: n.clave, documento: n.documento, comentarioId: n.comentario_id, prio: String(n.tipo || '').startsWith('prioridad') });
+      // (1-nov-2026, Jordan) La clave de una prioridad es `tipo|documento[|material]`: el material
+      // permite abrir la línea exacta cuando la prioridad se marcó sobre la entrega + material.
+      const _esPrio = String(n.tipo || '').startsWith('prioridad');
+      const _mat = _esPrio ? (String(n.clave || '').split('|')[2] || '') : '';
+      setFoco({ vista: n.vista, clave: n.clave, documento: n.documento, material: _mat, comentarioId: n.comentario_id, prio: _esPrio });
       navegar(n.vista);
     }));
   }

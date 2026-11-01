@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611011354';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611011354';
-import { getDatabase } from './data.js?v=202611011354';
+import { supabase } from './supabase-client.js?v=202611011513';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611011513';
+import { getDatabase } from './data.js?v=202611011513';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611011354';
-import { confirmar, pedirDato } from './confirmar.js?v=202611011354';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611011513';
+import { confirmar, pedirDato } from './confirmar.js?v=202611011513';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -4342,52 +4342,63 @@ const VISTAS_TRONCAL = {
 // Sólo las ACEPTADAS suben en el Plan de Carga; el saldo sigue con el orden ya definido.
 // (15-oct-2026, Jordan) Planner/Jefe Abastecimiento priorizan directo (queda ACEPTADA, sin aprobación);
 // Jefe Sucursal también marca y entra al mismo flujo de aprobación que Operaciones.
+// (1-nov-2026, Jordan) `material` distingue la prioridad por ENTREGA + MATERIAL (vistas Entregas de
+// Crossdocking y Pedidos de Traslados, tipos ent_cross / ent_traslado) de la de pedido/OC (material null).
 async function loadPrioridades(tipo) {
-  let q = supabase.from('abast_prioridad_carga').select('id,tipo,documento,centro,motivo,marcado_por,marcado_en,estado,evaluado_por,evaluado_en,comentario_eval').eq('activo', true).limit(5000);
+  let q = supabase.from('abast_prioridad_carga').select('id,tipo,documento,material,centro,motivo,marcado_por,marcado_en,estado,evaluado_por,evaluado_en,comentario_eval').eq('activo', true).limit(5000);
   if (tipo) q = q.eq('tipo', tipo);
   const { data, error } = await q;
   if (error) { console.warn('Prioridades de carga no disponibles', error); return new Map(); }
-  return new Map((data || []).map(x => [`${x.tipo}|${String(x.documento ?? '').trim()}`, x]));
+  return new Map((data || []).map(x => [`${x.tipo}|${String(x.documento ?? '').trim()}|${String(x.material ?? '').trim()}`, x]));
 }
-async function togglePrioridad(tipo, doc, centro, on) {
+async function togglePrioridad(tipo, doc, centro, on, material, etiqueta) {
   const d = String(doc ?? '').trim(); if (!d) return false;
+  const m = String(material ?? '').trim();
+  const lbl = String(etiqueta ?? '').trim() || d;
   const quien = await getUserEmail();
   const directo = can('evaluar_prioridad');   // Abastecimiento: sin aprobación
+  const alcance = m ? 'esa línea de la entrega' : 'ese pedido';
   if (on) {
     const motivo = await pedirDato(directo
-      ? `Marcar PRIORIDAD de carga · ${d}\n\nQueda como prioridad de carga de inmediato (sin aprobación) y sube primero dentro de su categoría. Motivo (opcional):`
-      : `Solicitar PRIORIDAD de carga · ${d}\n\nSe notificará a los Planner de Abastecimiento para que la evalúen. Al aceptarla pasa a ser prioridad de carga y sube primero dentro de su categoría. Motivo:`,
+      ? `Marcar PRIORIDAD de carga · ${lbl}\n\nQueda como prioridad de carga de inmediato (sin aprobación) y ${alcance} sube primero dentro de su categoría. Motivo (opcional):`
+      : `Solicitar PRIORIDAD de carga · ${lbl}\n\nSe notificará a los Planner de Abastecimiento para que la evalúen. Al aceptarla ${alcance} pasa a ser prioridad de carga y sube primero dentro de su categoría. Motivo:`,
       { placeholder: 'Ej. quiebre crítico, obra detenida, cliente esperando', aceptar: directo ? 'Marcar prioridad' : 'Solicitar prioridad', icono: 'priority_high', opcional: true });
     if (motivo === null) return false;
-    const { error } = await supabase.from('abast_prioridad_carga').insert({ tipo, documento: d, centro: centro || null, motivo: String(motivo || '').trim() || null, marcado_por: quien });
+    const { error } = await supabase.from('abast_prioridad_carga').insert({ tipo, documento: d, material: m || null, centro: centro || null, motivo: String(motivo || '').trim() || null, marcado_por: quien });
     if (error) { showAlert('No se pudo marcar la prioridad: ' + error.message, 'error'); return false; }
-    showAlert(directo ? `${d} marcado como PRIORIDAD de carga` : `Prioridad de ${d} enviada a Abastecimiento para aprobación`, 'success');
+    showAlert(directo ? `${lbl} marcado como PRIORIDAD de carga` : `Prioridad de ${lbl} enviada a Abastecimiento para aprobación`, 'success');
   } else {
-    if (!await confirmar(`¿Quitar la PRIORIDAD de carga de ${d}?`, { aceptar: 'Quitar prioridad', icono: 'remove_done' })) return false;
-    const { error } = await supabase.from('abast_prioridad_carga').update({ activo: false, desmarcado_por: quien, desmarcado_en: new Date().toISOString() }).eq('tipo', tipo).eq('documento', d).eq('activo', true);
+    if (!await confirmar(`¿Quitar la PRIORIDAD de carga de ${lbl}?`, { aceptar: 'Quitar prioridad', icono: 'remove_done' })) return false;
+    let q = supabase.from('abast_prioridad_carga').update({ activo: false, desmarcado_por: quien, desmarcado_en: new Date().toISOString() }).eq('tipo', tipo).eq('documento', d).eq('activo', true);
+    q = m ? q.eq('material', m) : q.is('material', null);
+    const { error } = await q;
     if (error) { showAlert('No se pudo quitar la prioridad: ' + error.message, 'error'); return false; }
-    showAlert(`Prioridad quitada a ${d}`, 'success');
+    showAlert(`Prioridad quitada a ${lbl}`, 'success');
   }
   return true;
 }
 // (15-oct-2026, Jordan) Planner de Abastecimiento acepta o rechaza la prioridad solicitada por Operaciones.
-async function evaluarPrioridad(tipo, doc, aceptar) {
+async function evaluarPrioridad(tipo, doc, aceptar, material, etiqueta) {
   const d = String(doc ?? '').trim(); if (!d) return false;
+  const m = String(material ?? '').trim();
+  const lbl = String(etiqueta ?? '').trim() || d;
   let comentario = null;
   if (aceptar) {
-    if (!await confirmar(`¿Aceptar la PRIORIDAD de carga de ${d}?\n\nPasa a ser prioridad de carga: sube primero dentro de su categoría en el Plan de Carga; el resto sigue con el orden ya definido.`,
+    if (!await confirmar(`¿Aceptar la PRIORIDAD de carga de ${lbl}?\n\nPasa a ser prioridad de carga: sube primero dentro de su categoría en el Plan de Carga; el resto sigue con el orden ya definido.`,
       { aceptar: 'Aceptar prioridad', icono: 'check_circle' })) return false;
   } else {
-    comentario = await pedirDato(`Rechazar la PRIORIDAD de carga de ${d}\n\nSe avisará a quien la marcó. Motivo del rechazo:`,
+    comentario = await pedirDato(`Rechazar la PRIORIDAD de carga de ${lbl}\n\nSe avisará a quien la marcó. Motivo del rechazo:`,
       { placeholder: 'Ej. sin disponibilidad en fábrica, camión ya completo', aceptar: 'Rechazar prioridad', icono: 'block', opcional: true });
     if (comentario === null) return false;
   }
-  const { data, error } = await supabase.from('abast_prioridad_carga')
+  let q = supabase.from('abast_prioridad_carga')
     .update({ estado: aceptar ? 'ACEPTADA' : 'RECHAZADA', comentario_eval: String(comentario || '').trim() || null })
-    .eq('tipo', tipo).eq('documento', d).eq('activo', true).eq('estado', 'PENDIENTE').select('id');
+    .eq('tipo', tipo).eq('documento', d).eq('activo', true).eq('estado', 'PENDIENTE');
+  q = m ? q.eq('material', m) : q.is('material', null);
+  const { data, error } = await q.select('id');
   if (error) { showAlert('No se pudo evaluar la prioridad: ' + error.message, 'error'); return false; }
-  if (!data || !data.length) { showAlert(`La prioridad de ${d} ya fue evaluada o retirada`, 'warning'); return true; }
-  showAlert(aceptar ? `${d} aceptado como PRIORIDAD de carga` : `Prioridad de ${d} rechazada`, aceptar ? 'success' : 'info');
+  if (!data || !data.length) { showAlert(`La prioridad de ${lbl} ya fue evaluada o retirada`, 'warning'); return true; }
+  showAlert(aceptar ? `${lbl} aceptado como PRIORIDAD de carga` : `Prioridad de ${lbl} rechazada`, aceptar ? 'success' : 'info');
   return true;
 }
 let PV_CTX_VENTAS = null;   // contexto vigente de la vista Ventas CD (21-oct-2026)
@@ -6645,6 +6656,9 @@ function v2ModoEntregas(tipo) {
       ],
       // (12-oct-2026, Jordan) Crossdocking y Pedidos de Traslados excluyen por entrega + material.
       ...(tipo !== 'REVEX' && cfg.excluir ? { excluir: { tipo: cfg.excluir.tipo, doc: r => docEnt(r.entrega), material: r => r.material } } : {}),
+      // (1-nov-2026, Jordan) Check PRIORIDAD de carga por ENTREGA + MATERIAL: lo marcan Jefe Sucursal,
+      // Jefe Operaciones y Planner Operaciones en sus centros y lo aprueba Abastecimiento (igual que el de pedido).
+      ...(tipo !== 'REVEX' ? { prioridad: { tipo: tipo === 'CROSSDOCK' ? 'ent_cross' : 'ent_traslado', doc: r => r.entrega, material: r => r.material, centro: r => r.ce } } : {}),
       v2mode: v2ModoEntregas(tipo) },
   ];
   // (15-oct-2026, Jordan) Crossdocking y Pedidos de Traslados abren en ENTREGAS (vista principal);
@@ -6668,7 +6682,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611011354');
+    const m = await import('./ind-plan-carga.js?v=202611011513');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -6881,9 +6895,14 @@ const esIngSum = r => String(r.documento ?? r.pv ?? '').trim() !== '' && String(
 const ingSumPill = (corto) => `<span class="sv-pill warn" title="${ING_SUM_TXT}: el retiro se ingresa en el CD 1003 y sube al camión con su pedido de venta" style="white-space:normal;line-height:1.2"><i></i>${corto ? 'INGRESAR Y SUMINISTRAR PV / GUÍA FACTURABLE' : ING_SUM_TXT}</span>`;
 // (15-oct-2026, Jordan) Pedidos/OC marcados PRIORIDAD de carga (se cargan al abrir el Plan de Carga).
 let PRIO_DOCS = new Set();
+// (1-nov-2026, Jordan) PRIORIDAD marcada sobre la ENTREGA + MATERIAL (vistas Entregas de Crossdocking y
+// Pedidos de Traslados): clave `entrega|material`. Prioriza la línea, no el pedido completo.
+let PRIO_ENT = new Set();
+const prioKeyEnt = d => `${String(d?.entrega_entrante ?? d?.entrega ?? '').trim()}|${String(d?.material ?? '').trim()}`;
+const esPrioEnt = d => { const e = String(d?.entrega_entrante ?? d?.entrega ?? '').trim(); return !!e && PRIO_ENT.has(prioKeyEnt(d)); };
 // (15-oct-2026, Jordan) Columna «Prioridad de carga» en los CSV: la posición se carga como prioritaria.
 const PRIO_CSV_TXT = 'PRIORIDAD DE CARGA';
-const esPrioCarga = d => !!d && PRIO_DOCS.has(String(d.pt ?? d.oc ?? d.pv ?? '').trim());
+const esPrioCarga = d => !!d && (PRIO_DOCS.has(String(d.pt ?? d.oc ?? d.pv ?? '').trim()) || esPrioEnt(d));
 const prioCsv = d => [...marcasLinea(d), esPrioCarga(d) ? PRIO_CSV_TXT : ''].filter(Boolean).join(' · ');
 // (23-oct-2026, Jordan) Elige, dentro de un nivel de prioridad, las líneas que más llenan `rem` toneladas
 // (mochila 0/1 a 0,1 t); desempate: más posiciones y luego el orden de prioridad. Igual que
@@ -6936,7 +6955,7 @@ function asignarCamionesCD(r) {
   const unidosCD = (r.det.retiro || []).filter(d => d._unidoCD);
   [unidosCD, manualesCM, r.det.revex, r.det.ventaCons, (r.det.retiro || []).filter(d => !d._unidoCD), (r.det.cross || []).filter(d => !esCM(d)), forz.filter(d => !esCM(d)),
    (r.det.quiebre || []).filter(d => !d._forzadoPlan && !esCM(d)), (r.det.stock || []).filter(d => !d._forzadoPlan && !esCM(d))].forEach((arr, ai) => {
-    (arr || []).forEach(d => { d._prio = PRIO_DOCS.has(doc(d)); d._niv = `${ai}|${d._prio ? 1 : 0}|${d._orden ?? 0}`; });
+    (arr || []).forEach(d => { d._prio = PRIO_DOCS.has(doc(d)) || esPrioEnt(d); d._niv = `${ai}|${d._prio ? 1 : 0}|${d._orden ?? 0}`; });
     (arr || []).slice()
       // (15-oct-2026) PRIORIDAD primero dentro de su categoría (no salta categorías).
       .sort((a, b) => ((b._prio ? 1 : 0) - (a._prio ? 1 : 0)) || ((a._orden ?? 0) - (b._orden ?? 0)) || ((npos.get(doc(b)) || 0) - (npos.get(doc(a)) || 0)) || cmp(doc(a), doc(b)) || cmp(mat(a), mat(b)))
@@ -7260,8 +7279,15 @@ async function renderPlanCarga(stage, opts = {}) {
     }
   } catch (e) { console.warn('Plan de carga: saldos activados no disponibles', e); }
   // (15-oct-2026) Sólo las prioridades ACEPTADAS por Abastecimiento suben en el orden de llenado.
-  try { const pm = await loadPrioridades(); PRIO_DOCS = new Set([...pm.values()].filter(x => x.estado === 'ACEPTADA').map(x => String(x.documento ?? '').trim())); }
-  catch (e) { PRIO_DOCS = new Set(); console.warn('Plan de carga: prioridades no disponibles', e); }
+  try {
+    const pm = await loadPrioridades();
+    const ok = [...pm.values()].filter(x => x.estado === 'ACEPTADA');
+    const esEnt = x => String(x.tipo ?? '').startsWith('ent_');
+    PRIO_DOCS = new Set(ok.filter(x => !esEnt(x)).map(x => String(x.documento ?? '').trim()));
+    // (1-nov-2026, Jordan) Prioridades por entrega + material (Jefe Sucursal / Jefe Operaciones).
+    PRIO_ENT = new Set(ok.filter(esEnt).map(x => `${String(x.documento ?? '').trim()}|${String(x.material ?? '').trim()}`));
+  }
+  catch (e) { PRIO_DOCS = new Set(); PRIO_ENT = new Set(); console.warn('Plan de carga: prioridades no disponibles', e); }
   // (1-oct-2026) Asignaciones manuales de líneas por origen|centro destino
   const asigMap = new Map();
   asigLineas.forEach(a => {
@@ -8772,14 +8798,15 @@ async function renderPlanCarga(stage, opts = {}) {
       : TAG('local_shipping', '2º camión opcional', `Lo que no cabe (${t1(r.excedente)} t) llega al 85% de un camión: se puede programar un 2º camión de ${t1(r.tonSegundo)} t`, 'extra'));
     if (r.tonClienteDiferido > 0) t.push(TAG('event_upcoming', 'CD-Cliente próximo', `CD-Cliente con fecha de entrega posterior: ${t1(r.tonClienteDiferido)} t`, 'h48'));
     // (15-oct-2026, Jordan) Pedidos/OC con PRIORIDAD de carga: alerta (roja si alguno queda fuera del camión CD).
-    if (PRIO_DOCS.size && r.det) {
+    // (1-nov-2026, Jordan) Incluye las prioridades marcadas por entrega + material (Jefe Sucursal / Operaciones).
+    if ((PRIO_DOCS.size || PRIO_ENT.size) && r.det) {
       marcarCapacidadCD(r);
       const pr = CAT_V2.flatMap(c => (r.det[c.k] || []).filter(d => d._prio));
       if (pr.length) {
         const docsP = [...new Set(pr.map(d => String(d.pt ?? d.oc ?? d.pv ?? '').trim()))];
         const fuera = [...new Set(pr.filter(d => !d._enCamion).map(d => String(d.pt ?? d.oc ?? d.pv ?? '').trim()))];
         t.push(TAG('priority_high', fuera.length ? `Prioridad fuera (${fuera.length})` : `Prioridad (${docsP.length})`,
-          fuera.length ? `Pedidos/OC PRIORITARIOS que no van en el camión CD: ${fuera.join(', ')}` : `Pedidos/OC PRIORITARIOS en el camión CD: ${docsP.join(', ')}`, fuera.length ? 'baja' : 'seg-ok'));
+          fuera.length ? `PRIORITARIOS que no van en el camión CD: ${fuera.join(', ')}` : `PRIORITARIOS en el camión CD: ${docsP.join(', ')}`, fuera.length ? 'baja' : 'seg-ok'));
       }
     }
     // (11-oct-2026) Diferencias abiertas del centro (Gestión Troncales → Control de Diferencias).

@@ -32,8 +32,8 @@ export function tonHtml(n) {
 }
 
 // Encabezado del shell: fecha y hora de la última actualización SAP de la vista
-import { confirmar } from './confirmar.js?v=202611011354';
-import { comentariosHabilitados, conteosComentarios, celdaComentarios, montarHilo, tomarFoco, abrirHiloSuelto } from './comentarios.js?v=202611011354';
+import { confirmar } from './confirmar.js?v=202611011513';
+import { comentariosHabilitados, conteosComentarios, celdaComentarios, montarHilo, tomarFoco, abrirHiloSuelto } from './comentarios.js?v=202611011513';
 export function setUltimaActualizacion(ts) {
   const el = document.getElementById('sv-upd');
   if (!el) return;
@@ -156,10 +156,14 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
 
   // (15-oct-2026, Jordan) PRIORIDAD de carga: check por pedido/OC (AV.prioridad = { tipo, doc, centro }).
   // La marca el Jefe de Operaciones de la sucursal (acción marcar_prioridad, sólo sus centros) y alerta en el Plan de Carga.
+  // (1-nov-2026, Jordan) Si la vista trae AV.prioridad.material, la marca es por ENTREGA + MATERIAL
+  // (vistas Entregas de Crossdocking y Pedidos de Traslados): se prioriza la línea, no el pedido completo.
   const prioCfg = AV.prioridad && deps.loadPrioridades ? AV.prioridad : null;
   let prios = prioCfg ? await deps.loadPrioridades(prioCfg.tipo) : new Map();
   const prioDoc = r => String(prioCfg.doc(r) ?? '').trim();
-  const prioDe = r => prios.get(`${prioCfg.tipo}|${prioDoc(r)}`) || null;
+  const prioMat = r => prioCfg.material ? String(prioCfg.material(r) ?? '').trim() : '';
+  const prioDe = r => prios.get(`${prioCfg.tipo}|${prioDoc(r)}|${prioMat(r)}`) || null;
+  const prioLbl = r => prioMat(r) ? `${prioDoc(r)} · material ${prioMat(r)}` : prioDoc(r);
   const puedePrio = r => deps.can('marcar_prioridad') && (!deps.enAlcance || !prioCfg.centro || deps.enAlcance(String(prioCfg.centro(r) ?? '').trim()));
   // (15-oct-2026, Jordan) Aprobación: la marca de Operaciones queda POR APROBAR hasta que un Planner de
   // Abastecimiento (acción evaluar_prioridad) la acepta → PRIORIDAD; si la rechaza se desactiva.
@@ -182,7 +186,8 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
   if (focoPrio) {
     // (15-oct-2026) Notificación de PRIORIDAD de carga: filtra la vista por el documento y abre su fila.
     const d = String(focoPrio.documento ?? '').trim();
-    const fr = prioCfg && d ? rowsAll.find(r => prioDoc(r) === d) : null;
+    const mFoco = String(focoPrio.material ?? '').trim();
+    const fr = prioCfg && d ? (rowsAll.find(r => prioDoc(r) === d && (!mFoco || prioMat(r) === mFoco)) || rowsAll.find(r => prioDoc(r) === d)) : null;
     if (fr && AV.docSearch && String(AV.docSearch.of(fr) ?? '').includes(d)) st.qDoc = d;
     else if (fr && AV.search && String(AV.search.of(fr) ?? '').includes(d)) st.q = d;
     if (fr) st.drawer = fr.__rid;
@@ -302,7 +307,7 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
     const shown = filt.slice(0, MAX);
     const selId = st.drawer;
     let cols = enFila ? AV.cols.concat([{ label: 'Plan de carga', html: r => celdaPlan(r) }]) : AV.cols;
-    if (prioCfg) cols = [{ label: 'Prioridad', html: r => celdaPrio(r) }].concat(cols);
+    if (prioCfg) cols = [{ label: prioCfg.material ? 'Prioridad línea' : 'Prioridad', html: r => celdaPrio(r) }].concat(cols);
     if (conComent) cols = cols.concat([{ label: 'Coment.', html: r => celdaComentarios(conteos.get(claveCom(r)) || 0, r.__rid) }]);
     // (8-oct-2026) Acciones en la fila principal (AV.filaAcciones(r) → [{ label, icon, run, tono }])
     if (AV.filaAcciones) cols = cols.concat([{ label: 'Acciones', html: r => {
@@ -535,7 +540,7 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
       ch.addEventListener('change', async () => {
         const r = rowsAll.find(x => x.__rid === ch.dataset.prio); if (!r) return;
         ch.disabled = true;
-        const ok = await deps.togglePrioridad(prioCfg.tipo, prioDoc(r), prioCfg.centro ? String(prioCfg.centro(r) ?? '').trim() : null, ch.checked);
+        const ok = await deps.togglePrioridad(prioCfg.tipo, prioDoc(r), prioCfg.centro ? String(prioCfg.centro(r) ?? '').trim() : null, ch.checked, prioMat(r), prioLbl(r));
         if (ok) prios = await deps.loadPrioridades(prioCfg.tipo);
         draw();
       });
@@ -547,7 +552,7 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
         const r = rowsAll.find(x => x.__rid === b.dataset[k]); if (!r) return;
         b.disabled = true;
         try {
-          const ok = await deps.evaluarPrioridad(prioCfg.tipo, prioDoc(r), acepta);
+          const ok = await deps.evaluarPrioridad(prioCfg.tipo, prioDoc(r), acepta, prioMat(r), prioLbl(r));
           if (ok) prios = await deps.loadPrioridades(prioCfg.tipo);
         } finally { draw(); }
       })));

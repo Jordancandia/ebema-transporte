@@ -85,6 +85,7 @@ export const PERFILES = {
     menu: ['home', ...TRONCALES, 'flete-tercero', 'indicadores', 'tarifas-clientes'],
     privilegios: ['COMENTAR'],
     // (15-oct-2026, Jordan) Marca PRIORIDAD de carga en Retiros, Crossdocking y Pedidos de Traslados (sus centros).
+    // (1-nov-2026, Jordan) Y prioriza entregas (entrega + material) en las vistas Entregas de esas dos vistas.
     acciones: [...P_VISUALIZAR, ...P_COMENTAR, 'marcar_prioridad'],
   },
   PLANNER_OPERACIONES: {
@@ -99,6 +100,7 @@ export const PERFILES = {
     menu: ['home', 'rates', ...TRONCALES, 'flete-tercero', 'indicadores', 'tarifas-clientes'],
     privilegios: ['COMENTAR'],
     // (15-oct-2026, Jordan) Prioriza entregas de sus centros; entra al flujo de aprobación de Abastecimiento.
+    // (1-nov-2026, Jordan) El check de prioridad de entregas va por entrega + material en las vistas Entregas.
     acciones: [...P_VISUALIZAR, ...P_COMENTAR, 'marcar_prioridad'],
   },
   JEFE_CATEGORIA: {
@@ -112,6 +114,16 @@ export const PERFILES = {
     menu: ['home', 'rates', ...TRONCALES_PLANIF],
     privilegios: ['VISUALIZAR'],
     acciones: [...P_VISUALIZAR],
+  },
+  // (1-nov-2026, Jordan) Control puerta del CD Quilicura: entra a la plataforma y sólo ve
+  // Portería → Control Puerta, donde registra y edita las visitas (llegada, ingreso, salida,
+  // pesos de romana, retiros de cliente y retornos de despacho). El Monitor de Operaciones y
+  // los umbrales quedan fuera de su menú.
+  CONTROL_PUERTA: {
+    label: 'Control Puerta', clase: 'CONTROL_PUERTA', alcance: 'CENTROS',
+    menu: ['porteria:registro'],
+    privilegios: ['VISUALIZAR', 'EDITAR'],
+    acciones: [...P_VISUALIZAR, ...P_EDITAR],
   },
   // Sin vistas en la plataforma interna (usan el portal de proveedor).
   TRANSPORTISTA: { label: 'Transportista', clase: 'TRANSPORTISTA', menu: [], acciones: [], privilegios: [], alcance: 'CENTROS' },
@@ -138,7 +150,7 @@ export const ACCIONES_EXTRA = [
   { key: 'coordinar_transporte',  label: 'Coordinar transporte del Plan de Carga (sin programar)', soloEditor: true },
   { key: 'programar_transporte',  label: 'Programar camión con transporte', soloEditor: true },
   { key: 'editar_dt_seguimiento', label: 'Editar DT en Seguimiento de Carga', soloEditor: true },
-  { key: 'marcar_prioridad',      label: 'Marcar PRIORIDAD de carga (Retiros, Crossdocking, Traslados)' },
+  { key: 'marcar_prioridad',      label: 'Marcar PRIORIDAD de carga (Retiros, Crossdocking, Traslados y sus Entregas)' },
   { key: 'evaluar_prioridad',     label: 'Aceptar / rechazar PRIORIDAD de carga — Abastecimiento' },
   { key: 'activar_saldo',         label: 'Activar saldo de camión parcial (Seguimiento de Carga)', soloEditor: true },
   { key: 'editar_carga_seguimiento', label: 'Editar carga de camión de plan cerrado (Seguimiento de Carga)', soloEditor: true },
@@ -181,8 +193,13 @@ function _match(m, grupoOTab, sub) {
 // (18-oct-2026, Jordan) Vistas sólo del perfil OWNER (ni Administrador ni Planner Distribución);
 // OWNER puede habilitarlas a un usuario como vista extra (p. ej. futuro perfil Portería).
 const SOLO_OWNER = ['porteria'];
+// (1-nov-2026, Jordan) Perfiles que traen Portería en su propio menú (ven sólo las pestañas que listan).
+const PERFIL_PORTERIA = ['CONTROL_PUERTA'];
 export function puedeVerMenu(grupoOTab, sub = null) {
-  if (SOLO_OWNER.includes(grupoOTab)) return _role === 'OWNER' || _match(_vistasExtra, grupoOTab, sub);
+  if (SOLO_OWNER.includes(grupoOTab)) {
+    if (PERFIL_PORTERIA.includes(_role)) return _match(perfil().menu, grupoOTab, sub) || _match(_vistasExtra, grupoOTab, sub);
+    return _role === 'OWNER' || _match(_vistasExtra, grupoOTab, sub);
+  }
   const m = perfil().menu;
   if (m === null) return true;
   return _match(m, grupoOTab, sub) || _match(_vistasExtra, grupoOTab, sub);
@@ -191,7 +208,13 @@ export function puedeVerMenu(grupoOTab, sub = null) {
 export function perfilVeMenu(role, key) {
   const p = PERFILES[normalizarPerfil(role)];
   if (!p) return false;
-  if (SOLO_OWNER.includes(key.split(':')[0])) return normalizarPerfil(role) === 'OWNER';
+  if (SOLO_OWNER.includes(key.split(':')[0])) {
+    const r = normalizarPerfil(role);
+    if (r === 'OWNER') return true;
+    if (!PERFIL_PORTERIA.includes(r)) return false;
+    const [gp, sp] = key.split(':');
+    return _match(p.menu, gp, sp ?? null);
+  }
   if (p.menu === null) return true;
   const [g, s] = key.split(':');
   return _match(p.menu, g, s ?? null);
