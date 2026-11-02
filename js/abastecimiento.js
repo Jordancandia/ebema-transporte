@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611021431';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611021431';
-import { getDatabase } from './data.js?v=202611021431';
+import { supabase } from './supabase-client.js?v=202611021437';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611021437';
+import { getDatabase } from './data.js?v=202611021437';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611021431';
-import { confirmar, pedirDato } from './confirmar.js?v=202611021431';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611021437';
+import { confirmar, pedirDato } from './confirmar.js?v=202611021437';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -6894,7 +6894,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611021431');
+    const m = await import('./ind-plan-carga.js?v=202611021437');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -7367,6 +7367,9 @@ async function renderPlanCarga(stage, opts = {}) {
   // («PEDIDO DE VENTA, EMITIR GUIA FACTURABLE»): entran como Venta Directa del centro (o del alternativo).
   let pv4000Coord = new Map(), pv4000Live = [], pv4000Cargados = new Set();
   if (planOrigen === '1003') try { [pv4000Coord, pv4000Live] = await Promise.all([loadPv4000Coord(), fetchAllRows('v_trc_sqvi_stock_almacen_4000')]); } catch (e) { console.warn('Plan de carga: PV Stock 4000 no disponible', e); }
+  // (2-nov-2026, Jordan) Entregas coordinadas que ya tienen DT (despachadas): se usa mas abajo para decidir
+  // si un reparto programado sin pendiente SAP sigue por despachar.
+  let conDtPlan = new Set();
   // (8-oct-2026, Jordan) NV y OC de retiro COORDINADAS se mantienen en el plan hasta su día de entrega/retiro,
   // aunque SAP las saque del SQVI (entrega creada / OC recibida): se usan las líneas respaldadas al coordinar
   // (abast_coord_sqvi, la respalda el servidor cada 20 min y al abrir el plan).
@@ -7388,6 +7391,7 @@ async function renderPlanCarga(stage, opts = {}) {
     const entCo = [...new Set([...coordVentas.values()].flatMap(c => entregasCoordV(c)))];
     let conDt = new Set();
     if (entCo.length) { const { data } = await supabase.from('abast_dt_dia').select('entrega').in('entrega', entCo); conDt = new Set((data || []).map(x => tx(x.entrega))); }
+    conDtPlan = conDt;
     // (2-nov-2026, Jordan) Respaldo POR POSICIÓN. Las entregas ya cargadas en planes anteriores se
     // descuentan más abajo (cargadosEnt), por eso aquí va null.
     const lin = ventasCoordLin(coordVentas, conDt);
@@ -7843,7 +7847,14 @@ async function renderPlanCarga(stage, opts = {}) {
       rowsDoc.forEach(r => {
         // (18-oct-2026, Jordan) Unidades editadas al coordinar (nunca más que el pendiente SAP).
         const pend0 = parseNum(r.ctd_confirmada) - parseNum(r.cantidad_entrg);
-        const pend = r._saldo ? pend0 : r._coordLin ? cantLineasV(co, r.material, pend0, r.fe_entrega) : cantAjustada(co, r.material, pend0, r.fe_entrega);
+        // (2-nov-2026, Jordan) Un reparto PROGRAMADO queda registrado en el plan hasta su fecha de
+        // programación: si SAP ya creó su entrega, el SQVI lo deja sin pendiente, pero mientras esa
+        // entrega no tenga DT sigue por despachar y cuenta con su cantidad CONFIRMADA. Mismo criterio
+        // que trc_pend_coord en v_trc_plan_carga_ventas_lineas (NV 1062020).
+        const entProg = entregaLineaV(co, r.material, r.fe_entrega);
+        const pendBase = pend0 > 1e-9 ? pend0
+          : (repCoord && String(r.fe_entrega ?? '').trim() === repCoord && entProg && !conDtPlan.has(entProg) ? parseNum(r.ctd_confirmada) : 0);
+        const pend = r._saldo ? pend0 : r._coordLin ? cantLineasV(co, r.material, pendBase, r.fe_entrega) : cantAjustada(co, r.material, pendBase, r.fe_entrega);
         if (pend <= 0) return;
         const dRep = parseDateSAP(r.fe_entrega);
         const repPost = !!(dRep && fMinRep && dRep.getTime() > fMinRep.getTime());
@@ -9845,10 +9856,13 @@ function ventasCoordLin(coordVentas, conDt) {
 function reponerCoordPorPosicion(ventasRaw, coordVentas, bkVen, conDt, cargadasEnt, lin, cargadasPos) {
   const tx = v => String(v ?? '').trim();
   const pendDe = r => parseNum(r.ctd_confirmada) - parseNum(r.cantidad_entrg);
-  const kPos = r => `${tx(r.doc_ventas)}|${tx(r.pos)}|${tx(r.material)}`;
+  // (2-nov-2026, Jordan) La clave del respaldo es POR REPARTO (doc|pos|material|fecha): una NV con
+  // varios repartos en la misma posicion debe evaluar cada reparto por separado, si no el reparto con
+  // saldo tapa el respaldo del reparto programado (caso NV 1062020: 03.11 ya con entrega / 12.11 con saldo).
+  const kPos = r => `${tx(r.doc_ventas)}|${tx(r.pos)}|${tx(r.material)}|${tx(r.fe_entrega)}`;
   const bkPorDoc = new Map();
   (bkVen || []).forEach(r => { const d = tx(r.doc_ventas); if (!bkPorDoc.has(d)) bkPorDoc.set(d, []); bkPorDoc.get(d).push(r); });
-  // Pendiente vivo máximo por posición: con repartos basta que UNO tenga saldo para que manden los vivos.
+  // Pendiente vivo del reparto (clave con fecha): cada reparto decide por si mismo.
   const pendPos = new Map();
   ventasRaw.forEach(r => { if (r._respaldo) return; const k = kPos(r);
     pendPos.set(k, Math.max(pendPos.has(k) ? pendPos.get(k) : -Infinity, pendDe(r))); });
