@@ -15,11 +15,11 @@
 // tarifas a clientes y «Guardar y recalcular» escribe sólo client_tariff_config
 // (syncOnly) y, si cambió la asignación de clusters, cluster_rutas por centro.
 // ============================================================================
-import { saveDatabase, getOrigenGroups } from './data.js?v=202611011604';
-import { buildZcapMap, es2Ton, componentesRegional } from './zcap.js?v=202611011604';
+import { saveDatabase, getOrigenGroups } from './data.js?v=202611020924';
+import { buildZcapMap, es2Ton, componentesRegional } from './zcap.js?v=202611020924';
 import { showAlert } from './utils.js';
-import { can } from './permisos.js?v=202611011604';
-import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, setParamPill, clasifPill, clasifTarifa, pillHtml } from './tarifas-ui.js?v=202611011604';
+import { can } from './permisos.js?v=202611020924';
+import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, setParamPill, clasifPill, clasifTarifa, pillHtml } from './tarifas-ui.js?v=202611020924';
 
 const CAPS = [5, 10, 15, 28];
 const CAP_LBL = { 5: '5 t', 10: '10 t', 15: '15 t', 28: '28 t' };
@@ -1315,7 +1315,7 @@ function renderTarifasCliente(container, ctx, modo) {
     container.querySelector('#t-sap')?.addEventListener('click', () => {
       const res = construirCargaSap(CC.sapRows || []);
       if (!res.n.rutas) { showAlert('Sin rutas con ZCAP para el filtro actual.', 'error'); return; }
-      const f = new Date().toISOString().slice(0, 10);
+      const f = new Date().toLocaleDateString('sv-SE');   // fecha local (no UTC) en el nombre del archivo
       descargarTxt(`ZFMP_${f}.csv`, res.zfmpTxt);
       setTimeout(() => descargarTxt(`ZFMI_ZFMX_${f}.csv`, res.zfmiZfmxTxt), 600);
       const om = res.omit.sinZfmp || res.omit.sinZfmi ? ` · sin ZFMP: ${fmt(res.omit.sinZfmp)} · sin ZFMI: ${fmt(res.omit.sinZfmi)} (ruta × camión)` : '';
@@ -1324,7 +1324,7 @@ function renderTarifasCliente(container, ctx, modo) {
     container.querySelector('#t-sapcam')?.addEventListener('click', () => {
       const res = construirCargaSapCamiones(CC.sapRows || []);
       if (!res.n.rutas) { showAlert('Sin rutas con ZCAP para el filtro actual.', 'error'); return; }
-      const f = new Date().toISOString().slice(0, 10);
+      const f = new Date().toLocaleDateString('sv-SE');   // fecha local (no UTC) en el nombre del archivo
       descargarTxt(`Rango_camiones_${f}.csv`, res.rangoTxt);
       setTimeout(() => descargarTxt(`Camion_MinMax_${f}.csv`, res.minmaxTxt), 600);
       const av = res.aviso.matSobreMax ? ` · ${fmt(res.aviso.matSobreMax)} centro × ruta con camión mayor bajo el FleteMax de materiales (28)` : '';

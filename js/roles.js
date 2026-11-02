@@ -1,8 +1,8 @@
-import { getDatabase, saveDatabase, getCentreName } from './data.js?v=202611011604';
+import { getDatabase, saveDatabase, getCentreName } from './data.js?v=202611020924';
 import { showAlert, escapeHtml } from './utils.js';
-import { supabase } from './supabase-client.js?v=202611011604';
-import { ROLES_CON_CENTROS, PERFILES, ALIAS_PERFIL, ACCIONES_EXTRA, VISTAS_CATALOGO, perfilVeMenu, esOwner, can, TODOS_CENTROS } from './permisos.js?v=202611011604';
-import { confirmar } from './confirmar.js?v=202611011604';
+import { supabase } from './supabase-client.js?v=202611020924';
+import { ROLES_CON_CENTROS, PERFILES, ALIAS_PERFIL, ACCIONES_EXTRA, VISTAS_CATALOGO, perfilVeMenu, esOwner, can, TODOS_CENTROS } from './permisos.js?v=202611020924';
+import { confirmar } from './confirmar.js?v=202611020924';
 
 // --- Perfiles de Acceso (Roles y Perfiles + Row Level Security) ---
 // 5 perfiles canónicos. Cada uno determina qué puede ver/editar el usuario
@@ -18,6 +18,7 @@ const ROLE_CONFIG = {
   'PLANNER_ABASTECIMIENTO': { bg: '#e0f2f1', text: '#00695c', border: '#80cbc4', icon: 'inventory',         label: 'Planner Abastecimiento' },
   'JEFE_OPERACIONES':       { bg: '#e3f2fd', text: '#0d47a1', border: '#90caf9', icon: 'warehouse',         label: 'Jefe Operaciones' },
   'PLANNER_OPERACIONES':    { bg: '#ede7f6', text: '#4527a0', border: '#b39ddb', icon: 'monitoring',        label: 'Planner Operaciones' },
+  'CONTROL_PUERTA':         { bg: '#fff8e1', text: '#7a5300', border: '#ffd54f', icon: 'meeting_room',     label: 'Control Puerta' },
   'JEFE_SUCURSAL':          { bg: '#e8eaf6', text: '#283593', border: '#9fa8da', icon: 'storefront',        label: 'Jefe Sucursal' },
   'JEFE_CATEGORIA':         { bg: '#f1f8e9', text: '#33691e', border: '#c5e1a5', icon: 'category',          label: 'Jefe Categoría' },
   'VENDEDOR':               { bg: '#e8f5e9', text: '#1b5e20', border: '#a5d6a7', icon: 'request_quote',     label: 'Vendedor' },
@@ -34,6 +35,7 @@ const ROLE_DESCRIPTIONS = {
   'PLANNER_ABASTECIMIENTO': 'Home y Gestión Troncales completa, todos los centros. Comenta y edita (excluir y subir pedidos al Plan de Carga).',
   'JEFE_OPERACIONES': 'Sus centros: Home, Gestión Troncales, Flete Tercero, Indicadores y Tarifas Clientes. Comenta (sin edición).',
   'PLANNER_OPERACIONES': 'Sus centros: Home, Cotizador, Gestión Troncales, Flete Tercero, Indicadores y Tarifas Clientes. Comenta (sin edición).',
+  'CONTROL_PUERTA': 'Sólo Portería · Control Puerta del centro asignado (1003): registra llegadas, ingresos, salidas, pesos, guías y retornos. Edita, no borra.',
   'JEFE_SUCURSAL': 'Sus centros: Home, Cotizador, Gestión Troncales, Flete Tercero, Indicadores y Tarifas Clientes. Comenta (sin edición).',
   'JEFE_CATEGORIA': 'Todos los centros: Home, Gestión Troncales e Indicadores. Comenta (sin edición).',
   'VENDEDOR': 'Sus centros: Home, Cotizador Despacho y Planificación de Gestión Troncales. Solo visualización.',
