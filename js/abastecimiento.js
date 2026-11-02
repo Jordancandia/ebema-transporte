@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611021512';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611021512';
-import { getDatabase } from './data.js?v=202611021512';
+import { supabase } from './supabase-client.js?v=202611021533';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611021533';
+import { getDatabase } from './data.js?v=202611021533';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611021512';
-import { confirmar, pedirDato } from './confirmar.js?v=202611021512';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611021533';
+import { confirmar, pedirDato } from './confirmar.js?v=202611021533';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -1727,6 +1727,26 @@ async function loadVentasManual() {
   });
   return m;
 }
+// (2-nov-2026, Jordan) El MR del SQVI es un BLOQUEO de la posición. Liberarlo a mano la deja como una
+// posición normal (coordinable y en el Plan de Carga); volver a bloquearla la saca de nuevo.
+async function liberarBloqueoPos(doc, posiciones, motivo) {
+  const email = await getUserEmail(), now = new Date().toISOString();
+  const rows = (posiciones || []).map(p => ({ doc_ventas: String(doc ?? '').trim(), pos: String(p.pos ?? '').trim(),
+    material: String(p.material ?? '').trim(), mr: p.mr || null, motivo: motivo || null, activo: true,
+    liberado_por: email, liberado_en: now, anulado_por: null, anulado_en: null }));
+  if (!rows.length) return false;
+  const { error } = await supabase.from('abast_venta_bloqueo_liberado').upsert(rows, { onConflict: 'doc_ventas,pos,material' });
+  if (error) { showAlert('No se pudo liberar el bloqueo: ' + error.message, 'error'); return false; }
+  return true;
+}
+async function volverABloquearPos(doc) {
+  const email = await getUserEmail();
+  const { error } = await supabase.from('abast_venta_bloqueo_liberado')
+    .update({ activo: false, anulado_por: email, anulado_en: new Date().toISOString() })
+    .eq('doc_ventas', String(doc ?? '').trim()).eq('activo', true);
+  if (error) { showAlert('No se pudo volver a bloquear: ' + error.message, 'error'); return false; }
+  return true;
+}
 async function eliminarVentaManual(doc) {
   const d = String(doc ?? '').trim();
   const { error } = await supabase.from('abast_venta_manual').delete().eq('doc_ventas', d);
@@ -1869,9 +1889,12 @@ function pesoLineaVM(l, mats) {
   return { kg: Math.max(peso, vol), maestro: !!(mp && mp.peso > 0) };
 }
 // existente: { cab, lineas } de loadVentasManual() → modo edición. Devuelve el N° de pedido guardado o null.
-function showVentaManualModal(ctx, existente) {
+// (2-nov-2026, Jordan) opts.posExtra: el pedido existe en SAP y sólo se agregan POSICIONES manuales
+// (la cabecera se copia de la NV y las posiciones se numeran 9000xx para no chocar con las de SAP).
+function showVentaManualModal(ctx, existente, opts = {}) {
   return new Promise(async resolve => {
     const editando = !!existente;
+    const posExtra = !!(opts && opts.posExtra);
     const cab = (existente && existente.cab) || {};
     const [rutas, mats, maestroCli] = await Promise.all([rutasVentaManual(), materialesVentaManual(), (ctx && ctx.maestro) ? Promise.resolve(ctx.maestro) : loadMaestroClientes()]);
     const filas = [...(((ctx && ctx._rowsByDoc) || new Map()).values())];
@@ -1892,7 +1915,7 @@ function showVentaManualModal(ctx, existente) {
       idCli: cab.id_cliente || '', nomCli: cab.nombre_cliente || '',
       idVen: cab.id_vendedor || '', nomVen: cab.nombre_vendedor || '',
       cond: cab.cond_expedicion || '', obs: cab.observacion || '',
-      lineas: existente ? existente.lineas.map(l => ({ material: l.material || '', nombre: l.denominacion || '', cant: String(l.cantidad ?? ''), um: l.um || '', peso: l.peso_unit_kg == null ? '' : String(l.peso_unit_kg) }))
+      lineas: (existente && (existente.lineas || []).length) ? existente.lineas.map(l => ({ material: l.material || '', nombre: l.denominacion || '', cant: String(l.cantidad ?? ''), um: l.um || '', peso: l.peso_unit_kg == null ? '' : String(l.peso_unit_kg) }))
         : [{ material: '', nombre: '', cant: '', um: '', peso: '' }],
       busRuta: { q: '', open: false }, err: false, errMsg: '',
     };
@@ -1954,9 +1977,9 @@ function showVentaManualModal(ctx, existente) {
       const retira = rs && /RETIRA/i.test(`${rs.codigo} ${rs.destino}`);
       panel.innerHTML = `
         <div class="sv-dr-h"><div style="flex:1;min-width:0">
-          <div class="sv-dr-k">${editando ? 'Editar pedido de venta manual' : 'Agregar pedido de venta manual'}</div>
+          <div class="sv-dr-k">${posExtra ? 'Posiciones manuales del pedido de venta' : editando ? 'Editar pedido de venta manual' : 'Agregar pedido de venta manual'}</div>
           <div class="sv-dr-t">${escapeHtml(st.doc || 'Nuevo pedido')}</div>
-          <div class="sv-dr-s">Ventas CD (1003) · queda «Sin coordinar» hasta que lo coordines, igual que una NV de SAP</div></div>
+          <div class="sv-dr-s">${posExtra ? 'El pedido existe en SAP: acá se agregan sólo las posiciones que el SQVI no trae. Se coordinan junto con el pedido y si SAP empieza a traer ese material, manda SAP.' : 'Ventas CD (1003) · queda «Sin coordinar» hasta que lo coordines, igual que una NV de SAP'}</div></div>
           <button class="sv-iconbtn" data-cx title="Cerrar (Esc)"><span class="material-symbols-outlined">close</span></button></div>
         <div class="sv-dr-b" style="gap:18px">
           ${falt.length ? '<div class="sv-note-box" style="background:#ffdad6;color:#93000a;font-weight:700">Completa los campos obligatorios marcados en rojo (cada material necesita cantidad y peso).</div>' : ''}
@@ -2077,7 +2100,7 @@ function showVentaManualModal(ctx, existente) {
         };
         const rows = lineas.map((l, i) => {
           const mp = mats.get(String(l.material).trim());
-          return { ...base, pos: String((i + 1) * 10).padStart(6, '0'), material: String(l.material).trim(),
+          return { ...base, pos: String(posExtra ? 900000 + (i + 1) * 10 : (i + 1) * 10).padStart(6, '0'), material: String(l.material).trim(),
             denominacion: String(l.nombre).trim() || (mp && mp.nombre) || null, cantidad: numVM(l.cant), um: String(l.um).trim().toUpperCase() || null,
             peso_unit_kg: numVM(l.peso) > 0 ? numVM(l.peso) : null };
         });
@@ -2097,7 +2120,7 @@ function showVentaManualModal(ctx, existente) {
           if (eC) console.warn('Maestro de clientes no actualizado:', eC.message);
         }
         clearRawCache();
-        showAlert(`Pedido manual ${doc} ${editando ? 'actualizado' : 'agregado'} · ${fmtNum(rows.reduce((s, r, i) => s + tonLinea(lineas[i]), 0), 2)} t`, 'success');
+        showAlert(`${posExtra ? `Posiciones manuales del pedido ${doc} guardadas` : `Pedido manual ${doc} ${editando ? 'actualizado' : 'agregado'}`} · ${fmtNum(rows.reduce((s, r, i) => s + tonLinea(lineas[i]), 0), 2)} t`, 'success');
         fin(doc);
       });
     }
@@ -3866,9 +3889,12 @@ const VISTAS_TRONCAL = {
       },
     },
     transform(rows) {
-      // 1) MR sólo vacías  2) sólo con ruta
+      // 1) (2-nov-2026, Jordan) El MR del SQVI es un BLOQUEO, no un rechazo: la posición se muestra
+      //    marcada como bloqueada (no suma al pedido ni al plan) y se puede LIBERAR a mano
+      //    (abast_venta_bloqueo_liberado → columna mr_liberado de la vista). Liberada, es una
+      //    posición normal.  2) sólo con ruta
+      const bloqueada = r => !!String(r.mr ?? '').trim() && !r.mr_liberado;
       const base = rows
-        .filter(r => !String(r.mr ?? '').trim())
         .filter(r => String(r.ruta ?? '').trim() !== '');
       // 2) (2-nov-2026, Jordan) REPARTOS: el SQVI parte una posición en varias fechas de entrega.
       //    Antes se conservaba UNA sola línea por doc+material (la de fecha más lejana), así que de
@@ -3884,12 +3910,17 @@ const VISTAS_TRONCAL = {
         if (pN && !pO) dedup.set(k, r);
       });
       // 3) Excluir líneas ya entregadas (entregada == confirmada); pendiente = conf - entreg
-      const lineas = [];
+      const lineas = [], bloqueadas = [];
       for (const r of dedup.values()) {
         const conf = parseNum(r.ctd_confirmada), entreg = parseNum(r.cantidad_entrg);
         const pend = conf - entreg;
         if (conf > 0 && entreg >= conf) continue;   // entregado completo → fuera
         if (pend <= 0) continue;
+        if (bloqueada(r)) {   // posición con bloqueo: se muestra, no se considera
+          bloqueadas.push({ ...r, _pend: pend, _entreg: entreg, _conf: conf, _bloq: true,
+            _ton: maxPesoDim(r.peso_neto, r.tamano_dimens) * pend / 1000 });
+          continue;
+        }
         const rl = lookupRuta(r.ruta);
         // (AJUSTE) peso mayor entre PESO NETO y tamaño/dimensión × unidades pendientes
         const pesoPos = maxPesoDim(r.peso_neto, r.tamano_dimens) * pend;
@@ -3899,13 +3930,18 @@ const VISTAS_TRONCAL = {
       }
       // 4) Agrupar por pedido de venta
       const g = new Map();
-      lineas.forEach(r => {
+      [...lineas, ...bloqueadas].forEach(r => {
         const k = String(r.doc_ventas ?? '').trim();
         (g.get(k) || g.set(k, []).get(k)).push(r);
       });
       const out = [];
-      for (const [doc, items] of g.entries()) {
-        const f = items[0];
+      for (const [doc, itemsAll] of g.entries()) {
+        // (2-nov-2026, Jordan) Las posiciones bloqueadas van aparte: no suman ton ni entran al detalle
+        // que leen la coordinación, «Agregar camión» y el CSV; se listan para poder liberarlas.
+        const items = itemsAll.filter(r => !r._bloq);
+        const bloqPos = itemsAll.filter(r => r._bloq).map(r => ({ pos: String(r.pos ?? '').trim(), material: String(r.material ?? '').trim(),
+          nombre: r.denominacion_de_posicion || '', pendiente: r._pend, ton: r._ton, mr: String(r.mr ?? '').trim(), fecha: r.fe_entrega }));
+        const f = items[0] || itemsAll[0];
         let ton = 0, parcial = false;
         let fmax = null;
         // (2-nov-2026, Jordan) REPARTOS: el SQVI trae una línea por reparto (posición + fecha). El
@@ -3927,10 +3963,13 @@ const VISTAS_TRONCAL = {
             porPos.set(kp, { doc_ventas: doc, deudor: r.deudor, ruta: r.ruta, comuna: r._comuna, region: r._region,
               material: r.material, nombre: r.denominacion_de_posicion, pendiente: r._pend, ton: r._ton,
               conf: r._conf, entreg: r._entreg, pos: String(r.pos ?? '').trim(), fecha: r.fe_entrega,
+              // (2-nov-2026, Jordan) posición agregada a mano (no viene en el SQVI)
+              _man: String(r.corrida ?? '').trim() === 'MANUAL',
               _reps: [{ fecha: r.fe_entrega, pendiente: r._pend, ton: r._ton, conf: r._conf }] });
             return;
           }
           ex.pendiente += r._pend; ex.ton += r._ton; ex.conf += r._conf; ex.entreg += r._entreg;
+          if (String(r.corrida ?? '').trim() === 'MANUAL') ex._man = true;
           ex._reps.push({ fecha: r.fe_entrega, pendiente: r._pend, ton: r._ton, conf: r._conf });
         });
         const detalle = [...porPos.values()];
@@ -3945,6 +3984,8 @@ const VISTAS_TRONCAL = {
           if (comunasList.has(normTxt(it._comuna))) { enCamino = true; comunaCamino = it._comuna; break; }
         }
         out.push({
+          _bloq_pos: bloqPos,
+          _libre_pos: items.filter(r => String(r.mr ?? '').trim() && r.mr_liberado).length,
           doc_ventas: doc, ofvta: f.ofvta, creado_el: f.creado_el, deudor: f.deudor, solicitante: f.solicitante,
           fe_entrega: feLbl, _ton_num: ton, _ton_totales: fmtNum(ton, 3),
           _estado: parcial ? 'ENTREGA PARCIAL PENDIENTE' : '',
@@ -4783,7 +4824,11 @@ const V2 = {
       rows.forEach(r => {
         const doc = String(r.doc_ventas ?? '').trim();
         const pv = ctx.pvMap[doc] || {};
-        r._nv_manual = (ctx.manualMap && ctx.manualMap.get(doc)) || null;   // (21-oct-2026) pedido agregado a mano
+        // (2-nov-2026, Jordan) Pedido de SAP con posiciones manuales: NO es un pedido manual (no se edita
+        // ni se elimina como tal), sólo lleva posiciones agregadas a mano.
+        r._pos_man = (r._detalle || []).filter(d => d._man).length;
+        const _todoMan = (r._detalle || []).length > 0 && (r._detalle || []).every(d => d._man);
+        r._nv_manual = (_todoMan && ctx.manualMap && ctx.manualMap.get(doc)) || null;   // (21-oct-2026) pedido agregado a mano
         r._id_cliente = String(r.solicitante ?? '').trim();   // columna "Solic." del SQVI (30-sep-2026)
         r._mc = (ctx.maestro && ctx.maestro.get(r._id_cliente)) || null;
         r._cliente = (r._mc && r._mc.nombre) || pv.nombre_1 || (r._coord && r._coord.nombre_cliente) || '';
@@ -4861,12 +4906,15 @@ const V2 = {
       { key: 'pl', label: 'En plan de carga', color: C_BLUE, sub: 'pedidos coordinados', fn: r => !!r._coord && !r._cargada && !r._saldoSinCoord },
       { key: 'cg', label: 'COORDINADO', color: C_SEC, sub: 'en camión programado · bloqueado', fn: r => !!r._cargada },
       { key: 'sl', label: 'Saldo sin coordinar', color: C_ORANGE, sub: 'la coordinación anterior ya viajó', fn: r => !!r._saldoSinCoord },
+      { key: 'bq', label: 'Con bloqueo', color: C_RED, sub: 'posiciones con MR por liberar', fn: r => (r._bloq_pos || []).length > 0 },
       { key: 'cd', label: 'CD-Cliente', color: '#7e22ce', sub: 'cliente ≥ 23,8 t o definido', fn: r => !!r._directo },
       { key: 'mn', label: 'Manuales', color: '#0f766e', sub: 'agregados en la plataforma', fn: r => !!r._nv_manual },
       { key: 'at', label: 'Atrasados', color: C_RED, sub: 'fecha de entrega vencida', fn: r => r._al.k === 'Atrasado' },
     ],
     cols: [
-      { label: 'Pedido', html: r => mono(r.doc_ventas, r.creado_el ? 'creado ' + r.creado_el : '') + (r._nv_manual ? `<div style="margin-top:4px" title="Pedido agregado a mano por ${escV2(r._nv_manual.cab.created_by || '')}">${pill('Manual', 'warn')}</div>` : '') },
+      { label: 'Pedido', html: r => mono(r.doc_ventas, r.creado_el ? 'creado ' + r.creado_el : '') + (r._nv_manual ? `<div style="margin-top:4px" title="Pedido agregado a mano por ${escV2(r._nv_manual.cab.created_by || '')}">${pill('Manual', 'warn')}</div>` : r._pos_man ? `<div style="margin-top:4px" title="Posiciones agregadas a mano porque el SQVI no las trae">${pill('+' + r._pos_man + (r._pos_man === 1 ? ' posición manual' : ' posiciones manuales'), 'warn')}</div>` : '')
+          + ((r._bloq_pos || []).length ? `<div style="margin-top:4px" title="Posición con bloqueo en SAP (MR): no se considera hasta liberarla">${pill(r._bloq_pos.length + (r._bloq_pos.length === 1 ? ' posición bloqueada' : ' posiciones bloqueadas') + ' · MR ' + [...new Set(r._bloq_pos.map(p => p.mr))].join('/'), 'bad')}</div>` : '')
+          + (r._libre_pos ? `<div style="margin-top:4px" title="Bloqueo liberado a mano: la posición se considera como cualquier otra">${pill('Bloqueo liberado', 'ok')}</div>` : '') },
       { label: 'Cliente', html: r => txt(r._cliente || (r._id_cliente ? 'ID ' + r._id_cliente : '—'), [r._cliente && r._id_cliente ? 'ID ' + r._id_cliente : '', r._vendedor].filter(Boolean).join(' · '), true) },
       { label: 'Destino', html: r => sucHtml(r.ofvta) + (r._ce_alt && r._ce_alt !== String(r.ofvta ?? '').trim() ? `<div style="margin-top:4px" title="Centro alternativo: computa en el Plan de Carga de ${escV2(nombreCentro(r._ce_alt) || r._ce_alt)}">${pill('Plan → ' + (nombreCentro(r._ce_alt) || r._ce_alt), 'purple')}</div>` : '') },
       { label: 'Tipo entrega', html: r => pill(r._directo ? 'CD-Cliente' : 'Consolidable', r._directo ? 'purple' : 'info')
@@ -4951,6 +4999,42 @@ const V2 = {
         if (!await confirmar(`¿Quitar el tipo de entrega manual del pedido ${row.doc_ventas}?\n\nVuelve a evaluarse con la regla de 23,8 t por cliente.`)) return null;
         return (await setVentaDirectoManual(row.doc_ventas, null)) ? (showAlert('Pedido vuelve a la regla automática', 'success'), { recargar: true }) : null;
       } });
+      // (2-nov-2026, Jordan) Posición con bloqueo (MR) en SAP: se libera a mano para poder coordinarla.
+      if ((r._bloq_pos || []).length && can('venta_manual')) {
+        acciones.push({ label: `Liberar bloqueo (${r._bloq_pos.length})`, icon: 'lock_open', run: async row => {
+          const ps = row._bloq_pos || [];
+          if (!ps.length) return null;
+          if (!await confirmar(`¿Liberar ${ps.length} ${ps.length === 1 ? 'posición bloqueada' : 'posiciones bloqueadas'} del pedido ${row.doc_ventas}?\n\n${ps.map(p => `• pos ${p.pos} · ${p.material} ${p.nombre}: ${fmtNum(p.pendiente, 0)} un · MR ${p.mr}`).join('\n')}\n\nQuedan como posiciones normales: se pueden coordinar y entran al Plan de Carga.`, { aceptar: 'Liberar bloqueo', icono: 'lock_open' })) return null;
+          if (!(await liberarBloqueoPos(row.doc_ventas, ps))) return null;
+          clearRawCache();
+          showAlert(`Bloqueo liberado · ${ps.length} ${ps.length === 1 ? 'posición' : 'posiciones'}`, 'success');
+          return { recargar: true };
+        } });
+      }
+      if (r._libre_pos && can('venta_manual')) {
+        acciones.push({ label: 'Volver a bloquear posiciones', icon: 'lock', run: async row => {
+          if (!await confirmar(`¿Volver a bloquear las posiciones liberadas del pedido ${row.doc_ventas}?\n\nSalen del Plan de Carga y vuelven a mostrarse como bloqueadas.`, { aceptar: 'Volver a bloquear', tono: 'peligro', icono: 'lock' })) return null;
+          if (!(await volverABloquearPos(row.doc_ventas))) return null;
+          clearRawCache();
+          showAlert('Posiciones vueltas a bloquear', 'success');
+          return { recargar: true };
+        } });
+      }
+      // (2-nov-2026, Jordan) Posiciones que SAP tiene y el SQVI no trae: se agregan a mano al pedido.
+      if (!k && !r._nv_manual && !esCamionExtraNV(r.doc_ventas, PV_CTX_VENTAS && PV_CTX_VENTAS.manualMap) && can('venta_manual')) {
+        acciones.push({ label: r._pos_man ? 'Editar posiciones manuales' : 'Agregar posición manual', icon: 'playlist_add', run: async (row, ctx2) => {
+          const cx = ctx2 || PV_CTX_VENTAS || {};
+          const man = (cx.manualMap && cx.manualMap.get(String(row.doc_ventas ?? '').trim())) || null;
+          const d0 = (row._detalle || [])[0] || {};
+          const cab = (man && man.cab) || { doc_ventas: String(row.doc_ventas ?? '').trim(), ofvta: String(row.ofvta ?? '').trim(),
+            ruta: String(d0.ruta ?? row.ruta ?? '').trim(), creado_el: null, fe_entrega: null,
+            id_cliente: String(row._id_cliente ?? '').trim(), nombre_cliente: row._cliente || null,
+            id_vendedor: String(row.deudor ?? '').trim() || null, nombre_vendedor: row._vendedor || null,
+            cond_expedicion: (row._cond && row._cond.raw) || null, observacion: null };
+          const ex = { cab, lineas: (man && man.lineas) || [] };
+          return (await showVentaManualModal(cx, ex, { posExtra: true })) ? { recargar: true } : null;
+        } });
+      }
       if (!k && r._nv_manual && can('venta_manual')) {
         acciones.push({ label: 'Editar pedido manual', icon: 'edit_note', run: async (row, ctx2) => ((await showVentaManualModal(ctx2 || PV_CTX_VENTAS || {}, row._nv_manual)) ? { recargar: true } : null) });
         acciones.push({ label: 'Eliminar pedido manual', icon: 'delete', run: async row => {
@@ -4971,6 +5055,7 @@ const V2 = {
         sub: `${r._cliente || (r._id_cliente ? 'Cliente ID ' + r._id_cliente : 'Cliente sin identificar')} → ${nombreCentro(r.ofvta) || r.ofvta}`,
         aviso,
         kv: [
+          (r._bloq_pos || []).length ? ['Posiciones bloqueadas (MR)', r._bloq_pos.map(p => `pos ${p.pos} · ${p.material} ${p.nombre} · ${fmtNum(p.pendiente, 0)} un · MR ${p.mr}`).join(' — ')] : null,
           vm ? ['Origen', `Pedido manual · ${vm.created_by || ''}${vm.created_at ? ' · ' + horaChile(vm.created_at) : ''}${vm.updated_by ? ' · editado por ' + vm.updated_by : ''}`] : null,
           vm && vm.observacion ? ['Observación', vm.observacion] : null,
           extrasNV.length ? ['Camiones adicionales', extrasNV.map(e => `${e.doc} (${fmtNum((e.lineas || []).reduce((s, l) => s + (Number(l.cantidad) || 0), 0), 0)} u.)`).join(' · ')] : null,
@@ -6914,7 +6999,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611021512');
+    const m = await import('./ind-plan-carga.js?v=202611021533');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -7621,7 +7706,8 @@ async function renderPlanCarga(stage, opts = {}) {
     // subtotal del SQVI (doc_compr o material vacios).
     .filter(r => String(r.doc_compr ?? '').trim() !== '' && String(r.material ?? '').trim() !== '')
     .filter(r => { const _e = estadosRetiro[String(r.doc_compr ?? '').trim()] || {}; return esEstadoCoordinado(_e.estado) && _e.tipo_local_rm !== 'LOCAL' && (_e.estado === 'coordinado_santiago' || _e.tipo_local_rm === 'RM' || String(_e.entrega_entrante ?? '').trim() !== ''); }) : [];
-  const ventas = esCD1003 ? ventasRaw.filter(r => !String(r.mr ?? '').trim()) : [];
+  // (2-nov-2026, Jordan) El MR es un bloqueo: la posición entra al plan sólo si se liberó a mano.
+  const ventas = esCD1003 ? ventasRaw.filter(r => !String(r.mr ?? '').trim() || r.mr_liberado) : [];
   // Regla Jordan 21-sep-2026: todo retiro LOCAL (tipo_local_rm='LOCAL') queda excluido del Plan de Carga;
   // los retiros de Concepción (1081) no cuentan en la tabla (los retiros son sólo del plan 1003).
   // (AJUSTE 21-sep-2026) Base de retiros para los camiones DIRECTOS Fábrica-Sucursal /
@@ -9930,7 +10016,7 @@ function reponerCoordPorPosicion(ventasRaw, coordVentas, bkVen, conDt, cargadasE
   // (2-nov-2026, Jordan) Posición RECHAZADA en el SQVI vivo (motivo de rechazo): no se repone nunca desde
   // el respaldo, no se puede despachar (caso NV 1058465 pos 20, respaldada antes de que SAP le pusiera MR 79).
   const mrPos = new Set();
-  ventasRaw.forEach(r => { if (!r._respaldo && tx(r.mr)) mrPos.add(kPos(r)); });
+  ventasRaw.forEach(r => { if (!r._respaldo && tx(r.mr) && !r.mr_liberado) mrPos.add(kPos(r)); });
   const quitar = new Set(), agregar = [];
   bkPorDoc.forEach((filas, doc) => {
     if (!coordVentas.get(doc)) return;                    // sin coordinar → nada que reponer
