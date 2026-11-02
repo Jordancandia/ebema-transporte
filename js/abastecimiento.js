@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611021234';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611021234';
-import { getDatabase } from './data.js?v=202611021234';
+import { supabase } from './supabase-client.js?v=202611021253';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611021253';
+import { getDatabase } from './data.js?v=202611021253';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611021234';
-import { confirmar, pedirDato } from './confirmar.js?v=202611021234';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611021253';
+import { confirmar, pedirDato } from './confirmar.js?v=202611021253';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -460,10 +460,50 @@ function wirePatentes(panel, st, tr, draw) {
     }
   });
 }
+// (2-nov-2026, Jordan) COORDINACIÓN POR REPARTO. abast_venta_coordinacion tiene PK
+// (doc_ventas, reparto):
+//   · reparto = ''           → coordinación del PEDIDO completo (cubre todos sus repartos);
+//   · reparto = 'DD.MM.YYYY' → coordinación de ESE reparto (su fecha de entrega SAP).
+// Si un pedido tiene alguna fila con reparto, pasa a MODO POR REPARTO: cada reparto necesita la
+// suya para entrar al Plan de Carga (no hereda la del pedido).
+// El Map lleva dos tipos de clave: «doc@reparto» para cada fila y «doc» a secas para la
+// coordinación principal del pedido (la del pedido completo o, si no hay, la del reparto más próximo).
+const claveCoordV = (doc, rep) => { const d = String(doc ?? '').trim(), r = String(rep ?? '').trim();
+  return r ? `${d}@${r}` : d; };
 async function loadCoordinacionesVenta() {
   const { data, error } = await supabase.from('abast_venta_coordinacion').select('*');
   if (error) { console.error(error); return new Map(); }
-  return new Map((data || []).filter(r => r.estado === 'coordinado').map(r => [String(r.doc_ventas ?? '').trim(), r]));
+  const filas = (data || []).filter(r => r.estado === 'coordinado');
+  const porDoc = new Map();
+  filas.forEach(r => { const d = String(r.doc_ventas ?? '').trim(); (porDoc.get(d) || porDoc.set(d, []).get(d)).push(r); });
+  const m = new Map();
+  porDoc.forEach((rs, d) => {
+    const conRep = rs.some(r => String(r.reparto ?? '').trim());
+    rs.forEach(r => { r._porReparto = conRep; m.set(claveCoordV(d, r.reparto), r); });
+    const base = rs.find(r => !String(r.reparto ?? '').trim())
+      || rs.slice().sort((a, b) => (parseDateSAP(a.reparto) || new Date(9999, 0)) - (parseDateSAP(b.reparto) || new Date(9999, 0)))[0];
+    if (base) m.set(d, base);
+  });
+  return m;
+}
+// «doc@reparto» → { doc, rep } (las claves de Seguimiento de Carga de las coordinaciones directas).
+const partirClaveCoordV = k => { const t = String(k ?? '').trim(), i = t.indexOf('@');
+  return i < 0 ? { doc: t, rep: '' } : { doc: t.slice(0, i), rep: t.slice(i + 1) }; };
+// Coordinación que aplica a un reparto. En modo por reparto, un reparto sin coordinación propia
+// NO hereda la del pedido: devuelve null y por lo tanto no entra al Plan de Carga.
+function coordRepV(coordVentas, doc, fechaRep) {
+  if (!coordVentas) return null;
+  const d = String(doc ?? '').trim(), f = String(fechaRep ?? '').trim();
+  if (f) { const ex = coordVentas.get(claveCoordV(d, f)); if (ex) return ex; }
+  const base = coordVentas.get(d) || null;
+  if (!base) return null;
+  return (base._porReparto && f) ? null : base;
+}
+// Repartos coordinados de un pedido: Map «DD.MM.YYYY» → coordinación (sin la del pedido completo).
+function coordRepsV(coordVentas, doc) {
+  const d = String(doc ?? '').trim() + '@', out = new Map();
+  (coordVentas || new Map()).forEach((co, k) => { if (String(k).startsWith(d)) out.set(String(k).slice(d.length), co); });
+  return out;
 }
 // Maestro de clientes (v_trc_maestro_clientes): nombre desde SAP (Solic. → nombre) +
 // dirección/teléfono guardados al coordinar. Map id_cliente → fila.
@@ -476,9 +516,11 @@ async function loadMaestroClientes() {
 async function guardarCoordinacionVenta(p, nuevo) {
   const email = await getUserEmail();
   const now = new Date().toISOString();
-  const payload = { ...p, estado: 'coordinado', updated_at: now, updated_by: email };
+  // (2-nov-2026, Jordan) La clave es (doc_ventas, reparto): reparto '' = coordinación del pedido.
+  const payload = { reparto: '', ...p, estado: 'coordinado', updated_at: now, updated_by: email };
+  payload.reparto = String(payload.reparto ?? '').trim();
   if (nuevo) { payload.created_at = now; payload.created_by = email; }
-  const { error } = await supabase.from('abast_venta_coordinacion').upsert(payload, { onConflict: 'doc_ventas' });
+  const { error } = await supabase.from('abast_venta_coordinacion').upsert(payload, { onConflict: 'doc_ventas,reparto' });
   if (error) { showAlert('Error al coordinar: ' + error.message, 'error'); return false; }
   // Dirección / teléfono / comuna quedan en el maestro de clientes para la próxima coordinación.
   if (p.id_cliente) {
@@ -550,14 +592,16 @@ async function registrarSeguimientoCoord(regs) {
 const lineaSegCoord = (o) => ({ tipo_carga: o.tipo_carga, documento: String(o.documento ?? '').trim(), n_entrega: String(o.n_entrega ?? ''), material: String(o.material ?? ''),
   nombre: o.nombre || '', cantidad: r4s(o.cantidad), ton: r4s(o.ton), ton_bruta: null, pedido_venta: String(o.pedido_venta ?? ''), ruta: o.ruta || '', comuna: o.comuna || '',
   proveedor: o.proveedor || '', cliente: o.cliente || '' });
-async function anularCoordinacionVenta(doc) {
-  const { error } = await supabase.from('abast_venta_coordinacion').delete().eq('doc_ventas', String(doc ?? '').trim());
+// (2-nov-2026, Jordan) reparto = '' anula la coordinación del pedido; con fecha, sólo la de ese reparto.
+async function anularCoordinacionVenta(doc, reparto) {
+  const d = String(doc ?? '').trim(), rep = String(reparto ?? '').trim();
+  const { error } = await supabase.from('abast_venta_coordinacion').delete().eq('doc_ventas', d).eq('reparto', rep);
   if (error) { showAlert('Error al anular la coordinación: ' + error.message, 'error'); return false; }
   // (18-oct-2026) El pedido puede ser un PV del Stock 4000 coordinado CD-Cliente (desde Seguimiento de Carga).
-  try { await supabase.from('abast_pv4000_coordinacion').delete().eq('documento', String(doc ?? '').trim()); } catch (_) { /* opcional */ }
-  await quitarSeguimientoCoord([doc]);
-  await quitarSeguimientoDirectoDocs([doc]);
-  VENTAS_PROGRAMADAS.delete(String(doc ?? '').trim());
+  if (!rep) try { await supabase.from('abast_pv4000_coordinacion').delete().eq('documento', d); } catch (_) { /* opcional */ }
+  await quitarSeguimientoCoord([claveCoordV(d, rep)]);
+  if (!rep) await quitarSeguimientoDirectoDocs([d]);
+  VENTAS_PROGRAMADAS.delete(d);
   return true;
 }
 async function loadTransportistasCoord() {
@@ -1314,6 +1358,58 @@ async function chequearChoquePatente(row, st, ctx, docsSel = []) {
   if ((mismoDia.length || docsSel.length) && tonTot > CAP_CAMION_DIRECTO + 1e-9) av.push(`Con los pedidos ${[...docsSel, ...mismoDia.map(c => c.doc_ventas)].join(', ')} el camión suma ${fmtNum(tonTot, 1)} t (supera ${CAP_CAMION_DIRECTO} t).`);
   return av;
 }
+// (2-nov-2026, Jordan) Fila «recortada» a un reparto: el diálogo de coordinación trabaja sólo con
+// las unidades, la fecha y la coordinación de ESE reparto, así el tope de unidades y la fecha por
+// defecto son los suyos. Sin reparto devuelve la fila tal cual (coordinación del pedido completo).
+function rowDeReparto(row, rep) {
+  const f = String(rep ?? '').trim();
+  if (!f) return row;
+  const det = (row._detalle || []).map(d => {
+    const x = (d._reps || []).find(y => String(y.fecha ?? '').trim() === f);
+    return x ? { ...d, pendiente: x.pendiente, ton: x.ton, conf: x.conf, fecha: x.fecha, _reps: [x] } : null;
+  }).filter(Boolean);
+  const ton = det.reduce((a, d) => a + (Number(d.ton) || 0), 0);
+  return { ...row, _detalle: det, _ton_num: ton, _ton_plan: ton, fe_entrega: f, _fecha_plan: f,
+           _reparto: f, _coord: (row._coord_reps && row._coord_reps.get(f)) || null };
+}
+// Selector de reparto: con varios repartos pendientes se elige cuál se coordina (o se anula).
+// Devuelve la fecha del reparto, '' para el pedido completo, o null si se cancela.
+function pickRepartoNV(row, { soloCoordinados = false } = {}) {
+  const reps = (row._reps_pend || []).filter(x => !soloCoordinados || x.co);
+  const pedidoEntero = !!row._coord && !row._por_reparto;
+  const opciones = [];
+  if (pedidoEntero || (!soloCoordinados && !row._por_reparto))
+    opciones.push({ rep: '', lbl: 'Pedido completo', sub: `todos los repartos juntos · ${fmtNum(row._ton_num || 0, 2)} t`, co: row._coord && !row._por_reparto ? row._coord : null });
+  reps.forEach(x => opciones.push({ rep: x.fecha, lbl: `Reparto ${x.fecha}`,
+    sub: `${fmtNum(x.pendiente, 0)} un · ${fmtNum(x.ton, 2)} t · ${x.lineas} ${x.lineas === 1 ? 'línea' : 'líneas'}`, co: x.co }));
+  if (!opciones.length) return Promise.resolve(null);
+  if (opciones.length === 1) return Promise.resolve(opciones[0].rep);
+  return new Promise(resolve => {
+    const wrap = document.createElement('div');
+    wrap.innerHTML = '<div class="sv-dr-bg" style="z-index:130"></div><aside class="sv-dr" style="z-index:131;width:min(560px,100vw)" role="dialog" aria-label="Elegir reparto"></aside>';
+    document.body.appendChild(wrap);
+    const panel = wrap.querySelector('aside');
+    const fin = v => { wrap.remove(); document.removeEventListener('keydown', onKey, true); resolve(v); };
+    const onKey = e => { if (e.key === 'Escape') { e.stopPropagation(); fin(null); } };
+    document.addEventListener('keydown', onKey, true);
+    wrap.querySelector('.sv-dr-bg').addEventListener('click', () => fin(null));
+    panel.innerHTML = `
+      <div class="sv-dr-h"><div style="flex:1;min-width:0">
+        <div class="sv-dr-k">${soloCoordinados ? 'Anular' : 'Coordinar'} · NV ${escapeHtml(String(row.doc_ventas ?? ''))}</div>
+        <div class="sv-dr-t">${escapeHtml(row._cliente || ('Cliente ' + (row._id_cliente || '')))}</div>
+        <div class="sv-dr-s">SAP partió este pedido en varios repartos con fechas distintas. Elige cuál ${soloCoordinados ? 'anular' : 'coordinar'}: cada reparto lleva su fecha de entrega, su N° de entrega y su transporte.</div></div>
+        <button class="sv-iconbtn" data-cx title="Cerrar (Esc)"><span class="material-symbols-outlined">close</span></button></div>
+      <div class="sv-dr-b" style="gap:8px">
+        ${opciones.map((o, i) => `<button class="sv-opt" data-i="${i}" style="padding:10px 12px;align-items:flex-start">
+          <span class="material-symbols-outlined" style="color:#5c5f61">${o.rep ? 'local_shipping' : 'inventory_2'}</span>
+          <span style="flex:1;min-width:0;text-align:left"><b>${escapeHtml(o.lbl)}</b>
+            <div class="sv-sub" style="margin:2px 0 0">${escapeHtml(o.sub)}</div></span>
+          <span class="sv-sub" style="margin:0">${o.co ? 'Coordinado ' + escapeHtml(fmtFechaISO(o.co.fecha_entrega) || '') : 'Sin coordinar'}</span></button>`).join('')}
+      </div>`;
+    panel.querySelector('[data-cx]').addEventListener('click', () => fin(null));
+    panel.querySelectorAll('[data-i]').forEach(b => b.addEventListener('click', () => fin(opciones[Number(b.dataset.i)].rep)));
+  });
+}
 function showCoordVentaModal(row, ctx) {
   return new Promise(async resolve => {
     const c = row._coord || {};
@@ -1350,6 +1446,8 @@ function showCoordVentaModal(row, ctx) {
     // al mismo camión. Comparten fecha y transporte (grupo_camion); cada pedido lleva su N° de entrega
     // y sus datos de cliente (dirección, comuna, teléfono).
     const MAIN = String(row.doc_ventas ?? '').trim();
+    // (2-nov-2026, Jordan) Reparto que se está coordinando ('' = pedido completo).
+    const REP = String(row._reparto ?? '').trim();
     const grupo0 = c.grupo_camion || null;
     const allV = [...(((ctx && ctx._rowsByDoc) || new Map()).values())].filter(x => String(x.doc_ventas ?? '').trim() !== MAIN);
     const rowOfV = d => allV.find(x => String(x.doc_ventas ?? '').trim() === d) || {};
@@ -1563,7 +1661,7 @@ function showCoordVentaModal(row, ctx) {
           hora_presentacion: cli ? st.horaPres.trim() : null,
         };
         const ok = await guardarCoordinacionVenta({
-          doc_ventas: MAIN, n_entrega: entregaHdr, id_cliente: row._id_cliente || null, nombre_cliente: row._cliente || null,
+          doc_ventas: MAIN, reparto: REP, n_entrega: entregaHdr, id_cliente: row._id_cliente || null, nombre_cliente: row._cliente || null,
           comuna: st.comuna.trim() || null, direccion: st.direccion.trim(), telefono: st.telefono.trim(), ...baseCoord,
           ce_alternativo: st.ceAlt && st.ceAlt !== st.ceOrig ? st.ceAlt : null, lineas: lc.lineas,
           ...((entregasV || (c.entregas && Object.keys(c.entregas).length)) ? { entregas: entregasV } : {}),
@@ -1582,7 +1680,7 @@ function showCoordVentaModal(row, ctx) {
           const quedan = new Set(extrasG.map(([d]) => d));
           const salen = allV.filter(x => x._coord && x._coord.grupo_camion === grupo0 && !quedan.has(String(x.doc_ventas).trim())).map(x => String(x.doc_ventas).trim());
           if (salen.length) {
-            const { error: eS } = await supabase.from('abast_venta_coordinacion').update({ grupo_camion: null, updated_at: new Date().toISOString(), updated_by: await getUserEmail() }).in('doc_ventas', salen);
+            const { error: eS } = await supabase.from('abast_venta_coordinacion').update({ grupo_camion: null, updated_at: new Date().toISOString(), updated_by: await getUserEmail() }).in('doc_ventas', salen).eq('reparto', '');
             if (eS) showAlert('Aviso: no se pudo separar ' + salen.join(', ') + ' del camión: ' + eS.message, 'error');
           }
         }
@@ -1590,12 +1688,12 @@ function showCoordVentaModal(row, ctx) {
           chofer_telefono: st.choferTel.trim(), patente_camion: fmtPatente(st.patCamion), patente_carro: fmtPatente(st.patCarro), hora_presentacion: st.horaPres.trim() };
         const coAj = x => (x === row ? { lineas: lc.lineas } : x._coord);
         const coMain = { n_entrega: entregaHdr, entregas: entregasV };
-        const regSeg = (x, docX, entregaX) => ({ doc: docX, tipo: 'CD-CLIENTE', ce: x === row ? (st.ceAlt || st.ceOrig) : ceEfV(x), fechaCarga: st.fecha, origen: '1003 CD Quilicura',
+        const regSeg = (x, docX, entregaX) => ({ doc: x === row ? claveCoordV(docX, REP) : docX, tipo: 'CD-CLIENTE', ce: x === row ? (st.ceAlt || st.ceOrig) : ceEfV(x), fechaCarga: st.fecha, origen: '1003 CD Quilicura',
           destino: `Cliente: ${x._cliente || ('ID ' + (x._id_cliente || ''))}` + (grupo ? ` · camión compartido (${extrasG.length + 1} pedidos)` : ''), transp: transpSeg,
           lineas: (x._detalle || []).map(d => { const q = x === row ? cantLineasV(coAj(x), d.material, d.pendiente) : cantAjustada(coAj(x), d.material, d.pendiente); return q > 0 ? lineaSegCoord({ tipo_carga: 'Pedidos de venta CD', documento: docX, n_entrega: x === row ? entregaLineaV(coMain, d.material) : entregaX, material: d.material, nombre: d.nombre,
             cantidad: q, ton: d.pendiente > 0 ? d.ton * q / d.pendiente : 0, pedido_venta: docX, ruta: d.ruta, comuna: d.comuna, cliente: x._cliente || '' }) : null; }).filter(Boolean) });
         if (cli) await registrarSeguimientoCoord([regSeg(row, MAIN, entregaHdr), ...extrasG.map(([d, ex]) => regSeg(rowOfV(d), d, ex.entrega.trim()))]);
-        else await quitarSeguimientoCoord([MAIN]);
+        else await quitarSeguimientoCoord([claveCoordV(MAIN, REP)]);
         const pendV = cli ? pendTranspRetiro({ chofer_nombre: st.choferNombre, chofer_rut: st.choferRut, chofer_telefono: st.choferTel, patente_camion: st.patCamion }) : [];
         showAlert((extrasG.length ? `${extrasG.length + 1} pedidos coordinados en el mismo camión` : `Pedido ${row.doc_ventas} coordinado`) + ` para el ${fmtFechaISO(st.fecha)}`
           + (pendV.length ? ` · pendiente: ${pendV.join(', ')}` : ''), 'success');
@@ -4695,6 +4793,27 @@ const V2 = {
         r._lineas_aj = !!(r._coord && r._coord.lineas && typeof r._coord.lineas === 'object');
         // (2-nov-2026, Jordan) El pedido tiene posiciones partidas en varios repartos SAP.
         r._con_repartos = (r._detalle || []).some(d => (d._reps || []).length > 1);
+        // (2-nov-2026, Jordan) Coordinación POR REPARTO: cada reparto puede tener la suya. _reps_pend
+        // resume los repartos pendientes del pedido (fecha, unidades, ton y su coordinación).
+        r._coord_reps = coordRepsV(ctx.coordMap, doc);
+        r._por_reparto = !!(r._coord && r._coord._porReparto);
+        const _repAgg = new Map();
+        (r._detalle || []).forEach(d => (d._reps || []).forEach(x => {
+          const f = String(x.fecha ?? '').trim();
+          const a = _repAgg.get(f) || { fecha: f, pendiente: 0, ton: 0, lineas: 0, co: null };
+          a.pendiente += Number(x.pendiente) || 0; a.ton += Number(x.ton) || 0; a.lineas++;
+          _repAgg.set(f, a);
+        }));
+        _repAgg.forEach(a => { a.co = r._coord_reps.get(a.fecha) || null; });
+        (r._detalle || []).forEach(d => (d._reps || []).forEach(x => {
+          x._coord = r._coord_reps.get(String(x.fecha ?? '').trim()) || null; }));
+        r._reps_pend = [..._repAgg.values()].sort((a, b) =>
+          (parseDateSAP(a.fecha) || new Date(9999, 0)) - (parseDateSAP(b.fecha) || new Date(9999, 0)));
+        r._reps_coord = r._reps_pend.filter(x => x.co).length;
+        // El flujo por reparto se activa sólo si SAP partió una posición en varios repartos (o si el
+        // pedido ya se coordinó por reparto). Un pedido con fechas distintas por material sigue
+        // coordinándose completo, como hasta ahora.
+        r._multi_rep = !!((r._con_repartos || r._por_reparto) && r._reps_pend.length > 1);
         r._ton_plan = (r._detalle || []).reduce((s, d) => s + (d.pendiente > 0 ? (d.ton || 0) * cantLineasV(r._coord, d.material, d.pendiente, d.fecha) / d.pendiente : 0), 0);
         r._dia_obj = ctx.diaObj(r._ce_plan);
         const fp = parseDateSAP(r._fecha_plan);
@@ -4740,9 +4859,11 @@ const V2 = {
       { label: 'Líneas', al: 'r', html: r => escV2((r._detalle || []).length) },
       { label: 'Ton', al: 'r', html: r => `<span class="sv-ton">${tonHtml(r._ton_num)}</span>` + (r._lineas_aj ? `<div class="sv-sub" title="Unidades editadas al coordinar">a cargar ${escV2(fmtNum(r._ton_plan, 2))} t</div>` : '') + (r._n_pedidos_cliente > 1 ? `<div class="sv-sub">cliente ${escV2(fmtNum(r._ton_cliente, 1))} t</div>` : '') },
       { label: 'Fecha entrega', html: r => mono(r._fecha_plan, r._coord ? 'confirmada' : 'SAP · por confirmar') },
-      { label: 'Coordinación', html: r => r._cargada ? pill('COORDINADO', 'info') + `<div class="sv-sub" title="Bloqueado: va en un camión programado">🔒 Camión ${escV2(r._cargada.patente || r._cargada.transportista || 'programado')} · carga ${escV2(fmtFechaISO(String(r._cargada.fecha_carga).slice(0, 10)))}</div>`
-        : r._coord ? pill('Pedido Coordinado', 'ok') + (entregasCoordV(r._coord).length ? `<div class="sv-sub">${entregasCoordV(r._coord).length > 1 ? 'Entregas' : 'Entrega'} ${escV2(entregasCoordV(r._coord).join(', '))}</div>` : '')
-          + (r._coord.tipo_entrega === 'CD-CLIENTE' && pendTranspRetiro(r._coord).length ? `<div style="margin-top:4px" title="Pendiente: ${escV2(pendTranspRetiro(r._coord).join(', '))}">${pill('Chofer/patente pendiente', 'warn')}</div>` : '') : pill('Sin coordinar', 'mute') },
+      { label: 'Coordinación', html: r => (r._cargada ? pill('COORDINADO', 'info') + `<div class="sv-sub" title="Bloqueado: va en un camión programado">🔒 Camión ${escV2(r._cargada.patente || r._cargada.transportista || 'programado')} · carga ${escV2(fmtFechaISO(String(r._cargada.fecha_carga).slice(0, 10)))}</div>`
+        : r._coord ? pill(r._por_reparto ? 'Reparto Coordinado' : 'Pedido Coordinado', 'ok') + (entregasCoordV(r._coord).length ? `<div class="sv-sub">${entregasCoordV(r._coord).length > 1 ? 'Entregas' : 'Entrega'} ${escV2(entregasCoordV(r._coord).join(', '))}</div>` : '')
+          + (r._coord.tipo_entrega === 'CD-CLIENTE' && pendTranspRetiro(r._coord).length ? `<div style="margin-top:4px" title="Pendiente: ${escV2(pendTranspRetiro(r._coord).join(', '))}">${pill('Chofer/patente pendiente', 'warn')}</div>` : '') : pill('Sin coordinar', 'mute'))
+        // (2-nov-2026, Jordan) Pedido con repartos: cuántos están coordinados (cada uno es un despacho).
+        + (r._multi_rep ? `<div class="sv-sub" title="${escV2((r._reps_pend || []).map(x => `${x.fecha}: ${x.co ? 'coordinado para ' + (fmtFechaISO(x.co.fecha_entrega) || '') : 'sin coordinar'}`).join(' · '))}">${escV2(String(r._reps_coord || 0))} de ${escV2(String((r._reps_pend || []).length))} repartos coordinados</div>` : '') },
       { label: 'Alerta', html: r => pill(r._al.k, r._al.tone) + (r._estado ? ` ${pill('Parcial', 'warn')}` : '') },
     ],
     // Excluir / Reactivar en la fila principal (no en el detalle) + estado en el Plan de Carga.
@@ -4773,11 +4894,27 @@ const V2 = {
       // (21-oct-2026) Un pedido manual también lo coordina quien puede agregarlos (Planner Distribución).
       const puedeCoordV = can('coordinar_venta') || (!!r._nv_manual && can('venta_manual'));
       if (!k && puedeCoordV) {
-        acciones.push({ label: c ? 'Editar coordinación' : 'Coordinar despacho', icon: 'event_available', primary: true,
-          run: async (row, ctx) => ((await showCoordVentaModal(row, ctx)) ? { recargar: true } : null) });
-        if (c) acciones.push({ label: 'Anular coordinación', icon: 'event_busy', run: async row => {
-          if (!await confirmar(`¿Anular la coordinación del pedido ${row.doc_ventas}?\n\nVuelve a «Sin coordinar» y sale del Plan de Carga.`)) return null;
-          return (await anularCoordinacionVenta(row.doc_ventas)) ? (showAlert('Coordinación anulada', 'success'), { recargar: true }) : null;
+        // (2-nov-2026, Jordan) Con varios repartos pendientes se coordina UN reparto a la vez: el
+        // selector pregunta cuál y el diálogo abre con las unidades y la fecha de ese reparto.
+        acciones.push({ label: r._multi_rep ? 'Coordinar reparto' : (c ? 'Editar coordinación' : 'Coordinar despacho'),
+          icon: 'event_available', primary: true,
+          run: async (row, ctx2) => {
+            let rp = '';
+            if (row._multi_rep) {
+              rp = await pickRepartoNV(row, {});
+              if (rp === null) return null;
+            }
+            return (await showCoordVentaModal(rowDeReparto(row, rp), ctx2)) ? { recargar: true } : null;
+          } });
+        if (c || (r._reps_coord || 0) > 0) acciones.push({ label: 'Anular coordinación', icon: 'event_busy', run: async row => {
+          let rp = '';
+          if (row._multi_rep) {
+            rp = await pickRepartoNV(row, { soloCoordinados: true });
+            if (rp === null) return null;
+          }
+          const q = rp ? `el reparto ${rp} del pedido ${row.doc_ventas}` : `el pedido ${row.doc_ventas}`;
+          if (!await confirmar(`¿Anular la coordinación de ${q}?\n\nVuelve a «Sin coordinar» y sale del Plan de Carga.`)) return null;
+          return (await anularCoordinacionVenta(row.doc_ventas, rp)) ? (showAlert('Coordinación anulada', 'success'), { recargar: true }) : null;
         } });
       }
       // (27-oct-2026, Jordan) CD-Cliente con transporte: el «camión programado» es su propio camión directo,
@@ -5442,7 +5579,21 @@ async function editarTranspDirectoSeg(c, tr, fecha, email, now, extraCli = {}) {
     if (/retiro/i.test(tipo)) q = supabase.from('abast_retiro_estado').update({ ...tr, fecha_retiro: fecha, updated_by: email, updated_at: now }).eq('doc_compr', doc);
     else if (esTrasladoDoc(doc)) q = supabase.from('abast_traslado_coordinacion').update({ ...tr, ...extraCli, fecha_entrega: fecha, updated_by: email, updated_at: now }).eq('doc_compr', doc);
     else {
-      q = supabase.from('abast_venta_coordinacion').update({ ...tr, ...extraCli, fecha_entrega: fecha, updated_by: email, updated_at: now }).eq('doc_ventas', doc);
+      // (2-nov-2026, Jordan) Con coordinación por reparto se actualiza la del reparto que va en ESTE
+      // camión, identificada por el N° de entrega de sus líneas (y siempre la del pedido completo).
+      const ents = new Set((c.lineas || []).filter(x => tx(x.documento) === doc).map(x => tx(x.n_entrega)).filter(Boolean));
+      let reps = [''];
+      try {
+        const { data: cos } = await supabase.from('abast_venta_coordinacion').select('reparto,n_entrega,entregas').eq('doc_ventas', doc);
+        const m = (cos || []).filter(z => {
+          if (!tx(z.reparto)) return true;
+          if (ents.has(tx(z.n_entrega))) return true;
+          const ev = z.entregas && typeof z.entregas === 'object' && !Array.isArray(z.entregas) ? Object.values(z.entregas).map(v => tx(v)) : [];
+          return ev.some(v => ents.has(v));
+        });
+        if (m.length) reps = [...new Set(m.map(z => tx(z.reparto)))];
+      } catch (_) { /* sin repartos: la coordinación del pedido */ }
+      q = supabase.from('abast_venta_coordinacion').update({ ...tr, ...extraCli, fecha_entrega: fecha, updated_by: email, updated_at: now }).eq('doc_ventas', doc).in('reparto', reps);
       await supabase.from('abast_pv4000_coordinacion').update({ ...tr, ...extraCli, fecha_entrega: fecha, updated_by: email, updated_at: now }).eq('documento', doc);
     }
     const { error } = await q;
@@ -5477,11 +5628,14 @@ async function editarTransporteSeguimiento(r, c) {
   const presCab = esCons ? { bloque_presentacion: t.bloque_presentacion ?? null, hora_presentacion: t.hora_presentacion || null } : esCli ? { bloque_presentacion: null, hora_presentacion: t.hora_presentacion || null } : {};
   let error = null;
   if (c.coord) {
-    const doc = String(c.clave).slice(6);
+    // (2-nov-2026, Jordan) La clave de una coordinación por reparto es «COORD|doc@DD.MM.YYYY».
+    const { doc, rep: repCl } = partirClaveCoordV(String(c.clave).slice(6));
     if (c.tipo === 'CD-Cliente') {
       const tabla = esTrasladoDoc(doc) ? 'abast_traslado_coordinacion' : 'abast_venta_coordinacion';
       const col = esTrasladoDoc(doc) ? 'doc_compr' : 'doc_ventas';
-      ({ error } = await supabase.from(tabla).update({ ...tr, ...extraCli, fecha_entrega: t.fecha_carga, updated_by: email, updated_at: now }).eq(col, doc));
+      let qU = supabase.from(tabla).update({ ...tr, ...extraCli, fecha_entrega: t.fecha_carga, updated_by: email, updated_at: now }).eq(col, doc);
+      if (!esTrasladoDoc(doc)) qU = qU.eq('reparto', repCl);
+      ({ error } = await qU);
       // (18-oct-2026) PV del Stock 4000 coordinado CD-Cliente: mismo cambio en su tabla.
       if (!error && !esTrasladoDoc(doc)) await supabase.from('abast_pv4000_coordinacion').update({ ...tr, ...extraCli, fecha_entrega: t.fecha_carga, updated_by: email, updated_at: now }).eq('documento', doc);
     } else {
@@ -6740,7 +6894,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611021234');
+    const m = await import('./ind-plan-carga.js?v=202611021253');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -7278,7 +7432,7 @@ async function renderPlanCarga(stage, opts = {}) {
       // (11-oct-2026, Jordan) NV: se descuenta por la ENTREGA coordinada (una NV re-coordinada con entrega
       // nueva porque la anterior no viajó vuelve al plan); sin entrega coordinada, por documento+material.
       // (28-oct-2026) Con entrega por posición: se descuenta cada línea por SU entrega.
-      const entCoord = (d, m, f) => { const co = coordVentas.get(d); return co ? entregaLineaV(co, m, f) : ''; };
+      const entCoord = (d, m, f) => { const co = coordRepV(coordVentas, d, f) || coordVentas.get(d); return co ? entregaLineaV(co, m, f) : ''; };
       // (2-nov-2026, Jordan) Posición con REPARTOS: el reparto que todavía tiene pendiente vivo no se
       // descuenta por la entrega de otro reparto del mismo material que ya viajó (es el saldo por salir).
       const nRepVivo = new Map();
@@ -7623,7 +7777,9 @@ async function renderPlanCarga(stage, opts = {}) {
     const _ventasDedupMap = new Map();
     // (18-oct-2026, Jordan) La NV computa en el centro alternativo asignado al coordinar (si lo tiene).
     ventas
-      .filter(r => (ceAltDe(coordVentas.get(String(r.doc_ventas ?? '').trim())) || String(r.ofvta ?? '').trim()) === ce)
+      .filter(r => { const d = String(r.doc_ventas ?? '').trim();
+        const coR = coordRepV(coordVentas, d, r.fe_entrega) || coordVentas.get(d);
+        return (ceAltDe(coR) || String(r.ofvta ?? '').trim()) === ce; })
       .filter(r => String(r.ruta ?? '').trim() !== '')
       .filter(r => normTxt(r.ruta).indexOf('RETIRA') === -1)
       .filter(r => !estaExcluido(exclusionesPlan, 'venta_1003', r.doc_ventas, null))
@@ -7636,8 +7792,18 @@ async function renderPlanCarga(stage, opts = {}) {
         const pN = parseNum(r.ctd_confirmada) - parseNum(r.cantidad_entrg) > 0, pO = parseNum(ex.ctd_confirmada) - parseNum(ex.cantidad_entrg) > 0;
         if (pN && !pO) _ventasDedupMap.set(k, r);
       });
-    const ventasPorDoc = {};
-    Array.from(_ventasDedupMap.values()).forEach(r => { const d = String(r.doc_ventas ?? '').trim(); (ventasPorDoc[d] = ventasPorDoc[d] || []).push(r); });
+    // (2-nov-2026, Jordan) Las líneas se agrupan por la COORDINACIÓN que les aplica, no por pedido:
+    // en modo por reparto cada reparto coordinado es su propio despacho (fecha, entrega y transporte
+    // propios) y un reparto sin coordinar no entra al plan.
+    const ventasPorGrupo = new Map();   // «doc@reparto» → { doc, rep, co, rows }
+    Array.from(_ventasDedupMap.values()).forEach(r => {
+      const d = String(r.doc_ventas ?? '').trim(), f = String(r.fe_entrega ?? '').trim();
+      const co = coordRepV(coordVentas, d, f);
+      if (!co) return;                                    // sin coordinación aplicable
+      const rp = String(co.reparto ?? '').trim(), k = claveCoordV(d, rp);
+      const g = ventasPorGrupo.get(k) || { doc: d, rep: rp, co, rows: [] };
+      g.rows.push(r); ventasPorGrupo.set(k, g);
+    });
     let tonVentaCliente = 0, tonVentaCons = 0;
     const sumTon = arr => arr.reduce((s, d) => s + d.ton, 0);
     // (2-oct-2026, Jordan) Sólo NV con estado Coordinado (abast_venta_coordinacion) entran al
@@ -7652,9 +7818,8 @@ async function renderPlanCarga(stage, opts = {}) {
     const cdCliYaCargado = (co, fc) => !!fc && fc.getTime() < diaHabil1.getTime()
       && !!(String(co.patente_camion ?? '').trim() || String(co.id_transporte ?? '').trim() || String(co.transportista ?? '').trim());
     const ventasCliPorGrupo = {};
-    for (const [doc, rowsDoc] of Object.entries(ventasPorDoc)) {
-      const co = coordVentas.get(doc);
-      if (!co) continue;                                    // sin coordinar → no se considera
+    for (const grpV of ventasPorGrupo.values()) {
+      const doc = grpV.doc, rowsDoc = grpV.rows, co = grpV.co, repCoord = grpV.rep;
       const pv = pvMap[doc] || {};
       const clienteKey = clienteKeyNV(doc, rowsDoc[0].solicitante, pv);
       const fc = parseISODate(co.fecha_entrega);
@@ -7664,8 +7829,9 @@ async function renderPlanCarga(stage, opts = {}) {
       // más próximo es el que gobierna la coordinación (usa su fecha de entrega confirmada); los
       // posteriores entran al plan cuyo día objetivo alcance SU fecha, de modo que una NV con 3
       // repartos (ej. 1062020: 03.11 / 12.11 / 26.11) genere 3 despachos y no uno solo.
+      // En modo por reparto el grupo ya es un solo reparto con su fecha confirmada: no hay nada que diferir.
       let fMinRep = null;
-      rowsDoc.forEach(r => { const d0 = parseDateSAP(r.fe_entrega); if (d0 && (!fMinRep || d0 < fMinRep)) fMinRep = d0; });
+      if (!repCoord) rowsDoc.forEach(r => { const d0 = parseDateSAP(r.fe_entrega); if (d0 && (!fMinRep || d0 < fMinRep)) fMinRep = d0; });
       rowsDoc.forEach(r => {
         // (18-oct-2026, Jordan) Unidades editadas al coordinar (nunca más que el pendiente SAP).
         const pend0 = parseNum(r.ctd_confirmada) - parseNum(r.cantidad_entrg);
@@ -7692,7 +7858,7 @@ async function renderPlanCarga(stage, opts = {}) {
         // aunque la patente aún esté pendiente.
         const pat = normPatente(co.patente_camion);
         const grp = String(co.grupo_camion ?? '').trim();
-        const gk = grp ? `GRP|${grp}` : pat ? `PAT|${pat}|${co.fecha_entrega}` : `CLI|${clienteKey}`;
+        const gk = grp ? `GRP|${grp}` : pat ? `PAT|${pat}|${co.fecha_entrega}` : `CLI|${clienteKey}${repCoord ? '|' + repCoord : ''}`;
         const nomCli = pv.nombre_1 || co.nombre_cliente || (clienteKey !== doc ? 'Cliente ' + clienteKey : clienteKey);
         const g = (ventasCliPorGrupo[gk] = ventasCliPorGrupo[gk] || { items: [], clientes: new Set(), pat: pat ? String(co.patente_camion).toUpperCase().trim() : '', grp, co });
         g.clientes.add(nomCli);
@@ -9680,9 +9846,11 @@ function reponerCoordPorPosicion(ventasRaw, coordVentas, bkVen, conDt, cargadasE
     pendPos.set(k, Math.max(pendPos.has(k) ? pendPos.get(k) : -Infinity, pendDe(r))); });
   const quitar = new Set(), agregar = [];
   bkPorDoc.forEach((filas, doc) => {
-    const co = coordVentas.get(doc);
-    if (!co || coordConDtV(co, conDt)) return;            // sin coordinar o ya con DT → nada que reponer
+    if (!coordVentas.get(doc)) return;                    // sin coordinar → nada que reponer
     filas.forEach(b => {
+      // (2-nov-2026) La coordinación del reparto manda; si el pedido no está en modo por reparto, la del pedido.
+      const co = coordRepV(coordVentas, doc, b.fe_entrega) || coordVentas.get(doc);
+      if (!co || coordConDtV(co, conDt)) return;           // ya con DT → nada que reponer
       const k = kPos(b), hayVivo = pendPos.has(k);
       if (hayVivo && pendPos.get(k) > 0) return;                                              // 1)
       const ent = entregaLineaV(co, b.material, b.fe_entrega);
