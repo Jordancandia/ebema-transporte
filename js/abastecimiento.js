@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611021452';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611021452';
-import { getDatabase } from './data.js?v=202611021452';
+import { supabase } from './supabase-client.js?v=202611021458';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611021458';
+import { getDatabase } from './data.js?v=202611021458';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611021452';
-import { confirmar, pedirDato } from './confirmar.js?v=202611021452';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611021458';
+import { confirmar, pedirDato } from './confirmar.js?v=202611021458';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -175,8 +175,13 @@ function parseNum(v) {
 }
 
 // MAX(peso_bruto, tamano_dimens) en número
+// (2-nov-2026, Jordan) Si el peso ya viene como NUMBER (p. ej. el PV de Stock 4000 hace
+// parseNum antes), no se vuelve a parsear como string SAP: String(13.33) → "13.33" y el
+// reemplazo de puntos (miles) borraba el punto decimal → 1333, inflando el tonelaje 100x
+// (PV 1058489: 442,5 m2 × 13,33 kg salían como 589,9 t en vez de 5,9 t). Mismo criterio que calcTon.
 function maxPesoDim(peso, dim) {
-  return Math.max(parseNum(peso), parseNum(dim));
+  const num = v => typeof v === 'number' ? v : parseNum(v);
+  return Math.max(num(peso), num(dim));
 }
 
 // Tonelaje = pesoMax * cantidad / 1000
@@ -6894,7 +6899,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611021452');
+    const m = await import('./ind-plan-carga.js?v=202611021458');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
