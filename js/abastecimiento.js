@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611021437';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611021437';
-import { getDatabase } from './data.js?v=202611021437';
+import { supabase } from './supabase-client.js?v=202611021452';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611021452';
+import { getDatabase } from './data.js?v=202611021452';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611021437';
-import { confirmar, pedirDato } from './confirmar.js?v=202611021437';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611021452';
+import { confirmar, pedirDato } from './confirmar.js?v=202611021452';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -6894,7 +6894,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611021437');
+    const m = await import('./ind-plan-carga.js?v=202611021452');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -7394,7 +7394,9 @@ async function renderPlanCarga(stage, opts = {}) {
     conDtPlan = conDt;
     // (2-nov-2026, Jordan) Respaldo POR POSICIÓN. Las entregas ya cargadas en planes anteriores se
     // descuentan más abajo (cargadosEnt), por eso aquí va null.
-    const lin = ventasCoordLin(coordVentas, conDt);
+    let viajadasPlan = new Set();
+    try { viajadasPlan = await entregasYaViajadas(entCo); } catch (e) { console.warn('Plan de carga: no se pudieron leer las entregas ya viajadas', e); }
+    const lin = ventasCoordLin(coordVentas, conDt, viajadasPlan);
     reponerCoordPorPosicion(ventasRaw, coordVentas, bkVen, conDt, null, lin);
     aplicarVentasCoordLin(ventasRaw, lin);
   } catch (e) { console.warn('Plan de carga: respaldo de coordinaciones no disponible', e); }
@@ -7437,11 +7439,6 @@ async function renderPlanCarga(stage, opts = {}) {
       // nueva porque la anterior no viajó vuelve al plan); sin entrega coordinada, por documento+material.
       // (28-oct-2026) Con entrega por posición: se descuenta cada línea por SU entrega.
       const entCoord = (d, m, f) => { const co = coordRepV(coordVentas, d, f) || coordVentas.get(d); return co ? entregaLineaV(co, m, f) : ''; };
-      // (2-nov-2026, Jordan) Posición con REPARTOS: el reparto que todavía tiene pendiente vivo no se
-      // descuenta por la entrega de otro reparto del mismo material que ya viajó (es el saldo por salir).
-      const nRepVivo = new Map();
-      ventasRaw.forEach(r2 => { const k2 = `${tx(r2.doc_ventas)}|${tx(r2.material)}`; const f2 = tx(r2.fe_entrega);
-        const st2 = nRepVivo.get(k2) || new Set(); st2.add(f2); nRepVivo.set(k2, st2); });
       for (let i = ventasRaw.length - 1; i >= 0; i--) {
         const r2 = ventasRaw[i], d = tx(r2.doc_ventas), m = tx(r2.material), f = tx(r2.fe_entrega);
         const e = entCoord(d, m, f);
@@ -7452,8 +7449,10 @@ async function renderPlanCarga(stage, opts = {}) {
         const ya = fueCargado && (!e || cargadosEnt.has(e));
         if (!ya) continue;
         const pendVivo = !r2._coordLin && !r2._respaldo && parseNum(r2.ctd_confirmada) - parseNum(r2.cantidad_entrg) > 0;
-        const multiRep = (nRepVivo.get(`${d}|${m}`) || new Set()).size > 1;
-        if (pendVivo && multiRep) continue;
+        // (2-nov-2026, Jordan) Una línea con PENDIENTE VIVO en SAP no se descarta por «ya viajó»: lo que
+        // viajó ya está descontado en el entregado, así que ese pendiente es SALDO por despachar y vuelve
+        // al plan (antes sólo se respetaba si la posición tenía varios repartos; caso NV 1060015).
+        if (pendVivo) continue;
         ventasRaw.splice(i, 1);
       }
       for (let i = retirosRaw.length - 1; i >= 0; i--) if (cargados.has(`${tx(retirosRaw[i].doc_compr)}|${tx(retirosRaw[i].material)}`)) retirosRaw.splice(i, 1);
@@ -9820,7 +9819,7 @@ async function reponerVentasCoordinadas(ventasRaw) {
     // pedido completo por el respaldo mientras la entrega no tuviera DT: una NV con una posición ya
     // despachada y otra pendiente (ej. 1058465) seguía apareciendo entera. Ahora cada posición se evalúa
     // por separado y la que ya viajó en un camión programado sale de la vista aunque no haya llegado su DT.
-    const lin = ventasCoordLin(coordVentas, conDt);
+    const lin = ventasCoordLin(coordVentas, conDt, VENTAS_ENT_CARGADAS);
     // (15-oct-2026, Jordan) NV programada que ya no viene en el SQVI → se entiende entregada: no se repone.
     const bkUsable = bkVen.filter(r => { const d = tx(r.doc_ventas); return !(VENTAS_PROGRAMADAS.has(d) && !docsLive.has(d)); });
     reponerCoordPorPosicion(ventasRaw, coordVentas, bkUsable, conDt, VENTAS_ENT_CARGADAS, lin, VENTAS_MAT_CARGADAS);
@@ -9831,12 +9830,44 @@ async function reponerVentasCoordinadas(ventasRaw) {
 // SAP crea la entrega por esas unidades y el pendiente del SQVI baja (p.ej. 1060015: 11.813 de 14.000 → quedaban
 // 2.186 en el plan). Se cargan las unidades coordinadas con tope en la cantidad CONFIRMADA (no en el pendiente),
 // usando líneas vivas (incluido el pedido manual) + respaldo. Mismo criterio que v_trc_plan_carga_ventas_lineas.
-function ventasCoordLin(coordVentas, conDt) {
+function ventasCoordLin(coordVentas, conDt, viajadas) {
   const tx = v => String(v ?? '').trim(), out = new Set();
   (coordVentas || new Map()).forEach((co, d) => {
     const l = co && co.lineas;
-    if (l && typeof l === 'object' && !Array.isArray(l) && !coordConDtV(co, conDt)) out.add(tx(d));
+    if (!(l && typeof l === 'object' && !Array.isArray(l)) || coordConDtV(co, conDt)) return;
+    // (2-nov-2026, Jordan) Si la entrega coordinada YA VIAJÓ en un camión programado, el override se apaga:
+    // lo que viajó ya está descontado por SAP en el entregado y lo que queda es SALDO por despachar
+    // (ej. NV 1060015: viajaron 11.813,49 de 14.000 y quedan 2.186,51 que deben volver al plan).
+    if (viajadas && viajadas.size && entregasCoordV(co).some(e => viajadas.has(tx(e)))) return;
+    out.add(tx(d));
   });
+  return out;
+}
+
+// (2-nov-2026, Jordan) Entregas coordinadas que YA VIAJARON: están en un camión PROGRAMADO (con patente)
+// de un plan anterior, o en una coordinación directa COORD| cuya fecha de carga ya pasó. Mismo criterio
+// que el descuento de «lo ya programado» del Plan de Carga y que VENTAS_ENT_CARGADAS en Ventas CD.
+async function entregasYaViajadas(entregas) {
+  const tx = v => String(v ?? '').trim(), out = new Set();
+  const ents = [...new Set((entregas || []).map(tx).filter(Boolean))];
+  if (!ents.length) return out;
+  const hoyIso = isoLocal(hoy00());
+  for (let i = 0; i < ents.length; i += 50) {
+    const { data, error } = await supabase.from('abast_seguimiento_carga').select('camion_id,n_entrega').in('n_entrega', ents.slice(i, i + 50)).limit(5000);
+    if (error) throw error;
+    const porCam = new Map();
+    (data || []).forEach(l => { const k = l.camion_id; if (!porCam.has(k)) porCam.set(k, []); porCam.get(k).push(tx(l.n_entrega)); });
+    const ids = [...porCam.keys()];
+    for (let j = 0; j < ids.length; j += 20) {
+      const { data: cams, error: e2 } = await supabase.from('abast_seguimiento_camion').select('id,clave,fecha_plan,fecha_carga,patente_camion').in('id', ids.slice(j, j + 20)).limit(5000);
+      if (e2) throw e2;
+      (cams || []).forEach(c => {
+        const viajo = !!tx(c.patente_camion) && String(c.fecha_plan || '').slice(0, 10) < hoyIso
+          && (!tx(c.clave).startsWith('COORD|') || (tx(c.fecha_carga) && tx(c.fecha_carga).slice(0, 10) < hoyIso));
+        if (viajo) (porCam.get(c.id) || []).forEach(e => out.add(e));
+      });
+    }
+  }
   return out;
 }
 // (2-nov-2026, Jordan) RESPALDO DE NV COORDINADAS **POR POSICIÓN** (antes: por pedido completo).
@@ -9866,10 +9897,15 @@ function reponerCoordPorPosicion(ventasRaw, coordVentas, bkVen, conDt, cargadasE
   const pendPos = new Map();
   ventasRaw.forEach(r => { if (r._respaldo) return; const k = kPos(r);
     pendPos.set(k, Math.max(pendPos.has(k) ? pendPos.get(k) : -Infinity, pendDe(r))); });
+  // (2-nov-2026, Jordan) Posición RECHAZADA en el SQVI vivo (motivo de rechazo): no se repone nunca desde
+  // el respaldo, no se puede despachar (caso NV 1058465 pos 20, respaldada antes de que SAP le pusiera MR 79).
+  const mrPos = new Set();
+  ventasRaw.forEach(r => { if (!r._respaldo && tx(r.mr)) mrPos.add(kPos(r)); });
   const quitar = new Set(), agregar = [];
   bkPorDoc.forEach((filas, doc) => {
     if (!coordVentas.get(doc)) return;                    // sin coordinar → nada que reponer
     filas.forEach(b => {
+      if (mrPos.has(kPos(b))) return;                     // rechazada en SAP → no se repone
       // (2-nov-2026) La coordinación del reparto manda; si el pedido no está en modo por reparto, la del pedido.
       const co = coordRepV(coordVentas, doc, b.fe_entrega) || coordVentas.get(doc);
       if (!co || coordConDtV(co, conDt)) return;           // ya con DT → nada que reponer
