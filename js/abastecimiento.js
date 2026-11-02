@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611021458';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611021458';
-import { getDatabase } from './data.js?v=202611021458';
+import { supabase } from './supabase-client.js?v=202611021512';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611021512';
+import { getDatabase } from './data.js?v=202611021512';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611021458';
-import { confirmar, pedirDato } from './confirmar.js?v=202611021458';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611021512';
+import { confirmar, pedirDato } from './confirmar.js?v=202611021512';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -4825,8 +4825,19 @@ const V2 = {
         r._plan = !r._coord ? 'SIN_COORD' : (fp && fp.getTime() <= r._dia_obj.getTime() ? 'EN_PLAN' : 'PROGRAMADO');
         // (14-oct-2026, Jordan) NV en camión programado → COORDINADO bloqueado, fuera del plan.
         r._saldoAct = !!(ctx.saldoDocs && ctx.saldoDocs.has(doc));
-        r._cargada = r._saldoAct ? null : (VENTAS_PROGRAMADAS.get(doc) || null);   // saldo activo → editable
+        // (2-nov-2026, Jordan) SALDO SIN COORDINAR: todas las entregas de la coordinación ya viajaron en
+        // camiones programados, pero SAP sigue mostrando pendiente. Ese saldo NO está coordinado: la fila
+        // no se bloquea para poder coordinarlo aparte y recién entonces entra al plan (NV 1060015, 1060570).
+        // Se miran TODAS las coordinaciones del pedido (la del pedido completo y las de cada reparto):
+        // si alguna todavía no viajó, el pedido sigue coordinado y la fila no es saldo.
+        const _coordsV = [r._coord, ...((r._coord_reps && [...r._coord_reps.values()]) || [])].filter(Boolean);
+        const _entCoV = [...new Set(_coordsV.flatMap(c => entregasCoordV(c)).map(e => String(e ?? '').trim()).filter(Boolean))];
+        r._saldoSinCoord = !!(r._coord && _entCoV.length && _entCoV.every(e => VENTAS_ENT_CARGADAS.has(e))
+          && (r._detalle || []).some(d => (Number(d.pendiente) || 0) > 0));
+        r._viajo = r._saldoSinCoord ? (VENTAS_PROGRAMADAS.get(doc) || null) : null;
+        r._cargada = (r._saldoAct || r._saldoSinCoord) ? null : (VENTAS_PROGRAMADAS.get(doc) || null);   // saldo activo o saldo sin coordinar → editable
         if (r._cargada) r._plan = 'CARGADA';
+        else if (r._saldoSinCoord) r._plan = 'SALDO';
       });
       // (7-oct-2026) Pedidos que comparten camión (grupo_camion)
       const porGrupo = new Map();
@@ -4846,9 +4857,10 @@ const V2 = {
     kpis: [
       { key: 'all', label: 'Pedidos', color: C_INK, sub: 'pendientes con ruta' },
       { key: 'sc', label: 'Sin coordinar', color: C_ORANGE, sub: 'no entran al plan', fn: r => !r._coord && !r._cargada },
-      { key: 'co', label: 'Coordinados', color: C_GREEN, sub: 'pedido coordinado', fn: r => !!r._coord && !r._cargada },
-      { key: 'pl', label: 'En plan de carga', color: C_BLUE, sub: 'pedidos coordinados', fn: r => !!r._coord && !r._cargada },
+      { key: 'co', label: 'Coordinados', color: C_GREEN, sub: 'pedido coordinado', fn: r => !!r._coord && !r._cargada && !r._saldoSinCoord },
+      { key: 'pl', label: 'En plan de carga', color: C_BLUE, sub: 'pedidos coordinados', fn: r => !!r._coord && !r._cargada && !r._saldoSinCoord },
       { key: 'cg', label: 'COORDINADO', color: C_SEC, sub: 'en camión programado · bloqueado', fn: r => !!r._cargada },
+      { key: 'sl', label: 'Saldo sin coordinar', color: C_ORANGE, sub: 'la coordinación anterior ya viajó', fn: r => !!r._saldoSinCoord },
       { key: 'cd', label: 'CD-Cliente', color: '#7e22ce', sub: 'cliente ≥ 23,8 t o definido', fn: r => !!r._directo },
       { key: 'mn', label: 'Manuales', color: '#0f766e', sub: 'agregados en la plataforma', fn: r => !!r._nv_manual },
       { key: 'at', label: 'Atrasados', color: C_RED, sub: 'fecha de entrega vencida', fn: r => r._al.k === 'Atrasado' },
@@ -4865,6 +4877,7 @@ const V2 = {
       { label: 'Ton', al: 'r', html: r => `<span class="sv-ton">${tonHtml(r._ton_num)}</span>` + (r._lineas_aj ? `<div class="sv-sub" title="Unidades editadas al coordinar">a cargar ${escV2(fmtNum(r._ton_plan, 2))} t</div>` : '') + (r._n_pedidos_cliente > 1 ? `<div class="sv-sub">cliente ${escV2(fmtNum(r._ton_cliente, 1))} t</div>` : '') },
       { label: 'Fecha entrega', html: r => mono(r._fecha_plan, r._coord ? 'confirmada' : 'SAP · por confirmar') },
       { label: 'Coordinación', html: r => (r._cargada ? pill('COORDINADO', 'info') + `<div class="sv-sub" title="Bloqueado: va en un camión programado">🔒 Camión ${escV2(r._cargada.patente || r._cargada.transportista || 'programado')} · carga ${escV2(fmtFechaISO(String(r._cargada.fecha_carga).slice(0, 10)))}</div>`
+        : r._saldoSinCoord ? pill('SALDO SIN COORDINAR', 'warn') + `<div class="sv-sub" title="La coordinación anterior ya viajó: este saldo todavía no está coordinado y no entra al plan">Ya viajó${r._viajo ? ' · camión ' + escV2(r._viajo.patente || r._viajo.transportista || '') + ' · carga ' + escV2(fmtFechaISO(String(r._viajo.fecha_carga).slice(0, 10))) : ''}</div>`
         : r._coord ? pill(r._por_reparto ? 'Reparto Coordinado' : 'Pedido Coordinado', 'ok') + (entregasCoordV(r._coord).length ? `<div class="sv-sub">${entregasCoordV(r._coord).length > 1 ? 'Entregas' : 'Entrega'} ${escV2(entregasCoordV(r._coord).join(', '))}</div>` : '')
           + (r._coord.tipo_entrega === 'CD-CLIENTE' && pendTranspRetiro(r._coord).length ? `<div style="margin-top:4px" title="Pendiente: ${escV2(pendTranspRetiro(r._coord).join(', '))}">${pill('Chofer/patente pendiente', 'warn')}</div>` : '') : pill('Sin coordinar', 'mute'))
         // (2-nov-2026, Jordan) Pedido con repartos: cuántos están coordinados (cada uno es un despacho).
@@ -4878,10 +4891,11 @@ const V2 = {
     bloqueado: r => !!r._cargada,
     planEstado: (r, excluida) => r._cargada ? `<span title="Ya va en un camión programado: no se vuelve a considerar">${pill('En camión programado', 'mute')}</span>`
       : excluida ? pill('Excluida hoy', 'bad')
+      : r._saldoSinCoord ? `<span title="El saldo no está coordinado: coordínalo para que entre al plan">${pill('Saldo sin coordinar', 'warn')}</span>`
       : r._coord ? `<span title="Plan de carga con día objetivo ${escV2(r._fecha_plan)}">${pill('En plan', 'ok')}</span>`
         + (r._plan === 'PROGRAMADO' ? `<div class="sv-sub">día ${escV2(r._fecha_plan)}</div>` : '')
       : pill('No considerado', 'mute'),
-    edge: r => r._cargada ? C_GREY : r._coord ? C_GREEN : (r._al.k === 'Atrasado' ? C_RED : null),
+    edge: r => r._cargada ? C_GREY : r._saldoSinCoord ? C_ORANGE : r._coord ? C_GREEN : (r._al.k === 'Atrasado' ? C_RED : null),
     note: 'Tipo de entrega por cliente: ≥ 23,8 t (85% de 28 t) → CD-Cliente; si no, Consolidable · Sólo los pedidos coordinados entran al Plan de Carga',
     minW: '1280px',
     detalle: r => {
@@ -4892,6 +4906,7 @@ const V2 = {
       const diaObjTxt = r._dia_obj ? fmtFechaISO(isoLocal(r._dia_obj)) : '';
       const k = r._cargada;
       const aviso = k ? `<b>COORDINADO · bloqueado:</b> el pedido ya va en un camión programado (${escV2(k.tipo || 'camión')} · carga ${escV2(fmtFechaISO(String(k.fecha_carga).slice(0, 10)))}${k.patente ? ' · patente ' + escV2(k.patente) : ''}${k.transportista ? ' · ' + escV2(k.transportista) : ''}). No se vuelve a considerar en el Plan de Carga; sale de la vista cuando el SQVI deje de traerlo.`
+        : r._saldoSinCoord ? `<b>Saldo sin coordinar:</b> la coordinación anterior ya viajó${r._viajo ? ` (camión ${escV2(r._viajo.patente || r._viajo.transportista || 'programado')} · carga ${escV2(fmtFechaISO(String(r._viajo.fecha_carga).slice(0, 10)))})` : ''} y SAP todavía muestra pendiente. Ese saldo NO está coordinado: no entra al Plan de Carga hasta que lo coordines con «Coordinar despacho» (fecha y entrega nuevas).`
         : r._plan === 'EN_PLAN' ? `<b>Plan de carga:</b> pedido coordinado para el ${escV2(r._fecha_plan)}; entra al Plan de Carga de hoy (día objetivo ${escV2(diaObjTxt)}).`
         : r._plan === 'PROGRAMADO' ? `<b>Plan de carga:</b> pedido coordinado para el ${escV2(r._fecha_plan)}; entrará al plan cuyo día objetivo sea esa fecha.`
         : '<b>Plan de carga:</b> sin coordinar, no se considera. Usa «Coordinar despacho» para confirmar la fecha de entrega.';
@@ -6899,7 +6914,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611021458');
+    const m = await import('./ind-plan-carga.js?v=202611021512');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -7375,6 +7390,9 @@ async function renderPlanCarga(stage, opts = {}) {
   // (2-nov-2026, Jordan) Entregas coordinadas que ya tienen DT (despachadas): se usa mas abajo para decidir
   // si un reparto programado sin pendiente SAP sigue por despachar.
   let conDtPlan = new Set();
+  // (2-nov-2026, Jordan) Entregas coordinadas que ya viajaron: su coordinación quedó consumida, el saldo
+  // que SAP todavía muestra pendiente NO está coordinado y no debe subir solo al camión del día siguiente.
+  let viajadasPlan = new Set();
   // (8-oct-2026, Jordan) NV y OC de retiro COORDINADAS se mantienen en el plan hasta su día de entrega/retiro,
   // aunque SAP las saque del SQVI (entrega creada / OC recibida): se usan las líneas respaldadas al coordinar
   // (abast_coord_sqvi, la respalda el servidor cada 20 min y al abrir el plan).
@@ -7399,7 +7417,6 @@ async function renderPlanCarga(stage, opts = {}) {
     conDtPlan = conDt;
     // (2-nov-2026, Jordan) Respaldo POR POSICIÓN. Las entregas ya cargadas en planes anteriores se
     // descuentan más abajo (cargadosEnt), por eso aquí va null.
-    let viajadasPlan = new Set();
     try { viajadasPlan = await entregasYaViajadas(entCo); } catch (e) { console.warn('Plan de carga: no se pudieron leer las entregas ya viajadas', e); }
     const lin = ventasCoordLin(coordVentas, conDt, viajadasPlan);
     reponerCoordPorPosicion(ventasRaw, coordVentas, bkVen, conDt, null, lin);
@@ -7444,6 +7461,11 @@ async function renderPlanCarga(stage, opts = {}) {
       // nueva porque la anterior no viajó vuelve al plan); sin entrega coordinada, por documento+material.
       // (28-oct-2026) Con entrega por posición: se descuenta cada línea por SU entrega.
       const entCoord = (d, m, f) => { const co = coordRepV(coordVentas, d, f) || coordVentas.get(d); return co ? entregaLineaV(co, m, f) : ''; };
+      // (2-nov-2026, Jordan) Posición con REPARTOS: el reparto que todavía tiene pendiente vivo no se
+      // descuenta por la entrega de otro reparto del mismo material que ya viajó (es el saldo por salir).
+      const nRepVivo = new Map();
+      ventasRaw.forEach(r2 => { const k2 = `${tx(r2.doc_ventas)}|${tx(r2.material)}`; const f2 = tx(r2.fe_entrega);
+        const st2 = nRepVivo.get(k2) || new Set(); st2.add(f2); nRepVivo.set(k2, st2); });
       for (let i = ventasRaw.length - 1; i >= 0; i--) {
         const r2 = ventasRaw[i], d = tx(r2.doc_ventas), m = tx(r2.material), f = tx(r2.fe_entrega);
         const e = entCoord(d, m, f);
@@ -7454,10 +7476,8 @@ async function renderPlanCarga(stage, opts = {}) {
         const ya = fueCargado && (!e || cargadosEnt.has(e));
         if (!ya) continue;
         const pendVivo = !r2._coordLin && !r2._respaldo && parseNum(r2.ctd_confirmada) - parseNum(r2.cantidad_entrg) > 0;
-        // (2-nov-2026, Jordan) Una línea con PENDIENTE VIVO en SAP no se descarta por «ya viajó»: lo que
-        // viajó ya está descontado en el entregado, así que ese pendiente es SALDO por despachar y vuelve
-        // al plan (antes sólo se respetaba si la posición tenía varios repartos; caso NV 1060015).
-        if (pendVivo) continue;
+        const multiRep = (nRepVivo.get(`${d}|${m}`) || new Set()).size > 1;
+        if (pendVivo && multiRep) continue;
         ventasRaw.splice(i, 1);
       }
       for (let i = retirosRaw.length - 1; i >= 0; i--) if (cargados.has(`${tx(retirosRaw[i].doc_compr)}|${tx(retirosRaw[i].material)}`)) retirosRaw.splice(i, 1);
@@ -7851,6 +7871,11 @@ async function renderPlanCarga(stage, opts = {}) {
       rowsDoc.forEach(r => {
         // (18-oct-2026, Jordan) Unidades editadas al coordinar (nunca más que el pendiente SAP).
         const pend0 = parseNum(r.ctd_confirmada) - parseNum(r.cantidad_entrg);
+        // (2-nov-2026, Jordan) Si la entrega de la coordinación que aplica a esta línea YA VIAJÓ, esa
+        // coordinación quedó consumida: el pendiente que queda en SAP es un SALDO SIN COORDINAR y no
+        // entra al plan (se ve en Ventas CD para coordinarlo). Casos NV 1060015 y 1060570.
+        const entViajo = entregaLineaV(co, r.material, r.fe_entrega);
+        if (entViajo && viajadasPlan.has(entViajo)) return;
         // (2-nov-2026, Jordan) Un reparto PROGRAMADO queda registrado en el plan hasta su fecha de
         // programación: si SAP ya creó su entrega, el SQVI lo deja sin pendiente, pero mientras esa
         // entrega no tenga DT sigue por despachar y cuenta con su cantidad CONFIRMADA. Mismo criterio
