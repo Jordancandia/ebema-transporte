@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611021312';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611021312';
-import { getDatabase } from './data.js?v=202611021312';
+import { supabase } from './supabase-client.js?v=202611021410';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611021410';
+import { getDatabase } from './data.js?v=202611021410';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611021312';
-import { confirmar, pedirDato } from './confirmar.js?v=202611021312';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611021410';
+import { confirmar, pedirDato } from './confirmar.js?v=202611021410';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -6894,7 +6894,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611021312');
+    const m = await import('./ind-plan-carga.js?v=202611021410');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -7587,7 +7587,11 @@ async function renderPlanCarga(stage, opts = {}) {
   // estuviera configurado a 48 horas.
   const retiros = esCD1003 ? retirosRaw
     .filter(r => !String(r.proveedor ?? '').startsWith('*'))
-    .filter(r => String(r.contr ?? '').trim() !== '')
+    // (2-nov-2026, bug Coquimbo) Antes se exigia contrato de compra (`contr !== ''`), pero hay OC
+    // sin contrato en el SQVI (p. ej. 4500213219 / 4500212881 a Coquimbo): quedaban coordinables en
+    // Retiros de Fabrica y nunca entraban al Plan de Carga. Ahora solo se descartan las filas de
+    // subtotal del SQVI (doc_compr o material vacios).
+    .filter(r => String(r.doc_compr ?? '').trim() !== '' && String(r.material ?? '').trim() !== '')
     .filter(r => { const _e = estadosRetiro[String(r.doc_compr ?? '').trim()] || {}; return esEstadoCoordinado(_e.estado) && _e.tipo_local_rm !== 'LOCAL' && (_e.estado === 'coordinado_santiago' || _e.tipo_local_rm === 'RM' || String(_e.entrega_entrante ?? '').trim() !== ''); }) : [];
   const ventas = esCD1003 ? ventasRaw.filter(r => !String(r.mr ?? '').trim()) : [];
   // Regla Jordan 21-sep-2026: todo retiro LOCAL (tipo_local_rm='LOCAL') queda excluido del Plan de Carga;
@@ -7599,7 +7603,11 @@ async function renderPlanCarga(stage, opts = {}) {
   // la misma OC quedaba contada en ambos planes (duplicado 1003/1081).
   const retirosDirectosBase = esCD1003 ? retirosRaw
     .filter(r => !String(r.proveedor ?? '').startsWith('*'))
-    .filter(r => String(r.contr ?? '').trim() !== '')
+    // (2-nov-2026, bug Coquimbo) Antes se exigia contrato de compra (`contr !== ''`), pero hay OC
+    // sin contrato en el SQVI (p. ej. 4500213219 / 4500212881 a Coquimbo): quedaban coordinables en
+    // Retiros de Fabrica y nunca entraban al Plan de Carga. Ahora solo se descartan las filas de
+    // subtotal del SQVI (doc_compr o material vacios).
+    .filter(r => String(r.doc_compr ?? '').trim() !== '' && String(r.material ?? '').trim() !== '')
     .filter(r => { const _e = estadosRetiro[String(r.doc_compr ?? '').trim()] || {}; return esEstadoCoordinado(_e.estado) && _e.tipo_local_rm !== 'LOCAL' && ['FAB-SUC', 'FAB-CLTE'].includes(_e.tipo_retiro); }) : [];
   // sqvi_pedidos_traslados_4000: cesu==ce (destino), origen siempre es CD 1003.
   // Deduplicar por doc_compr|pos — clave sin fecha para fusionar la fila '00.00.0000'
