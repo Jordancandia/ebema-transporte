@@ -1,7 +1,8 @@
-import { getDatabase, saveDatabase, calcEjes, getOrigenGroups } from './data.js?v=202611021253';
+import { getDatabase, saveDatabase, calcEjes, getOrigenGroups } from './data.js?v=202611021311';
 import { formatRut, validateRut, generateSapCode, parseCSV, showAlert, escapeHtml } from './utils.js';
-import { renderFichaTransporte } from './ficha-transporte.js?v=202611021253';
-import { abrirModalTroncal } from './troncales.js?v=202611021253';
+import { renderFichaTransporte } from './ficha-transporte.js?v=202611021311';
+import { abrirModalTroncal } from './troncales.js?v=202611021311';
+import { supabase } from './supabase-client.js?v=202611021311';
 
 let editingTransportId = null;
 let filtroTipo = ''; // '' | 'ultima_milla' | 'troncal'
@@ -219,7 +220,7 @@ export function renderTransportsView(container) {
                 <option value="TRONCAL">Troncal</option>
               </select>
             </div>
-            <div class="text-[11px] text-secondary bg-surface-container-low border border-outline-variant rounded p-sm">RUT, teléfono y correo son obligatorios: si falta alguno, el transportista queda <b>BLOQUEADO</b> y no aparece para programar camiones ni coordinar despachos.</div>
+            <div class="text-[11px] text-secondary bg-surface-container-low border border-outline-variant rounded p-sm">RUT, teléfono y correo son obligatorios: si falta alguno, el transportista queda <b>BLOQUEADO</b> y no aparece para programar camiones ni coordinar despachos. Todos estos datos se pueden corregir en cualquier momento.</div>
             <div class="grid grid-cols-1 md:grid-cols-2 gap-md">
               <div class="space-y-xs">
                 <label class="font-label-caps text-label-caps text-secondary block">RUT EMPRESA</label>
@@ -239,8 +240,12 @@ export function renderTransportsView(container) {
             <div class="space-y-xs">
               <label class="font-label-caps text-label-caps text-secondary block">CÓDIGO SAP</label>
               <input type="text" id="t-codigosap" class="w-full border border-[#CED4DA] p-sm font-body-md text-body-md focus:border-primary rounded bg-white">
-              <div id="t-sap-lock-msg" class="text-[11px] text-primary hidden items-center gap-xs font-bold mt-1">
-                <span class="material-symbols-outlined text-[12px]">lock</span> Código SAP bloqueado
+              <div id="t-sap-hint" class="text-[11px] text-secondary mt-1 flex items-start gap-xs">
+                <span class="material-symbols-outlined text-[12px] mt-px shrink-0">info</span>
+                <span>Al cambiarlo, el <b>ID interno</b> se re-asigna sólo si el transportista aún no tiene historial (camiones, coordinaciones, seguimiento o portería). Si ya tiene historial, se corrige el código y el ID queda fijo.</span>
+              </div>
+              <div id="t-id-interno" class="text-[11px] text-primary hidden items-center gap-xs font-bold mt-1">
+                <span class="material-symbols-outlined text-[12px]">key</span> <span id="t-id-interno-val"></span>
               </div>
             </div>
             <div class="pt-sm border-t border-outline-variant space-y-md">
@@ -413,29 +418,63 @@ export function renderTransportsView(container) {
   container.querySelector('#btn-cancel-transport-modal').addEventListener('click', closeEdit);
   container.querySelector('#t-rut').addEventListener('blur', e => { e.target.value = formatRut(e.target.value); });
 
-  container.querySelector('#transport-form').addEventListener('submit', e => {
+  // (2-nov-2026, Jordan) Maestro editable: RUT, Código SAP, razón social y contacto.
+  // El Código SAP pasa por la RPC fn_transportista_recodificar, que valida unicidad y
+  // re-asigna el ID interno sólo si el transportista aún no tiene historial operativo.
+  container.querySelector('#transport-form').addEventListener('submit', async e => {
     e.preventDefault();
+    const btnSave = container.querySelector('#transport-form button[type="submit"]');
     const db2 = getDatabase();
     const idx = db2.transports.findIndex(t => t.id === editingTransportId);
     if (idx === -1) return;
+    const actual = db2.transports[idx];
+
     const rutIn = formatRut(container.querySelector('#t-rut').value.trim());
     if (rutIn && !validateRut(rutIn)) { showAlert('El RUT ingresado no es válido.', 'error'); return; }
+    if (rutIn && (db2.transports || []).some(t => t.id !== editingTransportId && formatRut(String(t.rut || '')) === rutIn)) {
+      const dup = (db2.transports || []).find(t => t.id !== editingTransportId && formatRut(String(t.rut || '')) === rutIn);
+      showAlert(`El RUT ${rutIn} ya está registrado en ${dup.razonSocial || dup.id}.`, 'error'); return;
+    }
     const emailIn = container.querySelector('#t-email').value.trim();
     if (emailIn && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(emailIn)) { showAlert('El correo ingresado no es válido.', 'error'); return; }
+
+    const sapIn   = (container.querySelector('#t-codigosap').value || '').trim().toUpperCase();
+    const sapPrev = String(actual.codigoSap || actual.id || '').trim().toUpperCase();
+    if (sapPrev && !sapIn) { showAlert('El Código SAP es obligatorio.', 'error'); return; }
+    if (sapIn && (db2.transports || []).some(t => t.id !== editingTransportId &&
+        (String(t.codigoSap || '').trim().toUpperCase() === sapIn || String(t.id || '').trim().toUpperCase() === sapIn))) {
+      showAlert(`El Código SAP ${sapIn} ya está usado por otro transportista.`, 'error'); return;
+    }
+
+    // Recodificación en BD (sólo si cambió el código)
+    let nuevoId = actual.id, msgSap = '';
+    if (sapIn && sapIn !== sapPrev) {
+      if (btnSave) btnSave.disabled = true;
+      const { data, error } = await supabase.rpc('fn_transportista_recodificar', { p_id: actual.id, p_codigo: sapIn });
+      if (btnSave) btnSave.disabled = false;
+      if (error) { showAlert('No se pudo cambiar el Código SAP: ' + error.message, 'error'); return; }
+      const r = data || {};
+      if (r.rekey) { nuevoId = r.id; msgSap = ` Código SAP e ID interno re-asignados a ${r.id}.`; }
+      else { msgSap = ` Código SAP actualizado a ${sapIn}; el ID interno sigue siendo ${actual.id} porque ya tiene historial${(r.detalle || []).length ? ' (' + r.detalle.join(', ') + ')' : ''}.`; }
+    }
+
     db2.transports[idx] = {
-      ...db2.transports[idx],
+      ...actual,
       // (4-oct-2026) Nombres en MAYÚSCULA; teléfono y correo se completan sobre la nómina SAP.
+      id:          nuevoId,
+      codigoSap:   sapIn || actual.codigoSap || null,
       razonSocial: container.querySelector('#t-razonsocial').value.replace(/\s+/g, ' ').trim().toUpperCase(),
       direccion:   container.querySelector('#t-direccion').value.trim(),
       telefono:    container.querySelector('#t-telefono').value.trim(),
       email:       container.querySelector('#t-email').value.trim().toLowerCase(),
       ownerEmail:  container.querySelector('#t-email').value.trim().toLowerCase(),
-      rut:         rutIn || db2.transports[idx].rut || null,
+      rut:         rutIn || null,
       tipo_servicio: container.querySelector('#t-tipo').value,
     };
+    editingTransportId = nuevoId;
     const faltan = faltantesTransportista(db2.transports[idx]);
     saveDatabase(db2, { syncOnly: ['transports', 'transportsCamiones', 'transportsChoferes'] });
-    showAlert(faltan.length ? `Guardado. Queda BLOQUEADO hasta completar: ${faltan.join(', ')}.` : 'Transportista actualizado y activo.', faltan.length ? 'error' : 'success');
+    showAlert((faltan.length ? `Guardado. Queda BLOQUEADO hasta completar: ${faltan.join(', ')}.` : 'Transportista actualizado y activo.') + msgSap, faltan.length ? 'error' : 'success');
     closeEdit();
     renderTransportsView(container);
   });
@@ -559,7 +598,7 @@ function renderProveedoresTable(db, tipoFiltro, textoBusqueda) {
     tr.className = 'border-b border-outline-variant hover:bg-surface-container-low transition-colors';
     tr.innerHTML = `
       <td class="p-md">${tipoBadge}</td>
-      <td class="p-md font-data-mono text-sm">${escapeHtml(p.codigoSap || p.id || '')}</td>
+      <td class="p-md font-data-mono text-sm">${escapeHtml(p.codigoSap || p.id || '')}${p.codigoSap && String(p.codigoSap).trim() !== String(p.id).trim() ? `<div class="text-[10px] text-secondary font-normal" title="ID interno con el que quedó registrado el historial">ID ${escapeHtml(p.id || '')}</div>` : ''}</td>
       <td class="p-md font-bold">${escapeHtml(p.razonSocial||'')}</td>
       <td class="p-md font-data-mono text-sm">${escapeHtml(p.rut||'')}</td>
       <td class="p-md">${flotaInfo}</td>
@@ -608,22 +647,36 @@ function renderProveedoresTable(db, tipoFiltro, textoBusqueda) {
         document.getElementById('t-direccion').value   = t.direccion   || '';
         document.getElementById('t-telefono').value    = t.telefono    || '';
         document.getElementById('t-email').value       = t.email       || '';
-        document.getElementById('t-tipo').value        = t.tipo_servicio || 'ULTIMA_MILLA';
+        // (2-nov-2026) tipo_servicio se guardó con y sin guion bajo ('ULTIMA MILLA' / 'ULTIMA_MILLA').
+        document.getElementById('t-tipo').value        = String(t.tipo_servicio || '').toUpperCase().includes('TRONCAL') ? 'TRONCAL' : 'ULTIMA_MILLA';
         document.getElementById('transport-modal-title').textContent = 'Editar Transportista';
-        // Bloquear campos de identidad (el RUT queda editable mientras esté vacío: viene sin RUT desde la nómina SAP)
-        const rutEl = document.getElementById('t-rut');
-        rutEl.disabled = false;
-        rutEl.className = 'w-full border border-[#CED4DA] p-sm font-body-md text-body-md focus:border-primary rounded bg-white';
-        document.getElementById('t-rut-lock-msg')?.classList.add('hidden');
-        (t.rut ? ['t-rut','t-patente','t-codigosap'] : ['t-patente','t-codigosap']).forEach(fid => {
+        // (2-nov-2026, Jordan) El maestro es editable: RUT, Código SAP, razón social y datos de
+        // contacto se corrigen desde aquí. Sólo la patente queda bloqueada (se gestiona en la
+        // Ficha de Transporte, que es la dueña de los camiones).
+        ['t-rut', 't-codigosap'].forEach(fid => {
+          const el = document.getElementById(fid);
+          el.disabled = false;
+          el.className = 'w-full border border-[#CED4DA] p-sm font-body-md text-body-md focus:border-primary rounded bg-white';
+        });
+        ['t-rut-lock-msg'].forEach(fid => document.getElementById(fid)?.classList.add('hidden'));
+        ['t-patente'].forEach(fid => {
           const el = document.getElementById(fid);
           el.disabled = true;
           el.className = 'w-full border border-outline-variant p-sm font-body-md text-body-md rounded bg-[#E9ECEF] text-secondary cursor-not-allowed';
         });
-        (t.rut ? ['t-rut-lock-msg','t-patente-lock-msg','t-sap-lock-msg'] : ['t-patente-lock-msg','t-sap-lock-msg']).forEach(fid => {
+        ['t-patente-lock-msg'].forEach(fid => {
           const el = document.getElementById(fid);
           if (el) { el.classList.remove('hidden'); el.classList.add('flex'); }
         });
+        // ID interno: se muestra sólo cuando ya no coincide con el Código SAP (transportista con historial).
+        const idNote = document.getElementById('t-id-interno');
+        const idVal  = document.getElementById('t-id-interno-val');
+        if (idNote && idVal) {
+          const distinto = t.codigoSap && String(t.codigoSap).trim() !== String(t.id).trim();
+          idVal.textContent = `ID interno: ${t.id}`;
+          idNote.classList.toggle('hidden', !distinto);
+          idNote.classList.toggle('flex', !!distinto);
+        }
         editModal.classList.remove('pointer-events-none','opacity-0');
         editModal.querySelector('.modal-window').classList.remove('scale-95');
       } else {
