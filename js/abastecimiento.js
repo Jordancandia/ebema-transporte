@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611020924';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611020924';
-import { getDatabase } from './data.js?v=202611020924';
+import { supabase } from './supabase-client.js?v=202611021234';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611021234';
+import { getDatabase } from './data.js?v=202611021234';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611020924';
-import { confirmar, pedirDato } from './confirmar.js?v=202611020924';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611021234';
+import { confirmar, pedirDato } from './confirmar.js?v=202611021234';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -2193,16 +2193,41 @@ const LEYENDA_PV4000 = 'PEDIDO DE VENTA, EMITIR GUIA FACTURABLE';
 const leyendaPv4000Pill = corto => `<span class="sv-pill warn" title="${LEYENDA_PV4000}: pedido de venta del Stock Almacén 4000 coordinado como venta directa" style="white-space:normal;line-height:1.2"><i></i>${corto ? 'PV · EMITIR GUÍA FACTURABLE' : LEYENDA_PV4000}</span>`;
 const destinosPlan = () => (CALENDARIOS['1003'] && CALENDARIOS['1003'].destinos) || CENTROS_QUIEBRES;
 const ceAltDe = co => String((co && co.ce_alternativo) ?? '').trim();
-function cantAjustada(co, material, pend) {
+// (2-nov-2026, Jordan) REPARTOS SAP: una misma posición puede venir partida en varias fechas de
+// entrega (p. ej. NV 1062020 pos 10: 300 un al 03.11, 300 al 12.11, 140 al 26.11). Las claves de
+// coordinación (lineas / entregas) admiten «material|DD.MM.YYYY» (un reparto) además de «material»
+// (toda la posición, formato anterior a este cambio). Reglas de búsqueda:
+//   · con fecha: primero la clave del reparto, si no existe la del material (compatibilidad);
+//   · sin fecha y guardado por repartos: se suman las cantidades (o se toma la 1ª entrega).
+function numLineaRep(obj, material, fecha) {
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return undefined;
+  const m = String(material ?? '').trim(), f = String(fecha ?? '').trim(), has = k => Object.prototype.hasOwnProperty.call(obj, k);
+  if (f && has(`${m}|${f}`)) return Number(obj[`${m}|${f}`]);
+  if (has(m)) return Number(obj[m]);
+  const ks = Object.keys(obj).filter(k => k.startsWith(m + '|'));
+  if (!ks.length) return undefined;
+  if (f) return undefined;                       // reparto pedido y no guardado → no se carga
+  return ks.reduce((a, k) => a + (Number(obj[k]) || 0), 0);
+}
+function txtLineaRep(obj, material, fecha) {
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return '';
+  const m = String(material ?? '').trim(), f = String(fecha ?? '').trim();
+  if (f) { const v = String(obj[`${m}|${f}`] ?? '').trim(); if (v) return v; }
+  const v2 = String(obj[m] ?? '').trim();
+  if (v2) return v2;
+  const k = Object.keys(obj).find(k2 => k2.startsWith(m + '|') && String(obj[k2] ?? '').trim());
+  return k ? String(obj[k]).trim() : '';
+}
+function cantAjustada(co, material, pend, fecha) {
   const l = co && co.lineas;
   if (!l || typeof l !== 'object' || Array.isArray(l)) return pend;
-  const v = Number(l[String(material ?? '').trim()]);
+  const v = numLineaRep(l, material, fecha);
   return Number.isFinite(v) && v > 0 ? Math.min(v, pend) : 0;
 }
 // (28-oct-2026, Jordan) NV coordinada: N° de entrega SAP por material (coordinacion.entregas = { material: entrega });
 // el material sin entrega propia usa la del encabezado (n_entrega). Una NV puede tener varias entregas.
-const entregaLineaV = (co, material) => { const e = co && co.entregas;
-  const v = e && typeof e === 'object' && !Array.isArray(e) ? String(e[String(material ?? '').trim()] ?? '').trim() : '';
+const entregaLineaV = (co, material, fecha) => {
+  const v = txtLineaRep(co && co.entregas, material, fecha);
   return v || String((co && co.n_entrega) ?? '').trim(); };
 function entregasCoordV(co) {
   const out = new Set(), h = String((co && co.n_entrega) ?? '').trim(), e = co && co.entregas;
@@ -2213,10 +2238,10 @@ function entregasCoordV(co) {
 // Coordinación «despachada»: TODAS sus entregas tienen DT.
 const coordConDtV = (co, conDt) => { const es = entregasCoordV(co); return es.length > 0 && !!conDt && es.every(e => conDt.has(e)); };
 // (28-oct-2026, Jordan) Unidades editadas de una NV SIN tope en el pendiente SAP (pueden superar lo disponible).
-function cantLineasV(co, material, pend) {
+function cantLineasV(co, material, pend, fecha) {
   const l = co && co.lineas;
   if (!l || typeof l !== 'object' || Array.isArray(l)) return pend;
-  const v = Number(l[String(material ?? '').trim()]);
+  const v = numLineaRep(l, material, fecha);
   return Number.isFinite(v) && v > 0 ? v : 0;
 }
 // items: [{ material, nombre, pend, tonU }]  · st: { cant: Map(material → texto), ceAlt, ceOrig, errCarga }
@@ -3728,10 +3753,12 @@ const VISTAS_TRONCAL = {
     noBuscar: true,
     expand: {
       key: 'doc_ventas', idKey: 'doc_ventas',
-      headers: ['Pedido de Venta','ID Vendedor','Ruta','Comuna Destino','Región Destino','ID Material','Nombre Material','Cantidad Pendiente','Ton SKU'],
+      headers: ['Pedido de Venta','ID Vendedor','Ruta','Comuna Destino','Región Destino','ID Material','Nombre Material','Fecha Reparto','Cantidad Pendiente','Ton SKU'],
       build(row) {
         return (row._detalle || []).map(d => [
-          d.doc_ventas, d.deudor, d.ruta, d.comuna, d.region, d.material, d.nombre, fmtNum(d.pendiente, 0), fmtNum(d.ton, 3),
+          d.doc_ventas, d.deudor, d.ruta, d.comuna, d.region, d.material, d.nombre,
+          ((d._reps || []).length > 1 ? (d._reps || []).map(x => x.fecha).join(' · ') : (d.fecha || '')),
+          fmtNum(d.pendiente, 0), fmtNum(d.ton, 3),
         ]);
       },
     },
@@ -3740,17 +3767,18 @@ const VISTAS_TRONCAL = {
       const base = rows
         .filter(r => !String(r.mr ?? '').trim())
         .filter(r => String(r.ruta ?? '').trim() !== '');
-      // 2) Dedup doc_ventas+material → fecha de entrega más lejana
+      // 2) (2-nov-2026, Jordan) REPARTOS: el SQVI parte una posición en varias fechas de entrega.
+      //    Antes se conservaba UNA sola línea por doc+material (la de fecha más lejana), así que de
+      //    la NV 1062020 (3 repartos: 300 un al 03.11, 300 al 12.11, 140 al 26.11) sólo se veía el
+      //    último. Ahora cada reparto es una línea propia (doc|pos|material|fecha) y sólo se
+      //    descartan los duplicados exactos de la corrida (prima el que tiene pendiente).
       const dedup = new Map();
       base.forEach(r => {
-        const k = `${r.doc_ventas}|${r.material}`;
+        const k = `${String(r.doc_ventas ?? '').trim()}|${String(r.pos ?? '').trim()}|${String(r.material ?? '').trim()}|${String(r.fe_entrega ?? '').trim()}`;
         const ex = dedup.get(k);
         if (!ex) { dedup.set(k, r); return; }
-        // (11-oct-2026) Repartos SAP: prima la fila con pendiente > 0; a igualdad, la fecha más lejana.
         const pN = parseNum(r.ctd_confirmada) - parseNum(r.cantidad_entrg) > 0, pO = parseNum(ex.ctd_confirmada) - parseNum(ex.cantidad_entrg) > 0;
-        if (pN !== pO) { if (pN) dedup.set(k, r); return; }
-        const dNew = parseDateSAP(r.fe_entrega), dOld = parseDateSAP(ex.fe_entrega);
-        if (dNew && (!dOld || dNew >= dOld)) dedup.set(k, r);
+        if (pN && !pO) dedup.set(k, r);
       });
       // 3) Excluir líneas ya entregadas (entregada == confirmada); pendiente = conf - entreg
       const lineas = [];
@@ -3777,14 +3805,33 @@ const VISTAS_TRONCAL = {
         const f = items[0];
         let ton = 0, parcial = false;
         let fmax = null;
-        const detalle = items.map(r => {
+        // (2-nov-2026, Jordan) REPARTOS: el SQVI trae una línea por reparto (posición + fecha). El
+        // detalle del pedido sigue siendo UNA fila por posición (es lo que leen el editor de
+        // coordinación y «Agregar camión»), con la suma de sus repartos pendientes y el desglose en
+        // _reps. La fecha de la posición es su reparto MÁS PRÓXIMO (el primer despacho por hacer) y
+        // la del pedido, la más tardía de sus posiciones.
+        items.sort((a, b) => {
+          const da = parseDateSAP(a.fe_entrega), db3 = parseDateSAP(b.fe_entrega);
+          return (da || new Date(9999, 0)) - (db3 || new Date(9999, 0));
+        });
+        const porPos = new Map();
+        items.forEach(r => {
           ton += r._ton;
           if (r._parcial) parcial = true;
-          const d = parseDateSAP(r.fe_entrega);
-          if (d && (!fmax || d > fmax)) fmax = d;
-          return { doc_ventas: doc, deudor: r.deudor, ruta: r.ruta, comuna: r._comuna, region: r._region,
-                   material: r.material, nombre: r.denominacion_de_posicion, pendiente: r._pend, ton: r._ton, conf: r._conf, entreg: r._entreg };
+          const kp = `${String(r.pos ?? '').trim()}|${String(r.material ?? '').trim()}`;
+          const ex = porPos.get(kp);
+          if (!ex) {
+            porPos.set(kp, { doc_ventas: doc, deudor: r.deudor, ruta: r.ruta, comuna: r._comuna, region: r._region,
+              material: r.material, nombre: r.denominacion_de_posicion, pendiente: r._pend, ton: r._ton,
+              conf: r._conf, entreg: r._entreg, pos: String(r.pos ?? '').trim(), fecha: r.fe_entrega,
+              _reps: [{ fecha: r.fe_entrega, pendiente: r._pend, ton: r._ton, conf: r._conf }] });
+            return;
+          }
+          ex.pendiente += r._pend; ex.ton += r._ton; ex.conf += r._conf; ex.entreg += r._entreg;
+          ex._reps.push({ fecha: r.fe_entrega, pendiente: r._pend, ton: r._ton, conf: r._conf });
         });
+        const detalle = [...porPos.values()];
+        detalle.forEach(d => { const dd = parseDateSAP(d.fecha); if (dd && (!fmax || dd > fmax)) fmax = dd; });
         const feLbl = fmax ? `${String(fmax.getDate()).padStart(2,'0')}.${String(fmax.getMonth()+1).padStart(2,'0')}.${fmax.getFullYear()}` : f.fe_entrega;
         const al = alertaFecha(feLbl, 5);
         // Descarga en camino: si la comuna del pedido (según maestro de rutas)
@@ -4646,7 +4693,9 @@ const V2 = {
         r._ce_alt = ceAltDe(r._coord);
         r._ce_plan = r._ce_alt || String(r.ofvta ?? '').trim();
         r._lineas_aj = !!(r._coord && r._coord.lineas && typeof r._coord.lineas === 'object');
-        r._ton_plan = (r._detalle || []).reduce((s, d) => s + (d.pendiente > 0 ? (d.ton || 0) * cantLineasV(r._coord, d.material, d.pendiente) / d.pendiente : 0), 0);
+        // (2-nov-2026, Jordan) El pedido tiene posiciones partidas en varios repartos SAP.
+        r._con_repartos = (r._detalle || []).some(d => (d._reps || []).length > 1);
+        r._ton_plan = (r._detalle || []).reduce((s, d) => s + (d.pendiente > 0 ? (d.ton || 0) * cantLineasV(r._coord, d.material, d.pendiente, d.fecha) / d.pendiente : 0), 0);
         r._dia_obj = ctx.diaObj(r._ce_plan);
         const fp = parseDateSAP(r._fecha_plan);
         r._plan = !r._coord ? 'SIN_COORD' : (fp && fp.getTime() <= r._dia_obj.getTime() ? 'EN_PLAN' : 'PROGRAMADO');
@@ -4791,12 +4840,21 @@ const V2 = {
           c ? ['Coordinado por', `${c.updated_by || c.created_by || ''}${c.updated_at ? ' · ' + horaChile(c.updated_at) : ''}`] : null,
         ],
         tabla: {
+          // (2-nov-2026, Jordan) Con repartos SAP se agrega la columna «Repartos» con el desglose de
+          // fechas y cantidades de la posición (ej. 1062020: 300 al 03.11, 300 al 12.11, 140 al 26.11).
           titulo: `${(r._detalle || []).length} ${(r._detalle || []).length === 1 ? 'material pendiente' : 'materiales pendientes'}`,
-          head: r._lineas_aj ? [['Material'], ['Descripción'], ['Pendiente', 'r'], ['A cargar', 'r'], ['Ton', 'r']] : [['Material'], ['Descripción'], ['Cantidad', 'r'], ['Ton', 'r']],
-          rows: (r._detalle || []).map(d => { const q = cantLineasV(r._coord, d.material, d.pendiente);
-            const eL = r._coord && r._coord.entregas && r._coord.entregas[String(d.material).trim()] ? `<div class="sv-sub" style="margin:0">Ent. ${escV2(r._coord.entregas[String(d.material).trim()])}</div>` : '';
-            return r._lineas_aj ? [mono(d.material) + eL, escV2(d.nombre), escV2(fmtNum(d.pendiente, 0)), `<b>${escV2(fmtNum(q, q % 1 ? 2 : 0))}</b>`, `<span class="sv-ton">${tonHtml(d.pendiente > 0 ? d.ton * q / d.pendiente : 0)}</span>`]
-              : [mono(d.material), escV2(d.nombre), escV2(fmtNum(d.pendiente, 0)), `<span class="sv-ton">${tonHtml(d.ton)}</span>`]; }),
+          head: (() => { const base2 = [['Material'], ['Descripción']];
+            if (r._con_repartos) base2.push(['Repartos']);
+            return r._lineas_aj ? base2.concat([['Pendiente', 'r'], ['A cargar', 'r'], ['Ton', 'r']]) : base2.concat([['Cantidad', 'r'], ['Ton', 'r']]); })(),
+          rows: (r._detalle || []).map(d => { const q = cantLineasV(r._coord, d.material, d.pendiente, d.fecha);
+            const ent = txtLineaRep(r._coord && r._coord.entregas, d.material, d.fecha);
+            const eL = ent ? `<div class="sv-sub" style="margin:0">Ent. ${escV2(ent)}</div>` : '';
+            const reps = d._reps || [];
+            const col3 = r._con_repartos ? [reps.length > 1
+              ? reps.map(x => `${mono(x.fecha)} <span class="sv-sub" style="display:inline;margin:0">${escV2(fmtNum(x.pendiente, 0))} un</span>`).join('<br>')
+              : mono(d.fecha || '—')] : [];
+            return r._lineas_aj ? [mono(d.material) + eL, escV2(d.nombre)].concat(col3, [escV2(fmtNum(d.pendiente, 0)), `<b>${escV2(fmtNum(q, q % 1 ? 2 : 0))}</b>`, `<span class="sv-ton">${tonHtml(d.pendiente > 0 ? d.ton * q / d.pendiente : 0)}</span>`])
+              : [mono(d.material), escV2(d.nombre)].concat(col3, [escV2(fmtNum(d.pendiente, 0)), `<span class="sv-ton">${tonHtml(d.ton)}</span>`]); }),
         },
         nota: r._directo ? 'Camión directo al cliente (CD-Cliente)' : '2º en el orden de llenado del camión CD',
         acciones,
@@ -6682,7 +6740,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611020924');
+    const m = await import('./ind-plan-carga.js?v=202611021234');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -7176,14 +7234,10 @@ async function renderPlanCarga(stage, opts = {}) {
     const entCo = [...new Set([...coordVentas.values()].flatMap(c => entregasCoordV(c)))];
     let conDt = new Set();
     if (entCo.length) { const { data } = await supabase.from('abast_dt_dia').select('entrega').in('entrega', entCo); conDt = new Set((data || []).map(x => tx(x.entrega))); }
-    const bkPorDoc = new Map();
-    bkVen.forEach(r => { const d = tx(r.doc_ventas); if (!bkPorDoc.has(d)) bkPorDoc.set(d, []); bkPorDoc.get(d).push(r); });
-    const usarBk = new Set([...bkPorDoc.keys()].filter(d => { const co = coordVentas.get(d); return !!co && !coordConDtV(co, conDt); }));
+    // (2-nov-2026, Jordan) Respaldo POR POSICIÓN. Las entregas ya cargadas en planes anteriores se
+    // descuentan más abajo (cargadosEnt), por eso aquí va null.
     const lin = ventasCoordLin(coordVentas, conDt);
-    if (usarBk.size) {
-      for (let i = ventasRaw.length - 1; i >= 0; i--) { const d = tx(ventasRaw[i].doc_ventas); if (usarBk.has(d) && !lin.has(d)) ventasRaw.splice(i, 1); }
-      usarBk.forEach(d => bkPorDoc.get(d).forEach(r => ventasRaw.push({ ...r, _respaldo: true })));
-    }
+    reponerCoordPorPosicion(ventasRaw, coordVentas, bkVen, conDt, null, lin);
     aplicarVentasCoordLin(ventasRaw, lin);
   } catch (e) { console.warn('Plan de carga: respaldo de coordinaciones no disponible', e); }
   // (15-oct-2026, Jordan) OC calzada con centro 1003 cuyo pedido de venta es de una sucursal: el plan
@@ -7224,8 +7278,26 @@ async function renderPlanCarga(stage, opts = {}) {
       // (11-oct-2026, Jordan) NV: se descuenta por la ENTREGA coordinada (una NV re-coordinada con entrega
       // nueva porque la anterior no viajó vuelve al plan); sin entrega coordinada, por documento+material.
       // (28-oct-2026) Con entrega por posición: se descuenta cada línea por SU entrega.
-      const entCoord = (d, m) => { const co = coordVentas.get(d); return co ? entregaLineaV(co, m) : ''; };
-      for (let i = ventasRaw.length - 1; i >= 0; i--) { const d = tx(ventasRaw[i].doc_ventas), m = tx(ventasRaw[i].material), e = entCoord(d, m); if (e ? cargadosEnt.has(e) : cargados.has(`${d}|${m}`)) ventasRaw.splice(i, 1); }
+      const entCoord = (d, m, f) => { const co = coordVentas.get(d); return co ? entregaLineaV(co, m, f) : ''; };
+      // (2-nov-2026, Jordan) Posición con REPARTOS: el reparto que todavía tiene pendiente vivo no se
+      // descuenta por la entrega de otro reparto del mismo material que ya viajó (es el saldo por salir).
+      const nRepVivo = new Map();
+      ventasRaw.forEach(r2 => { const k2 = `${tx(r2.doc_ventas)}|${tx(r2.material)}`; const f2 = tx(r2.fe_entrega);
+        const st2 = nRepVivo.get(k2) || new Set(); st2.add(f2); nRepVivo.set(k2, st2); });
+      for (let i = ventasRaw.length - 1; i >= 0; i--) {
+        const r2 = ventasRaw[i], d = tx(r2.doc_ventas), m = tx(r2.material), f = tx(r2.fe_entrega);
+        const e = entCoord(d, m, f);
+        // (2-nov-2026, Jordan) La entrega del encabezado de la coordinación se hereda a cualquier
+        // material: se descuenta sólo si ESA línea (doc|material) fue la que viajó. Si el material
+        // nunca se cargó (ej. pos 20 de la 1058465, 2.946,8 kg), sigue pendiente en el plan.
+        const fueCargado = cargados.has(`${d}|${m}`);
+        const ya = fueCargado && (!e || cargadosEnt.has(e));
+        if (!ya) continue;
+        const pendVivo = !r2._coordLin && !r2._respaldo && parseNum(r2.ctd_confirmada) - parseNum(r2.cantidad_entrg) > 0;
+        const multiRep = (nRepVivo.get(`${d}|${m}`) || new Set()).size > 1;
+        if (pendVivo && multiRep) continue;
+        ventasRaw.splice(i, 1);
+      }
       for (let i = retirosRaw.length - 1; i >= 0; i--) if (cargados.has(`${tx(retirosRaw[i].doc_compr)}|${tx(retirosRaw[i].material)}`)) retirosRaw.splice(i, 1);
     }
   } catch (e) { console.warn('Plan de carga: no se pudo descontar lo ya programado en planes anteriores', e); }
@@ -7556,14 +7628,13 @@ async function renderPlanCarga(stage, opts = {}) {
       .filter(r => normTxt(r.ruta).indexOf('RETIRA') === -1)
       .filter(r => !estaExcluido(exclusionesPlan, 'venta_1003', r.doc_ventas, null))
       .forEach(r => {
-        const k = `${String(r.doc_ventas ?? '').trim()}|${String(r.material ?? '').trim()}`;
+        // (2-nov-2026, Jordan) REPARTOS: una línea por reparto (doc|pos|material|fecha). Antes se
+        // guardaba sólo una por doc+material y una NV con 3 repartos entraba al plan como uno solo.
+        const k = `${String(r.doc_ventas ?? '').trim()}|${String(r.pos ?? '').trim()}|${String(r.material ?? '').trim()}|${String(r.fe_entrega ?? '').trim()}`;
         const ex = _ventasDedupMap.get(k);
         if (!ex) { _ventasDedupMap.set(k, r); return; }
-        // (11-oct-2026) Repartos SAP: prima la fila con pendiente > 0; a igualdad, la fecha más lejana.
         const pN = parseNum(r.ctd_confirmada) - parseNum(r.cantidad_entrg) > 0, pO = parseNum(ex.ctd_confirmada) - parseNum(ex.cantidad_entrg) > 0;
-        if (pN !== pO) { if (pN) _ventasDedupMap.set(k, r); return; }
-        const dNew = parseDateSAP(r.fe_entrega), dOld = parseDateSAP(ex.fe_entrega);
-        if (dNew && (!dOld || dNew >= dOld)) _ventasDedupMap.set(k, r);
+        if (pN && !pO) _ventasDedupMap.set(k, r);
       });
     const ventasPorDoc = {};
     Array.from(_ventasDedupMap.values()).forEach(r => { const d = String(r.doc_ventas ?? '').trim(); (ventasPorDoc[d] = ventasPorDoc[d] || []).push(r); });
@@ -7589,16 +7660,25 @@ async function renderPlanCarga(stage, opts = {}) {
       const fc = parseISODate(co.fecha_entrega);
       const fechaTxt = fmtFechaISO(co.fecha_entrega);
       const items = [];
+      // (2-nov-2026, Jordan) REPARTOS: cada reparto trae su propia fecha de entrega SAP. El reparto
+      // más próximo es el que gobierna la coordinación (usa su fecha de entrega confirmada); los
+      // posteriores entran al plan cuyo día objetivo alcance SU fecha, de modo que una NV con 3
+      // repartos (ej. 1062020: 03.11 / 12.11 / 26.11) genere 3 despachos y no uno solo.
+      let fMinRep = null;
+      rowsDoc.forEach(r => { const d0 = parseDateSAP(r.fe_entrega); if (d0 && (!fMinRep || d0 < fMinRep)) fMinRep = d0; });
       rowsDoc.forEach(r => {
         // (18-oct-2026, Jordan) Unidades editadas al coordinar (nunca más que el pendiente SAP).
         const pend0 = parseNum(r.ctd_confirmada) - parseNum(r.cantidad_entrg);
-        const pend = r._saldo ? pend0 : r._coordLin ? cantLineasV(co, r.material, pend0) : cantAjustada(co, r.material, pend0);
+        const pend = r._saldo ? pend0 : r._coordLin ? cantLineasV(co, r.material, pend0, r.fe_entrega) : cantAjustada(co, r.material, pend0, r.fe_entrega);
         if (pend <= 0) return;
+        const dRep = parseDateSAP(r.fe_entrega);
+        const repPost = !!(dRep && fMinRep && dRep.getTime() > fMinRep.getTime());
+        if (repPost && dRep.getTime() > diaObjVentas.getTime()) return;   // reparto posterior: aún no toca
         const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), pend);
         if (t <= 0) return;
         const tonBruto = calcTon(parseNum(r.peso_neto), pend), tonVol = calcTon(parseNum(r.tamano_dimens), pend);
         const rl = lookupRuta(r.ruta);
-        items.push({ pv: doc, material: r.material, nombre: r.denominacion_de_posicion, cant: pend, ruta: r.ruta, comuna: rl.comuna, region: rl.region, fecha: fechaTxt, ton: t, tonBruto, tonVol, tipoExp: pv.denominacion || '', cliente: pv.nombre_1 || co.nombre_cliente || (String(r.solicitante ?? '').trim() ? 'ID ' + String(r.solicitante).trim() : ''), idCliente: String(r.solicitante ?? '').trim(), vendedor: pv.nombre || '', _manual: co.tipo_entrega, entrega: entregaLineaV(co, r.material), _ceOrig: ceAltDe(co) ? String(r.ofvta ?? '').trim() : '', _ajustada: pend < pend0 - 1e-9, _pendSap: pend0 });
+        items.push({ pv: doc, material: r.material, nombre: r.denominacion_de_posicion, cant: pend, ruta: r.ruta, comuna: rl.comuna, region: rl.region, fecha: repPost ? r.fe_entrega : fechaTxt, ton: t, tonBruto, tonVol, tipoExp: pv.denominacion || '', cliente: pv.nombre_1 || co.nombre_cliente || (String(r.solicitante ?? '').trim() ? 'ID ' + String(r.solicitante).trim() : ''), idCliente: String(r.solicitante ?? '').trim(), vendedor: pv.nombre || '', _manual: co.tipo_entrega, entrega: entregaLineaV(co, r.material, r.fe_entrega), _ceOrig: ceAltDe(co) ? String(r.ofvta ?? '').trim() : '', _ajustada: pend < pend0 - 1e-9, _pendSap: pend0 });
       });
       if (!items.length) continue;
       const enPlan = fc && fc.getTime() <= diaObjVentas.getTime();
@@ -9502,20 +9582,33 @@ async function renderPlanCarga(stage, opts = {}) {
 // «COORDINADO» bloqueado en Ventas CD (sin coordinar/editar/anular/excluir; no se vuelve a considerar),
 // mientras el SQVI la siga trayendo. Si el SQVI ya no la trae, sale de la vista (se entiende entregada).
 const VENTAS_PROGRAMADAS = new Map();   // doc_ventas → { fecha_carga, fecha_plan, patente, transportista, ce, tipo }
+// (2-nov-2026, Jordan) N° de entrega que YA viajaron: camión con patente de un plan anterior (o
+// coordinación directa COORD| con fecha de carga pasada). Mismo criterio que el Plan de Carga.
+const VENTAS_ENT_CARGADAS = new Set();
+const VENTAS_MAT_CARGADAS = new Set();   // «doc|material» efectivamente cargados en esos camiones
 async function cargarVentasProgramadas() {
   VENTAS_PROGRAMADAS.clear();
+  VENTAS_ENT_CARGADAS.clear();
+  VENTAS_MAT_CARGADAS.clear();
   const tx = v => String(v ?? '').trim();
-  const desde = isoLocal(new Date(hoy00().getTime() - 45 * 864e5));
+  const desde = isoLocal(new Date(hoy00().getTime() - 45 * 864e5)), hoyIsoProg = isoLocal(hoy00());
   const { data: cams, error } = await supabase.from('abast_seguimiento_camion')
-    .select('id,fecha_plan,fecha_carga,ce,tipo_camion,transportista,id_transporte,patente_camion').gte('fecha_plan', desde).limit(5000);
+    .select('id,clave,fecha_plan,fecha_carga,ce,tipo_camion,transportista,id_transporte,patente_camion').gte('fecha_plan', desde).limit(5000);
   if (error) throw error;
   const prog = (cams || []).filter(c => tx(c.patente_camion));   // programado = con patente
   const byId = new Map(prog.map(c => [c.id, c]));
   const ids = [...byId.keys()];
   for (let i = 0; i < ids.length; i += 10) {
-    const { data, error: e2 } = await supabase.from('abast_seguimiento_carga').select('camion_id,documento,pedido_venta,tipo_carga').in('camion_id', ids.slice(i, i + 10)).limit(5000);
+    const { data, error: e2 } = await supabase.from('abast_seguimiento_carga').select('camion_id,documento,pedido_venta,tipo_carga,n_entrega,material').in('camion_id', ids.slice(i, i + 10)).limit(5000);
     if (e2) throw e2;
     (data || []).forEach(l => {
+      const c0 = byId.get(l.camion_id);
+      if (c0 && String(c0.fecha_plan || '').slice(0, 10) < hoyIsoProg
+        && (!tx(c0.clave).startsWith('COORD|') || (tx(c0.fecha_carga) && tx(c0.fecha_carga).slice(0, 10) < hoyIsoProg))) {
+        if (tx(l.n_entrega)) VENTAS_ENT_CARGADAS.add(tx(l.n_entrega));
+        const dc = tx(l.documento) || tx(l.pedido_venta);
+        if (dc && tx(l.material)) VENTAS_MAT_CARGADAS.add(`${dc}|${tx(l.material)}`);
+      }
       if (!/venta/i.test(tx(l.tipo_carga))) return;          // sólo líneas de Pedidos de venta CD
       const doc = tx(l.documento) || tx(l.pedido_venta);
       if (!doc) return;
@@ -9538,22 +9631,14 @@ async function reponerVentasCoordinadas(ventasRaw) {
     const entCo = [...new Set([...coordVentas.values()].flatMap(c => entregasCoordV(c)))];
     let conDt = new Set();
     if (entCo.length) { const { data } = await supabase.from('abast_dt_dia').select('entrega').in('entrega', entCo); conDt = new Set((data || []).map(x => tx(x.entrega))); }
-    // (11-oct-2026, Jordan) NV coordinada: todas sus líneas vivas se reemplazan por el respaldo tomado al
-    // coordinar, hasta que la entrega coordinada tenga DT (mismo criterio que el Plan de Carga).
-    const bkPorDoc = new Map();
-    bkVen.forEach(r => { const d = tx(r.doc_ventas); if (!bkPorDoc.has(d)) bkPorDoc.set(d, []); bkPorDoc.get(d).push(r); });
-    // (15-oct-2026, Jordan) NV en camión programado cuya fecha de carga ya pasó y que en el SQVI vivo viene
-    // SIN pendiente (entrega creada por todo lo confirmado) → se entiende despachada aunque SAP no cierre la
-    // NV ni haya DT (p. ej. CD-Cliente): no se repone desde el respaldo y sale de la vista.
-    const hoyIso = isoLocal(hoy00());
-    const sinPendVivo = d => { const ls = ventasRaw.filter(r => tx(r.doc_ventas) === d && !r._respaldo);
-      return ls.length > 0 && ls.every(r => parseNum(r.ctd_confirmada) - parseNum(r.cantidad_entrg) <= 0); };
-    const despachada = d => { const p = VENTAS_PROGRAMADAS.get(d); return !!p && String(p.fecha_carga || '').slice(0, 10) < hoyIso && sinPendVivo(d); };
-    const usarBk = new Set([...bkPorDoc.keys()].filter(d => { const co = coordVentas.get(d); return !!co && !coordConDtV(co, conDt)
-      && !(VENTAS_PROGRAMADAS.has(d) && !docsLive.has(d)) && !despachada(d); }));
+    // (2-nov-2026, Jordan) Respaldo POR POSICIÓN (ver reponerCoordPorPosicion). Antes se reemplazaba el
+    // pedido completo por el respaldo mientras la entrega no tuviera DT: una NV con una posición ya
+    // despachada y otra pendiente (ej. 1058465) seguía apareciendo entera. Ahora cada posición se evalúa
+    // por separado y la que ya viajó en un camión programado sale de la vista aunque no haya llegado su DT.
     const lin = ventasCoordLin(coordVentas, conDt);
-    for (let i = ventasRaw.length - 1; i >= 0; i--) { const d = tx(ventasRaw[i].doc_ventas); if (usarBk.has(d) && !lin.has(d)) ventasRaw.splice(i, 1); }
-    usarBk.forEach(d => bkPorDoc.get(d).forEach(r => ventasRaw.push({ ...r, _respaldo: true })));
+    // (15-oct-2026, Jordan) NV programada que ya no viene en el SQVI → se entiende entregada: no se repone.
+    const bkUsable = bkVen.filter(r => { const d = tx(r.doc_ventas); return !(VENTAS_PROGRAMADAS.has(d) && !docsLive.has(d)); });
+    reponerCoordPorPosicion(ventasRaw, coordVentas, bkUsable, conDt, VENTAS_ENT_CARGADAS, lin, VENTAS_MAT_CARGADAS);
     aplicarVentasCoordLin(ventasRaw, lin);
   } catch (e) { console.warn('Ventas CD: respaldo de NV coordinadas no disponible', e); }
 }
@@ -9568,6 +9653,49 @@ function ventasCoordLin(coordVentas, conDt) {
     if (l && typeof l === 'object' && !Array.isArray(l) && !coordConDtV(co, conDt)) out.add(tx(d));
   });
   return out;
+}
+// (2-nov-2026, Jordan) RESPALDO DE NV COORDINADAS **POR POSICIÓN** (antes: por pedido completo).
+// Para cada posición de una NV coordinada que aún no tiene DT:
+//   1) si en el SQVI vivo todavía tiene pendiente → manda la línea viva (es el saldo por despachar);
+//   2) si no tiene pendiente y su entrega YA viajó en un camión programado de un plan anterior → se
+//      saca de la vista (ya salió) y no se repone;
+//   3) si no tiene pendiente y su entrega aún no viaja → se repone desde el respaldo (SAP creó la
+//      entrega y la carga está por hacerse).
+// Antes se reemplazaba el pedido COMPLETO por el respaldo mientras la entrega no tuviera DT, así que
+// una NV con una posición ya despachada y otra pendiente seguía apareciendo entera (ej. 1058465: las
+// pos 10 y 30 salieron el 26.10 en el camión 466 y sólo quedaban 2.946,8 kg de la pos 20).
+// cargadasEnt = Set de N° de entrega que ya viajaron (null = el llamador los descuenta después).
+// cargadasPos = Set «doc|material» de las líneas que realmente iban en ese camión: la entrega del
+// ENCABEZADO de la coordinación se hereda a cualquier material, así que sin este filtro una posición
+// que nunca se cargó (la pos 20 de la 1058465) se daría por despachada por la entrega de otra.
+function reponerCoordPorPosicion(ventasRaw, coordVentas, bkVen, conDt, cargadasEnt, lin, cargadasPos) {
+  const tx = v => String(v ?? '').trim();
+  const pendDe = r => parseNum(r.ctd_confirmada) - parseNum(r.cantidad_entrg);
+  const kPos = r => `${tx(r.doc_ventas)}|${tx(r.pos)}|${tx(r.material)}`;
+  const bkPorDoc = new Map();
+  (bkVen || []).forEach(r => { const d = tx(r.doc_ventas); if (!bkPorDoc.has(d)) bkPorDoc.set(d, []); bkPorDoc.get(d).push(r); });
+  // Pendiente vivo máximo por posición: con repartos basta que UNO tenga saldo para que manden los vivos.
+  const pendPos = new Map();
+  ventasRaw.forEach(r => { if (r._respaldo) return; const k = kPos(r);
+    pendPos.set(k, Math.max(pendPos.has(k) ? pendPos.get(k) : -Infinity, pendDe(r))); });
+  const quitar = new Set(), agregar = [];
+  bkPorDoc.forEach((filas, doc) => {
+    const co = coordVentas.get(doc);
+    if (!co || coordConDtV(co, conDt)) return;            // sin coordinar o ya con DT → nada que reponer
+    filas.forEach(b => {
+      const k = kPos(b), hayVivo = pendPos.has(k);
+      if (hayVivo && pendPos.get(k) > 0) return;                                              // 1)
+      const ent = entregaLineaV(co, b.material, b.fe_entrega);
+      const matFue = !cargadasPos || cargadasPos.has(`${tx(b.doc_ventas)}|${tx(b.material)}`);
+      if (ent && cargadasEnt && cargadasEnt.has(ent) && matFue) { if (hayVivo) quitar.add(k); return; }  // 2)
+      if (lin && lin.has(doc) && hayVivo) return;         // unidades editadas: manda la línea viva
+      if (hayVivo) quitar.add(k);
+      agregar.push(b);                                                                         // 3)
+    });
+  });
+  if (quitar.size) for (let i = ventasRaw.length - 1; i >= 0; i--)
+    if (!ventasRaw[i]._respaldo && quitar.has(kPos(ventasRaw[i]))) ventasRaw.splice(i, 1);
+  agregar.forEach(b => ventasRaw.push({ ...b, _respaldo: true }));
 }
 function aplicarVentasCoordLin(ventasRaw, lin) {
   if (!lin || !lin.size) return;
