@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611031135';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611031135';
-import { getDatabase } from './data.js?v=202611031135';
+import { supabase } from './supabase-client.js?v=202611031316';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611031316';
+import { getDatabase } from './data.js?v=202611031316';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611031135';
-import { confirmar, pedirDato } from './confirmar.js?v=202611031135';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611031316';
+import { confirmar, pedirDato } from './confirmar.js?v=202611031316';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -4877,10 +4877,20 @@ const V2 = {
         // si alguna todavía no viajó, el pedido sigue coordinado y la fila no es saldo.
         const _coordsV = [r._coord, ...((r._coord_reps && [...r._coord_reps.values()]) || [])].filter(Boolean);
         const _entCoV = [...new Set(_coordsV.flatMap(c => entregasCoordV(c)).map(e => String(e ?? '').trim()).filter(Boolean))];
-        r._saldoSinCoord = !!(r._coord && _entCoV.length && _entCoV.every(e => VENTAS_ENT_CARGADAS.has(e))
-          && (r._detalle || []).some(d => (Number(d.pendiente) || 0) > 0));
-        r._viajo = r._saldoSinCoord ? (VENTAS_PROGRAMADAS.get(doc) || null) : null;
-        r._cargada = (r._saldoAct || r._saldoSinCoord) ? null : (VENTAS_PROGRAMADAS.get(doc) || null);   // saldo activo o saldo sin coordinar → editable
+        // (3-nov-2026, Jordan) Ninguna NV queda coordinada sin una acción manual de coordinación. El saldo
+        // es SALDO SIN COORDINAR en dos casos: (a) la coordinación sigue viva pero todas sus entregas ya
+        // viajaron, y (b) la coordinación fue anulada y la NV sólo figura en un camión que YA viajó. Antes
+        // el caso (b) exigía r._coord, así que al anular la coordinación la NV caía en «COORDINADO ·
+        // en camión programado · bloqueado» por el camión viejo, en vez de quedar como saldo (NV 1060015).
+        // El bloqueo del 14-oct sigue intacto para el camión programado de HOY o de días futuros.
+        const _prog = VENTAS_PROGRAMADAS.get(doc) || null;
+        const _progViajo = !!(_prog && String(_prog.fecha_carga || '').slice(0, 10) < isoLocal(hoy00()));
+        const _tienePendV = (r._detalle || []).some(d => (Number(d.pendiente) || 0) > 0);
+        r._saldoSinCoord = !!(_tienePendV && (
+          (r._coord && _entCoV.length && _entCoV.every(e => VENTAS_ENT_CARGADAS.has(e)))
+          || (!_coordsV.length && _progViajo)));
+        r._viajo = r._saldoSinCoord ? _prog : null;
+        r._cargada = (r._saldoAct || r._saldoSinCoord) ? null : _prog;   // saldo activo o saldo sin coordinar → editable
         if (r._cargada) r._plan = 'CARGADA';
         else if (r._saldoSinCoord) r._plan = 'SALDO';
       });
@@ -6999,7 +7009,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611031135');
+    const m = await import('./ind-plan-carga.js?v=202611031316');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
