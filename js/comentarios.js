@@ -9,8 +9,8 @@
 // Permisos: ver = perfiles internos; comentar / responder / me gusta =
 // privilegio COMENTAR (can('comentar')); ocultar comentario = OWNER.
 // ============================================================================
-import { supabase } from './supabase-client.js?v=202611021533';
-import { can, esOwner, perfilVeMenu } from './permisos.js?v=202611021533';
+import { supabase } from './supabase-client.js?v=202611031120';
+import { can, esOwner, perfilVeMenu } from './permisos.js?v=202611031120';
 import { showAlert } from './utils.js';
 
 export const VISTAS_COMENTARIOS = {
@@ -356,6 +356,9 @@ const TIPO = {
   prioridad_solicitud: { icon: 'priority_high', bg: '#fff4e5', fg: '#c2410c', txt: 'solicita evaluar PRIORIDAD de carga en' },
   prioridad_aceptada:  { icon: 'check_circle',  bg: '#e6f4ea', fg: '#137333', txt: 'aceptó tu PRIORIDAD de carga en' },
   prioridad_rechazada: { icon: 'block',         bg: '#fde8e8', fg: '#b91c1c', txt: 'rechazó tu PRIORIDAD de carga en' },
+  // (3-nov-2026, Jordan) Control automático: coordinación cuya entrega ya viajó y la NV sigue con saldo
+  // pendiente. Ese saldo NO está coordinado y no debe entrar a camiones futuros.
+  coord_viajada: { icon: 'warning', bg: '#fff4e5', fg: '#c2410c', txt: 'detectó una coordinación ya viajada con saldo pendiente en' },
 };
 let _timer = null;
 export async function initCampana(slot, { navegar }) {
