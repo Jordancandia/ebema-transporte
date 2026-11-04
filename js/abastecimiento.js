@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611041434';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611041434';
-import { getDatabase } from './data.js?v=202611041434';
+import { supabase } from './supabase-client.js?v=202611041954';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611041954';
+import { getDatabase } from './data.js?v=202611041954';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611041434';
-import { confirmar, pedirDato } from './confirmar.js?v=202611041434';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611041954';
+import { confirmar, pedirDato } from './confirmar.js?v=202611041954';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -1337,8 +1337,17 @@ async function validarPatenteDia({ patente, fecha, clave, docs = [] }) {
   const selfClaves = new Set(rows.filter(x => x.documento && self.has(String(x.documento).trim())).map(x => x.clave));
   const otras = rows.filter(x => x.clave !== clave && !selfClaves.has(x.clave) && !(x.documento && self.has(String(x.documento).trim())));
   if (!otras.length) return true;
+  // (4-nov-2026, Jordan) Camión mixto: el mismo camión pasa a fábrica (retiro Fábrica-Cliente) y luego carga en el CD
+  // (CD-Cliente: NV o PV Stock 4000) para entregar a más de un cliente. Esa combinación se permite si se confirma.
+  const esCliK = k => String(k).startsWith('CLI|'), esFcliK = k => String(k).startsWith('FCLI|');
+  const complementaria = x => (esCliK(clave) && esFcliK(x.clave)) || (esFcliK(clave) && esCliK(x.clave));
+  if (otras.every(complementaria)) {
+    const det = [...new Set(otras.map(x => `• ${x.tipo} → ${x.ce_nombre || x.ce}${x.detalle ? ` (${x.detalle})` : ''}`))];
+    return await confirmar(`El camión ${fmtPatente(patente)} ya tiene una carga el ${fmtFechaISO(f)}\n\n${det.join('\n')}\n\n¿Es el mismo camión (pasa a fábrica y luego carga en el CD, entregando a más de un cliente)?\n\nSi es otro viaje, usa otra patente o cambia el día de carga.`,
+      { aceptar: 'Sí, camión mixto', cancelar: 'No, cambiar', icono: 'merge' });
+  }
   const grupos = new Map();
-  otras.forEach(x => { if (!grupos.has(x.clave)) grupos.set(x.clave, { tipo: x.tipo, ce: x.ce_nombre || x.ce, det: new Set() }); if (x.detalle) grupos.get(x.clave).det.add(x.detalle); });
+  otras.filter(x => !complementaria(x)).forEach(x => { if (!grupos.has(x.clave)) grupos.set(x.clave, { tipo: x.tipo, ce: x.ce_nombre || x.ce, det: new Set() }); if (x.detalle) grupos.get(x.clave).det.add(x.detalle); });
   const lineas = [...grupos.values()].map(g => `• ${g.tipo} → ${g.ce}${g.det.size ? ` (${[...g.det].join(', ')})` : ''}`);
   await confirmar(`El camión ${fmtPatente(patente)} ya tiene otra carga el ${fmtFechaISO(f)}\n\n${lineas.join('\n')}\n\nUn camión sólo puede tomar una carga por día de carga. Usa otra patente o cambia el día de carga.`,
     { aceptar: 'Entendido', cancelar: 'Cerrar', tono: 'peligro', icono: 'block' });
@@ -3732,6 +3741,8 @@ const VISTAS_TRONCAL = {
     dateRange: { campo: 'fe_entrega', label: 'Rango Fecha de Entrega' },
     async preload() {
       const estados = await loadEstadosRetiro();
+      // (4-nov-2026, Jordan) Camiones programados de planes anteriores: para marcar el SALDO SIN COORDINAR.
+      try { await cargarRetirosProgramados(); } catch (e) { console.warn('Retiros: no se pudieron leer los camiones programados', e); }
       // fetchAllRows pagina en paralelo (PostgREST capea a 1000 por defecto,
       // .limit(5000) no basta para una vista de 2853+ filas)
       const pvRows = await fetchAllRows('v_trc_pedidos_ventas_ref');
@@ -3848,7 +3859,20 @@ const VISTAS_TRONCAL = {
         // Cross-reference con pedidos_ventas_dt
         const docPV = String(f.documento ?? '').trim();
         const pv = pvMap[docPV] || {};
+        // (4-nov-2026, Jordan) SALDO SIN COORDINAR (misma estructura que los pedidos de venta): las líneas de
+        // esta OC ya viajaron en un camión programado de un plan anterior y SAP sigue mostrando pendiente. Ese
+        // saldo NO está coordinado: no entra al Plan de Carga hasta re-coordinar la OC con una entrega nueva.
+        const _vjRet = detalle.filter(d => d.pendiente > 0 && RETIROS_MAT_CARGADAS.has(`${oc}|${String(d.material ?? '').trim()}`));
+        const _entRet = String(estObj.entrega_entrante ?? '').trim();
+        const _reCoordRet = !!_entRet && !RETIROS_ENT_CARGADAS.has(_entRet);   // entrega nueva → ya re-coordinada
+        const _saldoSinCoordRet = _vjRet.length > 0 && !_reCoordRet;
+        // Todas las líneas pendientes ya viajaron → la OC completa es saldo; si sólo algunas, el resto sigue en el plan.
+        const _saldoTodoRet = _saldoSinCoordRet && _vjRet.length === detalle.filter(d => d.pendiente > 0).length;
         out.push({
+          _saldoSinCoord: _saldoSinCoordRet, _saldo_todo: _saldoTodoRet,
+          _saldo_pend: _vjRet.reduce((s2, d) => s2 + (Number(d.pendiente) || 0), 0), _vj_lineas: _vjRet.length,
+          _saldo_ton: _vjRet.reduce((s2, d) => s2 + (Number(d.ton) || 0), 0),
+          _viajo: _saldoSinCoordRet ? (RETIROS_PROGRAMADOS.get(oc) || null) : null,
           doc_compr: oc, contr: f.contr, proveedor: f.proveedor, nombre_1: f.nombre_1,
           ce: f.ce, _desc_centro: getNombreCentro(f.ce), alm: f.alm, documento: f.documento,
           fe_entrega: f.fe_entrega,
@@ -5231,6 +5255,7 @@ const V2 = {
       { key: 'no', label: 'Sin coordinar', color: C_GREY, sub: 'no entran al plan', fn: r => !r._modo },
       { key: 'rm', label: 'Retiro RM', color: C_GREEN, sub: 'entran al plan de carga', fn: r => r._modo === 'RM' },
       { key: 'lo', label: 'Retiro local', color: C_ORANGE, sub: 'gestiona la sucursal', fn: r => r._modo === 'LOCAL' },
+      { key: 'sl', label: 'Saldo sin coordinar', color: C_ORANGE, sub: 'la carga anterior ya viajó', fn: r => !!r._saldoSinCoord },
       { key: 'at', label: 'Atrasadas', color: C_RED, sub: 'vencidas > 5 días, sin coordinar', fn: retiroAtrasado },
       { key: 'ee', label: 'Expedición errónea', color: '#7e22ce', sub: 'pedido de venta calzado', fn: r => !!r._exp_error },
       { key: 'mn', label: 'Manuales', color: '#0f766e', sub: 'agregadas en la plataforma', fn: r => !!r._oc_manual },
@@ -5247,16 +5272,23 @@ const V2 = {
       { label: 'Ton', al: 'r', html: r => `<span class="sv-ton">${tonHtml(r._ton_num)}</span>` + (r._parcial ? `<div class="sv-sub" style="color:#15803d">retira ${escV2(fmtNum(r._ton_ret, 1))} t</div>` : '') + (r._revision_saldo ? '<div class="sv-sub" style="color:#b5000b">saldo pendiente</div>' : '') },
       { label: 'Alerta', html: r => (retiroAtrasado(r) ? pill('Atrasada', 'bad') : (r._al.k === 'Atrasado' ? pill('Vencida', 'orange') : pill(r._al.k, r._al.k === 'Pronto a vencer' ? 'warn' : r._al.tone)))
           + (r._exp_error ? `<div style="margin-top:4px" title="${escV2(r._pv_denominacion)}">${pill('Expedición errónea', 'purple')}</div>` : '') },
-      { label: 'Coordinación', html: r => r._modo === 'RM' ? pill('Retiro RM', 'ok') + (r._transp && r._transp.patente_camion ? `<div class="sv-sub">${escV2(r._transp.patente_camion)}</div>` : '')
-          + (pendTranspRetiro(r._transp).length ? `<div style="margin-top:4px" title="Pendiente: ${escV2(pendTranspRetiro(r._transp).join(', '))}">${pill('Chofer/patente pendiente', 'warn')}</div>` : '')
-          : r._modo === 'LOCAL' ? pill('Retiro local', 'orange') : pill('Sin coordinar', 'mute') },
+      { label: 'Coordinación', html: r => {
+        const yaViajo = `<div class="sv-sub" title="La carga anterior ya viajó: este saldo todavía no está coordinado y no entra al plan">Ya viajó${r._viajo ? ' · camión ' + escV2(r._viajo.patente || r._viajo.transportista || '') + ' · carga ' + escV2(fmtFechaISO(String(r._viajo.fecha_carga).slice(0, 10))) : ''}</div>`;
+        if (r._saldo_todo) return pill('SALDO SIN COORDINAR', 'warn') + yaViajo;
+        const base = r._modo === 'RM' ? pill('Retiro RM', 'ok') + (r._transp && r._transp.patente_camion ? `<div class="sv-sub">${escV2(r._transp.patente_camion)}</div>` : '')
+            + (pendTranspRetiro(r._transp).length ? `<div style="margin-top:4px" title="Pendiente: ${escV2(pendTranspRetiro(r._transp).join(', '))}">${pill('Chofer/patente pendiente', 'warn')}</div>` : '')
+          : r._modo === 'LOCAL' ? pill('Retiro local', 'orange') : pill('Sin coordinar', 'mute');
+        // Saldo parcial: parte de la OC ya viajó y sigue pendiente en SAP; el resto continúa en el plan.
+        return base + (r._saldoSinCoord ? `<div style="margin-top:4px" title="${escV2(fmtNum(r._saldo_pend || 0, 0))} un de ${r._vj_lineas || 0} línea(s) ya viajaron y SAP las sigue mostrando pendientes: re-coordina la OC para subir ese saldo">${pill('Saldo sin coordinar · ' + fmtNum(r._saldo_pend || 0, 0) + ' un', 'warn')}</div>` : '');
+      } },
     ],
     excluirEnFila: true,
     planEstado: (r, excluida) => excluida ? pill('Excluida hoy', 'bad')
-      : r._modo === 'RM' ? pill('En plan', 'ok') + (r._fecha_retiro ? `<div class="sv-sub">carga ${escV2(fmtFechaISO(r._fecha_retiro))}</div>` : '')
+      : r._saldo_todo ? `<span title="El saldo no está coordinado: re-coordina la OC con fecha de retiro y entrega nuevas para que entre al plan">${pill('Saldo sin coordinar', 'warn')}</span>`
+      : r._modo === 'RM' ? pill('En plan', 'ok') + (r._saldoSinCoord ? `<div class="sv-sub" style="color:#b45309">+ ${escV2(fmtNum(r._saldo_pend || 0, 0))} un de saldo sin coordinar</div>` : '') + (r._fecha_retiro ? `<div class="sv-sub">carga ${escV2(fmtFechaISO(r._fecha_retiro))}</div>` : '')
       : r._modo === 'LOCAL' ? pill('Retiro local', 'orange')
       : pill('No considerado', 'mute'),
-    edge: r => r._modo === 'LOCAL' ? C_ORANGE : r._modo === 'RM' ? C_GREEN : (retiroAtrasado(r) ? C_RED : null),
+    edge: r => r._saldo_todo ? C_ORANGE : r._modo === 'LOCAL' ? C_ORANGE : r._modo === 'RM' ? C_GREEN : (retiroAtrasado(r) ? C_RED : null),
     note: 'Tipo retiro automático: ≥ 23,8 t (85% de 28 t) → Stock FAB-SUC / Calzada FAB-CLTE; bajo 23,8 t → FAB-CD · Retiro RM entra al plan el día de su fecha de retiro',
     minW: '1320px',
     detalle: r => {
@@ -5289,7 +5321,9 @@ const V2 = {
       if (r._exp_error) avisos.push(`<b>Expedición errónea:</b> el pedido de venta ${escV2(r.documento)} tiene expedición «${escV2(r._pv_denominacion)}»; debe ser EBE-RET / EBE-DESP o EBE-RET / CLI-RET.`);
       if (r._modo === 'RM' && pendTranspRetiro(t).length) avisos.push(`<b>Transporte pendiente:</b> falta ${escV2(pendTranspRetiro(t).join(', '))}. Complétalo con «Editar coordinación»${pendTranspRetiro(t).includes('patente') ? '; sin patente el camión directo no queda programado' : ''}.`);
       if (esIngSum(r)) avisos.push(`<b>${ING_SUM_TXT}:</b> OC calzada con destino CD 1003 (PV ${escV2(r.documento)}). Ingresar el retiro en el CD y cargarlo en el camión junto con el pedido de venta.`);
-      avisos.push(r._modo === 'RM' ? '<b>Plan de carga:</b> Retiro RM — entra al plan el día de su fecha de retiro.'
+      if (r._saldoSinCoord) avisos.push(`<b>Saldo sin coordinar:</b> la carga anterior ya viajó${r._viajo ? ` (camión ${escV2(r._viajo.patente || r._viajo.transportista || 'programado')} · carga ${escV2(fmtFechaISO(String(r._viajo.fecha_carga).slice(0, 10)))})` : ''} y SAP todavía muestra ${escV2(fmtNum(r._saldo_pend || 0, 0))} un pendientes. Ese saldo NO está coordinado: no entra al Plan de Carga hasta re-coordinar la OC con fecha de retiro y entrega nuevas.`);
+      avisos.push(r._saldo_todo ? '<b>Plan de carga:</b> el saldo no está coordinado — no se considera hasta re-coordinar la OC.'
+        : r._modo === 'RM' ? '<b>Plan de carga:</b> Retiro RM — entra al plan el día de su fecha de retiro.'
         : r._modo === 'LOCAL' ? '<b>Plan de carga:</b> Retiro local — no se considera en el plan.' : '<b>Plan de carga:</b> sin coordinar, no se considera.');
       const rm = r._modo === 'RM';
       return {
@@ -5317,6 +5351,7 @@ const V2 = {
           r.documento ? ['Vendedor', r._pv_nombre_vendedor] : null,
           r.documento ? ['Ruta · comuna', [r._pv_ruta, r._pv_comuna].filter(Boolean).join(' · ')] : null,
           r._revision_saldo ? ['Saldo', 'Saldo pendiente (entrega parcial)'] : null,
+          r._saldoSinCoord ? ['Saldo sin coordinar', `${fmtNum(r._saldo_pend || 0, 0)} un · ${tonHtml(r._saldo_ton || 0)}`, true] : null,
           r._upd_at ? ['Última edición', `${fechaUpd(r._upd_at)}${r._upd_by ? ' · ' + r._upd_by : ''}`] : null,
         ],
         tabla: {
@@ -7156,7 +7191,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611041434');
+    const m = await import('./ind-plan-carga.js?v=202611041954');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -7722,7 +7757,16 @@ async function renderPlanCarga(stage, opts = {}) {
         if (pendVivo && multiRep) continue;
         ventasRaw.splice(i, 1);
       }
-      for (let i = retirosRaw.length - 1; i >= 0; i--) if (cargados.has(`${tx(retirosRaw[i].doc_compr)}|${tx(retirosRaw[i].material)}`)) retirosRaw.splice(i, 1);
+      // (4-nov-2026, Jordan) Retiros: igual que las NV, la línea se descuenta por la ENTREGA coordinada.
+      // Una OC re-coordinada con una entrega NUEVA (el saldo que no viajó) vuelve al plan; mientras siga con
+      // la entrega que ya viajó, el saldo queda fuera y se ve como SALDO SIN COORDINAR en Retiros de Fábrica.
+      for (let i = retirosRaw.length - 1; i >= 0; i--) {
+        const r2 = retirosRaw[i], d2 = tx(r2.doc_compr), m2 = tx(r2.material);
+        if (!cargados.has(`${d2}|${m2}`)) continue;
+        const e2 = tx((estadosRetiro[d2] || {}).entrega_entrante);
+        if (e2 && !cargadosEnt.has(e2)) continue;   // entrega nueva → el saldo vuelve al plan
+        retirosRaw.splice(i, 1);
+      }
     }
   } catch (e) { console.warn('Plan de carga: no se pudo descontar lo ya programado en planes anteriores', e); }
   // (15-oct-2026, Jordan) Saldos activados en Seguimiento de Carga (camión que viajó parcial): la línea
@@ -8388,6 +8432,16 @@ async function renderPlanCarga(stage, opts = {}) {
     Object.entries(provSuc).forEach(([k, b]) => { if (b.ton > capFab * UMBRAL_FABRICA) armarCamiones(b.items, CAP_CAMION_DIRECTO, d => d.oc).forEach(c => camionesFabSuc.push({ ...c, grupo: (b.items[0] && b.items[0].prov) || k, cap: CAP_CAMION_DIRECTO })); else aCandidatos(b); });
     camionesFabCli.forEach((c, i) => { c.n = i + 1; c.items.forEach(d => { d._camion = i + 1; }); tonFabCli += c.ton; det.fabCli.push(...c.items); });
     camionesFabSuc.forEach((c, i) => { c.n = i + 1; c.items.forEach(d => { d._camion = i + 1; }); tonFabSuc += c.ton; det.fabSuc.push(...c.items); });
+    // (4-nov-2026, Jordan) Camión mixto: misma patente en un camión Fábrica-Cliente y en uno CD-Cliente = un solo camión
+    // físico (pasa a fábrica y luego carga en el CD). Se marcan ambos y se muestra el tonelaje total del camión.
+    camionesCliente.forEach(cc => {
+      const p = normPatente(cc.patente); if (!p) return;
+      const ff = camionesFabCli.find(x => normPatente(x.patente) === p);
+      if (!ff) return;
+      const total = (cc.ton || 0) + (ff.ton || 0);
+      cc.mixto = { con: `Fáb-Cliente ${ff.n}`, tonOtro: ff.ton || 0, total };
+      ff.mixto = { con: `CD-Cliente ${cc.n}`, tonOtro: cc.ton || 0, total };
+    });
 
     // (AJUSTE 24-sep-2026, pedido Jordan) Promoción automática 48h → 24h: un
     // centro configurado a 48h despacha MAÑANA (24h) en vez de esperar el plan
@@ -8593,7 +8647,8 @@ async function renderPlanCarga(stage, opts = {}) {
     const resumen = tot > 1 ? `<div class="mb-sm px-md py-sm rounded-lg bg-amber-50 border border-amber-300 text-[12px] text-amber-900 font-bold">Se requieren ${tot} camiones para esta fecha (X${tot})</div>` : '';
     return resumen + lista.map(c => {
       const pct = c.cap > 0 ? Math.round(c.ton / c.cap * 100) : 0;
-      const lbl = `Camión ${c.n} de ${tot} · ${lblGrupo}: ${c.grupo} · ${fmtNum(c.ton, 1)} t de ${fmtNum(c.cap, 0)} t (${pct}%)`;
+      const mx = c.mixto ? ` · CAMIÓN MIXTO con ${c.mixto.con}: ${fmtNum(c.mixto.total, 1)} t en total (${c.cap > 0 ? Math.round(c.mixto.total / c.cap * 100) : 0}%${c.mixto.total > c.cap + 1e-6 ? ' · EXCEDE' : ''})` : '';
+      const lbl = `Camión ${c.n} de ${tot} · ${lblGrupo}: ${c.grupo} · ${fmtNum(c.ton, 1)} t de ${fmtNum(c.cap, 0)} t (${pct}%)${mx}`;
       return `<div class="mb-md pl-sm" style="border-left:4px solid #94a3b8">${blkFn(lbl, c.items)}</div>`;
     }).join('');
   }
@@ -10077,6 +10132,39 @@ async function cargarVentasProgramadas() {
       if (prev && String(prev.fecha_plan) >= String(c.fecha_plan)) return;   // el camión más reciente
       VENTAS_PROGRAMADAS.set(doc, { fecha_plan: c.fecha_plan, fecha_carga: c.fecha_carga || c.fecha_plan, patente: tx(c.patente_camion),
         transportista: tx(c.transportista) || tx(c.id_transporte), ce: tx(c.ce), tipo: c.tipo_camion || '' });
+    });
+  }
+}
+// (4-nov-2026, Jordan) Mismo criterio para los RETIROS: qué OC ya viajaron en un camión programado de un
+// plan anterior. Si SAP sigue mostrando pendiente, ese saldo NO está coordinado (igual que las NV).
+const RETIROS_PROGRAMADOS = new Map();    // doc_compr → { fecha_carga, fecha_plan, patente, transportista, ce, tipo }
+const RETIROS_ENT_CARGADAS = new Set();   // N° de entrega que ya viajaron
+const RETIROS_MAT_CARGADAS = new Set();   // «oc|material» cargados en esos camiones
+async function cargarRetirosProgramados() {
+  RETIROS_PROGRAMADOS.clear(); RETIROS_ENT_CARGADAS.clear(); RETIROS_MAT_CARGADAS.clear();
+  const tx = v => String(v ?? '').trim();
+  const desde = isoLocal(new Date(hoy00().getTime() - 45 * 864e5)), hoyIsoProg = isoLocal(hoy00());
+  const { data: cams, error } = await supabase.from('abast_seguimiento_camion')
+    .select('id,clave,fecha_plan,fecha_carga,ce,tipo_camion,transportista,id_transporte,patente_camion').gte('fecha_plan', desde).limit(5000);
+  if (error) throw error;
+  const byId = new Map((cams || []).filter(c => tx(c.patente_camion)).map(c => [c.id, c]));   // programado = con patente
+  const ids = [...byId.keys()];
+  for (let i = 0; i < ids.length; i += 10) {
+    const { data, error: e2 } = await supabase.from('abast_seguimiento_carga').select('camion_id,documento,tipo_carga,n_entrega,material').in('camion_id', ids.slice(i, i + 10)).limit(5000);
+    if (e2) throw e2;
+    (data || []).forEach(l => {
+      if (!/retiro/i.test(tx(l.tipo_carga))) return;
+      const c = byId.get(l.camion_id), oc = tx(l.documento);
+      if (!c || !oc) return;
+      const viajo = String(c.fecha_plan || '').slice(0, 10) < hoyIsoProg
+        && (!tx(c.clave).startsWith('COORD|') || (tx(c.fecha_carga) && tx(c.fecha_carga).slice(0, 10) < hoyIsoProg));
+      if (!viajo) return;
+      if (tx(l.n_entrega)) RETIROS_ENT_CARGADAS.add(tx(l.n_entrega));
+      if (tx(l.material)) RETIROS_MAT_CARGADAS.add(`${oc}|${tx(l.material)}`);
+      const prev = RETIROS_PROGRAMADOS.get(oc);
+      if (!prev || String(prev.fecha_plan) < String(c.fecha_plan))
+        RETIROS_PROGRAMADOS.set(oc, { fecha_plan: c.fecha_plan, fecha_carga: c.fecha_carga || c.fecha_plan, patente: tx(c.patente_camion),
+          transportista: tx(c.transportista) || tx(c.id_transporte), ce: tx(c.ce), tipo: c.tipo_camion || '' });
     });
   }
 }
