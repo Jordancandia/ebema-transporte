@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611042005';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611042005';
-import { getDatabase } from './data.js?v=202611042005';
+import { supabase } from './supabase-client.js?v=202611042031';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611042031';
+import { getDatabase } from './data.js?v=202611042031';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611042005';
-import { confirmar, pedirDato } from './confirmar.js?v=202611042005';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611042031';
+import { confirmar, pedirDato } from './confirmar.js?v=202611042031';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -7202,7 +7202,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611042005');
+    const m = await import('./ind-plan-carga.js?v=202611042031');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -10133,8 +10133,11 @@ async function cargarVentasProgramadas() {
     if (e2) throw e2;
     (data || []).forEach(l => {
       const c0 = byId.get(l.camion_id);
-      if (c0 && String(c0.fecha_plan || '').slice(0, 10) < hoyIsoProg
-        && (!tx(c0.clave).startsWith('COORD|') || (tx(c0.fecha_carga) && tx(c0.fecha_carga).slice(0, 10) < hoyIsoProg))) {
+      // (4-nov-2026, Jordan) YA VIAJÓ = su FECHA DE CARGA ya pasó. Antes bastaba que la fecha del PLAN fuera
+      // anterior a hoy, así que un camión planificado ayer para cargar HOY se tomaba por viajado y su NV caía
+      // en «saldo sin coordinar» (NV 1060010-3: plan 03-11, carga 04-11).
+      const fcC0 = c0 ? (tx(c0.fecha_carga) || tx(c0.fecha_plan)).slice(0, 10) : '';
+      if (c0 && fcC0 && fcC0 < hoyIsoProg) {
         if (tx(l.n_entrega)) VENTAS_ENT_CARGADAS.add(tx(l.n_entrega));
         const dc = tx(l.documento) || tx(l.pedido_venta);
         if (dc && tx(l.material)) VENTAS_MAT_CARGADAS.add(`${dc}|${tx(l.material)}`);
@@ -10170,8 +10173,9 @@ async function cargarRetirosProgramados() {
       if (!/retiro/i.test(tx(l.tipo_carga))) return;
       const c = byId.get(l.camion_id), oc = tx(l.documento);
       if (!c || !oc) return;
-      const viajo = String(c.fecha_plan || '').slice(0, 10) < hoyIsoProg
-        && (!tx(c.clave).startsWith('COORD|') || (tx(c.fecha_carga) && tx(c.fecha_carga).slice(0, 10) < hoyIsoProg));
+      // (4-nov-2026, Jordan) YA VIAJÓ = su FECHA DE CARGA ya pasó (no la fecha del plan).
+      const fcK = (tx(c.fecha_carga) || tx(c.fecha_plan)).slice(0, 10);
+      const viajo = !!fcK && fcK < hoyIsoProg;
       if (!viajo) return;
       if (tx(l.n_entrega)) RETIROS_ENT_CARGADAS.add(tx(l.n_entrega));
       if (tx(l.material)) RETIROS_MAT_CARGADAS.add(`${oc}|${tx(l.material)}`);
