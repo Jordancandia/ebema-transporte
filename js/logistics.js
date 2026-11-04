@@ -1,7 +1,7 @@
-import { getDatabase, saveDatabase, deleteRow } from './data.js?v=202611041959';
+import { getDatabase, saveDatabase, deleteRow } from './data.js?v=202611042005';
 import { showAlert, geocodeAddress, escapeHtml, toCSV, downloadFile } from './utils.js';
 import { GRUPOS_ORIGEN } from './chile-geo.js';
-import { confirmar } from './confirmar.js?v=202611041959';
+import { confirmar } from './confirmar.js?v=202611042005';
 
 let currentCdSearchTerm = '';
 
