@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611041416';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611041416';
-import { getDatabase } from './data.js?v=202611041416';
+import { supabase } from './supabase-client.js?v=202611041434';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611041434';
+import { getDatabase } from './data.js?v=202611041434';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611041416';
-import { confirmar, pedirDato } from './confirmar.js?v=202611041416';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611041434';
+import { confirmar, pedirDato } from './confirmar.js?v=202611041434';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -1741,6 +1741,62 @@ async function liberarBloqueoPos(doc, posiciones, motivo) {
   const { error } = await supabase.from('abast_venta_bloqueo_liberado').upsert(rows, { onConflict: 'doc_ventas,pos,material' });
   if (error) { showAlert('No se pudo liberar el bloqueo: ' + error.message, 'error'); return false; }
   return true;
+}
+// ── Ruta manual de posiciones sin ruta en el SQVI (4-nov-2026, Jordan) ──────
+// abast_venta_ruta_manual (doc, pos → ruta). La vista v_trc_sqvi_pedidos_venta_1003 la usa sólo si el
+// SQVI trae la ruta vacía; cuando el SQVI la trae, manda la del SQVI.
+async function guardarRutaManualNV(doc, posiciones, ruta) {
+  const email = await getUserEmail(), now = new Date().toISOString();
+  const rows = (posiciones || []).map(p => ({ doc_ventas: String(doc ?? '').trim(), pos: String(p.pos ?? '').trim(), ruta: String(ruta).trim(), asignado_por: email, asignado_en: now }));
+  if (!rows.length) return false;
+  const { error } = await supabase.from('abast_venta_ruta_manual').upsert(rows, { onConflict: 'doc_ventas,pos' });
+  if (error) { showAlert('No se pudo asignar la ruta: ' + error.message, 'error'); return false; }
+  return true;
+}
+async function quitarRutaManualNV(doc) {
+  const { error } = await supabase.from('abast_venta_ruta_manual').delete().eq('doc_ventas', String(doc ?? '').trim());
+  if (error) { showAlert('No se pudo quitar la ruta: ' + error.message, 'error'); return false; }
+  return true;
+}
+function pedirRutaNV(row, posiciones) {
+  return new Promise(async resolve => {
+    const rutas = await rutasVentaManual();
+    const wrap = document.createElement('div');
+    wrap.innerHTML = '<div class="sv-dr-bg" style="z-index:130"></div><aside class="sv-dr" style="z-index:131;width:min(520px,100vw)" role="dialog" aria-label="Asignar ruta"></aside>';
+    document.body.appendChild(wrap);
+    const panel = wrap.querySelector('aside');
+    const fin = v => { wrap.remove(); document.removeEventListener('keydown', onKey, true); resolve(v); };
+    const onKey = e => { if (e.key === 'Escape') { e.stopPropagation(); fin(null); } };
+    document.addEventListener('keydown', onKey, true);
+    wrap.querySelector('.sv-dr-bg').addEventListener('click', () => fin(null));
+    const lbl = r => `${r.codigo} · ${[r.comuna, r.region].filter(Boolean).join(', ')}${r.destino ? ' · ' + r.destino : ''}`;
+    panel.innerHTML = `
+      <div class="sv-dr-h"><div style="flex:1;min-width:0">
+        <div class="sv-dr-k">Asignar ruta · NV ${escapeHtml(String(row.doc_ventas ?? ''))}</div>
+        <div class="sv-dr-t">${escapeHtml(row._cliente || ('Cliente ' + (row._id_cliente || '')))}</div>
+        <div class="sv-dr-s">El SQVI no trae ruta para ${posiciones.length === 1 ? 'esta posición' : 'estas ' + posiciones.length + ' posiciones'}. Elige la ruta para poder coordinar. Cuando el SQVI la traiga, se usa la del SQVI.</div></div>
+        <button class="sv-iconbtn" data-cx title="Cerrar (Esc)"><span class="material-symbols-outlined">close</span></button></div>
+      <div class="sv-dr-b" style="gap:8px">
+        <div class="sv-sub" style="margin:0">${posiciones.map(p => 'pos ' + escapeHtml(p.pos) + (p.material ? ' · ' + escapeHtml(p.material) : '') + (p.nombre ? ' ' + escapeHtml(p.nombre) : '')).join('<br>')}</div>
+        <label style="font-weight:600;font-size:12px">Ruta *</label>
+        <input list="rutaNVlist" data-ruta placeholder="Escribe código, comuna o destino…" style="width:100%;padding:8px;border:1px solid #c4c7c5;border-radius:6px">
+        <datalist id="rutaNVlist">${rutas.map(r => `<option value="${escapeHtml(r.codigo)}">${escapeHtml(lbl(r))}</option>`).join('')}</datalist>
+        <div class="sv-sub" data-info style="margin:0;min-height:16px"></div></div>
+      <div class="sv-dr-f"><span class="sv-dr-note">* Obligatorio</span>
+        <button class="sv-btn" data-cancel>Cancelar</button>
+        <button class="sv-btn-p" data-ok><span class="material-symbols-outlined">alt_route</span>Asignar ruta</button></div>`;
+    const inp = panel.querySelector('[data-ruta]'), info = panel.querySelector('[data-info]');
+    const buscar = () => rutas.find(r => r.codigo.toLowerCase() === inp.value.trim().toLowerCase());
+    inp.addEventListener('input', () => { const r = buscar(); info.textContent = r ? lbl(r) : (inp.value.trim() ? 'Ruta no encontrada en el maestro' : ''); });
+    panel.querySelector('[data-cx]').addEventListener('click', () => fin(null));
+    panel.querySelector('[data-cancel]').addEventListener('click', () => fin(null));
+    panel.querySelector('[data-ok]').addEventListener('click', () => {
+      const r = buscar();
+      if (!r) { showAlert('Elige una ruta válida del maestro de rutas.', 'error'); return; }
+      fin(r.codigo);
+    });
+    inp.focus();
+  });
 }
 async function volverABloquearPos(doc) {
   const email = await getUserEmail();
@@ -3899,8 +3955,7 @@ const VISTAS_TRONCAL = {
       const bloqueada = r => !!String(r.mr ?? '').trim() && !r.mr_liberado;
       // (4-nov-2026, Jordan) De los bloqueos (MR) sólo se muestra el 79; las posiciones con otro MR se ocultan y no se consideran.
       const base = rows
-        .filter(r => !mrOcultoVenta(r))
-        .filter(r => String(r.ruta ?? '').trim() !== '');
+        .filter(r => !mrOcultoVenta(r));   // (4-nov-2026, Jordan) las posiciones SIN RUTA se muestran: hay que asignarles la ruta a mano para coordinar
       // 2) (2-nov-2026, Jordan) REPARTOS: el SQVI parte una posición en varias fechas de entrega.
       //    Antes se conservaba UNA sola línea por doc+material (la de fecha más lejana), así que de
       //    la NV 1062020 (3 repartos: 300 un al 03.11, 300 al 12.11, 140 al 26.11) sólo se veía el
@@ -3947,6 +4002,9 @@ const VISTAS_TRONCAL = {
         const bloqPos = itemsAll.filter(r => r._bloq).map(r => ({ pos: String(r.pos ?? '').trim(), material: String(r.material ?? '').trim(),
           nombre: r.denominacion_de_posicion || '', pendiente: r._pend, ton: r._ton, mr: String(r.mr ?? '').trim(), fecha: r.fe_entrega }));
         const f = items[0] || itemsAll[0];
+        const _clavePos = r => String(r.pos ?? '').trim();
+        const sinRutaPos = [...new Map(items.filter(r => !String(r.ruta ?? '').trim()).map(r => [_clavePos(r), { pos: _clavePos(r), material: String(r.material ?? '').trim(), nombre: r.denominacion_de_posicion || '' }])).values()];
+        const rutaManPos = [...new Map(items.filter(r => r.ruta_manual === true || r.ruta_manual === 'true').map(r => [_clavePos(r), { pos: _clavePos(r), ruta: String(r.ruta ?? '').trim() }])).values()];
         let ton = 0, parcial = false;
         let fmax = null;
         // (2-nov-2026, Jordan) REPARTOS: el SQVI trae una línea por reparto (posición + fecha). El
@@ -3990,6 +4048,7 @@ const VISTAS_TRONCAL = {
         }
         out.push({
           _bloq_pos: bloqPos,
+          _sin_ruta_pos: sinRutaPos, _ruta_man_pos: rutaManPos,
           _libre_pos: items.filter(r => String(r.mr ?? '').trim() && r.mr_liberado).length,
           doc_ventas: doc, ofvta: f.ofvta, creado_el: f.creado_el, deudor: f.deudor, solicitante: f.solicitante,
           fe_entrega: feLbl, _ton_num: ton, _ton_totales: fmtNum(ton, 3),
@@ -4915,12 +4974,13 @@ const V2 = {
       return doc ? { abrir: doc } : false;
     } }],
     kpis: [
-      { key: 'all', label: 'Pedidos', color: C_INK, sub: 'pendientes con ruta' },
+      { key: 'all', label: 'Pedidos', color: C_INK, sub: 'pendientes' },
       { key: 'sc', label: 'Sin coordinar', color: C_ORANGE, sub: 'no entran al plan', fn: r => !r._coord && !r._cargada },
       { key: 'co', label: 'Coordinados', color: C_GREEN, sub: 'pedido coordinado', fn: r => !!r._coord && !r._cargada && !r._saldoSinCoord },
       { key: 'pl', label: 'En plan de carga', color: C_BLUE, sub: 'pedidos coordinados', fn: r => !!r._coord && !r._cargada && !r._saldoSinCoord },
       { key: 'cg', label: 'COORDINADO', color: C_SEC, sub: 'en camión programado · bloqueado', fn: r => !!r._cargada },
       { key: 'sl', label: 'Saldo sin coordinar', color: C_ORANGE, sub: 'la coordinación anterior ya viajó', fn: r => !!r._saldoSinCoord },
+      { key: 'sr', label: 'Sin ruta', color: C_RED, sub: 'asignar ruta para coordinar', fn: r => (r._sin_ruta_pos || []).length > 0 },
       { key: 'bq', label: 'Con bloqueo', color: C_RED, sub: 'posiciones con MR por liberar', fn: r => (r._bloq_pos || []).length > 0 },
       { key: 'cd', label: 'CD-Cliente', color: '#7e22ce', sub: 'cliente ≥ 23,8 t o definido', fn: r => !!r._directo },
       { key: 'mn', label: 'Manuales', color: '#0f766e', sub: 'agregados en la plataforma', fn: r => !!r._nv_manual },
@@ -4929,6 +4989,8 @@ const V2 = {
     cols: [
       { label: 'Pedido', html: r => mono(r.doc_ventas, r.creado_el ? 'creado ' + r.creado_el : '') + (r._nv_manual ? `<div style="margin-top:4px" title="Pedido agregado a mano por ${escV2(r._nv_manual.cab.created_by || '')}">${pill('Manual', 'warn')}</div>` : r._pos_man ? `<div style="margin-top:4px" title="Posiciones agregadas a mano porque el SQVI no las trae">${pill('+' + r._pos_man + (r._pos_man === 1 ? ' posición manual' : ' posiciones manuales'), 'warn')}</div>` : '')
           + ((r._bloq_pos || []).length ? `<div style="margin-top:4px" title="Posición con bloqueo en SAP (MR): no se considera hasta liberarla">${pill(r._bloq_pos.length + (r._bloq_pos.length === 1 ? ' posición bloqueada' : ' posiciones bloqueadas') + ' · MR ' + [...new Set(r._bloq_pos.map(p => p.mr))].join('/'), 'bad')}</div>` : '')
+          + ((r._sin_ruta_pos || []).length ? `<div style="margin-top:4px" title="El SQVI no trae ruta para esta posición: asígnala para poder coordinar. Cuando el SQVI la traiga, se actualiza sola.">${pill('SIN RUTA · ' + r._sin_ruta_pos.length + (r._sin_ruta_pos.length === 1 ? ' posición' : ' posiciones'), 'bad')}</div>` : '')
+          + ((r._ruta_man_pos || []).length ? `<div style="margin-top:4px" title="Ruta asignada a mano (el SQVI no la trae). Cuando el SQVI la traiga, manda la del SQVI.">${pill('Ruta manual · ' + [...new Set(r._ruta_man_pos.map(p => p.ruta))].join('/'), 'warn')}</div>` : '')
           + (r._libre_pos ? `<div style="margin-top:4px" title="Bloqueo liberado a mano: la posición se considera como cualquier otra">${pill('Bloqueo liberado', 'ok')}</div>` : '') },
       { label: 'Cliente', html: r => txt(r._cliente || (r._id_cliente ? 'ID ' + r._id_cliente : '—'), [r._cliente && r._id_cliente ? 'ID ' + r._id_cliente : '', r._vendedor].filter(Boolean).join(' · '), true) },
       { label: 'Destino', html: r => sucHtml(r.ofvta) + (r._ce_alt && r._ce_alt !== String(r.ofvta ?? '').trim() ? `<div style="margin-top:4px" title="Centro alternativo: computa en el Plan de Carga de ${escV2(nombreCentro(r._ce_alt) || r._ce_alt)}">${pill('Plan → ' + (nombreCentro(r._ce_alt) || r._ce_alt), 'purple')}</div>` : '') },
@@ -4976,7 +5038,29 @@ const V2 = {
       const acciones = [];
       // (21-oct-2026) Un pedido manual también lo coordina quien puede agregarlos (Planner Distribución).
       const puedeCoordV = can('coordinar_venta') || (!!r._nv_manual && can('venta_manual'));
-      if (!k && puedeCoordV) {
+      // (4-nov-2026, Jordan) Posiciones sin ruta en el SQVI: se obliga a asignar la ruta antes de coordinar.
+      const puedeRuta = can('coordinar_venta') || can('venta_manual');
+      if (!k && puedeRuta && ((r._sin_ruta_pos || []).length || (r._ruta_man_pos || []).length)) {
+        const sin = (r._sin_ruta_pos || []).length > 0;
+        acciones.push({ label: sin ? `Asignar ruta (${r._sin_ruta_pos.length})` : 'Cambiar ruta asignada', icon: 'alt_route', primary: sin,
+          run: async row => {
+            const ps = (row._sin_ruta_pos || []).length ? row._sin_ruta_pos : (row._ruta_man_pos || []);
+            const ruta = await pedirRutaNV(row, ps);
+            if (!ruta) return null;
+            if (!(await guardarRutaManualNV(row.doc_ventas, ps, ruta))) return null;
+            clearRawCache();
+            showAlert(`Ruta ${ruta} asignada a ${ps.length} ${ps.length === 1 ? 'posición' : 'posiciones'} del pedido ${row.doc_ventas}`, 'success');
+            return { recargar: true };
+          } });
+        if (!sin && (r._ruta_man_pos || []).length) acciones.push({ label: 'Quitar ruta asignada', icon: 'link_off', run: async row => {
+          if (!await confirmar(`¿Quitar la ruta asignada a mano del pedido ${row.doc_ventas}?\n\nLas posiciones vuelven a quedar SIN RUTA y no se pueden coordinar hasta asignarla.`, { aceptar: 'Quitar ruta', tono: 'peligro', icono: 'link_off' })) return null;
+          if (!(await quitarRutaManualNV(row.doc_ventas))) return null;
+          clearRawCache();
+          showAlert('Ruta asignada quitada', 'success');
+          return { recargar: true };
+        } });
+      }
+      if (!k && puedeCoordV && !(r._sin_ruta_pos || []).length) {
         // (2-nov-2026, Jordan) Con varios repartos pendientes se coordina UN reparto a la vez: el
         // selector pregunta cuál y el diálogo abre con las unidades y la fecha de ese reparto.
         acciones.push({ label: r._multi_rep ? 'Coordinar reparto' : (c ? 'Editar coordinación' : 'Coordinar despacho'),
@@ -7072,7 +7156,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611041416');
+    const m = await import('./ind-plan-carga.js?v=202611041434');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
