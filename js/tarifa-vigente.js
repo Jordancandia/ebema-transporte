@@ -14,11 +14,11 @@
 // Min/Max, Express) sobre las rutas e histórico de hoy, así la variación aísla
 // el efecto del ajuste de tarifas.
 // ============================================================================
-import { supabase } from './supabase-client.js?v=202611041027';
-import { getTariffConfig, getClientTariffConfig, truckCapKg, getOrigenGroups } from './data.js?v=202611041027';
-import { can } from './permisos.js?v=202611041027';
-import { usuarioSesion, esc, fmt } from './tarifas-ui.js?v=202611041027';
-import { confirmar } from './confirmar.js?v=202611041027';
+import { supabase } from './supabase-client.js?v=202611041048';
+import { getTariffConfig, getClientTariffConfig, truckCapKg, getOrigenGroups } from './data.js?v=202611041048';
+import { can } from './permisos.js?v=202611041048';
+import { usuarioSesion, esc, fmt } from './tarifas-ui.js?v=202611041048';
+import { confirmar } from './confirmar.js?v=202611041048';
 import { showAlert } from './utils.js';
 
 const CAMPOS_TRUCK = ['id', 'Id_centro', 'type', 'capacityTons', 'Kmbase', 'baseKM', 'baseRate', 'rateAjustNorm', 'rateAjustEsp',
