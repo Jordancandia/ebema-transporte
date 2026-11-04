@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611041048';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611041048';
-import { getDatabase } from './data.js?v=202611041048';
+import { supabase } from './supabase-client.js?v=202611041053';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611041053';
+import { getDatabase } from './data.js?v=202611041053';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611041048';
-import { confirmar, pedirDato } from './confirmar.js?v=202611041048';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611041053';
+import { confirmar, pedirDato } from './confirmar.js?v=202611041053';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -914,6 +914,9 @@ async function quitarAjusteUnidades(doc, material) {
   return true;
 }
 const sapNum = n => String(Math.round(n * 1000) / 1000).replace('.', ',');
+// (4-nov-2026, Jordan) Pedidos de venta: del MR (bloqueo) sólo se deja el 79; cualquier otro MR se oculta y no se considera.
+const MR_VENTA_VISIBLE = '79';
+const mrOcultoVenta = r => { const m = String(r && r.mr != null ? r.mr : '').trim(); return !!m && m !== MR_VENTA_VISIBLE; };
 // ── Carga manual de pedidos de traslado sin entrega SAP (23-oct-2026, Jordan) ──
 // Pedidos de Traslados (1003/1081) y Crossdocking (4000): se suben a un camión CONSOLIDADO (camión CD del
 // centro) o CD-CLIENTE (camión directo) eligiendo el día de carga y las unidades. Entran SÓLO al Plan de
@@ -3894,7 +3897,9 @@ const VISTAS_TRONCAL = {
       //    (abast_venta_bloqueo_liberado → columna mr_liberado de la vista). Liberada, es una
       //    posición normal.  2) sólo con ruta
       const bloqueada = r => !!String(r.mr ?? '').trim() && !r.mr_liberado;
+      // (4-nov-2026, Jordan) De los bloqueos (MR) sólo se muestra el 79; las posiciones con otro MR se ocultan y no se consideran.
       const base = rows
+        .filter(r => !mrOcultoVenta(r))
         .filter(r => String(r.ruta ?? '').trim() !== '');
       // 2) (2-nov-2026, Jordan) REPARTOS: el SQVI parte una posición en varias fechas de entrega.
       //    Antes se conservaba UNA sola línea por doc+material (la de fecha más lejana), así que de
@@ -7067,7 +7072,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611041048');
+    const m = await import('./ind-plan-carga.js?v=202611041053');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -7775,7 +7780,8 @@ async function renderPlanCarga(stage, opts = {}) {
     .filter(r => String(r.doc_compr ?? '').trim() !== '' && String(r.material ?? '').trim() !== '')
     .filter(r => { const _e = estadosRetiro[String(r.doc_compr ?? '').trim()] || {}; return esEstadoCoordinado(_e.estado) && _e.tipo_local_rm !== 'LOCAL' && (_e.estado === 'coordinado_santiago' || _e.tipo_local_rm === 'RM' || String(_e.entrega_entrante ?? '').trim() !== ''); }) : [];
   // (2-nov-2026, Jordan) El MR es un bloqueo: la posición entra al plan sólo si se liberó a mano.
-  const ventas = esCD1003 ? ventasRaw.filter(r => !String(r.mr ?? '').trim() || r.mr_liberado) : [];
+  // (4-nov-2026, Jordan) Sólo el bloqueo MR 79 se maneja (y se libera a mano); las posiciones con otro MR no se consideran.
+  const ventas = esCD1003 ? ventasRaw.filter(r => !mrOcultoVenta(r) && (!String(r.mr ?? '').trim() || r.mr_liberado)) : [];
   // Regla Jordan 21-sep-2026: todo retiro LOCAL (tipo_local_rm='LOCAL') queda excluido del Plan de Carga;
   // los retiros de Concepción (1081) no cuentan en la tabla (los retiros son sólo del plan 1003).
   // (AJUSTE 21-sep-2026) Base de retiros para los camiones DIRECTOS Fábrica-Sucursal /
