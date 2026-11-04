@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611041954';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611041954';
-import { getDatabase } from './data.js?v=202611041954';
+import { supabase } from './supabase-client.js?v=202611041959';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611041959';
+import { getDatabase } from './data.js?v=202611041959';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611041954';
-import { confirmar, pedirDato } from './confirmar.js?v=202611041954';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611041959';
+import { confirmar, pedirDato } from './confirmar.js?v=202611041959';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -4757,6 +4757,9 @@ const orderAbc = (a, b) => abcRank(a) - abcRank(b) || a.localeCompare(b);
 const fechaUpd = ts => ts ? horaChile(ts) : '';
 // Retiro atrasado (regla 29-sep-2026): fecha SAP vencida hace MÁS de 5 días y sin coordinar.
 const retiroAtrasado = r => !esEstadoCoordinado(r._estado) && (diasVencida(r.fe_entrega) ?? -1) > 5;
+// (4-nov-2026, Jordan) OC Retiro RM cuya FECHA DE RETIRO ya pasó: ese día de carga no vale, hay que
+// re-coordinarla con fecha nueva. Antes se mostraba «carga 08-10» como si siguiera vigente.
+const retFechaVencida = r => r._modo === 'RM' && !!r._fecha_retiro && String(r._fecha_retiro).slice(0, 10) < isoLocal(hoy00());
 
 const V2 = {
   // ── STOCK ALMACÉN 4000 ────────────────────────────────────────────────────
@@ -5256,6 +5259,7 @@ const V2 = {
       { key: 'rm', label: 'Retiro RM', color: C_GREEN, sub: 'entran al plan de carga', fn: r => r._modo === 'RM' },
       { key: 'lo', label: 'Retiro local', color: C_ORANGE, sub: 'gestiona la sucursal', fn: r => r._modo === 'LOCAL' },
       { key: 'sl', label: 'Saldo sin coordinar', color: C_ORANGE, sub: 'la carga anterior ya viajó', fn: r => !!r._saldoSinCoord },
+      { key: 'fv', label: 'Fecha retiro vencida', color: C_RED, sub: 'coordinadas con fecha pasada', fn: retFechaVencida },
       { key: 'at', label: 'Atrasadas', color: C_RED, sub: 'vencidas > 5 días, sin coordinar', fn: retiroAtrasado },
       { key: 'ee', label: 'Expedición errónea', color: '#7e22ce', sub: 'pedido de venta calzado', fn: r => !!r._exp_error },
       { key: 'mn', label: 'Manuales', color: '#0f766e', sub: 'agregadas en la plataforma', fn: r => !!r._oc_manual },
@@ -5267,7 +5271,8 @@ const V2 = {
       { label: 'Tipo pedido', html: r => pill(r._tipo_pedido === 'CALZADA' ? 'Calzada' : 'Stock', r._tipo_pedido === 'CALZADA' ? 'info' : 'mute') + (r.documento ? `<div class="sv-sub">PV ${escV2(r.documento)}</div>` : '') + (esIngSum(r) ? `<div style="margin-top:4px">${ingSumPill(true)}</div>` : '') },
       { label: 'Tipo retiro', html: r => pill(r._tipo_retiro, TIPO_RETIRO_TONE[r._tipo_retiro] || 'mute') + `<div class="sv-sub">${r._tipo_origen === 'COORDINACION' ? 'coordinado' : 'automático'}</div>` },
       { label: 'Fecha SAP', html: r => mono(r.fe_entrega) },
-      { label: 'Fecha retiro', html: r => r._fecha_retiro ? mono(fmtFechaISO(r._fecha_retiro))
+      { label: 'Fecha retiro', html: r => r._fecha_retiro
+          ? mono(fmtFechaISO(r._fecha_retiro)) + (retFechaVencida(r) ? `<div style="margin-top:4px" title="La fecha de retiro ya pasó: ese día de carga no vale. Re-coordina la OC con una fecha nueva.">${pill('Vencida', 'bad')}</div>` : '')
           : (r._modo === 'RM' ? `<span class="sv-b" style="color:${C_RED}">Falta fecha</span>` : '<span class="sv-muted">—</span>') },
       { label: 'Ton', al: 'r', html: r => `<span class="sv-ton">${tonHtml(r._ton_num)}</span>` + (r._parcial ? `<div class="sv-sub" style="color:#15803d">retira ${escV2(fmtNum(r._ton_ret, 1))} t</div>` : '') + (r._revision_saldo ? '<div class="sv-sub" style="color:#b5000b">saldo pendiente</div>' : '') },
       { label: 'Alerta', html: r => (retiroAtrasado(r) ? pill('Atrasada', 'bad') : (r._al.k === 'Atrasado' ? pill('Vencida', 'orange') : pill(r._al.k, r._al.k === 'Pronto a vencer' ? 'warn' : r._al.tone)))
@@ -5285,7 +5290,9 @@ const V2 = {
     excluirEnFila: true,
     planEstado: (r, excluida) => excluida ? pill('Excluida hoy', 'bad')
       : r._saldo_todo ? `<span title="El saldo no está coordinado: re-coordina la OC con fecha de retiro y entrega nuevas para que entre al plan">${pill('Saldo sin coordinar', 'warn')}</span>`
-      : r._modo === 'RM' ? pill('En plan', 'ok') + (r._saldoSinCoord ? `<div class="sv-sub" style="color:#b45309">+ ${escV2(fmtNum(r._saldo_pend || 0, 0))} un de saldo sin coordinar</div>` : '') + (r._fecha_retiro ? `<div class="sv-sub">carga ${escV2(fmtFechaISO(r._fecha_retiro))}</div>` : '')
+      : r._modo === 'RM' ? pill('En plan', 'ok') + (r._saldoSinCoord ? `<div class="sv-sub" style="color:#b45309">+ ${escV2(fmtNum(r._saldo_pend || 0, 0))} un de saldo sin coordinar</div>` : '')
+          + (retFechaVencida(r) ? `<div class="sv-sub" style="color:#b5000b">fecha de retiro vencida (${escV2(fmtFechaISO(r._fecha_retiro))}) · actualízala</div>`
+             : r._fecha_retiro ? `<div class="sv-sub">carga ${escV2(fmtFechaISO(r._fecha_retiro))}</div>` : '')
       : r._modo === 'LOCAL' ? pill('Retiro local', 'orange')
       : pill('No considerado', 'mute'),
     edge: r => r._saldo_todo ? C_ORANGE : r._modo === 'LOCAL' ? C_ORANGE : r._modo === 'RM' ? C_GREEN : (retiroAtrasado(r) ? C_RED : null),
@@ -5321,6 +5328,7 @@ const V2 = {
       if (r._exp_error) avisos.push(`<b>Expedición errónea:</b> el pedido de venta ${escV2(r.documento)} tiene expedición «${escV2(r._pv_denominacion)}»; debe ser EBE-RET / EBE-DESP o EBE-RET / CLI-RET.`);
       if (r._modo === 'RM' && pendTranspRetiro(t).length) avisos.push(`<b>Transporte pendiente:</b> falta ${escV2(pendTranspRetiro(t).join(', '))}. Complétalo con «Editar coordinación»${pendTranspRetiro(t).includes('patente') ? '; sin patente el camión directo no queda programado' : ''}.`);
       if (esIngSum(r)) avisos.push(`<b>${ING_SUM_TXT}:</b> OC calzada con destino CD 1003 (PV ${escV2(r.documento)}). Ingresar el retiro en el CD y cargarlo en el camión junto con el pedido de venta.`);
+      if (retFechaVencida(r)) avisos.push(`<b>Fecha de retiro vencida:</b> la fecha coordinada (${escV2(fmtFechaISO(r._fecha_retiro))}) ya pasó, así que ese día de carga no vale. Re-coordina la OC con una fecha de retiro nueva.`);
       if (r._saldoSinCoord) avisos.push(`<b>Saldo sin coordinar:</b> la carga anterior ya viajó${r._viajo ? ` (camión ${escV2(r._viajo.patente || r._viajo.transportista || 'programado')} · carga ${escV2(fmtFechaISO(String(r._viajo.fecha_carga).slice(0, 10)))})` : ''} y SAP todavía muestra ${escV2(fmtNum(r._saldo_pend || 0, 0))} un pendientes. Ese saldo NO está coordinado: no entra al Plan de Carga hasta re-coordinar la OC con fecha de retiro y entrega nuevas.`);
       avisos.push(r._saldo_todo ? '<b>Plan de carga:</b> el saldo no está coordinado — no se considera hasta re-coordinar la OC.'
         : r._modo === 'RM' ? '<b>Plan de carga:</b> Retiro RM — entra al plan el día de su fecha de retiro.'
@@ -7191,7 +7199,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611041954');
+    const m = await import('./ind-plan-carga.js?v=202611041959');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
