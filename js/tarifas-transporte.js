@@ -1,17 +1,17 @@
 // PANTALLA 1: Administrador de Tarifas Transporte — SIT EBEMA
 // Sub-módulos: Peajes, Combustibles y Rendimientos, Seguros y Permisos,
 // Variables Generales y Motor de Costo (ZCAP) con exportación CSV.
-import { getDatabase, saveDatabase, getCentreName, getTariffConfig, getClientTariffConfig, truckCapKg, getOrigenGroups, getGroupRepId, buildTruckTypes, TRUCK_BASE_TYPES, loadHistorico, loadHistoricoFlete360, deleteRow } from './data.js?v=202611041053';
-import { CAP_LIST, truckTypesWithCap, calcularMatrizCostos, calcularCostoRuta } from './tarifas-engine.js?v=202611041053';
+import { getDatabase, saveDatabase, getCentreName, getTariffConfig, getClientTariffConfig, truckCapKg, getOrigenGroups, getGroupRepId, buildTruckTypes, TRUCK_BASE_TYPES, loadHistorico, loadHistoricoFlete360, deleteRow } from './data.js?v=202611041407';
+import { CAP_LIST, truckTypesWithCap, calcularMatrizCostos, calcularCostoRuta } from './tarifas-engine.js?v=202611041407';
 import { formatCLP, parseCSV, showAlert, toCSV, downloadFile, escapeHtml } from './utils.js';
-import { supabase } from './supabase-client.js?v=202611041053';
-import { getField } from './zonas-transporte.js?v=202611041053';
-import { renderZcapView, calcZcapRow } from './zcap.js?v=202611041053';
-import { can } from './permisos.js?v=202611041053';
-import { renderPeajesV2, setPeajesTab, renderCombustiblesV2, renderSegurosV2, renderCostosExtrasV2, renderVariablesV2, renderMotorV2 } from './tarifas-insumos.js?v=202611041053';
-import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, textoImpacto, setParamPill, usuarioSesion } from './tarifas-ui.js?v=202611041053';
-import { confirmar } from './confirmar.js?v=202611041053';
-import { cargarVigente, vigenteCache, onVigente, asegurarVigente, avisoCamionesHtml, wireAvisoCamiones, valorParam, ultimaActualizacion, fechaHora, usuarioCorto, estilosVigente } from './tarifa-vigente.js?v=202611041053';
+import { supabase } from './supabase-client.js?v=202611041407';
+import { getField } from './zonas-transporte.js?v=202611041407';
+import { renderZcapView, calcZcapRow } from './zcap.js?v=202611041407';
+import { can } from './permisos.js?v=202611041407';
+import { renderPeajesV2, setPeajesTab, renderCombustiblesV2, renderSegurosV2, renderCostosExtrasV2, renderVariablesV2, renderMotorV2 } from './tarifas-insumos.js?v=202611041407';
+import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, textoImpacto, setParamPill, usuarioSesion } from './tarifas-ui.js?v=202611041407';
+import { confirmar } from './confirmar.js?v=202611041407';
+import { cargarVigente, vigenteCache, onVigente, asegurarVigente, avisoCamionesHtml, wireAvisoCamiones, valorParam, ultimaActualizacion, fechaHora, usuarioCorto, estilosVigente } from './tarifa-vigente.js?v=202611041407';
 
 // FIX: Escuchar errores de sincronización con Supabase y notificar al usuario
 window.addEventListener('db_sync_error', (e) => {
@@ -176,11 +176,11 @@ export function renderTariffTransportView(container) {
       case 'camiones':      renderTarifasCamion(content, db, cfg); break;
       case 'zcap':          renderZcapView(content); break;
       case 'variacion':     // (25-oct-2026, Jordan) Variación Tarifa: tarifa vigente vs actual por centro
-        import('./variacion-tarifa.js?v=202611041053').then(m => m.renderVariacionTarifa(content))
+        import('./variacion-tarifa.js?v=202611041407').then(m => m.renderVariacionTarifa(content))
           .catch(e => { console.error(e); content.innerHTML = `<div class="sv-card" style="padding:32px;color:#b5000b">No se pudo cargar Variación Tarifa: ${escapeHtml(e.message || String(e))}</div>`; });
         break;
       case 'reajuste':      // (26-oct-2026, Jordan) Reajuste Polinómico: ponderadores editables + índices manuales
-        import('./reajuste-tarifa.js?v=202611041053').then(m => m.renderReajusteTarifa(content))
+        import('./reajuste-tarifa.js?v=202611041407').then(m => m.renderReajusteTarifa(content))
           .catch(e => { console.error(e); content.innerHTML = `<div class="sv-card" style="padding:32px;color:#b5000b">No se pudo cargar Reajuste Polinómico: ${escapeHtml(e.message || String(e))}</div>`; });
         break;
       case 'peajes':        renderPeajesV2(content, db, cfg); break;
@@ -2208,10 +2208,11 @@ function tcImpacto(db, cfg) {
 }
 
 // Propuesta de b, f y g por mínimos cuadrados contra el Motor de Costos
-function tcAjusteMotor(db, cfg) {
+function tcAjusteMotor(db, cfg, sel) {
   let nProp = 0;
   tcGrupos(db).forEach(g => {
-    if (TC.centro !== 'all' && TC.centro !== g.grupo) return;
+    // (4-nov-2026, Jordan) sel = centros elegidos en el selector de «Refrescar tarifas»
+    if (sel ? !sel.has(g.grupo) : (TC.centro !== 'all' && TC.centro !== g.grupo)) return;
     const rutas = tcRutasRegionales(db, cfg, g.gruposCalc).filter(r => (r.tipo || '').toUpperCase() === 'COMUNA' && Number(r.km) > 0);
     if (!rutas.length) return;
     (db.truckTypes || []).filter(t => t.Id_centro === g.repId).forEach(t => {
@@ -2371,11 +2372,34 @@ function renderTarifasCamion(content, db, cfg) {
     });
     wireChangesBar(content, () => { TC.draft = {}; TC.refrescado = false; TC.reajuste = null; render(); }, guardar);
     content.querySelector('#tt-refresh')?.addEventListener('click', () => {
-      TC.reajuste = null;   // la propuesta del motor reemplaza a la del reajuste polinómico
-      const n = tcAjusteMotor(db, cfg);
-      TC.refrescado = true;
-      render();
-      showAlert(n ? `Propuesta ajustada al Motor de Costos: ${n} valor(es) cambian. Revisa el impacto y guarda para aplicarla.` : 'Las tarifas ya están ajustadas al Motor de Costos.', 'success');
+      // (4-nov-2026, Jordan) Selector de sucursales a refrescar (antes refrescaba todas con «Todos»)
+      const prev = document.getElementById('tt-ref-ov'); if (prev) prev.remove();
+      const ov = document.createElement('div'); ov.id = 'tt-ref-ov';
+      ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
+      const pre = TC.centro === 'all' ? new Set() : new Set([TC.centro]);
+      ov.innerHTML = `<div style="background:var(--surface,#fff);color:inherit;border-radius:10px;max-width:420px;width:100%;padding:20px;box-shadow:0 10px 40px rgba(0,0,0,.3);max-height:90vh;overflow:auto">
+        <h3 style="margin:0 0 4px;font-size:16px;font-weight:700">Refrescar tarifas</h3>
+        <p style="margin:0 0 12px;font-size:12px;opacity:.75">Elige las sucursales a ajustar al Motor de Costos. Queda como cambio sin guardar; las demás no se tocan.</p>
+        <label style="display:flex;gap:8px;align-items:center;font-weight:600;font-size:13px;padding:4px 0;border-bottom:1px solid rgba(128,128,128,.3);margin-bottom:6px"><input type="checkbox" id="tt-ref-all"> Todas</label>
+        ${grupos.map(g => `<label style="display:flex;gap:8px;align-items:center;font-size:13px;padding:3px 0"><input type="checkbox" class="tt-ref-c" value="${esc(g.grupo)}" ${pre.has(g.grupo) ? 'checked' : ''}> ${esc(g.nombreTabla)}</label>`).join('')}
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
+          <button class="sv-btn" id="tt-ref-no">Cancelar</button>
+          <button class="sv-btn-p" id="tt-ref-ok">Refrescar</button></div></div>`;
+      document.body.appendChild(ov);
+      const cs = () => [...ov.querySelectorAll('.tt-ref-c')];
+      ov.querySelector('#tt-ref-all').addEventListener('change', e => cs().forEach(c => { c.checked = e.target.checked; }));
+      ov.querySelector('#tt-ref-no').addEventListener('click', () => ov.remove());
+      ov.addEventListener('click', e => { if (e.target === ov) ov.remove(); });
+      ov.querySelector('#tt-ref-ok').addEventListener('click', () => {
+        const sel = new Set(cs().filter(c => c.checked).map(c => c.value));
+        if (!sel.size) { showAlert('Elige al menos una sucursal.', 'error'); return; }
+        ov.remove();
+        TC.reajuste = null;   // la propuesta del motor reemplaza a la del reajuste polinómico
+        const n = tcAjusteMotor(db, cfg, sel);
+        TC.refrescado = true;
+        render();
+        showAlert(n ? `Propuesta ajustada al Motor de Costos en ${sel.size} sucursal(es): ${n} valor(es) cambian. Revisa el impacto y guarda para aplicarla.` : 'Las sucursales elegidas ya están ajustadas al Motor de Costos.', 'success');
+      });
     });
     // (23-oct-2026, Jordan) Camión 2 Ton por centro: fila manual en truck_types (sin Motor de Costos)
     content.querySelectorAll('[data-tc2t]').forEach(btn => btn.addEventListener('click', async () => {
