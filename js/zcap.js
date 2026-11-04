@@ -2,11 +2,11 @@
 // Regional:       ZCAP = Costo Base + km × Tarifa/KM
 // Interregional:  ZCAP = item10_costoRutaTotal (motor completo)
 // Troncales:      ZCAP = motor completo para rutas definidas por el usuario
-import { getDatabase, saveDatabase, getTariffConfig, truckCapKg, getOrigenGroups, TRUCK_BASE_TYPES } from './data.js?v=202611041407';
-import { calcularCostoRuta } from './tarifas-engine.js?v=202611041407';
+import { getDatabase, saveDatabase, getTariffConfig, truckCapKg, getOrigenGroups, TRUCK_BASE_TYPES } from './data.js?v=202611041416';
+import { calcularCostoRuta } from './tarifas-engine.js?v=202611041416';
 import { showAlert } from './utils.js';
-import { can } from './permisos.js?v=202611041407';
-import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, textoImpacto, setParamPill, usuarioSesion, clasifPill, clasifTarifa, carPill } from './tarifas-ui.js?v=202611041407';
+import { can } from './permisos.js?v=202611041416';
+import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, textoImpacto, setParamPill, usuarioSesion, clasifPill, clasifTarifa, carPill } from './tarifas-ui.js?v=202611041416';
 
 const TRUCK_ORDER = ['Camión 2 Ton', 'Camión 5 Ton', 'Camión 10 Ton', 'Camión 15 Ton', 'Camión 28 Ton'];
 
@@ -132,7 +132,7 @@ export function buildZcapMap(db, cfg, { incluir2t = false } = {}) {
 }
 
 // ── Vista Tarifas Rutas (ZCAP) v2 ──────────────────────────────────────────
-const ZV = { tipo: 'todas', centro: 'all', truck: 'all', q: '', kpi: 'all', pagina: 0, draft: {}, guardando: false };
+const ZV = { tipo: 'todas', tipos: new Set(), centro: 'all', truck: 'all', q: '', kpi: 'all', pagina: 0, draft: {}, guardando: false };
 const PAGE = 50;
 const TIPO_LBL = { todas: 'Todas', regional: 'Regionales', interregional: 'Interregionales', sector: 'Sectores', troncales: 'Troncales' };
 
@@ -173,10 +173,8 @@ export function renderZcapView(container) {
   function filtrados() {
     const q = ZV.q.trim().toLowerCase();
     return combos.filter(x => {
-      if (ZV.tipo === 'regional' && x.clasif !== 'Regional') return false;
-      if (ZV.tipo === 'interregional' && x.clasif !== 'Interregional') return false;
-      if (ZV.tipo === 'sector' && x.clasif !== 'Sector') return false;
-      if (ZV.tipo === 'troncales' && x.clasif !== 'Troncal') return false;
+      // (4-nov-2026, Jordan) selección múltiple de tipos de ruta (vacío = todas)
+      if (ZV.tipos.size && !ZV.tipos.has(x.clasif === 'Troncal' ? 'troncales' : String(x.clasif || '').toLowerCase())) return false;
       if (ZV.centro !== 'all' && x.grupo.grupo !== ZV.centro) return false;
       if (ZV.truck !== 'all' && x.truck.type !== ZV.truck) return false;
       if (q && !`${x.ruta.codigo} ${x.ruta.destino}`.toLowerCase().includes(q)) return false;
@@ -207,7 +205,7 @@ export function renderZcapView(container) {
     const totalPags = Math.max(1, Math.ceil(lista.length / PAGE));
     if (ZV.pagina >= totalPags) ZV.pagina = totalPags - 1;
     const pag = lista.slice(ZV.pagina * PAGE, (ZV.pagina + 1) * PAGE);
-    const troncal = ZV.tipo === 'troncales';
+    const troncal = ZV.tipos.size === 1 && ZV.tipos.has('troncales');
     const ch = cambios();
 
     const kpi = (k, lbl, val, sub, color, click) => `<button class="sv-kpi ${ZV.kpi === k ? 'is-on' : ''}" ${click ? `data-chip data-zkpi="${k}"` : 'data-chip disabled style="cursor:default"'}
@@ -230,7 +228,7 @@ export function renderZcapView(container) {
       </div>
       <div class="sv-filters">
         <div class="sv-frow">
-          <div class="sv-seg">${Object.entries(TIPO_LBL).map(([k, l]) => `<button data-chip data-ztipo="${k}" class="${ZV.tipo === k ? 'is-on' : ''}">${l}</button>`).join('')}</div>
+          <div class="sv-seg">${Object.entries(TIPO_LBL).map(([k, l]) => `<button data-chip data-ztipo="${k}" class="${(k === 'todas' ? !ZV.tipos.size : ZV.tipos.has(k)) ? 'is-on' : ''}">${l}</button>`).join('')}</div>
           <div class="sv-seg">${['all', ...TRUCK_ORDER].map(t => `<button data-chip data-ztruck="${esc(t)}" class="${ZV.truck === t ? 'is-on' : ''}">${t === 'all' ? 'Todos' : esc(t.replace('Camión ', ''))}</button>`).join('')}</div>
           <label class="sv-inp"><span class="material-symbols-outlined">search</span><input id="zcap-q" placeholder="Código o destino" value="${esc(ZV.q)}" style="width:200px"></label>
         </div>
@@ -297,7 +295,12 @@ export function renderZcapView(container) {
 
   function wire() {
     wireChain(container);
-    container.querySelectorAll('[data-ztipo]').forEach(b => b.addEventListener('click', () => { ZV.tipo = b.dataset.ztipo; ZV.pagina = 0; render(); }));
+    container.querySelectorAll('[data-ztipo]').forEach(b => b.addEventListener('click', () => {
+      const k = b.dataset.ztipo;
+      if (k === 'todas') ZV.tipos.clear(); else if (ZV.tipos.has(k)) ZV.tipos.delete(k); else ZV.tipos.add(k);
+      ZV.tipo = ZV.tipos.size ? [...ZV.tipos].join('+') : 'todas';
+      ZV.pagina = 0; render();
+    }));
     container.querySelectorAll('[data-ztruck]').forEach(b => b.addEventListener('click', () => { ZV.truck = b.dataset.ztruck; ZV.pagina = 0; render(); }));
     container.querySelectorAll('[data-zcentro]').forEach(b => b.addEventListener('click', () => { ZV.centro = b.dataset.zcentro; ZV.pagina = 0; render(); }));
     container.querySelectorAll('[data-zkpi]').forEach(b => b.addEventListener('click', () => { const k = b.dataset.zkpi; ZV.kpi = ZV.kpi === k || k === 'all' ? 'all' : k; ZV.pagina = 0; render(); }));
