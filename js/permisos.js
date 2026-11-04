@@ -153,7 +153,7 @@ export const ACCIONES_EXTRA = [
   { key: 'marcar_prioridad',      label: 'Marcar PRIORIDAD de carga (Retiros, Crossdocking, Traslados y sus Entregas)' },
   { key: 'evaluar_prioridad',     label: 'Aceptar / rechazar PRIORIDAD de carga — Abastecimiento' },
   { key: 'activar_saldo',         label: 'Activar saldo de camión parcial (Seguimiento de Carga)', soloEditor: true },
-  { key: 'editar_carga_seguimiento', label: 'Editar carga de camión de plan cerrado (Seguimiento de Carga)', soloEditor: true },
+  { key: 'editar_carga_seguimiento', label: 'Editar carga de un camión programado (Seguimiento de Carga)', soloEditor: true },
   { key: 'venta_manual',          label: 'Agregar y coordinar pedidos de venta manuales (Ventas CD)', soloEditor: true },
   { key: 'retiro_manual',         label: 'Agregar OC de retiro manuales (Retiros de Fábrica)', soloEditor: true },
 ];

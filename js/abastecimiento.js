@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611031709';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611031709';
-import { getDatabase } from './data.js?v=202611031709';
+import { supabase } from './supabase-client.js?v=202611041027';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611041027';
+import { getDatabase } from './data.js?v=202611041027';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611031709';
-import { confirmar, pedirDato } from './confirmar.js?v=202611031709';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611041027';
+import { confirmar, pedirDato } from './confirmar.js?v=202611041027';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -5611,6 +5611,26 @@ function agruparSeguimiento(rows, dtRows, ajustes, clientes, transp) {
   const esCoord = r => String(r.clave || '').startsWith('COORD|');
   const docsPlan = new Set(rows.filter(r => !esCoord(r)).map(r => String(r.documento ?? '').trim()).filter(Boolean));
   rows = rows.filter(r => !esCoord(r) || !docsPlan.has(String(r.documento ?? '').trim()));
+  // (4-nov-2026, Jordan) Un mismo camión y día de carga va en UNA sola posición: la coordinación suelta (COORD|…) cuyo
+  // centro, tipo, patente y día de carga coinciden con un camión directo del plan (patente|n) se junta con él, aunque
+  // su plan sea de otro día o su pedido no haya entrado a la foto del camión.
+  const nPatSeg = v => String(v ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const kFusion = r => [r.cd_origen, r.ce, r.tipo_camion, nPatSeg(r.patente_camion), String(r.fecha_carga || '').slice(0, 10)].map(x => String(x ?? '').trim()).join('|');
+  const dirPlan = new Map();
+  rows.forEach(r => {
+    if (esCoord(r) || ['Camión CD', '2º camión'].includes(r.tipo_camion) || !nPatSeg(r.patente_camion) || !r.fecha_carga) return;
+    const k = kFusion(r); if (!dirPlan.has(k)) dirPlan.set(k, r);
+  });
+  if (dirPlan.size) {
+    const sueltas = [];
+    rows = rows.filter(r => {
+      if (!esCoord(r) || !nPatSeg(r.patente_camion) || !r.fecha_carga) return true;
+      const t = dirPlan.get(kFusion(r)); if (!t) return true;
+      sueltas.push({ ...r, clave: t.clave, fecha_plan: t.fecha_plan, _fusion: true });
+      return false;
+    });
+    rows = rows.concat(sueltas);   // al final: la cabecera del camión la define la línea del plan
+  }
   const grupos = new Map();
   rows.forEach(r => {
     const ce = String(r.ce ?? '').trim();
@@ -5636,7 +5656,7 @@ function agruparSeguimiento(rows, dtRows, ajustes, clientes, transp) {
     g._lineas.sort(ordL);
     g.camiones = [...g._cams.values()].sort((a, b) => ORDEN_CAM_SEG(a.tipo) - ORDEN_CAM_SEG(b.tipo) || String(a.clave).localeCompare(String(b.clave)));
     delete g._cams;
-    g.camiones.forEach(c => { c.ton = c.lineas.reduce((s2, x) => s2 + (Number(x.ton) || 0), 0); if (c.coord) { c.cap = CAP_CAMION_DIRECTO; c.pct = Math.round(c.ton / CAP_CAMION_DIRECTO * 100); } c.nSku = new Set(c.lineas.map(x => String(x.material ?? '').trim()).filter(Boolean)).size;
+    g.camiones.forEach(c => { c.ton = c.lineas.reduce((s2, x) => s2 + (Number(x.ton) || 0), 0); if (c.coord) { c.cap = CAP_CAMION_DIRECTO; c.pct = Math.round(c.ton / CAP_CAMION_DIRECTO * 100); } else if (c.lineas.some(x => x._fusion)) { c.cap = Number(c.cap) || CAP_CAMION_DIRECTO; c.pct = Math.round(c.ton / c.cap * 100); } c.nSku = new Set(c.lineas.map(x => String(x.material ?? '').trim()).filter(Boolean)).size;
       // DT del camión (puede haber más de uno si el camión salió con varios documentos)
       const dts = new Map();
       new Set(c.lineas.map(x => String(x.camion_id))).forEach(id => (dtMap.get(id) || new Map()).forEach((v, k) => dts.set(k, v)));
@@ -6086,8 +6106,11 @@ async function quitarAjusteDt(camionIds, transporte) {
   if (error) { showAlert('No se pudo quitar el ajuste del DT: ' + error.message, 'error'); return false; }
   return true;
 }
-// ── Editar carga de un camión de un plan cerrado (19-oct-2026, Jordan) ─────────────────
-// Camión coordinado/programado de un plan de días anteriores: quitar pedidos / entregas que no viajaron
+// ── Editar carga de un camión programado (19-oct-2026, Jordan) ─────────────────────────
+// (3-nov-2026, Jordan) Se habilita también para el camión programado HOY, no sólo para planes de días
+// anteriores: con horizonte de 48 h un camión se programa hoy para cargar pasado mañana y hay que poder
+// agregar o sacar SKU antes de que salga (camiones de Chillán, Concepción y Puerto Montt del jueves).
+// Camión coordinado/programado: quitar pedidos / entregas que no viajaron
 // en ese camión y agregar los que sí viajaron (buscando por pedido de venta, OC, pedido de traslado o
 // entrega SAP). Sólo OWNER y Planner Distribución (acción 'editar_carga_seguimiento'). Motivo obligatorio;
 // cada cambio queda en abast_seguimiento_carga_ajuste. No toca la foto 15:35 ni los indicadores del plan:
@@ -6116,11 +6139,11 @@ function accionesDescargaSeg(r) {
       `Plan_vs_DT_${f(r.ce)}_${f(c.tipo)}_${f(c.patente_camion || 'SINPATENTE')}_${f(c.fecha_carga || r.fecha_carga)}.csv`); return null; } }));
 }
 function accionesEditarCargaSeg(r) {
-  if (!can('editar_carga_seguimiento') || !planCerradoSeg(r)) return [];
+  if (!can('editar_carga_seguimiento')) return [];   // OWNER y Planner Distribución, plan cerrado o del día
   const varios = r.camiones.length > 1;
   return r.camiones.filter(c => (c.camionIds || []).length).map(c => ({
     label: `Editar carga${varios ? ' · ' + c.lbl : ''}`, icon: 'swap_horiz',
-    title: 'Quitar o agregar pedidos / entregas a este camión (plan cerrado)', run: async () => {
+    title: `Quitar o agregar pedidos / entregas a este camión${planCerradoSeg(r) ? ' (plan cerrado)' : ' (programado hoy)'}`, run: async () => {
       const ok = await showEditarCargaModal(r, c);
       if (!ok) return null;
       clearRawCache(); return { recargar: true };
@@ -7009,7 +7032,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611031709');
+    const m = await import('./ind-plan-carga.js?v=202611041027');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
