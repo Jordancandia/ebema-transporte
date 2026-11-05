@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611042225';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611042225';
-import { getDatabase } from './data.js?v=202611042225';
+import { supabase } from './supabase-client.js?v=202611051016';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611051016';
+import { getDatabase } from './data.js?v=202611051016';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611042225';
-import { confirmar, pedirDato } from './confirmar.js?v=202611042225';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611051016';
+import { confirmar, pedirDato } from './confirmar.js?v=202611051016';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -7227,7 +7227,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611042225');
+    const m = await import('./ind-plan-carga.js?v=202611051016');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -10343,6 +10343,19 @@ function reponerCoordPorPosicion(ventasRaw, coordVentas, bkVen, conDt, cargadasE
   // el respaldo, no se puede despachar (caso NV 1058465 pos 20, respaldada antes de que SAP le pusiera MR 79).
   const mrPos = new Set();
   ventasRaw.forEach(r => { if (!r._respaldo && tx(r.mr) && !r.mr_liberado) mrPos.add(kPos(r)); });
+  // (5-nov-2026, Jordan) SAP REPROGRAMÓ la fecha del reparto: la fila de la fecha vieja sigue viva pero con
+  // ctd_confirmada = 0 y nada entregado, y la cantidad pasó a otra fecha de la MISMA posición que sí tiene
+  // pendiente. Esa fila no se repone desde el respaldo: el respaldo guardó la fecha vieja con la cantidad
+  // completa, así que la posición entraba dos veces (NV 1064185: 04.11 en 0 + 05.11 completa = unidades al doble).
+  // No afecta al reparto PROGRAMADO (su entrega existe: ctd_confirmada se mantiene y sube cantidad_entrg).
+  const vivoSinConfirmar = new Map();   // doc|pos|material|fecha → doc|pos|material
+  const pendPosMat = new Map();         // doc|pos|material → mayor pendiente vivo en cualquier fecha
+  ventasRaw.forEach(r => {
+    if (r._respaldo) return;
+    const km = `${tx(r.doc_ventas)}|${tx(r.pos)}|${tx(r.material)}`;
+    pendPosMat.set(km, Math.max(pendPosMat.has(km) ? pendPosMat.get(km) : 0, pendDe(r)));
+    if (parseNum(r.ctd_confirmada) <= 0 && parseNum(r.cantidad_entrg) <= 0) vivoSinConfirmar.set(kPos(r), km);
+  });
   const quitar = new Set(), agregar = [];
   bkPorDoc.forEach((filas, doc) => {
     if (!coordVentas.get(doc)) return;                    // sin coordinar → nada que reponer
@@ -10353,6 +10366,9 @@ function reponerCoordPorPosicion(ventasRaw, coordVentas, bkVen, conDt, cargadasE
       if (!co || coordConDtV(co, conDt)) return;           // ya con DT → nada que reponer
       const k = kPos(b), hayVivo = pendPos.has(k);
       if (hayVivo && pendPos.get(k) > 0) return;                                              // 1)
+      // fecha reprogramada por SAP: la cantidad vive en otra fecha de la misma posición → no se repone
+      const kmRep = vivoSinConfirmar.get(k);
+      if (kmRep && (pendPosMat.get(kmRep) || 0) > 0) return;
       const ent = entregaLineaV(co, b.material, b.fe_entrega);
       const matFue = !cargadasPos || cargadasPos.has(`${tx(b.doc_ventas)}|${tx(b.material)}`);
       if (ent && cargadasEnt && cargadasEnt.has(ent) && matFue) { if (hayVivo) quitar.add(k); return; }  // 2)
