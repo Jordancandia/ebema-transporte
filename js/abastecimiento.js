@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611042031';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611042031';
-import { getDatabase } from './data.js?v=202611042031';
+import { supabase } from './supabase-client.js?v=202611042201';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611042201';
+import { getDatabase } from './data.js?v=202611042201';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611042031';
-import { confirmar, pedirDato } from './confirmar.js?v=202611042031';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611042201';
+import { confirmar, pedirDato } from './confirmar.js?v=202611042201';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -7202,7 +7202,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611042031');
+    const m = await import('./ind-plan-carga.js?v=202611042201');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -7939,6 +7939,24 @@ async function renderPlanCarga(stage, opts = {}) {
     // subtotal del SQVI (doc_compr o material vacios).
     .filter(r => String(r.doc_compr ?? '').trim() !== '' && String(r.material ?? '').trim() !== '')
     .filter(r => { const _e = estadosRetiro[String(r.doc_compr ?? '').trim()] || {}; return esEstadoCoordinado(_e.estado) && _e.tipo_local_rm !== 'LOCAL' && ['FAB-SUC', 'FAB-CLTE'].includes(_e.tipo_retiro); }) : [];
+  // (4-nov-2026, Jordan) VÍNCULO DE CARGAS DE UN MISMO CAMIÓN: la misma patente puede llevar el tramo de
+  // fábrica (retiro directo) y el tramo CD→cliente (NV, PV Stock 4000 o crossdocking) el mismo día. El plan
+  // evalúa cada tramo con su propia fecha (el retiro directo sólo el día hábil 1; la NV con el horizonte del
+  // centro), así que uno puede no estar todavía en el plan. Este índice permite avisar «mismo camión» sin
+  // cambiar qué camiones muestra el plan.
+  const coordPorPatente = new Map();
+  const addCoordPat = (pat, o) => { const k = normPatente(pat); if (!k || !o.doc) return; if (!coordPorPatente.has(k)) coordPorPatente.set(k, []); coordPorPatente.get(k).push(o); };
+  Object.entries(estadosRetiro || {}).forEach(([oc, e]) => {
+    if (!e || !esEstadoCoordinado(e.estado) || e.tipo_local_rm === 'LOCAL') return;
+    addCoordPat(e.patente_camion, { doc: String(oc).trim(), fecha: String(e.fecha_retiro || '').slice(0, 10),
+      lbl: e.tipo_retiro === 'FAB-CLTE' ? 'retiro Fáb-Cliente' : e.tipo_retiro === 'FAB-SUC' ? 'retiro Fáb-Sucursal' : 'retiro fábrica→CD' });
+  });
+  [...((coordVentas && coordVentas.values()) || [])].forEach(c => { if (c.tipo_entrega === 'CD-CLIENTE')
+    addCoordPat(c.patente_camion, { doc: String(c.doc_ventas ?? '').trim(), fecha: String(c.fecha_entrega || '').slice(0, 10), lbl: 'NV CD-Cliente' }); });
+  [...((pv4000Coord && pv4000Coord.values()) || [])].forEach(c => { if (c.tipo_entrega === 'CD-CLIENTE')
+    addCoordPat(c.patente_camion, { doc: String(c.documento ?? '').trim(), fecha: String(c.fecha_entrega || '').slice(0, 10), lbl: 'PV Stock 4000 CD-Cliente' }); });
+  [...((coordTraslados && coordTraslados.values()) || [])].forEach(c => { if (c.tipo_entrega === 'CD-CLIENTE')
+    addCoordPat(c.patente_camion, { doc: String(c.doc_compr ?? '').trim(), fecha: String(c.fecha_entrega || '').slice(0, 10), lbl: 'traslado CD-Cliente' }); });
   // sqvi_pedidos_traslados_4000: cesu==ce (destino), origen siempre es CD 1003.
   // Deduplicar por doc_compr|pos — clave sin fecha para fusionar la fila '00.00.0000'
   // (cabecera SAP) con la fila de fecha real (línea de planificación), conservando
@@ -8302,7 +8320,7 @@ async function renderPlanCarga(stage, opts = {}) {
         const ton = sumTon(g.items);
         camionesCliente.push({ items: g.items, ton, grupo: `${g.pat ? 'Patente ' + g.pat : 'Camión compartido (patente pendiente)'} · ${nombres}`, cap: CAP_CAMION_DIRECTO,
           patente: g.pat, patenteCarro: g.co.patente_carro || '', idTrans: String(g.co.id_transporte ?? '').trim(), transportista: [g.co.id_transporte, g.co.transportista].filter(Boolean).join(' · '),
-          horaPres: String(g.co.hora_presentacion || '').trim(),
+          horaPres: String(g.co.hora_presentacion || '').trim(), fechaCarga: String(g.co.fecha_entrega || '').slice(0, 10),
           chofer: [g.co.chofer_nombre, g.co.chofer_rut, g.co.chofer_telefono].filter(Boolean).join(' · ') });
       } else armarCamiones(g.items, CAP_CAMION_DIRECTO, d => d.pv).forEach(c => camionesCliente.push({ ...c, grupo: nombres, cap: CAP_CAMION_DIRECTO }));
     });
@@ -8430,7 +8448,7 @@ async function renderPlanCarga(stage, opts = {}) {
       const nombres = [...new Set(items.map(d => d.prov).filter(Boolean))].join(' + ');
       (tipo === 'fabCli' ? camionesFabCli : camionesFabSuc).push({ items, ton: items.reduce((s2, d) => s2 + (d.ton || 0), 0),
         grupo: `Patente ${String(e.patente_camion || pat).toUpperCase()} · ${nombres}`, cap: CAP_CAMION_DIRECTO,
-        patente: String(e.patente_camion || pat).toUpperCase(), patenteCarro: e.patente_carro || '', idTrans: String(e.id_transporte ?? '').trim(),
+        patente: String(e.patente_camion || pat).toUpperCase(), patenteCarro: e.patente_carro || '', idTrans: String(e.id_transporte ?? '').trim(), fechaCarga: isoLocal(fechaPlanCe),
         transportista: [e.id_transporte, e.transportista].filter(Boolean).join(' · '),
         chofer: [e.chofer_nombre, e.chofer_rut, e.chofer_telefono].filter(Boolean).join(' · ') });
     });
@@ -8448,6 +8466,16 @@ async function renderPlanCarga(stage, opts = {}) {
     camionesFabSuc.forEach((c, i) => { c.n = i + 1; c.items.forEach(d => { d._camion = i + 1; }); tonFabSuc += c.ton; det.fabSuc.push(...c.items); });
     // (4-nov-2026, Jordan) Camión mixto: misma patente en un camión Fábrica-Cliente y en uno CD-Cliente = un solo camión
     // físico (pasa a fábrica y luego carga en el CD). Se marcan ambos y se muestra el tonelaje total del camión.
+    // (4-nov-2026, Jordan) Aviso «mismo camión»: otra carga coordinada con la MISMA patente y el MISMO día
+    // que todavía no forma camión en este plan (p. ej. el retiro directo del viernes, que el plan recién
+    // considera el día hábil 1). Sólo avisa; no cambia qué camiones muestra el plan.
+    const docsPlanCam = new Set([...camionesCliente, ...camionesFabCli, ...camionesFabSuc]
+      .flatMap(c => (c.items || []).map(d => String(d.pv ?? d.oc ?? '').trim())).filter(Boolean));
+    [...camionesCliente, ...camionesFabCli, ...camionesFabSuc].forEach(c => {
+      const pv2 = normPatente(c.patente); if (!pv2) { c.vinculos = []; return; }
+      c.vinculos = (coordPorPatente.get(pv2) || []).filter(o => !docsPlanCam.has(o.doc)
+        && (!c.fechaCarga || !o.fecha || o.fecha === c.fechaCarga));
+    });
     camionesCliente.forEach(cc => {
       const p = normPatente(cc.patente); if (!p) return;
       const ff = camionesFabCli.find(x => normPatente(x.patente) === p);
@@ -8662,7 +8690,8 @@ async function renderPlanCarga(stage, opts = {}) {
     return resumen + lista.map(c => {
       const pct = c.cap > 0 ? Math.round(c.ton / c.cap * 100) : 0;
       const mx = c.mixto ? ` · CAMIÓN MIXTO con ${c.mixto.con}: ${fmtNum(c.mixto.total, 1)} t en total (${c.cap > 0 ? Math.round(c.mixto.total / c.cap * 100) : 0}%${c.mixto.total > c.cap + 1e-6 ? ' · EXCEDE' : ''})` : '';
-      const lbl = `Camión ${c.n} de ${tot} · ${lblGrupo}: ${c.grupo} · ${fmtNum(c.ton, 1)} t de ${fmtNum(c.cap, 0)} t (${pct}%)${mx}`;
+      const vn = (c.vinculos || []).length ? ` · MISMO CAMIÓN: ${c.vinculos.map(o => `${o.lbl} ${o.doc}${o.fecha ? ' (retiro/carga ' + fmtFechaISO(o.fecha) + ')' : ''}`).join(', ')} — esa carga todavía no está en este plan` : '';
+      const lbl = `Camión ${c.n} de ${tot} · ${lblGrupo}: ${c.grupo} · ${fmtNum(c.ton, 1)} t de ${fmtNum(c.cap, 0)} t (${pct}%)${mx}${vn}`;
       return `<div class="mb-md pl-sm" style="border-left:4px solid #94a3b8">${blkFn(lbl, c.items)}</div>`;
     }).join('');
   }
@@ -9457,7 +9486,8 @@ async function renderPlanCarga(stage, opts = {}) {
       const man = cams.some(c => c.manualId);
       const pendCM = cams.some(c => (c.items || []).some(d => d._cargaManual));
       const ajS = cams.some(c => (c.items || []).some(esAjSaldo));
-      return `<span class="pc-dir" title="${escapeHtml(t.tip)}${man ? ' · armado a mano' : ''}${pendCM ? ' · ' + MARCA_PEND_ENTREGA : ''}"><span class="material-symbols-outlined" style="color:${t.color}">local_shipping</span>${escapeHtml(t.lbl)}${man ? ' (manual)' : ''} · ${t1(ton)} t${cams.length > 1 ? `<em style="background:${t.color}" title="Se requieren ${cams.length} camiones">X${cams.length}</em>` : ''}${pendCM ? ' <b style="color:#b45309">· PEND. RECEPCIÓN Y ENTREGA</b>' : ''}${ajS ? ` <b style="color:#b45309" title="${MARCA_AJ_SALDO}">· AJUSTAR SALDO</b>` : ''}</span>`;
+      const vin = cams.flatMap(c => c.vinculos || []);
+      return `<span class="pc-dir" title="${escapeHtml(t.tip)}${man ? ' · armado a mano' : ''}${pendCM ? ' · ' + MARCA_PEND_ENTREGA : ''}"><span class="material-symbols-outlined" style="color:${t.color}">local_shipping</span>${escapeHtml(t.lbl)}${man ? ' (manual)' : ''} · ${t1(ton)} t${cams.length > 1 ? `<em style="background:${t.color}" title="Se requieren ${cams.length} camiones">X${cams.length}</em>` : ''}${pendCM ? ' <b style="color:#b45309">· PEND. RECEPCIÓN Y ENTREGA</b>' : ''}${ajS ? ` <b style="color:#b45309" title="${MARCA_AJ_SALDO}">· AJUSTAR SALDO</b>` : ''}${vin.length ? ` <b style="color:#0f766e" title="Misma patente coordinada en otro tramo el mismo día (todavía no forma camión en este plan): ${escapeHtml(vin.map(o => o.lbl + ' ' + o.doc).join(', '))}">· MISMO CAMIÓN</b>` : ''}</span>`;
     });
     const pc = DIR_V2.flatMap(t => r[t.lista] || []).filter(porConfirmar);
     if (pc.length) chips.push(`<button class="pc-dir" data-trconf="${escapeHtml(r.ce)}" title="Camiones directos coordinados con un transportista BLOQUEADO en el maestro: completa sus datos para confirmarlos (hasta entonces no entran a la foto, correo ni Seguimiento)" style="border-color:#f59e0b;background:#fef3c7;color:#713f12;cursor:pointer"><span class="material-symbols-outlined" style="color:#b45309">pending_actions</span>Transporte por confirmar · ${pc.length}</button>`);
