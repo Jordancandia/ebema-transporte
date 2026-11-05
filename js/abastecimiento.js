@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611051016';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611051016';
-import { getDatabase } from './data.js?v=202611051016';
+import { supabase } from './supabase-client.js?v=202611051155';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611051155';
+import { getDatabase } from './data.js?v=202611051155';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611051016';
-import { confirmar, pedirDato } from './confirmar.js?v=202611051016';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611051155';
+import { confirmar, pedirDato } from './confirmar.js?v=202611051155';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -7227,7 +7227,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611051016');
+    const m = await import('./ind-plan-carga.js?v=202611051155');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -10349,11 +10349,13 @@ function reponerCoordPorPosicion(ventasRaw, coordVentas, bkVen, conDt, cargadasE
   // completa, así que la posición entraba dos veces (NV 1064185: 04.11 en 0 + 05.11 completa = unidades al doble).
   // No afecta al reparto PROGRAMADO (su entrega existe: ctd_confirmada se mantiene y sube cantidad_entrg).
   const vivoSinConfirmar = new Map();   // doc|pos|material|fecha → doc|pos|material
-  const pendPosMat = new Map();         // doc|pos|material → mayor pendiente vivo en cualquier fecha
+  const confPosMat = new Map();         // doc|pos|material → mayor cantidad CONFIRMADA viva en cualquier fecha
   ventasRaw.forEach(r => {
     if (r._respaldo) return;
     const km = `${tx(r.doc_ventas)}|${tx(r.pos)}|${tx(r.material)}`;
-    pendPosMat.set(km, Math.max(pendPosMat.has(km) ? pendPosMat.get(km) : 0, pendDe(r)));
+    // (5-nov-2026) Se mira lo CONFIRMADO, no el pendiente: cuando SAP crea la entrega el pendiente queda en 0
+    // en todas las fechas y el respaldo repondría las dos (la fecha vieja y la real), duplicando la posición.
+    confPosMat.set(km, Math.max(confPosMat.has(km) ? confPosMat.get(km) : 0, parseNum(r.ctd_confirmada)));
     if (parseNum(r.ctd_confirmada) <= 0 && parseNum(r.cantidad_entrg) <= 0) vivoSinConfirmar.set(kPos(r), km);
   });
   const quitar = new Set(), agregar = [];
@@ -10368,7 +10370,7 @@ function reponerCoordPorPosicion(ventasRaw, coordVentas, bkVen, conDt, cargadasE
       if (hayVivo && pendPos.get(k) > 0) return;                                              // 1)
       // fecha reprogramada por SAP: la cantidad vive en otra fecha de la misma posición → no se repone
       const kmRep = vivoSinConfirmar.get(k);
-      if (kmRep && (pendPosMat.get(kmRep) || 0) > 0) return;
+      if (kmRep && (confPosMat.get(kmRep) || 0) > 0) return;
       const ent = entregaLineaV(co, b.material, b.fe_entrega);
       const matFue = !cargadasPos || cargadasPos.has(`${tx(b.doc_ventas)}|${tx(b.material)}`);
       if (ent && cargadasEnt && cargadasEnt.has(ent) && matFue) { if (hayVivo) quitar.add(k); return; }  // 2)
