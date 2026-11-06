@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611061221';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611061221';
-import { getDatabase } from './data.js?v=202611061221';
+import { supabase } from './supabase-client.js?v=202611061629';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611061629';
+import { getDatabase } from './data.js?v=202611061629';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611061221';
-import { confirmar, pedirDato } from './confirmar.js?v=202611061221';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611061629';
+import { confirmar, pedirDato } from './confirmar.js?v=202611061629';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -7237,7 +7237,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611061221');
+    const m = await import('./ind-plan-carga.js?v=202611061629');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -10393,11 +10393,17 @@ function reponerCoordPorPosicion(ventasRaw, coordVentas, bkVen, conDt, cargadasE
     confPosMat.set(km, Math.max(confPosMat.has(km) ? confPosMat.get(km) : 0, parseNum(r.ctd_confirmada)));
     if (parseNum(r.ctd_confirmada) <= 0 && parseNum(r.cantidad_entrg) <= 0) vivoSinConfirmar.set(kPos(r), km);
   });
+  // (6-nov-2026, Jordan) Pedido de venta MANUAL vivo (Ventas CD «Agregar pedido manual») de la misma posición:
+  // se ingresó porque SAP ya creó la entrega y la NV no se veía en SIT. Esa línea manual ES la posición, así que
+  // el respaldo SAP no se repone (antes entraban las dos: NV 1059679 = 28 t manual + 28 t respaldo = 56 t).
+  const manualPos = new Set();
+  ventasRaw.forEach(r => { if (!r._respaldo && (tx(r.clvt) === 'MANUAL' || tx(r.corrida) === 'MANUAL')) manualPos.add(`${tx(r.doc_ventas)}|${tx(r.pos)}|${tx(r.material)}`); });
   const quitar = new Set(), agregar = [];
   bkPorDoc.forEach((filas, doc) => {
     if (!coordVentas.get(doc)) return;                    // sin coordinar → nada que reponer
     filas.forEach(b => {
       if (mrPos.has(kPos(b))) return;                     // rechazada en SAP → no se repone
+      if (manualPos.has(`${tx(b.doc_ventas)}|${tx(b.pos)}|${tx(b.material)}`)) return;   // ya está como pedido manual
       // (2-nov-2026) La coordinación del reparto manda; si el pedido no está en modo por reparto, la del pedido.
       const co = coordRepV(coordVentas, doc, b.fe_entrega) || coordVentas.get(doc);
       if (!co || coordConDtV(co, conDt)) return;           // ya con DT → nada que reponer
