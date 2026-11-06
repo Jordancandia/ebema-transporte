@@ -9,8 +9,8 @@
 // Permisos: ver = perfiles internos; comentar / responder / me gusta =
 // privilegio COMENTAR (can('comentar')); ocultar comentario = OWNER.
 // ============================================================================
-import { supabase } from './supabase-client.js?v=202611061140';
-import { can, esOwner, perfilVeMenu } from './permisos.js?v=202611061140';
+import { supabase } from './supabase-client.js?v=202611061154';
+import { can, esOwner, perfilVeMenu } from './permisos.js?v=202611061154';
 import { showAlert } from './utils.js';
 
 export const VISTAS_COMENTARIOS = {
