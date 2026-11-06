@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611061211';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611061211';
-import { getDatabase } from './data.js?v=202611061211';
+import { supabase } from './supabase-client.js?v=202611061221';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611061221';
+import { getDatabase } from './data.js?v=202611061221';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611061211';
-import { confirmar, pedirDato } from './confirmar.js?v=202611061211';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611061221';
+import { confirmar, pedirDato } from './confirmar.js?v=202611061221';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -2580,6 +2580,8 @@ function showCoordRetiroModal(row, ctx) {
       idTrans: t0.id_transporte || '', transportista: t0.transportista || '',
       choferNombre: t0.chofer_nombre || '', choferRut: t0.chofer_rut || '', choferTel: t0.chofer_telefono || '',
       patCamion: t0.patente_camion || '', patCarro: t0.patente_carro || '',
+      // (6-nov-2026, Jordan) FAB-CD: la sección de transporte va oculta; sólo se abre si ya tenía datos o se pide.
+      verTr: !!(String(t0.id_transporte ?? '').trim() || String(t0.patente_camion ?? '').trim()),
       extras: new Map(), q: '', err: false,
       // (7-oct-2026) Productos a retirar por OC (principal y acompañantes): oc → (material → { on, cant }).
       // Sin selección guardada = todo el pendiente.
@@ -2666,6 +2668,7 @@ function showCoordRetiroModal(row, ctx) {
         .sort((a, b) => (mismoProv(b) - mismoProv(a)) || ((String(b.ce) === String(row.ce)) - (String(a.ce) === String(row.ce))) || ((b._ton_num || 0) - (a._ton_num || 0)))
         .slice(0, 12);
     };
+    const ocultaTr = () => st.tipo === 'FAB-CD' && !st.verTr;
     const tiposOpc = () => rm() ? [['FAB-SUC', 'Directo a sucursal'], ['FAB-CLTE', 'Directo a cliente'], ['FAB-CD', 'Consolida en CD']] : [['FAB-SUC', 'Directo a sucursal'], ['FAB-CLTE', 'Directo a cliente']];
 
     function draw() {
@@ -2711,9 +2714,14 @@ function showCoordRetiroModal(row, ctx) {
             </div>
           </div>
           ${rm() ? `
+          ${ocultaTr() ? `
+          <div class="sv-card" style="padding:12px 16px;display:flex;align-items:center;justify-content:space-between;gap:10px">
+            <div><div class="sv-b" style="font-size:14px">Transporte</div>
+              <div style="font-size:12px;color:#5c5f61">Consolida en CD: no se piden datos del camión; el transporte se define al programar el camión en el Plan de Carga.</div></div>
+            <button class="sv-btn" data-vertr style="white-space:nowrap">Agregar transporte (opcional)</button>
+          </div>` : `
           <div class="sv-card" style="padding:14px 16px;display:flex;flex-direction:column;gap:10px">
             <div class="sv-b" style="font-size:14px">Datos del transporte${st.tipo === 'FAB-CD' ? ' (fábrica → CD) · opcional' : ''}</div>
-            ${st.tipo === 'FAB-CD' ? '<div style="font-size:12px;color:#5c5f61;margin-top:-4px">Consolida en CD: el transporte se puede dejar en blanco y definir en el Plan de Carga.</div>' : ''}
             <div>${lbl('Transportista (ID y nombre)', 'idTrans', st.tipo !== 'FAB-CD')}
               <div data-bus="trans"></div></div>
             ${notaTranspBloq(tr.trans.find(t => String(t.id) === st.idTrans))}
@@ -2735,7 +2743,7 @@ function showCoordRetiroModal(row, ctx) {
             ${(() => { const pd = pendTranspRetiro({ chofer_nombre: st.choferNombre, chofer_rut: st.choferRut, chofer_telefono: st.choferTel, patente_camion: st.patCamion });
               return pd.length ? `<div class="sv-note-box" style="background:#fef3c7;color:#713f12"><b>Pendiente:</b> ${escapeHtml(pd.join(', '))}. Puedes coordinar igual; la OC queda marcada <b>«Chofer/patente pendiente»</b> y se completa después con «Editar coordinación».${pd.includes('patente') ? ' Sin patente, el camión directo aún no queda programado en el Plan de Carga.' : ''}</div>` : ''; })()}
             <datalist id="dl-pat-ret">${camList().map(x => `<option value="${escapeHtml(x.id_camion)}">${escapeHtml([x.modelo, x.capacidad_ton ? x.capacidad_ton + ' t' : ''].filter(Boolean).join(' · '))}</option>`).join('')}</datalist>
-          </div>
+          </div>`}
           <div class="sv-card" style="padding:14px 16px;display:flex;flex-direction:column;gap:10px">
             <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
               <div class="sv-b" style="font-size:14px">Otras OC en el mismo camión</div>
@@ -2888,8 +2896,8 @@ function showCoordRetiroModal(row, ctx) {
       panel.querySelector('[data-q]')?.addEventListener('input', e => { st.q = e.target.value; const c = panel.querySelector('[data-cands]'); if (c) { c.innerHTML = candHtml(); wireCands(); } });
       wireCands();
       wireLineas();
-      montarTransp(panel, st, tr, bad('idTrans'), draw);
-      wirePatentes(panel, st, tr, draw);
+      if (panel.querySelector('[data-bus="trans"]')) { montarTransp(panel, st, tr, bad('idTrans'), draw); wirePatentes(panel, st, tr, draw); }
+      panel.querySelector('[data-vertr]')?.addEventListener('click', () => { st.verTr = true; draw(); });
       panel.querySelector('[data-sel="chof"]')?.addEventListener('change', e => {
         const x = chofList()[+e.target.value];
         if (x) { st.choferNombre = [x.nombre, x.apellido].filter(Boolean).join(' '); st.choferRut = x.rut || ''; st.choferTel = x.telefono || st.choferTel; if (x.id_camion) st.patCamion = fmtPatente(x.id_camion); draw(); }
@@ -2923,7 +2931,7 @@ function showCoordRetiroModal(row, ctx) {
           await supabase.from('abast_proveedor_direcciones').insert({ proveedor_id: row.proveedor, nombre_fabrica: fabDir.toUpperCase(), direccion: fabDir, comuna: st.comuna.trim(), contacto_nombre: st.contacto.trim() || null, contacto_telefono: st.tel.trim() || null, activo: true });
         }
         const email = await getUserEmail(), now = new Date().toISOString();
-        const transp = rm() ? {
+        const transp = rm() && !ocultaTr() ? {
           id_transporte: st.idTrans.trim(), transportista: st.transportista || null,
           chofer_nombre: st.choferNombre.trim() || null, chofer_rut: st.choferRut.trim() || null, chofer_telefono: st.choferTel.trim() || null,
           patente_camion: fmtPatente(st.patCamion) || null, patente_carro: fmtPatente(st.patCarro) || null,
@@ -7229,7 +7237,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611061211');
+    const m = await import('./ind-plan-carga.js?v=202611061221');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
