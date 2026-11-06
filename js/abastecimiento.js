@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611061136';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611061136';
-import { getDatabase } from './data.js?v=202611061136';
+import { supabase } from './supabase-client.js?v=202611061140';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611061140';
+import { getDatabase } from './data.js?v=202611061140';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611061136';
-import { confirmar, pedirDato } from './confirmar.js?v=202611061136';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611061140';
+import { confirmar, pedirDato } from './confirmar.js?v=202611061140';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -7227,7 +7227,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611061136');
+    const m = await import('./ind-plan-carga.js?v=202611061140');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -7992,6 +7992,16 @@ async function renderPlanCarga(stage, opts = {}) {
     addCoordPat(c.patente_camion, { doc: String(c.documento ?? '').trim(), fecha: String(c.fecha_entrega || '').slice(0, 10), lbl: 'PV Stock 4000 CD-Cliente' }); });
   [...((coordTraslados && coordTraslados.values()) || [])].forEach(c => { if (c.tipo_entrega === 'CD-CLIENTE')
     addCoordPat(c.patente_camion, { doc: String(c.doc_compr ?? '').trim(), fecha: String(c.fecha_entrega || '').slice(0, 10), lbl: 'traslado CD-Cliente' }); });
+  // (6-nov-2026, Jordan) Retiro fábrica→CD (FAB-CD) cuya patente tiene el MISMO día una carga CD-Cliente (NV, PV Stock 4000
+  // o traslado) = camión mixto: el camión retira en fábrica, pasa por el CD a cargar y reparte. Ese retiro viaja en ese
+  // camión y NO entra al camión CD del plan siguiente (ej. OC 4500213100 + PV 1058677, XX-74-78 el 6-nov a Coquimbo).
+  const retiroEnCamionMixto = oc => {
+    const e = estadosRetiro[String(oc ?? '').trim()] || {};
+    if (e.tipo_retiro !== 'FAB-CD') return false;
+    const k = normPatente(e.patente_camion), f = String(e.fecha_retiro || '').slice(0, 10);
+    if (!k || !f) return false;
+    return (coordPorPatente.get(k) || []).some(o => o.doc !== String(oc ?? '').trim() && o.fecha === f && /CD-Cliente/.test(o.lbl));
+  };
   // sqvi_pedidos_traslados_4000: cesu==ce (destino), origen siempre es CD 1003.
   // Deduplicar por doc_compr|pos — clave sin fecha para fusionar la fila '00.00.0000'
   // (cabecera SAP) con la fila de fecha real (línea de planificación), conservando
@@ -8394,6 +8404,7 @@ async function renderPlanCarga(stage, opts = {}) {
         .filter(r => String(r.ce ?? '').trim() === ce)
         .filter(r => !estaExcluido(exclusionesPlan, 'retiro_fabrica', r.doc_compr, r.material))
         .filter(r => (estadosRetiro[String(r.doc_compr ?? '').trim()] || {}).tipo_retiro === 'FAB-CD')
+        .filter(r => !retiroEnCamionMixto(r.doc_compr))
         // (9-oct-2026, Jordan) El retiro entra al plan MÁS PRÓXIMO cuyo día objetivo sea igual o
         // posterior a su fecha de retiro: cuenta si fecha_retiro ≤ día objetivo (o está atrasado).
         // Ej.: retiro el mar 13 y centro a 48h con objetivo mié 14 → entra al plan del 14; y como
