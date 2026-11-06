@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611061154';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611061154';
-import { getDatabase } from './data.js?v=202611061154';
+import { supabase } from './supabase-client.js?v=202611061211';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611061211';
+import { getDatabase } from './data.js?v=202611061211';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611061154';
-import { confirmar, pedirDato } from './confirmar.js?v=202611061154';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611061211';
+import { confirmar, pedirDato } from './confirmar.js?v=202611061211';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -2626,7 +2626,8 @@ function showCoordRetiroModal(row, ctx) {
       if (!st.tel.trim()) f.push('tel');
       if (!st.entrega.trim()) f.push('entrega');
       if (!st.tipo) f.push('tipo');
-      if (!String(st.idTrans).trim()) f.push('idTrans');   // (5-oct-2026) chofer y patente pueden quedar pendientes
+      // (6-nov-2026, Jordan) Retiro que consolida en CD (FAB-CD): el transporte es OPCIONAL al coordinar (se define en el Plan de Carga).
+      if (st.tipo !== 'FAB-CD' && !String(st.idTrans).trim()) f.push('idTrans');   // (5-oct-2026) chofer y patente pueden quedar pendientes
       st.extras.forEach((e, oc) => {
         if (!lineasOk(oc)) f.push('lineas_' + oc);
         if (!e.entrega.trim()) f.push('x_entrega_' + oc);
@@ -2711,8 +2712,9 @@ function showCoordRetiroModal(row, ctx) {
           </div>
           ${rm() ? `
           <div class="sv-card" style="padding:14px 16px;display:flex;flex-direction:column;gap:10px">
-            <div class="sv-b" style="font-size:14px">Datos del transporte${st.tipo === 'FAB-CD' ? ' (fábrica → CD)' : ''}</div>
-            <div>${lbl('Transportista (ID y nombre)', 'idTrans', true)}
+            <div class="sv-b" style="font-size:14px">Datos del transporte${st.tipo === 'FAB-CD' ? ' (fábrica → CD) · opcional' : ''}</div>
+            ${st.tipo === 'FAB-CD' ? '<div style="font-size:12px;color:#5c5f61;margin-top:-4px">Consolida en CD: el transporte se puede dejar en blanco y definir en el Plan de Carga.</div>' : ''}
+            <div>${lbl('Transportista (ID y nombre)', 'idTrans', st.tipo !== 'FAB-CD')}
               <div data-bus="trans"></div></div>
             ${notaTranspBloq(tr.trans.find(t => String(t.id) === st.idTrans))}
             ${chofList().length ? `<div>${lbl('Chofer del transportista', 'chof', false)}
@@ -2946,7 +2948,7 @@ function showCoordRetiroModal(row, ctx) {
               nombre: d.texto_breve, cantidad: c, ton: d.pesoU != null ? calcTon(d.pesoU, c) : d.ton, pedido_venta: x.documento || '', proveedor: x.nombre_1 || '', cliente: x._pv_nombre_cliente || '' })) };
         }));
         else await quitarSeguimientoCoord(filas.map(f => f.doc_compr));
-        const pendG = rm() ? pendTranspRetiro(transp) : [];
+        const pendG = rm() && st.tipo !== 'FAB-CD' ? pendTranspRetiro(transp) : [];
         showAlert((filas.length > 1 ? `${filas.length} OC coordinadas en el camión ${transp.patente_camion || '(patente pendiente)'}` : `OC ${row.doc_compr} coordinada como ${rm() ? 'Retiro RM' : 'Retiro local'}`)
           + (pendG.length ? ` · pendiente: ${pendG.join(', ')}` : ''), 'success');
         fin(true);
@@ -7227,7 +7229,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611061154');
+    const m = await import('./ind-plan-carga.js?v=202611061211');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
