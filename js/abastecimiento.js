@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611051431';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611051431';
-import { getDatabase } from './data.js?v=202611051431';
+import { supabase } from './supabase-client.js?v=202611061136';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611061136';
+import { getDatabase } from './data.js?v=202611061136';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611051431';
-import { confirmar, pedirDato } from './confirmar.js?v=202611051431';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611061136';
+import { confirmar, pedirDato } from './confirmar.js?v=202611061136';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -7227,7 +7227,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611051431');
+    const m = await import('./ind-plan-carga.js?v=202611061136');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -7698,7 +7698,7 @@ async function renderPlanCarga(stage, opts = {}) {
   const cmHoy = (cargasManualTr || []).filter(m => String(m.cesu ?? '').trim() === planOrigen);
   // (18-oct-2026, Jordan) Pedidos de venta del Stock Almacén 4000 coordinados como venta directa
   // («PEDIDO DE VENTA, EMITIR GUIA FACTURABLE»): entran como Venta Directa del centro (o del alternativo).
-  let pv4000Coord = new Map(), pv4000Live = [], pv4000Cargados = new Set();
+  let pv4000Coord = new Map(), pv4000Live = [], pv4000Cargados = new Map();
   if (planOrigen === '1003') try { [pv4000Coord, pv4000Live] = await Promise.all([loadPv4000Coord(), fetchAllRows('v_trc_sqvi_stock_almacen_4000')]); } catch (e) { console.warn('Plan de carga: PV Stock 4000 no disponible', e); }
   // (2-nov-2026, Jordan) Entregas coordinadas que ya tienen DT (despachadas): se usa mas abajo para decidir
   // si un reparto programado sin pendiente SAP sigue por despachar.
@@ -7755,7 +7755,7 @@ async function renderPlanCarga(stage, opts = {}) {
     const tx = v => String(v ?? '').trim(), hoyIso = isoLocal(hoy00());
     const desde = isoLocal(new Date(hoy00().getTime() - 45 * 864e5));
     const { data: cams, error: eCam } = await supabase.from('abast_seguimiento_camion')
-      .select('id,clave,fecha_carga,transportista,id_transporte,patente_camion').lt('fecha_plan', hoyIso).gte('fecha_plan', desde).limit(5000);
+      .select('id,clave,fecha_carga,transportista,id_transporte,patente_camion,programado_en,actualizado_en').lt('fecha_plan', hoyIso).gte('fecha_plan', desde).limit(5000);
     if (eCam) throw eCam;
     // (14-oct-2026, Jordan) También las coordinaciones directas (COORD|) con transporte cuya fecha de carga ya pasó:
     // la NV ya salió en su camión (ej. NV 1052298 coordinada CD-Cliente para el 13-10) y no vuelve al plan.
@@ -7763,12 +7763,22 @@ async function renderPlanCarga(stage, opts = {}) {
     const ids = (cams || []).filter(c => tx(c.patente_camion)
       && (!tx(c.clave).startsWith('COORD|') || (tx(c.fecha_carga) && tx(c.fecha_carga).slice(0, 10) < hoyIso))).map(c => c.id);
     const cargados = new Set(), cargadosEnt = new Set();
+    // (6-nov-2026, Jordan) Momento en que se programó/actualizó cada camión: un PV del Stock 4000 re-coordinado
+    // DESPUÉS de ese camión (porque no viajó, ej. NV 1058489) vuelve al plan.
+    const tsCam = new Map((cams || []).map(c => [c.id, Math.max(Date.parse(c.programado_en) || 0, Date.parse(c.actualizado_en) || 0)]));
+    const cargadosTs = new Map();
     for (let i = 0; i < ids.length; i += 10) {
-      const { data, error } = await supabase.from('abast_seguimiento_carga').select('documento,material,n_entrega').in('camion_id', ids.slice(i, i + 10)).limit(5000);
+      const { data, error } = await supabase.from('abast_seguimiento_carga').select('camion_id,documento,material,n_entrega').in('camion_id', ids.slice(i, i + 10)).limit(5000);
       if (error) throw error;
-      (data || []).forEach(l => { if (tx(l.documento)) cargados.add(`${tx(l.documento)}|${tx(l.material)}`); if (tx(l.n_entrega)) cargadosEnt.add(tx(l.n_entrega)); });
+      (data || []).forEach(l => {
+        if (tx(l.documento)) {
+          const k = `${tx(l.documento)}|${tx(l.material)}`; cargados.add(k);
+          cargadosTs.set(k, Math.max(cargadosTs.get(k) || 0, tsCam.get(l.camion_id) || 0));
+        }
+        if (tx(l.n_entrega)) cargadosEnt.add(tx(l.n_entrega));
+      });
     }
-    pv4000Cargados = cargados;
+    pv4000Cargados = cargadosTs;
     if (cargados.size || cargadosEnt.size) {
       // (11-oct-2026, Jordan) NV: se descuenta por la ENTREGA coordinada (una NV re-coordinada con entrega
       // nueva porque la anterior no viajó vuelve al plan); sin entrega coordinada, por documento+material.
@@ -8274,9 +8284,13 @@ async function renderPlanCarga(stage, opts = {}) {
       if (!vivos.length && fc.getTime() < hoy00().getTime()) continue;   // ya no está en el SQVI y la fecha pasó
       const libre = new Map(); vivos.forEach(x => { const m = String(x.material ?? '').trim(); libre.set(m, (libre.get(m) || 0) + parseNum(x.libre_utiliz)); });
       const its = [];
+      // (6-nov-2026, Jordan) Lo cargado en un camión anterior sólo se descuenta si ese camión es posterior a la última
+      // coordinación manual del PV; si se re-coordinó después (no viajó), vuelve al plan.
+      const tsCoordP4 = Date.parse(co.updated_at || co.created_at) || 0;
+      const yaCargadoP4 = k => pv4000Cargados.has(k) && !(tsCoordP4 && pv4000Cargados.get(k) && tsCoordP4 > pv4000Cargados.get(k));
       (Array.isArray(co.lineas) ? co.lineas : []).forEach(l => {
         const m = String(l.material ?? '').trim();
-        if (!m || pv4000Cargados.has(`${docP}|${m}`)) return;
+        if (!m || yaCargadoP4(`${docP}|${m}`)) return;
         let q = Number(l.cantidad) || 0;
         if (vivos.length) q = Math.min(q, libre.get(m) || 0);
         if (!(q > 0)) return;
