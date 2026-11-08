@@ -14,11 +14,11 @@
 // Min/Max, Express) sobre las rutas e histórico de hoy, así la variación aísla
 // el efecto del ajuste de tarifas.
 // ============================================================================
-import { supabase } from './supabase-client.js?v=202611061629';
-import { getTariffConfig, getClientTariffConfig, truckCapKg, getOrigenGroups } from './data.js?v=202611061629';
-import { can } from './permisos.js?v=202611061629';
-import { usuarioSesion, esc, fmt } from './tarifas-ui.js?v=202611061629';
-import { confirmar } from './confirmar.js?v=202611061629';
+import { supabase } from './supabase-client.js?v=202611081501';
+import { getTariffConfig, getClientTariffConfig, truckCapKg, getOrigenGroups } from './data.js?v=202611081501';
+import { can } from './permisos.js?v=202611081501';
+import { usuarioSesion, esc, fmt } from './tarifas-ui.js?v=202611081501';
+import { confirmar } from './confirmar.js?v=202611081501';
 import { showAlert } from './utils.js';
 
 const CAMPOS_TRUCK = ['id', 'Id_centro', 'type', 'capacityTons', 'Kmbase', 'baseKM', 'baseRate', 'rateAjustNorm', 'rateAjustEsp',
@@ -100,7 +100,25 @@ async function _insertar(db, origen, nota = '') {
   if (error) throw new Error(error.message);
   _vig = data;
   _emit();
+  guardarCalculadas(db, _vig);           // (8-nov-2026) tarifas resultantes a BD, en segundo plano
   return _vig;
+}
+
+// (8-nov-2026, Jordan) Guarda en BD las tarifas calculadas (clientes y transporte) de una
+// fijación: tarifas_clientes_calculadas / tarifas_transporte_calculadas (ver tarifas-calculadas.js).
+export async function guardarCalculadas(db, vig = _vig) {
+  try {
+    const m = await import('./tarifas-calculadas.js?v=202611081501');
+    const r = await m.guardarTarifasCalculadas(db, vig);
+    const cam = x => fmt((x?.nuevas || 0) + (x?.actualizadas || 0));
+    showAlert(`Tarifas guardadas: ${cam(r.clientes)} cambios en clientes · ${cam(r.transporte)} en transporte (sin cambio ${fmt(r.clientes?.sin_cambio || 0)} / ${fmt(r.transporte?.sin_cambio || 0)}).`, 'success');
+    _emit();
+    return r;
+  } catch (e) {
+    console.error('Tarifas calculadas:', e);
+    showAlert('La tarifa vigente quedó fijada, pero no se pudieron guardar las tarifas calculadas: ' + (e.message || e) + '. Usa «Guardar tarifas» en Tarifas Clientes.', 'error');
+    return null;
+  }
 }
 
 // Registra la foto actual como vigente sólo si todavía no existe ninguna.

@@ -15,11 +15,12 @@
 // tarifas a clientes y «Guardar y recalcular» escribe sólo client_tariff_config
 // (syncOnly) y, si cambió la asignación de clusters, cluster_rutas por centro.
 // ============================================================================
-import { saveDatabase, getOrigenGroups } from './data.js?v=202611061629';
-import { buildZcapMap, es2Ton, componentesRegional } from './zcap.js?v=202611061629';
+import { saveDatabase, getOrigenGroups } from './data.js?v=202611081501';
+import { buildZcapMap, es2Ton, componentesRegional } from './zcap.js?v=202611081501';
 import { showAlert } from './utils.js';
-import { can } from './permisos.js?v=202611061629';
-import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, setParamPill, clasifPill, clasifTarifa, pillHtml } from './tarifas-ui.js?v=202611061629';
+import { can } from './permisos.js?v=202611081501';
+import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, setParamPill, clasifPill, clasifTarifa, pillHtml } from './tarifas-ui.js?v=202611081501';
+import { cargarVigente, guardarCalculadas, fechaHora, usuarioCorto } from './tarifa-vigente.js?v=202611081501';
 
 const CAPS = [5, 10, 15, 28];
 const CAP_LBL = { 5: '5 t', 10: '10 t', 15: '15 t', 28: '28 t' };
@@ -1223,6 +1224,63 @@ function descargarTxt(nombre, txt) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+// ── Tarifas guardadas en BD (8-nov-2026, Jordan) ───────────────────────────
+// Marca «Tarifas guardadas al …» (v_tarifas_clientes_vigentes) y, si la tarifa vigente
+// aún no tiene sus tarifas guardadas, botón «Guardar tarifas» (OWNER/ADMIN).
+let _guardando = false;
+async function pintarGuardadas(container, ctx, render) {
+  const el = container.querySelector('#t-guard');
+  if (!el) return;
+  try {
+    const m = await import('./tarifas-calculadas.js?v=202611081501');
+    const [info, vig] = await Promise.all([m.infoGuardadas(), cargarVigente().catch(() => null)]);
+    if (!el.isConnected) return;
+    const pendiente = vig && (!info || Number(info.tarifa_vigente_id) !== Number(vig.id));
+    el.innerHTML = (info
+      ? `<span class="material-symbols-outlined" style="font-size:15px;vertical-align:-3px;color:#15803d">database</span> Tarifas guardadas al <b>${fechaHora(info.fecha_actualizacion)}</b>`
+      : '<span class="material-symbols-outlined" style="font-size:15px;vertical-align:-3px">database</span> Sin tarifas guardadas')
+      + (pendiente && can('editar') ? ` <button class="sv-btn" data-tguardar style="margin-left:6px" title="Guarda en BD las tarifas de la tarifa vigente del ${fechaHora(vig.fijada_at)}"><span class="material-symbols-outlined">save</span>${_guardando ? 'Guardando…' : 'Guardar tarifas'}</button>` : '');
+    el.title = info ? `Tarifa vigente #${info.tarifa_vigente_id} · fijada por ${usuarioCorto(info.fijada_by)}` : '';
+    el.querySelector('[data-tguardar]')?.addEventListener('click', async () => {
+      if (_guardando) return;
+      _guardando = true; pintarGuardadas(container, ctx, render);
+      try { await guardarCalculadas(ctx.db, vig); } finally { _guardando = false; pintarGuardadas(container, ctx, render); }
+    });
+  } catch (e) {
+    if (el.isConnected) el.textContent = '';
+    console.warn('Tarifas guardadas:', e.message || e);
+  }
+}
+// CSV de Tarifas Clientes desde la BD: mismas columnas y filtros que el CSV de pantalla
+async function descargarCsvGuardadas(NG, S) {
+  try {
+    const m = await import('./tarifas-calculadas.js?v=202611081501');
+    const filas = await m.leerVigentes('v_tarifas_clientes_vigentes');
+    if (!filas.length) { showAlert('No hay tarifas guardadas en base de datos.', 'error'); return; }
+    const q = S.q.trim().toLowerCase();
+    const pasa = r => (!S.tipos.length || S.tipos.includes(String(r.tipo || '').toLowerCase())) && (S.centro === 'all' || r.centro_origen === S.centro)
+      && (!S.trucks.length || S.trucks.includes(String(r.cap_kg))) && (!q || `${r.codigo_ruta} ${r.destino}`.toLowerCase().includes(q));
+    const lista = filas.filter(pasa).sort((a, b) => (a.centro_origen || '').localeCompare(b.centro_origen || '') || String(a.codigo_ruta).localeCompare(String(b.codigo_ruta)) || num(a.cap_kg) - num(b.cap_kg));
+    const sep = ';', qq = v => '"' + String(v ?? '').replace(/"/g, '""') + '"';
+    const ent = v => (v != null && !isNaN(v) ? Math.round(Number(v)) : '');
+    const H = ['CENTRO ORIGEN', 'ID RUTA', 'DESTINO', 'TIPO', 'CLASIFICACION', 'COMUNA', 'KM', 'TIPO DE CAMION', 'COSTO RUTA',
+      'TARIFA MINIMA', 'TARIFA MAXIMA', 'TARIFA $/KG', 'TARIFA EXPRESS', 'KILOS MINIMOS', 'CLUSTER', 'FECHA ACTUALIZACION'];
+    const R = lista.map(r => [NG[r.centro_origen] || titulo(r.centro_origen), r.codigo_ruta, r.destino || '', r.ambito || '', r.clasificacion || '',
+      r.comuna || '', num(r.km), r.tipo_camion, ent(r.costo_ruta), ent(r.tarifa_minima), ent(r.tarifa_maxima),
+      r.tarifa_kg != null ? fmt(Number(r.tarifa_kg), 2) : '', ent(r.tarifa_express), r.kilos_minimos != null ? Math.round(Number(r.kilos_minimos)) : '',
+      r.cluster || '', fechaHora(r.fecha_actualizacion)]);
+    const txt = [H.map(qq).join(sep), ...R.map(r => r.map(qq).join(sep))].join('\n');
+    const f = new Date(lista[0]?.fecha_actualizacion || filas[0].fecha_actualizacion).toLocaleDateString('sv-SE');
+    const blob = new Blob(['\ufeff' + txt], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = `tarifas_clientes_guardadas_${f}.csv`;
+    document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+    showAlert(`CSV guardadas: ${fmt(lista.length)} filas (tarifas al ${fechaHora(filas[0].fecha_actualizacion)}).`, 'success');
+  } catch (e) {
+    showAlert('No se pudieron leer las tarifas guardadas: ' + (e.message || e), 'error');
+  }
+}
+
 function renderTarifasCliente(container, ctx, modo) {
   const S = modo === 'zfmp' ? ZP : ZI;
   const NG = nombreGrupo(ctx.db);
@@ -1248,7 +1306,9 @@ function renderTarifasCliente(container, ctx, modo) {
     const pag = lista.slice(S.pagina * ZPAGE, (S.pagina + 1) * ZPAGE);
     const prom = f => lista.reduce((s, r) => s + num(r[f]), 0) / n;
     const acciones = `<button class="${nStale ? 'sv-btn-p' : 'sv-btn'}" data-refrescar id="t-refresh" title="${nStale ? 'Tarifas Rutas cambió desde que se tomó la foto del ZCAP' : 'La foto del ZCAP coincide con Tarifas Rutas'}"><span class="material-symbols-outlined">${nStale ? 'refresh' : 'check'}</span>${nStale ? `Refrescar tarifas · ${fmt(nStale)} desactualizadas` : 'Tarifas al día'}</button>
-      <button class="sv-btn" data-csv id="t-csv"><span class="material-symbols-outlined">download</span>Descargar CSV</button>
+      <span id="t-guard" class="sv-muted" style="font-size:12px;align-self:center;white-space:nowrap"></span>
+      <button class="sv-btn" data-csv id="t-csv" title="CSV con las tarifas calculadas en pantalla (filtros activos)"><span class="material-symbols-outlined">download</span>Descargar CSV</button>
+      <button class="sv-btn" id="t-csvg" title="CSV con las tarifas guardadas en base de datos (tarifa vigente), con los filtros activos"><span class="material-symbols-outlined">database</span>CSV guardadas</button>
       <button class="sv-btn" data-sap id="t-sap" title="Descarga ZFMP.csv y ZFMI_ZFMX.csv listos para cargar en SAP (centro y tipo de ruta del filtro, todos los camiones)"><span class="material-symbols-outlined">upload_file</span>Carga SAP</button>
       <button class="sv-btn" data-sapcam id="t-sapcam" title="Descarga Rango_camiones.csv y Camion_MinMax.csv listos para cargar en SAP (centro y tipo de ruta del filtro, camiones habilitados por ruta)"><span class="material-symbols-outlined">local_shipping</span>Camiones SAP</button>`;
     const filtros = `<div class="sv-filters">
@@ -1330,6 +1390,8 @@ function renderTarifasCliente(container, ctx, modo) {
       const av = res.aviso.matSobreMax ? ` · ${fmt(res.aviso.matSobreMax)} centro × ruta con camión mayor bajo el FleteMax de materiales (28)` : '';
       showAlert(`Camiones SAP: ${fmt(res.n.rutas)} rutas · Rango ${fmt(res.n.rango)} · MinMax ${fmt(res.n.minmax)} filas${av}.`, 'success');
     });
+    pintarGuardadas(container, ctx, render);
+    container.querySelector('#t-csvg')?.addEventListener('click', () => descargarCsvGuardadas(NG, S));
     container.querySelector('#t-csv')?.addEventListener('click', () => {
       const sep = ';', qq = v => '"' + String(v ?? '').replace(/"/g, '""') + '"';
       const ent = v => (v != null && !isNaN(v) ? Math.round(v) : '');
