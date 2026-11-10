@@ -14,11 +14,11 @@
 // Min/Max, Express) sobre las rutas e histórico de hoy, así la variación aísla
 // el efecto del ajuste de tarifas.
 // ============================================================================
-import { supabase } from './supabase-client.js?v=202611101819';
-import { getTariffConfig, getClientTariffConfig, truckCapKg, getOrigenGroups } from './data.js?v=202611101819';
-import { can } from './permisos.js?v=202611101819';
-import { usuarioSesion, esc, fmt } from './tarifas-ui.js?v=202611101819';
-import { confirmar } from './confirmar.js?v=202611101819';
+import { supabase } from './supabase-client.js?v=202611101827';
+import { getTariffConfig, getClientTariffConfig, truckCapKg, getOrigenGroups } from './data.js?v=202611101827';
+import { can } from './permisos.js?v=202611101827';
+import { usuarioSesion, esc, fmt } from './tarifas-ui.js?v=202611101827';
+import { confirmar } from './confirmar.js?v=202611101827';
 import { showAlert } from './utils.js';
 
 const CAMPOS_TRUCK = ['id', 'Id_centro', 'type', 'capacityTons', 'Kmbase', 'baseKM', 'baseRate', 'rateAjustNorm', 'rateAjustEsp',
@@ -108,7 +108,7 @@ async function _insertar(db, origen, nota = '') {
 // fijación: tarifas_clientes_calculadas / tarifas_transporte_calculadas (ver tarifas-calculadas.js).
 export async function guardarCalculadas(db, vig = _vig) {
   try {
-    const m = await import('./tarifas-calculadas.js?v=202611101819');
+    const m = await import('./tarifas-calculadas.js?v=202611101827');
     const r = await m.guardarTarifasCalculadas(db, vig);
     const cam = x => fmt((x?.nuevas || 0) + (x?.actualizadas || 0));
     showAlert(`Tarifas guardadas: ${cam(r.clientes)} cambios en clientes · ${cam(r.transporte)} en transporte (sin cambio ${fmt(r.clientes?.sin_cambio || 0)} / ${fmt(r.transporte?.sin_cambio || 0)}).`, 'success');
