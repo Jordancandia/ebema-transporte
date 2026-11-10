@@ -193,6 +193,8 @@ function _match(m, grupoOTab, sub) {
 // (18-oct-2026, Jordan) Vistas sólo del perfil OWNER (ni Administrador ni Planner Distribución);
 // OWNER puede habilitarlas a un usuario como vista extra (p. ej. futuro perfil Portería).
 const SOLO_OWNER = ['porteria'];
+// (9-nov-2026, Jordan) Vistas en validación: sólo OWNER; el resto únicamente como vista extra asignada.
+const SOLO_OWNER_ESTRICTO = ['monitor-consolidacion'];
 // (1-nov-2026, Jordan) Perfiles que traen Portería en su propio menú (ven las pestañas que listan;
 // Administrador tiene menu null, o sea todas). El resto sólo entra con vista extra del OWNER.
 const PERFIL_PORTERIA = ['CONTROL_PUERTA', 'ADMINISTRADOR', 'PLANNER_DISTRIBUCION', 'JEFE_ABASTECIMIENTO',
@@ -203,6 +205,7 @@ export const PERFIL_UMBRALES = ['OWNER', 'JEFE_OPERACIONES'];
 const PERFIL_PORTERIA_CENTRO = ['CONTROL_PUERTA', 'JEFE_OPERACIONES', 'PLANNER_OPERACIONES'];
 const CENTRO_PORTERIA = '1003';
 export function puedeVerMenu(grupoOTab, sub = null) {
+  if (SOLO_OWNER_ESTRICTO.includes(grupoOTab)) return _role === 'OWNER' || _match(_vistasExtra, grupoOTab, sub);
   if (SOLO_OWNER.includes(grupoOTab)) {
     if (_role === 'OWNER') return true;
     if (PERFIL_PORTERIA.includes(_role)) {
@@ -220,6 +223,7 @@ export function puedeVerMenu(grupoOTab, sub = null) {
 export function perfilVeMenu(role, key) {
   const p = PERFILES[normalizarPerfil(role)];
   if (!p) return false;
+  if (SOLO_OWNER_ESTRICTO.includes(key.split(':')[0])) return normalizarPerfil(role) === 'OWNER';
   if (SOLO_OWNER.includes(key.split(':')[0])) {
     const r = normalizarPerfil(role);
     if (r === 'OWNER') return true;
@@ -260,6 +264,7 @@ export const VISTAS_CATALOGO = [
   { modulo: 'Flete Tercero / Indicadores', items: [['flete-tercero', 'Flete Tercero (Seguimiento)'], ['indicadores', 'Indicadores (Reportes)']] },
   { modulo: 'Tarifas', items: [['tarifas-transporte', 'Tarifas Transporte'], ['tarifas-clientes', 'Tarifas Clientes']] },
   { modulo: 'Maestros', items: [['proveedores', 'Proveedores'], ['rutas', 'Rutas'], ['productos', 'Productos']] },
+  { modulo: 'Distribución', items: [['monitor-consolidacion', 'Monitor de Consolidación']] },
   { modulo: 'Portería (CD Quilicura)', items: [['porteria:registro', 'Control Puerta'], ['porteria:alertas', 'Monitor de Operaciones'], ['porteria:indicadores', 'Indicadores de Portería']] },
   { modulo: 'Administración', items: [['roles', 'Roles y Perfiles']] },
 ];

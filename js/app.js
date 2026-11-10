@@ -1,6 +1,6 @@
-import { getDatabase, saveDatabase, initDatabase, loadRoutesData, loadHistoricoFlete360 } from './data.js?v=202611092244';
-import { supabase } from './supabase-client.js?v=202611092244';
-import { setSesionPermisos, puedeVerMenu, can, esSoloLectura, PERFILES, normalizarPerfil } from './permisos.js?v=202611092244';
+import { getDatabase, saveDatabase, initDatabase, loadRoutesData, loadHistoricoFlete360 } from './data.js?v=202611100014';
+import { supabase } from './supabase-client.js?v=202611100014';
+import { setSesionPermisos, puedeVerMenu, can, esSoloLectura, PERFILES, normalizarPerfil } from './permisos.js?v=202611100014';
 // ── Módulos cargados bajo demanda (lazy) — se cachean tras la primera carga ──
 const _mod = {};
 async function loadMod(key, modPath) {
@@ -9,9 +9,9 @@ async function loadMod(key, modPath) {
 }
 // Pre-warm: carga indicadores y abastecimiento en background tras login
 function prewarmMods() {
-  setTimeout(() => loadMod('ind',   './indicadores.js?v=202611092244'), 600);
+  setTimeout(() => loadMod('ind',   './indicadores.js?v=202611100014'), 600);
   setTimeout(() => loadRoutesData(), 800);  // pre-fetch tablas pesadas en background
-  setTimeout(() => loadMod('abast', './abastecimiento.js?v=202611092244'), 2000);
+  setTimeout(() => loadMod('abast', './abastecimiento.js?v=202611100014'), 2000);
 }
 import { showAlert, formatRut, validateRut, formatPhone } from './utils.js';
 
@@ -315,7 +315,7 @@ function renderApp() {
   if (!currentSession) {
     renderAuthView();
   } else if (currentSession.tipo === 'proveedor') {
-    import('./provider-portal.js?v=202611092244').then(m => m.renderProviderShell(currentSession, handleLogout));
+    import('./provider-portal.js?v=202611100014').then(m => m.renderProviderShell(currentSession, handleLogout));
   } else {
     renderDashboardShell();
   }
@@ -1328,6 +1328,13 @@ const SIDEBAR_MENU = [
       { tab: 'flete-tercero', sub: 'en_curso',     icon: 'pending_actions', label: 'Pedidos en Curso' },
     ]
   },
+  // (9-nov-2026, Jordan) Monitor de Consolidación — pedidos venta sucursal × entregas, tonelaje vs camiones
+  // habilitados de Tarifas Clientes. Sólo OWNER (vista extra asignable). Ver js/monitor-consolidacion.js
+  {
+    group: 'monitor-consolidacion', icon: 'local_shipping', label: 'Distribución', children: [
+      { tab: 'monitor-consolidacion', sub: 'mapa', icon: 'map', label: 'Monitor de Consolidación' },
+    ]
+  },
   // (18-oct-2026, Jordan) Portería · Reloj Control CD Quilicura — sólo OWNER (ver puedeVerMenu en permisos.js)
   {
     group: 'porteria', icon: 'door_front', label: 'Portería', children: [
@@ -1362,6 +1369,7 @@ const NAV_LAYOUT = [
     { label: 'Orden de Carga', group: 'abastecimiento', subs: ['pedidos_traslados_revex', 'pedidos_venta', 'retiros', 'pedidos_traslados_4000', 'pedidos_traslados'] },
     { label: 'Planificación', group: 'abastecimiento', subs: ['plan_carga', 'seguimiento_carga', 'ind_plan_carga'] },
   ] },
+  { key: 'distribucion', icon: 'route', label: 'Distribución', sections: [{ label: 'Pedidos Venta Sucursal', group: 'monitor-consolidacion' }] },
   { key: 'porteria', icon: 'door_front', label: 'Portería', sections: [{ label: 'CD Quilicura', group: 'porteria' }] },
   { key: 'flete', icon: 'local_shipping', label: 'Flete Tercero', sections: [{ label: 'Seguimiento', group: 'flete-tercero' }] },
   { key: 'ind', icon: 'monitoring', label: 'Indicadores', sections: [{ label: 'Reportes', group: 'indicadores' }] },
@@ -1754,7 +1762,7 @@ function renderDashboardShell() {
   document.getElementById('sv-goto').addEventListener('click', openGotoPalette);
   bindPaletteKey();
   // (12-oct-2026) Campana de notificaciones (menciones, respuestas y me gusta en comentarios de Orden de Carga)
-  import('./comentarios.js?v=202611092244')
+  import('./comentarios.js?v=202611100014')
     .then(m => m.initCampana(document.getElementById('sv-notif-slot'), { navegar: sub => switchTab('abastecimiento', sub) }))
     .catch(e => console.warn('notificaciones:', e));
   wireSidebar();
@@ -1843,37 +1851,37 @@ async function switchTab(tabName, subName = null) {
   _stageSpinner(stage);
   switch (tabName) {
     case 'home': {
-      const m = await loadMod('ind', './indicadores.js?v=202611092244');
+      const m = await loadMod('ind', './indicadores.js?v=202611100014');
       m.renderIndicadoresHome(stage);
       break;
     }
     case 'rates': {
       await loadRoutesData();
-      const m = await loadMod('rates', './rates.js?v=202611092244');
+      const m = await loadMod('rates', './rates.js?v=202611100014');
       m.renderRatesView(stage);
       break;
     }
     case 'transports': {
-      const m = await loadMod('trans', './transports.js?v=202611092244');
+      const m = await loadMod('trans', './transports.js?v=202611100014');
       m.renderTransportsView(stage);
       break;
     }
     case 'routes': {
       await loadRoutesData();
-      const m = await loadMod('routes', './routes.js?v=202611092244');
+      const m = await loadMod('routes', './routes.js?v=202611100014');
       if (alias) m.setRoutesSubTab(alias);
       m.renderRoutesView(stage);
       break;
     }
     case 'roles': {
-      const m = await loadMod('roles', './roles.js?v=202611092244');
+      const m = await loadMod('roles', './roles.js?v=202611100014');
       m.renderRolesView(stage);
       break;
     }
     case 'tarifas-transporte': {
       await loadRoutesData();
       await loadHistoricoFlete360();
-      const m = await loadMod('tt', './tarifas-transporte.js?v=202611092244');
+      const m = await loadMod('tt', './tarifas-transporte.js?v=202611100014');
       if (alias) m.setActiveSub(alias);
       m.renderTariffTransportView(stage);
       break;
@@ -1881,37 +1889,42 @@ async function switchTab(tabName, subName = null) {
     case 'tarifas-clientes': {
       await loadRoutesData();
       await loadHistoricoFlete360();
-      const m = await loadMod('tc', './tarifas-clientes.js?v=202611092244');
+      const m = await loadMod('tc', './tarifas-clientes.js?v=202611100014');
       if (alias) m.setActiveSubC(alias);
       m.renderClientTariffView(stage);
       break;
     }
     case 'abastecimiento': {
       await loadRoutesData();
-      const m = await loadMod('abast', './abastecimiento.js?v=202611092244');
+      const m = await loadMod('abast', './abastecimiento.js?v=202611100014');
       if (subName) m.setAbastSubTab(subName);
       m.renderAbastecimientoView(stage);
       break;
     }
     case 'indicadores': {
-      const m = await loadMod('ind', './indicadores.js?v=202611092244');
+      const m = await loadMod('ind', './indicadores.js?v=202611100014');
       if (subName) m.setIndicadoresSubTab(subName);
       m.renderIndicadoresView(stage);
       break;
     }
     case 'productos': {
-      const m = await loadMod('mprod', './maestro-productos.js?v=202611092244');
+      const m = await loadMod('mprod', './maestro-productos.js?v=202611100014');
       m.renderMaestroProductos(stage);
       break;
     }
+    case 'monitor-consolidacion': {
+      const m = await loadMod('mcons', './monitor-consolidacion.js?v=202611100014');
+      await m.renderMonitorConsolidacion(stage);
+      break;
+    }
     case 'porteria': {
-      const m = await loadMod('port', './porteria.js?v=202611092244');
+      const m = await loadMod('port', './porteria.js?v=202611100014');
       await m.renderPorteria(stage, subName || 'registro');
       break;
     }
     case 'flete-tercero': {
       await loadRoutesData();
-      const m = await loadMod('fter', './flete-tercero.js?v=202611092244');
+      const m = await loadMod('fter', './flete-tercero.js?v=202611100014');
       if (subName) m.setFleteTerceroSubTab(subName);
       m.renderFleteTerceroView(stage);
       break;
