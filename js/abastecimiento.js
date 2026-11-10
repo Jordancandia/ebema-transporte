@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611101815';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611101815';
-import { getDatabase } from './data.js?v=202611101815';
+import { supabase } from './supabase-client.js?v=202611101819';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611101819';
+import { getDatabase } from './data.js?v=202611101819';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611101815';
-import { confirmar, pedirDato } from './confirmar.js?v=202611101815';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611101819';
+import { confirmar, pedirDato } from './confirmar.js?v=202611101819';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -4864,11 +4864,33 @@ const V2 = {
           r._pvc_ce = ceAltDe(r._pvc) || String(r._pvc.ce ?? '').trim();
         }
       });
+      // (10-nov-2026, Jordan) Pedidos de venta AGRUPADOS por N° de pedido; el detalle muestra sus productos.
+      const g = new Map(), out = [];
+      rows.forEach(r => {
+        if (r._tipo !== 'Pedido de venta' || !String(r.documento ?? '').trim()) { out.push(r); return; }
+        const k = String(r.documento).trim();
+        let G = g.get(k);
+        if (!G) {
+          G = Object.assign({}, r, { _grupo: true, _lineas: [], _ton_num: 0, _cant_tot: 0, _pvc_cant: 0, _flete_zflt: 0, _flete_um: 0 });
+          g.set(k, G); out.push(G);
+        }
+        G._lineas.push(r);
+        G._ton_num += tonNum(r._ton_totales) || 0;
+        G._cant_tot += parseNum(r.libre_utiliz) || 0;
+        G._pvc_cant += r._pvc_cant || 0;
+        G._flete_zflt += parseNum(r.flete_zflt) || 0; G._flete_um += parseNum(r.flete_zfl0_zfl1) || 0;
+        // peor situación de stock entre sus productos
+        if (r._sd != null && (G._sd == null || r._sd < G._sd)) { G._sd = r._sd; G._q = r._q; G._abc = r._abc; }
+      });
+      g.forEach(G => { G._ton_totales = fmtNum(G._ton_num, 3); G._n_lin = G._lineas.length;
+        if (G._sd == null) G._q = grupoQuiebre(null); });
+      rows.splice(0, rows.length, ...out);
+      ctx._rows = rows;
     },
     // (12-oct-2026) Filtro por Centro destino (se quitó el de Clase ABC) y por Tipo (Stock / Pedido de venta)
     chip: { label: 'Destino', of: r => String(r.ce ?? '').trim(), name: v => nombreCentro(v) ? `${v} · ${nombreCentro(v)}` : v },
     chips: [{ key: 'tipo', label: 'Tipo', of: r => r._tipo }],
-    search: { ph: 'Buscar material o pedido', of: r => `${r.material} ${r._nombre || ''} ${r.documento || ''}` },
+    search: { ph: 'Buscar material, pedido o cliente', of: r => `${r.material} ${r._nombre || ''} ${r.documento || ''} ${r.nombre_cliente || ''} ${(r._lineas || []).map(l => l.material + ' ' + (l._nombre || '')).join(' ')}` },
     kpis: [
       { key: 'all', label: 'SKU', color: C_INK, sub: 'stock y pedidos en 4000' },
       // (10-nov-2026, Jordan) filtro Stock / Pedidos de venta
@@ -4884,17 +4906,17 @@ const V2 = {
     minW: '1500px',
     cols: [
       { label: 'Tipo', html: r => pill(r._tipo, r._tipo === 'Stock' ? 'info' : 'purple') },
-      { label: 'Material', html: r => matHtml(r.material, r._nombre) },
+      { label: 'Material', html: r => r._grupo ? txt(`${r._n_lin} ${r._n_lin === 1 ? 'producto' : 'productos'}`, r._lineas.slice(0, 2).map(l => l._nombre || l.material).join(' · ') + (r._n_lin > 2 ? ' …' : '')) : matHtml(r.material, r._nombre) },
       { label: 'Destino', html: r => sucHtml(r.ce) },
       { label: 'Pedido de venta', html: r => r.documento ? mono(r.documento, r.creado ? 'entrega ' + r.creado : '') : '<span class="sv-muted">—</span>' },
       // (10-nov-2026, Jordan) datos de la NV: cliente, vendedor, ruta·comuna, obra y flete cobrado
       { label: 'Cliente · vendedor', html: r => r.documento ? txt(r.nombre_cliente || '—', [r.id_cliente ? 'ID ' + r.id_cliente : '', r.interlocutor].filter(Boolean).join(' · ')) : '<span class="sv-muted">—</span>' },
       { label: 'Ruta · comuna', html: r => r.documento ? (r.ruta ? txt(r.ruta, r._comuna || r.ruta_desc || '') : '<span class="sv-muted">Sin ruta</span>') : '<span class="sv-muted">—</span>' },
       { label: 'Obra', html: r => r.documento && (r.id_obra || r.direccion_obra) ? txt(r.direccion_obra || '—', r.id_obra ? 'obra ' + r.id_obra : '') : '<span class="sv-muted">—</span>' },
-      { label: 'Flete cobrado', al: 'r', html: r => { if (!r.documento) return '<span class="sv-muted">—</span>'; const ft = parseNum(r.flete_zflt) || 0, fu = parseNum(r.flete_zfl0_zfl1) || 0;
+      { label: 'Flete cobrado', al: 'r', html: r => { if (!r.documento) return '<span class="sv-muted">—</span>'; const ft = r._grupo ? r._flete_zflt : (parseNum(r.flete_zflt) || 0), fu = r._grupo ? r._flete_um : (parseNum(r.flete_zfl0_zfl1) || 0);
           return ft || fu ? `<b>${escV2(fmtCLP(ft + fu))}</b><div class="sv-sub">Trasl. ${escV2(fmtCLP(ft))} · UM ${escV2(fmtCLP(fu))}</div>` : '<span class="sv-muted">$0</span>'; } },
       { label: 'Clase ABC', html: r => mono(r._abc) },
-      { label: 'Cantidad', al: 'r', html: r => escV2(r.libre_utiliz || '0') + (r.umb ? ` <span class="sv-muted">${escV2(r.umb)}</span>` : '') },
+      { label: 'Cantidad', al: 'r', html: r => r._grupo ? escV2(fmtNum(r._cant_tot, r._cant_tot % 1 ? 2 : 0)) + ' <span class="sv-muted">un</span>' : escV2(r.libre_utiliz || '0') + (r.umb ? ` <span class="sv-muted">${escV2(r.umb)}</span>` : '') },
       { label: 'Ton', al: 'r', html: r => `<span class="sv-ton">${tonHtml(tonNum(r._ton_totales))}</span>` },
       { label: 'Días de stock', al: 'r', html: r => r._sd == null ? '<span class="sv-muted">—</span>' : `<span class="sv-b" style="color:${r._sd <= 3 ? C_RED : C_INK}">${r._sd}</span>` },
       { label: 'Estado', html: r => pill(r._q.lbl, r._q.tone) },
@@ -4904,12 +4926,14 @@ const V2 = {
           : pill('Sin coordinar', 'mute') },
     ],
     detalle: r => ({
-      kind: `${r._tipo || 'Material'} · almacén 4000`, title: r.material, sub: (r._nombre || r.texto_breve_de_material || r.denominacion_de_posicion || '') + (nombreCentro(r.ce) ? ' → ' + nombreCentro(r.ce) : ''),
+      kind: `${r._tipo || 'Material'} · almacén 4000`, title: r._grupo ? r.documento : r.material,
+      sub: r._grupo ? `${r.nombre_cliente || 'Pedido de venta'} → ${nombreCentro(r.ce) || r.ce} · ${r._n_lin} ${r._n_lin === 1 ? 'producto' : 'productos'}`
+        : (r._nombre || r.texto_breve_de_material || r.denominacion_de_posicion || '') + (nombreCentro(r.ce) ? ' → ' + nombreCentro(r.ce) : ''),
       kv: [
         ['Centro destino', `${r.ce}${nombreCentro(r.ce) ? ' · ' + nombreCentro(r.ce) : ''}`],
-        ['Clase ABC', r._abc],
-        ['Cantidad disponible', `${r.libre_utiliz || 0} ${r.umb || ''}`.trim()],
-        ['Peso mayor (kg/un)', r._peso_mayor],
+        r._grupo ? null : ['Clase ABC', r._abc],
+        r._grupo ? ['Productos', `${r._n_lin} · ${fmtNum(r._cant_tot, r._cant_tot % 1 ? 2 : 0)} un`] : ['Cantidad disponible', `${r.libre_utiliz || 0} ${r.umb || ''}`.trim()],
+        r._grupo ? null : ['Peso mayor (kg/un)', r._peso_mayor],
         ['Toneladas', tonHtml(tonNum(r._ton_totales)), true],
         ['Días de stock', r._sd == null ? 'Sin dato en SLIM' : `${r._sd} · ${r._q.lbl}`],
         r.documento ? ['Pedido de venta', r.documento] : null,
@@ -4920,8 +4944,9 @@ const V2 = {
         r.documento ? ['ID cliente', r.id_cliente] : null,
         r.documento ? ['Cliente', r.nombre_cliente] : null,
         r.documento ? ['ID obra', r.id_obra] : null, r.documento ? ['Dirección obra', r.direccion_obra] : null,
-        r.documento ? ['Flete traslado (ZFLT)', fmtCLP(parseNum(r.flete_zflt) || 0)] : null,
-        r.documento ? ['Flete última milla (ZFL0/ZFL1)', fmtCLP(parseNum(r.flete_zfl0_zfl1) || 0)] : null,
+        r.documento ? ['Flete traslado (ZFLT)', fmtCLP(r._grupo ? r._flete_zflt : (parseNum(r.flete_zflt) || 0))] : null,
+        r.documento ? ['Flete última milla (ZFL0/ZFL1)', fmtCLP(r._grupo ? r._flete_um : (parseNum(r.flete_zfl0_zfl1) || 0))] : null,
+        r._grupo ? ['Flete total', fmtCLP(r._flete_zflt + r._flete_um)] : null,
         r._pvc ? ['Coordinación', `${r._pvc.tipo_entrega === 'CD-CLIENTE' ? 'CD-Cliente (camión directo)' : 'Consolidado (camión CD)'} · ${fmtNum(r._pvc_cant, r._pvc_cant % 1 ? 2 : 0)} un · día ${fmtFechaISO(r._pvc.fecha_entrega)}${r._pvc.n_entrega ? ' · entrega ' + r._pvc.n_entrega : ''}`] : null,
         r._pvc && r._pvc.tipo_entrega === 'CD-CLIENTE' ? ['Entrega en', [r._pvc.nombre_cliente, r._pvc.direccion, r._pvc.comuna, r._pvc.telefono].filter(Boolean).join(' · ')] : null,
         r._pvc && r._pvc.tipo_entrega === 'CD-CLIENTE' ? ['Transporte', [r._pvc.id_transporte, r._pvc.transportista, r._pvc.patente_camion ? 'Camión ' + r._pvc.patente_camion : '', r._pvc.chofer_nombre].filter(Boolean).join(' · ')] : null,
@@ -4931,7 +4956,7 @@ const V2 = {
       aviso: r._pvc ? `<b>${LEYENDA_PV4000}:</b> pedido de venta coordinado ${r._pvc.tipo_entrega === 'CD-CLIENTE' ? 'CD-Cliente (camión directo al cliente)' : 'consolidado en el camión CD'}; entra al Plan de Carga de ${escV2(nombreCentro(r._pvc_ce) || r._pvc_ce)} el día ${escV2(fmtFechaISO(r._pvc.fecha_entrega))}.` : undefined,
       acciones: r._tipo !== 'Pedido de venta' || !can('coordinar_venta') ? [] : [
         { label: r._pvc ? 'Editar coordinación' : 'Coordinar pedido de venta', icon: 'event_available', primary: true,
-          run: async (row, ctx) => ((await showCoordPv4000Modal(row, ctx)) ? { recargar: true } : null) },
+          run: async (row, ctx) => ((await showCoordPv4000Modal(row, Object.assign({}, ctx, { _rows: row._lineas || [row] }))) ? { recargar: true } : null) },
         ...(r._pvc ? [{ label: 'Anular coordinación', icon: 'event_busy', run: async row => {
           if (!await confirmar(`¿Anular la coordinación del pedido de venta ${row.documento}?\n\nSale del Plan de Carga.`)) return null;
           const { error } = await supabase.from('abast_pv4000_coordinacion').delete().eq('documento', String(row.documento).trim());
@@ -4940,6 +4965,16 @@ const V2 = {
           showAlert('Coordinación anulada', 'success'); return { recargar: true };
         } }] : []),
       ],
+      // (10-nov-2026, Jordan) Productos del pedido de venta
+      tabla: r._grupo ? (() => {
+        const n = x => escV2(fmtNum(Number(x) || 0, (Number(x) || 0) % 1 ? 2 : 0));
+        return { titulo: `${r._n_lin} ${r._n_lin === 1 ? 'producto' : 'productos'} del pedido`,
+          head: [['ID material'], ['Descripción'], ['Pos.'], ['Fecha entrega'], ['Cantidad', 'r'], ['UM'], ['Ton', 'r'], ['Días stock', 'r'], ['Flete traslado / UM', 'r']],
+          rows: r._lineas.map(l => [mono(l.material), escV2(l._nombre || ''), mono(String(l.pos ?? '').replace(/^0+/, '') || '—'), mono(l.creado || '—'),
+            n(parseNum(l.libre_utiliz)), escV2(l.umb || ''), `<span class="sv-ton">${tonHtml(tonNum(l._ton_totales))}</span>`,
+            l._sd == null ? '<span class="sv-muted">—</span>' : `<span style="color:${l._sd <= 3 ? C_RED : C_INK}">${l._sd}</span>`,
+            `${escV2(fmtCLP(parseNum(l.flete_zflt) || 0))}<div class="sv-sub" style="margin:0">UM ${escV2(fmtCLP(parseNum(l.flete_zfl0_zfl1) || 0))}</div>`]) };
+      })() : null,
       nota: 'Almacén 4000 · centro físico 1003',
     }),
   },
@@ -7390,7 +7425,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611101815');
+    const m = await import('./ind-plan-carga.js?v=202611101819');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
