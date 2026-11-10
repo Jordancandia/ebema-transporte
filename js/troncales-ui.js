@@ -32,8 +32,8 @@ export function tonHtml(n) {
 }
 
 // Encabezado del shell: fecha y hora de la última actualización SAP de la vista
-import { confirmar } from './confirmar.js?v=202611101552';
-import { comentariosHabilitados, conteosComentarios, celdaComentarios, montarHilo, tomarFoco, abrirHiloSuelto } from './comentarios.js?v=202611101552';
+import { confirmar } from './confirmar.js?v=202611101558';
+import { comentariosHabilitados, conteosComentarios, celdaComentarios, montarHilo, tomarFoco, abrirHiloSuelto } from './comentarios.js?v=202611101558';
 export function setUltimaActualizacion(ts) {
   const el = document.getElementById('sv-upd');
   if (!el) return;
@@ -595,7 +595,7 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
       ${tb.sub ? `<div class="sv-sub" style="margin:-4px 0 6px;max-width:none">${esc(tb.sub)}</div>` : ''}
       <div class="sv-card" style="overflow:auto"><table class="sv-table">
         <thead><tr>${tb.head.map(([l, al]) => `<th class="${al === 'r' ? 'r' : ''}">${esc(l)}</th>`).join('')}</tr></thead>
-        <tbody>${tb.rows.map(row => `<tr>${row.map((c, i) => `<td class="${tb.head[i] && tb.head[i][1] === 'r' ? 'r' : ''}">${c}</td>`).join('')}</tr>`).join('')}</tbody>
+        <tbody>${tb.rows.map((row, ri) => `<tr${tb.rowStyle && tb.rowStyle(ri) ? ` style="${tb.rowStyle(ri)}"` : ''}>${row.map((c, i) => `<td class="${tb.head[i] && tb.head[i][1] === 'r' ? 'r' : ''}">${c}</td>`).join('')}</tr>`).join('')}</tbody>
       </table></div></div>` : '';
     const tabla = (d.tablas || (d.tabla ? [d.tabla] : [])).map(tablaHtml).join('');
 

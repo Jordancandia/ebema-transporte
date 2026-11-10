@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611101552';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611101552';
-import { getDatabase } from './data.js?v=202611101552';
+import { supabase } from './supabase-client.js?v=202611101558';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611101558';
+import { getDatabase } from './data.js?v=202611101558';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611101552';
-import { confirmar, pedirDato } from './confirmar.js?v=202611101552';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611101558';
+import { confirmar, pedirDato } from './confirmar.js?v=202611101558';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -4824,6 +4824,7 @@ const V2 = {
   // ── STOCK ALMACÉN 4000 ────────────────────────────────────────────────────
   stock_almacen: {
     titulo: 'Stock Almacén 4000',
+    drawerW: 'min(1180px, 96vw)',   // (10-nov-2026) detalle ancho para ver los productos
     desc: 'Stock disponible en el almacén 4000 (físicamente en 1003) y días de stock de la sucursal destino por SKU.',
     async preload() { const [skuMap, pvCoord] = await Promise.all([slimSkuMap(), loadPv4000Coord()]); return { skuMap, pvCoord }; },
     enrich(rows, ctx) {
@@ -4955,6 +4956,7 @@ const V2 = {
   // (ej.: entrega 05.10 → aparece en el plan armado el 02.10, día objetivo 05.10).
   pedidos_venta: {
     titulo: 'Ventas CD (1003)',
+    drawerW: 'min(1180px, 96vw)',   // (10-nov-2026) detalle ancho para ver los productos
     desc: 'Pedidos de ventas con centro expedición CDRM. Sólo los pedidos coordinados entran al Plan de Carga del día de su fecha de entrega.',
     async preload() {
       const [pvMap, ventasDirectoManual, feriadosRows, coordMap, maestro, horizRows, manualMap] = await Promise.all([
@@ -5312,7 +5314,9 @@ const V2 = {
             rows.push(out);
           });
           const nd = (r._detalle || []).length, nb = (r._bloq_pos || []).length;
-          return { titulo: `${nd} ${nd === 1 ? 'posición pendiente' : 'posiciones pendientes'}${nb ? ` · ${nb} bloqueada${nb === 1 ? '' : 's'}` : ''}`, head, rows };
+          return { titulo: `${nd} ${nd === 1 ? 'posición pendiente' : 'posiciones pendientes'}${nb ? ` · ${nb} bloqueada${nb === 1 ? '' : 's'}` : ''}`, head, rows,
+            // Fila bloqueada completa tachada y en rojo suave
+            rowStyle: i => i >= nd ? 'background:#fdecec;text-decoration:line-through;text-decoration-color:#93000a;color:#93000a' : '' };
         })(),
         nota: r._directo ? 'Camión directo al cliente (CD-Cliente)' : '2º en el orden de llenado del camión CD',
         acciones,
@@ -5326,6 +5330,7 @@ const V2 = {
   // datos de transporte y varias OC por camión, Excluir en la fila, sólo OWNER edita.
   retiros: {
     titulo: 'Retiros de Fábrica',
+    drawerW: 'min(1180px, 96vw)',   // (10-nov-2026) detalle ancho para ver los productos
     prioridad: { tipo: 'retiro', doc: r => r.doc_compr ?? r.oc ?? r.pt, centro: r => r.ce },   // (15-oct-2026) check PRIORIDAD
     desc: 'Órdenes de compra con retiro a proveedor. Sólo los Retiro RM entran al Plan de Carga, el día de su fecha de retiro (día en que se carga).',
     rowId: r => String(r.doc_compr ?? '').trim(),
@@ -5473,6 +5478,7 @@ const V2 = {
   // Modifican: OWNER y Planner Abastecimiento (permiso ajustar_plan).
   pedidos_traslados_4000: {
     titulo: 'Crossdocking',
+    drawerW: 'min(1180px, 96vw)',   // (10-nov-2026) detalle ancho para ver los productos
     prioridad: { tipo: 'cross', doc: r => r.doc_compr ?? r.oc ?? r.pt, centro: r => r.ce },   // (15-oct-2026) check PRIORIDAD
     desc: 'Traslados desde Almacén 4000 (CD Quilicura) a sucursales. Por defecto entran al Plan de Carga como Consolidable (camión CD).',
     rowId: r => `${r.doc_compr}|${r._pos || r.material}`,
@@ -5582,6 +5588,7 @@ const V2 = {
   // ── PEDIDOS DE TRASLADOS ──────────────────────────────────────────────────
   pedidos_traslados: {
     titulo: 'Pedidos de Traslados',
+    drawerW: 'min(1180px, 96vw)',   // (10-nov-2026) detalle ancho para ver los productos
     prioridad: { tipo: 'traslado', doc: r => r.doc_compr ?? r.oc ?? r.pt, centro: r => r.ce },   // (15-oct-2026) check PRIORIDAD
     desc: 'Pedidos de traslados desde centros de distribución a sucursales',
     origen: { of: r => r.cesu, opciones: ORIGENES_CD },
@@ -7315,7 +7322,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611101552');
+    const m = await import('./ind-plan-carga.js?v=202611101558');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
