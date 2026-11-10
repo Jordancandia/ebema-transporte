@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611101711';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611101711';
-import { getDatabase } from './data.js?v=202611101711';
+import { supabase } from './supabase-client.js?v=202611101759';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611101759';
+import { getDatabase } from './data.js?v=202611101759';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611101711';
-import { confirmar, pedirDato } from './confirmar.js?v=202611101711';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611101759';
+import { confirmar, pedirDato } from './confirmar.js?v=202611101759';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -7091,6 +7091,21 @@ Object.entries(V2).forEach(([k, v]) => {
   if (cfg.modes && v.modos) cfg.modes.forEach(m => { const mv = v.modos[m.id]; if (mv) { m.v2mode = { cols: mv.cols }; m.v2label = mv.v2label; m.icon = mv.icon; } });
 });
 
+// (10-nov-2026, Jordan) Stock Almacén 4000 va DENTRO de Crossdocking: selector «Crossdocking | Stock Almacén 4000».
+// El modo Stock usa su propia vista, carga, filtros, columnas y detalle (las claves propias de Crossdocking se anulan).
+(() => {
+  const cx = VISTAS_TRONCAL.pedidos_traslados_4000, sk = VISTAS_TRONCAL.stock_almacen;
+  if (!cx || !sk || !cx.v2 || !sk.v2 || cx.modes) return;
+  const anular = (base, nuevo) => { const o = {}; Object.keys(base).forEach(k => { o[k] = undefined; }); return Object.assign(o, nuevo); };
+  const modoStock = anular(cx, sk);
+  delete modoStock.v2; delete modoStock.modes;
+  cx.modes = [
+    { label: 'Crossdocking', v2label: 'Crossdocking', icon: 'swap_horiz' },
+    Object.assign(modoStock, { label: 'Stock Almacén 4000', v2label: 'Stock Almacén 4000', icon: 'inventory',
+      v2mode: anular(cx.v2, Object.assign({}, sk.v2, { titulo: 'Crossdocking · Stock Almacén 4000' })) }),
+  ];
+})();
+
 // ── ENTREGAS DISPONIBLES (7-oct-2026, Jordan) ────────────────────────────────
 // Las vistas SQVI muestran el PENDIENTE (lo pedido menos lo que ya tiene entrega); los pendientes sin
 // entrega no entran al Plan de Carga. El modo «Entregas» muestra lo disponible real para cargar: entregas
@@ -7354,7 +7369,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611101711');
+    const m = await import('./ind-plan-carga.js?v=202611101759');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
