@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611101803';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611101803';
-import { getDatabase } from './data.js?v=202611101803';
+import { supabase } from './supabase-client.js?v=202611101812';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611101812';
+import { getDatabase } from './data.js?v=202611101812';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611101803';
-import { confirmar, pedirDato } from './confirmar.js?v=202611101803';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611101812';
+import { confirmar, pedirDato } from './confirmar.js?v=202611101812';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -4863,6 +4863,9 @@ const V2 = {
     search: { ph: 'Buscar material o pedido', of: r => `${r.material} ${r._nombre || ''} ${r.documento || ''}` },
     kpis: [
       { key: 'all', label: 'SKU', color: C_INK, sub: 'stock y pedidos en 4000' },
+      // (10-nov-2026, Jordan) filtro Stock / Pedidos de venta
+      { key: 'st', label: 'Stock', color: C_BLUE, sub: 'stock disponible', fn: r => r._tipo === 'Stock' },
+      { key: 'pv', label: 'Pedidos de venta', color: '#7e22ce', sub: 'calzados en almacén 4000', fn: r => r._tipo === 'Pedido de venta' },
       { key: 'q', label: 'Quebrados', color: C_RED, sub: '0 a 3 días', fn: r => r._q.g === 'q' },
       { key: 'c', label: 'Críticos', color: C_ORANGE, sub: '4 a 5 días', fn: r => r._q.g === 'c' },
       { key: 'r', label: 'En revisión', color: C_YELLOW, sub: '6 a 7 días', fn: r => r._q.g === 'r' },
@@ -4870,12 +4873,18 @@ const V2 = {
     ],
     edge: r => r._pvc ? C_GREEN : r._q.g === 'q' ? C_RED : null,
     note: () => `Días de stock según SLIM del centro destino${_stockOcultasCx ? ` · ${_stockOcultasCx} línea${_stockOcultasCx > 1 ? 's' : ''} oculta${_stockOcultasCx > 1 ? 's' : ''} por estar en Crossdocking` : ''}`,
-    minW: '1100px',
+    minW: '1500px',
     cols: [
       { label: 'Tipo', html: r => pill(r._tipo, r._tipo === 'Stock' ? 'info' : 'purple') },
       { label: 'Material', html: r => matHtml(r.material, r._nombre) },
       { label: 'Destino', html: r => sucHtml(r.ce) },
-      { label: 'Pedido de venta', html: r => r.documento ? mono(r.documento, [r.ruta, r._comuna].filter(Boolean).join(' · ') || (r.creado ? 'entrega ' + r.creado : '')) : '<span class="sv-muted">—</span>' },
+      { label: 'Pedido de venta', html: r => r.documento ? mono(r.documento, r.creado ? 'entrega ' + r.creado : '') : '<span class="sv-muted">—</span>' },
+      // (10-nov-2026, Jordan) datos de la NV: cliente, vendedor, ruta·comuna, obra y flete cobrado
+      { label: 'Cliente · vendedor', html: r => r.documento ? txt(r.nombre_cliente || '—', [r.id_cliente ? 'ID ' + r.id_cliente : '', r.interlocutor].filter(Boolean).join(' · ')) : '<span class="sv-muted">—</span>' },
+      { label: 'Ruta · comuna', html: r => r.documento ? (r.ruta ? txt(r.ruta, r._comuna || r.ruta_desc || '') : '<span class="sv-muted">Sin ruta</span>') : '<span class="sv-muted">—</span>' },
+      { label: 'Obra', html: r => r.documento && (r.id_obra || r.direccion_obra) ? txt(r.direccion_obra || '—', r.id_obra ? 'obra ' + r.id_obra : '') : '<span class="sv-muted">—</span>' },
+      { label: 'Flete cobrado', al: 'r', html: r => { if (!r.documento) return '<span class="sv-muted">—</span>'; const ft = parseNum(r.flete_zflt) || 0, fu = parseNum(r.flete_zfl0_zfl1) || 0;
+          return ft || fu ? `<b>${escV2(fmtCLP(ft + fu))}</b><div class="sv-sub">Trasl. ${escV2(fmtCLP(ft))} · UM ${escV2(fmtCLP(fu))}</div>` : '<span class="sv-muted">$0</span>'; } },
       { label: 'Clase ABC', html: r => mono(r._abc) },
       { label: 'Cantidad', al: 'r', html: r => escV2(r.libre_utiliz || '0') + (r.umb ? ` <span class="sv-muted">${escV2(r.umb)}</span>` : '') },
       { label: 'Ton', al: 'r', html: r => `<span class="sv-ton">${tonHtml(tonNum(r._ton_totales))}</span>` },
@@ -4896,11 +4905,15 @@ const V2 = {
         ['Toneladas', tonHtml(tonNum(r._ton_totales)), true],
         ['Días de stock', r._sd == null ? 'Sin dato en SLIM' : `${r._sd} · ${r._q.lbl}`],
         r.documento ? ['Pedido de venta', r.documento] : null,
-        r.ruta ? ['Ruta', `${r.ruta}${r._comuna ? ' · ' + r._comuna : ''}`] : null,
+        r.documento ? ['Ruta · comuna', r.ruta ? (() => { const i = lookupRuta(r.ruta); return i.encontrada ? [r.ruta, i.denominacion || i.destino, i.comuna].filter(Boolean).join(' · ') : [r.ruta, r.ruta_desc, 'no está en la maestra de rutas'].filter(Boolean).join(' · '); })() : 'Sin ruta'] : null,
         r.creado ? ['Fecha de entrega', r.creado] : null,
-        r.deudor ? ['ID vendedor', r.deudor] : null,
-        r.nombre_cliente ? ['Cliente', [r.nombre_cliente, r.id_cliente ? 'ID ' + r.id_cliente : ''].filter(Boolean).join(' · ')] : null,
-        ...kvDatosNV(datosNV([r])),   // (9-nov-2026)
+        r.documento ? ['Condición expedición', r.cond_expedicion] : null,
+        r.documento ? ['Vendedor', r.interlocutor || r.deudor] : null,
+        r.documento ? ['ID cliente', r.id_cliente] : null,
+        r.documento ? ['Cliente', r.nombre_cliente] : null,
+        r.documento ? ['ID obra', r.id_obra] : null, r.documento ? ['Dirección obra', r.direccion_obra] : null,
+        r.documento ? ['Flete traslado (ZFLT)', fmtCLP(parseNum(r.flete_zflt) || 0)] : null,
+        r.documento ? ['Flete última milla (ZFL0/ZFL1)', fmtCLP(parseNum(r.flete_zfl0_zfl1) || 0)] : null,
         r._pvc ? ['Coordinación', `${r._pvc.tipo_entrega === 'CD-CLIENTE' ? 'CD-Cliente (camión directo)' : 'Consolidado (camión CD)'} · ${fmtNum(r._pvc_cant, r._pvc_cant % 1 ? 2 : 0)} un · día ${fmtFechaISO(r._pvc.fecha_entrega)}${r._pvc.n_entrega ? ' · entrega ' + r._pvc.n_entrega : ''}`] : null,
         r._pvc && r._pvc.tipo_entrega === 'CD-CLIENTE' ? ['Entrega en', [r._pvc.nombre_cliente, r._pvc.direccion, r._pvc.comuna, r._pvc.telefono].filter(Boolean).join(' · ')] : null,
         r._pvc && r._pvc.tipo_entrega === 'CD-CLIENTE' ? ['Transporte', [r._pvc.id_transporte, r._pvc.transportista, r._pvc.patente_camion ? 'Camión ' + r._pvc.patente_camion : '', r._pvc.chofer_nombre].filter(Boolean).join(' · ')] : null,
@@ -5511,8 +5524,9 @@ const V2 = {
   pedidos_traslados_4000: {
     titulo: 'Crossdocking',
     drawerW: 'min(1180px, 96vw)',   // (10-nov-2026) detalle ancho para ver los productos
-    prioridad: { tipo: 'cross', doc: r => r.doc_compr ?? r.oc ?? r.pt, centro: r => r.ce },   // (15-oct-2026) check PRIORIDAD
-    desc: 'Traslados desde Almacén 4000 (CD Quilicura) a sucursales. Por defecto entran al Plan de Carga como Consolidable (camión CD).',
+    // (10-nov-2026, Jordan) prioridad por PT + posición (material); la entrega creada la hereda
+    prioridad: { tipo: 'cross', doc: r => r.doc_compr ?? r.oc ?? r.pt, material: r => r.material, centro: r => r.ce },
+    desc: 'Pedidos de traslado desde Almacén 4000 (CD Quilicura) sin entrega creada. Sólo consulta y priorización: la prioridad del PT y posición pasa a su entrega.',
     rowId: r => `${r.doc_compr}|${r._pos || r.material}`,
     async preload() {
       const [coordMap, feriadosRows, horizRows, cm] = await Promise.all([loadCoordTraslados(), fetchAllRows('abast_feriados'), fetchAllRows('abast_horizonte_centro'), loadCargaManualTr()]);
@@ -5574,16 +5588,9 @@ const V2 = {
     detalle: r => {
       const c = r._coord;
       const puede = can('ajustar_plan');
-      const acciones = !puede ? [] : [
-        { label: r._cdcli ? 'Editar coordinación CD-Cliente' : 'Coordinar como CD-Cliente', icon: 'local_shipping', primary: true,
-          run: async (row, ctx) => ((await showCoordTrasladoModal(row, ctx)) ? { recargar: true } : null) },
-        // (18-oct-2026, Jordan) Editar unidades y centro destino alternativo del Plan de Carga.
-        { label: 'Ajustar unidades / centro destino', icon: 'tune',
-          run: async (row, ctx) => ((await showAjusteCrossModal(row, ctx)) ? { recargar: true } : null) },
-      ];
-      // (23-oct-2026, Jordan) Carga manual sin entrega SAP: subir el pedido a un camión eligiendo día y unidades.
-      if (can('incluir_plan')) acciones.push({ label: r._cm ? 'Editar carga manual (camión)' : 'Subir a camión (carga manual)', icon: 'local_shipping',
-        run: async (row, ctx) => ((await showCargaManualModal(row, ctx, 'CROSSDOCK')) ? { recargar: true } : null) });
+      // (10-nov-2026, Jordan) Los pedidos de traslado de Crossdocking (pendientes sin entrega) son SÓLO de consulta y
+      // priorización: no se coordinan ni se suben a camión. La prioridad del PT + posición la hereda su entrega.
+      const acciones = [];
       if (puede && r._cdcli) acciones.push({ label: 'Volver a Consolidable', icon: 'undo', run: async row => {
         if (!await confirmar(`¿Quitar el camión directo CD-Cliente del pedido ${row.doc_compr}?\n\nVuelve a Consolidable y entra al camión CD.`)) return null;
         return (await volverConsolidableTraslado(row.doc_compr, row._coord)) ? (showAlert('Pedido vuelve a Consolidable', 'success'), { recargar: true }) : null;
@@ -7352,6 +7359,10 @@ function v2ModoEntregas(tipo) {
   // (15-oct-2026, Jordan) Crossdocking y Pedidos de Traslados abren en ENTREGAS (vista principal);
   // los pedidos de traslado quedan como «Pendientes». Revex mantiene Pendientes primero.
   if (tipo !== 'REVEX') cfg.modes.reverse();
+  // (10-nov-2026, Jordan) Crossdocking: la prioridad se da al PT + posición (material) y la ENTREGA creada de esa
+  // posición la toma tal cual (misma marca 'cross' por doc. modelo + material) — se ve y gestiona en ambas pestañas.
+  if (tipo === 'CROSSDOCK') cfg.modes.forEach(m => { if (m.id === 'ent' && m.v2mode)
+    m.v2mode.prioridad = { tipo: 'cross', doc: r => r.doc_compr, material: r => r.material, centro: r => r.ce }; });
 });
 agregarModoStockEnCross();   // (10-nov-2026, Jordan) después de crear Entregas / Pendientes
 
@@ -7371,7 +7382,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611101803');
+    const m = await import('./ind-plan-carga.js?v=202611101812');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -7587,11 +7598,13 @@ let PRIO_DOCS = new Set();
 // (1-nov-2026, Jordan) PRIORIDAD marcada sobre la ENTREGA + MATERIAL (vistas Entregas de Crossdocking y
 // Pedidos de Traslados): clave `entrega|material`. Prioriza la línea, no el pedido completo.
 let PRIO_ENT = new Set();
+let PRIO_DOC_MAT = new Set();   // (10-nov-2026) `pt|material`
+const esPrioDocMat = d => PRIO_DOC_MAT.has(`${String(d?.pt ?? d?.oc ?? d?.pv ?? '').trim()}|${String(d?.material ?? '').trim()}`);
 const prioKeyEnt = d => `${String(d?.entrega_entrante ?? d?.entrega ?? '').trim()}|${String(d?.material ?? '').trim()}`;
 const esPrioEnt = d => { const e = String(d?.entrega_entrante ?? d?.entrega ?? '').trim(); return !!e && PRIO_ENT.has(prioKeyEnt(d)); };
 // (15-oct-2026, Jordan) Columna «Prioridad de carga» en los CSV: la posición se carga como prioritaria.
 const PRIO_CSV_TXT = 'PRIORIDAD DE CARGA';
-const esPrioCarga = d => !!d && (PRIO_DOCS.has(String(d.pt ?? d.oc ?? d.pv ?? '').trim()) || esPrioEnt(d));
+const esPrioCarga = d => !!d && (PRIO_DOCS.has(String(d.pt ?? d.oc ?? d.pv ?? '').trim()) || esPrioDocMat(d) || esPrioEnt(d));
 const prioCsv = d => [...marcasLinea(d), esPrioCarga(d) ? PRIO_CSV_TXT : ''].filter(Boolean).join(' · ');
 // (23-oct-2026, Jordan) Elige, dentro de un nivel de prioridad, las líneas que más llenan `rem` toneladas
 // (mochila 0/1 a 0,1 t); desempate: más posiciones y luego el orden de prioridad. Igual que
@@ -7644,7 +7657,7 @@ function asignarCamionesCD(r) {
   const unidosCD = (r.det.retiro || []).filter(d => d._unidoCD);
   [unidosCD, manualesCM, r.det.revex, r.det.ventaCons, (r.det.retiro || []).filter(d => !d._unidoCD), (r.det.cross || []).filter(d => !esCM(d)), forz.filter(d => !esCM(d)),
    (r.det.quiebre || []).filter(d => !d._forzadoPlan && !esCM(d)), (r.det.stock || []).filter(d => !d._forzadoPlan && !esCM(d))].forEach((arr, ai) => {
-    (arr || []).forEach(d => { d._prio = PRIO_DOCS.has(doc(d)) || esPrioEnt(d); d._niv = `${ai}|${d._prio ? 1 : 0}|${d._orden ?? 0}`; });
+    (arr || []).forEach(d => { d._prio = PRIO_DOCS.has(doc(d)) || esPrioDocMat(d) || esPrioEnt(d); d._niv = `${ai}|${d._prio ? 1 : 0}|${d._orden ?? 0}`; });
     (arr || []).slice()
       // (15-oct-2026) PRIORIDAD primero dentro de su categoría (no salta categorías).
       .sort((a, b) => ((b._prio ? 1 : 0) - (a._prio ? 1 : 0)) || ((a._orden ?? 0) - (b._orden ?? 0)) || ((npos.get(doc(b)) || 0) - (npos.get(doc(a)) || 0)) || cmp(doc(a), doc(b)) || cmp(mat(a), mat(b)))
@@ -8016,11 +8029,13 @@ async function renderPlanCarga(stage, opts = {}) {
     const pm = await loadPrioridades();
     const ok = [...pm.values()].filter(x => x.estado === 'ACEPTADA');
     const esEnt = x => String(x.tipo ?? '').startsWith('ent_');
-    PRIO_DOCS = new Set(ok.filter(x => !esEnt(x)).map(x => String(x.documento ?? '').trim()));
+    PRIO_DOCS = new Set(ok.filter(x => !esEnt(x) && !String(x.material ?? '').trim()).map(x => String(x.documento ?? '').trim()));
+    // (10-nov-2026, Jordan) prioridad de PT + posición (Crossdocking): aplica a sus líneas / entregas del mismo material
+    PRIO_DOC_MAT = new Set(ok.filter(x => !esEnt(x) && String(x.material ?? '').trim()).map(x => `${String(x.documento ?? '').trim()}|${String(x.material ?? '').trim()}`));
     // (1-nov-2026, Jordan) Prioridades por entrega + material (Jefe Sucursal / Jefe Operaciones).
     PRIO_ENT = new Set(ok.filter(esEnt).map(x => `${String(x.documento ?? '').trim()}|${String(x.material ?? '').trim()}`));
   }
-  catch (e) { PRIO_DOCS = new Set(); PRIO_ENT = new Set(); console.warn('Plan de carga: prioridades no disponibles', e); }
+  catch (e) { PRIO_DOCS = new Set(); PRIO_ENT = new Set(); PRIO_DOC_MAT = new Set(); console.warn('Plan de carga: prioridades no disponibles', e); }
   // (1-oct-2026) Asignaciones manuales de líneas por origen|centro destino
   const asigMap = new Map();
   asigLineas.forEach(a => {

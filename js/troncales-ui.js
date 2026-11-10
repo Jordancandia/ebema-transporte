@@ -32,8 +32,8 @@ export function tonHtml(n) {
 }
 
 // Encabezado del shell: fecha y hora de la última actualización SAP de la vista
-import { confirmar } from './confirmar.js?v=202611101803';
-import { comentariosHabilitados, conteosComentarios, celdaComentarios, montarHilo, tomarFoco, abrirHiloSuelto } from './comentarios.js?v=202611101803';
+import { confirmar } from './confirmar.js?v=202611101812';
+import { comentariosHabilitados, conteosComentarios, celdaComentarios, montarHilo, tomarFoco, abrirHiloSuelto } from './comentarios.js?v=202611101812';
 export function setUltimaActualizacion(ts) {
   const el = document.getElementById('sv-upd');
   if (!el) return;
@@ -162,13 +162,24 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
   let prios = prioCfg ? await deps.loadPrioridades(prioCfg.tipo) : new Map();
   const prioDoc = r => String(prioCfg.doc(r) ?? '').trim();
   const prioMat = r => prioCfg.material ? String(prioCfg.material(r) ?? '').trim() : '';
-  const prioDe = r => prios.get(`${prioCfg.tipo}|${prioDoc(r)}|${prioMat(r)}`) || null;
+  // (10-nov-2026) marcas antiguas sin material (pedido completo) siguen valiendo para cada posición
+  const prioDe = r => prios.get(`${prioCfg.tipo}|${prioDoc(r)}|${prioMat(r)}`) || (prioMat(r) ? prios.get(`${prioCfg.tipo}|${prioDoc(r)}|`) : null) || null;
+  // (10-nov-2026, Jordan) Prioridad HEREDADA: la entrega toma la prioridad dada a su PT + posición (prioCfg.hereda)
+  const heCfg = prioCfg && prioCfg.hereda ? prioCfg.hereda : null;
+  let priosH = heCfg ? await deps.loadPrioridades(heCfg.tipo) : new Map();
+  const heredaDe = r => { if (!heCfg) return null; const d = String(heCfg.doc(r) ?? '').trim(), m = String(heCfg.material(r) ?? '').trim();
+    return priosH.get(`${heCfg.tipo}|${d}|${m}`) || priosH.get(`${heCfg.tipo}|${d}|`) || null; };
   const prioLbl = r => prioMat(r) ? `${prioDoc(r)} · material ${prioMat(r)}` : prioDoc(r);
   const puedePrio = r => deps.can('marcar_prioridad') && (!deps.enAlcance || !prioCfg.centro || deps.enAlcance(String(prioCfg.centro(r) ?? '').trim()));
   // (15-oct-2026, Jordan) Aprobación: la marca de Operaciones queda POR APROBAR hasta que un Planner de
   // Abastecimiento (acción evaluar_prioridad) la acepta → PRIORIDAD; si la rechaza se desactiva.
   const puedeEval = () => deps.can('evaluar_prioridad') && !!deps.evaluarPrioridad;
   function celdaPrio(r) {
+    const h = !prioDe(r) ? heredaDe(r) : null;
+    if (h) {   // heredada del PT: se muestra, se gestiona en el pedido (Crossdocking)
+      const hp = h.estado !== 'PENDIENTE';
+      return `<span class="sv-pill ${hp ? 'bad' : 'warn'}" style="font-size:10px;padding:1px 6px" title="Prioridad del pedido de traslado ${esc(String(heCfg.doc(r) ?? ''))} · posición ${esc(String(heCfg.material(r) ?? ''))}${h.motivo ? ' · ' + esc(h.motivo) : ''}. Se gestiona en la vista Crossdocking."><i></i>${hp ? 'PRIORIDAD PT' : 'PT POR APROBAR'}</span>`;
+    }
     const p = prioDe(r), ed = puedePrio(r) && prioDoc(r);
     const pend = !!p && p.estado === 'PENDIENTE';
     const tit = p ? `Marcada por ${esc(p.marcado_por || '')}${p.motivo ? ' · ' + esc(p.motivo) : ''}${pend ? ' · pendiente de aprobación de Abastecimiento' : (p.evaluado_por ? ' · aceptada por ' + esc(p.evaluado_por) : '')}` : '';
