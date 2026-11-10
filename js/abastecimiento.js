@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611101658';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611101658';
-import { getDatabase } from './data.js?v=202611101658';
+import { supabase } from './supabase-client.js?v=202611101711';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611101711';
+import { getDatabase } from './data.js?v=202611101711';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611101658';
-import { confirmar, pedirDato } from './confirmar.js?v=202611101658';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611101711';
+import { confirmar, pedirDato } from './confirmar.js?v=202611101711';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -3900,7 +3900,9 @@ const VISTAS_TRONCAL = {
           const tRet = calcTon(pesoU, ret);
           ton += t; tonRet += tRet; pendienteTotal += pend; pedidoTotal += ctdP;
           if (ctdE > 0 && ctdE < ctdP) revSaldo = true;
-          return { doc_compr: oc, ce: r.ce, material: r.material, texto_breve: r.texto_breve, pedido: ctdP, pendiente: pend, entregado: ctdE, ton: t, pesoU, retiro: ret, ton_ret: tRet, fecha: r.fe_entrega };
+          return { doc_compr: oc, ce: r.ce, material: r.material, texto_breve: r.texto_breve, pedido: ctdP, pendiente: pend, entregado: ctdE, ton: t, pesoU, retiro: ret, ton_ret: tRet, fecha: r.fe_entrega,
+                   // (10-nov-2026, Jordan) flete de la posición = ZFLT + ZFL0/ZFL1 (NV calzada)
+                   flete: (parseNum(r.flete_zflt) || 0) + (parseNum(r.flete_zfl0_zfl1) || 0) };
         });
         // (3-oct-2026, Jordan) Tipo de pedido: OC con pedido de venta = CALZADA, sin pedido = STOCK.
         // Tipo de retiro automático: OC ≥ 85% de un camión de 28 t (23,8 t) → STOCK: FAB-SUC,
@@ -3960,6 +3962,10 @@ const VISTAS_TRONCAL = {
           _upd_at: estObj.updated_at || '', _upd_by: estObj.updated_by || '',
           _detalle: detalle,
           ...datosNV(items),   // (9-nov-2026) datos de la NV calzada que trae el CSV Drive
+          // (10-nov-2026, Jordan) creación de la OC y datos de la NV calzada del CSV Drive
+          _creado_oc: f.creado_oc || f.creado_el || '', _creado_por_oc: f.creado_por_oc || f.creado_por || '',
+          _ofvta_nv: String(f.ofvta_nv ?? '').trim(), _ruta_nv: String(f.ruta_nv ?? f.ruta ?? '').trim(), _ruta_desc_nv: String(f.ruta_desc ?? '').trim(),
+          _id_cliente_nv: String(f.id_cliente ?? '').trim(),
           // Datos cruzados de Pedidos de Ventas
           _pv_denominacion: pv.denominacion || '',
           _pv_nombre_cliente: pv.nombre_1 || datosNV(items)._nombre_cliente_sap || '',
@@ -5369,6 +5375,7 @@ const V2 = {
     ],
     cols: [
       { label: 'Orden de compra', html: r => mono(r.doc_compr, r.contr ? 'contrato ' + r.contr : '') + (r._oc_manual ? `<div style="margin-top:2px">${pill('Manual', 'info')}</div>` : '') },
+      { label: 'Creación OC', html: r => r._creado_oc ? mono(r._creado_oc, r._creado_por_oc || '') : '<span class="sv-muted">—</span>' },   // (10-nov-2026)
       { label: 'Proveedor', html: r => txt(r.nombre_1, r.proveedor, true) },
       { label: 'Destino', html: r => sucHtml(r.ce) },
       { label: 'Tipo pedido', html: r => pill(r._tipo_pedido === 'CALZADA' ? 'Calzada' : 'Stock', r._tipo_pedido === 'CALZADA' ? 'info' : 'mute') + (r.documento ? `<div class="sv-sub">PV ${escV2(r.documento)}</div>` : '') + (esIngSum(r) ? `<div style="margin-top:4px">${ingSumPill(true)}</div>` : '') },
@@ -5378,6 +5385,10 @@ const V2 = {
           ? mono(fmtFechaISO(r._fecha_retiro)) + (retFechaVencida(r) ? `<div style="margin-top:4px" title="La fecha de retiro ya pasó: ese día de carga no vale. Re-coordina la OC con una fecha nueva.">${pill('Vencida', 'bad')}</div>` : '')
           : (r._modo === 'RM' ? `<span class="sv-b" style="color:${C_RED}">Falta fecha</span>` : '<span class="sv-muted">—</span>') },
       { label: 'Ton', al: 'r', html: r => `<span class="sv-ton">${tonHtml(r._ton_num)}</span>` + (r._parcial ? `<div class="sv-sub" style="color:#15803d">retira ${escV2(fmtNum(r._ton_ret, 1))} t</div>` : '') + (r._revision_saldo ? '<div class="sv-sub" style="color:#b5000b">saldo pendiente</div>' : '') },
+      // (10-nov-2026, Jordan) flete cobrado en la NV calzada (ZFLT + ZFL0/ZFL1)
+      { label: 'Flete PV', al: 'r', html: r => r.documento && (r._flete_traslado || r._flete_um)
+          ? `<b>${escV2(fmtCLP((r._flete_traslado || 0) + (r._flete_um || 0)))}</b><div class="sv-sub">Trasl. ${escV2(fmtCLP(r._flete_traslado || 0))} · UM ${escV2(fmtCLP(r._flete_um || 0))}</div>`
+          : '<span class="sv-muted">—</span>' },
       { label: 'Alerta', html: r => (retiroAtrasado(r) ? pill('Atrasada', 'bad') : (r._al.k === 'Atrasado' ? pill('Vencida', 'orange') : pill(r._al.k, r._al.k === 'Pronto a vencer' ? 'warn' : r._al.tone)))
           + (r._exp_error ? `<div style="margin-top:4px" title="${escV2(r._pv_denominacion)}">${pill('Expedición errónea', 'purple')}</div>` : '') },
       { label: 'Coordinación', html: r => {
@@ -5400,7 +5411,7 @@ const V2 = {
       : pill('No considerado', 'mute'),
     edge: r => r._saldo_todo ? C_ORANGE : r._modo === 'LOCAL' ? C_ORANGE : r._modo === 'RM' ? C_GREEN : (retiroAtrasado(r) ? C_RED : null),
     note: 'Tipo retiro automático: ≥ 23,8 t (85% de 28 t) → Stock FAB-SUC / Calzada FAB-CLTE; bajo 23,8 t → FAB-CD · Retiro RM entra al plan el día de su fecha de retiro',
-    minW: '1320px',
+    minW: '1440px',
     detalle: r => {
       const t = r._transp || {};
       const puede = can('coordinar_retiro');
@@ -5446,6 +5457,7 @@ const V2 = {
           ['Coordinación', r._modo === 'RM' ? pill('Retiro RM', 'ok') : r._modo === 'LOCAL' ? pill('Retiro local', 'orange') : pill('Sin coordinar', 'mute'), true],
           ['Tipo pedido', r._tipo_pedido === 'CALZADA' ? 'Calzada (con pedido de venta)' : 'Stock'],
           esIngSum(r) ? ['Instrucción', ingSumPill(false), true] : null,
+          ['Fecha creación OC', r._creado_oc], ['Usuario creación', r._creado_por_oc],
           ['Fecha SAP', r.fe_entrega], ['Fecha retiro (carga)', r._fecha_retiro ? fmtFechaISO(r._fecha_retiro) : ''],
           ['Toneladas', tonHtml(r._ton_num), true],
           r._parcial ? ['A retirar', `${tonHtml(r._ton_ret)} · ${(r._detalle || []).filter(d => d.retiro > 0).length} de ${(r._detalle || []).length} productos`, true] : null,
@@ -5456,23 +5468,35 @@ const V2 = {
           rm && (t.id_transporte || t.transportista) ? ['Transporte', [t.id_transporte, t.transportista].filter(Boolean).join(' · ')] : null,
           rm && t.chofer_nombre ? ['Chofer', [t.chofer_nombre, t.chofer_rut, t.chofer_telefono].filter(Boolean).join(' · ')] : null,
           rm && t.patente_camion ? ['Patentes', `Camión ${t.patente_camion}${t.patente_carro ? ' · Carro ' + t.patente_carro : ''}`] : null,
+          // (10-nov-2026, Jordan) OC calzada: datos de la NV que trae el CSV Drive
           r.documento ? ['Pedido de venta', r.documento] : null,
-          r.documento ? ['Tipo expedición', r._exp_error ? `${escV2(r._pv_denominacion)} ${pill('Errónea', 'purple')}` : escV2(r._pv_denominacion || '—'), true] : null,
-          r.documento ? ['Cliente', r._pv_nombre_cliente] : null,
-          r.documento ? ['Vendedor', r._pv_nombre_vendedor] : null,
-          ...kvDatosNV(r),   // (9-nov-2026)
-          r.documento ? ['Ruta · comuna', [r._pv_ruta, r._pv_comuna].filter(Boolean).join(' · ')] : null,
+          r.documento ? ['Oficina de ventas', [r._ofvta_nv, nombreCentro(r._ofvta_nv)].filter(Boolean).join(' · ')] : null,
+          r.documento ? ['Condición expedición', r._exp_error ? `${escV2(r._pv_denominacion || r._cond_exp)} ${pill('Errónea', 'purple')}` : escV2(r._cond_exp || r._pv_denominacion || '—'), true] : null,
+          r.documento ? ['Ruta · comuna de entrega', (() => { const rid = r._ruta_nv || r._pv_ruta; if (!rid) return 'Sin ruta'; const i = lookupRuta(rid);
+              return i.encontrada ? [rid, i.denominacion || i.destino, i.comuna].filter(Boolean).join(' · ') : [rid, r._ruta_desc_nv, 'no está en la maestra de rutas'].filter(Boolean).join(' · '); })()] : null,
+          r.documento ? ['Vendedor', r._interlocutor || r._pv_nombre_vendedor] : null,
+          r.documento ? ['ID cliente', r._id_cliente_nv] : null,
+          r.documento ? ['Cliente', r._nombre_cliente_sap || r._pv_nombre_cliente] : null,
+          ...(r.documento ? kvDatosNV(r).filter(x => x && x[0] !== 'Interlocutor comercial') : []),   // obra / dirección, fletes
+          r.documento && (r._flete_traslado || r._flete_um) ? ['Flete total PV', fmtCLP((r._flete_traslado || 0) + (r._flete_um || 0))] : null,
           r._revision_saldo ? ['Saldo', 'Saldo pendiente (entrega parcial)'] : null,
           r._saldoSinCoord ? ['Saldo sin coordinar', `${fmtNum(r._saldo_pend || 0, 0)} un · ${tonHtml(r._saldo_ton || 0)}`, true] : null,
           r._upd_at ? ['Última edición', `${fechaUpd(r._upd_at)}${r._upd_by ? ' · ' + r._upd_by : ''}`] : null,
         ],
-        tabla: {
-          titulo: `${(r._detalle || []).length} ${(r._detalle || []).length === 1 ? 'material pendiente' : 'materiales pendientes'}`,
-          head: r._modo ? [['Material'], ['Descripción'], ['Fecha entrega'], ['Pendiente', 'r'], ['A retirar', 'r'], ['Ton a retirar', 'r']] : [['Material'], ['Descripción'], ['Fecha entrega'], ['Pendiente', 'r'], ['Ton', 'r']],
-          rows: (r._detalle || []).map(d => r._modo
-            ? [mono(d.material), escV2(d.texto_breve), mono(d.fecha || '—'), escV2(fmtNum(d.pendiente, 0)), d.retiro > 0 ? escV2(fmtNum(d.retiro, d.retiro % 1 ? 2 : 0)) : '<span class="sv-muted">No retira</span>', `<span class="sv-ton">${tonHtml(d.ton_ret)}</span>`]
-            : [mono(d.material), escV2(d.texto_breve), mono(d.fecha || '—'), escV2(fmtNum(d.pendiente, 0)), `<span class="sv-ton">${tonHtml(d.ton)}</span>`]),
-        },
+        // (10-nov-2026, Jordan) Detalle: pedido, entregado, pendiente, ton posición y, si es calzada, flete por posición (ZFLT + ZFL0/ZFL1).
+        tabla: (() => {
+          const cal = !!r.documento, n = x => escV2(fmtNum(Number(x) || 0, (Number(x) || 0) % 1 ? 2 : 0));
+          const head = [['Material'], ['Descripción'], ['Fecha entrega'], ['Pedido', 'r'], ['Entregado', 'r'], ['Pendiente', 'r'], ['Ton posición', 'r']];
+          if (r._modo) head.push(['A retirar', 'r'], ['Ton a retirar', 'r']);
+          if (cal) head.push(['Flete posición', 'r']);
+          const rows = (r._detalle || []).map(d => {
+            const o = [mono(d.material), escV2(d.texto_breve), mono(d.fecha || '—'), n(d.pedido), n(d.entregado), n(d.pendiente), `<span class="sv-ton">${tonHtml(d.ton)}</span>`];
+            if (r._modo) o.push(d.retiro > 0 ? n(d.retiro) : '<span class="sv-muted">No retira</span>', `<span class="sv-ton">${tonHtml(d.ton_ret)}</span>`);
+            if (cal) o.push(d.flete ? escV2(fmtCLP(d.flete)) : '<span class="sv-muted">—</span>');
+            return o;
+          });
+          return { titulo: `${(r._detalle || []).length} ${(r._detalle || []).length === 1 ? 'material pendiente' : 'materiales pendientes'}`, head, rows };
+        })(),
         nota: r._tipo_retiro === 'FAB-CD' ? '3º en el orden de llenado del camión CD' : 'Camión directo de fábrica',
         acciones,
       };
@@ -7330,7 +7354,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611101658');
+    const m = await import('./ind-plan-carga.js?v=202611101711');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.

@@ -32,8 +32,8 @@ export function tonHtml(n) {
 }
 
 // Encabezado del shell: fecha y hora de la última actualización SAP de la vista
-import { confirmar } from './confirmar.js?v=202611101658';
-import { comentariosHabilitados, conteosComentarios, celdaComentarios, montarHilo, tomarFoco, abrirHiloSuelto } from './comentarios.js?v=202611101658';
+import { confirmar } from './confirmar.js?v=202611101711';
+import { comentariosHabilitados, conteosComentarios, celdaComentarios, montarHilo, tomarFoco, abrirHiloSuelto } from './comentarios.js?v=202611101711';
 export function setUltimaActualizacion(ts) {
   const el = document.getElementById('sv-upd');
   if (!el) return;
@@ -173,14 +173,15 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
     const pend = !!p && p.estado === 'PENDIENTE';
     const tit = p ? `Marcada por ${esc(p.marcado_por || '')}${p.motivo ? ' · ' + esc(p.motivo) : ''}${pend ? ' · pendiente de aprobación de Abastecimiento' : (p.evaluado_por ? ' · aceptada por ' + esc(p.evaluado_por) : '')}` : '';
     const pill = !p ? '' : pend
-      ? `<span class="sv-pill warn" title="${tit}"><i></i>POR APROBAR</span>`
-      : `<span class="sv-pill bad" title="${tit}"><i></i>PRIORIDAD</span>`;
+      ? `<span class="sv-pill warn" title="${tit}" style="font-size:10px;padding:1px 6px"><i></i>POR APROBAR</span>`
+      : `<span class="sv-pill bad" title="${tit}" style="font-size:10px;padding:1px 6px"><i></i>PRIORIDAD</span>`;
     const rid = esc(r.__rid);
-    const ev = pend && puedeEval() ? `<span style="display:inline-flex;gap:4px;margin-left:6px;white-space:nowrap">
-      <button class="sv-btn" data-prio-ok="${rid}" title="Aceptar: pasa a ser prioridad de carga" style="padding:2px 8px;font-size:11px;color:#15803d"><span class="material-symbols-outlined">check_circle</span>Aceptar</button>
-      <button class="sv-btn" data-prio-no="${rid}" title="Rechazar la priorización" style="padding:2px 8px;font-size:11px;color:#b91c1c"><span class="material-symbols-outlined">block</span>Rechazar</button></span>` : '';
-    if (!ed) return (pill + ev) || '<span class="sv-muted">—</span>';
-    return `<span style="display:inline-flex;align-items:center;white-space:nowrap"><label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;white-space:nowrap" title="${p ? 'Quitar prioridad de carga' : (puedeEval() ? 'Marcar prioridad de carga' : 'Solicitar prioridad de carga (la aprueba Abastecimiento)')}">
+    // (10-nov-2026, Jordan) columna compacta: Aceptar / Rechazar sólo con ícono, debajo de la marca
+    const ev = pend && puedeEval() ? `<span style="display:inline-flex;gap:4px;margin-top:4px">
+      <button class="sv-btn" data-prio-ok="${rid}" title="Aceptar: pasa a ser prioridad de carga" style="padding:2px 4px;font-size:11px;color:#15803d"><span class="material-symbols-outlined">check_circle</span></button>
+      <button class="sv-btn" data-prio-no="${rid}" title="Rechazar la priorización" style="padding:2px 4px;font-size:11px;color:#b91c1c"><span class="material-symbols-outlined">block</span></button></span>` : '';
+    if (!ed) return (pill || ev) ? `<span style="display:inline-flex;flex-direction:column;align-items:flex-start">${pill}${ev}</span>` : '<span class="sv-muted">—</span>';
+    return `<span style="display:inline-flex;flex-direction:column;align-items:flex-start"><label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;white-space:nowrap" title="${p ? 'Quitar prioridad de carga' : (puedeEval() ? 'Marcar prioridad de carga' : 'Solicitar prioridad de carga (la aprueba Abastecimiento)')}">
       <input type="checkbox" data-prio="${rid}" ${p ? 'checked' : ''} style="width:16px;height:16px;accent-color:#b5000b;cursor:pointer">${pill}</label>${ev}</span>`;
   }
   if (focoPrio) {
@@ -307,7 +308,7 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
     const shown = filt.slice(0, MAX);
     const selId = st.drawer;
     let cols = enFila ? AV.cols.concat([{ label: 'Plan de carga', html: r => celdaPlan(r) }]) : AV.cols;
-    if (prioCfg) cols = [{ label: prioCfg.material ? 'Prioridad línea' : 'Prioridad', html: r => celdaPrio(r) }].concat(cols);
+    if (prioCfg) cols = [{ label: prioCfg.material ? 'Prio. línea' : 'Prio.', w: '92px', html: r => celdaPrio(r) }].concat(cols);
     if (conComent) cols = cols.concat([{ label: 'Coment.', html: r => celdaComentarios(conteos.get(claveCom(r)) || 0, r.__rid) }]);
     // (8-oct-2026) Acciones en la fila principal (AV.filaAcciones(r) → [{ label, icon, run, tono }])
     if (AV.filaAcciones) cols = cols.concat([{ label: 'Acciones', html: r => {
@@ -329,7 +330,7 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
       ${filtros}
       ${esCal() ? calHTML(filt) : `<div class="sv-card">
         <div class="sv-tablewrap"><table class="sv-table" style="min-width:${AV.minW || '900px'}">
-          <thead><tr>${cols.map(c => `<th class="${c.al === 'r' ? 'r' : ''}">${esc(c.label)}</th>`).join('')}</tr></thead>
+          <thead><tr>${cols.map(c => `<th class="${c.al === 'r' ? 'r' : ''}"${c.w ? ` style="width:${c.w};min-width:${c.w};max-width:${c.w}"` : ''}>${esc(c.label)}</th>`).join('')}</tr></thead>
           <tbody>${body}</tbody></table></div>
         <div class="sv-tfoot"><span>${filt.length.toLocaleString('es-CL')} de ${rowsAll.filter(r => !AV.origen || st.orig === '*' || String(AV.origen.of(r) ?? '').trim() === st.orig).length.toLocaleString('es-CL')} registros${filt.length > MAX ? ` · mostrando ${MAX}, usa los filtros para acotar` : ''}</span><span>${esc(nota)}</span></div>
       </div>`}
