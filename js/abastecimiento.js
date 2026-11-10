@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611101812';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611101812';
-import { getDatabase } from './data.js?v=202611101812';
+import { supabase } from './supabase-client.js?v=202611101815';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611101815';
+import { getDatabase } from './data.js?v=202611101815';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611101812';
-import { confirmar, pedirDato } from './confirmar.js?v=202611101812';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611101815';
+import { confirmar, pedirDato } from './confirmar.js?v=202611101815';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -4759,6 +4759,14 @@ const V2_DEPS = {
   augmentRaw: async (vista, rows) => { if (vista === 'v_trc_sqvi_pedidos_venta_1003') await reponerVentasCoordinadas(rows); },
   fetchAllRows, filtrarPorCentro, can, parseDateSAP, exportarCSV, showAlert,
   clearRawCache: () => clearRawCache(),
+  // (10-nov-2026, Jordan) Última lectura de los archivos SAP del Drive (trc_drive_estado). Entregas → su archivo.
+  ultimaLectura: async vista => {
+    const { data, error } = await supabase.from('trc_drive_estado').select('archivo,cargado_en');
+    if (error || !data) return null;
+    const ent = /entregas/i.test(String(vista || ''));
+    const rows = data.filter(x => !ent || /^Entregas_Periodo/i.test(String(x.archivo || '')));
+    return rows.reduce((m, x) => (x.cargado_en && (!m || x.cargado_en > m) ? x.cargado_en : m), null);
+  },
   loadExclusionesPlan, excluirDelPlan, reactivarEnPlan,
   loadPrioridades, togglePrioridad, evaluarPrioridad, enAlcance,
 };
@@ -7382,7 +7390,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611101812');
+    const m = await import('./ind-plan-carga.js?v=202611101815');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.

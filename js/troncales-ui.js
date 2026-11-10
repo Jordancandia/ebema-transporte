@@ -32,8 +32,8 @@ export function tonHtml(n) {
 }
 
 // Encabezado del shell: fecha y hora de la última actualización SAP de la vista
-import { confirmar } from './confirmar.js?v=202611101812';
-import { comentariosHabilitados, conteosComentarios, celdaComentarios, montarHilo, tomarFoco, abrirHiloSuelto } from './comentarios.js?v=202611101812';
+import { confirmar } from './confirmar.js?v=202611101815';
+import { comentariosHabilitados, conteosComentarios, celdaComentarios, montarHilo, tomarFoco, abrirHiloSuelto } from './comentarios.js?v=202611101815';
 export function setUltimaActualizacion(ts) {
   const el = document.getElementById('sv-upd');
   if (!el) return;
@@ -109,7 +109,11 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
 
   const ctx = Object.assign({}, active.preload ? await active.preload() : {}, AV.preload ? await AV.preload() : {});
   const rawRows = (await deps.fetchAllRows(active.vista)).slice();
-  setUltimaActualizacion(maxCargadoEn(rawRows));
+  // (10-nov-2026, Jordan) La hora mostrada es la última lectura de los archivos SAP (Drive), no la de la fila más nueva:
+  // en Entregas el cargado_en de cada fila es su PRIMERA aparición y dejaba la hora pegada en la última entrega nueva.
+  { const tf = maxCargadoEn(rawRows); let tl = null;
+    try { tl = deps.ultimaLectura ? await deps.ultimaLectura(active.vista) : null; } catch (_e) { tl = null; }
+    setUltimaActualizacion(tl && (!tf || new Date(tl) > new Date(tf)) ? tl : tf); }
   // (9-oct-2026) Hook para reponer filas respaldadas (p. ej. NV coordinadas que SAP sacó del SQVI).
   if (deps.augmentRaw) await deps.augmentRaw(active.vista, rawRows);
   const campoCentro = active.centroCampo || active.chipFilter?.campo;

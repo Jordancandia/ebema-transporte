@@ -15,13 +15,13 @@
 // descartar_lote_tarifas borra lo parcial y lo vigente queda intacto.
 // Vistas de lectura: v_tarifas_clientes_vigentes · v_tarifas_transporte_vigentes
 // ============================================================================
-import { supabase } from './supabase-client.js?v=202611101812';
-import { getTariffConfig, getClientTariffConfig, truckCapKg } from './data.js?v=202611101812';
-import { buildZcapMap, componentesRegional } from './zcap.js?v=202611101812';
-import { calcTarifasEscenario } from './tarifas-clientes-v2.js?v=202611101812';
-import { contextoTarifasClientes } from './tarifas-clientes.js?v=202611101812';
-import { escenarioVigente } from './tarifa-vigente.js?v=202611101812';
-import { clasifTarifa } from './tarifas-ui.js?v=202611101812';
+import { supabase } from './supabase-client.js?v=202611101815';
+import { getTariffConfig, getClientTariffConfig, truckCapKg } from './data.js?v=202611101815';
+import { buildZcapMap, componentesRegional } from './zcap.js?v=202611101815';
+import { calcTarifasEscenario } from './tarifas-clientes-v2.js?v=202611101815';
+import { contextoTarifasClientes } from './tarifas-clientes.js?v=202611101815';
+import { escenarioVigente } from './tarifa-vigente.js?v=202611101815';
+import { clasifTarifa } from './tarifas-ui.js?v=202611101815';
 
 const LOTE_FILAS = 1000;
 const n = v => (v == null || v === '' || !isFinite(Number(v))) ? null : Number(v);
