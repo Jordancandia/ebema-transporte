@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611081501';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611081501';
-import { getDatabase } from './data.js?v=202611081501';
+import { supabase } from './supabase-client.js?v=202611092244';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611092244';
+import { getDatabase } from './data.js?v=202611092244';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611081501';
-import { confirmar, pedirDato } from './confirmar.js?v=202611081501';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611092244';
+import { confirmar, pedirDato } from './confirmar.js?v=202611092244';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -916,7 +916,40 @@ async function quitarAjusteUnidades(doc, material) {
 const sapNum = n => String(Math.round(n * 1000) / 1000).replace('.', ',');
 // (4-nov-2026, Jordan) Pedidos de venta: del MR (bloqueo) sólo se deja el 79; cualquier otro MR se oculta y no se considera.
 const MR_VENTA_VISIBLE = '79';
-const mrOcultoVenta = r => { const m = String(r && r.mr != null ? r.mr : '').trim(); return !!m && m !== MR_VENTA_VISIBLE; };
+// (9-nov-2026, Jordan) Lectura Drive: bloqueo = columna AA (Dcto. vendedor) o AB (motivo de rechazo) con valor.
+// TODAS las posiciones bloqueadas se muestran (tachadas) y no entran al Plan hasta liberarlas; ya no se oculta ningún MR.
+const mrOcultoVenta = r => false;   // antes (4-nov): sólo se mostraba el MR 79
+
+// (9-nov-2026, Jordan) Datos de la NV que traen los CSV Drive: obra, dirección, fletes y cliente.
+// ZFLT = FLETE TRASLADO · ZFL0/ZFL1 = FLETE ÚLTIMA MILLA. El flete viene por posición: se suma
+// una vez por posición (los repartos repiten la posición).
+const fmtCLP = n => '$ ' + fmtNum(Math.round(Number(n) || 0), 0);
+function datosNV(rows) {
+  const porPos = new Map(), obras = new Map(), inter = new Set(), cli = [];
+  (rows || []).forEach(r => {
+    const k = `${String(r.doc_ventas ?? r.doc_compr ?? r.documento ?? '').trim()}|${String(r.pos ?? '').trim()}|${String(r.material ?? '').trim()}`;
+    if (!porPos.has(k)) porPos.set(k, r);
+    const id = String(r.id_obra ?? '').trim(), dir = String(r.direccion_obra ?? '').trim();
+    if (id || dir) obras.set(id || dir, { id, dir });
+    const it = String(r.interlocutor ?? '').trim(); if (it) inter.add(it);
+    const nc = String(r.nombre_cliente ?? '').trim(); if (nc) cli.push(nc);
+  });
+  const pos = [...porPos.values()];
+  return {
+    _obras: [...obras.values()],
+    _flete_traslado: pos.reduce((s, r) => s + (parseNum(r.flete_zflt) || 0), 0),
+    _flete_um: pos.reduce((s, r) => s + (parseNum(r.flete_zfl0_zfl1) || 0), 0),
+    _interlocutor: [...inter].join(' / '),
+    _nombre_cliente_sap: cli[0] || '',
+  };
+}
+const obraTxt = o => [o.dir, o.id ? 'obra ' + o.id : ''].filter(Boolean).join(' · ');
+const kvDatosNV = r => [
+  (r._obras || []).length ? ['Obra / dirección', r._obras.map(obraTxt).join(' — ')] : null,
+  r._flete_traslado ? ['Flete traslado (ZFLT)', fmtCLP(r._flete_traslado)] : null,
+  r._flete_um ? ['Flete última milla (ZFL0/ZFL1)', fmtCLP(r._flete_um)] : null,
+  r._interlocutor ? ['Interlocutor comercial', r._interlocutor] : null,
+];
 // ── Carga manual de pedidos de traslado sin entrega SAP (23-oct-2026, Jordan) ──
 // Pedidos de Traslados (1003/1081) y Crossdocking (4000): se suben a un camión CONSOLIDADO (camión CD del
 // centro) o CD-CLIENTE (camión directo) eligiendo el día de carga y las unidades. Entran SÓLO al Plan de
@@ -3853,7 +3886,7 @@ const VISTAS_TRONCAL = {
           const tRet = calcTon(pesoU, ret);
           ton += t; tonRet += tRet; pendienteTotal += pend; pedidoTotal += ctdP;
           if (ctdE > 0 && ctdE < ctdP) revSaldo = true;
-          return { doc_compr: oc, ce: r.ce, material: r.material, texto_breve: r.texto_breve, pedido: ctdP, pendiente: pend, entregado: ctdE, ton: t, pesoU, retiro: ret, ton_ret: tRet };
+          return { doc_compr: oc, ce: r.ce, material: r.material, texto_breve: r.texto_breve, pedido: ctdP, pendiente: pend, entregado: ctdE, ton: t, pesoU, retiro: ret, ton_ret: tRet, fecha: r.fe_entrega };
         });
         // (3-oct-2026, Jordan) Tipo de pedido: OC con pedido de venta = CALZADA, sin pedido = STOCK.
         // Tipo de retiro automático: OC ≥ 85% de un camión de 28 t (23,8 t) → STOCK: FAB-SUC,
@@ -3912,9 +3945,10 @@ const VISTAS_TRONCAL = {
           _fecha_retiro:   estObj.fecha_retiro    || '',
           _upd_at: estObj.updated_at || '', _upd_by: estObj.updated_by || '',
           _detalle: detalle,
+          ...datosNV(items),   // (9-nov-2026) datos de la NV calzada que trae el CSV Drive
           // Datos cruzados de Pedidos de Ventas
           _pv_denominacion: pv.denominacion || '',
-          _pv_nombre_cliente: pv.nombre_1 || '',
+          _pv_nombre_cliente: pv.nombre_1 || datosNV(items)._nombre_cliente_sap || '',
           _pv_nombre_vendedor: pv.nombre || '',
           _pv_ce_expedicion: pv.psex || '',
           _pv_ruta: pv.ruta || '',
@@ -3991,7 +4025,7 @@ const VISTAS_TRONCAL = {
       //    (abast_venta_bloqueo_liberado → columna mr_liberado de la vista). Liberada, es una
       //    posición normal.  2) sólo con ruta
       const bloqueada = r => !!String(r.mr ?? '').trim() && !r.mr_liberado;
-      // (4-nov-2026, Jordan) De los bloqueos (MR) sólo se muestra el 79; las posiciones con otro MR se ocultan y no se consideran.
+      // (9-nov-2026, Jordan) Se muestran todos los bloqueos (MR y Dcto. vendedor), tachados; no se consideran hasta liberarlos.
       const base = rows
         .filter(r => !mrOcultoVenta(r));   // (4-nov-2026, Jordan) las posiciones SIN RUTA se muestran: hay que asignarles la ruta a mano para coordinar
       // 2) (2-nov-2026, Jordan) REPARTOS: el SQVI parte una posición en varias fechas de entrega.
@@ -4064,6 +4098,7 @@ const VISTAS_TRONCAL = {
             porPos.set(kp, { doc_ventas: doc, deudor: r.deudor, ruta: r.ruta, comuna: r._comuna, region: r._region,
               material: r.material, nombre: r.denominacion_de_posicion, pendiente: r._pend, ton: r._ton,
               conf: r._conf, entreg: r._entreg, pos: String(r.pos ?? '').trim(), fecha: r.fe_entrega,
+              flete_zflt: parseNum(r.flete_zflt) || 0, flete_um: parseNum(r.flete_zfl0_zfl1) || 0,   // (9-nov-2026)
               // (2-nov-2026, Jordan) posición agregada a mano (no viene en el SQVI)
               _man: String(r.corrida ?? '').trim() === 'MANUAL',
               _reps: [{ fecha: r.fe_entrega, pendiente: r._pend, ton: r._ton, conf: r._conf }] });
@@ -4089,6 +4124,7 @@ const VISTAS_TRONCAL = {
           _sin_ruta_pos: sinRutaPos, _ruta_man_pos: rutaManPos,
           _libre_pos: items.filter(r => String(r.mr ?? '').trim() && r.mr_liberado).length,
           doc_ventas: doc, ofvta: f.ofvta, creado_el: f.creado_el, deudor: f.deudor, solicitante: f.solicitante,
+          ...datosNV(itemsAll),   // (9-nov-2026) obra, dirección, fletes, cliente SAP
           fe_entrega: feLbl, _ton_num: ton, _ton_totales: fmtNum(ton, 3),
           _estado: parcial ? 'ENTREGA PARCIAL PENDIENTE' : '',
           _alerta: al.txt, _alerta_cls: al.cls, _detalle: detalle,
@@ -4409,7 +4445,8 @@ const VISTAS_TRONCAL = {
           _ruta: pv.ruta || '',
           _comuna: lookupRuta(pv.ruta).comuna || '',
           _vendedor: pv.nombre || '',
-          _cliente: pv.nombre_1 || '',
+          _cliente: pv.nombre_1 || String(r.nombre_cliente ?? '').trim(),
+          ...datosNV([r]),   // (9-nov-2026) obra, dirección, fletes de la NV (CSV Drive)
         };
       });
       return out.sort((a, b) => {
@@ -4839,6 +4876,8 @@ const V2 = {
         r.ruta ? ['Ruta', `${r.ruta}${r._comuna ? ' · ' + r._comuna : ''}`] : null,
         r.creado ? ['Fecha de entrega', r.creado] : null,
         r.deudor ? ['ID vendedor', r.deudor] : null,
+        r.nombre_cliente ? ['Cliente', [r.nombre_cliente, r.id_cliente ? 'ID ' + r.id_cliente : ''].filter(Boolean).join(' · ')] : null,
+        ...kvDatosNV(datosNV([r])),   // (9-nov-2026)
         r._pvc ? ['Coordinación', `${r._pvc.tipo_entrega === 'CD-CLIENTE' ? 'CD-Cliente (camión directo)' : 'Consolidado (camión CD)'} · ${fmtNum(r._pvc_cant, r._pvc_cant % 1 ? 2 : 0)} un · día ${fmtFechaISO(r._pvc.fecha_entrega)}${r._pvc.n_entrega ? ' · entrega ' + r._pvc.n_entrega : ''}`] : null,
         r._pvc && r._pvc.tipo_entrega === 'CD-CLIENTE' ? ['Entrega en', [r._pvc.nombre_cliente, r._pvc.direccion, r._pvc.comuna, r._pvc.telefono].filter(Boolean).join(' · ')] : null,
         r._pvc && r._pvc.tipo_entrega === 'CD-CLIENTE' ? ['Transporte', [r._pvc.id_transporte, r._pvc.transportista, r._pvc.patente_camion ? 'Camión ' + r._pvc.patente_camion : '', r._pvc.chofer_nombre].filter(Boolean).join(' · ')] : null,
@@ -4936,7 +4975,7 @@ const V2 = {
         r._nv_manual = (_todoMan && ctx.manualMap && ctx.manualMap.get(doc)) || null;   // (21-oct-2026) pedido agregado a mano
         r._id_cliente = String(r.solicitante ?? '').trim();   // columna "Solic." del SQVI (30-sep-2026)
         r._mc = (ctx.maestro && ctx.maestro.get(r._id_cliente)) || null;
-        r._cliente = (r._mc && r._mc.nombre) || pv.nombre_1 || (r._coord && r._coord.nombre_cliente) || '';
+        r._cliente = (r._mc && r._mc.nombre) || pv.nombre_1 || r._nombre_cliente_sap || (r._coord && r._coord.nombre_cliente) || '';
         r._vendedor = pv.nombre || '';
         r._cond = condExpedicion(pv.denominacion);
         r._al = alertaV2(r._fecha_plan, 5);
@@ -5022,18 +5061,20 @@ const V2 = {
       { key: 'cg', label: 'COORDINADO', color: C_SEC, sub: 'en camión programado · bloqueado', fn: r => !!r._cargada },
       { key: 'sl', label: 'Saldo sin coordinar', color: C_ORANGE, sub: 'la coordinación anterior ya viajó', fn: r => !!r._saldoSinCoord },
       { key: 'sr', label: 'Sin ruta', color: C_RED, sub: 'asignar ruta para coordinar', fn: r => (r._sin_ruta_pos || []).length > 0 },
-      { key: 'bq', label: 'Con bloqueo', color: C_RED, sub: 'posiciones con MR por liberar', fn: r => (r._bloq_pos || []).length > 0 },
+      { key: 'bq', label: 'Con bloqueo', color: C_RED, sub: 'posiciones bloqueadas por liberar', fn: r => (r._bloq_pos || []).length > 0 },
       { key: 'cd', label: 'CD-Cliente', color: '#7e22ce', sub: 'cliente ≥ 23,8 t o definido', fn: r => !!r._directo },
       { key: 'mn', label: 'Manuales', color: '#0f766e', sub: 'agregados en la plataforma', fn: r => !!r._nv_manual },
       { key: 'at', label: 'Atrasados', color: C_RED, sub: 'fecha de entrega vencida', fn: r => r._al.k === 'Atrasado' },
     ],
     cols: [
       { label: 'Pedido', html: r => mono(r.doc_ventas, r.creado_el ? 'creado ' + r.creado_el : '') + (r._nv_manual ? `<div style="margin-top:4px" title="Pedido agregado a mano por ${escV2(r._nv_manual.cab.created_by || '')}">${pill('Manual', 'warn')}</div>` : r._pos_man ? `<div style="margin-top:4px" title="Posiciones agregadas a mano porque el SQVI no las trae">${pill('+' + r._pos_man + (r._pos_man === 1 ? ' posición manual' : ' posiciones manuales'), 'warn')}</div>` : '')
-          + ((r._bloq_pos || []).length ? `<div style="margin-top:4px" title="Posición con bloqueo en SAP (MR): no se considera hasta liberarla">${pill(r._bloq_pos.length + (r._bloq_pos.length === 1 ? ' posición bloqueada' : ' posiciones bloqueadas') + ' · MR ' + [...new Set(r._bloq_pos.map(p => p.mr))].join('/'), 'bad')}</div>` : '')
+          + ((r._bloq_pos || []).length ? `<div style="margin-top:4px" title="Posición con bloqueo en SAP (MR): no se considera hasta liberarla">${pill(r._bloq_pos.length + (r._bloq_pos.length === 1 ? ' posición bloqueada' : ' posiciones bloqueadas') + ' · ' + [...new Set(r._bloq_pos.map(p => /^\d/.test(p.mr) ? 'MR ' + p.mr : p.mr))].join(' / '), 'bad')}</div>` : '')
           + ((r._sin_ruta_pos || []).length ? `<div style="margin-top:4px" title="El SQVI no trae ruta para esta posición: asígnala para poder coordinar. Cuando el SQVI la traiga, se actualiza sola.">${pill('SIN RUTA · ' + r._sin_ruta_pos.length + (r._sin_ruta_pos.length === 1 ? ' posición' : ' posiciones'), 'bad')}</div>` : '')
           + ((r._ruta_man_pos || []).length ? `<div style="margin-top:4px" title="Ruta asignada a mano (el SQVI no la trae). Cuando el SQVI la traiga, manda la del SQVI.">${pill('Ruta manual · ' + [...new Set(r._ruta_man_pos.map(p => p.ruta))].join('/'), 'warn')}</div>` : '')
           + (r._libre_pos ? `<div style="margin-top:4px" title="Bloqueo liberado a mano: la posición se considera como cualquier otra">${pill('Bloqueo liberado', 'ok')}</div>` : '') },
       { label: 'Cliente', html: r => txt(r._cliente || (r._id_cliente ? 'ID ' + r._id_cliente : '—'), [r._cliente && r._id_cliente ? 'ID ' + r._id_cliente : '', r._vendedor].filter(Boolean).join(' · '), true) },
+      // (9-nov-2026, Jordan) Obra y dirección de despacho (CSV Drive)
+      { label: 'Obra', html: r => (r._obras || []).length ? txt(r._obras[0].dir || '—', [r._obras[0].id ? 'obra ' + r._obras[0].id : '', r._obras.length > 1 ? '+' + (r._obras.length - 1) + ' obras' : ''].filter(Boolean).join(' · ')) : '<span class="sv-muted">—</span>' },
       { label: 'Destino', html: r => sucHtml(r.ofvta) + (r._ce_alt && r._ce_alt !== String(r.ofvta ?? '').trim() ? `<div style="margin-top:4px" title="Centro alternativo: computa en el Plan de Carga de ${escV2(nombreCentro(r._ce_alt) || r._ce_alt)}">${pill('Plan → ' + (nombreCentro(r._ce_alt) || r._ce_alt), 'purple')}</div>` : '') },
       { label: 'Tipo entrega', html: r => pill(r._directo ? 'CD-Cliente' : 'Consolidable', r._directo ? 'purple' : 'info')
           + (r._tipo_fijo && r._tipo_fijo !== r._tipo_auto ? ` ${pill('Manual', 'mute')}` : '')
@@ -5195,7 +5236,7 @@ const V2 = {
         sub: `${r._cliente || (r._id_cliente ? 'Cliente ID ' + r._id_cliente : 'Cliente sin identificar')} → ${nombreCentro(r.ofvta) || r.ofvta}`,
         aviso,
         kv: [
-          (r._bloq_pos || []).length ? ['Posiciones bloqueadas (MR)', r._bloq_pos.map(p => `pos ${p.pos} · ${p.material} ${p.nombre} · ${fmtNum(p.pendiente, 0)} un · MR ${p.mr}`).join(' — ')] : null,
+          (r._bloq_pos || []).length ? ['Posiciones bloqueadas', r._bloq_pos.map(p => `<div style="text-decoration:line-through;color:#93000a" title="Bloqueada en SAP: no se considera hasta liberarla">pos ${escV2(p.pos)} · ${escV2(p.material)} ${escV2(p.nombre)} · ${fmtNum(p.pendiente, 0)} un · ${escV2(p.mr)}</div>`).join(''), true] : null,
           vm ? ['Origen', `Pedido manual · ${vm.created_by || ''}${vm.created_at ? ' · ' + horaChile(vm.created_at) : ''}${vm.updated_by ? ' · editado por ' + vm.updated_by : ''}`] : null,
           vm && vm.observacion ? ['Observación', vm.observacion] : null,
           extrasNV.length ? ['Camiones adicionales', extrasNV.map(e => `${e.doc} (${fmtNum((e.lineas || []).reduce((s, l) => s + (Number(l.cantidad) || 0), 0), 0)} u.)`).join(' · ')] : null,
@@ -5204,6 +5245,7 @@ const V2 = {
           ['Fecha entrega', c ? `${r._fecha_plan} (confirmada)` : `${r.fe_entrega || '—'} (SAP, por confirmar)`],
           c ? ['N° de entrega', entregasCoordV(c).join(', ')] : null,
           ['ID cliente (Solic.)', r._id_cliente], ['Cliente', r._cliente],
+          ...kvDatosNV(r),   // (9-nov-2026) obra, dirección, fletes
           ['Comuna', (c && c.comuna) || r._comuna], c ? ['Dirección', c.direccion] : null,
           c ? ['Teléfono cliente', c.telefono] : null,
           c && c.tipo_entrega === 'CD-CLIENTE' ? ['Transporte', [c.id_transporte, c.transportista].filter(Boolean).join(' · ')] : null,
@@ -5226,15 +5268,16 @@ const V2 = {
           // fechas y cantidades de la posición (ej. 1062020: 300 al 03.11, 300 al 12.11, 140 al 26.11).
           titulo: `${(r._detalle || []).length} ${(r._detalle || []).length === 1 ? 'material pendiente' : 'materiales pendientes'}`,
           head: (() => { const base2 = [['Material'], ['Descripción']];
-            if (r._con_repartos) base2.push(['Repartos']);
+            base2.push([r._con_repartos ? 'Repartos' : 'Fecha entrega']);   // (9-nov-2026) fecha de entrega de cada posición, siempre
+            if (r._flete_traslado || r._flete_um) base2.push(['Flete traslado / UM', 'r']);
             return r._lineas_aj ? base2.concat([['Pendiente', 'r'], ['A cargar', 'r'], ['Ton', 'r']]) : base2.concat([['Cantidad', 'r'], ['Ton', 'r']]); })(),
           rows: (r._detalle || []).map(d => { const q = cantLineasV(r._coord, d.material, d.pendiente, d.fecha);
             const ent = txtLineaRep(r._coord && r._coord.entregas, d.material, d.fecha);
             const eL = ent ? `<div class="sv-sub" style="margin:0">Ent. ${escV2(ent)}</div>` : '';
             const reps = d._reps || [];
-            const col3 = r._con_repartos ? [reps.length > 1
+            const col3 = [reps.length > 1
               ? reps.map(x => `${mono(x.fecha)} <span class="sv-sub" style="display:inline;margin:0">${escV2(fmtNum(x.pendiente, 0))} un</span>`).join('<br>')
-              : mono(d.fecha || '—')] : [];
+              : mono(d.fecha || '—')].concat(r._flete_traslado || r._flete_um ? [`${escV2(fmtCLP(d.flete_zflt))}<div class="sv-sub" style="margin:0">UM ${escV2(fmtCLP(d.flete_um))}</div>`] : []);
             return r._lineas_aj ? [mono(d.material) + eL, escV2(d.nombre)].concat(col3, [escV2(fmtNum(d.pendiente, 0)), `<b>${escV2(fmtNum(q, q % 1 ? 2 : 0))}</b>`, `<span class="sv-ton">${tonHtml(d.pendiente > 0 ? d.ton * q / d.pendiente : 0)}</span>`])
               : [mono(d.material), escV2(d.nombre)].concat(col3, [escV2(fmtNum(d.pendiente, 0)), `<span class="sv-ton">${tonHtml(d.ton)}</span>`]); }),
         },
@@ -5371,6 +5414,7 @@ const V2 = {
           r.documento ? ['Tipo expedición', r._exp_error ? `${escV2(r._pv_denominacion)} ${pill('Errónea', 'purple')}` : escV2(r._pv_denominacion || '—'), true] : null,
           r.documento ? ['Cliente', r._pv_nombre_cliente] : null,
           r.documento ? ['Vendedor', r._pv_nombre_vendedor] : null,
+          ...kvDatosNV(r),   // (9-nov-2026)
           r.documento ? ['Ruta · comuna', [r._pv_ruta, r._pv_comuna].filter(Boolean).join(' · ')] : null,
           r._revision_saldo ? ['Saldo', 'Saldo pendiente (entrega parcial)'] : null,
           r._saldoSinCoord ? ['Saldo sin coordinar', `${fmtNum(r._saldo_pend || 0, 0)} un · ${tonHtml(r._saldo_ton || 0)}`, true] : null,
@@ -5378,10 +5422,10 @@ const V2 = {
         ],
         tabla: {
           titulo: `${(r._detalle || []).length} ${(r._detalle || []).length === 1 ? 'material pendiente' : 'materiales pendientes'}`,
-          head: r._modo ? [['Material'], ['Descripción'], ['Pendiente', 'r'], ['A retirar', 'r'], ['Ton a retirar', 'r']] : [['Material'], ['Descripción'], ['Pendiente', 'r'], ['Ton', 'r']],
+          head: r._modo ? [['Material'], ['Descripción'], ['Fecha entrega'], ['Pendiente', 'r'], ['A retirar', 'r'], ['Ton a retirar', 'r']] : [['Material'], ['Descripción'], ['Fecha entrega'], ['Pendiente', 'r'], ['Ton', 'r']],
           rows: (r._detalle || []).map(d => r._modo
-            ? [mono(d.material), escV2(d.texto_breve), escV2(fmtNum(d.pendiente, 0)), d.retiro > 0 ? escV2(fmtNum(d.retiro, d.retiro % 1 ? 2 : 0)) : '<span class="sv-muted">No retira</span>', `<span class="sv-ton">${tonHtml(d.ton_ret)}</span>`]
-            : [mono(d.material), escV2(d.texto_breve), escV2(fmtNum(d.pendiente, 0)), `<span class="sv-ton">${tonHtml(d.ton)}</span>`]),
+            ? [mono(d.material), escV2(d.texto_breve), mono(d.fecha || '—'), escV2(fmtNum(d.pendiente, 0)), d.retiro > 0 ? escV2(fmtNum(d.retiro, d.retiro % 1 ? 2 : 0)) : '<span class="sv-muted">No retira</span>', `<span class="sv-ton">${tonHtml(d.ton_ret)}</span>`]
+            : [mono(d.material), escV2(d.texto_breve), mono(d.fecha || '—'), escV2(fmtNum(d.pendiente, 0)), `<span class="sv-ton">${tonHtml(d.ton)}</span>`]),
         },
         nota: r._tipo_retiro === 'FAB-CD' ? '3º en el orden de llenado del camión CD' : 'Camión directo de fábrica',
         acciones,
@@ -5488,6 +5532,7 @@ const V2 = {
           r._pv ? ['N° pedido de venta', r.documento] : null, r._pv ? ['Tipo de expedición', r._tipo_exp] : null,
           r._pv ? ['Ruta · comuna', [r._ruta, r._comuna].filter(Boolean).join(' · ')] : null,
           r._pv ? ['Cliente', r._cliente] : null, r._pv ? ['Vendedor', r._vendedor] : null,
+          ...kvDatosNV(r),   // (9-nov-2026)
           c ? ['Fecha coordinada', fmtFechaISO(c.fecha_entrega)] : null, c ? ['N° de entrega', c.n_entrega] : null,
           c ? ['Entrega en', [c.direccion, c.comuna].filter(Boolean).join(', ')] : null, c ? ['Teléfono cliente', c.telefono] : null,
           c ? ['Transporte', [c.id_transporte, c.transportista].filter(Boolean).join(' · ')] : null,
@@ -7237,7 +7282,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611081501');
+    const m = await import('./ind-plan-carga.js?v=202611092244');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.

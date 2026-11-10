@@ -32,8 +32,8 @@ export function tonHtml(n) {
 }
 
 // Encabezado del shell: fecha y hora de la última actualización SAP de la vista
-import { confirmar } from './confirmar.js?v=202611081501';
-import { comentariosHabilitados, conteosComentarios, celdaComentarios, montarHilo, tomarFoco, abrirHiloSuelto } from './comentarios.js?v=202611081501';
+import { confirmar } from './confirmar.js?v=202611092244';
+import { comentariosHabilitados, conteosComentarios, celdaComentarios, montarHilo, tomarFoco, abrirHiloSuelto } from './comentarios.js?v=202611092244';
 export function setUltimaActualizacion(ts) {
   const el = document.getElementById('sv-upd');
   if (!el) return;
