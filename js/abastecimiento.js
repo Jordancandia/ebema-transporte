@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611101626';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611101626';
-import { getDatabase } from './data.js?v=202611101626';
+import { supabase } from './supabase-client.js?v=202611101631';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611101631';
+import { getDatabase } from './data.js?v=202611101631';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611101626';
-import { confirmar, pedirDato } from './confirmar.js?v=202611101626';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611101631';
+import { confirmar, pedirDato } from './confirmar.js?v=202611101631';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -920,7 +920,14 @@ const sapNum = n => String(Math.round(n * 1000) / 1000).replace('.', ',');
 const MR_VENTA_VISIBLE = '79';
 // (9-nov-2026, Jordan) Lectura Drive: bloqueo = columna AA (Dcto. vendedor) o AB (motivo de rechazo) con valor.
 // TODAS las posiciones bloqueadas se muestran (tachadas) y no entran al Plan hasta liberarlas; ya no se oculta ningún MR.
-const mrOcultoVenta = r => false;   // antes (4-nov): sólo se mostraba el MR 79
+// (10-nov-2026, Jordan) MR 60, 70 y CR = el cliente rechaza la posición: se OCULTA y no se considera.
+// Si el pedido sólo tiene posiciones con esos MR, el pedido completo desaparece. El resto de bloqueos se muestra tachado.
+const MR_RECHAZO_CLIENTE = new Set(['60', '70', 'CR']);
+const mrOcultoVenta = r => {
+  if (r && r.mr_liberado) return false;
+  const mr = String((r && (r.motivo_rechazo ?? String(r.mr ?? '').split('/')[0])) ?? '').trim().toUpperCase().replace(/^MR\s*/, '');
+  return MR_RECHAZO_CLIENTE.has(mr);
+};
 
 // (9-nov-2026, Jordan) Datos de la NV que traen los CSV Drive: obra, dirección, fletes y cliente.
 // ZFLT = FLETE TRASLADO · ZFL0/ZFL1 = FLETE ÚLTIMA MILLA. El flete viene por posición: se suma
@@ -7323,7 +7330,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611101626');
+    const m = await import('./ind-plan-carga.js?v=202611101631');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
