@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611101558';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611101558';
-import { getDatabase } from './data.js?v=202611101558';
+import { supabase } from './supabase-client.js?v=202611101626';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611101626';
+import { getDatabase } from './data.js?v=202611101626';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611101558';
-import { confirmar, pedirDato } from './confirmar.js?v=202611101558';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611101626';
+import { confirmar, pedirDato } from './confirmar.js?v=202611101626';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -4132,6 +4132,7 @@ const VISTAS_TRONCAL = {
           _sin_ruta_pos: sinRutaPos, _ruta_man_pos: rutaManPos,
           _libre_pos: items.filter(r => String(r.mr ?? '').trim() && r.mr_liberado).length,
           doc_ventas: doc, ofvta: f.ofvta, creado_el: f.creado_el, deudor: f.deudor, solicitante: f.solicitante,
+          _ruta_nv: String((itemsAll.find(x => String(x.ruta ?? '').trim()) || {}).ruta ?? '').trim(),
           ...datosNV(itemsAll),   // (9-nov-2026) obra, dirección, fletes, cliente SAP
           fe_entrega: feLbl, _ton_num: ton, _ton_totales: fmtNum(ton, 3),
           _estado: parcial ? 'ENTREGA PARCIAL PENDIENTE' : '',
@@ -4989,9 +4990,9 @@ const V2 = {
         r._vendedor = pv.nombre || r._interlocutor || '';   // (10-nov-2026) vendedor = interlocutor comercial del CSV si no está en Pedidos de Ventas
         r._cond = condExpedicion(pv.denominacion || r._cond_exp);
         r._al = alertaV2(r._fecha_plan, 5);
-        r._ruta = (r._detalle && r._detalle[0] && r._detalle[0].ruta) || '';
-        r._comuna = (r._detalle && r._detalle[0] && r._detalle[0].comuna) || '';
+        r._ruta = (r._detalle && r._detalle[0] && r._detalle[0].ruta) || r._ruta_nv || '';   // (10-nov-2026) NV con todas sus posiciones bloqueadas: ruta de la NV
         r._ruta_info = lookupRuta(r._ruta);   // (10-nov-2026) maestra de rutas
+        r._comuna = (r._detalle && r._detalle[0] && r._detalle[0].comuna) || r._ruta_info.comuna || '';
         // (18-oct-2026, Jordan) Centro alternativo y unidades editadas al coordinar.
         r._ce_alt = ceAltDe(r._coord);
         r._ce_plan = r._ce_alt || String(r.ofvta ?? '').trim();
@@ -7322,7 +7323,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611101558');
+    const m = await import('./ind-plan-carga.js?v=202611101626');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
