@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611101631';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611101631';
-import { getDatabase } from './data.js?v=202611101631';
+import { supabase } from './supabase-client.js?v=202611101658';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611101658';
+import { getDatabase } from './data.js?v=202611101658';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611101631';
-import { confirmar, pedirDato } from './confirmar.js?v=202611101631';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611101658';
+import { confirmar, pedirDato } from './confirmar.js?v=202611101658';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -5077,12 +5077,12 @@ const V2 = {
       { key: 'sc', label: 'Sin coordinar', color: C_ORANGE, sub: 'no entran al plan', fn: r => !r._coord && !r._cargada },
       { key: 'co', label: 'Coordinados', color: C_GREEN, sub: 'pedido coordinado', fn: r => !!r._coord && !r._cargada && !r._saldoSinCoord },
       { key: 'pl', label: 'En plan de carga', color: C_BLUE, sub: 'pedidos coordinados', fn: r => !!r._coord && !r._cargada && !r._saldoSinCoord },
-      { key: 'cg', label: 'COORDINADO', color: C_SEC, sub: 'en camión programado · bloqueado', fn: r => !!r._cargada },
+      // (10-nov-2026, Jordan) quitado como filtro: { key: 'cg', label: 'COORDINADO', color: C_SEC, sub: 'en camión programado · bloqueado', fn: r => !!r._cargada },
       { key: 'sl', label: 'Saldo sin coordinar', color: C_ORANGE, sub: 'la coordinación anterior ya viajó', fn: r => !!r._saldoSinCoord },
-      { key: 'sr', label: 'Sin ruta', color: C_RED, sub: 'asignar ruta para coordinar', fn: r => (r._sin_ruta_pos || []).length > 0 },
-      { key: 'bq', label: 'Con bloqueo', color: C_RED, sub: 'posiciones bloqueadas por liberar', fn: r => (r._bloq_pos || []).length > 0 },
-      { key: 'cd', label: 'CD-Cliente', color: '#7e22ce', sub: 'cliente ≥ 23,8 t o definido', fn: r => !!r._directo },
-      { key: 'mn', label: 'Manuales', color: '#0f766e', sub: 'agregados en la plataforma', fn: r => !!r._nv_manual },
+      // (10-nov-2026, Jordan) quitado como filtro: { key: 'sr', label: 'Sin ruta', color: C_RED, sub: 'asignar ruta para coordinar', fn: r => (r._sin_ruta_pos || []).length > 0 },
+      // (10-nov-2026, Jordan) quitado como filtro: { key: 'bq', label: 'Con bloqueo', color: C_RED, sub: 'posiciones bloqueadas por liberar', fn: r => (r._bloq_pos || []).length > 0 },
+      // (10-nov-2026, Jordan) quitado como filtro: { key: 'cd', label: 'CD-Cliente', color: '#7e22ce', sub: 'cliente ≥ 23,8 t o definido', fn: r => !!r._directo },
+      // (10-nov-2026, Jordan) quitado como filtro: { key: 'mn', label: 'Manuales', color: '#0f766e', sub: 'agregados en la plataforma', fn: r => !!r._nv_manual },
       { key: 'at', label: 'Atrasados', color: C_RED, sub: 'fecha de entrega vencida', fn: r => r._al.k === 'Atrasado' },
     ],
     cols: [
@@ -7330,7 +7330,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611101631');
+    const m = await import('./ind-plan-carga.js?v=202611101658');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
