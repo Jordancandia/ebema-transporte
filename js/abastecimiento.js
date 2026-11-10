@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611101244';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611101244';
-import { getDatabase } from './data.js?v=202611101244';
+import { supabase } from './supabase-client.js?v=202611101552';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611101552';
+import { getDatabase } from './data.js?v=202611101552';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611101244';
-import { confirmar, pedirDato } from './confirmar.js?v=202611101244';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611101552';
+import { confirmar, pedirDato } from './confirmar.js?v=202611101552';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -203,10 +203,12 @@ function fmtNum(n, dec = 2) {
 }
 
 function lookupRuta(rutaId) {
-  if (!rutaId) return { comuna: '', region: '' };
+  if (!rutaId) return { comuna: '', region: '', denominacion: '', destino: '', km: '', encontrada: false };
   const db = getDatabase();
   const r = (db.routes || []).find(x => x.codigo === String(rutaId).trim());
-  return r ? { comuna: r.comuna || '', region: r.region || '' } : { comuna: '', region: '' };
+  // (10-nov-2026) + denominación/destino/km de la maestra de rutas y si la ruta existe en ella
+  return r ? { comuna: r.comuna || '', region: r.region || '', denominacion: r.denominacion || '', destino: r.destino || '', km: r.km || '', encontrada: true }
+    : { comuna: '', region: '', denominacion: '', destino: '', km: '', encontrada: false };
 }
 
 function horaChile(ts) {
@@ -941,8 +943,13 @@ function datosNV(rows) {
     _flete_um: pos.reduce((s, r) => s + (parseNum(r.flete_zfl0_zfl1) || 0), 0),
     _interlocutor: [...inter].join(' / '),
     _nombre_cliente_sap: cli[0] || '',
+    _cond_exp: ((rows || []).map(r => String(r.cond_expedicion ?? '').trim()).find(Boolean)) || '',
   };
 }
+// (10-nov-2026, Jordan) Ruta completa desde la maestra de rutas.
+const rutaTxt = r => { if (!r._ruta) return 'Sin ruta'; const i = r._ruta_info || lookupRuta(r._ruta);
+  return i.encontrada ? [r._ruta, i.denominacion || i.destino, [i.comuna, i.region].filter(Boolean).join(', '), i.km ? i.km + ' km' : ''].filter(Boolean).join(' · ')
+    : `${r._ruta} · no está en la maestra de rutas`; };
 const obraTxt = o => [o.dir, o.id ? 'obra ' + o.id : ''].filter(Boolean).join(' · ');
 const kvDatosNV = r => [
   (r._obras || []).length ? ['Obra / dirección', r._obras.map(obraTxt).join(' — ')] : null,
@@ -4072,7 +4079,8 @@ const VISTAS_TRONCAL = {
         // que leen la coordinación, «Agregar camión» y el CSV; se listan para poder liberarlas.
         const items = itemsAll.filter(r => !r._bloq);
         const bloqPos = itemsAll.filter(r => r._bloq).map(r => ({ pos: String(r.pos ?? '').trim(), material: String(r.material ?? '').trim(),
-          nombre: r.denominacion_de_posicion || '', pendiente: r._pend, ton: r._ton, mr: String(r.mr ?? '').trim(), fecha: r.fe_entrega }));
+          nombre: r.denominacion_de_posicion || '', pendiente: r._pend, ton: r._ton, mr: String(r.mr ?? '').trim(), fecha: r.fe_entrega,
+          conf: r._conf, entreg: r._entreg, flete_zflt: parseNum(r.flete_zflt) || 0, flete_um: parseNum(r.flete_zfl0_zfl1) || 0 }));
         const f = items[0] || itemsAll[0];
         const _clavePos = r => String(r.pos ?? '').trim();
         const sinRutaPos = [...new Map(items.filter(r => !String(r.ruta ?? '').trim()).map(r => [_clavePos(r), { pos: _clavePos(r), material: String(r.material ?? '').trim(), nombre: r.denominacion_de_posicion || '' }])).values()];
@@ -4976,11 +4984,12 @@ const V2 = {
         r._id_cliente = String(r.solicitante ?? '').trim();   // columna "Solic." del SQVI (30-sep-2026)
         r._mc = (ctx.maestro && ctx.maestro.get(r._id_cliente)) || null;
         r._cliente = (r._mc && r._mc.nombre) || pv.nombre_1 || r._nombre_cliente_sap || (r._coord && r._coord.nombre_cliente) || '';
-        r._vendedor = pv.nombre || '';
-        r._cond = condExpedicion(pv.denominacion);
+        r._vendedor = pv.nombre || r._interlocutor || '';   // (10-nov-2026) vendedor = interlocutor comercial del CSV si no está en Pedidos de Ventas
+        r._cond = condExpedicion(pv.denominacion || r._cond_exp);
         r._al = alertaV2(r._fecha_plan, 5);
         r._ruta = (r._detalle && r._detalle[0] && r._detalle[0].ruta) || '';
         r._comuna = (r._detalle && r._detalle[0] && r._detalle[0].comuna) || '';
+        r._ruta_info = lookupRuta(r._ruta);   // (10-nov-2026) maestra de rutas
         // (18-oct-2026, Jordan) Centro alternativo y unidades editadas al coordinar.
         r._ce_alt = ceAltDe(r._coord);
         r._ce_plan = r._ce_alt || String(r.ofvta ?? '').trim();
@@ -5080,7 +5089,9 @@ const V2 = {
           + (r._tipo_fijo && r._tipo_fijo !== r._tipo_auto ? ` ${pill('Manual', 'mute')}` : '')
           + (r._grupo_docs && r._grupo_docs.length ? `<div class="sv-sub" title="Mismo camión: ${escV2(r._grupo_docs.join(', '))}">Camión compartido · ${r._grupo_docs.length + 1} pedidos</div>` : '')
           + (r._cond ? `<div class="sv-sub" title="${escV2(r._cond.raw)}">${escV2(r._cond.lbl)}</div>` : '') },
+      { label: 'Ruta', html: r => r._ruta ? txt(r._ruta, r._ruta_info && r._ruta_info.encontrada ? [r._ruta_info.denominacion || r._ruta_info.destino, r._ruta_info.comuna].filter(Boolean).join(' · ') : 'No está en la maestra') : '<span class="sv-muted">Sin ruta</span>' },
       { label: 'Líneas', al: 'r', html: r => escV2((r._detalle || []).length) },
+      { label: 'Flete cobrado', al: 'r', html: r => (r._flete_traslado || r._flete_um) ? `<b>${escV2(fmtCLP((r._flete_traslado || 0) + (r._flete_um || 0)))}</b><div class="sv-sub">Traslado ${escV2(fmtCLP(r._flete_traslado))} · UM ${escV2(fmtCLP(r._flete_um))}</div>` : '<span class="sv-muted">—</span>' },
       { label: 'Ton', al: 'r', html: r => `<span class="sv-ton">${tonHtml(r._ton_num)}</span>` + (r._lineas_aj ? `<div class="sv-sub" title="Unidades editadas al coordinar">a cargar ${escV2(fmtNum(r._ton_plan, 2))} t</div>` : '') + (r._n_pedidos_cliente > 1 ? `<div class="sv-sub">cliente ${escV2(fmtNum(r._ton_cliente, 1))} t</div>` : '') },
       { label: 'Fecha entrega', html: r => mono(r._fecha_plan, r._coord ? 'confirmada' : 'SAP · por confirmar') },
       { label: 'Coordinación', html: r => (r._cargada ? pill('COORDINADO', 'info') + `<div class="sv-sub" title="Bloqueado: va en un camión programado">🔒 Camión ${escV2(r._cargada.patente || r._cargada.transportista || 'programado')} · carga ${escV2(fmtFechaISO(String(r._cargada.fecha_carga).slice(0, 10)))}</div>`
@@ -5254,7 +5265,7 @@ const V2 = {
           c && c.tipo_entrega === 'CD-CLIENTE' ? ['Presentación en CD', txtPresentacion(c) || 'Sin hora'] : null,
           r._grupo_docs && r._grupo_docs.length ? ['Mismo camión', r._grupo_docs.join(', ')] : null,
           ['Condición expedición', r._cond ? `${r._cond.lbl} (${r._cond.raw})` : '—'],
-          ['Ruta', r._ruta], ['Oficina ventas', `${r.ofvta}${nombreCentro(r.ofvta) ? ' · ' + nombreCentro(r.ofvta) : ''}`],
+          ['Ruta', rutaTxt(r)], ['Oficina ventas', `${r.ofvta}${nombreCentro(r.ofvta) ? ' · ' + nombreCentro(r.ofvta) : ''}`],
           r._ce_alt && r._ce_alt !== String(r.ofvta ?? '').trim() ? ['Centro en Plan de Carga', `${r._ce_alt}${nombreCentro(r._ce_alt) ? ' · ' + nombreCentro(r._ce_alt) : ''} (alternativo)`] : null,
           r._lineas_aj ? ['Toneladas a cargar', tonHtml(r._ton_plan), true] : null,
           ['Toneladas', tonHtml(r._ton_num), true], ['Vendedor', r._vendedor || r.deudor],
@@ -5263,24 +5274,46 @@ const V2 = {
           r._estado ? ['Entrega SAP', 'Entrega parcial pendiente'] : null,
           c ? ['Coordinado por', `${c.updated_by || c.created_by || ''}${c.updated_at ? ' · ' + horaChile(c.updated_at) : ''}`] : null,
         ],
-        tabla: {
-          // (2-nov-2026, Jordan) Con repartos SAP se agrega la columna «Repartos» con el desglose de
-          // fechas y cantidades de la posición (ej. 1062020: 300 al 03.11, 300 al 12.11, 140 al 26.11).
-          titulo: `${(r._detalle || []).length} ${(r._detalle || []).length === 1 ? 'material pendiente' : 'materiales pendientes'}`,
-          head: (() => { const base2 = [['Material'], ['Descripción']];
-            base2.push([r._con_repartos ? 'Repartos' : 'Fecha entrega']);   // (9-nov-2026) fecha de entrega de cada posición, siempre
-            if (r._flete_traslado || r._flete_um) base2.push(['Flete traslado / UM', 'r']);
-            return r._lineas_aj ? base2.concat([['Pendiente', 'r'], ['A cargar', 'r'], ['Ton', 'r']]) : base2.concat([['Cantidad', 'r'], ['Ton', 'r']]); })(),
-          rows: (r._detalle || []).map(d => { const q = cantLineasV(r._coord, d.material, d.pendiente, d.fecha);
+        tabla: (() => {
+          // (10-nov-2026, Jordan) Detalle por posición: ID material, descripción, fecha de reparto confirmado,
+          // cantidades (pedido / entregado / pendiente), toneladas, flete cobrado y bloqueo. Las posiciones
+          // bloqueadas (MR / Dcto. vendedor) se listan tachadas al final y no suman.
+          const conFlete = !!(r._flete_traslado || r._flete_um);
+          const aj = !!r._lineas_aj;
+          const head = [['ID material'], ['Descripción'], [r._con_repartos ? 'Repartos (fecha confirmada)' : 'Fecha reparto confirmado'], ['Pedido', 'r'], ['Entregado', 'r'], ['Pendiente', 'r']];
+          if (aj) head.push(['A cargar', 'r']);
+          head.push(['Ton', 'r']);
+          if (conFlete) head.push(['Flete traslado / UM', 'r']);
+          head.push(['Bloqueo']);
+          const n0 = x => escV2(fmtNum(Number(x) || 0, (Number(x) || 0) % 1 ? 2 : 0));
+          const flete = d => `${escV2(fmtCLP(d.flete_zflt))}<div class="sv-sub" style="margin:0">UM ${escV2(fmtCLP(d.flete_um))}</div>`;
+          const rows = (r._detalle || []).map(d => {
+            const q = cantLineasV(r._coord, d.material, d.pendiente, d.fecha);
             const ent = txtLineaRep(r._coord && r._coord.entregas, d.material, d.fecha);
             const eL = ent ? `<div class="sv-sub" style="margin:0">Ent. ${escV2(ent)}</div>` : '';
             const reps = d._reps || [];
-            const col3 = [reps.length > 1
+            const fch = reps.length > 1
               ? reps.map(x => `${mono(x.fecha)} <span class="sv-sub" style="display:inline;margin:0">${escV2(fmtNum(x.pendiente, 0))} un</span>`).join('<br>')
-              : mono(d.fecha || '—')].concat(r._flete_traslado || r._flete_um ? [`${escV2(fmtCLP(d.flete_zflt))}<div class="sv-sub" style="margin:0">UM ${escV2(fmtCLP(d.flete_um))}</div>`] : []);
-            return r._lineas_aj ? [mono(d.material) + eL, escV2(d.nombre)].concat(col3, [escV2(fmtNum(d.pendiente, 0)), `<b>${escV2(fmtNum(q, q % 1 ? 2 : 0))}</b>`, `<span class="sv-ton">${tonHtml(d.pendiente > 0 ? d.ton * q / d.pendiente : 0)}</span>`])
-              : [mono(d.material), escV2(d.nombre)].concat(col3, [escV2(fmtNum(d.pendiente, 0)), `<span class="sv-ton">${tonHtml(d.ton)}</span>`]); }),
-        },
+              : mono(d.fecha || '—');
+            const out = [mono(d.material) + eL, escV2(d.nombre), fch, n0(d.conf), n0(d.entreg), n0(d.pendiente)];
+            if (aj) out.push(`<b>${n0(q)}</b>`);
+            out.push(`<span class="sv-ton">${tonHtml(aj ? (d.pendiente > 0 ? d.ton * q / d.pendiente : 0) : d.ton)}</span>`);
+            if (conFlete) out.push(flete(d));
+            out.push('<span class="sv-muted">—</span>');
+            return out;
+          });
+          (r._bloq_pos || []).forEach(p => {
+            const T = h => `<span style="text-decoration:line-through;color:#93000a">${h}</span>`;
+            const out = [T(mono(p.material)), T(escV2(p.nombre)), T(mono(p.fecha || '—')), T(n0(p.conf)), T(n0(p.entreg)), T(n0(p.pendiente))];
+            if (aj) out.push(T('0'));
+            out.push(T(tonHtml(p.ton || 0)));
+            if (conFlete) out.push(T(flete(p)));
+            out.push(pill(/^\d/.test(p.mr) ? 'MR ' + p.mr : p.mr, 'bad'));
+            rows.push(out);
+          });
+          const nd = (r._detalle || []).length, nb = (r._bloq_pos || []).length;
+          return { titulo: `${nd} ${nd === 1 ? 'posición pendiente' : 'posiciones pendientes'}${nb ? ` · ${nb} bloqueada${nb === 1 ? '' : 's'}` : ''}`, head, rows };
+        })(),
         nota: r._directo ? 'Camión directo al cliente (CD-Cliente)' : '2º en el orden de llenado del camión CD',
         acciones,
       };
@@ -7282,7 +7315,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611101244');
+    const m = await import('./ind-plan-carga.js?v=202611101552');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
