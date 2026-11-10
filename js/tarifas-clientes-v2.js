@@ -15,12 +15,12 @@
 // tarifas a clientes y «Guardar y recalcular» escribe sólo client_tariff_config
 // (syncOnly) y, si cambió la asignación de clusters, cluster_rutas por centro.
 // ============================================================================
-import { saveDatabase, getOrigenGroups } from './data.js?v=202611100014';
-import { buildZcapMap, es2Ton, componentesRegional } from './zcap.js?v=202611100014';
+import { saveDatabase, getOrigenGroups } from './data.js?v=202611101244';
+import { buildZcapMap, es2Ton, componentesRegional } from './zcap.js?v=202611101244';
 import { showAlert } from './utils.js';
-import { can } from './permisos.js?v=202611100014';
-import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, setParamPill, clasifPill, clasifTarifa, pillHtml } from './tarifas-ui.js?v=202611100014';
-import { cargarVigente, guardarCalculadas, fechaHora, usuarioCorto } from './tarifa-vigente.js?v=202611100014';
+import { can } from './permisos.js?v=202611101244';
+import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, setParamPill, clasifPill, clasifTarifa, pillHtml } from './tarifas-ui.js?v=202611101244';
+import { cargarVigente, guardarCalculadas, fechaHora, usuarioCorto } from './tarifa-vigente.js?v=202611101244';
 
 const CAPS = [5, 10, 15, 28];
 const CAP_LBL = { 5: '5 t', 10: '10 t', 15: '15 t', 28: '28 t' };
@@ -1232,7 +1232,7 @@ async function pintarGuardadas(container, ctx, render) {
   const el = container.querySelector('#t-guard');
   if (!el) return;
   try {
-    const m = await import('./tarifas-calculadas.js?v=202611100014');
+    const m = await import('./tarifas-calculadas.js?v=202611101244');
     const [info, vig] = await Promise.all([m.infoGuardadas(), cargarVigente().catch(() => null)]);
     if (!el.isConnected) return;
     const pendiente = vig && (!info || Number(info.tarifa_vigente_id) !== Number(vig.id));
@@ -1254,7 +1254,7 @@ async function pintarGuardadas(container, ctx, render) {
 // CSV de Tarifas Clientes desde la BD: mismas columnas y filtros que el CSV de pantalla
 async function descargarCsvGuardadas(NG, S) {
   try {
-    const m = await import('./tarifas-calculadas.js?v=202611100014');
+    const m = await import('./tarifas-calculadas.js?v=202611101244');
     const filas = await m.leerVigentes('v_tarifas_clientes_vigentes');
     if (!filas.length) { showAlert('No hay tarifas guardadas en base de datos.', 'error'); return; }
     const q = S.q.trim().toLowerCase();
