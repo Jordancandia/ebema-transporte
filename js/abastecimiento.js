@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611111534';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611111534';
-import { getDatabase } from './data.js?v=202611111534';
+import { supabase } from './supabase-client.js?v=202611111542';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611111542';
+import { getDatabase } from './data.js?v=202611111542';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611111534';
-import { confirmar, pedirDato } from './confirmar.js?v=202611111534';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611111542';
+import { confirmar, pedirDato } from './confirmar.js?v=202611111542';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -7493,7 +7493,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611111534');
+    const m = await import('./ind-plan-carga.js?v=202611111542');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -7749,6 +7749,8 @@ function llenarPorNivelesCD(lineas, rem, marcar) {
   }
   return usado;
 }
+// (11-nov-2026, Jordan) Marca «camión CD armado a mano» del centro (fila centinela en abast_plan_linea_camion).
+const CAMION_MANO_DOC = '__ARMADO_MANUAL__', CAMION_MANO_KEY = CAMION_MANO_DOC + '|-';
 function asignarCamionesCD(r) {
   const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
   const doc = d => String(d.pt ?? d.oc ?? d.pv ?? '').trim();
@@ -7796,16 +7798,19 @@ function asignarCamionesCD(r) {
     if (acc + (d.ton || 0) <= r.cap + 1e-9) { d._enCamion = true; d._manualExcede = false; acc += d.ton || 0; }
     else d._manualExcede = true;
   });
+  // (11-nov-2026, Jordan) Camión ARMADO A MANO: el camión CD lleva SÓLO lo que se subió a mano (NV, entregas…);
+  // no se completa automático y todo el saldo queda habilitado para el 2º camión.
+  const armadoMano = asig.get(CAMION_MANO_KEY) === 1;
   subirManual(orden.filter(catAlta));
-  acc += llenarPorNivelesCD(orden.filter(d => catAlta(d) && d._manual === null), r.cap - acc, d => { d._enCamion = true; });
+  if (!armadoMano) acc += llenarPorNivelesCD(orden.filter(d => catAlta(d) && d._manual === null), r.cap - acc, d => { d._enCamion = true; });
   subirManual(orden.filter(d => !catAlta(d)));
   // (23-oct-2026, Jordan) Se llena por niveles de prioridad (categoría → PRIORIDAD → orden); dentro de un
   // mismo nivel se elige la combinación de líneas que más llena el espacio libre y, a igual tonelaje, la
   // que sube más posiciones. Un nivel nunca cede espacio a uno de menor prioridad.
-  acc += llenarPorNivelesCD(orden.filter(d => !catAlta(d) && d._manual === null), r.cap - acc, d => { d._enCamion = true; });
+  if (!armadoMano) acc += llenarPorNivelesCD(orden.filter(d => !catAlta(d) && d._manual === null), r.cap - acc, d => { d._enCamion = true; });
   const excedente = orden.filter(d => !d._enCamion && d._manual !== 0).reduce((s, d) => s + (d.ton || 0), 0);
   const manual2 = orden.some(d => d._manual === 2);
-  let segundoPropuesto = manual2 || (excedente > 0 && excedente >= r.cap * UMBRAL_SEGUNDO_CAMION);
+  let segundoPropuesto = manual2 || (excedente > 0 && (armadoMano || excedente >= r.cap * UMBRAL_SEGUNDO_CAMION));
   let acc2 = 0;
   orden.forEach(d => { if (d._manual === 2) { if (acc2 + (d.ton || 0) <= r.cap + 1e-9) { d._camion2 = true; acc2 += d.ton || 0; } else d._manualExcede = true; } });
   if (segundoPropuesto) acc2 += llenarPorNivelesCD(orden.filter(d => (d._manual === null || d._manualExcede) && !d._enCamion && !d._camion2), r.cap - acc2, d => { d._camion2 = true; });
@@ -7813,7 +7818,7 @@ function asignarCamionesCD(r) {
   // volumétrico erróneo), no cabe en ningún camión: no se propone un 2º camión vacío (0 t).
   if (segundoPropuesto && !manual2 && acc2 <= 1e-9) segundoPropuesto = false;
   const tonNoCarga = orden.filter(d => d._manual === 0).reduce((s, d) => s + (d.ton || 0), 0);
-  return { cargado: acc, excedente, segundoPropuesto, tonSegundo: acc2, manual2, tonNoCarga, nManual: orden.filter(d => d._manual !== null).length, orden };
+  return { cargado: acc, excedente, segundoPropuesto, tonSegundo: acc2, manual2, tonNoCarga, nManual: orden.filter(d => d._manual !== null).length, orden, armadoMano };
 }
 
 // (9-oct-2026, Jordan) Las líneas sacadas a mano del camión («No carga», camion 0) se
@@ -9714,9 +9719,15 @@ async function renderPlanCarga(stage, opts = {}) {
     renderPlanCarga(stage);
   }
   function ajustesHtml(r, fill) {
-    if (!fill.nManual) return '';
     const cerrado = estadoCierre().cerrado;
-    return `<div class="pc-extra"><span class="material-symbols-outlined">tune</span><div style="flex:1;min-width:0"><b>${fill.nManual} línea${fill.nManual > 1 ? 's' : ''} con asignación manual/confirmada</b>${fill.tonNoCarga > 0.05 ? ` · ${t1(fill.tonNoCarga)} t marcadas «no carga»` : ''}. La foto de las ${HHMM_CIERRE} respeta estos ajustes.</div>
+    // (11-nov-2026, Jordan) Armado manual del camión CD: sólo lo subido a mano; el saldo pasa al 2º camión.
+    const manoHtml = fill.armadoMano
+      ? `<div class="pc-extra is-ok"><span class="material-symbols-outlined">pan_tool</span><div style="flex:1;min-width:0"><b>Camión CD armado a mano</b> · lleva sólo lo subido con «→ CD» (${t1(fill.cargado || 0)} t). El saldo (${t1(fill.excede || 0)} t) queda habilitado en el 2º camión.</div>
+        ${PUEDE_AJUSTAR && !cerrado ? `<button class="sv-btn" data-armar-mano="${escapeHtml(r.ce)}" data-armar-on="0"><span class="material-symbols-outlined">autorenew</span>Volver a llenado automático</button>` : ''}</div>`
+      : (PUEDE_AJUSTAR && !cerrado ? `<div class="pc-extra is-mute"><span class="material-symbols-outlined">pan_tool</span><div style="flex:1;min-width:0">¿Necesitas armar el camión con una NV y entregas específicas? Arma el camión a mano: lleva sólo lo que subas con «→ CD» y el resto queda para un 2º camión.</div>
+        <button class="sv-btn" data-armar-mano="${escapeHtml(r.ce)}" data-armar-on="1"><span class="material-symbols-outlined">pan_tool</span>Armar camión a mano</button></div>` : '');
+    if (!fill.nManual) return manoHtml;
+    return manoHtml + `<div class="pc-extra"><span class="material-symbols-outlined">tune</span><div style="flex:1;min-width:0"><b>${fill.nManual} línea${fill.nManual > 1 ? 's' : ''} con asignación manual/confirmada</b>${fill.tonNoCarga > 0.05 ? ` · ${t1(fill.tonNoCarga)} t marcadas «no carga»` : ''}. La foto de las ${HHMM_CIERRE} respeta estos ajustes.</div>
       ${PUEDE_AJUSTAR && !cerrado ? `<button class="sv-btn" data-restablecer="${escapeHtml(r.ce)}"><span class="material-symbols-outlined">restart_alt</span>Restablecer automático</button>` : ''}</div>`;
   }
   function segundoHtml(r, fill) {
@@ -10395,6 +10406,23 @@ async function renderPlanCarga(stage, opts = {}) {
     stage.querySelectorAll('[data-coord-tr]').forEach(b => b.addEventListener('click', async e => { e.stopPropagation(); await coordinarTransporte(b.dataset.coordTr, Number(b.dataset.progCam || 1)); }));
     stage.querySelectorAll('[data-coord-quitar]').forEach(b => b.addEventListener('click', async e => { e.stopPropagation(); await quitarCoordinacionTransp(b.dataset.coordQuitar, Number(b.dataset.progCam || 1)); }));
     stage.querySelectorAll('[data-restablecer]').forEach(b => b.addEventListener('click', async e => { e.stopPropagation(); b.disabled = true; await restablecerAuto(b.dataset.restablecer); }));
+    // (11-nov-2026, Jordan) Armar camión CD a mano / volver a automático
+    stage.querySelectorAll('[data-armar-mano]').forEach(b => b.addEventListener('click', async e => {
+      e.stopPropagation();
+      const ce = b.dataset.armarMano, on = b.dataset.armarOn === '1';
+      const r = resultado.find(x => x.ce === ce);
+      if (!r || bloqueadoPorCierre()) return;
+      if (on && !await confirmar(`¿Armar a mano el camión CD de ${r.nombre}?\n\nEl camión llevará SÓLO las líneas que subas con «→ CD» (NV, entregas, retiros). Todo lo demás queda habilitado para el 2º camión.\n\nPuedes subir varias entregas de una vez desde Pedidos de Traslados / Crossdocking → Entregas.`, { aceptar: 'Armar a mano', icono: 'pan_tool' })) return;
+      b.disabled = true;
+      const { error } = on
+        ? await supabase.from('abast_plan_linea_camion').upsert({ fecha: hoyIsoPlan, cd_origen: planOrigen, ce, documento: CAMION_MANO_DOC, material: '-', camion: 1, origen: 'manual', updated_by: await getUserEmail(), updated_at: new Date().toISOString() }, { onConflict: 'fecha,cd_origen,ce,documento,material' })
+        : await supabase.from('abast_plan_linea_camion').delete().eq('fecha', hoyIsoPlan).eq('cd_origen', planOrigen).eq('ce', ce).eq('documento', CAMION_MANO_DOC);
+      if (error) { showAlert('No se pudo guardar: ' + error.message, 'error'); b.disabled = false; return; }
+      if (on) r.asig.set(CAMION_MANO_KEY, 1); else r.asig.delete(CAMION_MANO_KEY);
+      refrescarFill(r);
+      showAlert(on ? `${r.nombre}: camión CD armado a mano. Sube las líneas con «→ CD».` : `${r.nombre}: el camión CD vuelve al llenado automático.`, 'success');
+      draw();
+    }));
     stage.querySelectorAll('[data-trconf]').forEach(b => b.addEventListener('click', async e => {
       e.stopPropagation();
       if (!PUEDE_TRANSPORTE) { showAlert('Sólo el perfil OWNER puede confirmar los datos del transporte.', 'warning'); return; }
