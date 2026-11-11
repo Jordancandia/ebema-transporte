@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611111556';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611111556';
-import { getDatabase } from './data.js?v=202611111556';
+import { supabase } from './supabase-client.js?v=202611111602';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611111602';
+import { getDatabase } from './data.js?v=202611111602';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611111556';
-import { confirmar, pedirDato } from './confirmar.js?v=202611111556';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611111602';
+import { confirmar, pedirDato } from './confirmar.js?v=202611111602';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -7290,6 +7290,21 @@ async function asignarEntregasCamion(rows, tipo, cam) {
   showAlert(`${lineas.size} línea${lineas.size === 1 ? '' : 's'}: ${lbl}`, 'success');
   return true;
 }
+// (11-nov-2026, Jordan) Reactivar en el plan varias entregas excluidas hoy (entrega + material) de una vez.
+async function reactivarEntregasMasivo(rows, tipo) {
+  const k = tipo === 'CROSSDOCK' ? 'pedidos_traslados_4000' : 'pedidos_traslados';
+  const tEx = (VISTAS_TRONCAL[k] && VISTAS_TRONCAL[k].excluir && VISTAS_TRONCAL[k].excluir.tipo) || (tipo === 'CROSSDOCK' ? 'crossdock_4000' : 'traslados_1003');
+  const exc = await loadExclusionesPlan();
+  const claves = new Set(rows.map(r => `${docEnt(r.entrega)}|${String(r.material ?? '').trim()}`));
+  const docs = new Set(rows.map(r => docEnt(r.entrega)));
+  const ids = exc.filter(e => e.tipo === tEx && (claves.has(`${String(e.doc ?? '').trim()}|${String(e.material ?? '').trim()}`) || (docs.has(String(e.doc ?? '').trim()) && !String(e.material ?? '').trim()))).map(e => e.id);
+  if (!ids.length) { showAlert('Ninguna de las entregas seleccionadas está excluida hoy.', 'warning'); return false; }
+  if (!await confirmar(`¿Reactivar en el Plan de Carga ${ids.length} línea${ids.length === 1 ? '' : 's'} excluida${ids.length === 1 ? '' : 's'}?`, { aceptar: 'Reactivar', icono: 'visibility' })) return false;
+  const { error } = await supabase.from('abast_plan_exclusiones').delete().in('id', ids);
+  if (error) { showAlert('Error al reactivar: ' + error.message, 'error'); return false; }
+  showAlert(`${ids.length} línea${ids.length === 1 ? '' : 's'} reactivada${ids.length === 1 ? '' : 's'} en el plan`, 'success');
+  return true;
+}
 // (11-nov-2026, Jordan) Excluir del plan varias entregas (entrega + material) de una vez.
 async function excluirEntregasMasivo(rows, tipo) {
   const k = tipo === 'CROSSDOCK' ? 'pedidos_traslados_4000' : 'pedidos_traslados';
@@ -7316,6 +7331,7 @@ function v2ModoEntregas(tipo) {
       { label: 'No cargar hoy', icon: 'do_not_disturb_on', perm: 'ajustar_plan', run: rows => asignarEntregasCamion(rows, tipo, 0) },
       { label: 'Volver a automático', icon: 'autorenew', perm: 'ajustar_plan', run: rows => asignarEntregasCamion(rows, tipo, 'auto') },
       ...(tipo !== 'REVEX' ? [{ label: 'Excluir del plan', icon: 'visibility_off', tono: 'peligro', perm: 'excluir', run: rows => excluirEntregasMasivo(rows, tipo) }] : []),
+      ...(tipo !== 'REVEX' ? [{ label: 'Reactivar en el plan', icon: 'visibility', perm: 'excluir', run: rows => reactivarEntregasMasivo(rows, tipo) }] : []),
     ] },
     desc: 'Entregas SAP creadas (disponible real para cargar): son las que alimentan el Plan de Carga. Vigentes = sin Documento de Transporte y no cargadas en un camión programado de un plan anterior (las no programadas siguen disponibles los días siguientes).',
     headBtns: [{ label: 'Cargar entregas (Excel)', icon: 'upload_file', perm: 'ajustar_plan', run: () => cargarEntregasExcel() }],
@@ -7493,7 +7509,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611111556');
+    const m = await import('./ind-plan-carga.js?v=202611111602');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
