@@ -22,10 +22,10 @@
 //   · Camión objetivo: camiones habilitados en Tarifas Clientes del centro origen (grupo) de la sucursal;
 //     "No habilitado" si la ruta del pedido no tiene ese camión.
 // ============================================================================
-import { supabase } from './supabase-client.js?v=202611110954';
-import { getDatabase, loadRoutesData, HIST_ALIAS_PREFIJO } from './data.js?v=202611110954';
+import { supabase } from './supabase-client.js?v=202611111442';
+import { getDatabase, loadRoutesData, HIST_ALIAS_PREFIJO } from './data.js?v=202611111442';
 import { loadLeaflet } from './utils.js';
-import { filtrarPorCentro, can } from './permisos.js?v=202611110954';
+import { filtrarPorCentro, can } from './permisos.js?v=202611111442';
 
 const CFG = {
   umbralCompleto: 0.90,
