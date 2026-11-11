@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611101827';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611101827';
-import { getDatabase } from './data.js?v=202611101827';
+import { supabase } from './supabase-client.js?v=202611110954';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611110954';
+import { getDatabase } from './data.js?v=202611110954';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611101827';
-import { confirmar, pedirDato } from './confirmar.js?v=202611101827';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611110954';
+import { confirmar, pedirDato } from './confirmar.js?v=202611110954';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -7253,6 +7253,14 @@ function cargarEntregasExcel() {
     inp.click();
   });
 }
+// (11-nov-2026, Jordan) Entregas (entrega|pos) que trae el archivo SAP vigente. null si no se puede leer (no se filtra).
+async function entregasEnArchivoSap() {
+  try {
+    const { data, error } = await supabase.from('trc_live').select('entrega:data->>entrega,pos:data->>pos').eq('fuente', 'entregas_creadas').range(0, 9999);
+    if (error || !data || !data.length) return null;
+    return new Set(data.map(x => `${String(x.entrega ?? '').trim()}|${String(x.pos ?? '').trim().padStart(6, '0')}`));
+  } catch (_e) { return null; }
+}
 function v2ModoEntregas(tipo) {
   const esTr = tipo === 'TRASLADO', esCx = tipo === 'CROSSDOCK';
   const est = r => r._plan_ent;
@@ -7380,8 +7388,17 @@ function v2ModoEntregas(tipo) {
     { id: 'pend', v2label: 'Pendientes', icon: 'pending_actions', sinExcluir: tipo !== 'REVEX' },
     { id: 'ent', v2label: 'Entregas', icon: 'local_shipping', vista: 'v_abast_entregas_disponibles',
       // (14-oct-2026, Jordan) + entregas RETENIDAS (ya iban en un camión programado): observación "Revisar entrega duplicada"
-      preload: async () => { const { data, error } = await supabase.rpc('fn_abast_entregas_duplicadas'); if (error) console.warn('Entregas duplicadas', error); return { dup: data || [] }; },
-      transform: (rows, ctx) => rows.filter(r => r.tipo === tipo).concat((ctx?.dup || []).filter(r => r.tipo === tipo).map(r => ({ ...r, _dup: true }))), postFilter: undefined,
+      preload: async () => {
+        const { data, error } = await supabase.rpc('fn_abast_entregas_duplicadas'); if (error) console.warn('Entregas duplicadas', error);
+        return { dup: data || [], enArchivo: await entregasEnArchivoSap() };
+      },
+      // (11-nov-2026, Jordan) Las vistas Entregas (Traslados / Crossdocking / Revex) muestran SÓLO lo que trae el archivo SAP
+      // vigente (Entregas_Periodo). Las líneas guardadas por estar en un camión confirmado quedan en el Plan de Carga /
+      // Seguimiento, pero aquí no aparecen si el archivo ya no las trae.
+      transform: (rows, ctx) => {
+        const ea = ctx?.enArchivo, enArch = r => !ea || ea.has(`${String(r.entrega ?? '').trim()}|${String(r.pos_entrega ?? r.pos ?? '').trim().padStart(6, '0')}`);
+        return rows.filter(r => r.tipo === tipo && enArch(r)).concat((ctx?.dup || []).filter(r => r.tipo === tipo && enArch(r)).map(r => ({ ...r, _dup: true })));
+      }, postFilter: undefined,
       centroCampo: 'ce', titulo: `${cfg.titulo} – ENTREGAS`,
       columnas: [
         { key: 'entrega', label: 'Entrega' }, { key: 'pos_entrega', label: 'Pos. entrega' }, { key: 'doc_compr', label: 'Doc. modelo' }, { key: 'pos', label: 'Pos. modelo' },
@@ -7425,7 +7442,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611101827');
+    const m = await import('./ind-plan-carga.js?v=202611110954');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
