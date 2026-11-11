@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611111456';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611111456';
-import { getDatabase } from './data.js?v=202611111456';
+import { supabase } from './supabase-client.js?v=202611111534';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611111534';
+import { getDatabase } from './data.js?v=202611111534';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611111456';
-import { confirmar, pedirDato } from './confirmar.js?v=202611111456';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611111534';
+import { confirmar, pedirDato } from './confirmar.js?v=202611111534';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -1397,9 +1397,10 @@ async function validarPatenteDia({ patente, fecha, clave, docs = [] }) {
   const grupos = new Map();
   otras.filter(x => !complementaria(x)).forEach(x => { if (!grupos.has(x.clave)) grupos.set(x.clave, { tipo: x.tipo, ce: x.ce_nombre || x.ce, det: new Set() }); if (x.detalle) grupos.get(x.clave).det.add(x.detalle); });
   const lineas = [...grupos.values()].map(g => `• ${g.tipo} → ${g.ce}${g.det.size ? ` (${[...g.det].join(', ')})` : ''}`);
-  await confirmar(`El camión ${fmtPatente(patente)} ya tiene otra carga el ${fmtFechaISO(f)}\n\n${lineas.join('\n')}\n\nUn camión sólo puede tomar una carga por día de carga. Usa otra patente o cambia el día de carga.`,
-    { aceptar: 'Entendido', cancelar: 'Cerrar', tono: 'peligro', icono: 'block' });
-  return false;
+  // (11-nov-2026, Jordan) Un mismo camión puede hacer más de un viaje el mismo día (p. ej. consolidado a San Bernardo en
+  // la mañana y en la tarde una NV a Rancagua): ya no se bloquea, se pide confirmar que es otra vuelta del mismo camión.
+  return await confirmar(`El camión ${fmtPatente(patente)} ya tiene otra carga el ${fmtFechaISO(f)}\n\n${lineas.join('\n')}\n\n¿Es una segunda vuelta del mismo camión ese día (termina la primera carga y vuelve a cargar)?\n\nSi no, usa otra patente o cambia el día de carga.`,
+    { aceptar: 'Sí, 2ª vuelta del mismo camión', cancelar: 'No, cambiar', icono: 'replay' });
 }
 async function chequearChoquePatente(row, st, ctx, docsSel = []) {
   const doc = String(row.doc_ventas ?? '').trim();
@@ -7492,7 +7493,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611111456');
+    const m = await import('./ind-plan-carga.js?v=202611111534');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -7785,14 +7786,23 @@ function asignarCamionesCD(r) {
     if ((v === undefined || v === null) && d._unidoCD) v = 1;   // (29-oct-2026) retiro unido: siempre en el camión CD
     d._manual = v === undefined || v === null ? null : Number(v);
     d._camion2 = false; d._enCamion = false; d._manualExcede = false;
-    if (d._manual !== 1) return;
-    if (acc + (d.ton || 0) <= r.cap + 1e-9) { d._enCamion = true; acc += d.ton || 0; }
+  });
+  // (11-nov-2026, Jordan) Lo subido a mano NO desplaza a las categorías de mayor prioridad: retiro unido, carga
+  // manual, REVEX y Ventas coordinadas (NV) se ubican primero; recién después entran las líneas subidas a mano
+  // de las demás categorías (entregas de traslados / crossdocking) y al final el resto por niveles.
+  const catAlta = d => Number(String(d._niv || '9').split('|')[0]) <= 3;
+  const subirManual = arr => arr.forEach(d => {
+    if (d._manual !== 1 || d._enCamion) return;
+    if (acc + (d.ton || 0) <= r.cap + 1e-9) { d._enCamion = true; d._manualExcede = false; acc += d.ton || 0; }
     else d._manualExcede = true;
   });
+  subirManual(orden.filter(catAlta));
+  acc += llenarPorNivelesCD(orden.filter(d => catAlta(d) && d._manual === null), r.cap - acc, d => { d._enCamion = true; });
+  subirManual(orden.filter(d => !catAlta(d)));
   // (23-oct-2026, Jordan) Se llena por niveles de prioridad (categoría → PRIORIDAD → orden); dentro de un
   // mismo nivel se elige la combinación de líneas que más llena el espacio libre y, a igual tonelaje, la
   // que sube más posiciones. Un nivel nunca cede espacio a uno de menor prioridad.
-  acc += llenarPorNivelesCD(orden.filter(d => d._manual === null), r.cap - acc, d => { d._enCamion = true; });
+  acc += llenarPorNivelesCD(orden.filter(d => !catAlta(d) && d._manual === null), r.cap - acc, d => { d._enCamion = true; });
   const excedente = orden.filter(d => !d._enCamion && d._manual !== 0).reduce((s, d) => s + (d.ton || 0), 0);
   const manual2 = orden.some(d => d._manual === 2);
   let segundoPropuesto = manual2 || (excedente > 0 && excedente >= r.cap * UMBRAL_SEGUNDO_CAMION);
