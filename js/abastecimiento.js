@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611111621';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611111621';
-import { getDatabase } from './data.js?v=202611111621';
+import { supabase } from './supabase-client.js?v=202611111828';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611111828';
+import { getDatabase } from './data.js?v=202611111828';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611111621';
-import { confirmar, pedirDato } from './confirmar.js?v=202611111621';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611111828';
+import { confirmar, pedirDato } from './confirmar.js?v=202611111828';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -5962,6 +5962,26 @@ function agruparSeguimiento(rows, dtRows, ajustes, clientes, transp) {
     });
     if (remap.size) rows = rows.map(r => remap.get(r) || r);
   }
+  // (11-nov-2026, Jordan) CAMIÓN MIXTO = UN solo camión: coordinaciones de DISTINTO tipo con la misma patente, centro y
+  // día de carga (p. ej. retira en fábrica y luego carga una NV en el CD para ir directo al cliente) se muestran
+  // en una sola posición y un solo camión. Cada coordinación conserva su clave (_claveOrig) para editar / anular.
+  {
+    const porPD = new Map();
+    rows.forEach(r => {
+      if (!esCoord(r) || !nPatSeg(r.patente_camion) || !r.fecha_carga) return;
+      const k = [r.cd_origen, r.ce, nPatSeg(r.patente_camion), String(r.fecha_carga).slice(0, 10)].map(x => String(x ?? '').trim()).join('|');
+      if (!porPD.has(k)) porPD.set(k, []); porPD.get(k).push(r);
+    });
+    const remapM = new Map();
+    porPD.forEach(arr => {
+      const tipos = [...new Set(arr.map(x => x.tipo_camion))]; if (tipos.length < 2) return;
+      // cabecera: el tramo que entrega (CD-Cliente / Fáb-Cliente) manda sobre el retiro
+      const cab = arr.find(x => x.tipo_camion === 'CD-Cliente') || arr.find(x => x.tipo_camion !== 'Retiro FAB-CD') || arr[0];
+      arr.forEach(x => remapM.set(x, { ...x, clave: cab.clave, fecha_plan: cab.fecha_plan, tipo_camion: cab.tipo_camion, _fusion: true,
+        _claveOrig: x._claveOrig || x.clave, _fechaPlanOrig: x._fechaPlanOrig || x.fecha_plan, _tipoOrig: x.tipo_camion, _mixto: tipos }));
+    });
+    if (remapM.size) rows = rows.map(r => remapM.get(r) || r);
+  }
   const grupos = new Map();
   const marcarMismoCamion = gs => {
     // (4-nov-2026, Jordan) Un camión puede llevar dos TRAMOS de distinto tipo el mismo día: retira en fábrica
@@ -6015,6 +6035,8 @@ function agruparSeguimiento(rows, dtRows, ajustes, clientes, transp) {
       c.lineas.forEach(x => { x.dt = [...(matDt.get(String(x.material ?? '').trim()) || [])].join(' / '); x._cargadoDt = matDt.has(String(x.material ?? '').trim()); });
       c.nSinDt = c.dts.length ? new Set(c.lineas.filter(x => !x._cargadoDt).map(x => String(x.material ?? '').trim())).size : 0;
       c.cat = segCategoria(c, g); c.lbl = SEG_CAT[c.cat];
+      { const tr = [...new Set(c.lineas.map(x => x._tipoOrig).filter(Boolean))];   // (11-nov-2026) camión mixto
+        if (tr.length > 1) { c.mixto = tr; c.lbl = 'Camión mixto · ' + tr.map(t => t === 'Retiro FAB-CD' ? 'Retiro de fábrica' : t).join(' + '); } }
       c.clientes = clientesCamionSeg(c, clientes);
       c.camionIds = [...new Set(c.lineas.map(x => x.camion_id))];
       c.claves = [...new Set(c.lineas.map(x => x._claveOrig || x.clave))];
@@ -6121,7 +6143,9 @@ async function editarTransporteSeguimiento(r, c) {
     if (error) break;
     // (2-nov-2026, Jordan) La clave de una coordinación por reparto es «COORD|doc@DD.MM.YYYY».
     const { doc, rep: repCl } = partirClaveCoordV(String(claveK).slice(6));
-    if (c.tipo === 'CD-Cliente') {
+    // (11-nov-2026) camión mixto: cada coordinación usa su propio tipo (retiro / CD-Cliente)
+    const tipoK = (c.lineas.find(x => (x._claveOrig || x.clave) === claveK) || {})._tipoOrig || c.tipo;
+    if (tipoK === 'CD-Cliente') {
       const tabla = esTrasladoDoc(doc) ? 'abast_traslado_coordinacion' : 'abast_venta_coordinacion';
       const col = esTrasladoDoc(doc) ? 'doc_compr' : 'doc_ventas';
       let qU = supabase.from(tabla).update({ ...tr, ...extraCli, fecha_entrega: t.fecha_carga, updated_by: email, updated_at: now }).eq(col, doc);
@@ -6145,7 +6169,8 @@ async function editarTransporteSeguimiento(r, c) {
   const { error: e2 } = await supabase.rpc('fn_abast_guardar_seguimiento', { p_cab: cab, p_lineas: null });
   // Resto de coordinaciones reunidas en este camión: misma cabecera de transporte.
   if (!e2 && c.coord) for (const kx of (c.claves || []).filter(k => k !== c.clave)) {
-    const { data: rg } = await supabase.from('abast_seguimiento_camion').select('*').eq('clave', kx).eq('tipo_camion', c.tipo).eq('ce', r.ce);
+    const tipoKx = (c.lineas.find(x => (x._claveOrig || x.clave) === kx) || {})._tipoOrig || c.tipo;   // (11-nov-2026) camión mixto
+    const { data: rg } = await supabase.from('abast_seguimiento_camion').select('*').eq('clave', kx).eq('tipo_camion', tipoKx).eq('ce', r.ce);
     for (const k of rg || []) await supabase.rpc('fn_abast_guardar_seguimiento', { p_cab: { fecha_plan: k.fecha_plan, fecha_carga: t.fecha_carga, cd_origen: k.cd_origen, ce: k.ce,
       tipo_camion: k.tipo_camion, clave: k.clave, origen: k.origen || '', destino: k.destino || '', ton: k.ton, cap: k.cap, pct: k.pct, ...tr, patente_carro: t.patente_carro || '', ...presCab }, p_lineas: null });
   }
@@ -7514,7 +7539,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611111621');
+    const m = await import('./ind-plan-carga.js?v=202611111828');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
