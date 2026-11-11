@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611111602';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611111602';
-import { getDatabase } from './data.js?v=202611111602';
+import { supabase } from './supabase-client.js?v=202611111617';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611111617';
+import { getDatabase } from './data.js?v=202611111617';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611111602';
-import { confirmar, pedirDato } from './confirmar.js?v=202611111602';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611111617';
+import { confirmar, pedirDato } from './confirmar.js?v=202611111617';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -7277,6 +7277,11 @@ async function asignarEntregasCamion(rows, tipo, cam) {
   const lbl = { 1: 'subir al camión CD', 2: 'subir al 2º camión', 0: 'dejar fuera del camión (no cargar hoy)', auto: 'volver a la asignación automática' }[cam];
   const ents = [...new Set(rows.map(r => String(r.entrega ?? '').trim()))];
   if (!await confirmar(`¿${lbl[0].toUpperCase() + lbl.slice(1)} ${lineas.size} línea${lineas.size === 1 ? '' : 's'} de ${ents.length} entrega${ents.length === 1 ? '' : 's'}?\n\n${ents.slice(0, 12).join(', ')}${ents.length > 12 ? ' …' : ''}\n\nAplica al Plan de Carga de hoy. Si no cabe en el camión, queda marcada para revisar en el plan.`)) return false;
+  // (11-nov-2026, Jordan) Las líneas de un camión ya programado (carga confirmada) no se mueven.
+  { const { data: conf } = await supabase.from('abast_plan_linea_camion').select('cd_origen,ce,documento,material').eq('fecha', fecha).eq('origen', 'confirmado');
+    let n = 0; (conf || []).forEach(c => { if (lineas.delete(`${c.cd_origen}|${c.ce}|${c.documento}|${c.material}`)) n++; });
+    if (n) showAlert(`${n} línea${n === 1 ? '' : 's'} ya va${n === 1 ? '' : 'n'} en un camión programado: no se mueve${n === 1 ? '' : 'n'}.`, 'warning');
+    if (!lineas.size) return false; }
   let error = null;
   if (cam === 'auto') {
     for (const l of lineas.values()) {
@@ -7509,7 +7514,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611111602');
+    const m = await import('./ind-plan-carga.js?v=202611111617');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -9394,8 +9399,10 @@ async function renderPlanCarga(stage, opts = {}) {
     if (!t) return;
     const quien = await getUserEmail();
     const filas = new Map();
+    // (11-nov-2026, Jordan) Al programar se congela TODA la carga del camión (también lo subido a mano): lo
+    // programado no se vuelve a tocar y sólo el saldo queda disponible para el 2º camión.
     f.orden.forEach(d => {
-      if (d._manual !== null || !d._enCamion) return;
+      if (!d._enCamion) return;
       const k = `${docLinea(d)}|${matLinea(d)}`;
       if (!filas.has(k)) filas.set(k, { fecha: hoyIsoPlan, cd_origen: planOrigen, ce, documento: docLinea(d), material: matLinea(d), camion: 1, origen: 'confirmado', updated_by: quien, updated_at: new Date().toISOString() });
     });
@@ -9436,6 +9443,13 @@ async function renderPlanCarga(stage, opts = {}) {
     const t = await showTransporteCamionModal({ titulo: `2º camión → ${r.nombre}`, sub: `${t1(r.tonSegundo)} t de ${fmtNum(r.cap, 0)} t · día objetivo ${diaCorto(diaObj(r))}`,
       ini: progMap.get(`${ce}|2`) || coordMap.get(`${ce}|2`) || {}, otros: otrosProgramados(ce, 2), fechaDef: isoLocal(diaObj(r)), presentacion: presCam(ce, 2), choque: { clave: `CAM|${planOrigen}|${ce}|2` } });
     if (!t) return;
+    {   // (11-nov-2026, Jordan) congelar la carga del 2º camión al programarlo
+      const f2 = refrescarFill(r), quien2 = await getUserEmail(), filas2 = new Map();
+      f2.orden.forEach(d => { if (!d._camion2) return; const k = `${docLinea(d)}|${matLinea(d)}`;
+        if (!filas2.has(k)) filas2.set(k, { fecha: hoyIsoPlan, cd_origen: planOrigen, ce, documento: docLinea(d), material: matLinea(d), camion: 2, origen: 'confirmado', updated_by: quien2, updated_at: new Date().toISOString() }); });
+      if (filas2.size) { const { error: e2 } = await supabase.from('abast_plan_linea_camion').upsert([...filas2.values()], { onConflict: 'fecha,cd_origen,ce,documento,material' });
+        if (e2) { showAlert('No se pudo congelar la carga del 2º camión: ' + e2.message, 'error'); return; } filas2.forEach((v, k) => r.asig.set(k, 2)); }
+    }
     if (!(await guardarProgramado(ce, 2, t))) return;
     await leerProgramados();
     refrescarFill(r);
@@ -9594,9 +9608,16 @@ async function renderPlanCarga(stage, opts = {}) {
   async function restablecerAuto(ce) {
     const r = resultado.find(x => x.ce === ce);
     if (!r || bloqueadoPorCierre()) return;
-    const { error } = await supabase.from('abast_plan_linea_camion').delete().eq('fecha', hoyIsoPlan).eq('cd_origen', planOrigen).eq('ce', ce);
+    // (11-nov-2026, Jordan) Si hay un camión programado, su carga confirmada no se toca.
+    const hayProg = !!(progMap.get(`${ce}|1`) || progMap.get(`${ce}|2`));
+    let q = supabase.from('abast_plan_linea_camion').delete().eq('fecha', hoyIsoPlan).eq('cd_origen', planOrigen).eq('ce', ce);
+    if (hayProg) q = q.neq('origen', 'confirmado');
+    const { error } = await q;
     if (error) { showAlert('No se pudo restablecer: ' + error.message, 'error'); return; }
-    r.asig.clear(); refrescarFill(r);
+    if (hayProg) { const { data: keep } = await supabase.from('abast_plan_linea_camion').select('documento,material,camion').eq('fecha', hoyIsoPlan).eq('cd_origen', planOrigen).eq('ce', ce);
+      r.asig.clear(); (keep || []).forEach(x => r.asig.set(`${x.documento}|${x.material}`, Number(x.camion))); }
+    else r.asig.clear();
+    refrescarFill(r);
     showAlert(`${r.nombre}: carga vuelve al llenado automático.`, 'success');
     draw();
   }
