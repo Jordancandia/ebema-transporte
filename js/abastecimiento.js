@@ -10,12 +10,13 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611111828';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611111828';
-import { getDatabase } from './data.js?v=202611111828';
+import { supabase } from './supabase-client.js?v=202611111843';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611111843';
+import { getDatabase } from './data.js?v=202611111843';
+import { COMUNAS_POR_REGION } from './chile-geo.js';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611111828';
-import { confirmar, pedirDato } from './confirmar.js?v=202611111828';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611111843';
+import { confirmar, pedirDato } from './confirmar.js?v=202611111843';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -409,14 +410,32 @@ function wirePatentes(panel, st, tr, draw) {
     if (!ok && !h && box) { h = document.createElement('div'); h.dataset.pathint = '1'; h.className = 'sv-sub'; h.style.cssText = 'margin:4px 0 0;color:#b5000b'; h.textContent = 'Formato AA-AA-11 o AA-11-11'; box.after(h); }
     if (ok && h) h.remove();
   };
+  // (11-nov-2026, Jordan) Carro guardado por camión: al indicar la patente del camión se completa el carro
+  // con el último usado (si está vacío o si lo había puesto el sistema para otra patente). Editable.
+  const carroDe = pat => { const n = normPatente(pat); if (!n) return '';
+    const b = ((tr && tr.carros) || []).find(x => normPatente(x.patente) === n) || choferesDePatente(tr, pat).find(x => x.patente_carro);
+    return b ? fmtPatente(b.patente_carro) : ''; };
+  const autoCarro = () => {
+    const pat = st.patCamion;
+    if (!normPatente(pat) || !patenteValida(pat)) return;
+    const car = carroDe(pat); if (!car) return;
+    const actual = normPatente(st.patCarro);
+    const puesto = st._carroAuto && st._carroAuto === actual && st._carroDe !== normPatente(pat);
+    if (actual && !puesto) return;
+    st.patCarro = car; st._carroAuto = normPatente(car); st._carroDe = normPatente(pat);
+    if (iCar) { iCar.value = car; marcar(iCar);
+      let h = iCar.closest('.sv-inp')?.parentElement?.querySelector('[data-carrohint]');
+      if (!h && iCar.closest('.sv-inp')) { h = document.createElement('div'); h.dataset.carrohint = '1'; h.className = 'sv-sub'; h.style.cssText = 'margin:4px 0 0;color:#15803d'; iCar.closest('.sv-inp').after(h); }
+      if (h) h.textContent = 'Carro guardado para este camión (editable)'; }
+  };
   [iCam, iCar].filter(Boolean).forEach(i => {
     i.setAttribute('maxlength', '9');
     i.setAttribute('autocomplete', 'off');
     i.style.textTransform = 'uppercase';
     if (!i.value) i.placeholder = i === iCam ? (/pendiente/i.test(i.placeholder) ? 'AA-AA-11 · pendiente' : 'AA-AA-11') : 'AA-AA-11 (opcional)';
     const fijar = () => { const f = fmtPatente(i.value); if (i.value !== f) i.value = f; st[i.dataset.k] = f; marcar(i); };
-    i.addEventListener('blur', () => { fijar(); if (i === iCam) sugerir(true); });
-    i.addEventListener('change', () => { fijar(); if (i === iCam) sugerir(true); });   // selección desde el autocompletar
+    i.addEventListener('blur', () => { fijar(); if (i === iCam) { autoCarro(); sugerir(true); } });
+    i.addEventListener('change', () => { fijar(); if (i === iCam) { autoCarro(); sugerir(true); } });   // selección desde el autocompletar
     if (i.value) marcar(i);
   });
   // Choferes registrados con la patente: propuesta editable.
@@ -454,6 +473,7 @@ function wirePatentes(panel, st, tr, draw) {
       }).join('')}</div>`;
     box.querySelectorAll('[data-patpick]').forEach(btn => btn.addEventListener('click', () => { const b = lst[+btn.dataset.patpick]; if (b) aplicar(b); }));
   }
+  autoCarro();
   sugerir(false);
   // Guardar: no se acepta una patente fuera de formato.
   const ok = panel.querySelector('[data-ok]');
@@ -612,11 +632,13 @@ async function anularCoordinacionVenta(doc, reparto) {
   return true;
 }
 async function loadTransportistasCoord() {
-  const [t, c, k, b] = await Promise.all([
+  const [t, c, k, b, cr] = await Promise.all([
     supabase.from('transports').select('id,razonSocial,rut,activo,telefono,email,tipo_servicio'),
     supabase.from('transports_choferes').select('rut,nombre,apellido,telefono,id_transporte,id_camion'),
     supabase.from('transports_camiones').select('id_camion,id_transporte,modelo,capacidad_ton'),
     supabase.from('abast_base_choferes').select('patente,chofer_nombre,chofer_rut,chofer_telefono,id_transporte,transportista,patente_carro,usos,ultimo_uso').order('ultimo_uso', { ascending: false }).limit(5000),
+    // (11-nov-2026, Jordan) Carro guardado por camión (abast_base_carros, se alimenta solo con cada coordinación)
+    supabase.from('abast_base_carros').select('patente,patente_carro,ultimo_uso').limit(5000),
   ]);
   // (14-oct-2026) Base de choferes por patente: se suma a los choferes del maestro del transportista.
   const base = (b && !b.error && b.data) || [];
@@ -637,6 +659,7 @@ async function loadTransportistasCoord() {
     choferes: chofM,
     camiones: k.data || [],
     base,
+    carros: (cr && !cr.error && cr.data) || [],
   };
 }
 // (5-oct-2026, Jordan) Se puede coordinar con un transportista BLOQUEADO del maestro (faltan RUT,
@@ -964,6 +987,48 @@ const kvDatosNV = r => [
   r._flete_um ? ['Flete última milla (ZFL0/ZFL1)', fmtCLP(r._flete_um)] : null,
   r._interlocutor ? ['Interlocutor comercial', r._interlocutor] : null,
 ];
+// (11-nov-2026, Jordan) La obra de la NV (CSV Drive) completa dirección y comuna al coordinar.
+// Direccion_Obra de SAP trae la ciudad al final («AVDA TUNICHE 2209 RANCAGUA»): la comuna se toma de
+// la comuna de la ruta si aparece en la dirección, si no de la comuna con que termina la dirección,
+// y si no de la ruta. Lo ya coordinado manda (no se pisa al editar).
+const _normCom = s => String(s ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+const COMUNAS_CL = Object.entries(COMUNAS_POR_REGION).flatMap(([reg, l]) => l.map(n => ({ n, reg, k: _normCom(n) }))).filter(c => c.k.length >= 4).sort((a, b) => b.k.length - a.k.length);
+function comunaDeObra(dir, comunaRuta) {
+  const k = _normCom(dir), kr = _normCom(comunaRuta);
+  if (!k) return comunaRuta || '';
+  if (kr && kr.length >= 4 && k.includes(kr)) return comunaRuta;
+  const m = COMUNAS_CL.find(c => k.endsWith(c.k));
+  // Si la ruta tiene comuna, la comuna de la dirección debe ser de la misma región (evita sectores homónimos).
+  const regR = kr ? (COMUNAS_CL.find(c => c.k === kr) || {}).reg : null;
+  if (m && (!regR || m.reg === regR)) return m.n;
+  return comunaRuta || (m ? m.n : '');
+}
+function obrasDe(row) {
+  const l = ((row && row._obras) || []).filter(o => o && (o.dir || o.id));
+  if (l.length) return l;
+  const id = String((row && row.id_obra) ?? '').trim(), dir = String((row && row.direccion_obra) ?? '').trim();
+  return id || dir ? [{ id, dir }] : [];
+}
+function obraIni(row, comunaRuta) {
+  const o = obrasDe(row).find(x => x.dir);
+  return o ? { direccion: o.dir, comuna: comunaDeObra(o.dir, comunaRuta), obra: o } : { direccion: '', comuna: '', obra: null };
+}
+// Selector / nota de obra en el bloque «Datos del cliente» (el clic copia dirección y comuna).
+function obraPickHtml(row, st) {
+  const l = obrasDe(row).filter(o => o.dir);
+  if (!l.length) return '';
+  if (l.length === 1) return `<div class="sv-sub" style="margin:0;max-width:none"><span class="material-symbols-outlined" style="font-size:14px;vertical-align:-2px">apartment</span> Obra de la NV${l[0].id ? ' ' + escapeHtml(l[0].id) : ''}: ${escapeHtml(l[0].dir)} <button type="button" class="sv-link" data-obra="0" style="border:none;background:none;color:#0b57d0;cursor:pointer;padding:0;font:inherit;text-decoration:underline">usar</button></div>`;
+  return `<div class="sv-sub" style="margin:0;max-width:none">La NV tiene ${l.length} obras (clic para usar su dirección):</div>
+    <div style="display:flex;flex-wrap:wrap;gap:6px">${l.map((o, i) => { const on = _normCom(o.dir) === _normCom(st.direccion);
+      return `<button type="button" class="sv-opt ${on ? 'is-on' : ''}" data-obra="${i}" style="padding:4px 10px;width:auto"><span class="material-symbols-outlined" style="font-size:16px">${on ? 'check_circle' : 'apartment'}</span><span style="text-align:left"><b>${escapeHtml(o.dir)}</b>${o.id ? ` <span class="sv-sub" style="display:inline;margin:0">obra ${escapeHtml(o.id)}</span>` : ''}</span></button>`; }).join('')}</div>`;
+}
+function wireObraPick(panel, row, st, comunaRuta, draw) {
+  const l = obrasDe(row).filter(o => o.dir);
+  panel.querySelectorAll('[data-obra]').forEach(b => b.addEventListener('click', () => {
+    const o = l[+b.dataset.obra]; if (!o) return;
+    st.direccion = o.dir; st.comuna = comunaDeObra(o.dir, comunaRuta) || st.comuna; draw();
+  }));
+}
 // ── Carga manual de pedidos de traslado sin entrega SAP (23-oct-2026, Jordan) ──
 // Pedidos de Traslados (1003/1081) y Crossdocking (4000): se suben a un camión CONSOLIDADO (camión CD del
 // centro) o CD-CLIENTE (camión directo) eligiendo el día de carga y las unidades. Entran SÓLO al Plan de
@@ -1485,12 +1550,13 @@ function showCoordVentaModal(row, ctx) {
     const puedeTipo = can('forzar_cd_cliente') || (!!row._nv_manual && can('venta_manual'));
     const entregaOpc = !!row._nv_manual;   // pedido manual: puede no tener entrega SAP
     const feSap = parseDateSAP(row.fe_entrega);
+    const ob = obraIni(row, row._comuna);   // (11-nov-2026, Jordan) obra de la NV antes que el maestro de clientes
     const st = {
       tipo: c.tipo_entrega || row._tipo_entrega || 'CONSOLIDABLE',
       fecha: c.fecha_entrega || (feSap ? isoLocal(feSap) : ''),
       entrega: c.n_entrega || '',
-      comuna: c.comuna || mc.comuna || row._comuna || '',
-      direccion: c.direccion || mc.direccion || '',
+      comuna: c.comuna || ob.comuna || mc.comuna || row._comuna || '',
+      direccion: c.direccion || ob.direccion || mc.direccion || '',
       telefono: c.telefono || mc.telefono || '',
       idTrans: c.id_transporte || '', transportista: c.transportista || '',
       choferNombre: c.chofer_nombre || '', choferRut: c.chofer_rut || '', choferTel: c.chofer_telefono || '',
@@ -1519,8 +1585,8 @@ function showCoordVentaModal(row, ctx) {
     const rowOfV = d => allV.find(x => String(x.doc_ventas ?? '').trim() === d) || {};
     const ceEfV = x => ceAltDe(x._coord) || String(x.ofvta ?? '').trim();
     const mismoCe = x => ceEfV(x) === (st.ceAlt || st.ceOrig);
-    const extraIni = x => { const xc = x._coord || {}, xm = x._mc || {};
-      return { entrega: xc.n_entrega || '', comuna: xc.comuna || xm.comuna || x._comuna || '', direccion: xc.direccion || xm.direccion || '', telefono: xc.telefono || xm.telefono || '' }; };
+    const extraIni = x => { const xc = x._coord || {}, xm = x._mc || {}, xo = obraIni(x, x._comuna);
+      return { entrega: xc.n_entrega || '', comuna: xc.comuna || xo.comuna || xm.comuna || x._comuna || '', direccion: xc.direccion || xo.direccion || xm.direccion || '', telefono: xc.telefono || xm.telefono || '' }; };
     st.extras = new Map(); st.q = '';
     if (grupo0) allV.filter(x => x._coord && x._coord.grupo_camion === grupo0).forEach(x => st.extras.set(String(x.doc_ventas).trim(), extraIni(x)));
     const tonSelV = () => (row._ton_num || 0) + [...st.extras.keys()].reduce((s, d) => s + (rowOfV(d)._ton_num || 0), 0);
@@ -1638,6 +1704,7 @@ function showCoordVentaModal(row, ctx) {
           <div class="sv-card" style="padding:14px 16px;display:flex;flex-direction:column;gap:10px">
             <div class="sv-b" style="font-size:14px">Datos del cliente</div>
             <div class="sv-sub" style="margin:0;max-width:none">ID ${escapeHtml(row._id_cliente || '—')} · ${escapeHtml(row._cliente || 'sin nombre en el maestro')}</div>
+            ${obraPickHtml(row, st)}
             <div style="display:grid;grid-template-columns:1fr 2fr;gap:8px">
               <div>${lbl('Comuna', 'comuna', false)}${inp('comuna', '')}</div>
               <div>${lbl('Dirección', 'direccion', true)}${inp('direccion', 'Calle, número, obra')}</div>
@@ -1684,6 +1751,7 @@ function showCoordVentaModal(row, ctx) {
       }));
       montarTransp(panel, st, tr, bad('idTrans'), draw);
       wirePatentes(panel, st, tr, draw);
+      wireObraPick(panel, row, st, row._comuna, draw);
       wireEditorCarga(panel, st, itemsNV, draw, { sinTope: true });
       panel.querySelector('[data-sel="chof"]')?.addEventListener('change', e => {
         const x = chofList()[+e.target.value];
@@ -3331,7 +3399,7 @@ function showCoordPv4000Modal(row, ctx) {
       fecha: c.fecha_entrega || (feSap ? isoLocal(feSap) : ''), entrega: c.n_entrega || '',
       // (18-oct-2026, Jordan) Tipo de entrega: CONSOLIDABLE (camión CD) o CD-CLIENTE (camión directo).
       tipo: c.tipo_entrega || 'CONSOLIDABLE',
-      cliente: c.nombre_cliente || '', comuna: c.comuna || '', direccion: c.direccion || '', telefono: c.telefono || '',
+      cliente: c.nombre_cliente || '', comuna: c.comuna || obraIni(row, row._comuna || lookupRuta(row.ruta).comuna).comuna || '', direccion: c.direccion || obraIni(row, row._comuna).direccion || '', telefono: c.telefono || '',
       idTrans: c.id_transporte || '', transportista: c.transportista || '',
       choferNombre: c.chofer_nombre || '', choferRut: c.chofer_rut || '', choferTel: c.chofer_telefono || '',
       patCamion: c.patente_camion || '', patCarro: c.patente_carro || '', horaPres: c.hora_presentacion || '' };
@@ -3557,7 +3625,7 @@ function showCoordTrasladoModal(row, ctx) {
     const st = {
       fecha: c.fecha_entrega || (parseDateSAP(row.fe_entrega) ? isoLocal(parseDateSAP(row.fe_entrega)) : ''),
       entregas: new Map([[main, c.n_entrega || '']]),
-      cliente: c.nombre_cliente || row._cliente || '', comuna: c.comuna || row._comuna || '', direccion: c.direccion || '', telefono: c.telefono || '',
+      cliente: c.nombre_cliente || row._cliente || '', comuna: c.comuna || obraIni(row, row._comuna).comuna || row._comuna || '', direccion: c.direccion || obraIni(row, row._comuna).direccion || '', telefono: c.telefono || '',
       idTrans: c.id_transporte || '', transportista: c.transportista || '',
       choferNombre: c.chofer_nombre || '', choferRut: c.chofer_rut || '', choferTel: c.chofer_telefono || '',
       patCamion: c.patente_camion || '', patCarro: c.patente_carro || '', err: false,
@@ -7539,7 +7607,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611111828');
+    const m = await import('./ind-plan-carga.js?v=202611111843');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
