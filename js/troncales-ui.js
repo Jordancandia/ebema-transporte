@@ -32,8 +32,8 @@ export function tonHtml(n) {
 }
 
 // Encabezado del shell: fecha y hora de la última actualización SAP de la vista
-import { confirmar } from './confirmar.js?v=202611111442';
-import { comentariosHabilitados, conteosComentarios, celdaComentarios, montarHilo, tomarFoco, abrirHiloSuelto } from './comentarios.js?v=202611111442';
+import { confirmar } from './confirmar.js?v=202611111456';
+import { comentariosHabilitados, conteosComentarios, celdaComentarios, montarHilo, tomarFoco, abrirHiloSuelto } from './comentarios.js?v=202611111456';
 export function setUltimaActualizacion(ts) {
   const el = document.getElementById('sv-upd');
   if (!el) return;
@@ -100,6 +100,8 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
   document.addEventListener('keydown', stage._fClose);
   // Tras una acción con { recargar } se reabre el detalle de la misma fila con datos frescos.
   st.drawer = st._reopen || null; st._reopen = null;
+  // (11-nov-2026, Jordan) Selección múltiple de filas para acciones masivas (AV.seleccion.acciones).
+  if (!st.sel) st.sel = new Set();
 
   const active = cfg.modes ? Object.assign({}, cfg, cfg.modes[st.mode] || cfg.modes[0]) : cfg;
   const AV = Object.assign({}, V, (active.v2mode || {}));
@@ -324,6 +326,13 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
     const selId = st.drawer;
     let cols = enFila ? AV.cols.concat([{ label: 'Plan de carga', html: r => celdaPlan(r) }]) : AV.cols;
     if (prioCfg) cols = [{ label: prioCfg.material ? 'Prio. línea' : 'Prio.', w: '92px', html: r => celdaPrio(r) }].concat(cols);
+    const selAcc = (AV.seleccion && AV.seleccion.acciones || []).filter(a => !a.perm || deps.can(a.perm));
+    if (selAcc.length) {
+      const vis = new Set(rowsAll.map(r => r.__rid)); [...st.sel].forEach(id => { if (!vis.has(id)) st.sel.delete(id); });
+      const todos = filt.slice(0, MAX).length > 0 && filt.slice(0, MAX).every(r => st.sel.has(r.__rid));
+      cols = [{ label: '', w: '34px', headHtml: `<input type="checkbox" data-selall title="Seleccionar todas las filas filtradas" ${todos ? 'checked' : ''} style="width:16px;height:16px;cursor:pointer">`,
+        html: r => `<input type="checkbox" data-selrow="${esc(r.__rid)}" ${st.sel.has(r.__rid) ? 'checked' : ''} style="width:16px;height:16px;cursor:pointer">` }].concat(cols);
+    }
     if (conComent) cols = cols.concat([{ label: 'Coment.', html: r => celdaComentarios(conteos.get(claveCom(r)) || 0, r.__rid) }]);
     // (8-oct-2026) Acciones en la fila principal (AV.filaAcciones(r) → [{ label, icon, run, tono }])
     if (AV.filaAcciones) cols = cols.concat([{ label: 'Acciones', html: r => {
@@ -343,9 +352,13 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
       ${headHTML()}
       ${kpis}
       ${filtros}
+      ${!esCal() && selAcc.length && st.sel.size ? `<div class="sv-card" style="padding:10px 14px;margin-bottom:10px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;position:sticky;top:60px;z-index:5;border:1px solid #b5000b33">
+        <b>${st.sel.size.toLocaleString('es-CL')} seleccionada${st.sel.size === 1 ? '' : 's'}</b>
+        ${selAcc.map((a, i) => `<button class="${a.primary ? 'sv-btn-p' : 'sv-btn'}" data-selacc="${i}"${a.tono === 'peligro' ? ' style="color:#b91c1c"' : ''}>${a.icon ? `<span class="material-symbols-outlined">${a.icon}</span>` : ''}${esc(a.label)}</button>`).join('')}
+        <button class="sv-btn" data-selclear><span class="material-symbols-outlined">close</span>Quitar selección</button></div>` : ''}
       ${esCal() ? calHTML(filt) : `<div class="sv-card">
         <div class="sv-tablewrap"><table class="sv-table" style="min-width:${AV.minW || '900px'}">
-          <thead><tr>${cols.map(c => `<th class="${c.al === 'r' ? 'r' : ''}"${c.w ? ` style="width:${c.w};min-width:${c.w};max-width:${c.w}"` : ''}>${esc(c.label)}</th>`).join('')}</tr></thead>
+          <thead><tr>${cols.map(c => `<th class="${c.al === 'r' ? 'r' : ''}"${c.w ? ` style="width:${c.w};min-width:${c.w};max-width:${c.w}"` : ''}>${c.headHtml || esc(c.label)}</th>`).join('')}</tr></thead>
           <tbody>${body}</tbody></table></div>
         <div class="sv-tfoot"><span>${filt.length.toLocaleString('es-CL')} de ${rowsAll.filter(r => !AV.origen || st.orig === '*' || String(AV.origen.of(r) ?? '').trim() === st.orig).length.toLocaleString('es-CL')} registros${filt.length > MAX ? ` · mostrando ${MAX}, usa los filtros para acotar` : ''}</span><span>${esc(nota)}</span></div>
       </div>`}
@@ -505,7 +518,7 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
     stage.querySelectorAll('[data-orig]').forEach(b => b.addEventListener('click', () => { st.orig = b.dataset.orig; st.chip = 'all'; st.chip2 = 'all'; draw(); }));
     stage.querySelectorAll('[data-mode]').forEach(b => b.addEventListener('click', () => {
       const m = +b.dataset.mode; if (m === st.mode) return;
-      st.mode = m; st.kpi = 'all'; st.chip = 'all'; st.chip2 = 'all'; renderTablaV2(stage, cfg, deps, viewKey);
+      st.mode = m; st.sel && st.sel.clear(); st.kpi = 'all'; st.chip = 'all'; st.chip2 = 'all'; renderTablaV2(stage, cfg, deps, viewKey);
     }));
     stage.querySelector('[data-clear]')?.addEventListener('click', () => {
       Object.assign(st, { kpi: 'all', chip: 'all', chip2: 'all', q: '', qDoc: '', dFrom: '', dTo: '', ex: {}, open: null }); draw();
@@ -531,6 +544,27 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
       exclusiones = await deps.loadExclusionesPlan();
       if (AV.onPlanChange) await AV.onPlanChange(rowsAll, ctx);
       draw();
+    }));
+    // (11-nov-2026) selección múltiple
+    stage.querySelectorAll('[data-selrow]').forEach(ch => {
+      ch.addEventListener('click', e => e.stopPropagation());
+      ch.addEventListener('change', () => { if (ch.checked) st.sel.add(ch.dataset.selrow); else st.sel.delete(ch.dataset.selrow); draw(); });
+    });
+    stage.querySelector('[data-selall]')?.addEventListener('change', e => {
+      const ids = filt.slice(0, 1500).map(r => r.__rid);
+      if (e.target.checked) ids.forEach(id => st.sel.add(id)); else ids.forEach(id => st.sel.delete(id));
+      draw();
+    });
+    stage.querySelector('[data-selclear]')?.addEventListener('click', () => { st.sel.clear(); draw(); });
+    stage.querySelectorAll('[data-selacc]').forEach(b => b.addEventListener('click', async () => {
+      const acc = (AV.seleccion && AV.seleccion.acciones || []).filter(a => !a.perm || deps.can(a.perm));
+      const a = acc[+b.dataset.selacc]; if (!a) return;
+      const rows = rowsAll.filter(r => st.sel.has(r.__rid)); if (!rows.length) return;
+      b.disabled = true;
+      try {
+        const res = await a.run(rows, ctx);
+        if (res) { st.sel.clear(); deps.clearRawCache(); renderTablaV2(stage, cfg, deps, viewKey); }
+      } finally { b.disabled = false; }
     }));
     stage.querySelectorAll('[data-facc]').forEach(b => b.addEventListener('click', async e => {
       e.stopPropagation();
