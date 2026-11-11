@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611111545';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611111545';
-import { getDatabase } from './data.js?v=202611111545';
+import { supabase } from './supabase-client.js?v=202611111549';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611111549';
+import { getDatabase } from './data.js?v=202611111549';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611111545';
-import { confirmar, pedirDato } from './confirmar.js?v=202611111545';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611111549';
+import { confirmar, pedirDato } from './confirmar.js?v=202611111549';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -7493,7 +7493,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611111545');
+    const m = await import('./ind-plan-carga.js?v=202611111549');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -7793,27 +7793,28 @@ function asignarCamionesCD(r) {
   // manual, REVEX y Ventas coordinadas (NV) se ubican primero; recién después entran las líneas subidas a mano
   // de las demás categorías (entregas de traslados / crossdocking) y al final el resto por niveles.
   const catAlta = d => Number(String(d._niv || '9').split('|')[0]) <= 3;
+  // (11-nov-2026, Jordan) Lo subido a mano SIEMPRE va en el camión, aunque supere la capacidad: se marca
+  // _sobreCap y al programar se alerta (sobrecarga), pero se deja programar.
   const subirManual = arr => arr.forEach(d => {
     if (d._manual !== 1 || d._enCamion) return;
-    if (acc + (d.ton || 0) <= r.cap + 1e-9) { d._enCamion = true; d._manualExcede = false; acc += d.ton || 0; }
-    else d._manualExcede = true;
+    d._enCamion = true; d._manualExcede = false; d._sobreCap = acc + (d.ton || 0) > r.cap + 1e-9; acc += d.ton || 0;
   });
   // (11-nov-2026, Jordan) Camión ARMADO A MANO: el camión CD lleva SÓLO lo que se subió a mano (NV, entregas…);
   // no se completa automático y todo el saldo queda habilitado para el 2º camión.
   const armadoMano = asig.get(CAMION_MANO_KEY) === 1;
   subirManual(orden.filter(catAlta));
-  if (!armadoMano) acc += llenarPorNivelesCD(orden.filter(d => catAlta(d) && d._manual === null), r.cap - acc, d => { d._enCamion = true; });
+  if (!armadoMano) acc += llenarPorNivelesCD(orden.filter(d => catAlta(d) && d._manual === null), Math.max(0, r.cap - acc), d => { d._enCamion = true; });
   subirManual(orden.filter(d => !catAlta(d)));
   // (23-oct-2026, Jordan) Se llena por niveles de prioridad (categoría → PRIORIDAD → orden); dentro de un
   // mismo nivel se elige la combinación de líneas que más llena el espacio libre y, a igual tonelaje, la
   // que sube más posiciones. Un nivel nunca cede espacio a uno de menor prioridad.
-  if (!armadoMano) acc += llenarPorNivelesCD(orden.filter(d => !catAlta(d) && d._manual === null), r.cap - acc, d => { d._enCamion = true; });
+  if (!armadoMano) acc += llenarPorNivelesCD(orden.filter(d => !catAlta(d) && d._manual === null), Math.max(0, r.cap - acc), d => { d._enCamion = true; });
   const excedente = orden.filter(d => !d._enCamion && d._manual !== 0).reduce((s, d) => s + (d.ton || 0), 0);
   const manual2 = orden.some(d => d._manual === 2);
   let segundoPropuesto = manual2 || (excedente > 0 && (armadoMano || excedente >= r.cap * UMBRAL_SEGUNDO_CAMION));
   let acc2 = 0;
-  orden.forEach(d => { if (d._manual === 2) { if (acc2 + (d.ton || 0) <= r.cap + 1e-9) { d._camion2 = true; acc2 += d.ton || 0; } else d._manualExcede = true; } });
-  if (segundoPropuesto) acc2 += llenarPorNivelesCD(orden.filter(d => (d._manual === null || d._manualExcede) && !d._enCamion && !d._camion2), r.cap - acc2, d => { d._camion2 = true; });
+  orden.forEach(d => { if (d._manual === 2) { d._camion2 = true; d._sobreCap = acc2 + (d.ton || 0) > r.cap + 1e-9; acc2 += d.ton || 0; } });   // (11-nov-2026) igual que el camión CD
+  if (segundoPropuesto) acc2 += llenarPorNivelesCD(orden.filter(d => (d._manual === null || d._manualExcede) && !d._enCamion && !d._camion2), Math.max(0, r.cap - acc2), d => { d._camion2 = true; });
   // (16-oct-2026) Si el excedente es una línea que por sí sola supera la capacidad (p.ej. peso
   // volumétrico erróneo), no cabe en ningún camión: no se propone un 2º camión vacío (0 t).
   if (segundoPropuesto && !manual2 && acc2 <= 1e-9) segundoPropuesto = false;
@@ -9365,6 +9366,8 @@ async function renderPlanCarga(stage, opts = {}) {
     if (!r) return;
     if (!PUEDE_TRANSPORTE) { showAlert('Sólo el perfil OWNER puede agregar o modificar los datos del transporte.', 'error'); return; }
     const f = refrescarFill(r);
+    // (11-nov-2026, Jordan) Sobrecarga: se alerta pero se deja programar.
+    if ((f.cargado || 0) > r.cap + 0.05 && !await confirmar(`El camión CD de ${r.nombre} SUPERA la capacidad:\n\n${t1(f.cargado)} t cargadas de ${fmtNum(r.cap, 0)} t (${Math.round((f.cargado || 0) / r.cap * 100)}%) · exceso ${t1(f.cargado - r.cap)} t.\n\n¿Programar igual?`, { aceptar: 'Programar igual', cancelar: 'Revisar carga', tono: 'peligro', icono: 'warning' })) return;
     // (29-oct-2026) Camión CD con retiro Fábrica-Sucursal unido: por defecto el transporte (y día) del retiro.
     const ru = (r.retirosUnidos || [])[0], eRu = ru ? ru.e : null;
     const iniRu = eRu ? { id_transporte: eRu.id_transporte, transportista: eRu.transportista, chofer_nombre: eRu.chofer_nombre, chofer_rut: eRu.chofer_rut,
@@ -9413,6 +9416,7 @@ async function renderPlanCarga(stage, opts = {}) {
     if (!r) return;
     if (!PUEDE_TRANSPORTE) { showAlert('Sólo el perfil OWNER puede agregar o modificar los datos del transporte.', 'error'); return; }
     if (!segAcept.has(ce)) { showAlert('Primero acepta el 2º camión.', 'error'); return; }
+    if ((r.tonSegundo || 0) > r.cap + 0.05 && !await confirmar(`El 2º camión de ${r.nombre} SUPERA la capacidad:\n\n${t1(r.tonSegundo)} t de ${fmtNum(r.cap, 0)} t (${Math.round((r.tonSegundo || 0) / r.cap * 100)}%) · exceso ${t1(r.tonSegundo - r.cap)} t.\n\n¿Programar igual?`, { aceptar: 'Programar igual', cancelar: 'Revisar carga', tono: 'peligro', icono: 'warning' })) return;
     const t = await showTransporteCamionModal({ titulo: `2º camión → ${r.nombre}`, sub: `${t1(r.tonSegundo)} t de ${fmtNum(r.cap, 0)} t · día objetivo ${diaCorto(diaObj(r))}`,
       ini: progMap.get(`${ce}|2`) || coordMap.get(`${ce}|2`) || {}, otros: otrosProgramados(ce, 2), fechaDef: isoLocal(diaObj(r)), presentacion: presCam(ce, 2), choque: { clave: `CAM|${planOrigen}|${ce}|2` } });
     if (!t) return;
@@ -9498,7 +9502,12 @@ async function renderPlanCarga(stage, opts = {}) {
       if (d0 && !yaVa) {
         const usado = cam === 1 ? (f0.cargado || 0) : (f0.tonSegundo || 0);
         const libre = Math.max(0, r.cap - usado);
-        if ((d0.ton || 0) > libre + 1e-6) { await bajarParaSubir(r, d0, f0, libre, cam); return; }
+        if ((d0.ton || 0) > libre + 1e-6) {
+          // (11-nov-2026, Jordan) Alerta de sobrecarga, pero se permite subir igual.
+          const sub = await confirmar(`La línea ${docu} · ${mat} (${t1(d0.ton || 0)} t) no cabe: quedan ${t1(libre)} t libres de ${fmtNum(r.cap, 0)} t.\n\n¿Subirla igual (el camión queda sobre su capacidad) o bajar carga para hacerle espacio?`,
+            { aceptar: 'Subir igual (sobrecarga)', cancelar: 'Bajar carga', tono: 'peligro', icono: 'warning' });
+          if (!sub) { await bajarParaSubir(r, d0, f0, libre, cam); return; }
+        }
       }
     }
     const { error } = cam === 'auto'
@@ -9947,6 +9956,7 @@ async function renderPlanCarga(stage, opts = {}) {
       const e = estadoV2(r);
       return kv([
           ['Capacidad', `${fmtNum(r.cap, 0)} t`], ['Cargado', `${t1(fill.cargado)} t · ${Math.min(r.pct, 100)}%`],
+          (fill.cargado || 0) > r.cap + 0.05 ? ['Sobrecarga', `<span style="color:#b5000b;font-weight:700">⚠ ${t1(fill.cargado - r.cap)} t sobre la capacidad (${Math.round(fill.cargado / r.cap * 100)}%) · se puede programar igual</span>`] : null,
           r.faltan <= 0.05 && r.sobrecarga > 0.05 ? ['Sobra', `<span style="color:#15803d">+${t1(r.sobrecarga)} t</span>`] : ['Faltan', `<span style="color:${r.pct < 70 ? '#b5000b' : 'inherit'}">${t1(r.faltan)} t</span>`],
           r.faltan > 0.05 && r.sobrecarga > 0.05 ? ['No caben', `<span style="color:#a16207">${t1(r.sobrecarga)} t · líneas más grandes que el espacio libre (no se dividen)</span>`] : null,
           ['Estado', pillEstado(e)],
