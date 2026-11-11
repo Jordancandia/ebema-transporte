@@ -10,12 +10,12 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611111549';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611111549';
-import { getDatabase } from './data.js?v=202611111549';
+import { supabase } from './supabase-client.js?v=202611111556';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611111556';
+import { getDatabase } from './data.js?v=202611111556';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611111549';
-import { confirmar, pedirDato } from './confirmar.js?v=202611111549';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611111556';
+import { confirmar, pedirDato } from './confirmar.js?v=202611111556';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -7493,7 +7493,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611111549');
+    const m = await import('./ind-plan-carga.js?v=202611111556');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -9667,19 +9667,24 @@ async function renderPlanCarga(stage, opts = {}) {
             <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
               <span class="sv-pill ${excede ? 'bad' : pct >= PCT_PROGRAMAR_CD ? 'ok' : 'warn'}"><i></i>${t1(tot)} t de ${fmtNum(r.cap, 0)} t · ${pct}%</span>
               <span class="sv-sub" style="margin:0">${soloEnt ? `${(r.retirosUnidos || []).length ? `Retiro unido ${t1(tonRetF())} t + ` : ''}Entregas ${t1(tonSel)} t` : `Retiro ${t1(tonRet)} t + entregas ${t1(tonSel)} t`}</span>
-              ${excede ? '<b style="color:#b5000b">Supera la capacidad del camión: quita entregas.</b>' : ''}</div>
+              ${excede ? `<b style="color:#b5000b">⚠ Supera la capacidad del camión en ${t1(tot - r.cap)} t: puedes guardar igual (sobrecarga).</b>` : ''}</div>
             <div class="pc-tbl"><table class="sv-table"><thead><tr><th style="width:28px"></th><th style="width:28px"></th><th>Documento</th><th>Material</th><th>Fecha</th><th class="r">Ton</th></tr></thead>
               <tbody>${filas || '<tr><td colspan="6" class="sv-sub">No hay entregas en el plan de esta sucursal.</td></tr>'}</tbody></table></div>
           </div>
           <div class="sv-dr-f"><span class="sv-dr-note">${sel.size} ${sel.size === 1 ? 'línea seleccionada' : 'líneas seleccionadas'}</span>
             <div style="display:flex;gap:8px"><button class="sv-btn" data-x>Cancelar</button>
-            <button class="sv-btn-p" data-guardar ${excede || sinRet ? 'disabled' : ''} title="${sinRet ? 'Elige al menos un retiro' : ''}"><span class="material-symbols-outlined">${soloEnt ? 'checklist' : 'merge'}</span>${soloEnt ? 'Guardar camión CD' : 'Armar camión CD'}</button></div></div></aside>`;
+            <button class="sv-btn-p" data-guardar data-excede="${excede ? t1(tot - r.cap) + '|' + pct : ''}" ${sinRet ? 'disabled' : ''} title="${sinRet ? 'Elige al menos un retiro' : ''}"><span class="material-symbols-outlined">${soloEnt ? 'checklist' : 'merge'}</span>${soloEnt ? 'Guardar camión CD' : 'Armar camión CD'}</button></div></div></aside>`;
         wrap.querySelectorAll('[data-x]').forEach(b => b.addEventListener('click', () => cerrar(false)));
         wrap.querySelectorAll('[data-ind]').forEach(b => { b.indeterminate = true; });
         wrap.querySelectorAll('[data-ug]').forEach(b => b.addEventListener('change', () => { (grupos.get(b.dataset.ug) || []).forEach(i => b.checked ? sel.add(i) : sel.delete(i)); pintar(); }));
         wrap.querySelectorAll('[data-ul]').forEach(b => b.addEventListener('change', () => { const i = Number(b.dataset.ul); b.checked ? sel.add(i) : sel.delete(i); pintar(); }));
         wrap.querySelectorAll('[data-ur]').forEach(b => b.addEventListener('change', () => { b.checked ? selRet.add(b.dataset.ur) : selRet.delete(b.dataset.ur); pintar(); }));
-        wrap.querySelector('[data-guardar]')?.addEventListener('click', () => cerrar(true));
+        // (11-nov-2026, Jordan) Sobrecarga: se alerta pero se deja guardar.
+        wrap.querySelector('[data-guardar]')?.addEventListener('click', async e => {
+          const ex = e.currentTarget.dataset.excede;
+          if (ex) { const [t, p] = ex.split('|'); if (!await confirmar(`El camión CD de ${r.nombre} supera su capacidad en ${t} t (${p}%).\n\n¿Guardar igual?`, { aceptar: 'Guardar igual', cancelar: 'Revisar', tono: 'peligro', icono: 'warning' })) return; }
+          cerrar(true);
+        });
       };
       document.body.appendChild(wrap);
       pintar();

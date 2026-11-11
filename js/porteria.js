@@ -13,10 +13,10 @@
 //  SQL: supabase/sql/2026-10-18_porteria_reloj_control.sql
 //       supabase/sql/2026-11-01_porteria_v2_pestanas_alertas.sql
 // ============================================================================
-import { supabase } from './supabase-client.js?v=202611111549';
+import { supabase } from './supabase-client.js?v=202611111556';
 import { escapeHtml as esc, showAlert, toCSV, downloadFile } from './utils.js';
-import { confirmar, pedirDato } from './confirmar.js?v=202611111549';
-import { getPerfil, PERFIL_UMBRALES } from './permisos.js?v=202611111549';
+import { confirmar, pedirDato } from './confirmar.js?v=202611111556';
+import { getPerfil, PERFIL_UMBRALES } from './permisos.js?v=202611111556';
 
 const CENTRO = '1003';
 const TZ = 'America/Santiago';
