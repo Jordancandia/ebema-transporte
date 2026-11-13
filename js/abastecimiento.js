@@ -10,13 +10,13 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611111843';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611111843';
-import { getDatabase } from './data.js?v=202611111843';
+import { supabase } from './supabase-client.js?v=202611131143';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611131143';
+import { getDatabase } from './data.js?v=202611131143';
 import { COMUNAS_POR_REGION } from './chile-geo.js';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611111843';
-import { confirmar, pedirDato } from './confirmar.js?v=202611111843';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611131143';
+import { confirmar, pedirDato } from './confirmar.js?v=202611131143';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -3994,7 +3994,10 @@ const VISTAS_TRONCAL = {
         // (4-nov-2026, Jordan) SAP manda: sólo hay SALDO si la línea registra entrega PARCIAL (entregado > 0 y
         // todavía pendiente). Si SAP no registra nada entregado, el retiro no se hizo: la línea sigue pendiente
         // completa y vuelve al plan, aunque haya quedado en un camión programado de un plan anterior.
-        const _vjRet = detalle.filter(d => d.pendiente > 0 && d.entregado > 0 && RETIROS_MAT_CARGADAS.has(`${oc}|${String(d.material ?? '').trim()}`));
+        // (12-nov-2026, Jordan) Corrige la regla «SAP manda» del 4-nov: una línea que ya viajó con la entrega
+        // coordinada es SALDO SIN COORDINAR aunque SAP no registre nada entregado (ej. OC 4500208917 mat 602270,
+        // viajó 2 veces a Talca con entregado 0). Se ve como saldo y no entra al plan hasta re-coordinar la OC.
+        const _vjRet = detalle.filter(d => d.pendiente > 0 && RETIROS_MAT_CARGADAS.has(`${oc}|${String(d.material ?? '').trim()}`));
         const _entRet = String(estObj.entrega_entrante ?? '').trim();
         const _reCoordRet = !!_entRet && !RETIROS_ENT_CARGADAS.has(_entRet);   // entrega nueva → ya re-coordinada
         const _saldoSinCoordRet = _vjRet.length > 0 && !_reCoordRet;
@@ -7607,7 +7610,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611111843');
+    const m = await import('./ind-plan-carga.js?v=202611131143');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -8208,7 +8211,9 @@ async function renderPlanCarga(stage, opts = {}) {
         if (!cargados.has(`${d2}|${m2}`)) continue;
         // (4-nov-2026, Jordan) SAP manda: sin nada entregado en la línea, el retiro no se hizo y sigue
         // pendiente completo (vuelve al plan). Sólo queda fuera el saldo de una entrega PARCIAL.
-        if (!(parseNum(r2.ctd_entregada) > 0)) continue;
+        // (12-nov-2026, Jordan) Ya NO: aunque SAP no registre nada entregado, la línea que viajó con esta
+        // entrega queda fuera del plan (se ve como SALDO SIN COORDINAR en Retiros de Fábrica).
+        // if (!(parseNum(r2.ctd_entregada) > 0)) continue;
         const e2 = tx((estadosRetiro[d2] || {}).entrega_entrante);
         if (e2 && !cargadosEnt.has(e2)) continue;   // entrega nueva → el saldo vuelve al plan
         retirosRaw.splice(i, 1);
