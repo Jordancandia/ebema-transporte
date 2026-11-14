@@ -10,13 +10,13 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611141113';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611141113';
-import { getDatabase } from './data.js?v=202611141113';
+import { supabase } from './supabase-client.js?v=202611141141';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611141141';
+import { getDatabase } from './data.js?v=202611141141';
 import { COMUNAS_POR_REGION } from './chile-geo.js';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611141113';
-import { confirmar, pedirDato } from './confirmar.js?v=202611141113';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611141141';
+import { confirmar, pedirDato } from './confirmar.js?v=202611141141';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -311,9 +311,13 @@ function tipoQuiebre(sd) {
 // ── Estado de coordinación de retiros (persistente) ─────────────────────────
 async function loadEstadosRetiro() {
   // (3-oct-2026) Incluye los datos de transporte de la coordinación (Retiro RM).
-  const { data, error } = await supabase.from('abast_retiro_estado').select('doc_compr, estado, tipo_retiro, entrega_entrante, tipo_local_rm, fab_direccion, fab_comuna, fab_contacto, fab_telefono, fecha_retiro, lineas_retiro, updated_at, updated_by, id_transporte, transportista, chofer_nombre, chofer_rut, chofer_telefono, patente_camion, patente_carro');
+  // (14-nov-2026, Jordan) `acopio`: la OC se retira para acopiar en destino y NO suma al Plan de Carga.
+  // Si la columna aún no existe en la BD (migración 2026-11-14 sin aplicar) se vuelve a leer sin ella.
+  const COLS = 'doc_compr, estado, tipo_retiro, entrega_entrante, tipo_local_rm, fab_direccion, fab_comuna, fab_contacto, fab_telefono, fecha_retiro, lineas_retiro, updated_at, updated_by, id_transporte, transportista, chofer_nombre, chofer_rut, chofer_telefono, patente_camion, patente_carro';
+  let { data, error } = await supabase.from('abast_retiro_estado').select(COLS + ', acopio');
+  if (error && /acopio/i.test(error.message || '')) { console.warn('abast_retiro_estado.acopio no existe aún: aplica supabase/sql/2026-11-14_retiro_acopio_no_suma_plan.sql'); ({ data, error } = await supabase.from('abast_retiro_estado').select(COLS)); }
   const m = {};
-  if (!error) (data || []).forEach(r => { const { doc_compr, ...rest } = r; m[String(doc_compr)] = rest; });
+  if (!error) (data || []).forEach(r => { const { doc_compr, ...rest } = r; rest.acopio = !!rest.acopio; m[String(doc_compr)] = rest; });
   return m;
 }
 
@@ -2702,8 +2706,12 @@ function showCoordRetiroModal(row, ctx) {
       // (7-oct-2026) Productos a retirar por OC (principal y acompañantes): oc → (material → { on, cant }).
       // Sin selección guardada = todo el pendiente.
       lin: new Map(),
+      // (14-nov-2026, Jordan) ACOPIO por OC: oc → true/false marcado por el usuario. Sin marca = regla automática
+      // (FAB-CD con destino distinto del CD 1003 → acopio). Una OC de acopio NO suma al Plan de Carga.
+      acop: new Map(),
     };
     const MAIN = String(row.doc_compr).trim();
+    if (editando) st.acop.set(MAIN, !!row._acopio);
     const initLin = (oc, x) => { if (!st.lin.has(oc)) st.lin.set(oc, new Map((x._detalle || []).map(d => { const c = cantRetiroLinea({ lineas_retiro: x._lineas_retiro }, d.material, d.pendiente);
       return [String(d.material ?? '').trim(), { on: c > 0, cant: c > 0 ? c : d.pendiente }]; }))); };
     initLin(MAIN, row);
@@ -2715,7 +2723,7 @@ function showCoordRetiroModal(row, ctx) {
     // OC ya coordinadas en el mismo camión (misma patente y fecha) se precargan como acompañantes.
     if (editando && t0.patente_camion && row._fecha_retiro) {
       allRows.filter(x => x._modo === 'RM' && x._fecha_retiro === row._fecha_retiro && normPatente((x._transp || {}).patente_camion) === normPatente(t0.patente_camion))
-        .forEach(x => { st.extras.set(String(x.doc_compr), { entrega: x._entrega_entrante || '', dir: x._fab_direccion || '', comuna: x._fab_comuna || '', contacto: x._fab_contacto || '', tel: x._fab_telefono || '' }); initLin(String(x.doc_compr), x); });
+        .forEach(x => { st.extras.set(String(x.doc_compr), { entrega: x._entrega_entrante || '', dir: x._fab_direccion || '', comuna: x._fab_comuna || '', contacto: x._fab_contacto || '', tel: x._fab_telefono || '' }); initLin(String(x.doc_compr), x); st.acop.set(String(x.doc_compr), !!x._acopio); });
     }
 
     const wrap = document.createElement('div');
@@ -2763,6 +2771,22 @@ function showCoordRetiroModal(row, ctx) {
     const camList = () => tr.camiones.filter(x => String(x.id_transporte ?? '').trim() === st.idTrans.trim() && String(x.id_camion ?? '').trim());
     const xRow = oc => oc === MAIN ? row : (rowOf(oc) || {});
     const linOf = oc => st.lin.get(oc) || new Map();
+    // (14-nov-2026, Jordan) Acopio por OC. Aplica a FAB-CD y FAB-SUC (no a FAB-CLTE: va al cliente).
+    const ceOf = oc => String(xRow(oc).ce ?? '').trim();
+    const acopioAplica = () => rm() && !!st.tipo && st.tipo !== 'FAB-CLTE';
+    const acopioAuto = oc => st.tipo === 'FAB-CD' && ceOf(oc) !== '1003';
+    const acopioOf = oc => acopioAplica() && (st.acop.has(oc) ? !!st.acop.get(oc) : acopioAuto(oc));
+    const acopioHtml = (oc, compacto) => {
+      if (!acopioAplica()) return '';
+      const on = acopioOf(oc), auto = !st.acop.has(oc), O = escapeHtml(oc);
+      const dest = `${ceOf(oc)} ${getNombreCentro(ceOf(oc))}`.trim();
+      return `<label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;padding:${compacto ? '8px 10px' : '10px 12px'};border:1px solid ${on ? '#f59e0b' : 'var(--sv-line)'};border-radius:6px;background:${on ? '#fffbeb' : 'transparent'}">
+        <input type="checkbox" data-acop="${O}" ${on ? 'checked' : ''} style="margin-top:3px">
+        <span style="flex:1;min-width:0"><b style="font-size:13px;color:${on ? '#92400e' : 'inherit'}">Acopio · no suma al Plan de Carga</b>
+          <div class="sv-sub" style="margin:2px 0 0;max-width:none">${on
+            ? `El material se acopia en <b>${escapeHtml(dest)}</b> y su salida se planifica después (traslado / NV / entrega SAP). Queda en Seguimiento de Carga como ACOPIO.`
+            : `Marca si esta OC sólo se trae para acopiar en ${escapeHtml(dest)}; si no, ${st.tipo === 'FAB-CD' ? 'suma al camión CD de su destino' : 'arma camión directo a la sucursal'}.`}${auto && acopioAuto(oc) ? ' <i>(propuesto: consolida en CD con destino distinto del CD)</i>' : ''}</div></span></label>`;
+    };
     const detOf = (oc, m) => (xRow(oc)._detalle || []).find(d => String(d.material ?? '').trim() === m) || {};
     const cantOk = (l, d) => isFinite(l.cant) && l.cant > 0 && l.cant <= (d.pendiente || 0) + 1e-9;
     const lineasOk = oc => { const on = [...linOf(oc)].filter(([, l]) => l.on); return on.length > 0 && on.every(([m, l]) => cantOk(l, detOf(oc, m))); };
@@ -2809,13 +2833,14 @@ function showCoordRetiroModal(row, ctx) {
               ${tiposOpc().map(([v, d]) => `<button class="sv-opt ${st.tipo === v ? 'is-on' : ''}" data-tipo="${v}" style="flex-direction:column;align-items:flex-start;gap:2px"><b>${v}</b><span class="sv-sub" style="margin:0">${d}</span></button>`).join('')}
             </div>
             <div class="sv-sub" style="margin-top:6px;max-width:none">Regla automática: ${escapeHtml(row._tipo_auto || '')} (${fmtNum(row._ton_num, 1)} t; umbral 23,8 t)</div></div>
+          ${acopioHtml(MAIN, false)}
           <div style="display:grid;grid-template-columns:220px 1fr;gap:12px">
             <div>${lbl('Fecha de retiro (carga)', 'fecha', rm())}
               <label class="sv-inp" style="${inpS('fecha')}"><span class="material-symbols-outlined">calendar_today</span><input type="date" data-k="fecha" value="${escapeHtml(st.fecha)}" style="width:140px"></label></div>
             <div>${lbl('Entrega entrante', 'entrega', rm())}
               <label class="sv-inp" style="${inpS('entrega')}"><span class="material-symbols-outlined">tag</span><input class="is-mono" data-k="entrega" value="${escapeHtml(st.entrega)}" placeholder="N° de entrega" style="width:100%"></label></div>
           </div>
-          ${rm() ? '<div class="sv-sub" style="margin-top:-10px;max-width:none">La OC entra al Plan de Carga del día de su fecha de retiro (día en que se carga).</div>' : ''}
+          ${rm() ? `<div class="sv-sub" style="margin-top:-10px;max-width:none">${acopioOf(MAIN) ? 'OC de <b>acopio</b>: no entra al Plan de Carga; la fecha de retiro es el día en que el camión carga en fábrica.' : 'La OC entra al Plan de Carga del día de su fecha de retiro (día en que se carga).'}</div>` : ''}
           ${lineasHtml(MAIN)}
           <div class="sv-card" style="padding:14px 16px;display:flex;flex-direction:column;gap:10px">
             <div class="sv-b" style="font-size:14px">Fábrica y contacto</div>
@@ -2877,6 +2902,7 @@ function showCoordRetiroModal(row, ctx) {
                   <div>${lbl('Comuna', 'x_comuna_' + oc, true)}${xinp(oc, 'comuna', '')}</div>
                   <div>${lbl('Contacto', 'x_contacto_' + oc, true)}${xinp(oc, 'contacto', 'Nombre')}</div>
                   <div>${lbl('Teléfono', 'x_tel_' + oc, true)}${xinp(oc, 'tel', '+56 9…')}</div></div>` : '<div class="sv-sub" style="margin:0">Mismo proveedor: usa la dirección y el contacto de arriba.</div>'}
+                ${acopioHtml(oc, true)}
                 ${lineasHtml(oc, true)}
               </div>`; }).join('')}
             <label class="sv-inp" style="width:100%;box-sizing:border-box"><span class="material-symbols-outlined">search</span><input data-q value="${escapeHtml(st.q)}" placeholder="Buscar OC o proveedor para agregar" style="width:100%"></label>
@@ -3008,7 +3034,8 @@ function showCoordRetiroModal(row, ctx) {
       });
       panel.querySelectorAll('[data-k]').forEach(i => i.addEventListener(i.type === 'checkbox' || i.type === 'date' ? 'change' : 'input', () => { st[i.dataset.k] = i.type === 'checkbox' ? i.checked : i.value; }));
       panel.querySelectorAll('[data-x]').forEach(i => i.addEventListener('input', () => { const e = st.extras.get(i.dataset.x); if (e) e[i.dataset.xk] = i.value; }));
-      panel.querySelectorAll('[data-xdel]').forEach(b => b.addEventListener('click', () => { st.extras.delete(b.dataset.xdel); st.lin.delete(b.dataset.xdel); draw(); }));
+      panel.querySelectorAll('[data-xdel]').forEach(b => b.addEventListener('click', () => { st.extras.delete(b.dataset.xdel); st.lin.delete(b.dataset.xdel); st.acop.delete(b.dataset.xdel); draw(); }));
+      panel.querySelectorAll('[data-acop]').forEach(i => i.addEventListener('change', () => { st.acop.set(i.dataset.acop, i.checked); draw(); }));
       panel.querySelector('[data-q]')?.addEventListener('input', e => { st.q = e.target.value; const c = panel.querySelector('[data-cands]'); if (c) { c.innerHTML = candHtml(); wireCands(); } });
       wireCands();
       wireLineas();
@@ -3053,11 +3080,11 @@ function showCoordRetiroModal(row, ctx) {
           patente_camion: fmtPatente(st.patCamion) || null, patente_carro: fmtPatente(st.patCarro) || null,
         } : TRANSP_NULL;
         const base = { estado: 'coordinado', tipo_local_rm: st.modo, tipo_retiro: st.tipo || null, fecha_retiro: st.fecha || null, ...transp, updated_by: email, updated_at: now };
-        const filas = [{ ...base, doc_compr: String(row.doc_compr).trim(), entrega_entrante: st.entrega.trim() || null, lineas_retiro: lineasSel(MAIN),
+        const filas = [{ ...base, doc_compr: String(row.doc_compr).trim(), entrega_entrante: st.entrega.trim() || null, lineas_retiro: lineasSel(MAIN), acopio: acopioOf(MAIN),
           fab_direccion: fabDir || null, fab_comuna: st.comuna.trim() || null, fab_contacto: st.contacto.trim() || null, fab_telefono: st.tel.trim() || null }];
         if (rm()) st.extras.forEach((x, oc) => {
           const xr = rowOf(oc) || {}; const mismo = mismoProv(xr);
-          filas.push({ ...base, doc_compr: String(oc).trim(), entrega_entrante: x.entrega.trim() || null, lineas_retiro: lineasSel(oc),
+          filas.push({ ...base, doc_compr: String(oc).trim(), entrega_entrante: x.entrega.trim() || null, lineas_retiro: lineasSel(oc), acopio: acopioOf(oc),
             fab_direccion: mismo ? (fabDir || null) : (x.dir.trim() || null), fab_comuna: mismo ? (st.comuna.trim() || null) : (x.comuna.trim() || null),
             fab_contacto: mismo ? (st.contacto.trim() || null) : (x.contacto.trim() || null), fab_telefono: mismo ? (st.tel.trim() || null) : (x.tel.trim() || null) });
         });
@@ -3067,13 +3094,15 @@ function showCoordRetiroModal(row, ctx) {
           const x = String(f.doc_compr) === String(row.doc_compr).trim() ? row : (rowOf(f.doc_compr) || {});
           const ce = String(x.ce ?? row.ce ?? '').trim();
           return { doc: f.doc_compr, tipo: st.tipo, ce, fechaCarga: st.fecha, origen: x.nombre_1 || 'Fábrica',
-            destino: st.tipo === 'FAB-CD' ? '1003 CD Quilicura' : st.tipo === 'FAB-CLTE' ? `Cliente: ${x._pv_nombre_cliente || ''}` : `${ce} ${getNombreCentro(ce)}`,
+            destino: (st.tipo === 'FAB-CD' ? '1003 CD Quilicura' : st.tipo === 'FAB-CLTE' ? `Cliente: ${x._pv_nombre_cliente || ''}` : `${ce} ${getNombreCentro(ce)}`) + (f.acopio ? ' · ACOPIO' : ''),
             transp, lineas: (x._detalle || []).map(d => ({ d, c: cantRetiroLinea(f, d.material, d.pendiente) })).filter(o => o.c > 0).map(({ d, c }) => lineaSegCoord({ tipo_carga: 'Retiro Fábrica', documento: f.doc_compr, n_entrega: f.entrega_entrante || '', material: d.material,
               nombre: d.texto_breve, cantidad: c, ton: d.pesoU != null ? calcTon(d.pesoU, c) : d.ton, pedido_venta: x.documento || '', proveedor: x.nombre_1 || '', cliente: x._pv_nombre_cliente || '' })) };
         }));
         else await quitarSeguimientoCoord(filas.map(f => f.doc_compr));
         const pendG = rm() && st.tipo !== 'FAB-CD' ? pendTranspRetiro(transp) : [];
+        const nAcop = filas.filter(f => f.acopio).length;
         showAlert((filas.length > 1 ? `${filas.length} OC coordinadas en el camión ${transp.patente_camion || '(patente pendiente)'}` : `OC ${row.doc_compr} coordinada como ${rm() ? 'Retiro RM' : 'Retiro local'}`)
+          + (nAcop ? (filas.length === 1 ? ' · ACOPIO: no suma al Plan de Carga' : ` · ${nAcop} OC de acopio (no suman al plan)`) : '')
           + (pendG.length ? ` · pendiente: ${pendG.join(', ')}` : ''), 'success');
         fin(true);
       });
@@ -3860,6 +3889,7 @@ const VISTAS_TRONCAL = {
     chipFilter: { campo: 'ce', label: 'Centro' },
     extraChips: [
       { campo: '_tipo_retiro', label: 'Tipo Retiro' },
+      { campo: '_acopio_lbl', label: 'Acopio' },   // (14-nov-2026)
       { campo: '_estado_lbl', label: 'Coordinación' },
       { campo: '_alerta', label: 'Alerta' },
     ],
@@ -3932,10 +3962,10 @@ const VISTAS_TRONCAL = {
     },
     expand: {
       key: 'doc_compr', idKey: 'doc_compr', numCols: 3,
-      headers: ['Orden de Compra','Contrato de Compra','Centro Destino','Nombre Cliente','Nombre Vendedor','Centro Expedición','Ruta','Tipo Retiro','Entrega Entrante','ID Material','Nombre Material','Cantidad Pedido','Cantidad Pendiente','Ton SKU'],
+      headers: ['Orden de Compra','Contrato de Compra','Centro Destino','Nombre Cliente','Nombre Vendedor','Centro Expedición','Ruta','Tipo Retiro','Acopio','Entrega Entrante','ID Material','Nombre Material','Cantidad Pedido','Cantidad Pendiente','Ton SKU'],
       build(row) {
         return (row._detalle || []).map(d => [
-          d.doc_compr, row.contr, d.ce, row._pv_nombre_cliente, row._pv_nombre_vendedor, row._pv_ce_expedicion, row._pv_ruta, row._tipo_retiro, row._entrega_entrante, d.material, d.texto_breve, fmtNum(d.pedido, 1), fmtNum(d.pendiente, 1), fmtNum(d.ton, 4),
+          d.doc_compr, row.contr, d.ce, row._pv_nombre_cliente, row._pv_nombre_vendedor, row._pv_ce_expedicion, row._pv_ruta, row._tipo_retiro, row._acopio ? 'SI' : 'NO', row._entrega_entrante, d.material, d.texto_breve, fmtNum(d.pedido, 1), fmtNum(d.pendiente, 1), fmtNum(d.ton, 4),
         ]);
       },
     },
@@ -4014,6 +4044,8 @@ const VISTAS_TRONCAL = {
           _tipo_retiro: tipoRetiro, _tipo_auto: tipoAuto, _tipo_pedido: tipoPedido, _modo: modo,
           _oc_manual: items.some(r => String(r.corrida ?? '') === 'MANUAL'),   // (29-oct-2026) OC agregada a mano
           _tipo_origen: modo && estObj.tipo_retiro ? 'COORDINACION' : 'REGLA',
+          _acopio: !!(modo && estObj.acopio),   // (14-nov-2026) retiro a acopio: no suma al Plan de Carga
+          _acopio_lbl: modo && estObj.acopio ? 'Acopio' : 'Suma al plan',
           _transp: estObj,
           _cliente: tipoRetiro === 'FAB-CLTE',
           _consolidar: tipoRetiro === 'FAB-CD',
@@ -5537,7 +5569,7 @@ const V2 = {
       { label: 'Proveedor', html: r => txt(r.nombre_1, r.proveedor, true) },
       { label: 'Destino', html: r => sucHtml(r.ce) },
       { label: 'Tipo pedido', html: r => pill(r._tipo_pedido === 'CALZADA' ? 'Calzada' : 'Stock', r._tipo_pedido === 'CALZADA' ? 'info' : 'mute') + (r.documento ? `<div class="sv-sub">PV ${escV2(r.documento)}</div>` : '') + (esIngSum(r) ? `<div style="margin-top:4px">${ingSumPill(true)}</div>` : '') },
-      { label: 'Tipo retiro', html: r => pill(r._tipo_retiro, TIPO_RETIRO_TONE[r._tipo_retiro] || 'mute') + `<div class="sv-sub">${r._tipo_origen === 'COORDINACION' ? 'coordinado' : 'automático'}</div>` },
+      { label: 'Tipo retiro', html: r => pill(r._tipo_retiro, TIPO_RETIRO_TONE[r._tipo_retiro] || 'mute') + (r._acopio ? ' ' + pill('ACOPIO', 'warn') : '') + `<div class="sv-sub">${r._tipo_origen === 'COORDINACION' ? 'coordinado' : 'automático'}${r._acopio ? ' · no suma al plan' : ''}</div>` },
       { label: 'Fecha SAP', html: r => mono(r.fe_entrega) },
       { label: 'Fecha retiro', html: r => r._fecha_retiro
           ? mono(fmtFechaISO(r._fecha_retiro)) + (retFechaVencida(r) ? `<div style="margin-top:4px" title="La fecha de retiro ya pasó y SAP sigue mostrando la OC pendiente: está FUERA del Plan de Carga. Re-coordina con fecha nueva, anula o pide ingresar la entrega entrante.">${pill('PENDIENTE DE REGULARIZAR', 'bad')}</div>` : '')
@@ -5610,7 +5642,7 @@ const V2 = {
         kind: 'Orden de compra · ' + (r._tipo_pedido === 'CALZADA' ? 'Calzada' : 'Stock'), title: r.doc_compr, sub: `${r.nombre_1 || ''} → ${nombreCentro(r.ce) || r.ce} · ${fmtNum(r._ton_num, 2)} t`,
         aviso: avisos.join('<br>'),
         kv: [
-          ['Tipo retiro', pill(r._tipo_retiro, TIPO_RETIRO_TONE[r._tipo_retiro] || 'mute') + ` <span class="sv-muted">${r._tipo_origen === 'COORDINACION' ? 'coordinado' : 'automático'}</span>`, true],
+          ['Tipo retiro', pill(r._tipo_retiro, TIPO_RETIRO_TONE[r._tipo_retiro] || 'mute') + (r._acopio ? ' ' + pill('ACOPIO', 'warn') : '') + ` <span class="sv-muted">${r._tipo_origen === 'COORDINACION' ? 'coordinado' : 'automático'}${r._acopio ? ' · acopia en destino, no suma al Plan de Carga' : ''}</span>`, true],
           ['Regla automática', `${r._tipo_auto} · ${fmtNum(r._ton_num, 1)} t (umbral 23,8 t)`],
           ['Coordinación', r._modo === 'RM' ? pill('Retiro RM', 'ok') : r._modo === 'LOCAL' ? pill('Retiro local', 'orange') : pill('Sin coordinar', 'mute'), true],
           ['Tipo pedido', r._tipo_pedido === 'CALZADA' ? 'Calzada (con pedido de venta)' : 'Stock'],
@@ -5655,7 +5687,7 @@ const V2 = {
           });
           return { titulo: `${(r._detalle || []).length} ${(r._detalle || []).length === 1 ? 'material pendiente' : 'materiales pendientes'}`, head, rows };
         })(),
-        nota: r._tipo_retiro === 'FAB-CD' ? '3º en el orden de llenado del camión CD' : 'Camión directo de fábrica',
+        nota: r._acopio ? 'Retiro a ACOPIO: se trae para acopiar en destino y su salida se planifica después · no suma al Plan de Carga' : r._tipo_retiro === 'FAB-CD' ? '3º en el orden de llenado del camión CD' : 'Camión directo de fábrica',
         acciones,
       };
     },
@@ -7640,7 +7672,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611141113');
+    const m = await import('./ind-plan-carga.js?v=202611141141');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -8099,7 +8131,7 @@ function aplicarEstadoPlanTraslados(rows, ep) {
 let planDetalleAbierto = new Set();
 let planOrigen = '1003';   // centro origen del plan de carga (1003 / 1081)
 // Estado de la presentación v2 del Plan de Carga (filtros y panel lateral abiertos)
-const PLAN_V2_STATE = { kpi: 'all', drawer: null, tab: 'cd', origen: null, verVencidos: false };
+const PLAN_V2_STATE = { kpi: 'all', drawer: null, tab: 'cd', origen: null, verVencidos: false, verAcopio: false };
 
 async function renderPlanCarga(stage, opts = {}) {
   stage.innerHTML = '<div class="text-secondary text-body-md p-md">Cargando Plan de Carga…</div>';
@@ -8394,6 +8426,18 @@ async function renderPlanCarga(stage, opts = {}) {
     v.cant += Number(cant) || 0; v.ton += Number(ton) || 0; v.lineas += 1;
     vencidosPlan.set(k, v);
   };
+  // (14-nov-2026, Jordan) ACOPIO: OC de retiro coordinada para traer material a acopiar en el destino (su salida se
+  // planifica después). NO suma al camión CD ni arma camión directo; se informa aparte (banner «Retiros a acopio»)
+  // y sigue aplicando PENDIENTE DE REGULARIZAR si su fecha pasa. La marca es por OC (un camión puede mezclar).
+  const acopioPlan = new Map();   // «doc|ce» → { doc, ce, fecha, nombre, tipoRet, ee, pat, cant, ton, lineas }
+  const esAcopio = oc => !!((estadosRetiro[String(oc ?? '').trim()] || {}).acopio);
+  const regAcopio = (r, cant, ton) => {
+    const _oc = String(r.doc_compr ?? '').trim(), _ce = String(r.ce ?? '').trim(), _e = estadosRetiro[_oc] || {};
+    const k = `${_oc}|${_ce}`;
+    const v = acopioPlan.get(k) || { doc: _oc, ce: _ce, fecha: String(_e.fecha_retiro ?? '').slice(0, 10), nombre: r.nombre_1 || '', tipoRet: _e.tipo_retiro || '', ee: _e.entrega_entrante || '', pat: _e.patente_camion || '', cant: 0, ton: 0, lineas: 0 };
+    v.cant += Number(cant) || 0; v.ton += Number(ton) || 0; v.lineas += 1;
+    acopioPlan.set(k, v);
+  };
   const retiros = esCD1003 ? retirosRaw
     .filter(r => !String(r.proveedor ?? '').startsWith('*'))
     // (2-nov-2026, bug Coquimbo) Antes se exigia contrato de compra (`contr !== ''`), pero hay OC
@@ -8430,7 +8474,7 @@ async function renderPlanCarga(stage, opts = {}) {
   Object.entries(estadosRetiro || {}).forEach(([oc, e]) => {
     if (!e || !esEstadoCoordinado(e.estado) || e.tipo_local_rm === 'LOCAL') return;
     addCoordPat(e.patente_camion, { doc: String(oc).trim(), fecha: String(e.fecha_retiro || '').slice(0, 10),
-      lbl: e.tipo_retiro === 'FAB-CLTE' ? 'retiro Fáb-Cliente' : e.tipo_retiro === 'FAB-SUC' ? 'retiro Fáb-Sucursal' : 'retiro fábrica→CD' });
+      lbl: (e.tipo_retiro === 'FAB-CLTE' ? 'retiro Fáb-Cliente' : e.tipo_retiro === 'FAB-SUC' ? 'retiro Fáb-Sucursal' : 'retiro fábrica→CD') + (e.acopio ? ' (acopio)' : '') });
   });
   [...((coordVentas && coordVentas.values()) || [])].forEach(c => { if (c.tipo_entrega === 'CD-CLIENTE')
     addCoordPat(c.patente_camion, { doc: String(c.doc_ventas ?? '').trim(), fecha: String(c.fecha_entrega || '').slice(0, 10), lbl: 'NV CD-Cliente' }); });
@@ -8871,6 +8915,12 @@ async function renderPlanCarga(stage, opts = {}) {
               if (q > 0) regVencido('retiro', _oc, ce, _e.fecha_retiro, r.nombre_1, q, calcTon(maxPesoDim(r.peso_bruto, r.tamano_dimens), q), { ee: _e.entrega_entrante || '', tipoRet: _e.tipo_retiro || 'FAB-CD', pv: r.documento || '' }); }
             return false;
           }
+          // (14-nov-2026, Jordan) OC de ACOPIO: no suma al camión CD; se informa aparte.
+          if (esAcopio(_oc)) {
+            if (fechaObjetivoCe === diaHabil1) { const q = r._saldo ? parseNum(r.ctd_pedido) : cantRetiroLinea(_e, r.material, parseNum(r.ctd_pedido) - parseNum(r.ctd_entregada));
+              if (q > 0) regAcopio(r, q, calcTon(maxPesoDim(r.peso_bruto, r.tamano_dimens), q)); }
+            return false;
+          }
           return !fr || fr.getTime() <= fechaObjetivoCe.getTime(); });
     }
     function sumarRetiro(lista) {
@@ -8907,8 +8957,16 @@ async function renderPlanCarga(stage, opts = {}) {
       const q = cantRetiroLinea(_e, r.material, parseNum(r.ctd_pedido) - parseNum(r.ctd_entregada));
       if (q > 0) regVencido('retiro', _oc, ce, _e.fecha_retiro, r.nombre_1, q, calcTon(maxPesoDim(r.peso_bruto, r.tamano_dimens), q), { ee: _e.entrega_entrante || '', tipoRet: _e.tipo_retiro, pv: r.documento || '' });
     });
+    // (14-nov-2026, Jordan) Fábrica-Sucursal de ACOPIO: no arma camión directo; se informa en el banner de acopio.
+    retirosDirectosBase.filter(r => String(r.ce ?? '').trim() === ce && esAcopio(r.doc_compr)).forEach(r => {
+      const _e = estadosRetiro[String(r.doc_compr ?? '').trim()] || {}; const fr = parseISODate(_e.fecha_retiro);
+      if (fr && fr.getTime() < hoy00().getTime()) return;   // ya avisado como PENDIENTE DE REGULARIZAR
+      const q = cantRetiroLinea(_e, r.material, parseNum(r.ctd_pedido) - parseNum(r.ctd_entregada));
+      if (q > 0) regAcopio(r, q, calcTon(maxPesoDim(r.peso_bruto, r.tamano_dimens), q));
+    });
     const retirosFab = retirosDirectosBase
       .filter(r => String(r.ce ?? '').trim() === ce)
+      .filter(r => !esAcopio(r.doc_compr))
       .filter(r => !estaExcluido(exclusionesPlan, 'retiro_fabrica', r.doc_compr, r.material))
       .filter(r => cantRetiroLinea(estadosRetiro[String(r.doc_compr ?? '').trim()], r.material, parseNum(r.ctd_pedido) - parseNum(r.ctd_entregada)) > 0)
       .filter(r => { const fr = parseISODate((estadosRetiro[String(r.doc_compr ?? '').trim()] || {}).fecha_retiro); return !!fr && fr.getTime() === fechaPlanCe.getTime(); });
@@ -10577,6 +10635,32 @@ async function renderPlanCarga(stage, opts = {}) {
         <div class="sv-sub" style="margin-top:8px">Para regularizar: en <b>Retiros de Fábrica</b> / <b>Ventas CD</b> edita la coordinación con una fecha nueva (vuelve al plan de esa fecha), anúlala, o si el camión sí viajó pide ingresar la entrega entrante / crear la DT en SAP para que descuente el pendiente.</div></div>` : ''}
     </div>`;
   }
+  // (14-nov-2026, Jordan) Banner informativo RETIROS A ACOPIO: OC coordinadas con marca acopio (traen material a
+  // acopiar en el destino; su salida se planifica después). NO suman al plan; se listan para que Expedición sepa que llegan.
+  function acopioHtml() {
+    const lista = [...acopioPlan.values()].sort((a, b) => a.fecha.localeCompare(b.fecha) || a.ce.localeCompare(b.ce));
+    if (!lista.length) return '';
+    const ton = lista.reduce((s, v) => s + v.ton, 0);
+    const filas = lista.map(v => `<tr>
+        <td>${pill('Retiro ' + escapeHtml(v.tipoRet || ''), 'mute')} ${pill('ACOPIO', 'warn')}</td>
+        <td><b class="sv-mono">${escapeHtml(v.doc)}</b>${v.ee ? `<div class="sv-sub" style="margin:0">EE ${escapeHtml(v.ee)}</div>` : ''}</td>
+        <td>${escapeHtml(v.nombre || '')}</td>
+        <td>${escapeHtml(nombreCentro(v.ce) || v.ce)}<div class="sv-sub" style="margin:0">${v.tipoRet === 'FAB-CD' ? 'acopia en CD 1003' : 'acopia en sucursal'}</div></td>
+        <td class="sv-mono">${v.fecha ? escapeHtml(fmtFechaISO(v.fecha)) : '—'}</td>
+        <td class="sv-mono">${v.pat ? escapeHtml(fmtPatente(v.pat)) : '<span class="sv-muted">sin patente</span>'}</td>
+        <td style="text-align:right">${escapeHtml(fmtNum(v.cant, 0))} un · ${escapeHtml(fmtNum(v.ton, 2))} t<div class="sv-sub" style="margin:0">${v.lineas} línea${v.lineas === 1 ? '' : 's'}</div></td>
+      </tr>`).join('');
+    return `<div class="sv-card" style="border:1px solid #fcd34d;background:#fffbeb;padding:12px 14px;margin-bottom:12px">
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <span class="material-symbols-outlined" style="color:#92400e">warehouse</span>
+        <b style="color:#92400e">Retiros a acopio · ${lista.length} · ${escapeHtml(fmtNum(ton, 1))} t</b>
+        <span class="sv-sub" style="margin:0">OC que se traen para acopiar en el destino; su salida se planifica después. <b>No suman a ningún camión de este Plan de Carga.</b></span>
+        <button class="sv-btn" data-acopio-toggle style="margin-left:auto;padding:4px 10px;font-size:12px">${st.verAcopio ? 'Ocultar' : 'Ver detalle'}</button>
+      </div>
+      ${st.verAcopio ? `<div class="sv-table-wrap" style="margin-top:10px"><table class="sv-table"><thead><tr><th>Tipo</th><th>Orden de compra</th><th>Proveedor</th><th>Destino</th><th>Fecha retiro</th><th>Patente</th><th style="text-align:right">Carga</th></tr></thead><tbody>${filas}</tbody></table>
+        <div class="sv-sub" style="margin-top:8px">Para que una OC vuelva a sumar al plan, desmarca <b>Acopio</b> en «Editar coordinación» de <b>Retiros de Fábrica</b>.</div></div>` : ''}
+    </div>`;
+  }
   function draw() {
     resultado.forEach(refrescarFill);
     const kpiDef = [
@@ -10613,6 +10697,7 @@ async function renderPlanCarga(stage, opts = {}) {
       <div class="sv-legend pc-legend"><b>Orden de llenado</b>${CAT_V2.map((c, i) => `<span><i style="background:${c.color}"></i>${i + 1}. ${escapeHtml(c.lbl)}</span>`).join('')}
         <span class="pc-sep"></span>${DIR_V2.map(t => `<span><span class="material-symbols-outlined" style="color:${t.color};font-size:16px">local_shipping</span>${escapeHtml(t.lbl)}</span>`).join('')}</div>
       ${vencidosHtml()}
+      ${acopioHtml()}
       <div class="pc-list">
         ${!resultado.length ? '<div class="sv-card pc-empty"><span class="material-symbols-outlined">inventory_2</span>Sin carga para este origen.</div>'
           : filas.length ? filas.map(filaV2).join('') : '<div class="sv-card pc-empty">Ninguna sucursal con ese estado. Haz clic de nuevo en la tarjeta para quitar el filtro.</div>'}
@@ -10628,6 +10713,7 @@ async function renderPlanCarga(stage, opts = {}) {
     }));
     stage.querySelectorAll('[data-kpi]').forEach(b => b.addEventListener('click', () => { const k = b.dataset.kpi; st.kpi = st.kpi === k ? 'all' : k; draw(); }));
     stage.querySelector('[data-vencidos-toggle]')?.addEventListener('click', () => { st.verVencidos = !st.verVencidos; draw(); });
+    stage.querySelector('[data-acopio-toggle]')?.addEventListener('click', () => { st.verAcopio = !st.verAcopio; draw(); });
     stage.querySelectorAll('[data-suc]').forEach(b => {
       const abrir = () => { st.drawer = b.dataset.suc; st.tab = 'cd'; draw(); };
       b.addEventListener('click', abrir);
