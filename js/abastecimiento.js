@@ -10,13 +10,13 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611131143';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611131143';
-import { getDatabase } from './data.js?v=202611131143';
+import { supabase } from './supabase-client.js?v=202611141113';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611141113';
+import { getDatabase } from './data.js?v=202611141113';
 import { COMUNAS_POR_REGION } from './chile-geo.js';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611131143';
-import { confirmar, pedirDato } from './confirmar.js?v=202611131143';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611141113';
+import { confirmar, pedirDato } from './confirmar.js?v=202611141113';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -5190,6 +5190,10 @@ const V2 = {
         r._cargada = (r._saldoAct || r._saldoSinCoord) ? null : _prog;   // saldo activo o saldo sin coordinar → editable
         if (r._cargada) r._plan = 'CARGADA';
         else if (r._saldoSinCoord) r._plan = 'SALDO';
+        // (13-nov-2026, Jordan) PENDIENTE DE REGULARIZAR: coordinada para una fecha ya pasada, no está en un camión
+        // programado y SAP sigue mostrando pendiente → fuera del Plan de Carga hasta re-coordinar o anular.
+        r._vencida = !!(r._coord && !r._cargada && !r._saldoSinCoord && _tienePendV && fp && fp.getTime() < hoy00().getTime());
+        if (r._vencida) r._plan = 'VENCIDA';
       });
       // (7-oct-2026) Pedidos que comparten camión (grupo_camion)
       const porGrupo = new Map();
@@ -5213,6 +5217,8 @@ const V2 = {
       { key: 'pl', label: 'En plan de carga', color: C_BLUE, sub: 'pedidos coordinados', fn: r => !!r._coord && !r._cargada && !r._saldoSinCoord },
       // (10-nov-2026, Jordan) quitado como filtro: { key: 'cg', label: 'COORDINADO', color: C_SEC, sub: 'en camión programado · bloqueado', fn: r => !!r._cargada },
       { key: 'sl', label: 'Saldo sin coordinar', color: C_ORANGE, sub: 'la coordinación anterior ya viajó', fn: r => !!r._saldoSinCoord },
+      // (13-nov-2026, Jordan) fecha de entrega confirmada pasada y SAP sigue con pendiente → fuera del plan
+      { key: 'vc', label: 'Pendiente regularizar', color: C_RED, sub: 'fecha confirmada pasada · fuera del plan', fn: r => !!r._vencida },
       // (10-nov-2026, Jordan) quitado como filtro: { key: 'sr', label: 'Sin ruta', color: C_RED, sub: 'asignar ruta para coordinar', fn: r => (r._sin_ruta_pos || []).length > 0 },
       // (10-nov-2026, Jordan) quitado como filtro: { key: 'bq', label: 'Con bloqueo', color: C_RED, sub: 'posiciones bloqueadas por liberar', fn: r => (r._bloq_pos || []).length > 0 },
       // (10-nov-2026, Jordan) quitado como filtro: { key: 'cd', label: 'CD-Cliente', color: '#7e22ce', sub: 'cliente ≥ 23,8 t o definido', fn: r => !!r._directo },
@@ -5240,6 +5246,7 @@ const V2 = {
       { label: 'Fecha entrega', html: r => mono(r._fecha_plan, r._coord ? 'confirmada' : 'SAP · por confirmar') },
       { label: 'Coordinación', html: r => (r._cargada ? pill('COORDINADO', 'info') + `<div class="sv-sub" title="Bloqueado: va en un camión programado">🔒 Camión ${escV2(r._cargada.patente || r._cargada.transportista || 'programado')} · carga ${escV2(fmtFechaISO(String(r._cargada.fecha_carga).slice(0, 10)))}</div>`
         : r._saldoSinCoord ? pill('SALDO SIN COORDINAR', 'warn') + `<div class="sv-sub" title="La coordinación anterior ya viajó: este saldo todavía no está coordinado y no entra al plan">Ya viajó${r._viajo ? ' · camión ' + escV2(r._viajo.patente || r._viajo.transportista || '') + ' · carga ' + escV2(fmtFechaISO(String(r._viajo.fecha_carga).slice(0, 10))) : ''}</div>`
+        : r._vencida ? pill('PENDIENTE DE REGULARIZAR', 'bad') + `<div class="sv-sub" style="color:#b5000b" title="La fecha confirmada ya pasó y SAP sigue mostrando pendiente: está FUERA del Plan de Carga">programado el ${escV2(r._fecha_plan)} · fuera del plan${entregasCoordV(r._coord).length ? ' · entrega ' + escV2(entregasCoordV(r._coord).join(', ')) + ' sin DT' : ''}</div>`
         : r._coord ? pill(r._por_reparto ? 'Reparto Coordinado' : 'Pedido Coordinado', 'ok') + (entregasCoordV(r._coord).length ? `<div class="sv-sub">${entregasCoordV(r._coord).length > 1 ? 'Entregas' : 'Entrega'} ${escV2(entregasCoordV(r._coord).join(', '))}</div>` : '')
           + (r._coord.tipo_entrega === 'CD-CLIENTE' && pendTranspRetiro(r._coord).length ? `<div style="margin-top:4px" title="Pendiente: ${escV2(pendTranspRetiro(r._coord).join(', '))}">${pill('Chofer/patente pendiente', 'warn')}</div>` : '') : pill('Sin coordinar', 'mute'))
         // (2-nov-2026, Jordan) Pedido con repartos: cuántos están coordinados (cada uno es un despacho).
@@ -5254,10 +5261,11 @@ const V2 = {
     planEstado: (r, excluida) => r._cargada ? `<span title="Ya va en un camión programado: no se vuelve a considerar">${pill('En camión programado', 'mute')}</span>`
       : excluida ? pill('Excluida hoy', 'bad')
       : r._saldoSinCoord ? `<span title="El saldo no está coordinado: coordínalo para que entre al plan">${pill('Saldo sin coordinar', 'warn')}</span>`
+      : r._vencida ? `<span title="Fecha confirmada ${escV2(r._fecha_plan)} ya pasada y SAP sigue con pendiente: fuera del plan hasta regularizar">${pill('Fuera del plan · regularizar', 'bad')}</span>`
       : r._coord ? `<span title="Plan de carga con día objetivo ${escV2(r._fecha_plan)}">${pill('En plan', 'ok')}</span>`
         + (r._plan === 'PROGRAMADO' ? `<div class="sv-sub">día ${escV2(r._fecha_plan)}</div>` : '')
       : pill('No considerado', 'mute'),
-    edge: r => r._cargada ? C_GREY : r._saldoSinCoord ? C_ORANGE : r._coord ? C_GREEN : (r._al.k === 'Atrasado' ? C_RED : null),
+    edge: r => r._cargada ? C_GREY : r._saldoSinCoord ? C_ORANGE : r._vencida ? C_RED : r._coord ? C_GREEN : (r._al.k === 'Atrasado' ? C_RED : null),
     note: 'Tipo de entrega por cliente: ≥ 23,8 t (85% de 28 t) → CD-Cliente; si no, Consolidable · Sólo los pedidos coordinados entran al Plan de Carga',
     minW: '1280px',
     detalle: r => {
@@ -5269,6 +5277,7 @@ const V2 = {
       const k = r._cargada;
       const aviso = k ? `<b>COORDINADO · bloqueado:</b> el pedido ya va en un camión programado (${escV2(k.tipo || 'camión')} · carga ${escV2(fmtFechaISO(String(k.fecha_carga).slice(0, 10)))}${k.patente ? ' · patente ' + escV2(k.patente) : ''}${k.transportista ? ' · ' + escV2(k.transportista) : ''}). No se vuelve a considerar en el Plan de Carga; sale de la vista cuando el SQVI deje de traerlo.`
         : r._saldoSinCoord ? `<b>Saldo sin coordinar:</b> la coordinación anterior ya viajó${r._viajo ? ` (camión ${escV2(r._viajo.patente || r._viajo.transportista || 'programado')} · carga ${escV2(fmtFechaISO(String(r._viajo.fecha_carga).slice(0, 10)))})` : ''} y SAP todavía muestra pendiente. Ese saldo NO está coordinado: no entra al Plan de Carga hasta que lo coordines con «Coordinar despacho» (fecha y entrega nuevas).`
+        : r._vencida ? `<b>Pendiente de regularizar:</b> el despacho estaba coordinado para el ${escV2(r._fecha_plan)} y SAP sigue mostrando ${escV2(fmtNum((r._detalle || []).reduce((s2, d) => s2 + (Number(d.pendiente) || 0), 0), 0))} un pendientes${entregasCoordV(r._coord).length ? ` (entrega ${escV2(entregasCoordV(r._coord).join(', '))} sin DT)` : ''}. <b>No está en el Plan de Carga.</b> Si no se despachó, usa «Editar coordinación» con una fecha nueva; si sí salió, pide crear la DT / cerrar la entrega en SAP; si no va, anula la coordinación.`
         : r._plan === 'EN_PLAN' ? `<b>Plan de carga:</b> pedido coordinado para el ${escV2(r._fecha_plan)}; entra al Plan de Carga de hoy (día objetivo ${escV2(diaObjTxt)}).`
         : r._plan === 'PROGRAMADO' ? `<b>Plan de carga:</b> pedido coordinado para el ${escV2(r._fecha_plan)}; entrará al plan cuyo día objetivo sea esa fecha.`
         : '<b>Plan de carga:</b> sin coordinar, no se considera. Usa «Coordinar despacho» para confirmar la fecha de entrega.';
@@ -5320,6 +5329,25 @@ const V2 = {
           if (!await confirmar(`¿Anular la coordinación de ${q}?\n\nVuelve a «Sin coordinar» y sale del Plan de Carga.`)) return null;
           return (await anularCoordinacionVenta(row.doc_ventas, rp)) ? (showAlert('Coordinación anulada', 'success'), { recargar: true }) : null;
         } });
+      }
+      // (13-nov-2026, Jordan) NV COORDINADA en camión programado: antes sólo se podía anular. Ahora OWNER / Planner
+      // Distribución (acción editar_carga_seguimiento) pueden EDITAR la coordinación (fecha, transporte, unidades).
+      // Si cambia la fecha de carga, la NV se saca del camión programado (fn_abast_seg_editar_carga, con motivo)
+      // y pasa al plan de la fecha nueva; si la fecha se mantiene, el camión no se toca.
+      if (k && c && puedeCoordV && can('editar_carga_seguimiento') && !(r._sin_ruta_pos || []).length) {
+        acciones.push({ label: 'Editar coordinación', icon: 'edit_calendar', primary: true,
+          title: 'Camión programado: editar fecha, transporte o unidades. Si cambia la fecha, la NV sale del camión programado.',
+          run: async (row, ctx2) => {
+            const f0 = String(k.fecha_carga || '').slice(0, 10);
+            if (!await confirmar(`El pedido ${row.doc_ventas} ya va en un camión programado (${k.patente || k.transportista || 'camión'} · carga ${fmtFechaISO(f0)}).\n\nSi cambias la fecha de entrega, el pedido SALE de ese camión (queda registrado en el historial de ajustes) y entra al Plan de Carga de la fecha nueva. Si mantienes la fecha, el camión no se modifica.\n\n¿Editar la coordinación?`, { aceptar: 'Editar coordinación', icono: 'edit_calendar' })) return null;
+            let rp = '';
+            if (row._multi_rep) { rp = await pickRepartoNV(row, { soloCoordinados: true }); if (rp === null) return null; }
+            const ok = await showCoordVentaModal(rowDeReparto(row, rp), ctx2);
+            if (!ok) return null;
+            await sacarNVDeCamionProgramadoSiCambioFecha(row.doc_ventas, rp, k);
+            clearRawCache();
+            return { recargar: true };
+          } });
       }
       // (27-oct-2026, Jordan) CD-Cliente con transporte: el «camión programado» es su propio camión directo,
       // así que se puede anular la coordinación (el bloqueo del 14-oct aplica a NV que van en el camión CD consolidado).
@@ -5493,6 +5521,8 @@ const V2 = {
     kpis: [
       { key: 'all', label: 'OC por retirar', color: C_INK, sub: 'todas las sucursales' },
       { key: 'no', label: 'Sin coordinar', color: C_GREY, sub: 'no entran al plan', fn: r => !r._modo },
+      // (13-nov-2026, Jordan) retiro programado con fecha pasada que SAP sigue mostrando pendiente → fuera del plan
+      { key: 'vc', label: 'Pendiente regularizar', color: C_RED, sub: 'fecha de retiro pasada · fuera del plan', fn: r => retFechaVencida(r) },
       { key: 'rm', label: 'Retiro RM', color: C_GREEN, sub: 'entran al plan de carga', fn: r => r._modo === 'RM' },
       { key: 'lo', label: 'Retiro local', color: C_ORANGE, sub: 'gestiona la sucursal', fn: r => r._modo === 'LOCAL' },
       { key: 'sl', label: 'Saldo sin coordinar', color: C_ORANGE, sub: 'la carga anterior ya viajó', fn: r => !!r._saldoSinCoord },
@@ -5510,7 +5540,7 @@ const V2 = {
       { label: 'Tipo retiro', html: r => pill(r._tipo_retiro, TIPO_RETIRO_TONE[r._tipo_retiro] || 'mute') + `<div class="sv-sub">${r._tipo_origen === 'COORDINACION' ? 'coordinado' : 'automático'}</div>` },
       { label: 'Fecha SAP', html: r => mono(r.fe_entrega) },
       { label: 'Fecha retiro', html: r => r._fecha_retiro
-          ? mono(fmtFechaISO(r._fecha_retiro)) + (retFechaVencida(r) ? `<div style="margin-top:4px" title="La fecha de retiro ya pasó: ese día de carga no vale. Re-coordina la OC con una fecha nueva.">${pill('Vencida', 'bad')}</div>` : '')
+          ? mono(fmtFechaISO(r._fecha_retiro)) + (retFechaVencida(r) ? `<div style="margin-top:4px" title="La fecha de retiro ya pasó y SAP sigue mostrando la OC pendiente: está FUERA del Plan de Carga. Re-coordina con fecha nueva, anula o pide ingresar la entrega entrante.">${pill('PENDIENTE DE REGULARIZAR', 'bad')}</div>` : '')
           : (r._modo === 'RM' ? `<span class="sv-b" style="color:${C_RED}">Falta fecha</span>` : '<span class="sv-muted">—</span>') },
       { label: 'Ton', al: 'r', html: r => `<span class="sv-ton">${tonHtml(r._ton_num)}</span>` + (r._parcial ? `<div class="sv-sub" style="color:#15803d">retira ${escV2(fmtNum(r._ton_ret, 1))} t</div>` : '') + (r._revision_saldo ? '<div class="sv-sub" style="color:#b5000b">saldo pendiente</div>' : '') },
       // (10-nov-2026, Jordan) flete cobrado en la NV calzada (ZFLT + ZFL0/ZFL1)
@@ -5533,11 +5563,11 @@ const V2 = {
     planEstado: (r, excluida) => excluida ? pill('Excluida hoy', 'bad')
       : r._saldo_todo ? `<span title="El saldo no está coordinado: re-coordina la OC con fecha de retiro y entrega nuevas para que entre al plan">${pill('Saldo sin coordinar', 'warn')}</span>`
       : r._modo === 'RM' ? pill('En plan', 'ok') + (r._saldoSinCoord ? `<div class="sv-sub" style="color:#b45309">+ ${escV2(fmtNum(r._saldo_pend || 0, 0))} un de saldo sin coordinar</div>` : '')
-          + (retFechaVencida(r) ? `<div class="sv-sub" style="color:#b5000b">fecha de retiro vencida (${escV2(fmtFechaISO(r._fecha_retiro))}) · actualízala</div>`
+          + (retFechaVencida(r) ? `<div class="sv-sub" style="color:#b5000b">retiro programado el ${escV2(fmtFechaISO(r._fecha_retiro))} · fuera del plan${r._entrega_entrante ? ' · entrega entrante ' + escV2(r._entrega_entrante) + ' sin ingresar' : ''}</div>`
              : r._fecha_retiro ? `<div class="sv-sub">carga ${escV2(fmtFechaISO(r._fecha_retiro))}</div>` : '')
       : r._modo === 'LOCAL' ? pill('Retiro local', 'orange')
       : pill('No considerado', 'mute'),
-    edge: r => r._saldo_todo ? C_ORANGE : r._modo === 'LOCAL' ? C_ORANGE : r._modo === 'RM' ? C_GREEN : (retiroAtrasado(r) ? C_RED : null),
+    edge: r => retFechaVencida(r) ? C_RED : r._saldo_todo ? C_ORANGE : r._modo === 'LOCAL' ? C_ORANGE : r._modo === 'RM' ? C_GREEN : (retiroAtrasado(r) ? C_RED : null),
     note: 'Tipo retiro automático: ≥ 23,8 t (85% de 28 t) → Stock FAB-SUC / Calzada FAB-CLTE; bajo 23,8 t → FAB-CD · Retiro RM entra al plan el día de su fecha de retiro',
     minW: '1440px',
     detalle: r => {
@@ -5570,7 +5600,7 @@ const V2 = {
       if (r._exp_error) avisos.push(`<b>Expedición errónea:</b> el pedido de venta ${escV2(r.documento)} tiene expedición «${escV2(r._pv_denominacion)}»; debe ser EBE-RET / EBE-DESP o EBE-RET / CLI-RET.`);
       if (r._modo === 'RM' && pendTranspRetiro(t).length) avisos.push(`<b>Transporte pendiente:</b> falta ${escV2(pendTranspRetiro(t).join(', '))}. Complétalo con «Editar coordinación»${pendTranspRetiro(t).includes('patente') ? '; sin patente el camión directo no queda programado' : ''}.`);
       if (esIngSum(r)) avisos.push(`<b>${ING_SUM_TXT}:</b> OC calzada con destino CD 1003 (PV ${escV2(r.documento)}). Ingresar el retiro en el CD y cargarlo en el camión junto con el pedido de venta.`);
-      if (retFechaVencida(r)) avisos.push(`<b>Fecha de retiro vencida:</b> la fecha coordinada (${escV2(fmtFechaISO(r._fecha_retiro))}) ya pasó, así que ese día de carga no vale. Re-coordina la OC con una fecha de retiro nueva.`);
+      if (retFechaVencida(r)) avisos.push(`<b>Pendiente de regularizar:</b> el retiro estaba programado para el ${escV2(fmtFechaISO(r._fecha_retiro))} y SAP sigue mostrando la OC con saldo pendiente${r._entrega_entrante ? ` (entrega entrante <b>${escV2(r._entrega_entrante)}</b> pendiente de ingresar, no descontó las unidades)` : ' (sin entrega entrante registrada)'}. <b>No está en el Plan de Carga.</b> Si no se retiró, edita la coordinación con una fecha nueva; si sí se retiró, pide ingresar la entrega entrante en SAP; si no va, anula la coordinación.`);
       if (r._saldoSinCoord) avisos.push(`<b>Saldo sin coordinar:</b> la carga anterior ya viajó${r._viajo ? ` (camión ${escV2(r._viajo.patente || r._viajo.transportista || 'programado')} · carga ${escV2(fmtFechaISO(String(r._viajo.fecha_carga).slice(0, 10)))})` : ''} y SAP todavía muestra ${escV2(fmtNum(r._saldo_pend || 0, 0))} un pendientes. Ese saldo NO está coordinado: no entra al Plan de Carga hasta re-coordinar la OC con fecha de retiro y entrega nuevas.`);
       avisos.push(r._saldo_todo ? '<b>Plan de carga:</b> el saldo no está coordinado — no se considera hasta re-coordinar la OC.'
         : r._modo === 'RM' ? '<b>Plan de carga:</b> Retiro RM — entra al plan el día de su fecha de retiro.'
@@ -7610,7 +7640,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611131143');
+    const m = await import('./ind-plan-carga.js?v=202611141113');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -8069,7 +8099,7 @@ function aplicarEstadoPlanTraslados(rows, ep) {
 let planDetalleAbierto = new Set();
 let planOrigen = '1003';   // centro origen del plan de carga (1003 / 1081)
 // Estado de la presentación v2 del Plan de Carga (filtros y panel lateral abiertos)
-const PLAN_V2_STATE = { kpi: 'all', drawer: null, tab: 'cd', origen: null };
+const PLAN_V2_STATE = { kpi: 'all', drawer: null, tab: 'cd', origen: null, verVencidos: false };
 
 async function renderPlanCarga(stage, opts = {}) {
   stage.innerHTML = '<div class="text-secondary text-body-md p-md">Cargando Plan de Carga…</div>';
@@ -8352,6 +8382,18 @@ async function renderPlanCarga(stage, opts = {}) {
   // centros, por lo que un retiro FAB-CD coordinado con fecha_retiro en la ventana
   // 48h (p. ej. Coquimbo) quedaba excluido del Plan de Carga aunque su centro
   // estuviera configurado a 48 horas.
+  // (13-nov-2026, Jordan) PENDIENTE DE REGULARIZAR: una OC de retiro o NV coordinada cuya fecha de
+  // retiro/entrega YA PASÓ y que SAP sigue mostrando pendiente (entrega entrante sin ingresar, unidades
+  // sin descontar) NO entra al Plan de Carga como «atrasada». Se avisa aquí (banner del plan) y en las
+  // vistas Retiros de Fábrica / Ventas CD hasta que se re-coordine con fecha nueva, se anule o se
+  // confirme que viajó. Antes esos documentos seguían sumando al camión CD día tras día.
+  const vencidosPlan = new Map();   // «tipo|doc|ce» → { tipo, doc, ce, fecha, nombre, cant, ton, ee, lineas }
+  const regVencido = (tipo, doc, ce, fecha, nombre, cant, ton, extra = {}) => {
+    const k = `${tipo}|${String(doc ?? '').trim()}|${String(ce ?? '').trim()}`;
+    const v = vencidosPlan.get(k) || { tipo, doc: String(doc ?? '').trim(), ce: String(ce ?? '').trim(), fecha: String(fecha ?? '').slice(0, 10), nombre: nombre || '', cant: 0, ton: 0, lineas: 0, ...extra };
+    v.cant += Number(cant) || 0; v.ton += Number(ton) || 0; v.lineas += 1;
+    vencidosPlan.set(k, v);
+  };
   const retiros = esCD1003 ? retirosRaw
     .filter(r => !String(r.proveedor ?? '').startsWith('*'))
     // (2-nov-2026, bug Coquimbo) Antes se exigia contrato de compra (`contr !== ''`), pero hay OC
@@ -8664,6 +8706,14 @@ async function renderPlanCarga(stage, opts = {}) {
         items.push({ pv: doc, material: r.material, nombre: r.denominacion_de_posicion, cant: pend, ruta: r.ruta, comuna: rl.comuna, region: rl.region, fecha: repPost ? r.fe_entrega : fechaTxt, ton: t, tonBruto, tonVol, tipoExp: pv.denominacion || '', cliente: pv.nombre_1 || co.nombre_cliente || (String(r.solicitante ?? '').trim() ? 'ID ' + String(r.solicitante).trim() : ''), idCliente: String(r.solicitante ?? '').trim(), vendedor: pv.nombre || '', _manual: co.tipo_entrega, entrega: entregaLineaV(co, r.material, r.fe_entrega), _ceOrig: ceAltDe(co) ? String(r.ofvta ?? '').trim() : '', _ajustada: pend < pend0 - 1e-9, _pendSap: pend0 });
       });
       if (!items.length) continue;
+      // (13-nov-2026, Jordan) Fecha de entrega confirmada pasada y SAP sigue con pendiente → PENDIENTE DE
+      // REGULARIZAR: no entra al plan como «atrasada». Un CD-Cliente ya programado con transporte en un plan
+      // anterior ya salió (cdCliYaCargado) y no se avisa.
+      if (fc && fc.getTime() < hoy00().getTime()) {
+        if (!(co.tipo_entrega === 'CD-CLIENTE' && cdCliYaCargado(co, fc)))
+          items.forEach(it => regVencido('nv', doc, ce, co.fecha_entrega, it.cliente, it.cant, it.ton, { tipoEnt: co.tipo_entrega, ent: entregasCoordV(co).join(', '), rep: repCoord }));
+        continue;
+      }
       const enPlan = fc && fc.getTime() <= diaObjVentas.getTime();
       if (co.tipo_entrega === 'CD-CLIENTE') {
         if (!enPlan) { tonClienteDiferido += sumTon(items); continue; }   // camión exclusivo de otro día
@@ -8813,7 +8863,15 @@ async function renderPlanCarga(stage, opts = {}) {
         // posterior a su fecha de retiro: cuenta si fecha_retiro ≤ día objetivo (o está atrasado).
         // Ej.: retiro el mar 13 y centro a 48h con objetivo mié 14 → entra al plan del 14; y como
         // retiro24 (≤ día hábil 1) también lo suma, si con él el camión supera el 90% se adelanta al 13.
-        .filter(r => { const _e = estadosRetiro[String(r.doc_compr ?? '').trim()] || {}; const fr = parseISODate(_e.fecha_retiro); return !fr || fr.getTime() < hoy00().getTime() || fr.getTime() <= fechaObjetivoCe.getTime(); });
+        // (13-nov-2026, Jordan) Fecha de retiro pasada → PENDIENTE DE REGULARIZAR: no entra al plan (antes
+        // seguía contando como «atrasado» y la OC no retirada inflaba el camión CD semanas después).
+        .filter(r => { const _oc = String(r.doc_compr ?? '').trim(), _e = estadosRetiro[_oc] || {}; const fr = parseISODate(_e.fecha_retiro);
+          if (fr && fr.getTime() < hoy00().getTime()) {
+            if (fechaObjetivoCe === diaHabil1) { const q = r._saldo ? parseNum(r.ctd_pedido) : cantRetiroLinea(_e, r.material, parseNum(r.ctd_pedido) - parseNum(r.ctd_entregada));
+              if (q > 0) regVencido('retiro', _oc, ce, _e.fecha_retiro, r.nombre_1, q, calcTon(maxPesoDim(r.peso_bruto, r.tamano_dimens), q), { ee: _e.entrega_entrante || '', tipoRet: _e.tipo_retiro || 'FAB-CD', pv: r.documento || '' }); }
+            return false;
+          }
+          return !fr || fr.getTime() <= fechaObjetivoCe.getTime(); });
     }
     function sumarRetiro(lista) {
       let sum = 0; const items = [];
@@ -8841,6 +8899,14 @@ async function renderPlanCarga(stage, opts = {}) {
     // retiro (fecha_retiro = día hábil 1), sin importar el horizonte 24h/48h del camión CD. Antes un
     // centro 48h adelantado a 24h (Coquimbo) buscaba retiros del día hábil 2 y perdía sus directos.
     const fechaPlanCe = diaHabil1;
+    // (13-nov-2026, Jordan) Retiros directos coordinados con fecha de retiro pasada y saldo pendiente en SAP:
+    // nunca entraron a este plan (exigen fecha exacta), pero se avisan como PENDIENTE DE REGULARIZAR.
+    retirosDirectosBase.filter(r => String(r.ce ?? '').trim() === ce).forEach(r => {
+      const _oc = String(r.doc_compr ?? '').trim(), _e = estadosRetiro[_oc] || {}; const fr = parseISODate(_e.fecha_retiro);
+      if (!fr || fr.getTime() >= hoy00().getTime()) return;
+      const q = cantRetiroLinea(_e, r.material, parseNum(r.ctd_pedido) - parseNum(r.ctd_entregada));
+      if (q > 0) regVencido('retiro', _oc, ce, _e.fecha_retiro, r.nombre_1, q, calcTon(maxPesoDim(r.peso_bruto, r.tamano_dimens), q), { ee: _e.entrega_entrante || '', tipoRet: _e.tipo_retiro, pv: r.documento || '' });
+    });
     const retirosFab = retirosDirectosBase
       .filter(r => String(r.ce ?? '').trim() === ce)
       .filter(r => !estaExcluido(exclusionesPlan, 'retiro_fabrica', r.doc_compr, r.material))
@@ -10482,6 +10548,35 @@ async function renderPlanCarga(stage, opts = {}) {
     for (const x of segs) { if (await guardarSeguimiento(x.sg)) { memo.set(x.k, x.sig); yaFoto.add(x.kf); } }
   }
 
+  // (13-nov-2026, Jordan) Banner PENDIENTE DE REGULARIZAR: retiros / NV coordinados con fecha pasada que SAP
+  // sigue mostrando pendientes. Están FUERA del plan hasta re-coordinar, anular o confirmar que viajaron.
+  function vencidosHtml() {
+    const lista = [...vencidosPlan.values()].sort((a, b) => a.fecha.localeCompare(b.fecha) || a.ce.localeCompare(b.ce));
+    if (!lista.length) return '';
+    const nRet = lista.filter(v => v.tipo === 'retiro').length, nNv = lista.length - nRet;
+    const dias = f => { const d = parseISODate(f); return d ? Math.round((hoy00().getTime() - d.getTime()) / 864e5) : 0; };
+    const filas = lista.map(v => `<tr>
+        <td>${v.tipo === 'retiro' ? pill('Retiro ' + escapeHtml(v.tipoRet || ''), 'warn') : pill(v.tipoEnt === 'CD-CLIENTE' ? 'NV CD-Cliente' : 'NV consolidable', 'warn')}</td>
+        <td><b class="sv-mono">${escapeHtml(v.doc)}</b>${v.rep ? `<div class="sv-sub" style="margin:0">reparto ${escapeHtml(v.rep)}</div>` : ''}${v.pv ? `<div class="sv-sub" style="margin:0">PV ${escapeHtml(v.pv)}</div>` : ''}</td>
+        <td>${escapeHtml(v.nombre || '')}</td>
+        <td>${escapeHtml(nombreCentro(v.ce) || v.ce)}</td>
+        <td class="sv-mono">${escapeHtml(fmtFechaISO(v.fecha))}<div class="sv-sub" style="margin:0;color:#b5000b">hace ${dias(v.fecha)} día${dias(v.fecha) === 1 ? '' : 's'}</div></td>
+        <td style="text-align:right">${escapeHtml(fmtNum(v.cant, 0))} un · ${escapeHtml(fmtNum(v.ton, 2))} t<div class="sv-sub" style="margin:0">${v.lineas} línea${v.lineas === 1 ? '' : 's'} pendiente${v.lineas === 1 ? '' : 's'} en SAP</div></td>
+        <td>${v.tipo === 'retiro'
+          ? (v.ee ? `Entrega entrante <b class="sv-mono">${escapeHtml(v.ee)}</b> <span style="color:#b5000b">pendiente de ingresar</span>: SAP no descontó las unidades.` : '<span style="color:#b5000b">Sin entrega entrante registrada</span> y SAP sigue con saldo pendiente.')
+          : (v.ent ? `Entrega <b class="sv-mono">${escapeHtml(v.ent)}</b> sin DT y SAP sigue con pendiente.` : 'SAP sigue mostrando la posición pendiente.')}</td>
+      </tr>`).join('');
+    return `<div class="sv-card" style="border:1px solid #f0b4b4;background:#fff5f5;padding:12px 14px;margin-bottom:12px">
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <span class="material-symbols-outlined" style="color:#b5000b">report</span>
+        <b style="color:#b5000b">Pendientes de regularizar · ${lista.length}</b>
+        <span class="sv-sub" style="margin:0">${nRet ? `${nRet} retiro${nRet === 1 ? '' : 's'} de fábrica` : ''}${nRet && nNv ? ' · ' : ''}${nNv ? `${nNv} pedido${nNv === 1 ? '' : 's'} de venta` : ''} con fecha programada ya pasada que SAP sigue mostrando pendientes. <b>No están en este Plan de Carga.</b></span>
+        <button class="sv-btn" data-vencidos-toggle style="margin-left:auto;padding:4px 10px;font-size:12px">${st.verVencidos ? 'Ocultar' : 'Ver detalle'}</button>
+      </div>
+      ${st.verVencidos ? `<div class="sv-table-wrap" style="margin-top:10px"><table class="sv-table"><thead><tr><th>Tipo</th><th>Documento</th><th>Proveedor / Cliente</th><th>Destino</th><th>Fecha programada</th><th style="text-align:right">Pendiente SAP</th><th>Qué revisar</th></tr></thead><tbody>${filas}</tbody></table>
+        <div class="sv-sub" style="margin-top:8px">Para regularizar: en <b>Retiros de Fábrica</b> / <b>Ventas CD</b> edita la coordinación con una fecha nueva (vuelve al plan de esa fecha), anúlala, o si el camión sí viajó pide ingresar la entrega entrante / crear la DT en SAP para que descuente el pendiente.</div></div>` : ''}
+    </div>`;
+  }
   function draw() {
     resultado.forEach(refrescarFill);
     const kpiDef = [
@@ -10517,6 +10612,7 @@ async function renderPlanCarga(stage, opts = {}) {
       }).join('')}</div>
       <div class="sv-legend pc-legend"><b>Orden de llenado</b>${CAT_V2.map((c, i) => `<span><i style="background:${c.color}"></i>${i + 1}. ${escapeHtml(c.lbl)}</span>`).join('')}
         <span class="pc-sep"></span>${DIR_V2.map(t => `<span><span class="material-symbols-outlined" style="color:${t.color};font-size:16px">local_shipping</span>${escapeHtml(t.lbl)}</span>`).join('')}</div>
+      ${vencidosHtml()}
       <div class="pc-list">
         ${!resultado.length ? '<div class="sv-card pc-empty"><span class="material-symbols-outlined">inventory_2</span>Sin carga para este origen.</div>'
           : filas.length ? filas.map(filaV2).join('') : '<div class="sv-card pc-empty">Ninguna sucursal con ese estado. Haz clic de nuevo en la tarjeta para quitar el filtro.</div>'}
@@ -10531,6 +10627,7 @@ async function renderPlanCarga(stage, opts = {}) {
       planOrigen = btn.dataset.origen; st.drawer = null; renderPlanCarga(stage);
     }));
     stage.querySelectorAll('[data-kpi]').forEach(b => b.addEventListener('click', () => { const k = b.dataset.kpi; st.kpi = st.kpi === k ? 'all' : k; draw(); }));
+    stage.querySelector('[data-vencidos-toggle]')?.addEventListener('click', () => { st.verVencidos = !st.verVencidos; draw(); });
     stage.querySelectorAll('[data-suc]').forEach(b => {
       const abrir = () => { st.drawer = b.dataset.suc; st.tab = 'cd'; draw(); };
       b.addEventListener('click', abrir);
@@ -10652,7 +10749,24 @@ async function renderPlanCarga(stage, opts = {}) {
 // (14-oct-2026, Jordan) NV en un camión PROGRAMADO (día de carga + camión con transporte) → estado
 // «COORDINADO» bloqueado en Ventas CD (sin coordinar/editar/anular/excluir; no se vuelve a considerar),
 // mientras el SQVI la siga trayendo. Si el SQVI ya no la trae, sale de la vista (se entiende entregada).
-const VENTAS_PROGRAMADAS = new Map();   // doc_ventas → { fecha_carga, fecha_plan, patente, transportista, ce, tipo }
+const VENTAS_PROGRAMADAS = new Map();   // doc_ventas → { fecha_carga, fecha_plan, patente, transportista, ce, tipo, camionId, lineIds }
+// (13-nov-2026, Jordan) Tras editar la coordinación de una NV que va en un camión programado: si la fecha de
+// entrega confirmada quedó distinta a la fecha de carga del camión, sus líneas se quitan de ese camión con
+// fn_abast_seg_editar_carga (queda en el historial de ajustes) para que la NV entre al plan de la fecha nueva.
+async function sacarNVDeCamionProgramadoSiCambioFecha(doc, reparto, prog) {
+  const d = String(doc ?? '').trim(), rep = String(reparto ?? '').trim();
+  if (!prog || !prog.camionId || !(prog.lineIds || []).length) return;
+  try {
+    const { data: co } = await supabase.from('abast_venta_coordinacion').select('fecha_entrega').eq('doc_ventas', d).eq('reparto', rep).maybeSingle();
+    const fNueva = String((co || {}).fecha_entrega || '').slice(0, 10), fCam = String(prog.fecha_carga || '').slice(0, 10);
+    if (!fNueva || fNueva === fCam) return;
+    const { error } = await supabase.rpc('fn_abast_seg_editar_carga', { p_camion_id: prog.camionId, p_quitar: prog.lineIds, p_agregar: [],
+      p_motivo: `Coordinación editada: fecha de entrega ${fmtFechaISO(fCam)} → ${fmtFechaISO(fNueva)}` });
+    if (error) { showAlert('La coordinación se guardó, pero no se pudo sacar el pedido del camión programado: ' + error.message, 'error'); return; }
+    VENTAS_PROGRAMADAS.delete(d);
+    showAlert(`Pedido ${d} sacado del camión programado del ${fmtFechaISO(fCam)} · entra al plan del ${fmtFechaISO(fNueva)}`, 'success');
+  } catch (e) { console.warn('Editar coordinación NV programada', e); }
+}
 // (2-nov-2026, Jordan) N° de entrega que YA viajaron: camión con patente de un plan anterior (o
 // coordinación directa COORD| con fecha de carga pasada). Mismo criterio que el Plan de Carga.
 const VENTAS_ENT_CARGADAS = new Set();
@@ -10670,7 +10784,7 @@ async function cargarVentasProgramadas() {
   const byId = new Map(prog.map(c => [c.id, c]));
   const ids = [...byId.keys()];
   for (let i = 0; i < ids.length; i += 10) {
-    const { data, error: e2 } = await supabase.from('abast_seguimiento_carga').select('camion_id,documento,pedido_venta,tipo_carga,n_entrega,material').in('camion_id', ids.slice(i, i + 10)).limit(5000);
+    const { data, error: e2 } = await supabase.from('abast_seguimiento_carga').select('id,camion_id,documento,pedido_venta,tipo_carga,n_entrega,material').in('camion_id', ids.slice(i, i + 10)).limit(5000);
     if (e2) throw e2;
     (data || []).forEach(l => {
       const c0 = byId.get(l.camion_id);
@@ -10687,9 +10801,10 @@ async function cargarVentasProgramadas() {
       const doc = tx(l.documento) || tx(l.pedido_venta);
       if (!doc) return;
       const c = byId.get(l.camion_id), prev = VENTAS_PROGRAMADAS.get(doc);
+      if (prev && prev.camionId === l.camion_id) { if (l.id != null) prev.lineIds.push(l.id); return; }   // otra línea del mismo camión
       if (prev && String(prev.fecha_plan) >= String(c.fecha_plan)) return;   // el camión más reciente
       VENTAS_PROGRAMADAS.set(doc, { fecha_plan: c.fecha_plan, fecha_carga: c.fecha_carga || c.fecha_plan, patente: tx(c.patente_camion),
-        transportista: tx(c.transportista) || tx(c.id_transporte), ce: tx(c.ce), tipo: c.tipo_camion || '' });
+        transportista: tx(c.transportista) || tx(c.id_transporte), ce: tx(c.ce), tipo: c.tipo_camion || '', camionId: l.camion_id, lineIds: l.id != null ? [l.id] : [] });
     });
   }
 }
