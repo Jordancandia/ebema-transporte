@@ -10,13 +10,13 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611141141';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611141141';
-import { getDatabase } from './data.js?v=202611141141';
+import { supabase } from './supabase-client.js?v=202611161231';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611161231';
+import { getDatabase } from './data.js?v=202611161231';
 import { COMUNAS_POR_REGION } from './chile-geo.js';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611141141';
-import { confirmar, pedirDato } from './confirmar.js?v=202611141141';
+import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611161231';
+import { confirmar, pedirDato } from './confirmar.js?v=202611161231';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -799,6 +799,32 @@ function montarTransp(panel, st, tr, invalid, draw) {
       st.idTrans = String(t.id); st.transportista = t.razonSocial || ''; draw();
     },
   });
+  // (16-nov-2026, Jordan) Camiones reservados (directos): un clic trae el transporte de la reserva.
+  const hostR = panel.querySelector('[data-bus="trans"]');
+  const pintarRes = lista => {
+    if (!hostR || !hostR.isConnected) return;
+    panel.querySelector('[data-res-pick-box]')?.remove();
+    const l = (lista || []).filter(x => x.reserva_tipo && x.reserva_tipo !== 'CD');
+    if (!l.length) return;
+    const box = document.createElement('div');
+    box.dataset.resPickBox = '1';
+    box.style.cssText = 'margin-bottom:8px;padding:8px 10px;border:1px dashed #93c5fd;border-radius:10px;background:#eff6ff';
+    box.innerHTML = `<div class="sv-sub" style="margin:0 0 6px;max-width:none"><b>Usar camión reservado</b> · trae transportista, chofer y patentes de la reserva</div>
+      <div style="display:flex;flex-direction:column;gap:4px">${l.map((x, i) => `<button type="button" class="sv-btn" data-res-pick="${i}" style="justify-content:flex-start;text-align:left;font-size:12px"><span class="material-symbols-outlined" style="color:#1d4ed8">event_available</span>${escapeHtml(txtReservaCam(x))}</button>`).join('')}</div>`;
+    hostR.parentNode.insertBefore(box, hostR);
+    box.querySelectorAll('[data-res-pick]').forEach(b => b.addEventListener('click', () => {
+      const x = l[+b.dataset.resPick];
+      if (!x) return;
+      st.idTrans = String(x.id_transporte || ''); st.transportista = x.transportista || '';
+      st.choferNombre = x.chofer_nombre || ''; st.choferRut = x.chofer_rut || ''; st.choferTel = x.chofer_telefono || '';
+      st.patCamion = x.patente_camion || ''; st.patCarro = x.patente_carro || '';
+      if ('horaPres' in st && x.hora_presentacion) st.horaPres = x.hora_presentacion;
+      if (st.busT) { st.busT.open = false; st.busT.q = ''; }
+      showAlert(`Transporte de la reserva cargado (${fmtPatente(x.patente_camion)}). Revisa que la fecha sea el ${fmtFechaISO(x.fecha_carga)}.`, 'success');
+      draw();
+    }));
+  };
+  if (_reservasCam && Date.now() - _reservasCamTs < 60000) pintarRes(_reservasCam); else loadReservasCamion().then(pintarRes).catch(() => {});
 }
 // (5-oct-2026, Jordan) Al coordinar transporte (Ventas CD, Retiros, Crossdocking) sólo el ID y nombre
 // del transportista son obligatorios; chofer, RUT, teléfono y patente pueden completarse después.
@@ -1448,6 +1474,11 @@ async function validarPatenteDia({ patente, fecha, clave, docs = [] }) {
     if (error) throw error;
     rows = data || [];
   } catch (e) { console.warn('Validación de patente por día no disponible', e); return true; }
+  // (16-nov-2026, Jordan) Camión RESERVADO: si la carga que se agenda va al mismo centro que la reserva, es la reserva
+  // materializándose (no es otra carga). Para otro centro se alerta como «Camión reservado».
+  { const ceDe = k => { const q = String(k || '').split('|'); return String((q[0] === 'CAM' ? q[2] : q[1]) || '').trim(); };
+    rows = rows.filter(x => !(esClaveReserva(x.clave) && x.clave !== clave && String(x.ce ?? '').trim() === ceDe(clave)));
+    rows.forEach(x => { if (esClaveReserva(x.clave)) { x.tipo = 'Camión reservado'; x.detalle = 'reserva de transporte'; } }); }
   const self = new Set((docs || []).map(d => String(d ?? '').trim()).filter(Boolean));
   // La carga a la que ya pertenecen estos documentos también es «esta carga» (p. ej. retiro unido al camión CD).
   const selfClaves = new Set(rows.filter(x => x.documento && self.has(String(x.documento).trim())).map(x => x.clave));
@@ -3110,6 +3141,86 @@ function showCoordRetiroModal(row, ctx) {
     draw();
   });
 }
+// ── Camión RESERVADO (16-nov-2026, Jordan) ───────────────────────────────────
+// Reserva = transporte + día de carga + destino, SIN amarrar entregas ni materiales. La carga se define recién
+// cuando se confirma (corte manual: Owner o Planner Distribución). Se guarda en abast_plan_camion_coordinado con
+// camion >= 100 y reserva_tipo, por lo que cuenta en el cupo de bloques y en la alerta de patente de ese día.
+// Vive hasta que se confirma, se libera o pasa su fecha de carga (no depende del plan del día).
+const RES_CAM_BASE = 100;
+const RES_TIPOS = [
+  { k: 'CD', lbl: 'Consolidado CD', sub: 'Camión CD / 2º camión a sucursal', pres: 'bloque' },
+  { k: 'CD-CLIENTE', lbl: 'CD-Cliente', sub: 'Pedidos de venta directo a cliente', pres: 'hora' },
+  { k: 'FAB-SUC', lbl: 'Fábrica-Sucursal', sub: 'Retiro directo a sucursal', pres: null },
+  { k: 'FAB-CLTE', lbl: 'Fábrica-Cliente', sub: 'Retiro directo a cliente', pres: null },
+];
+const resTipo = k => RES_TIPOS.find(x => x.k === k) || RES_TIPOS[0];
+const esClaveReserva = k => /^CAM\|[^|]*\|[^|]*\|\d{3,}$/.test(String(k || ''));
+let _reservasCam = null, _reservasCamTs = 0;
+async function loadReservasCamion(force) {
+  if (!force && _reservasCam && Date.now() - _reservasCamTs < 60000) return _reservasCam;
+  try {
+    const { data, error } = await supabase.from('abast_plan_camion_coordinado').select('*')
+      .not('reserva_tipo', 'is', null).gte('fecha_carga', isoLocal(hoy00())).order('fecha_carga');
+    if (error) throw error;
+    _reservasCam = data || [];
+  } catch (e) { console.warn('Reservas de camión no disponibles', e); _reservasCam = _reservasCam || []; }
+  _reservasCamTs = Date.now();
+  return _reservasCam;
+}
+async function borrarReservaCamion(x) {
+  _reservasCam = null;
+  return supabase.from('abast_plan_camion_coordinado').delete().eq('fecha', x.fecha).eq('cd_origen', x.cd_origen).eq('ce', x.ce).eq('camion', x.camion);
+}
+const txtReservaCam = x => [resTipo(x.reserva_tipo).lbl + ' → ' + getNombreCentro(String(x.ce).trim()), 'carga ' + fmtFechaISO(x.fecha_carga),
+  x.patente_camion ? fmtPatente(x.patente_camion) : '', x.transportista || x.id_transporte || '', x.referencia || ''].filter(Boolean).join(' · ');
+// Paso 1 de la reserva: tipo de camión, centro destino y referencia. Devuelve { tipo, ce, referencia } o null.
+function showReservaCamionModal({ cd, ceDef = '' }) {
+  return new Promise(resolve => {
+    const centros = ((getDatabase().logisticsCentres) || []).map(c => ({ id: String(c.id), nombre: c.nombre || String(c.id) }))
+      .filter(c => c.id !== String(cd)).sort((a, b) => a.id.localeCompare(b.id));
+    const st = { tipo: 'CD', ce: String(ceDef || ''), ref: '', err: false };
+    const wrap = document.createElement('div');
+    wrap.innerHTML = '<div class="sv-dr-bg" style="z-index:120"></div><aside class="sv-dr" style="z-index:121;width:min(600px,100vw)" role="dialog" aria-label="Reservar camión"></aside>';
+    document.body.appendChild(wrap);
+    const panel = wrap.querySelector('aside');
+    const fin = v => { wrap.remove(); document.removeEventListener('keydown', onKey, true); resolve(v); };
+    const onKey = e => { if (e.key !== 'Escape' || document.querySelector('.sv-cf-bg')) return; e.stopPropagation(); fin(null); };
+    document.addEventListener('keydown', onKey, true);
+    wrap.querySelector('.sv-dr-bg').addEventListener('click', () => fin(null));
+    function draw() {
+      const badCe = st.err && !st.ce;
+      panel.innerHTML = `
+        <div class="sv-dr-h"><div style="flex:1;min-width:0">
+          <div class="sv-dr-k">Reservar camión</div>
+          <div class="sv-dr-t">Camión para otro día, sin amarrar la carga</div>
+          <div class="sv-dr-s">Origen ${escapeHtml(String(cd))} · paso 1 de 2</div></div>
+          <button class="sv-iconbtn" data-cx title="Cerrar (Esc)"><span class="material-symbols-outlined">close</span></button></div>
+        <div class="sv-dr-b" style="gap:16px">
+          <div class="sv-sub" style="margin:0;max-width:none">La reserva guarda el <b>transporte y el día de carga</b>. No se amarra a entregas ni materiales: la carga se define cuando se <b>confirma</b> (corte manual).</div>
+          <div><label class="sv-flbl" style="display:block;margin-bottom:6px">Tipo de camión *</label>
+            <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px">${RES_TIPOS.map(t => `<button type="button" class="sv-opt ${st.tipo === t.k ? 'is-on' : ''}" data-rtipo="${t.k}" style="flex-direction:column;align-items:flex-start;gap:2px"><b>${escapeHtml(t.lbl)}</b><span class="sv-sub" style="margin:0">${escapeHtml(t.sub)}</span></button>`).join('')}</div></div>
+          <div><label class="sv-flbl" style="display:block;margin-bottom:6px;${badCe ? 'color:#b5000b' : ''}">Centro destino *</label>
+            <label class="sv-inp" style="width:100%;box-sizing:border-box;${badCe ? 'border-color:#b5000b' : ''}"><span class="material-symbols-outlined">store</span>
+              <select data-rce style="border:none;background:transparent;width:100%;font:inherit;outline:none"><option value="">Elegir centro…</option>
+                ${centros.map(c => `<option value="${escapeHtml(c.id)}" ${c.id === st.ce ? 'selected' : ''}>${escapeHtml(c.id)} · ${escapeHtml(c.nombre)}</option>`).join('')}</select></label></div>
+          <div><label class="sv-flbl" style="display:block;margin-bottom:6px">Referencia (opcional)</label>
+            <label class="sv-inp" style="width:100%;box-sizing:border-box"><input data-rref value="${escapeHtml(st.ref)}" maxlength="120" placeholder="${st.tipo === 'CD' ? 'Ej.: saldo del camión del martes' : 'Cliente, proveedor u obra'}" style="width:100%"></label></div>
+        </div>
+        <div class="sv-dr-f"><span class="sv-dr-note">* Obligatorio</span>
+          <div style="display:flex;gap:8px"><button class="sv-btn" data-cx>Cancelar</button>
+          <button class="sv-btn-p" data-ok><span class="material-symbols-outlined">arrow_forward</span>Datos del transporte</button></div></div>`;
+      panel.querySelectorAll('[data-cx]').forEach(b => b.addEventListener('click', () => fin(null)));
+      panel.querySelectorAll('[data-rtipo]').forEach(b => b.addEventListener('click', () => { st.tipo = b.dataset.rtipo; draw(); }));
+      panel.querySelector('[data-rce]').addEventListener('change', e => { st.ce = e.target.value; });
+      panel.querySelector('[data-rref]').addEventListener('input', e => { st.ref = e.target.value; });
+      panel.querySelector('[data-ok]').addEventListener('click', () => {
+        if (!st.ce) { st.err = true; draw(); return; }
+        fin({ tipo: st.tipo, ce: st.ce, referencia: st.ref.trim() });
+      });
+    }
+    draw();
+  });
+}
 // ── Horario de presentación para carga en CD (28-oct-2026, Jordan) ──────────────
 // Consolidados (camión CD / 2º camión): 3 bloques y máximo 2 camiones por bloque (día de carga + CD origen;
 // cuentan programados y coordinados). CD-Cliente: sin bloque, pero con hora de presentación obligatoria.
@@ -3146,7 +3257,8 @@ function campoHoraPres(st, bad) {
 //   o { modo: 'hora' } (CD-Cliente). Sin presentacion no se pide horario (retiros, fábrica).
 // (29-oct-2026) choque: { clave, docs } → bloquea si la patente ya tiene otra carga ese día de carga (validarPatenteDia).
 function showTransporteCamionModal({ titulo, sub, ini = {}, otros = [], fechaDef = '', modo = 'programar', presentacion = null, choque = null }) {
-  const COORD = modo === 'coordinar';
+  const RESV = modo === 'reservar';   // (16-nov-2026) reserva: transporte + día, sin carga amarrada
+  const COORD = modo === 'coordinar' || RESV;
   const PRES = presentacion && presentacion.modo;
   return new Promise(async resolve => {
     let tr = { trans: [], transTodos: [], choferes: [], camiones: [] };
@@ -3271,13 +3383,13 @@ function showTransporteCamionModal({ titulo, sub, ini = {}, otros = [], fechaDef
       const t = sel();
       panel.innerHTML = `
         <div class="sv-dr-h"><div style="flex:1;min-width:0">
-          <div class="sv-dr-k">${COORD ? 'Coordinar transporte' : 'Programar camión'}</div>
+          <div class="sv-dr-k">${RESV ? 'Reservar camión · paso 2 de 2' : COORD ? 'Coordinar transporte' : 'Programar camión'}</div>
           <div class="sv-dr-t">${escapeHtml(titulo)}</div>
           ${sub ? `<div class="sv-dr-s">${escapeHtml(sub)}</div>` : ''}</div>
           <button class="sv-iconbtn" data-cx title="Cerrar (Esc)"><span class="material-symbols-outlined">close</span></button></div>
         <div class="sv-dr-b" style="gap:16px">
           ${falt.length ? '<div class="sv-note-box" style="background:#ffdad6;color:#93000a;font-weight:700">Completa los campos obligatorios marcados en rojo.</div>' : ''}
-          <div class="sv-sub" style="margin:0;max-width:none">Elige el día de carga y el transportista del maestro de transporte; luego el chofer y las patentes. ${COORD ? 'Al guardar, el transporte queda <b>coordinado sin programar</b>: la carga del camión sigue actualizándose y el perfil OWNER lo programa con estos datos.' : 'Al confirmar, el camión queda programado para carga.'}</div>
+          <div class="sv-sub" style="margin:0;max-width:none">Elige el día de carga y el transportista del maestro de transporte; luego el chofer y las patentes. ${RESV ? 'Al guardar, el camión queda <b>reservado</b> para ese día: cuenta en el cupo del bloque y en la alerta de patente, pero la carga no se amarra hasta que se confirma.' : COORD ? 'Al guardar, el transporte queda <b>coordinado sin programar</b>: la carga del camión sigue actualizándose y el perfil OWNER lo programa con estos datos.' : 'Al confirmar, el camión queda programado para carga.'}</div>
           <div style="max-width:260px">${lbl('Fecha de carga', 'fechaCarga', true)}
             <label class="sv-inp" style="width:100%;box-sizing:border-box;${bad('fechaCarga') ? 'border-color:#b5000b' : ''}"><span class="material-symbols-outlined">event</span>
               <input type="date" data-k="fechaCarga" value="${escapeHtml(st.fechaCarga)}" style="width:100%;border:none;background:transparent;font:inherit;outline:none"></label>
@@ -3311,7 +3423,7 @@ function showTransporteCamionModal({ titulo, sub, ini = {}, otros = [], fechaDef
         </div>
         <div class="sv-dr-f"><span class="sv-dr-note">* Obligatorio</span>
           <div style="display:flex;gap:8px"><button class="sv-btn" data-cx>Cancelar</button>
-          <button class="sv-btn-p" data-ok><span class="material-symbols-outlined">${COORD ? 'event_available' : 'local_shipping'}</span>${COORD ? 'Guardar coordinación' : 'Confirmar camión'}</button></div></div>`;
+          <button class="sv-btn-p" data-ok><span class="material-symbols-outlined">${COORD ? 'event_available' : 'local_shipping'}</span>${RESV ? 'Guardar reserva' : COORD ? 'Guardar coordinación' : 'Confirmar camión'}</button></div></div>`;
       panel.querySelectorAll('[data-cx]').forEach(b => b.addEventListener('click', () => fin(null)));
       panel.querySelectorAll('[data-k]').forEach(i => i.addEventListener('input', () => { st[i.dataset.k] = i.value; }));
       panel.querySelector('[data-k="fechaCarga"]')?.addEventListener('change', async e => { st.fechaCarga = e.target.value; await cargarCupos(); draw(); });
@@ -3370,8 +3482,8 @@ function showTransporteCamionModal({ titulo, sub, ini = {}, otros = [], fechaDef
         }
         // (8-oct-2026, Jordan) Confirmar el camión con sus datos y el día de carga.
         const presObj = PRES === 'bloque' ? { bloque_presentacion: st.bloque, hora_presentacion: bloquePres(st.bloque).desde } : PRES === 'hora' ? { hora_presentacion: st.horaPres.trim() } : {};
-        const okConf = await confirmar(`${COORD ? '¿Guardar la coordinación del transporte (sin programar)?' : '¿Confirmar el camión?'}\n\n${titulo}\nDía de carga: ${fmtFechaISO(st.fechaCarga)}${PRES ? `\nPresentación: ${txtPresentacion(presObj)}` : ''}\nTransportista: ${tsel.id} · ${tsel.razonSocial || st.transportista}\nChofer: ${st.choferNombre.trim()} · ${st.choferRut.trim()} · ${st.choferTel.trim()}\nPatente camión: ${fmtPatente(st.patCamion)}${st.patCarro.trim() ? ' · carro ' + fmtPatente(st.patCarro) : ''}`,
-          { aceptar: COORD ? 'Guardar coordinación' : 'Confirmar camión', tono: 'normal', icono: COORD ? 'event_available' : 'local_shipping' });
+        const okConf = await confirmar(`${RESV ? '¿Guardar la reserva del camión (sin carga amarrada)?' : COORD ? '¿Guardar la coordinación del transporte (sin programar)?' : '¿Confirmar el camión?'}\n\n${titulo}\nDía de carga: ${fmtFechaISO(st.fechaCarga)}${PRES ? `\nPresentación: ${txtPresentacion(presObj)}` : ''}\nTransportista: ${tsel.id} · ${tsel.razonSocial || st.transportista}\nChofer: ${st.choferNombre.trim()} · ${st.choferRut.trim()} · ${st.choferTel.trim()}\nPatente camión: ${fmtPatente(st.patCamion)}${st.patCarro.trim() ? ' · carro ' + fmtPatente(st.patCarro) : ''}`,
+          { aceptar: RESV ? 'Guardar reserva' : COORD ? 'Guardar coordinación' : 'Confirmar camión', tono: 'normal', icono: COORD ? 'event_available' : 'local_shipping' });
         if (!okConf) { draw(); return; }
         fin({
           fecha_carga: st.fechaCarga,
@@ -4027,16 +4139,31 @@ const VISTAS_TRONCAL = {
         // (12-nov-2026, Jordan) Corrige la regla «SAP manda» del 4-nov: una línea que ya viajó con la entrega
         // coordinada es SALDO SIN COORDINAR aunque SAP no registre nada entregado (ej. OC 4500208917 mat 602270,
         // viajó 2 veces a Talca con entregado 0). Se ve como saldo y no entra al plan hasta re-coordinar la OC.
-        const _vjRet = detalle.filter(d => d.pendiente > 0 && RETIROS_MAT_CARGADAS.has(`${oc}|${String(d.material ?? '').trim()}`));
+        const _matK = m => `${oc}|${String(m ?? '').trim()}`;
+        const _vjRet = detalle.filter(d => d.pendiente > 0 && RETIROS_MAT_CARGADAS.has(_matK(d.material)));
         const _entRet = String(estObj.entrega_entrante ?? '').trim();
         const _reCoordRet = !!_entRet && !RETIROS_ENT_CARGADAS.has(_entRet);   // entrega nueva → ya re-coordinada
-        const _saldoSinCoordRet = _vjRet.length > 0 && !_reCoordRet;
-        // Todas las líneas pendientes ya viajaron → la OC completa es saldo; si sólo algunas, el resto sigue en el plan.
-        const _saldoTodoRet = _saldoSinCoordRet && _vjRet.length === detalle.filter(d => d.pendiente > 0).length;
+        // (14-nov-2026, Jordan) COORDINACIÓN CONSUMIDA: todas las líneas que SÍ estaban coordinadas (lineas_retiro;
+        // sin selección = toda la OC) ya viajaron en un camión programado, y ninguna de ellas sigue pendiente sin
+        // viajar. Una línea que nunca se coordinó NO mantiene viva la coordinación. Casos: OC 4500208914 (se
+        // coordinaron 620606/620607 y viajaron el 4-nov; 620610 nunca estuvo en la coordinación) y 4500208820 (las 16
+        // líneas coordinadas viajaron el 22-oct y SAP las cerró; quedan 6 líneas nuevas pendientes). Antes la OC
+        // seguía como «Retiro RM» del camión pasado y PENDIENTE DE REGULARIZAR; ahora TODA la OC (incluidas las
+        // líneas no coordinadas) es SALDO SIN COORDINAR hasta re-coordinarla con fecha y entrega nuevas.
+        const _pendRet = detalle.filter(d => d.pendiente > 0);
+        const _matsCoord = coord0 ? (est0.lineas_retiro ? Object.keys(est0.lineas_retiro) : detalle.map(d => d.material)) : [];
+        const _coordViaj = _matsCoord.filter(m => RETIROS_MAT_CARGADAS.has(_matK(m)));
+        const _coordPendRet = coord0 ? _pendRet.filter(d => cantRetiroLinea(est0, d.material, d.pendiente) > 0) : _pendRet;
+        const _consumidaRet = coord0 && !_reCoordRet && _coordViaj.length > 0 && _coordPendRet.every(d => RETIROS_MAT_CARGADAS.has(_matK(d.material)));
+        const _saldoSinCoordRet = (_vjRet.length > 0 || _consumidaRet) && !_reCoordRet;
+        // Todas las líneas pendientes ya viajaron (o la coordinación se consumió) → la OC completa es saldo;
+        // si sólo algunas, el resto sigue en el plan.
+        const _saldoTodoRet = _saldoSinCoordRet && (_consumidaRet || _vjRet.length === _pendRet.length);
+        const _saldoLin = _saldoTodoRet ? _pendRet : _vjRet;
         out.push({
           _saldoSinCoord: _saldoSinCoordRet, _saldo_todo: _saldoTodoRet,
-          _saldo_pend: _vjRet.reduce((s2, d) => s2 + (Number(d.pendiente) || 0), 0), _vj_lineas: _vjRet.length,
-          _saldo_ton: _vjRet.reduce((s2, d) => s2 + (Number(d.ton) || 0), 0),
+          _saldo_pend: _saldoLin.reduce((s2, d) => s2 + (Number(d.pendiente) || 0), 0), _vj_lineas: _vjRet.length,
+          _saldo_ton: _saldoLin.reduce((s2, d) => s2 + (Number(d.ton) || 0), 0),
           _viajo: _saldoSinCoordRet ? (RETIROS_PROGRAMADOS.get(oc) || null) : null,
           doc_compr: oc, contr: f.contr, proveedor: f.proveedor, nombre_1: f.nombre_1,
           ce: f.ce, _desc_centro: getNombreCentro(f.ce), alm: f.alm, documento: f.documento,
@@ -4944,7 +5071,8 @@ const fechaUpd = ts => ts ? horaChile(ts) : '';
 const retiroAtrasado = r => !esEstadoCoordinado(r._estado) && (diasVencida(r.fe_entrega) ?? -1) > 5;
 // (4-nov-2026, Jordan) OC Retiro RM cuya FECHA DE RETIRO ya pasó: ese día de carga no vale, hay que
 // re-coordinarla con fecha nueva. Antes se mostraba «carga 08-10» como si siguiera vigente.
-const retFechaVencida = r => r._modo === 'RM' && !!r._fecha_retiro && String(r._fecha_retiro).slice(0, 10) < isoLocal(hoy00());
+// (14-nov-2026) Una coordinación ya consumida (la OC completa es SALDO SIN COORDINAR) no es «pendiente de regularizar»: viajó.
+const retFechaVencida = r => r._modo === 'RM' && !r._saldo_todo && !!r._fecha_retiro && String(r._fecha_retiro).slice(0, 10) < isoLocal(hoy00());
 
 const V2 = {
   // ── STOCK ALMACÉN 4000 ────────────────────────────────────────────────────
@@ -7672,7 +7800,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611141141');
+    const m = await import('./ind-plan-carga.js?v=202611161231');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -9458,8 +9586,135 @@ async function renderPlanCarga(stage, opts = {}) {
     try {
       const { data } = await supabase.from('abast_plan_camion_coordinado').select('*')
         .eq('fecha', isoLocal(hoy00())).eq('cd_origen', planOrigen);
-      coordMap = new Map((data || []).map(x => [`${String(x.ce ?? '').trim()}|${x.camion}`, x]));
+      coordMap = new Map((data || []).filter(x => !x.reserva_tipo).map(x => [`${String(x.ce ?? '').trim()}|${x.camion}`, x]));
     } catch (_e) { coordMap = new Map(); }
+  }
+  // ── (16-nov-2026, Jordan) Camiones RESERVADOS: transporte + día de carga sin amarrar entregas/materiales ──
+  // La carga del camión reservado es la que tenga el plan el día en que se confirma (corte manual, Owner o
+  // Planner Distribución). Alcance: consolidado CD (camión CD / 2º camión) y directos (CD-Cliente, Fábrica-Sucursal,
+  // Fábrica-Cliente; estos se usan al coordinar la NV / OC con «Usar camión reservado»).
+  let reservas = [];
+  const resKey = x => `${x.fecha}|${String(x.ce ?? '').trim()}|${x.camion}`;
+  const resDe = k => reservas.find(x => resKey(x) === k) || null;
+  const presRes = x => ({ modo: 'bloque', cd: planOrigen, self: { fecha: x.fecha, ce: x.ce, camion: x.camion } });
+  async function leerReservas() {
+    try {
+      const todas = (await loadReservasCamion(true)).filter(x => String(x.cd_origen) === String(planOrigen));
+      const vivas = [];
+      for (const x of todas) {
+        // Reserva de camión directo ya materializada: existe una NV / OC coordinada con esa patente, día y centro.
+        // (Las de consolidado CD se consumen al confirmar/programar.)
+        let usada = false;
+        if (x.reserva_tipo !== 'CD' && x.patente_camion && x.fecha_carga) {
+          try {
+            const { data } = await supabase.rpc('fn_abast_cargas_patente', { p_patente: normPatente(x.patente_camion), p_fecha: x.fecha_carga });
+            usada = (data || []).some(c => !esClaveReserva(c.clave) && String(c.ce ?? '').trim() === String(x.ce ?? '').trim());
+          } catch (_e) { /* sin validación: se mantiene visible */ }
+        }
+        if (usada) { if (PUEDE_COORD) await borrarReservaCamion(x); continue; }
+        vivas.push(x);
+      }
+      reservas = vivas;
+    } catch (_e) { reservas = []; }
+  }
+  async function reservarCamion(ceDef, editar = null) {
+    if (!PUEDE_COORD) { showAlert('Tu perfil no puede reservar camiones (Owner o Planner Distribución).', 'error'); return; }
+    const base = editar ? { tipo: editar.reserva_tipo, ce: String(editar.ce).trim(), referencia: editar.referencia || '' }
+      : await showReservaCamionModal({ cd: planOrigen, ceDef });
+    if (!base) return;
+    const tp = resTipo(base.tipo), hoyI = hoyIsoPlanP(), fechaK = editar ? editar.fecha : hoyI;
+    let cam = editar ? Number(editar.camion) : RES_CAM_BASE + 1;
+    if (!editar) {
+      const { data } = await supabase.from('abast_plan_camion_coordinado').select('camion').eq('fecha', hoyI).eq('cd_origen', planOrigen).eq('ce', base.ce)
+        .gte('camion', RES_CAM_BASE).order('camion', { ascending: false }).limit(1);
+      if (data && data[0]) cam = Number(data[0].camion) + 1;
+    }
+    const t = await showTransporteCamionModal({ titulo: `Reserva ${tp.lbl} → ${getNombreCentro(base.ce)}`,
+      sub: `Sin carga amarrada: se define al confirmar${base.referencia ? ' · ' + base.referencia : ''}`,
+      ini: editar || {}, fechaDef: editar ? editar.fecha_carga : isoLocal(diaHabil2), modo: 'reservar',
+      presentacion: tp.pres === 'bloque' ? { modo: 'bloque', cd: planOrigen, self: { fecha: fechaK, ce: base.ce, camion: cam } } : tp.pres === 'hora' ? { modo: 'hora' } : null,
+      choque: { clave: `CAM|${planOrigen}|${base.ce}|${cam}` } });
+    if (!t) return;
+    if (String(t.fecha_carga) < hoyI) { showAlert('La fecha de carga de la reserva no puede ser anterior a hoy.', 'error'); return; }
+    const { error } = await supabase.from('abast_plan_camion_coordinado').upsert({ fecha: fechaK, cd_origen: planOrigen, ce: base.ce, camion: cam, ...t,
+      reserva_tipo: base.tipo, referencia: base.referencia || null, coordinado_por: await getUserEmail(), coordinado_en: new Date().toISOString() }, { onConflict: 'fecha,cd_origen,ce,camion' });
+    if (error) { showAlert('No se pudo guardar la reserva: ' + msgCupo(error), 'error'); return; }
+    await leerReservas();
+    showAlert(`Camión reservado: ${tp.lbl} → ${getNombreCentro(base.ce)}, carga ${fmtFechaISO(t.fecha_carga)} (${t.patente_camion}). La carga se define al confirmar.`, 'success');
+    draw();
+  }
+  // Al programar por el flujo normal, si la sucursal tiene un camión reservado se ofrece usarlo.
+  async function ofrecerReserva(ce, res) {
+    if (res) return res;
+    const c = reservas.filter(x => x.reserva_tipo === 'CD' && String(x.ce ?? '').trim() === String(ce));
+    if (!c.length) return null;
+    return (await confirmar(`Hay un camión reservado para ${getNombreCentro(ce)}:\n\n${txtReservaCam(c[0])}\n\n¿Programar con esa reserva?`,
+      { aceptar: 'Usar la reserva', cancelar: 'No, otro transporte', icono: 'event_available' })) ? c[0] : null;
+  }
+  async function liberarReserva(k) {
+    const x = resDe(k);
+    if (!x || !PUEDE_COORD) return;
+    if (!await confirmar(`¿Liberar el camión reservado?\n\n${txtReservaCam(x)}\n\nSe libera el transporte, el cupo del bloque y la patente de ese día.`, { aceptar: 'Liberar reserva', tono: 'peligro', icono: 'event_busy' })) return;
+    const { error } = await borrarReservaCamion(x);
+    if (error) { showAlert('No se pudo liberar la reserva: ' + error.message, 'error'); return; }
+    await leerReservas();
+    draw();
+  }
+  // Corte manual: la reserva pasa a camión programado con la carga que el plan tiene AHORA (foto + Seguimiento).
+  async function confirmarReserva(k, cam) {
+    const x = resDe(k);
+    if (!x) return;
+    if (!PUEDE_TRANSPORTE) { showAlert('Confirmar la carga de una reserva requiere perfil Owner o Planner Distribución.', 'error'); return; }
+    const ce = String(x.ce).trim(), r = resultado.find(y => y.ce === ce);
+    if (!r) { showAlert(`${getNombreCentro(ce)} no tiene carga en el plan de hoy: la reserva sigue vigente.`, 'error'); return; }
+    if (progMap.get(`${ce}|${cam}`)) { showAlert(`El ${cam === 2 ? '2º camión' : 'camión CD'} de ${r.nombre} ya está programado.`, 'error'); return; }
+    if (cam === 2) {
+      if (!segAcept.has(ce)) { showAlert('Primero acepta el 2º camión de la sucursal (pestaña «2º camión»).', 'error'); st.drawer = ce; st.tab = 'seg'; draw(); return; }
+      await programarSegundo(ce, x);
+    } else await programarCD(ce, x);
+  }
+  function reservasHtml() {
+    if (!reservas.length) return '';
+    const filas = reservas.map(x => {
+      const k = escapeHtml(resKey(x)), ce = String(x.ce ?? '').trim(), r = resultado.find(y => y.ce === ce), esCD = x.reserva_tipo === 'CD';
+      const p1 = !!progMap.get(`${ce}|1`), p2 = !!progMap.get(`${ce}|2`);
+      let carga = '<span class="sv-muted">Se define al coordinar la NV / OC («Usar camión reservado»)</span>';
+      if (esCD) {
+        if (!r) carga = '<span class="sv-muted">Sin carga en el plan de hoy</span>';
+        else {
+          const ton = p1 ? (r.tonSegundo || r.excedente || 0) : (r.cargadoCD || 0);
+          const pct = r.cap > 0 ? Math.round(ton / r.cap * 100) : 0;
+          carga = `<b style="color:${pct >= PCT_PROGRAMAR_CD ? '#15803d' : '#a16207'}">${t1(ton)} t · ${pct}%</b>${pct < PCT_PROGRAMAR_CD ? ' ' + pill('bajo ' + PCT_PROGRAMAR_CD + '%', 'warn') : ''}
+            <div class="sv-sub" style="margin:0">${p1 ? 'saldo tras el camión CD programado' : 'camión CD del plan de hoy'} · cambia con cada lectura SAP hasta confirmar</div>`;
+        }
+      }
+      const bt = [];
+      if (esCD && PUEDE_TRANSPORTE && r) {
+        if (!p1) bt.push(`<button class="sv-btn-p" data-res-conf="${k}" data-res-cam="1" title="Corte manual: programa el camión CD con la carga actual del plan (foto + Seguimiento)"><span class="material-symbols-outlined">task_alt</span>Confirmar carga</button>`);
+        else if (!p2) bt.push(`<button class="sv-btn-p" data-res-conf="${k}" data-res-cam="2" title="Corte manual: programa el 2º camión con el saldo actual (requiere aceptar el 2º camión)"><span class="material-symbols-outlined">task_alt</span>Confirmar en 2º camión</button>`);
+      }
+      if (PUEDE_COORD) bt.push(`<button class="sv-btn" data-res-edit="${k}"><span class="material-symbols-outlined">edit</span>Editar</button>`,
+        `<button class="sv-btn" data-res-lib="${k}"><span class="material-symbols-outlined">event_busy</span>Liberar</button>`);
+      return `<tr>
+        <td>${pill(escapeHtml(resTipo(x.reserva_tipo).lbl), 'mute')} ${pill('RESERVADO', 'warn')}</td>
+        <td><b>${escapeHtml(getNombreCentro(ce))}</b> <span class="sv-mono">${escapeHtml(ce)}</span>${x.referencia ? `<div class="sv-sub" style="margin:0">${escapeHtml(x.referencia)}</div>` : ''}</td>
+        <td class="sv-mono">${escapeHtml(fmtFechaISO(x.fecha_carga))}<div class="sv-sub" style="margin:0">${escapeHtml(txtPresentacion(x) || 'sin horario')}</div></td>
+        <td><b class="sv-mono">${escapeHtml(fmtPatente(x.patente_camion) || '—')}</b>${x.patente_carro ? ' · carro ' + escapeHtml(fmtPatente(x.patente_carro)) : ''}
+          <div class="sv-sub" style="margin:0">${escapeHtml([x.id_transporte, x.transportista].filter(Boolean).join(' · '))}</div>
+          <div class="sv-sub" style="margin:0">${escapeHtml([x.chofer_nombre, x.chofer_telefono].filter(Boolean).join(' · '))}</div></td>
+        <td>${carga}</td>
+        <td><div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end">${bt.join('')}</div></td>
+      </tr>`;
+    }).join('');
+    return `<div class="sv-card" style="border:1px solid #93c5fd;background:#eff6ff;padding:12px 14px;margin-bottom:12px">
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <span class="material-symbols-outlined" style="color:#1d4ed8">event_available</span>
+        <b style="color:#1e3a8a">Camiones reservados · ${reservas.length}</b>
+        <span class="sv-sub" style="margin:0">Transporte y día de carga tomados, <b>sin entregas ni materiales amarrados</b>. No entran a la foto, al correo ni a los indicadores hasta que se confirma la carga.</span>
+        <button class="sv-btn" data-res-toggle style="margin-left:auto;padding:4px 10px;font-size:12px">${st.ocultarReservas ? 'Ver detalle' : 'Ocultar'}</button>
+      </div>
+      ${st.ocultarReservas ? '' : `<div class="sv-table-wrap" style="margin-top:10px"><table class="sv-table"><thead><tr><th>Tipo</th><th>Destino</th><th>Día de carga</th><th>Transporte</th><th>Carga estimada hoy</th><th></th></tr></thead><tbody>${filas}</tbody></table></div>`}
+    </div>`;
   }
   // (23-oct-2026, Jordan) Ocultar la etiqueta de diferencias en la fila de cada sucursal (true para volver a mostrarla).
   const MOSTRAR_TAG_DIFERENCIAS = false;
@@ -9507,14 +9762,21 @@ async function renderPlanCarga(stage, opts = {}) {
     const f = faltanTransp(t);
     return f.length ? { t, f } : null;
   };
-  await Promise.all([leerFotoCierre(), leerSegundos(), leerProgramados(), leerMaestroTr(), leerCoordinados()]);   // (24-oct-2026) sin leerDiferencias: vista deshabilitada
+  await Promise.all([leerFotoCierre(), leerSegundos(), leerProgramados(), leerMaestroTr(), leerCoordinados()]);
+  await leerReservas();   // (16-nov-2026) camiones reservados   // (24-oct-2026) sin leerDiferencias: vista deshabilitada
   const otrosProgramados = (ce, cam) => [...progMap.values()]
     .filter(x => !(String(x.ce).trim() === ce && Number(x.camion) === cam))
     .map(x => ({ lbl: `${x.camion === 2 ? '2º camión' : 'camión CD'} ${getNombreCentro(x.ce)}`, patente_camion: x.patente_camion, chofer_rut: x.chofer_rut }));
-  async function guardarProgramado(ce, cam, t) {
+  async function guardarProgramado(ce, cam, t, res = null) {
+    // (16-nov-2026) Confirmación de una reserva: se libera primero (para no contar doble el cupo del bloque) y, si falla, se repone.
+    if (res) await borrarReservaCamion(res);
     const { error } = await supabase.from('abast_plan_camion_programado').upsert({ fecha: hoyIsoPlanP(), cd_origen: planOrigen, ce, camion: cam, ...t,
       programado_por: await getUserEmail(), programado_en: new Date().toISOString() }, { onConflict: 'fecha,cd_origen,ce,camion' });
-    if (error) { showAlert('No se pudo programar el camión: ' + msgCupo(error), 'error'); return false; }
+    if (error) {
+      if (res) { await supabase.from('abast_plan_camion_coordinado').upsert(res, { onConflict: 'fecha,cd_origen,ce,camion' }); _reservasCam = null; }
+      showAlert('No se pudo programar el camión: ' + msgCupo(error), 'error'); return false;
+    }
+    if (res) await leerReservas();
     // (12-oct-2026) Programado: la coordinación previa ya no aplica
     if (coordMap.has(`${ce}|${cam}`)) { await supabase.from('abast_plan_camion_coordinado').delete().eq('fecha', hoyIsoPlanP()).eq('cd_origen', planOrigen).eq('ce', ce).eq('camion', cam); coordMap.delete(`${ce}|${cam}`); }
     return true;
@@ -9604,20 +9866,23 @@ async function renderPlanCarga(stage, opts = {}) {
   }
   // (3-oct-2026, Jordan) Programar el camión CD: pide los datos del transporte y congela su carga
   // (origen 'confirmado'). Sólo los camiones programados entran a la foto 15:35 y a los indicadores.
-  async function programarCD(ce) {
+  async function programarCD(ce, res = null) {
     const r = resultado.find(x => x.ce === ce);
     if (!r) return;
     if (!PUEDE_TRANSPORTE) { showAlert('Sólo el perfil OWNER puede agregar o modificar los datos del transporte.', 'error'); return; }
+    res = await ofrecerReserva(ce, res);   // (16-nov-2026) camión reservado
     const f = refrescarFill(r);
     // (11-nov-2026, Jordan) Sobrecarga: se alerta pero se deja programar.
     if ((f.cargado || 0) > r.cap + 0.05 && !await confirmar(`El camión CD de ${r.nombre} SUPERA la capacidad:\n\n${t1(f.cargado)} t cargadas de ${fmtNum(r.cap, 0)} t (${Math.round((f.cargado || 0) / r.cap * 100)}%) · exceso ${t1(f.cargado - r.cap)} t.\n\n¿Programar igual?`, { aceptar: 'Programar igual', cancelar: 'Revisar carga', tono: 'peligro', icono: 'warning' })) return;
+    // (16-nov-2026, Jordan) Reserva bajo el umbral: sólo alerta (igual que hoy), se puede confirmar.
+    if (res && r.cap > 0 && (f.cargado || 0) < r.cap * PCT_PROGRAMAR_CD / 100 - 0.05 && !await confirmar(`La carga del camión reservado para ${r.nombre} está BAJO el ${PCT_PROGRAMAR_CD}%:\n\n${t1(f.cargado || 0)} t de ${fmtNum(r.cap, 0)} t (${Math.round((f.cargado || 0) / r.cap * 100)}%).\n\n¿Confirmar la carga igual?`, { aceptar: 'Confirmar igual', cancelar: 'Esperar más carga', icono: 'warning' })) return;
     // (29-oct-2026) Camión CD con retiro Fábrica-Sucursal unido: por defecto el transporte (y día) del retiro.
     const ru = (r.retirosUnidos || [])[0], eRu = ru ? ru.e : null;
     const iniRu = eRu ? { id_transporte: eRu.id_transporte, transportista: eRu.transportista, chofer_nombre: eRu.chofer_nombre, chofer_rut: eRu.chofer_rut,
       chofer_telefono: eRu.chofer_telefono, patente_camion: eRu.patente_camion, patente_carro: eRu.patente_carro, fecha_carga: eRu.fecha_retiro } : {};
     const docsRu = (r.retirosUnidos || []).map(x => String(x.item.oc ?? '').trim());
     const t = await showTransporteCamionModal({ titulo: `Camión CD → ${r.nombre}`, sub: `${t1(f.cargado)} t de ${fmtNum(r.cap, 0)} t · día objetivo ${diaCorto(diaObj(r))}${eRu ? ' · incluye retiro Fábrica-Sucursal' : ''}`,
-      ini: progMap.get(`${ce}|1`) || coordMap.get(`${ce}|1`) || iniRu, otros: otrosProgramados(ce, 1), fechaDef: isoLocal(diaObj(r)), presentacion: presCam(ce, 1), choque: { clave: `CAM|${planOrigen}|${ce}|1`, docs: docsRu } });
+      ini: res || progMap.get(`${ce}|1`) || coordMap.get(`${ce}|1`) || iniRu, otros: otrosProgramados(ce, 1), fechaDef: isoLocal(diaObj(r)), presentacion: res ? presRes(res) : presCam(ce, 1), choque: { clave: `CAM|${planOrigen}|${ce}|1`, docs: docsRu } });
     if (!t) return;
     const quien = await getUserEmail();
     const filas = new Map();
@@ -9633,7 +9898,7 @@ async function renderPlanCarga(stage, opts = {}) {
       if (e1) { showAlert('No se pudo confirmar la carga: ' + e1.message, 'error'); return; }
       filas.forEach((v, k) => r.asig.set(k, 1));
     }
-    if (!(await guardarProgramado(ce, 1, t))) return;
+    if (!(await guardarProgramado(ce, 1, t, res))) return;
     await leerProgramados();
     refrescarFill(r);
     await guardarFotoCamion(r, 1);
@@ -9656,14 +9921,15 @@ async function renderPlanCarga(stage, opts = {}) {
     if (cam === 1) renderPlanCarga(stage); else { await leerProgramados(); draw(); }
   }
   // (4-oct-2026, Jordan) 2º camión aceptado → agregar datos del transporte (queda programado).
-  async function programarSegundo(ce) {
+  async function programarSegundo(ce, res = null) {
     const r = resultado.find(x => x.ce === ce);
     if (!r) return;
     if (!PUEDE_TRANSPORTE) { showAlert('Sólo el perfil OWNER puede agregar o modificar los datos del transporte.', 'error'); return; }
     if (!segAcept.has(ce)) { showAlert('Primero acepta el 2º camión.', 'error'); return; }
+    res = await ofrecerReserva(ce, res);   // (16-nov-2026) camión reservado
     if ((r.tonSegundo || 0) > r.cap + 0.05 && !await confirmar(`El 2º camión de ${r.nombre} SUPERA la capacidad:\n\n${t1(r.tonSegundo)} t de ${fmtNum(r.cap, 0)} t (${Math.round((r.tonSegundo || 0) / r.cap * 100)}%) · exceso ${t1(r.tonSegundo - r.cap)} t.\n\n¿Programar igual?`, { aceptar: 'Programar igual', cancelar: 'Revisar carga', tono: 'peligro', icono: 'warning' })) return;
     const t = await showTransporteCamionModal({ titulo: `2º camión → ${r.nombre}`, sub: `${t1(r.tonSegundo)} t de ${fmtNum(r.cap, 0)} t · día objetivo ${diaCorto(diaObj(r))}`,
-      ini: progMap.get(`${ce}|2`) || coordMap.get(`${ce}|2`) || {}, otros: otrosProgramados(ce, 2), fechaDef: isoLocal(diaObj(r)), presentacion: presCam(ce, 2), choque: { clave: `CAM|${planOrigen}|${ce}|2` } });
+      ini: res || progMap.get(`${ce}|2`) || coordMap.get(`${ce}|2`) || {}, otros: otrosProgramados(ce, 2), fechaDef: isoLocal(diaObj(r)), presentacion: res ? presRes(res) : presCam(ce, 2), choque: { clave: `CAM|${planOrigen}|${ce}|2` } });
     if (!t) return;
     {   // (11-nov-2026, Jordan) congelar la carga del 2º camión al programarlo
       const f2 = refrescarFill(r), quien2 = await getUserEmail(), filas2 = new Map();
@@ -9672,7 +9938,7 @@ async function renderPlanCarga(stage, opts = {}) {
       if (filas2.size) { const { error: e2 } = await supabase.from('abast_plan_linea_camion').upsert([...filas2.values()], { onConflict: 'fecha,cd_origen,ce,documento,material' });
         if (e2) { showAlert('No se pudo congelar la carga del 2º camión: ' + e2.message, 'error'); return; } filas2.forEach((v, k) => r.asig.set(k, 2)); }
     }
-    if (!(await guardarProgramado(ce, 2, t))) return;
+    if (!(await guardarProgramado(ce, 2, t, res))) return;
     await leerProgramados();
     refrescarFill(r);
     await guardarFotoCamion(r, 2);
@@ -9734,6 +10000,7 @@ async function renderPlanCarga(stage, opts = {}) {
     const bt = [];
     if (PUEDE_TRANSPORTE) bt.push(`<button class="sv-btn-p" ${progAttr}="${ceA}"><span class="material-symbols-outlined">local_shipping</span>Agregar datos y programar</button>`);
     if (PUEDE_COORD && !cerrado) bt.push(`<button class="sv-btn${PUEDE_TRANSPORTE ? '' : '-p'}" data-coord-tr="${ceA}" data-prog-cam="${cam}"><span class="material-symbols-outlined">event_available</span>Coordinar transporte</button>`);
+    if (PUEDE_COORD) bt.push(`<button class="sv-btn" data-res-new="${escapeHtml(r.ce)}" title="Reserva transporte y día de carga sin amarrar entregas ni materiales; la carga se define al confirmar"><span class="material-symbols-outlined">event_available</span>Reservar para otro día</button>`);   // (16-nov-2026) camión reservado
     const txt = PUEDE_TRANSPORTE ? 'agrega los datos del transporte para programarlo, o sólo coordínalo y la carga sigue actualizándose'
       : PUEDE_COORD ? 'coordina el transporte: los datos quedan guardados y la carga sigue actualizándose hasta que se programe (Owner o Planner Distribución)'
       : 'faltan los datos del transporte (los agrega Owner o Planner Distribución)';
@@ -10020,7 +10287,7 @@ async function renderPlanCarga(stage, opts = {}) {
       : `${fill.manual2 ? 'Armado a mano.' : 'Lo que no cabe llega al 85% de un camión.'} Es opcional: al aceptarlo se confirma la carga de ambos camiones y se despliega el detalle de SKU para agregar los datos del transporte.${cerrado ? (PUEDE_TRANSPORTE ? ' Plan cerrado: aceptación con perfil OWNER.' : ' Plan cerrado: sólo el perfil OWNER puede aceptarlo.') : ''}`;
     return `<div class="pc-extra pc-seg2 ${acept ? 'is-ok' : ''}"><span class="material-symbols-outlined">${acept ? 'check_circle' : 'add_circle'}</span>
       <div style="flex:1;min-width:0"><b>${acept ? (prog2 ? '2º camión programado' : '2º camión aceptado') : '2º camión sugerido'}</b> · ${t1(r.tonSegundo)} t de ${fmtNum(r.cap, 0)} t (${pct2}%). ${escapeHtml(txt)}
-      ${st.tab === 'seg' || !acept ? '' : `<small>El detalle de SKU está en la pestaña «2º camión».</small>`}</div>${btn}</div>` + (acept && st.tab === 'seg' ? progHtml(r, 2) : '') + ajustesHtml(r, fill);
+      ${st.tab === 'seg' || !acept ? '' : `<small>El detalle de SKU está en la pestaña «2º camión».</small>`}</div>${btn}${!acept && PUEDE_COORD ? `<button class="sv-btn" data-res-new="${escapeHtml(r.ce)}" title="Reserva transporte y día de carga sin amarrar entregas ni materiales; la carga se define al confirmar"><span class="material-symbols-outlined">event_available</span>Reservar para otro día</button>` : ''}</div>` + (acept && st.tab === 'seg' ? progHtml(r, 2) : '') + ajustesHtml(r, fill);
   }
   function estadoCierre() {
     const now = new Date(), c = new Date(now); c.setHours(CIERRE_H, CIERRE_M, 0, 0);
@@ -10043,6 +10310,8 @@ async function renderPlanCarga(stage, opts = {}) {
     // (23-oct-2026, Jordan) Camión CD que lleva saldos (líneas con menos unidades que su entrega).
     if (Object.values(r.det || {}).some(a => (a || []).some(d => esAjSaldo(d) && (d._enCamion || d._camion2))))
       t.push(TAG('content_cut', 'Entrega ajustar saldo', MARCA_AJ_SALDO + ': lleva líneas con menos unidades que su entrega SAP (ajustar la entrega a lo cargado)', 'baja'));
+    { const rs = reservas.filter(x => String(x.ce ?? '').trim() === String(r.ce));   // (16-nov-2026) camiones reservados
+      if (rs.length) t.push(TAG('event_available', `Reserva ${rs.map(x => fmtFechaISO(x.fecha_carga).slice(0, 5)).join(' · ')}`, 'Camión reservado (transporte y día, sin carga amarrada): ' + rs.map(txtReservaCam).join(' / '), 'h48')); }
     if (r.enCalendario) t.push(TAG('calendar_today', 'Agenda', 'En calendario de despacho', 'agenda'));
     if (!r.enCalendario && r.pct >= 70) t.push(TAG('add_circle', 'Cupo extra', 'Fuera de agenda con carga ≥70%', 'extra'));
     if (r.enCalendario && r.pct < 70) t.push(TAG('warning', 'Carga baja', 'En calendario con carga <70%', 'baja'));
@@ -10684,6 +10953,7 @@ async function renderPlanCarga(stage, opts = {}) {
           <div class="sv-seg" role="group" aria-label="Centro origen">${Object.keys(CALENDARIOS).map(id =>
             `<button data-chip data-origen="${id}" class="${planOrigen === id ? 'is-on' : ''}">${escapeHtml(CALENDARIOS[id].nombre)} · ${id}</button>`).join('')}</div>
           ${PUEDE_EXCLUIR && !cierre.cerrado ? `<button class="sv-btn" data-ver-exclusiones data-chip title="Ver y reactivar exclusiones"><span class="material-symbols-outlined">visibility_off</span>Exclusiones${exclusionesPlan.length ? ` <span class="sv-pill mute" style="padding:0 7px">${exclusionesPlan.length}</span>` : ''}</button>` : ''}
+          ${PUEDE_COORD ? `<button class="sv-btn" data-res-new="" title="Reserva un camión (transporte y día de carga) sin amarrar entregas ni materiales"><span class="material-symbols-outlined">event_available</span>Reservar camión${reservas.length ? ` <span class="sv-pill mute" style="padding:0 7px">${reservas.length}</span>` : ''}</button>` : ''}
           <button class="sv-btn" data-ent-noplan title="Entregas SAP creadas que no están consideradas en el Plan de Carga (con pedido de traslado y motivo) · descargable"><span class="material-symbols-outlined">assignment_late</span>Entregas no consideradas</button>
           <button class="sv-btn" data-descarga="__todo__" title="Descarga el plan completo del origen (sin filtro de KPI)"><span class="material-symbols-outlined">download</span>Descargar plan (CSV)</button>
           <button class="sv-btn is-icon" data-refrescar title="Refrescar datos"><span class="material-symbols-outlined">refresh</span></button>
@@ -10698,6 +10968,7 @@ async function renderPlanCarga(stage, opts = {}) {
         <span class="pc-sep"></span>${DIR_V2.map(t => `<span><span class="material-symbols-outlined" style="color:${t.color};font-size:16px">local_shipping</span>${escapeHtml(t.lbl)}</span>`).join('')}</div>
       ${vencidosHtml()}
       ${acopioHtml()}
+      ${reservasHtml()}
       <div class="pc-list">
         ${!resultado.length ? '<div class="sv-card pc-empty"><span class="material-symbols-outlined">inventory_2</span>Sin carga para este origen.</div>'
           : filas.length ? filas.map(filaV2).join('') : '<div class="sv-card pc-empty">Ninguna sucursal con ese estado. Haz clic de nuevo en la tarjeta para quitar el filtro.</div>'}
@@ -10738,6 +11009,12 @@ async function renderPlanCarga(stage, opts = {}) {
     stage.querySelectorAll('[data-prog-edit]').forEach(b => b.addEventListener('click', async e => { e.stopPropagation(); await editarTransporte(b.dataset.progEdit, Number(b.dataset.progCam || 1)); }));
     stage.querySelectorAll('[data-coord-tr]').forEach(b => b.addEventListener('click', async e => { e.stopPropagation(); await coordinarTransporte(b.dataset.coordTr, Number(b.dataset.progCam || 1)); }));
     stage.querySelectorAll('[data-coord-quitar]').forEach(b => b.addEventListener('click', async e => { e.stopPropagation(); await quitarCoordinacionTransp(b.dataset.coordQuitar, Number(b.dataset.progCam || 1)); }));
+    // (16-nov-2026, Jordan) Camiones reservados
+    stage.querySelectorAll('[data-res-new]').forEach(b => b.addEventListener('click', async e => { e.stopPropagation(); await reservarCamion(b.dataset.resNew || ''); }));
+    stage.querySelectorAll('[data-res-edit]').forEach(b => b.addEventListener('click', async e => { e.stopPropagation(); const x = resDe(b.dataset.resEdit); if (x) await reservarCamion(x.ce, x); }));
+    stage.querySelectorAll('[data-res-lib]').forEach(b => b.addEventListener('click', async e => { e.stopPropagation(); await liberarReserva(b.dataset.resLib); }));
+    stage.querySelectorAll('[data-res-conf]').forEach(b => b.addEventListener('click', async e => { e.stopPropagation(); await confirmarReserva(b.dataset.resConf, Number(b.dataset.resCam || 1)); }));
+    stage.querySelector('[data-res-toggle]')?.addEventListener('click', () => { st.ocultarReservas = !st.ocultarReservas; draw(); });
     stage.querySelectorAll('[data-restablecer]').forEach(b => b.addEventListener('click', async e => { e.stopPropagation(); b.disabled = true; await restablecerAuto(b.dataset.restablecer); }));
     // (11-nov-2026, Jordan) Armar camión CD a mano / volver a automático
     stage.querySelectorAll('[data-armar-mano]').forEach(b => b.addEventListener('click', async e => {
