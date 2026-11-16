@@ -32,8 +32,8 @@ export function tonHtml(n) {
 }
 
 // Encabezado del shell: fecha y hora de la última actualización SAP de la vista
-import { confirmar } from './confirmar.js?v=202611161240';
-import { comentariosHabilitados, conteosComentarios, celdaComentarios, montarHilo, tomarFoco, abrirHiloSuelto } from './comentarios.js?v=202611161240';
+import { confirmar } from './confirmar.js?v=202611161340';
+import { comentariosHabilitados, conteosComentarios, celdaComentarios, montarHilo, tomarFoco, abrirHiloSuelto } from './comentarios.js?v=202611161340';
 export function setUltimaActualizacion(ts) {
   const el = document.getElementById('sv-upd');
   if (!el) return;
@@ -66,6 +66,42 @@ function leerFiltros(viewKey) {
 }
 function guardarFiltros(viewKey, st) {
   try { const o = { _dia: hoyISO() }; F_KEYS.forEach(k => { if (st[k] !== undefined) o[k] = st[k]; }); localStorage.setItem(LS_FILTROS + viewKey, JSON.stringify(o)); } catch (_e) { /* sin almacenamiento */ }
+}
+// (16-nov-2026, Jordan · fluidez P2) Saltos entre vistas: quien navega deja un «salto» pendiente para la vista destino
+// ({ filtros: { kpi | q | qDoc }, volver: { sub, lbl } }); al abrirse, la vista parte con filtros neutros + los del salto.
+const _saltos = new Map();
+export function prepararSaltoV2(viewKey, salto) { _saltos.set(viewKey, salto || {}); }
+function filtrosNeutros(cfg) {
+  const V = cfg.v2, hoy = cfg.dateDefaultHoy ? hoyISO() : '';
+  return { kpi: 'all', chip: 'all', chip2: 'all', q: '', qDoc: '', ex: {}, mode: 0, dFrom: hoy, dTo: hoy,
+    orig: V.origen ? (V.origen.opciones.find(o => o[0] === '*') || V.origen.opciones[0])[0] : null, vista: V.calendario ? 'cal' : 'lista' };
+}
+// Filas de una vista SIN dibujarla (mismo cálculo que la tabla, con filtros neutros): la usan «Pendientes» y el
+// buscador global, para que los números coincidan con lo que el usuario ve al saltar a la vista.
+export async function calcularVistaV2(cfg, deps) {
+  const V = cfg.v2;
+  const active = cfg.modes ? Object.assign({}, cfg, cfg.modes[0]) : cfg;
+  const AV = Object.assign({}, V, (active.v2mode || {}));
+  const ctx = Object.assign({}, active.preload ? await active.preload() : {}, AV.preload ? await AV.preload() : {});
+  const rawRows = (await deps.fetchAllRows(active.vista)).slice();
+  if (deps.augmentRaw) await deps.augmentRaw(active.vista, rawRows);
+  const campoCentro = active.centroCampo || active.chipFilter?.campo;
+  let rowsAll = active.transform ? active.transform(rawRows, ctx) : rawRows;
+  rowsAll = campoCentro ? deps.filtrarPorCentro(rowsAll, campoCentro) : rowsAll;
+  if (active.postFilter) rowsAll = active.postFilter(rowsAll, 'all', ctx);
+  if (AV.enrich) AV.enrich(rowsAll, ctx);
+  const n = filtrosNeutros(cfg), dF = isoToDate(n.dFrom), dT = isoToDate(n.dTo), cal = !!(AV.calendario && n.vista === 'cal');
+  const rows = rowsAll.filter(r => {
+    if (AV.origen && n.orig && n.orig !== '*' && String(AV.origen.of(r) ?? '').trim() !== n.orig) return false;
+    if (AV.fecha && (dF || dT) && !cal) {
+      const d = deps.parseDateSAP(AV.fecha.of(r));
+      if (!d) return false;
+      if (dF && d < dF) return false;
+      if (dT && d > dT) return false;
+    }
+    return true;
+  });
+  return { rows, AV };
 }
 // (16-nov-2026 · fluidez) Posición de scroll de la vista (contenedores padres, ventana y tabla) para reponerla tras recargar.
 export function guardarScroll(el) {
@@ -127,6 +163,10 @@ async function renderTablaV2Core(stage, cfg, deps, viewKey, recarga = false) {
     if (!cfg.modes || !cfg.modes[st.mode]) st.mode = 0;
     if (st.vista === 'cal' && !V.calendario) st.vista = 'lista';
   }
+  // (16-nov-2026 · fluidez P2) Llegada por salto desde otra vista / Pendientes / buscador
+  { const salto = _saltos.get(viewKey) || null; _saltos.delete(viewKey);
+    if (salto) { Object.assign(st, filtrosNeutros(cfg), salto.filtros || {}); st._volver = salto.volver || null; st.sel = new Set(); }
+    else if (!recarga) st._volver = null; }
   _estado.set(viewKey, st);
   st.open = null;
   // (11-oct-2026) Vista calendario opcional (AV.calendario): se elige entre Calendario y Lista.
@@ -315,10 +355,11 @@ async function renderTablaV2Core(stage, cfg, deps, viewKey, recarga = false) {
       `<button data-chip data-mode="${i}" class="${st.mode === i ? 'is-on' : ''}">${m.icon ? `<span class="material-symbols-outlined">${m.icon}</span>` : ''}${esc(m.v2label || m.label)}</button>`).join('')}</div>` : '';
     return `<div class="sv-vhead">
       <div style="min-width:0"><h1 class="sv-h1">${esc(AV.titulo)}</h1>${AV.desc ? `<div class="sv-desc">${esc(AV.desc)}</div>` : ''}</div>
-      <div class="sv-actions">${AV.calendario ? `<div class="sv-seg" role="group" aria-label="Vista">
+      <div class="sv-actions">${st._volver ? `<button class="sv-btn-p" data-volver title="Volver a donde estabas"><span class="material-symbols-outlined">arrow_back</span>Volver a ${esc(st._volver.lbl || '')}</button>` : ''}${AV.calendario ? `<div class="sv-seg" role="group" aria-label="Vista">
         <button data-chip data-vista="cal" class="${esCal() ? 'is-on' : ''}"><span class="material-symbols-outlined">calendar_month</span>Calendario</button>
         <button data-chip data-vista="lista" class="${!esCal() ? 'is-on' : ''}"><span class="material-symbols-outlined">view_list</span>Lista</button></div>` : ''}${modes}${seg}
         ${headBtns().map((b, i) => `<button class="sv-btn" data-hbtn="${i}" title="${esc(b.label)}"><span class="material-symbols-outlined">${esc(b.icon || 'bolt')}</span>${esc(b.label)}</button>`).join('')}
+        ${deps.barraTrabajo ? deps.barraTrabajo() : ''}
         <button class="sv-btn" data-csv title="Descargar CSV"><span class="material-symbols-outlined">download</span>Descargar</button>
         <button class="sv-btn is-icon" data-refrescar title="Refrescar datos"><span class="material-symbols-outlined">refresh</span></button>
       </div></div>`;
@@ -586,6 +627,8 @@ async function renderTablaV2Core(stage, cfg, deps, viewKey, recarga = false) {
     stage.querySelector('[data-dfrom]')?.addEventListener('change', e => { st.dFrom = e.target.value; draw(); });
     stage.querySelector('[data-dto]')?.addEventListener('change', e => { st.dTo = e.target.value; draw(); });
     stage.querySelector('[data-refrescar]')?.addEventListener('click', () => { deps.clearRawCache(); renderTablaV2(stage, cfg, deps, viewKey); });
+    stage.querySelector('[data-volver]')?.addEventListener('click', () => { const v = st._volver; st._volver = null; if (v && deps.navegar) deps.navegar(v.sub); });
+    if (deps.wireBarraTrabajo) deps.wireBarraTrabajo(stage);
     stage.querySelectorAll('[data-hbtn]').forEach(b => b.addEventListener('click', async () => {
       const hb = headBtns()[+b.dataset.hbtn]; if (!hb) return;
       b.disabled = true;

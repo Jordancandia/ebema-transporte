@@ -10,13 +10,13 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611161240';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611161240';
-import { getDatabase } from './data.js?v=202611161240';
+import { supabase } from './supabase-client.js?v=202611161340';
+import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611161340';
+import { getDatabase } from './data.js?v=202611161340';
 import { COMUNAS_POR_REGION } from './chile-geo.js';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611161240';
-import { confirmar, pedirDato } from './confirmar.js?v=202611161240';
+import { renderTablaV2, calcularVistaV2, prepararSaltoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611161340';
+import { confirmar, pedirDato } from './confirmar.js?v=202611161340';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -4993,6 +4993,8 @@ const V2_DEPS = {
   // (9-oct-2026, Jordan) Ventas CD: NV coordinadas se mantienen en la vista durante el día.
   augmentRaw: async (vista, rows) => { if (vista === 'v_trc_sqvi_pedidos_venta_1003') await reponerVentasCoordinadas(rows); },
   fetchAllRows, filtrarPorCentro, can, parseDateSAP, exportarCSV, showAlert,
+  // (16-nov-2026 · fluidez P2) Pendientes + buscador global en el encabezado y saltos entre vistas
+  barraTrabajo: () => barraTrabajoHtml(), wireBarraTrabajo: root => wireBarraTrabajo(root), navegar: sub => irASub(sub),
   clearRawCache: () => clearRawCache(),
   // (10-nov-2026, Jordan) Última lectura de los archivos SAP del Drive (trc_drive_estado). Entregas → su archivo.
   ultimaLectura: async vista => {
@@ -7797,14 +7799,214 @@ function badgePill(label, count, cls) {
 // ============================================================================
 // ENTRADA PRINCIPAL
 // ============================================================================
+// ============================================================================
+// FLUIDEZ P2 (16-nov-2026, Jordan): saltos entre vistas, «Pendientes», buscador global y aviso de lectura SAP nueva
+// ============================================================================
+let _navAbast = null;
+export function setAbastNavegar(fn) { _navAbast = fn; }
+function irASub(sub) {
+  if (_navAbast) { _navAbast(sub); return; }
+  currentSub = sub; if (rootEl) renderAbastecimientoView(rootEl);
+}
+// Vistas que participan (orden del proceso). pend = indicadores de la propia vista que son trabajo por hacer.
+const SUBS_TRABAJO = [
+  { sub: 'pedidos_traslados_revex', lbl: 'Revex', icon: 'recycling', pend: ['at'] },
+  { sub: 'pedidos_venta', lbl: 'Ventas CD (1003)', icon: 'sell', pend: ['sc', 'sr', 'bq', 'sl', 'vc', 'at'] },
+  { sub: 'retiros', lbl: 'Retiros de Fábrica', icon: 'factory', pend: ['no', 'vc', 'sl', 'fv', 'ee'] },
+  { sub: 'pedidos_traslados_4000', lbl: 'Crossdocking', icon: 'local_shipping', pend: ['at'] },
+  { sub: 'pedidos_traslados', lbl: 'Pedidos de Traslados', icon: 'swap_horiz', pend: ['at'] },
+  { sub: 'seguimiento_carga', lbl: 'Seguimiento de Carga', icon: 'fact_check', pend: ['dif', 'revisar', 'pendoc'] },
+];
+const LBL_SUB = Object.assign({ plan_carga: 'Plan de Carga' }, Object.fromEntries(SUBS_TRABAJO.map(x => [x.sub, x.lbl])));
+const subsVisibles = () => SUBS_TRABAJO.filter(x => VISTAS_TRONCAL[x.sub] && VISTAS_TRONCAL[x.sub].v2 && puedeVerMenu('abastecimiento', x.sub));
+const _calcTrabajo = new Map();   // sub -> { ts, gen, p }
+function calcSub(sub) {
+  const c = _calcTrabajo.get(sub);
+  if (c && c.gen === _rawGen && Date.now() - c.ts < RAW_TTL) return c.p;
+  const p = calcularVistaV2(VISTAS_TRONCAL[sub], V2_DEPS);
+  p.catch(() => { if ((_calcTrabajo.get(sub) || {}).p === p) _calcTrabajo.delete(sub); });
+  _calcTrabajo.set(sub, { ts: Date.now(), gen: _rawGen, p });
+  return p;
+}
+// Salta a una vista con filtros ({ kpi } | { q } | { qDoc }); volver = { sub, lbl } muestra «Volver a …» en el destino.
+function saltarASub(sub, filtros, volver = null) {
+  if (VISTAS_TRONCAL[sub] && VISTAS_TRONCAL[sub].v2) prepararSaltoV2(sub, { filtros: filtros || {}, volver });
+  irASub(sub);
+}
+const filtroDocSub = (sub, doc) => ((VISTAS_TRONCAL[sub] || {}).v2 || {}).docSearch ? { qDoc: String(doc) } : { q: String(doc) };
+function barraTrabajoHtml() {
+  return `<button class="sv-btn" data-trabajo="pend" title="Qué falta por hacer hoy en cada vista de Gestión Troncales"><span class="material-symbols-outlined">checklist</span>Pendientes</button>
+    <button class="sv-btn is-icon" data-trabajo="buscar" title="Buscar un pedido, OC, entrega, cliente o patente en todas las vistas"><span class="material-symbols-outlined">travel_explore</span></button>`;
+}
+function wireBarraTrabajo(root) {
+  root.querySelectorAll('[data-trabajo]').forEach(b => {
+    if (b._wTrab) return; b._wTrab = true;
+    b.addEventListener('click', e => { e.stopPropagation(); showCentroTrabajo(b.dataset.trabajo); });
+  });
+}
+function showCentroTrabajo(tabIni = 'pend') {
+  document.getElementById('sv-trabajo')?.remove();
+  const st = { tab: tabIni === 'buscar' ? 'buscar' : 'pend', q: '', buscando: false, res: null };
+  const wrap = document.createElement('div');
+  wrap.id = 'sv-trabajo';
+  wrap.innerHTML = '<div class="sv-dr-bg" style="z-index:118"></div><aside class="sv-dr" style="z-index:119;width:min(640px,100vw)" role="dialog" aria-label="Pendientes y buscador"></aside>';
+  document.body.appendChild(wrap);
+  const panel = wrap.querySelector('aside');
+  let vivo = true;
+  const fin = () => { vivo = false; wrap.remove(); document.removeEventListener('keydown', onKey, true); };
+  const onKey = e => { if (e.key !== 'Escape' || document.querySelector('.sv-cf-bg') || document.getElementById('coord-modal-bg')) return; e.stopPropagation(); fin(); };
+  document.addEventListener('keydown', onKey, true);
+  wrap.querySelector('.sv-dr-bg').addEventListener('click', fin);
+  const subs = subsVisibles();
+  const ir = (sub, filtros) => { fin(); saltarASub(sub, filtros, null); };
+  const chip = (n, lbl, color, attrs, tip) => `<button type="button" class="sv-btn" ${attrs} title="${escapeHtml(tip || '')}" style="gap:6px;${n ? '' : 'opacity:.55'}"><i style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${color}"></i>${escapeHtml(lbl)} <b>${n}</b></button>`;
+  const tarjeta = (icon, titulo, cuerpo, attrAbrir) => `<div class="sv-card" style="padding:12px 14px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><span class="material-symbols-outlined" style="color:#5c5f61">${icon}</span><b style="flex:1">${escapeHtml(titulo)}</b>
+        <button type="button" class="sv-btn" ${attrAbrir} style="padding:2px 10px;font-size:12px">Abrir<span class="material-symbols-outlined">chevron_right</span></button></div>${cuerpo}</div>`;
+  const cargando = '<span class="sv-sub" style="margin:0">Calculando…</span>';
+
+  // ── Pendientes ──
+  async function pintarPlan() {
+    const host = panel.querySelector('[data-pend-plan]');
+    if (!host) return;
+    try {
+      const hoyI = isoLocal(hoy00());
+      const [co, sg, pg, rs] = await Promise.all([
+        supabase.from('abast_plan_camion_coordinado').select('ce,camion,cd_origen,reserva_tipo').eq('fecha', hoyI),
+        supabase.from('abast_plan_segundo_camion').select('ce,cd_origen').eq('fecha', hoyI),
+        supabase.from('abast_plan_camion_programado').select('ce,camion,cd_origen').eq('fecha', hoyI),
+        loadReservasCamion()]);
+      if (!vivo || !host.isConnected) return;
+      const k = x => `${String(x.cd_origen ?? '').trim()}|${String(x.ce ?? '').trim()}`;
+      const prog2 = new Set((pg.data || []).filter(x => Number(x.camion) === 2).map(k));
+      const nCoord = (co.data || []).filter(x => !x.reserva_tipo).length;
+      const nSeg = (sg.data || []).filter(x => !prog2.has(k(x))).length;
+      const nRes = (rs || []).length;
+      host.innerHTML = chip(nCoord, 'Transporte coordinado sin programar', '#1d4ed8', 'data-ir-sub="plan_carga"', 'Camiones con transporte coordinado hoy que falta programar')
+        + chip(nSeg, '2º camión aceptado sin transporte', '#ca8a04', 'data-ir-sub="plan_carga"', '2º camión aceptado hoy al que faltan los datos del transporte')
+        + chip(nRes, 'Camiones reservados', '#1d4ed8', 'data-ir-sub="plan_carga"', 'Reservas vigentes (transporte y día) cuya carga falta confirmar')
+        + `<span class="sv-sub" style="margin:0">Programados hoy: <b>${(pg.data || []).length}</b></span>`;
+      wire();
+    } catch (e) { if (host.isConnected) host.innerHTML = '<span class="sv-sub" style="margin:0;color:#b45309">No se pudo leer el estado del plan.</span>'; }
+  }
+  async function pintarSub(x) {
+    const host = panel.querySelector(`[data-pend-sub="${x.sub}"]`);
+    if (!host) return;
+    try {
+      const { rows, AV } = await calcSub(x.sub);
+      if (!vivo || !host.isConnected) return;
+      const ks = (AV.kpis || []).filter(k => k.fn && x.pend.includes(k.key));
+      const chips = ks.map(k => { const n = rows.filter(k.fn).length; return { n, h: chip(n, k.label, k.color || '#5c5f61', `data-ir-sub="${x.sub}" data-ir-kpi="${escapeHtml(k.key)}"`, k.sub || '') }; });
+      const tot = chips.reduce((s, c) => s + c.n, 0);
+      host.innerHTML = (chips.length ? chips.map(c => c.h).join('') : '<span class="sv-sub" style="margin:0">Sin indicadores de pendientes en esta vista.</span>')
+        + `<span class="sv-sub" style="margin:0">${rows.length} ${rows.length === 1 ? 'fila' : 'filas'} en la vista${chips.length && !tot ? ' · <b style="color:#15803d">al día</b>' : ''}</span>`;
+      wire();
+    } catch (e) { console.warn('Pendientes: no se pudo calcular', x.sub, e); if (host.isConnected) host.innerHTML = '<span class="sv-sub" style="margin:0;color:#b45309">No se pudo calcular esta vista.</span>'; }
+  }
+  // ── Buscador global ──
+  async function buscar() {
+    const q = st.q.trim();
+    if (q.length < 3) { showAlert('Escribe al menos 3 caracteres para buscar.', 'error'); return; }
+    st.buscando = true; st.res = null; draw();
+    const ql = q.toLowerCase();
+    const res = [];
+    for (const x of subs) res.push(await (async () => {
+      try {
+        const { rows, AV } = await calcSub(x.sub);
+        const nS = AV.search ? rows.filter(r => String(AV.search.of(r) ?? '').toLowerCase().includes(ql)).length : 0;
+        const nD = AV.docSearch ? rows.filter(r => String(AV.docSearch.of(r) ?? '').includes(q)).length : 0;
+        return { x, n: Math.max(nS, nD), filtros: nS >= nD && nS ? { q } : nD ? { qDoc: q } : null };
+      } catch (e) { return { x, n: 0, filtros: null, err: true }; }
+    })());
+    if (!vivo) return;
+    st.buscando = false; st.res = { q, res }; draw();
+  }
+  function wire() {
+    panel.querySelectorAll('[data-ir-sub]').forEach(b => {
+      if (b._w) return; b._w = true;
+      b.addEventListener('click', () => {
+        const sub = b.dataset.irSub;
+        if (b.dataset.irQ !== undefined) { const r = (st.res ? st.res.res : []).find(y => y.x.sub === sub); ir(sub, r && r.filtros); }
+        else ir(sub, b.dataset.irKpi ? { kpi: b.dataset.irKpi } : null);
+      });
+    });
+  }
+  function draw() {
+    const verPlan = puedeVerMenu('abastecimiento', 'plan_carga');
+    const pend = `${verPlan ? tarjeta('local_shipping', 'Plan de Carga', '<div data-pend-plan style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">' + cargando + '</div>', 'data-ir-sub="plan_carga"') : ''}
+      ${subs.map(x => tarjeta(x.icon, x.lbl, `<div data-pend-sub="${x.sub}" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">${cargando}</div>`, `data-ir-sub="${x.sub}"`)).join('')}
+      <div class="sv-sub" style="margin:0;max-width:none">Cada número es el indicador de la propia vista (sin filtros). Al hacer clic se abre la vista ya filtrada.</div>`;
+    const r = st.res;
+    const buscarHtml = `<div style="display:flex;gap:8px"><label class="sv-inp" style="flex:1;box-sizing:border-box;min-width:0"><span class="material-symbols-outlined">search</span>
+          <input data-gq value="${escapeHtml(st.q)}" placeholder="Pedido, OC, entrega, cliente, proveedor, material o patente…" autocomplete="off" style="width:100%"></label>
+        <button type="button" class="sv-btn-p" data-gbuscar ${st.buscando ? 'disabled' : ''}><span class="material-symbols-outlined">travel_explore</span>Buscar</button></div>
+      <div class="sv-sub" style="margin:0;max-width:none">Busca en todas las vistas de Orden de Carga y en Seguimiento de Carga, y dice dónde está.</div>
+      ${st.buscando ? '<div class="sv-note-box">Buscando en todas las vistas…</div>' : ''}
+      ${r ? (r.res.some(y => y.n) ? r.res.filter(y => y.n).map(y => `<div class="sv-card" style="padding:10px 14px;display:flex;align-items:center;gap:10px">
+            <span class="material-symbols-outlined" style="color:#5c5f61">${y.x.icon}</span><div style="flex:1;min-width:0"><b>${escapeHtml(y.x.lbl)}</b><div class="sv-sub" style="margin:0">${y.n} ${y.n === 1 ? 'coincidencia' : 'coincidencias'} con «${escapeHtml(r.q)}»</div></div>
+            <button type="button" class="sv-btn-p" data-ir-sub="${y.x.sub}" data-ir-q="1">Abrir<span class="material-symbols-outlined">chevron_right</span></button></div>`).join('')
+          : `<div class="sv-note-box">Sin coincidencias para «${escapeHtml(r.q)}» en ${subs.map(y => y.lbl).join(', ')}.</div>`)
+          + (r.res.some(y => y.err) ? `<div class="sv-sub" style="margin:0;color:#b45309">No se pudo revisar: ${r.res.filter(y => y.err).map(y => escapeHtml(y.x.lbl)).join(', ')}.</div>` : '') : ''}`;
+    panel.innerHTML = `
+      <div class="sv-dr-h"><div style="flex:1;min-width:0">
+        <div class="sv-dr-k">Gestión Troncales</div>
+        <div class="sv-dr-t">${st.tab === 'pend' ? 'Pendientes de hoy' : 'Buscar en todas las vistas'}</div></div>
+        <button class="sv-iconbtn" data-cx title="Cerrar (Esc)"><span class="material-symbols-outlined">close</span></button></div>
+      <div class="sv-tabs"><button data-tt="pend" class="${st.tab === 'pend' ? 'is-on' : ''}"><span class="material-symbols-outlined">checklist</span>Pendientes</button>
+        <button data-tt="buscar" class="${st.tab === 'buscar' ? 'is-on' : ''}"><span class="material-symbols-outlined">travel_explore</span>Buscar</button></div>
+      <div class="sv-dr-b" style="gap:12px">${st.tab === 'pend' ? pend : buscarHtml}</div>`;
+    panel.querySelector('[data-cx]').addEventListener('click', fin);
+    panel.querySelectorAll('[data-tt]').forEach(b => b.addEventListener('click', () => { st.tab = b.dataset.tt; draw(); }));
+    wire();
+    if (st.tab === 'pend') { (async () => { if (verPlan) await pintarPlan(); for (const x of subs) { if (!vivo || st.tab !== 'pend') break; await pintarSub(x); } })(); }
+    else {
+      const inp = panel.querySelector('[data-gq]');
+      inp.addEventListener('input', () => { st.q = inp.value; });
+      inp.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); buscar(); } });
+      panel.querySelector('[data-gbuscar]').addEventListener('click', buscar);
+      if (!st.buscando) setTimeout(() => { inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length); }, 0);
+    }
+  }
+  draw();
+}
+// Aviso de lectura SAP nueva: cada 3 min (sólo con la pestaña visible) compara la última lectura de los archivos SAP
+// con la que había al abrir la vista; si hay una más nueva ofrece actualizar. Consulta mínima (tabla de estado).
+let _lectBase = null, _lectTk = null;
+function vigilarLecturaSap() {
+  document.getElementById('sv-lect-nueva')?.remove();
+  V2_DEPS.ultimaLectura('').then(t => { _lectBase = t || _lectBase; }).catch(() => {});
+  if (_lectTk) return;
+  _lectTk = setInterval(async () => {
+    const av = document.getElementById('sv-lect-nueva');
+    if (!rootEl || !rootEl.isConnected) { if (av) av.remove(); return; }
+    if (av || document.visibilityState !== 'visible') return;
+    let t = null;
+    try { t = await V2_DEPS.ultimaLectura(''); } catch (_e) { return; }
+    if (!t) return;
+    if (!_lectBase) { _lectBase = t; return; }
+    if (!(new Date(t) > new Date(_lectBase))) return;
+    const hora = new Date(t).toLocaleTimeString('es-CL', { timeZone: 'America/Santiago', hour: '2-digit', minute: '2-digit', hour12: false });
+    const el = document.createElement('div');
+    el.id = 'sv-lect-nueva';
+    el.style.cssText = 'position:fixed;left:50%;bottom:20px;transform:translateX(-50%);z-index:90;display:flex;align-items:center;gap:10px;padding:10px 14px;border-radius:12px;background:#1e3a8a;color:#fff;box-shadow:0 8px 24px rgba(0,0,0,.25);font-size:13px';
+    el.innerHTML = `<span class="material-symbols-outlined">sync</span><span>Hay una lectura SAP nueva (<b>${escapeHtml(hora)}</b>)</span>
+      <button type="button" data-lect-ok style="background:#fff;color:#1e3a8a;border:none;border-radius:8px;padding:5px 12px;font-weight:700;cursor:pointer">Actualizar</button>
+      <button type="button" data-lect-x title="Ahora no" style="background:transparent;color:#fff;border:none;cursor:pointer;display:flex"><span class="material-symbols-outlined" style="font-size:18px">close</span></button>`;
+    document.body.appendChild(el);
+    el.querySelector('[data-lect-ok]').addEventListener('click', () => { el.remove(); clearRawCache(); if (rootEl && rootEl.isConnected) renderAbastecimientoView(rootEl); });
+    el.querySelector('[data-lect-x]').addEventListener('click', () => { _lectBase = t; el.remove(); });
+  }, 180000);
+}
+
 export async function renderAbastecimientoView(container) {
   rootEl = container;
+  try { vigilarLecturaSap(); } catch (_e) { /* aviso opcional */ }
   container.innerHTML = '<div id="ab-stage"></div>';
   const stage = container.querySelector('#ab-stage');
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611161240');
+    const m = await import('./ind-plan-carga.js?v=202611161340');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -8183,7 +8385,17 @@ function recalcCargaCD(r) {
 // Calcula el plan de ambos CD (1003 y 1081) con la MISMA función del Plan de Carga
 // (modo sólo-cálculo) y devuelve, por origen|destino|doc|material, si la línea va
 // en el camión CD, en el 2º camión (propuesto/aceptado) o no cabe.
-async function estadoPlanTraslados() {
+// (16-nov-2026 · fluidez P2) Llamadas simultáneas comparten un solo cálculo (Pendientes y buscador lo piden en segundo plano).
+let _eptEnCurso = null;
+function estadoPlanTraslados() {
+  if (_eptEnCurso) return _eptEnCurso;
+  const p = estadoPlanTrasladosCalc();
+  _eptEnCurso = p;
+  const fin = () => { if (_eptEnCurso === p) _eptEnCurso = null; };
+  p.then(fin, fin);
+  return p;
+}
+async function estadoPlanTrasladosCalc() {
   const lineas = new Map(), centros = {};
   let exclusiones = [], inclusiones = [];
   let seg = new Set();
@@ -8191,11 +8403,11 @@ async function estadoPlanTraslados() {
     const { data } = await supabase.from('abast_plan_segundo_camion').select('cd_origen,ce').eq('fecha', isoLocal(hoy00()));
     seg = new Set((data || []).map(x => `${String(x.cd_origen ?? '').trim()}|${String(x.ce ?? '').trim()}`));
   } catch (_e) { /* sin 2º camión */ }
-  const prev = planOrigen;
-  try {
+  // (16-nov-2026) El origen va como parámetro del cálculo: ya NO se cambia el origen global del Plan de Carga mientras
+  // se calcula (antes, una acción hecha en ese lapso podía quedar con el CD equivocado).
+  {
     for (const [orig] of ORIGENES_CD) {
-      planOrigen = orig;
-      const res = await renderPlanCarga(document.createElement('div'), { soloCalculo: true });
+      const res = await renderPlanCarga(document.createElement('div'), { soloCalculo: true, origen: orig });
       if (!res) continue;
       exclusiones = res.exclusionesPlan || []; inclusiones = res.inclusionesPlan || [];
       res.resultadoTodos.forEach(r => {
@@ -8208,7 +8420,7 @@ async function estadoPlanTraslados() {
         });
       });
     }
-  } finally { planOrigen = prev; }
+  }
   return { lineas, centros, exclusiones, inclusiones };
 }
 const PLAN_LINEA_V2 = {
@@ -8275,6 +8487,10 @@ function aplicarEstadoPlanTraslados(rows, ep) {
 
 let planDetalleAbierto = new Set();
 let planOrigen = '1003';   // centro origen del plan de carga (1003 / 1081)
+// (16-nov-2026) Dentro de renderPlanCargaCore el origen es una variable LOCAL del mismo nombre (cada cálculo usa el suyo);
+// estas dos funciones son la única vía para leer / cambiar el origen global desde ahí.
+const planOrigenGlobal = () => planOrigen;
+function setPlanOrigenGlobal(v) { planOrigen = v; }
 // Estado de la presentación v2 del Plan de Carga (filtros y panel lateral abiertos)
 const PLAN_V2_STATE = { kpi: 'all', drawer: null, tab: 'cd', origen: null, verVencidos: false, verAcopio: false };
 
@@ -8289,6 +8505,8 @@ async function renderPlanCarga(stage, opts = {}) {
   finally { if (recarga) { stage.style.opacity = ''; stage.style.pointerEvents = ''; restaurarScroll(sc); } }
 }
 async function renderPlanCargaCore(stage, opts = {}) {
+  // eslint-disable-next-line no-shadow
+  let planOrigen = opts.origen || planOrigenGlobal();   // origen de ESTE cálculo (sombra la variable global a propósito)
   if (!opts._recarga) stage.innerHTML = '<div class="text-secondary text-body-md p-md">Cargando Plan de Carga…</div>';
 
   const [quiebresRaw, trasladosRaw, revexRaw, retirosRaw, ventasRaw, traslados4000Raw, calendarioRows, estadosRetiro, exclusionesPlan, pvRows, feriadosRows, horizonteRows] = await Promise.all([
@@ -10445,10 +10663,14 @@ async function renderPlanCargaCore(stage, opts = {}) {
     const ent = d => String(d.entrega_entrante || d.entrega || '').trim();
     const sub = d => tipo === 'V' ? (d.cliente || '') : tipo === 'R' ? (d.prov || '') : (d._motivo ? d._motivo + ' · ' + (d.material || '') : (d.material || ''));
     const doc = d => tipo === 'V' ? d.pv : tipo === 'R' ? d.oc : d.pt;
+    // (16-nov-2026 · fluidez P2) El documento abre su vista de origen ya filtrada (con «Volver a Plan de Carga»).
+    const subDoc = d => tipo === 'V' ? 'pedidos_venta' : tipo === 'R' ? 'retiros' : tipo === 'X' ? 'pedidos_traslados_4000' : String(d.material ?? '').trim().startsWith('900000') ? 'pedidos_traslados_revex' : 'pedidos_traslados';
+    const docHtml = d => { const v = String(doc(d) ?? '').trim(), sb = subDoc(d);
+      return v && puedeVerMenu('abastecimiento', sb) ? `<span class="sv-mono" role="link" tabindex="0" data-ir-doc="${escapeHtml(sb)}|${escapeHtml(v)}" title="Abrir ${escapeHtml(v)} en ${escapeHtml(LBL_SUB[sb] || sb)}" style="cursor:pointer;text-decoration:underline dotted;text-underline-offset:3px">${escapeHtml(v)}</span>` : `<span class="sv-mono">${escapeHtml(v)}</span>`; };
     const cant = d => tipo === 'X' ? fmtNum(d.ctdPend, 0) : tipo === 'T' ? escapeHtml(d.ctd ?? '') : fmtNum(parseNum(d.cant), 0);
     return `<div class="pc-tbl"><table class="sv-table"><thead><tr>${head.map((h, i) => `<th class="${i >= 4 ? 'r' : ''}">${escapeHtml(h)}</th>`).join('')}${accFn ? '<th class="r">Mover</th>' : ''}</tr></thead>
       <tbody>${items.map(d => `<tr class="${d._enCamion === false ? (d._camion2 ? 'is-seg' : 'is-fuera') : ''}" title="${d._enCamion === false ? (d._camion2 ? 'Va en el 2º camión (opcional)' : 'No cabe: queda para el próximo plan') : ''}">
-        <td style="white-space:nowrap">${esPrioCarga(d) ? PRIO_BADGE : ''}<span class="sv-mono">${escapeHtml(String(doc(d) ?? ''))}</span>${d._ingSum ? `<div style="margin-top:2px;font-size:10px">${ingSumPill(true)}</div><div class="sv-sub" style="margin:0">PV ${escapeHtml(String(d.pv ?? ''))}</div>` : ''}${d._guiaFact ? `<div style="margin-top:2px;font-size:10px">${leyendaPv4000Pill(true)}</div>` : ''}${d._ceOrig ? `<div class="sv-sub" style="margin:2px 0 0;color:#7e22ce;font-weight:700" title="Centro destino alternativo asignado al coordinar">Centro alt. · orig. ${escapeHtml(getNombreCentro(d._ceOrig))}</div>` : ''}</td>
+        <td style="white-space:nowrap">${esPrioCarga(d) ? PRIO_BADGE : ''}${docHtml(d)}${d._ingSum ? `<div style="margin-top:2px;font-size:10px">${ingSumPill(true)}</div><div class="sv-sub" style="margin:0">PV ${escapeHtml(String(d.pv ?? ''))}</div>` : ''}${d._guiaFact ? `<div style="margin-top:2px;font-size:10px">${leyendaPv4000Pill(true)}</div>` : ''}${d._ceOrig ? `<div class="sv-sub" style="margin:2px 0 0;color:#7e22ce;font-weight:700" title="Centro destino alternativo asignado al coordinar">Centro alt. · orig. ${escapeHtml(getNombreCentro(d._ceOrig))}</div>` : ''}</td>
         <td>${ent(d) ? `<span class="sv-mono">${escapeHtml(ent(d))}</span>` : '<span class="sv-muted">—</span>'}</td>
         <td><div class="pc-mat"><b>${escapeHtml(d.nombre || '')}</b><small>${escapeHtml(sub(d))}</small></div></td>
         <td class="sv-mono">${escapeHtml(d.fecha || '')}</td><td class="r">${cant(d)}${d._ajustada ? `<div class="sv-sub" style="margin:0" title="Unidades editadas al coordinar">de ${fmtNum(d._pendSap, 0)}</div>` : ''}</td><td class="r"><b>${fmtNum(d.ton, 2)}</b></td>${accFn ? `<td class="r" style="white-space:nowrap">${accFn(d)}</td>` : ''}</tr>`).join('')}</tbody></table></div>`;
@@ -10984,6 +11206,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
             `<button data-chip data-origen="${id}" class="${planOrigen === id ? 'is-on' : ''}">${escapeHtml(CALENDARIOS[id].nombre)} · ${id}</button>`).join('')}</div>
           ${PUEDE_EXCLUIR && !cierre.cerrado ? `<button class="sv-btn" data-ver-exclusiones data-chip title="Ver y reactivar exclusiones"><span class="material-symbols-outlined">visibility_off</span>Exclusiones${exclusionesPlan.length ? ` <span class="sv-pill mute" style="padding:0 7px">${exclusionesPlan.length}</span>` : ''}</button>` : ''}
           ${PUEDE_COORD ? `<button class="sv-btn" data-res-new="" title="Reserva un camión (transporte y día de carga) sin amarrar entregas ni materiales"><span class="material-symbols-outlined">event_available</span>Reservar camión${reservas.length ? ` <span class="sv-pill mute" style="padding:0 7px">${reservas.length}</span>` : ''}</button>` : ''}
+          ${barraTrabajoHtml()}
           <button class="sv-btn" data-ent-noplan title="Entregas SAP creadas que no están consideradas en el Plan de Carga (con pedido de traslado y motivo) · descargable"><span class="material-symbols-outlined">assignment_late</span>Entregas no consideradas</button>
           <button class="sv-btn" data-descarga="__todo__" title="Descarga el plan completo del origen (sin filtro de KPI)"><span class="material-symbols-outlined">download</span>Descargar plan (CSV)</button>
           <button class="sv-btn is-icon" data-refrescar title="Refrescar datos"><span class="material-symbols-outlined">refresh</span></button>
@@ -11008,11 +11231,18 @@ async function renderPlanCargaCore(stage, opts = {}) {
     </div>`;
 
     st._drK = _drK;
+    wireBarraTrabajo(stage);   // (16-nov-2026 · fluidez P2) Pendientes + buscador
+    stage.querySelectorAll('[data-ir-doc]').forEach(el => {
+      const go = e => { e.stopPropagation(); e.preventDefault(); const i = el.dataset.irDoc.indexOf('|'); const sb = el.dataset.irDoc.slice(0, i), dc = el.dataset.irDoc.slice(i + 1);
+        saltarASub(sb, filtroDocSub(sb, dc), { sub: 'plan_carga', lbl: 'Plan de Carga' }); };
+      el.addEventListener('click', go);
+      el.addEventListener('keydown', e => { if (e.key === 'Enter') go(e); });
+    });
     if (_drS) { const b2 = stage.querySelector('.pc-dr .sv-dr-b'); if (b2) b2.scrollTop = _drS; }
     stage.querySelector('[data-refrescar]')?.addEventListener('click', () => { clearRawCache(); renderPlanCarga(stage); });
     stage.querySelectorAll('[data-origen]').forEach(btn => btn.addEventListener('click', () => {
       if (planOrigen === btn.dataset.origen) return;
-      planOrigen = btn.dataset.origen; st.drawer = null; renderPlanCarga(stage);
+      setPlanOrigenGlobal(btn.dataset.origen); st.drawer = null; renderPlanCarga(stage);
     }));
     stage.querySelectorAll('[data-kpi]').forEach(b => b.addEventListener('click', () => { const k = b.dataset.kpi; st.kpi = st.kpi === k ? 'all' : k; draw(); }));
     stage.querySelector('[data-vencidos-toggle]')?.addEventListener('click', () => { st.verVencidos = !st.verVencidos; draw(); });
