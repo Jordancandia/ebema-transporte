@@ -32,8 +32,8 @@ export function tonHtml(n) {
 }
 
 // Encabezado del shell: fecha y hora de la última actualización SAP de la vista
-import { confirmar } from './confirmar.js?v=202611161231';
-import { comentariosHabilitados, conteosComentarios, celdaComentarios, montarHilo, tomarFoco, abrirHiloSuelto } from './comentarios.js?v=202611161231';
+import { confirmar } from './confirmar.js?v=202611161240';
+import { comentariosHabilitados, conteosComentarios, celdaComentarios, montarHilo, tomarFoco, abrirHiloSuelto } from './comentarios.js?v=202611161240';
 export function setUltimaActualizacion(ts) {
   const el = document.getElementById('sv-upd');
   if (!el) return;
@@ -57,6 +57,41 @@ export function maxCargadoEn(rows) {
 
 // Estado de filtros por vista (se mantiene mientras dure la sesión en la pestaña)
 const _estado = new Map();
+// (16-nov-2026, Jordan · fluidez) Los filtros de cada vista sobreviven a F5 / nueva versión durante el MISMO día
+// (al día siguiente parten limpios, para no dejar filtros viejos escondiendo filas).
+const LS_FILTROS = 'sit_trc_filtros_v1_';
+const F_KEYS = ['kpi', 'chip', 'chip2', 'q', 'qDoc', 'dFrom', 'dTo', 'orig', 'mode', 'vista'];
+function leerFiltros(viewKey) {
+  try { const o = JSON.parse(localStorage.getItem(LS_FILTROS + viewKey) || 'null'); return o && o._dia === hoyISO() ? o : null; } catch (_e) { return null; }
+}
+function guardarFiltros(viewKey, st) {
+  try { const o = { _dia: hoyISO() }; F_KEYS.forEach(k => { if (st[k] !== undefined) o[k] = st[k]; }); localStorage.setItem(LS_FILTROS + viewKey, JSON.stringify(o)); } catch (_e) { /* sin almacenamiento */ }
+}
+// (16-nov-2026 · fluidez) Posición de scroll de la vista (contenedores padres, ventana y tabla) para reponerla tras recargar.
+export function guardarScroll(el) {
+  const l = [];
+  for (let p = el; p; p = p.parentElement) if (p.scrollTop > 0 || p.scrollLeft > 0) l.push([p, p.scrollTop, p.scrollLeft]);
+  const tw = el.querySelector('.sv-table-wrap');
+  return { el, l, x: window.scrollX, y: window.scrollY, tw: tw ? [tw.scrollTop, tw.scrollLeft] : null };
+}
+export function restaurarScroll(s) {
+  if (!s) return;
+  try {
+    s.l.forEach(([p, top, left]) => { if (p.isConnected) { p.scrollTop = top; p.scrollLeft = left; } });
+    if (window.scrollX !== s.x || window.scrollY !== s.y) window.scrollTo(s.x, s.y);
+    const tw = s.tw && s.el.querySelector('.sv-table-wrap');
+    if (tw) { tw.scrollTop = s.tw[0]; tw.scrollLeft = s.tw[1]; }
+  } catch (_e) { /* sin scroll que reponer */ }
+}
+// (16-nov-2026 · fluidez) Recarga de la MISMA vista (tras una acción): no se borra la pantalla; la tabla anterior queda
+// visible y atenuada mientras llegan los datos nuevos, y se repone el scroll.
+export async function renderTablaV2(stage, cfg, deps, viewKey) {
+  const recarga = stage._vkV2 === viewKey && !!stage.firstElementChild;
+  const sc = recarga ? guardarScroll(stage) : null;
+  if (recarga) { stage.style.transition = 'opacity .15s'; stage.style.opacity = '.55'; stage.style.pointerEvents = 'none'; }
+  try { await renderTablaV2Core(stage, cfg, deps, viewKey, recarga); stage._vkV2 = viewKey; }
+  finally { if (recarga) { stage.style.opacity = ''; stage.style.pointerEvents = ''; restaurarScroll(sc); } }
+}
 
 function isoToDate(s) {
   const m = String(s || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
@@ -78,13 +113,20 @@ function hoyISO() {
 // ── Motor de la vista ───────────────────────────────────────────────────────
 // deps: { fetchAllRows, filtrarPorCentro, can, parseDateSAP, clearRawCache,
 //         exportarCSV, loadExclusionesPlan, excluirDelPlan, reactivarEnPlan, showAlert }
-export async function renderTablaV2(stage, cfg, deps, viewKey) {
+async function renderTablaV2Core(stage, cfg, deps, viewKey, recarga = false) {
   const V = cfg.v2;
+  const guardados = !_estado.has(viewKey) ? leerFiltros(viewKey) : null;
   const st = _estado.get(viewKey) || {
     kpi: 'all', chip: 'all', chip2: 'all', q: '', qDoc: '', dFrom: '', dTo: '',
     orig: V.origen ? V.origen.opciones[0][0] : null, mode: 0, drawer: null,
   };
   if (!_estado.has(viewKey) && cfg.dateDefaultHoy) { st.dFrom = st.dTo = hoyISO(); }
+  if (guardados) {
+    F_KEYS.forEach(k => { if (guardados[k] !== undefined && guardados[k] !== null) st[k] = guardados[k]; });
+    if (V.origen && !V.origen.opciones.some(o => o[0] === st.orig)) st.orig = V.origen.opciones[0][0];
+    if (!cfg.modes || !cfg.modes[st.mode]) st.mode = 0;
+    if (st.vista === 'cal' && !V.calendario) st.vista = 'lista';
+  }
   _estado.set(viewKey, st);
   st.open = null;
   // (11-oct-2026) Vista calendario opcional (AV.calendario): se elige entre Calendario y Lista.
@@ -106,15 +148,28 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
   const active = cfg.modes ? Object.assign({}, cfg, cfg.modes[st.mode] || cfg.modes[0]) : cfg;
   const AV = Object.assign({}, V, (active.v2mode || {}));
 
-  stage.innerHTML = `<div class="sv-view"><div class="sv-vhead"><div><h1 class="sv-h1">${esc(AV.titulo)}</h1>
+  if (!recarga) stage.innerHTML = `<div class="sv-view"><div class="sv-vhead"><div><h1 class="sv-h1">${esc(AV.titulo)}</h1>
     <div class="sv-desc">Cargando datos…</div></div></div></div>`;
 
+  // (16-nov-2026 · fluidez) Lecturas independientes EN PARALELO (antes iban una tras otra): datos de la vista, última
+  // lectura SAP, comentarios, exclusiones y prioridades parten juntas; los preload mantienen su orden entre sí.
+  const quiet = p => { p.catch(() => {}); return p; };
+  const _conComentP = comentariosHabilitados(viewKey);
+  const _conExclP = !!(active.excluir && ((!active.sinExcluir && deps.can(AV.permisoExcluir || 'excluir')) || AV.excluirEnFila));
+  const _prioCfgP = AV.prioridad && deps.loadPrioridades ? AV.prioridad : null;
+  const pRaw = quiet(Promise.resolve().then(() => deps.fetchAllRows(active.vista)));
+  const pUlt = quiet(Promise.resolve().then(() => deps.ultimaLectura ? deps.ultimaLectura(active.vista) : null));
+  const pConteos = quiet(Promise.resolve().then(() => _conComentP ? conteosComentarios(viewKey) : new Map()));
+  const pExcl = quiet(Promise.resolve().then(() => _conExclP ? deps.loadExclusionesPlan() : []));
+  const pPrios = quiet(Promise.resolve().then(() => _prioCfgP ? deps.loadPrioridades(_prioCfgP.tipo) : new Map()));
+  const pPriosH = quiet(Promise.resolve().then(() => _prioCfgP && _prioCfgP.hereda ? deps.loadPrioridades(_prioCfgP.hereda.tipo) : new Map()));
+
   const ctx = Object.assign({}, active.preload ? await active.preload() : {}, AV.preload ? await AV.preload() : {});
-  const rawRows = (await deps.fetchAllRows(active.vista)).slice();
+  const rawRows = (await pRaw).slice();
   // (10-nov-2026, Jordan) La hora mostrada es la última lectura de los archivos SAP (Drive), no la de la fila más nueva:
   // en Entregas el cargado_en de cada fila es su PRIMERA aparición y dejaba la hora pegada en la última entrega nueva.
   { const tf = maxCargadoEn(rawRows); let tl = null;
-    try { tl = deps.ultimaLectura ? await deps.ultimaLectura(active.vista) : null; } catch (_e) { tl = null; }
+    try { tl = await pUlt; } catch (_e) { tl = null; }
     setUltimaActualizacion(tl && (!tf || new Date(tl) > new Date(tf)) ? tl : tf); }
   // (9-oct-2026) Hook para reponer filas respaldadas (p. ej. NV coordinadas que SAP sacó del SQVI).
   if (deps.augmentRaw) await deps.augmentRaw(active.vista, rawRows);
@@ -136,7 +191,7 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
     const m = typeof active.excluir.material === 'function' ? String(active.excluir.material(r) ?? '').trim() : '';
     return m ? `${d} · mat. ${m}` : d;
   };
-  let conteos = conComent ? await conteosComentarios(viewKey) : new Map();
+  let conteos = await pConteos;
   const foco = conComent ? tomarFoco(viewKey) : null;
   const focoPrio = foco && foco.prio ? foco : null;   // (15-oct-2026) se resuelve más abajo, tras cargar prioridades
   if (foco && !foco.prio) {
@@ -151,7 +206,7 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
   // excluirEnFila (2-oct-2026): estado + botón Excluir/Reactivar en la fila principal
   // (columna «Plan de carga») en vez del panel lateral de detalle.
   const enFila = !!(active.excluir && AV.excluirEnFila);
-  let exclusiones = (puedeExcluir || enFila) ? await deps.loadExclusionesPlan() : [];
+  let exclusiones = await pExcl;
   function exclusionDe(r) {
     const ex = active.excluir; if (!ex) return null;
     const doc = String(ex.doc(r) ?? '').trim();
@@ -165,14 +220,14 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
   // (1-nov-2026, Jordan) Si la vista trae AV.prioridad.material, la marca es por ENTREGA + MATERIAL
   // (vistas Entregas de Crossdocking y Pedidos de Traslados): se prioriza la línea, no el pedido completo.
   const prioCfg = AV.prioridad && deps.loadPrioridades ? AV.prioridad : null;
-  let prios = prioCfg ? await deps.loadPrioridades(prioCfg.tipo) : new Map();
+  let prios = await pPrios;
   const prioDoc = r => String(prioCfg.doc(r) ?? '').trim();
   const prioMat = r => prioCfg.material ? String(prioCfg.material(r) ?? '').trim() : '';
   // (10-nov-2026) marcas antiguas sin material (pedido completo) siguen valiendo para cada posición
   const prioDe = r => prios.get(`${prioCfg.tipo}|${prioDoc(r)}|${prioMat(r)}`) || (prioMat(r) ? prios.get(`${prioCfg.tipo}|${prioDoc(r)}|`) : null) || null;
   // (10-nov-2026, Jordan) Prioridad HEREDADA: la entrega toma la prioridad dada a su PT + posición (prioCfg.hereda)
   const heCfg = prioCfg && prioCfg.hereda ? prioCfg.hereda : null;
-  let priosH = heCfg ? await deps.loadPrioridades(heCfg.tipo) : new Map();
+  let priosH = await pPriosH;
   const heredaDe = r => { if (!heCfg) return null; const d = String(heCfg.doc(r) ?? '').trim(), m = String(heCfg.material(r) ?? '').trim();
     return priosH.get(`${heCfg.tipo}|${d}|${m}`) || priosH.get(`${heCfg.tipo}|${d}|`) || null; };
   const prioLbl = r => prioMat(r) ? `${prioDoc(r)} · material ${prioMat(r)}` : prioDoc(r);
@@ -271,6 +326,7 @@ export async function renderTablaV2(stage, cfg, deps, viewKey) {
 
   stage._fRedraw = () => draw();
   function draw() {
+    guardarFiltros(viewKey, st);   // (16-nov-2026 · fluidez) filtros persistentes durante el día
     const pre = base();
     const { byChip, filt } = aplica(pre);
     const hasFilter = exOn() || st.kpi !== 'all' || st.chip !== 'all' || st.chip2 !== 'all' || !!st.q.trim() || !!st.qDoc.trim() || ((!!st.dFrom || !!st.dTo) && !esCal());

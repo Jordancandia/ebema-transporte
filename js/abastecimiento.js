@@ -10,13 +10,13 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611161231';
-import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611161231';
-import { getDatabase } from './data.js?v=202611161231';
+import { supabase } from './supabase-client.js?v=202611161240';
+import { can, enAlcance, filtrarPorCentro } from './permisos.js?v=202611161240';
+import { getDatabase } from './data.js?v=202611161240';
 import { COMUNAS_POR_REGION } from './chile-geo.js';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611161231';
-import { confirmar, pedirDato } from './confirmar.js?v=202611161231';
+import { renderTablaV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611161240';
+import { confirmar, pedirDato } from './confirmar.js?v=202611161240';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -3256,7 +3256,9 @@ function campoHoraPres(st, bad) {
 // (28-oct-2026) presentacion: { modo: 'bloque', cd, self: { fecha, ce, camion } } (camión CD / 2º camión)
 //   o { modo: 'hora' } (CD-Cliente). Sin presentacion no se pide horario (retiros, fábrica).
 // (29-oct-2026) choque: { clave, docs } → bloquea si la patente ya tiene otra carga ese día de carga (validarPatenteDia).
-function showTransporteCamionModal({ titulo, sub, ini = {}, otros = [], fechaDef = '', modo = 'programar', presentacion = null, choque = null }) {
+// (16-nov-2026 · fluidez) avisos: alertas de la carga (sobrecarga, bajo umbral) que se muestran en el panel y en la
+// confirmación final, en vez de un diálogo aparte antes de abrir el formulario.
+function showTransporteCamionModal({ titulo, sub, ini = {}, otros = [], fechaDef = '', modo = 'programar', presentacion = null, choque = null, avisos = [] }) {
   const RESV = modo === 'reservar';   // (16-nov-2026) reserva: transporte + día, sin carga amarrada
   const COORD = modo === 'coordinar' || RESV;
   const PRES = presentacion && presentacion.modo;
@@ -3389,6 +3391,7 @@ function showTransporteCamionModal({ titulo, sub, ini = {}, otros = [], fechaDef
           <button class="sv-iconbtn" data-cx title="Cerrar (Esc)"><span class="material-symbols-outlined">close</span></button></div>
         <div class="sv-dr-b" style="gap:16px">
           ${falt.length ? '<div class="sv-note-box" style="background:#ffdad6;color:#93000a;font-weight:700">Completa los campos obligatorios marcados en rojo.</div>' : ''}
+          ${avisos.length ? `<div class="sv-note-box" style="background:#fef3c7;color:#713f12"><b>Atención:</b> ${avisos.map(a => escapeHtml(a)).join(' · ')}</div>` : ''}
           <div class="sv-sub" style="margin:0;max-width:none">Elige el día de carga y el transportista del maestro de transporte; luego el chofer y las patentes. ${RESV ? 'Al guardar, el camión queda <b>reservado</b> para ese día: cuenta en el cupo del bloque y en la alerta de patente, pero la carga no se amarra hasta que se confirma.' : COORD ? 'Al guardar, el transporte queda <b>coordinado sin programar</b>: la carga del camión sigue actualizándose y el perfil OWNER lo programa con estos datos.' : 'Al confirmar, el camión queda programado para carga.'}</div>
           <div style="max-width:260px">${lbl('Fecha de carga', 'fechaCarga', true)}
             <label class="sv-inp" style="width:100%;box-sizing:border-box;${bad('fechaCarga') ? 'border-color:#b5000b' : ''}"><span class="material-symbols-outlined">event</span>
@@ -3466,7 +3469,7 @@ function showTransporteCamionModal({ titulo, sub, ini = {}, otros = [], fechaDef
           if (mismaPat && !choque) av.push(`La patente ya está programada hoy en ${o.lbl}.`);
           else if (!mismaPat && rut && normPatente(o.chofer_rut) === rut) av.push(`El chofer ya está programado hoy en ${o.lbl} (patente ${o.patente_camion}).`);
         });
-        if (av.length && !(await confirmar(`Posible choque con el camión ${fmtPatente(st.patCamion)}\n\n${av.map(a => '• ' + a).join('\n')}\n\n¿Programar igual?`, { aceptar: 'Programar igual', tono: 'peligro', icono: 'warning' }))) return;
+        // (16-nov-2026 · fluidez) el posible choque de chofer/patente ya no abre un diálogo propio: va en la confirmación final.
         // Transportista bloqueado: se completan en el maestro los datos que faltaban.
         const fs = faltan(tsel);
         if (fs.length) {
@@ -3482,8 +3485,9 @@ function showTransporteCamionModal({ titulo, sub, ini = {}, otros = [], fechaDef
         }
         // (8-oct-2026, Jordan) Confirmar el camión con sus datos y el día de carga.
         const presObj = PRES === 'bloque' ? { bloque_presentacion: st.bloque, hora_presentacion: bloquePres(st.bloque).desde } : PRES === 'hora' ? { hora_presentacion: st.horaPres.trim() } : {};
-        const okConf = await confirmar(`${RESV ? '¿Guardar la reserva del camión (sin carga amarrada)?' : COORD ? '¿Guardar la coordinación del transporte (sin programar)?' : '¿Confirmar el camión?'}\n\n${titulo}\nDía de carga: ${fmtFechaISO(st.fechaCarga)}${PRES ? `\nPresentación: ${txtPresentacion(presObj)}` : ''}\nTransportista: ${tsel.id} · ${tsel.razonSocial || st.transportista}\nChofer: ${st.choferNombre.trim()} · ${st.choferRut.trim()} · ${st.choferTel.trim()}\nPatente camión: ${fmtPatente(st.patCamion)}${st.patCarro.trim() ? ' · carro ' + fmtPatente(st.patCarro) : ''}`,
-          { aceptar: RESV ? 'Guardar reserva' : COORD ? 'Guardar coordinación' : 'Confirmar camión', tono: 'normal', icono: COORD ? 'event_available' : 'local_shipping' });
+        const avTxt = [...avisos, ...av];
+        const okConf = await confirmar(`${avTxt.length ? 'ATENCIÓN\n' + avTxt.map(a => '• ' + a).join('\n') + '\n\n' : ''}${RESV ? '¿Guardar la reserva del camión (sin carga amarrada)?' : COORD ? '¿Guardar la coordinación del transporte (sin programar)?' : '¿Confirmar el camión?'}\n\n${titulo}\nDía de carga: ${fmtFechaISO(st.fechaCarga)}${PRES ? `\nPresentación: ${txtPresentacion(presObj)}` : ''}\nTransportista: ${tsel.id} · ${tsel.razonSocial || st.transportista}\nChofer: ${st.choferNombre.trim()} · ${st.choferRut.trim()} · ${st.choferTel.trim()}\nPatente camión: ${fmtPatente(st.patCamion)}${st.patCarro.trim() ? ' · carro ' + fmtPatente(st.patCarro) : ''}`,
+          { aceptar: RESV ? 'Guardar reserva' : COORD ? 'Guardar coordinación' : 'Confirmar camión', tono: avTxt.length ? 'peligro' : 'normal', icono: avTxt.length ? 'warning' : COORD ? 'event_available' : 'local_shipping' });
         if (!okConf) { draw(); return; }
         fin({
           fecha_carga: st.fechaCarga,
@@ -7800,7 +7804,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611161231');
+    const m = await import('./ind-plan-carga.js?v=202611161240');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -7815,11 +7819,24 @@ export async function renderAbastecimientoView(container) {
 // pestaña o al reusar la misma vista en el Plan de Carga).
 const _rawCache = new Map();       // vista -> { rows, ts }
 const RAW_TTL = 120000;            // 2 minutos
-function clearRawCache() { _rawCache.clear(); }
+// (16-nov-2026 · fluidez) Descargas en curso por vista: dos lecturas simultáneas de la misma vista comparten una sola
+// descarga. _rawGen invalida las descargas iniciadas antes de un clearRawCache (no pisan el caché con datos viejos).
+const _rawPend = new Map();
+let _rawGen = 0;
+function clearRawCache() { _rawCache.clear(); _rawPend.clear(); _rawGen++; }
 
 async function fetchAllRows(vista, force = false) {
   const cached = _rawCache.get(vista);
   if (!force && cached && (Date.now() - cached.ts) < RAW_TTL) return cached.rows;
+  if (!force && _rawPend.has(vista)) return _rawPend.get(vista);
+  const p = fetchAllRowsRed(vista, force, _rawGen);
+  _rawPend.set(vista, p);
+  const fin = () => { if (_rawPend.get(vista) === p) _rawPend.delete(vista); };
+  p.then(fin, fin);
+  return p;
+}
+async function fetchAllRowsRed(vista, force, gen) {
+  const cached = _rawCache.get(vista);
 
   const pageSize = 1000;
   // 1) Total de filas (HEAD, sin traer datos) para paginar en paralelo.
@@ -7871,7 +7888,7 @@ async function fetchAllRows(vista, force = false) {
     if (data.length < pageSize) break;
   }
 
-  _rawCache.set(vista, { rows, ts: Date.now() });
+  if (gen === _rawGen) _rawCache.set(vista, { rows, ts: Date.now() });
   return rows;
 }
 
@@ -8261,8 +8278,18 @@ let planOrigen = '1003';   // centro origen del plan de carga (1003 / 1081)
 // Estado de la presentación v2 del Plan de Carga (filtros y panel lateral abiertos)
 const PLAN_V2_STATE = { kpi: 'all', drawer: null, tab: 'cd', origen: null, verVencidos: false, verAcopio: false };
 
+// (16-nov-2026, Jordan · fluidez) Recarga del plan tras una acción: no se borra la pantalla; el plan anterior queda
+// visible y atenuado mientras se recalcula, y se repone el scroll (página y panel lateral).
 async function renderPlanCarga(stage, opts = {}) {
-  stage.innerHTML = '<div class="text-secondary text-body-md p-md">Cargando Plan de Carga…</div>';
+  if (opts.soloCalculo) return renderPlanCargaCore(stage, opts);
+  const recarga = stage._planVisto === planOrigen && !!stage.firstElementChild;
+  const sc = recarga ? guardarScroll(stage) : null;
+  if (recarga) { stage.style.transition = 'opacity .15s'; stage.style.opacity = '.55'; stage.style.pointerEvents = 'none'; }
+  try { const out = await renderPlanCargaCore(stage, { ...opts, _recarga: recarga }); stage._planVisto = planOrigen; return out; }
+  finally { if (recarga) { stage.style.opacity = ''; stage.style.pointerEvents = ''; restaurarScroll(sc); } }
+}
+async function renderPlanCargaCore(stage, opts = {}) {
+  if (!opts._recarga) stage.innerHTML = '<div class="text-secondary text-body-md p-md">Cargando Plan de Carga…</div>';
 
   const [quiebresRaw, trasladosRaw, revexRaw, retirosRaw, ventasRaw, traslados4000Raw, calendarioRows, estadosRetiro, exclusionesPlan, pvRows, feriadosRows, horizonteRows] = await Promise.all([
     fetchAllRows('v_trc_slim_stock'),
@@ -9873,16 +9900,17 @@ async function renderPlanCarga(stage, opts = {}) {
     res = await ofrecerReserva(ce, res);   // (16-nov-2026) camión reservado
     const f = refrescarFill(r);
     // (11-nov-2026, Jordan) Sobrecarga: se alerta pero se deja programar.
-    if ((f.cargado || 0) > r.cap + 0.05 && !await confirmar(`El camión CD de ${r.nombre} SUPERA la capacidad:\n\n${t1(f.cargado)} t cargadas de ${fmtNum(r.cap, 0)} t (${Math.round((f.cargado || 0) / r.cap * 100)}%) · exceso ${t1(f.cargado - r.cap)} t.\n\n¿Programar igual?`, { aceptar: 'Programar igual', cancelar: 'Revisar carga', tono: 'peligro', icono: 'warning' })) return;
+    const avisosP = [];   // (16-nov · fluidez) la alerta va dentro del formulario y en la confirmación final
+    if ((f.cargado || 0) > r.cap + 0.05) avisosP.push(`El camión CD SUPERA la capacidad: ${t1(f.cargado)} t de ${fmtNum(r.cap, 0)} t (${Math.round((f.cargado || 0) / r.cap * 100)}%), exceso ${t1(f.cargado - r.cap)} t.`);
     // (16-nov-2026, Jordan) Reserva bajo el umbral: sólo alerta (igual que hoy), se puede confirmar.
-    if (res && r.cap > 0 && (f.cargado || 0) < r.cap * PCT_PROGRAMAR_CD / 100 - 0.05 && !await confirmar(`La carga del camión reservado para ${r.nombre} está BAJO el ${PCT_PROGRAMAR_CD}%:\n\n${t1(f.cargado || 0)} t de ${fmtNum(r.cap, 0)} t (${Math.round((f.cargado || 0) / r.cap * 100)}%).\n\n¿Confirmar la carga igual?`, { aceptar: 'Confirmar igual', cancelar: 'Esperar más carga', icono: 'warning' })) return;
+    if (res && r.cap > 0 && (f.cargado || 0) < r.cap * PCT_PROGRAMAR_CD / 100 - 0.05) avisosP.push(`La carga está BAJO el ${PCT_PROGRAMAR_CD}%: ${t1(f.cargado || 0)} t de ${fmtNum(r.cap, 0)} t (${Math.round((f.cargado || 0) / r.cap * 100)}%).`);
     // (29-oct-2026) Camión CD con retiro Fábrica-Sucursal unido: por defecto el transporte (y día) del retiro.
     const ru = (r.retirosUnidos || [])[0], eRu = ru ? ru.e : null;
     const iniRu = eRu ? { id_transporte: eRu.id_transporte, transportista: eRu.transportista, chofer_nombre: eRu.chofer_nombre, chofer_rut: eRu.chofer_rut,
       chofer_telefono: eRu.chofer_telefono, patente_camion: eRu.patente_camion, patente_carro: eRu.patente_carro, fecha_carga: eRu.fecha_retiro } : {};
     const docsRu = (r.retirosUnidos || []).map(x => String(x.item.oc ?? '').trim());
     const t = await showTransporteCamionModal({ titulo: `Camión CD → ${r.nombre}`, sub: `${t1(f.cargado)} t de ${fmtNum(r.cap, 0)} t · día objetivo ${diaCorto(diaObj(r))}${eRu ? ' · incluye retiro Fábrica-Sucursal' : ''}`,
-      ini: res || progMap.get(`${ce}|1`) || coordMap.get(`${ce}|1`) || iniRu, otros: otrosProgramados(ce, 1), fechaDef: isoLocal(diaObj(r)), presentacion: res ? presRes(res) : presCam(ce, 1), choque: { clave: `CAM|${planOrigen}|${ce}|1`, docs: docsRu } });
+      ini: res || progMap.get(`${ce}|1`) || coordMap.get(`${ce}|1`) || iniRu, otros: otrosProgramados(ce, 1), fechaDef: isoLocal(diaObj(r)), presentacion: res ? presRes(res) : presCam(ce, 1), avisos: avisosP, choque: { clave: `CAM|${planOrigen}|${ce}|1`, docs: docsRu } });
     if (!t) return;
     const quien = await getUserEmail();
     const filas = new Map();
@@ -9927,9 +9955,9 @@ async function renderPlanCarga(stage, opts = {}) {
     if (!PUEDE_TRANSPORTE) { showAlert('Sólo el perfil OWNER puede agregar o modificar los datos del transporte.', 'error'); return; }
     if (!segAcept.has(ce)) { showAlert('Primero acepta el 2º camión.', 'error'); return; }
     res = await ofrecerReserva(ce, res);   // (16-nov-2026) camión reservado
-    if ((r.tonSegundo || 0) > r.cap + 0.05 && !await confirmar(`El 2º camión de ${r.nombre} SUPERA la capacidad:\n\n${t1(r.tonSegundo)} t de ${fmtNum(r.cap, 0)} t (${Math.round((r.tonSegundo || 0) / r.cap * 100)}%) · exceso ${t1(r.tonSegundo - r.cap)} t.\n\n¿Programar igual?`, { aceptar: 'Programar igual', cancelar: 'Revisar carga', tono: 'peligro', icono: 'warning' })) return;
+    const avisosS = (r.tonSegundo || 0) > r.cap + 0.05 ? [`El 2º camión SUPERA la capacidad: ${t1(r.tonSegundo)} t de ${fmtNum(r.cap, 0)} t (${Math.round((r.tonSegundo || 0) / r.cap * 100)}%), exceso ${t1(r.tonSegundo - r.cap)} t.`] : [];   // (16-nov · fluidez) alerta dentro del formulario
     const t = await showTransporteCamionModal({ titulo: `2º camión → ${r.nombre}`, sub: `${t1(r.tonSegundo)} t de ${fmtNum(r.cap, 0)} t · día objetivo ${diaCorto(diaObj(r))}`,
-      ini: res || progMap.get(`${ce}|2`) || coordMap.get(`${ce}|2`) || {}, otros: otrosProgramados(ce, 2), fechaDef: isoLocal(diaObj(r)), presentacion: res ? presRes(res) : presCam(ce, 2), choque: { clave: `CAM|${planOrigen}|${ce}|2` } });
+      ini: res || progMap.get(`${ce}|2`) || coordMap.get(`${ce}|2`) || {}, otros: otrosProgramados(ce, 2), fechaDef: isoLocal(diaObj(r)), presentacion: res ? presRes(res) : presCam(ce, 2), avisos: avisosS, choque: { clave: `CAM|${planOrigen}|${ce}|2` } });
     if (!t) return;
     {   // (11-nov-2026, Jordan) congelar la carga del 2º camión al programarlo
       const f2 = refrescarFill(r), quien2 = await getUserEmail(), filas2 = new Map();
@@ -10931,6 +10959,8 @@ async function renderPlanCarga(stage, opts = {}) {
     </div>`;
   }
   function draw() {
+    // (16-nov-2026 · fluidez) el panel lateral conserva su scroll al redibujar (mover líneas, programar, etc.)
+    const _drB = stage.querySelector('.pc-dr .sv-dr-b'), _drK = `${st.drawer}|${st.tab}`, _drS = _drB && st._drK === _drK ? _drB.scrollTop : 0;
     resultado.forEach(refrescarFill);
     const kpiDef = [
       { key: 'prog', label: 'Programar', color: '#15803d', sub: 'sucursales ≥85%', fn: r => estadoV2(r).k === 'prog' },
@@ -10977,6 +11007,8 @@ async function renderPlanCarga(stage, opts = {}) {
       <div data-drawer-slot>${st.drawer && resultado.find(x => x.ce === st.drawer) ? drawerHtml(resultado.find(x => x.ce === st.drawer)) : ''}</div>
     </div>`;
 
+    st._drK = _drK;
+    if (_drS) { const b2 = stage.querySelector('.pc-dr .sv-dr-b'); if (b2) b2.scrollTop = _drS; }
     stage.querySelector('[data-refrescar]')?.addEventListener('click', () => { clearRawCache(); renderPlanCarga(stage); });
     stage.querySelectorAll('[data-origen]').forEach(btn => btn.addEventListener('click', () => {
       if (planOrigen === btn.dataset.origen) return;
