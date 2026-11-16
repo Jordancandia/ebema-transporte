@@ -10,13 +10,13 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611161340';
-import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611161340';
-import { getDatabase } from './data.js?v=202611161340';
+import { supabase } from './supabase-client.js?v=202611161343';
+import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611161343';
+import { getDatabase } from './data.js?v=202611161343';
 import { COMUNAS_POR_REGION } from './chile-geo.js';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, calcularVistaV2, prepararSaltoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611161340';
-import { confirmar, pedirDato } from './confirmar.js?v=202611161340';
+import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611161343';
+import { confirmar, pedirDato } from './confirmar.js?v=202611161343';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -4995,6 +4995,7 @@ const V2_DEPS = {
   fetchAllRows, filtrarPorCentro, can, parseDateSAP, exportarCSV, showAlert,
   // (16-nov-2026 · fluidez P2) Pendientes + buscador global en el encabezado y saltos entre vistas
   barraTrabajo: () => barraTrabajoHtml(), wireBarraTrabajo: root => wireBarraTrabajo(root), navegar: sub => irASub(sub),
+  alCalcularVista: (sub, rows, AV) => actualizarPendMenu(sub, rows, AV),   // (fluidez P3) contador del menú
   clearRawCache: () => clearRawCache(),
   // (10-nov-2026, Jordan) Última lectura de los archivos SAP del Drive (trc_drive_estado). Entregas → su archivo.
   ultimaLectura: async vista => {
@@ -7834,6 +7835,22 @@ function saltarASub(sub, filtros, volver = null) {
   irASub(sub);
 }
 const filtroDocSub = (sub, doc) => ((VISTAS_TRONCAL[sub] || {}).v2 || {}).docSearch ? { qDoc: String(doc) } : { q: String(doc) };
+// (16-nov-2026 · fluidez P3) Contador de pendientes junto a cada vista del menú lateral. Se actualiza cuando la vista se
+// calcula (al abrirla o al abrir «Pendientes»); no dispara descargas por sí solo.
+function setPendMenu(sub, n) {
+  try {
+    (window.__sitPendMenu = window.__sitPendMenu || {})[sub] = n;
+    const hora = new Date().toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit', hour12: false });
+    document.querySelectorAll(`[data-pend-menu="${sub}"]`).forEach(el => { el.textContent = n ? String(n) : ''; el.style.display = n ? 'inline-flex' : 'none';
+      el.title = `${n} con pendientes · calculado ${hora}`; });
+  } catch (_e) { /* menú no disponible */ }
+}
+function actualizarPendMenu(sub, rows, AV) {
+  const x = SUBS_TRABAJO.find(y => y.sub === sub);
+  if (!x) return;
+  const fns = (AV.kpis || []).filter(k => k.fn && x.pend.includes(k.key)).map(k => k.fn);
+  setPendMenu(sub, fns.length ? rows.filter(r => fns.some(f => f(r))).length : 0);
+}
 function barraTrabajoHtml() {
   return `<button class="sv-btn" data-trabajo="pend" title="Qué falta por hacer hoy en cada vista de Gestión Troncales"><span class="material-symbols-outlined">checklist</span>Pendientes</button>
     <button class="sv-btn is-icon" data-trabajo="buscar" title="Buscar un pedido, OC, entrega, cliente o patente en todas las vistas"><span class="material-symbols-outlined">travel_explore</span></button>`;
@@ -7882,6 +7899,7 @@ function showCentroTrabajo(tabIni = 'pend') {
       const nCoord = (co.data || []).filter(x => !x.reserva_tipo).length;
       const nSeg = (sg.data || []).filter(x => !prog2.has(k(x))).length;
       const nRes = (rs || []).length;
+      setPendMenu('plan_carga', nCoord + nSeg + nRes);
       host.innerHTML = chip(nCoord, 'Transporte coordinado sin programar', '#1d4ed8', 'data-ir-sub="plan_carga"', 'Camiones con transporte coordinado hoy que falta programar')
         + chip(nSeg, '2º camión aceptado sin transporte', '#ca8a04', 'data-ir-sub="plan_carga"', '2º camión aceptado hoy al que faltan los datos del transporte')
         + chip(nRes, 'Camiones reservados', '#1d4ed8', 'data-ir-sub="plan_carga"', 'Reservas vigentes (transporte y día) cuya carga falta confirmar')
@@ -7895,6 +7913,7 @@ function showCentroTrabajo(tabIni = 'pend') {
     try {
       const { rows, AV } = await calcSub(x.sub);
       if (!vivo || !host.isConnected) return;
+      actualizarPendMenu(x.sub, rows, AV);
       const ks = (AV.kpis || []).filter(k => k.fn && x.pend.includes(k.key));
       const chips = ks.map(k => { const n = rows.filter(k.fn).length; return { n, h: chip(n, k.label, k.color || '#5c5f61', `data-ir-sub="${x.sub}" data-ir-kpi="${escapeHtml(k.key)}"`, k.sub || '') }; });
       const tot = chips.reduce((s, c) => s + c.n, 0);
@@ -8006,7 +8025,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611161340');
+    const m = await import('./ind-plan-carga.js?v=202611161343');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -8507,7 +8526,7 @@ async function renderPlanCarga(stage, opts = {}) {
 async function renderPlanCargaCore(stage, opts = {}) {
   // eslint-disable-next-line no-shadow
   let planOrigen = opts.origen || planOrigenGlobal();   // origen de ESTE cálculo (sombra la variable global a propósito)
-  if (!opts._recarga) stage.innerHTML = '<div class="text-secondary text-body-md p-md">Cargando Plan de Carga…</div>';
+  if (!opts._recarga) stage.innerHTML = opts.soloCalculo ? '' : esqueletoV2('Plan de Carga');
 
   const [quiebresRaw, trasladosRaw, revexRaw, retirosRaw, ventasRaw, traslados4000Raw, calendarioRows, estadosRetiro, exclusionesPlan, pvRows, feriadosRows, horizonteRows] = await Promise.all([
     fetchAllRows('v_trc_slim_stock'),
@@ -10070,7 +10089,8 @@ async function renderPlanCargaCore(stage, opts = {}) {
   }
   // (1-oct-2026) Aceptar = programar el 2º camión Y congelar la carga de ambos camiones
   // (origen 'confirmado'), para que lo que se cargue no cambie con nuevas líneas SAP.
-  async function accionSegundo(ce, accion) {
+  // (16-nov-2026 · fluidez P3) directo = true: sin diálogo ni aviso propios (lo usa «Aceptar y programar»); devuelve true si quedó hecho.
+  async function accionSegundo(ce, accion, directo = false) {
     const r = resultado.find(x => x.ce === ce);
     if (!r || bloqueadoPorCierre(true)) return;
     if (accion === 'quitar' && progMap.get(`${ce}|2`) && !PUEDE_TRANSPORTE) { showAlert('El 2º camión ya tiene transporte: sólo el perfil OWNER puede quitarlo.', 'error'); return; }
@@ -10078,7 +10098,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
     if (accion === 'aceptar') {
       // (4-oct-2026, Jordan) Aceptar es un paso propio: confirma la carga y despliega los SKU;
       // los datos del transporte se agregan después con «Agregar datos del transporte».
-      if (!await confirmar(`¿Aceptar el 2º camión para ${r.nombre}?\n\n${t1(r.tonSegundo)} t de ${fmtNum(r.cap, 0)} t. Se confirma la carga de ambos camiones; luego el perfil OWNER agrega los datos del transporte.`)) { draw(); return; }
+      if (!directo && !await confirmar(`¿Aceptar el 2º camión para ${r.nombre}?\n\n${t1(r.tonSegundo)} t de ${fmtNum(r.cap, 0)} t. Se confirma la carga de ambos camiones; luego el perfil OWNER agrega los datos del transporte.`)) { draw(); return; }
       const quien = await getUserEmail();
       const filas = new Map();
       f.orden.forEach(d => {
@@ -10106,8 +10126,19 @@ async function renderPlanCargaCore(stage, opts = {}) {
     await Promise.all([leerSegundos(), leerProgramados()]);
     refrescarFill(r);
     if (accion === 'aceptar') { st.drawer = ce; st.tab = 'seg'; }
-    showAlert(accion === 'aceptar' ? `2º camión aceptado para ${r.nombre}: falta agregar los datos del transporte (perfil OWNER).` : `2º camión quitado de ${r.nombre}; la carga vuelve al llenado automático.`, 'success');
+    if (!directo) showAlert(accion === 'aceptar' ? `2º camión aceptado para ${r.nombre}: falta agregar los datos del transporte (perfil OWNER).` : `2º camión quitado de ${r.nombre}; la carga vuelve al llenado automático.`, 'success');
     draw();
+    return true;
+  }
+  // (16-nov-2026, Jordan · fluidez P3) 2º camión en un solo paso: acepta (confirma la carga de ambos camiones) y abre de
+  // inmediato los datos del transporte; la confirmación final del formulario vale para ambas cosas.
+  async function aceptarYProgramarSegundo(ce) {
+    const r = resultado.find(x => x.ce === ce);
+    if (!r) return;
+    if (!PUEDE_TRANSPORTE) { showAlert('Programar el 2º camión requiere perfil Owner o Planner Distribución.', 'error'); return; }
+    if (!segAcept.has(ce) && !(await accionSegundo(ce, 'aceptar', true))) return;
+    await programarSegundo(ce);
+    if (!progMap.get(`${ce}|2`)) showAlert(`2º camión de ${r.nombre} aceptado, pero quedó SIN transporte: prográmalo o quítalo desde la pestaña «2º camión».`, 'error');
   }
   // (3-oct-2026, Jordan) Programar el camión CD: pide los datos del transporte y congela su carga
   // (origen 'confirmado'). Sólo los camiones programados entran a la foto 15:35 y a los indicadores.
@@ -10533,7 +10564,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
       : `${fill.manual2 ? 'Armado a mano.' : 'Lo que no cabe llega al 85% de un camión.'} Es opcional: al aceptarlo se confirma la carga de ambos camiones y se despliega el detalle de SKU para agregar los datos del transporte.${cerrado ? (PUEDE_TRANSPORTE ? ' Plan cerrado: aceptación con perfil OWNER.' : ' Plan cerrado: sólo el perfil OWNER puede aceptarlo.') : ''}`;
     return `<div class="pc-extra pc-seg2 ${acept ? 'is-ok' : ''}"><span class="material-symbols-outlined">${acept ? 'check_circle' : 'add_circle'}</span>
       <div style="flex:1;min-width:0"><b>${acept ? (prog2 ? '2º camión programado' : '2º camión aceptado') : '2º camión sugerido'}</b> · ${t1(r.tonSegundo)} t de ${fmtNum(r.cap, 0)} t (${pct2}%). ${escapeHtml(txt)}
-      ${st.tab === 'seg' || !acept ? '' : `<small>El detalle de SKU está en la pestaña «2º camión».</small>`}</div>${btn}${!acept && PUEDE_COORD ? `<button class="sv-btn" data-res-new="${escapeHtml(r.ce)}" title="Reserva transporte y día de carga sin amarrar entregas ni materiales; la carga se define al confirmar"><span class="material-symbols-outlined">event_available</span>Reservar para otro día</button>` : ''}</div>` + (acept && st.tab === 'seg' ? progHtml(r, 2) : '') + ajustesHtml(r, fill);
+      ${st.tab === 'seg' || !acept ? '' : `<small>El detalle de SKU está en la pestaña «2º camión».</small>`}</div>${!acept && PUEDE_AJUSTAR && PUEDE_TRANSPORTE ? `<button class="sv-btn-p" data-seg-directo="${escapeHtml(r.ce)}" title="Acepta el 2º camión y abre de inmediato los datos del transporte (un solo paso)"><span class="material-symbols-outlined">bolt</span>Aceptar y programar</button>` : ''}${btn}${!acept && PUEDE_COORD ? `<button class="sv-btn" data-res-new="${escapeHtml(r.ce)}" title="Reserva transporte y día de carga sin amarrar entregas ni materiales; la carga se define al confirmar"><span class="material-symbols-outlined">event_available</span>Reservar para otro día</button>` : ''}</div>` + (acept && st.tab === 'seg' ? progHtml(r, 2) : '') + ajustesHtml(r, fill);
   }
   function estadoCierre() {
     const now = new Date(), c = new Date(now); c.setHours(CIERRE_H, CIERRE_M, 0, 0);
@@ -11261,6 +11292,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
       e.stopPropagation(); b.disabled = true;
       await accionSegundo(b.dataset.segCe, b.dataset.segAccion);
     }));
+    stage.querySelectorAll('[data-seg-directo]').forEach(b => b.addEventListener('click', async e => { e.stopPropagation(); b.disabled = true; try { await aceptarYProgramarSegundo(b.dataset.segDirecto); } finally { b.disabled = false; } }));
     stage.querySelectorAll('[data-mover]').forEach(b => b.addEventListener('click', async e => {
       e.stopPropagation(); b.disabled = true;
       await moverLinea(b.dataset.mover, b.dataset.doc, b.dataset.mat, b.dataset.cam === 'auto' ? 'auto' : Number(b.dataset.cam));

@@ -32,8 +32,8 @@ export function tonHtml(n) {
 }
 
 // Encabezado del shell: fecha y hora de la última actualización SAP de la vista
-import { confirmar } from './confirmar.js?v=202611161340';
-import { comentariosHabilitados, conteosComentarios, celdaComentarios, montarHilo, tomarFoco, abrirHiloSuelto } from './comentarios.js?v=202611161340';
+import { confirmar } from './confirmar.js?v=202611161343';
+import { comentariosHabilitados, conteosComentarios, celdaComentarios, montarHilo, tomarFoco, abrirHiloSuelto } from './comentarios.js?v=202611161343';
 export function setUltimaActualizacion(ts) {
   const el = document.getElementById('sv-upd');
   if (!el) return;
@@ -75,6 +75,28 @@ function filtrosNeutros(cfg) {
   const V = cfg.v2, hoy = cfg.dateDefaultHoy ? hoyISO() : '';
   return { kpi: 'all', chip: 'all', chip2: 'all', q: '', qDoc: '', ex: {}, mode: 0, dFrom: hoy, dTo: hoy,
     orig: V.origen ? (V.origen.opciones.find(o => o[0] === '*') || V.origen.opciones[0])[0] : null, vista: V.calendario ? 'cal' : 'lista' };
+}
+// (16-nov-2026 · fluidez P3) Pantalla de carga inicial con forma de tabla (en vez del texto «Cargando datos…»).
+export function esqueletoV2(titulo) {
+  const barra = (w, h = 14) => `<div style="height:${h}px;width:${w};border-radius:6px;background:#e1e3e4;animation:svSk 1.1s ease-in-out infinite alternate"></div>`;
+  return `<style>@keyframes svSk{from{opacity:.45}to{opacity:1}}</style><div class="sv-view" aria-busy="true"><div class="sv-vhead"><div><h1 class="sv-h1">${esc(titulo || '')}</h1>
+    <div class="sv-desc">Cargando datos…</div></div></div>
+    <div style="display:flex;gap:12px;margin:8px 0 16px">${[1, 2, 3, 4].map(() => `<div style="flex:1;padding:14px;border:1px solid #e1e3e4;border-radius:12px;display:flex;flex-direction:column;gap:8px">${barra('55%', 10)}${barra('35%', 22)}</div>`).join('')}</div>
+    <div style="border:1px solid #e1e3e4;border-radius:12px;padding:14px;display:flex;flex-direction:column;gap:12px">${['100%', '92%', '97%', '88%', '95%', '90%', '96%'].map(w => barra(w)).join('')}</div></div>`;
+}
+// Filtro neutro (origen y fechas por defecto) de las filas ya calculadas de una vista.
+function filtrarNeutro(rowsAll, cfg, AV, deps) {
+  const n = filtrosNeutros(cfg), dF = isoToDate(n.dFrom), dT = isoToDate(n.dTo), cal = !!(AV.calendario && n.vista === 'cal');
+  return rowsAll.filter(r => {
+    if (AV.origen && n.orig && n.orig !== '*' && String(AV.origen.of(r) ?? '').trim() !== n.orig) return false;
+    if (AV.fecha && (dF || dT) && !cal) {
+      const d = deps.parseDateSAP(AV.fecha.of(r));
+      if (!d) return false;
+      if (dF && d < dF) return false;
+      if (dT && d > dT) return false;
+    }
+    return true;
+  });
 }
 // Filas de una vista SIN dibujarla (mismo cálculo que la tabla, con filtros neutros): la usan «Pendientes» y el
 // buscador global, para que los números coincidan con lo que el usuario ve al saltar a la vista.
@@ -188,8 +210,7 @@ async function renderTablaV2Core(stage, cfg, deps, viewKey, recarga = false) {
   const active = cfg.modes ? Object.assign({}, cfg, cfg.modes[st.mode] || cfg.modes[0]) : cfg;
   const AV = Object.assign({}, V, (active.v2mode || {}));
 
-  if (!recarga) stage.innerHTML = `<div class="sv-view"><div class="sv-vhead"><div><h1 class="sv-h1">${esc(AV.titulo)}</h1>
-    <div class="sv-desc">Cargando datos…</div></div></div></div>`;
+  if (!recarga) stage.innerHTML = esqueletoV2(AV.titulo);
 
   // (16-nov-2026 · fluidez) Lecturas independientes EN PARALELO (antes iban una tras otra): datos de la vista, última
   // lectura SAP, comentarios, exclusiones y prioridades parten juntas; los preload mantienen su orden entre sí.
@@ -218,6 +239,8 @@ async function renderTablaV2Core(stage, cfg, deps, viewKey, recarga = false) {
   rowsAll = campoCentro ? deps.filtrarPorCentro(rowsAll, campoCentro) : rowsAll;
   if (active.postFilter) rowsAll = active.postFilter(rowsAll, 'all', ctx);
   if (AV.enrich) AV.enrich(rowsAll, ctx);
+  // (16-nov-2026 · fluidez P3) contador de pendientes del menú: se actualiza cada vez que la vista se calcula
+  if (deps.alCalcularVista && st.mode === 0) { try { deps.alCalcularVista(viewKey, filtrarNeutro(rowsAll, cfg, AV, deps), AV); } catch (_e) { /* contador opcional */ } }
   rowsAll.forEach((r, i) => { r.__rid = AV.rowId ? String(AV.rowId(r)) : String(i); });
 
   // (12-oct-2026) Comentarios por fila en Orden de Carga: clave estable (rowId o documento|material)
