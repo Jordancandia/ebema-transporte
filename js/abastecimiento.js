@@ -10,13 +10,13 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611171050';
-import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611171050';
-import { getDatabase } from './data.js?v=202611171050';
+import { supabase } from './supabase-client.js?v=202611171146';
+import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611171146';
+import { getDatabase } from './data.js?v=202611171146';
 import { COMUNAS_POR_REGION } from './chile-geo.js';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611171050';
-import { confirmar, pedirDato } from './confirmar.js?v=202611171050';
+import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611171146';
+import { confirmar, pedirDato } from './confirmar.js?v=202611171146';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -8217,7 +8217,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611171050');
+    const m = await import('./ind-plan-carga.js?v=202611171146');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -10380,6 +10380,208 @@ async function renderPlanCargaCore(stage, opts = {}) {
   await Promise.all([leerFotoCierre(), leerSegundos(), leerProgramados(), leerMaestroTr(), leerCoordinados()]);
   await leerReservas();   // (16-nov-2026) camiones reservados
   await leerEstadoSum();   // (16-nov-2026) estado 14:30 → marca «EXTRA»   // (24-oct-2026) sin leerDiferencias: vista deshabilitada
+  // ── (17-nov-2026, Jordan) SIN FONDO DESPUÉS DE CREAR ENTREGAS ─────────────────────────────────────
+  // Lo informado a Logística (aviso ≥85%) se cruza con las entregas SAP creadas (fn_abast_sin_fondo_estado):
+  // SUMINISTRADO · PARCIAL · SIN FONDO (el PT ya tiene entregas, esta línea no) · PENDIENTE (PT aún sin entregas).
+  // Abastecimiento saca lo sin fondo del camión hoy (vuelve mañana) y elige reemplazos en un solo paso; con ≥2 días
+  // sin fondo la línea deja de entrar sola al plan (exclusión del día «SIN FONDO») hasta volver a incluirla.
+  let sfPorCe = new Map(), sfBloq = new Map();
+  async function leerSinFondo() {
+    try {
+      const { data, error } = await supabase.rpc('fn_abast_sin_fondo_estado', { p_cd_origen: planOrigen });
+      if (error) throw error;
+      sfPorCe = new Map(); sfBloq = new Map();
+      (data || []).forEach(x => { const m = x.fila === 'BLOQUEADO' ? sfBloq : sfPorCe; const ce = String(x.ce ?? '').trim(); if (!m.has(ce)) m.set(ce, []); m.get(ce).push(x); });
+    } catch (e) { console.warn('Estado sin fondo no disponible', e); sfPorCe = new Map(); sfBloq = new Map(); }
+    st._sfV = (st._sfV || 0) + 1;
+  }
+  const _sfPromesa = leerSinFondo();   // no bloquea la carga: al llegar redibuja
+  const SF_CATS = ['revex', 'cross', 'quiebre', 'stock', 'adelanto'];
+  const SF_LBL = { revex: 'REVEX', cross: 'Crossdocking', quiebre: 'Quiebre', stock: 'Abastecimiento', adelanto: 'Adelanto' };
+  const sfKey = d => `${docLinea(d)}|${matLinea(d)}`;
+  // Líneas del plan (pedidos de traslado) agrupadas por documento|material.
+  function sfLineasPlan(r) {
+    const m = new Map();
+    SF_CATS.forEach(k => (r.det[k] || []).forEach(d => {
+      const key = sfKey(d);
+      if (!m.has(key)) m.set(key, { key, cat: k, doc: docLinea(d), mat: matLinea(d), nombre: d.nombre || '', fecha: d.fecha || '', items: [] });
+      m.get(key).items.push(d);
+    }));
+    m.forEach(l => {
+      l.ton = l.items.reduce((s, d) => s + (d.ton || 0), 0);
+      l.tonCam = l.items.filter(d => d._enCamion).reduce((s, d) => s + (d.ton || 0), 0);
+      l.enCam = l.items.some(d => d._enCamion); l.en2 = l.items.some(d => d._camion2);
+      l.noCarga = l.items.every(d => d._manual === 0);
+      l.entrega = [...new Set(l.items.map(d => String(d.entrega_entrante || d.entrega || '').trim()).filter(Boolean))];
+      l.ord = (l.items[0] && l.items[0]._orden) ?? 0;
+    });
+    return m;
+  }
+  function sfDatos(r) {
+    const avisos = sfPorCe.get(r.ce) || [], bloq = sfBloq.get(r.ce) || [];
+    marcarCapacidadCD(r);
+    const plan = sfLineasPlan(r);
+    const lineas = avisos.map(a => { const k = `${String(a.documento).trim()}|${String(a.material).trim()}`; return { ...a, key: k, pl: plan.get(k) || null }; });
+    const sum = est => lineas.filter(x => x.estado === est);
+    const tonOf = arr => arr.reduce((s, x) => s + (Number(x.ton_inf) || 0), 0);
+    const sf = sum('SIN FONDO'), par = sum('PARCIAL');
+    const sfEnCam = sf.filter(x => x.pl && x.pl.enCam && !x.pl.noCarga);
+    const sfKeys = new Set(sf.map(x => x.key));
+    const cand = [...plan.values()].filter(l => !l.enCam && !l.en2 && !l.noCarga && !sfKeys.has(l.key) && l.ton > 0.0001)
+      .sort((a, b) => (b.entrega.length ? 1 : 0) - (a.entrega.length ? 1 : 0) || SF_CATS.indexOf(a.cat) - SF_CATS.indexOf(b.cat) || a.ord - b.ord || a.doc.localeCompare(b.doc));
+    return { lineas, bloq, sf, par, sfEnCam, cand, plan,
+      tonInf: tonOf(lineas), tonSum: tonOf(sum('SUMINISTRADO')) + par.reduce((s, x) => s + (Number(x.ton_inf) || 0) - (Number(x.ton_falta) || 0), 0),
+      tonSf: tonOf(sf) + par.reduce((s, x) => s + (Number(x.ton_falta) || 0), 0), tonPend: tonOf(sum('PENDIENTE')), nPend: sum('PENDIENTE').length };
+  }
+  // Selección del ajuste (se conserva entre redibujos mientras el panel siga en la misma sucursal).
+  function sfSel(r, dt) {
+    if (!st.sf || st.sf.ce !== r.ce || st.sf.v !== st._sfV) {
+      const sacar = new Set(dt.sfEnCam.map(x => x.key));
+      const fill = marcarCapacidadCD(r);
+      let libre = Math.max(0, r.cap - (fill.cargado || 0)) + dt.sfEnCam.reduce((s, x) => s + (x.pl ? x.pl.tonCam : 0), 0);
+      const subir = new Set();
+      dt.cand.forEach(l => { if (l.ton <= libre + 1e-6) { subir.add(l.key); libre -= l.ton; } });
+      st.sf = { ce: r.ce, v: st._sfV, sacar, subir };
+    }
+    return st.sf;
+  }
+  function sinFondoTag(r) {
+    const n = (sfPorCe.get(r.ce) || []).filter(x => x.estado === 'SIN FONDO' || x.estado === 'PARCIAL').length, nb = (sfBloq.get(r.ce) || []).length;
+    if (!n && !nb) return '';
+    const txt = [n ? `${n} sin fondo` : '', nb ? `${nb} bloqueada${nb > 1 ? 's' : ''}` : ''].filter(Boolean).join(' · ');
+    return `<span data-sf-open="${escapeHtml(r.ce)}" style="cursor:pointer" class="pc-tag baja" title="Líneas informadas a Logística que no se suministraron: clic para sacarlas y elegir reemplazos"><span class="material-symbols-outlined">inventory</span>${escapeHtml(txt)}</span>`;
+  }
+  function sinFondoBannerHtml() {
+    const sucs = resultado.map(r => {
+      const a = sfPorCe.get(r.ce) || [], b = sfBloq.get(r.ce) || [];
+      const sf = a.filter(x => x.estado === 'SIN FONDO' || x.estado === 'PARCIAL');
+      const ton = a.filter(x => x.estado === 'SIN FONDO').reduce((s, x) => s + (Number(x.ton_inf) || 0), 0) + a.filter(x => x.estado === 'PARCIAL').reduce((s, x) => s + (Number(x.ton_falta) || 0), 0);
+      return { r, n: sf.length, nb: b.length, ton };
+    }).filter(x => x.n || x.nb).sort((a, b) => b.ton - a.ton);
+    if (!sucs.length) return '';
+    const n = sucs.reduce((s, x) => s + x.n, 0), nb = sucs.reduce((s, x) => s + x.nb, 0), ton = sucs.reduce((s, x) => s + x.ton, 0);
+    return `<div class="sv-card" style="border:1px solid #fed7aa;background:#fff7ed;padding:10px 14px;margin-bottom:12px">
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <span class="material-symbols-outlined" style="color:#9a3412">inventory</span>
+        <b style="color:#9a3412">Sin fondo · ${n} línea${n === 1 ? '' : 's'} · ${escapeHtml(t1(ton))} t por reponer</b>
+        <span class="sv-sub" style="margin:0">Informadas a Logística sin entrega creada${nb ? ` · <b>${nb}</b> bloqueada${nb === 1 ? '' : 's'} hoy por llevar 2+ días sin fondo` : ''}. Abre la sucursal para sacarlas y elegir reemplazos.</span>
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">${sucs.map(x => `<button class="sv-btn" data-sf-open="${escapeHtml(x.r.ce)}" style="padding:3px 10px;font-size:12px">${escapeHtml(x.r.nombre)}<span class="sv-pill mute" style="padding:0 7px;margin-left:4px">${x.n}${x.nb ? ' +' + x.nb + ' bloq.' : ''} · ${escapeHtml(t1(x.ton))} t</span></button>`).join('')}</div>
+    </div>`;
+  }
+  function sinFondoHtml(r) {
+    const dt = sfDatos(r), sel = sfSel(r, dt), fill = marcarCapacidadCD(r);
+    const puede = (PUEDE_AJUSTAR || PUEDE_TRANSPORTE) && !estadoCierre().cerrado;
+    const prog = !!progMap.get(`${r.ce}|1`);
+    const sale = dt.sfEnCam.filter(x => sel.sacar.has(x.key)).reduce((s, x) => s + (x.pl ? x.pl.tonCam : 0), 0);
+    const entra = dt.cand.filter(l => sel.subir.has(l.key)).reduce((s, l) => s + l.ton, 0);
+    const ahora = fill.cargado || 0, despues = Math.max(0, ahora - sale + entra);
+    const pct = t => r.cap > 0 ? Math.round(t / r.cap * 100) : 0;
+    const colPct = p => p >= PCT_PROGRAMAR_CD ? '#15803d' : p >= 70 ? '#a16207' : '#b5000b';
+    const barra = t => `<div style="height:8px;border-radius:4px;background:#edeeef;overflow:hidden;margin-top:4px"><div style="height:100%;width:${Math.min(100, pct(t))}%;background:${colPct(pct(t))}"></div></div>`;
+    const estPill = est => est === 'SIN FONDO' ? pill('SIN FONDO', 'warn') : est === 'PARCIAL' ? pill('PARCIAL', 'warn') : est === 'SUMINISTRADO' ? pill('CON ENTREGA', 'ok') : pill('SIN ENTREGA AÚN', 'mute');
+    const diasHtml = d => d >= 2 ? `<span class="pc-tag baja" title="Mañana deja de entrar sola al plan (queda bloqueada hasta volver a incluirla)">${d} días</span>` : d === 1 ? '<span class="sv-sub" style="margin:0">1er día</span>' : '';
+    const ubic = x => !x.pl ? '<span class="sv-muted">fuera del plan</span>' : x.pl.noCarga ? '<span class="sv-muted">No carga hoy</span>' : x.pl.enCam ? 'En camión CD' : x.pl.en2 ? '2º camión' : '<span class="sv-muted">No cabe</span>';
+    const filaSf = x => {
+      const chk = puede && !prog && x.estado === 'SIN FONDO' && x.pl && x.pl.enCam && !x.pl.noCarga;
+      return `<tr style="cursor:default">
+        <td style="width:28px">${chk ? `<input type="checkbox" data-sf-sacar="${escapeHtml(x.key)}" ${sel.sacar.has(x.key) ? 'checked' : ''}>` : ''}</td>
+        <td><b class="sv-mono">${escapeHtml(x.documento)}</b> · <span class="sv-mono">${escapeHtml(x.material)}</span><div class="sv-sub" style="margin:0">${escapeHtml(x.nombre || '')}</div></td>
+        <td>${estPill(x.estado)}${x.estado === 'PARCIAL' ? `<div class="sv-sub" style="margin:0">entregó ${escapeHtml(fmtNum(x.cant_ent, 0))} de ${escapeHtml(fmtNum(x.cant_inf, 0))}</div>` : ''}</td>
+        <td class="r">${escapeHtml(t1(x.estado === 'PARCIAL' ? x.ton_falta : x.ton_inf))} t</td>
+        <td>${diasHtml(x.dias || 0)}</td>
+        <td style="font-size:12px">${ubic(x)}</td></tr>`;
+    };
+    const sfFilas = [...dt.sf, ...dt.par].sort((a, b) => (b.dias || 0) - (a.dias || 0) || String(a.documento).localeCompare(String(b.documento)));
+    const candTop = dt.cand.slice(0, 40);
+    const filaCand = l => `<tr style="cursor:default">
+        <td style="width:28px">${puede && !prog ? `<input type="checkbox" data-sf-subir="${escapeHtml(l.key)}" ${sel.subir.has(l.key) ? 'checked' : ''}>` : ''}</td>
+        <td><b class="sv-mono">${escapeHtml(l.doc)}</b> · <span class="sv-mono">${escapeHtml(l.mat)}</span><div class="sv-sub" style="margin:0">${escapeHtml(l.nombre)}</div></td>
+        <td>${l.entrega.length ? pill('CON ENTREGA', 'ok') : pill('SIN ENTREGA', 'mute')}<div class="sv-sub" style="margin:0">${escapeHtml(SF_LBL[l.cat] || l.cat)}${l.fecha ? ' · ' + escapeHtml(l.fecha) : ''}</div></td>
+        <td class="r">${escapeHtml(t1(l.ton))} t</td></tr>`;
+    const undo = st.sfUndo && st.sfUndo.ce === r.ce;
+    return kv([
+        ['Informado a Logística', `${t1(dt.tonInf)} t · ${dt.lineas.length} línea${dt.lineas.length === 1 ? '' : 's'}`],
+        ['Con entrega', `<span style="color:#15803d">${t1(dt.tonSum)} t</span>`],
+        ['Sin fondo', `<span style="color:${dt.tonSf > 0.05 ? '#b5000b' : 'inherit'}">${t1(dt.tonSf)} t · ${dt.sf.length + dt.par.length} línea${dt.sf.length + dt.par.length === 1 ? '' : 's'}</span>`],
+        dt.nPend ? ['Sin entrega aún', `${t1(dt.tonPend)} t · ${dt.nPend} línea${dt.nPend === 1 ? '' : 's'} (el PT todavía no tiene entregas)`] : null,
+      ])
+      + (prog ? '<div class="sv-note-box" style="margin:8px 0">El camión CD ya está programado: para cambiar su carga usa «Editar carga» en Seguimiento de Carga.</div>' : '')
+      + (sfFilas.length || dt.sfEnCam.length ? `
+      <div class="pc-extra is-mute pc-seg2" style="margin:10px 0">
+        <span class="material-symbols-outlined">tune</span>
+        <div><b>Ajuste del camión CD</b>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:6px">
+            <div><small style="margin:0">Ahora</small><b style="font-size:15px;color:${colPct(pct(ahora))}">${t1(ahora)} t · ${pct(ahora)}%</b>${barra(ahora)}</div>
+            <div><small style="margin:0">Con el ajuste</small><b style="font-size:15px;color:${colPct(pct(despues))}">${t1(despues)} t · ${pct(despues)}%</b>${barra(despues)}</div>
+          </div>
+          <small>Sale ${t1(sale)} t sin fondo · entra ${t1(entra)} t de reemplazo. El espacio que quede libre lo completa el plan según prioridad; los reemplazos sin entrega se informan a Logística en el próximo aviso.</small>
+        </div>
+        ${puede && !prog ? `<div class="pc-av-btns">
+          ${undo ? '<button class="sv-btn" data-sf-deshacer title="Devuelve las líneas a como estaban antes del último ajuste"><span class="material-symbols-outlined">undo</span>Deshacer</button>' : ''}
+          <button class="sv-btn-p" data-sf-aplicar="${escapeHtml(r.ce)}" ${sel.sacar.size || sel.subir.size ? '' : 'disabled style="opacity:.55;cursor:not-allowed"'}><span class="material-symbols-outlined">published_with_changes</span>Aplicar ajuste</button></div>` : ''}
+      </div>` : '')
+      + (sfFilas.length ? `<div class="sv-dr-k" style="margin:12px 0 4px">1 · Líneas sin fondo — marca las que salen hoy del camión (vuelven mañana)</div>
+        <div class="sv-table-wrap"><table class="sv-table"><thead><tr><th></th><th>Pedido · material</th><th>Estado</th><th class="r">Falta</th><th>Días</th><th>Hoy</th></tr></thead><tbody>${sfFilas.map(filaSf).join('')}</tbody></table></div>
+        ${dt.par.length ? '<div class="sv-sub" style="margin-top:4px">PARCIAL: lo entregado viaja; el saldo queda pendiente en SAP para el próximo plan.</div>' : ''}`
+        : '<div class="sv-note-box" style="margin-top:8px">Sin líneas sin fondo: todo lo informado tiene entrega o aún está en proceso.</div>')
+      + (dt.sfEnCam.length && dt.cand.length ? `<div class="sv-dr-k" style="margin:14px 0 4px">2 · Reemplazos — primero los que ya tienen entrega (fondo confirmado), luego por prioridad del plan</div>
+        <div class="sv-table-wrap"><table class="sv-table"><thead><tr><th></th><th>Pedido · material</th><th>Fondo</th><th class="r">Ton</th></tr></thead><tbody>${candTop.map(filaCand).join('')}</tbody></table></div>
+        ${dt.cand.length > candTop.length ? `<div class="sv-sub" style="margin-top:4px">${dt.cand.length - candTop.length} candidato(s) más: el plan los toma solo si queda espacio.</div>` : ''}` : '')
+      + (dt.bloq.length ? `<div class="sv-dr-k" style="margin:14px 0 4px">Bloqueadas hoy por sin fondo (2+ días) — no entran solas al plan</div>
+        <div class="sv-table-wrap"><table class="sv-table"><thead><tr><th>Pedido · material</th><th>Días</th><th></th></tr></thead><tbody>${dt.bloq.map(b => `<tr style="cursor:default">
+          <td><b class="sv-mono">${escapeHtml(b.documento)}</b> · <span class="sv-mono">${escapeHtml(b.material)}</span><div class="sv-sub" style="margin:0">${escapeHtml(b.nombre || '')} · ${escapeHtml(SF_LBL[{ REVEX: 'revex', Crossdocking: 'cross' }[b.categoria] || 'stock'] || '')}</div></td>
+          <td>${diasHtml(b.dias || 2)}</td>
+          <td class="r">${puede ? `<button class="sv-btn" data-sf-incluir="${escapeHtml(String(b.excl_id))}" data-sf-doc="${escapeHtml(b.documento)}" data-sf-mat="${escapeHtml(b.material)}" style="padding:3px 10px;font-size:12px" title="Ya hay stock: vuelve a entrar al plan de hoy"><span class="material-symbols-outlined">undo</span>Volver a incluir</button>` : ''}</td></tr>`).join('')}</tbody></table></div>` : '');
+  }
+  async function sfLog(ce, filas, accion) {
+    try { const quien = await getUserEmail();
+      await supabase.from('abast_plan_sin_fondo_accion').insert(filas.map(f => ({ cd_origen: planOrigen, ce, documento: f.doc, material: f.mat, accion, ton: Math.round((f.ton || 0) * 10000) / 10000, usuario: quien })));
+    } catch (e) { console.warn('log sin fondo', e); }
+  }
+  async function aplicarSinFondo(ce) {
+    const r = resultado.find(x => x.ce === ce);
+    if (!r || bloqueadoPorCierre()) return;
+    if (progMap.get(`${ce}|1`)) { showAlert('El camión CD ya está programado: ajusta su carga con «Editar carga» en Seguimiento de Carga.', 'error'); return; }
+    const dt = sfDatos(r), sel = sfSel(r, dt);
+    const sacar = dt.sfEnCam.filter(x => sel.sacar.has(x.key)).map(x => ({ doc: String(x.documento).trim(), mat: String(x.material).trim(), ton: x.pl ? x.pl.tonCam : 0, cam: 0 }));
+    const subir = dt.cand.filter(l => sel.subir.has(l.key)).map(l => ({ doc: l.doc, mat: l.mat, ton: l.ton, cam: 1 }));
+    const todas = [...sacar, ...subir];
+    if (!todas.length) return;
+    const quien = await getUserEmail(), ahora = new Date().toISOString();
+    const prev = todas.map(f => { const k = `${f.doc}|${f.mat}`; return { doc: f.doc, mat: f.mat, v: r.asig.has(k) ? r.asig.get(k) : null }; });
+    const { error } = await supabase.from('abast_plan_linea_camion').upsert(todas.map(f => ({ fecha: hoyIsoPlan, cd_origen: planOrigen, ce, documento: f.doc, material: f.mat,
+      camion: f.cam, origen: 'manual', updated_by: quien, updated_at: ahora })), { onConflict: 'fecha,cd_origen,ce,documento,material' });
+    if (error) { showAlert('No se pudo aplicar el ajuste: ' + error.message, 'error'); return; }
+    todas.forEach(f => r.asig.set(`${f.doc}|${f.mat}`, f.cam));
+    st.sfUndo = { ce, prev };
+    st._sfV = (st._sfV || 0) + 1;
+    refrescarFill(r);
+    if (segAcept.has(ce)) await supabase.from('abast_plan_segundo_camion').update({ ton_propuesta: Math.round(r.tonSegundo * 10000) / 10000 }).eq('fecha', hoyIsoPlan).eq('cd_origen', planOrigen).eq('ce', ce);
+    sfLog(ce, sacar, 'SACAR_HOY'); sfLog(ce, subir, 'SUBIR_REEMPLAZO');
+    draw();
+    showAlert(`Ajuste aplicado en ${r.nombre}: ${sacar.length} línea(s) sin fondo fuera hoy · ${subir.length} reemplazo(s) al camión CD (${Math.min(r.pct, 100)}%).`, 'success');
+  }
+  async function deshacerSinFondo() {
+    const u = st.sfUndo; if (!u) return;
+    const r = resultado.find(x => x.ce === u.ce);
+    if (!r || bloqueadoPorCierre()) return;
+    const quien = await getUserEmail(), ahora = new Date().toISOString();
+    const borrar = u.prev.filter(p => p.v === null), volver = u.prev.filter(p => p.v !== null);
+    const res = await Promise.all([
+      ...borrar.map(p => supabase.from('abast_plan_linea_camion').delete().eq('fecha', hoyIsoPlan).eq('cd_origen', planOrigen).eq('ce', u.ce).eq('documento', p.doc).eq('material', p.mat)),
+      volver.length ? supabase.from('abast_plan_linea_camion').upsert(volver.map(p => ({ fecha: hoyIsoPlan, cd_origen: planOrigen, ce: u.ce, documento: p.doc, material: p.mat, camion: Number(p.v), origen: 'manual', updated_by: quien, updated_at: ahora })),
+        { onConflict: 'fecha,cd_origen,ce,documento,material' }) : Promise.resolve({}),
+    ]);
+    const err = res.find(x => x && x.error);
+    if (err) { showAlert('No se pudo deshacer: ' + err.error.message, 'error'); return; }
+    u.prev.forEach(p => { const k = `${p.doc}|${p.mat}`; if (p.v === null) r.asig.delete(k); else r.asig.set(k, Number(p.v)); });
+    st.sfUndo = null; st._sfV = (st._sfV || 0) + 1;
+    refrescarFill(r);
+    sfLog(u.ce, u.prev.map(p => ({ doc: p.doc, mat: p.mat, ton: 0 })), 'DESHACER');
+    draw();
+    showAlert('Ajuste deshecho: las líneas vuelven a como estaban.', 'success');
+  }
   const otrosProgramados = (ce, cam) => [...progMap.values()]
     .filter(x => !(String(x.ce).trim() === ce && Number(x.camion) === cam))
     .map(x => ({ lbl: `${x.camion === 2 ? '2º camión' : 'camión CD'} ${getNombreCentro(x.ce)}`, patente_camion: x.patente_camion, chofer_rut: x.chofer_rut }));
@@ -10987,6 +11189,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
     const dif = MOSTRAR_TAG_DIFERENCIAS ? difMap.get(String(r.ce)) : null;
     if (dif && dif.n) t.push(TAG('rule', `${dif.n} diferencia${dif.n > 1 ? 's' : ''}`, `${dif.n} diferencia(s) abierta(s) en Control de Diferencias${dif.bloq ? ` · ${dif.bloq} bloquean líneas` : ''}: clic para ver el detalle`, 'baja')
       .replace('<span class="pc-tag', `<span data-dif-open="${escapeHtml(r.ce)}" style="cursor:pointer" class="pc-tag`));
+    { const sft = sinFondoTag(r); if (sft) t.push(sft); }   // (17-nov-2026) sin fondo
     return t.join('');
   }
   // Camión a escala: segmentos por categoría (orden de llenado) + espacio libre rayado
@@ -11162,6 +11365,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
         ;
     }
     if (tab === 'dirman') return dirManHtml(r);
+    if (tab === 'sum') return sinFondoHtml(r);   // (17-nov-2026) sin fondo
     if (tab === 'dif') return difHtml(r);
     const [tk, n] = tab.split(':');
     const t = DIR_V2.find(x => x.k === tk);
@@ -11209,10 +11413,13 @@ async function renderPlanCargaCore(stage, opts = {}) {
     if ((r.fabCandidatos || []).length || [...(r.camionesFabSuc || []), ...(r.camionesFabCli || [])].some(c => c.manualId))
       tabs.push({ k: 'dirman', lbl: `Unir directos${(r.fabCandidatos || []).length ? ' · ' + r.fabCandidatos.length + ' OC' : ''}`, color: '#b45309' });
     if (MOSTRAR_TAG_DIFERENCIAS) { const dif = difMap.get(String(r.ce)); if (dif && dif.n) tabs.push({ k: 'dif', lbl: `Diferencias · ${dif.n}`, color: '#b5000b', icon: 'rule' }); }
+    if (sfPorCe.has(r.ce) || sfBloq.has(r.ce)) { const nSf = (sfPorCe.get(r.ce) || []).filter(x => x.estado === 'SIN FONDO' || x.estado === 'PARCIAL').length;   // (17-nov-2026) sin fondo
+      tabs.push({ k: 'sum', lbl: `Suministro${nSf ? ' · ' + nSf + ' sin fondo' : ''}`, color: '#9a3412', icon: 'inventory' }); }
     if (!tabs.some(x => x.k === st.tab)) st.tab = 'cd';
     const foot = st.tab === 'cd' ? 'Orden de llenado: REVEX → Venta → Retiro → Cross → Quiebre → Abastecimiento'
       : st.tab === 'seg' ? 'Lo que no cabe en el camión CD, en el mismo orden de llenado (se propone si llega al 85% de la capacidad o si se mueven líneas a mano)'
       : st.tab === 'dirman' ? 'Unión manual de retiros directos: vale sólo para el plan de hoy'
+      : st.tab === 'sum' ? 'Cruce de lo informado a Logística con las entregas SAP creadas · se actualiza con cada lectura del archivo de entregas'
       : st.tab === 'dif' ? 'Diferencias abiertas detectadas por el servidor (Control de Diferencias) para esta sucursal'
       : (DIR_V2.find(x => st.tab.startsWith(x.k))?.tip || '');
     return `<div class="sv-dr-bg" data-close></div>
@@ -11661,6 +11868,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
         <span class="pc-sep"></span>${DIR_V2.map(t => `<span><span class="material-symbols-outlined" style="color:${t.color};font-size:16px">local_shipping</span>${escapeHtml(t.lbl)}</span>`).join('')}</div>
       ${vencidosHtml()}
       ${acopioHtml()}
+      ${sinFondoBannerHtml()}
       ${reservasHtml()}
       <div class="pc-list">
         ${!resultado.length ? '<div class="sv-card pc-empty"><span class="material-symbols-outlined">inventory_2</span>Sin carga para este origen.</div>'
@@ -11756,6 +11964,19 @@ async function renderPlanCargaCore(stage, opts = {}) {
     stage.querySelectorAll('[data-unir-cd]').forEach(b => b.addEventListener('click', async e => { e.stopPropagation(); await armarCamionConRetiro(b.dataset.unirCd, b.dataset.unirN); }));
     stage.querySelectorAll('[data-separar-cd]').forEach(b => b.addEventListener('click', async e => { e.stopPropagation(); await separarRetiroCD(b.dataset.separarCd); }));
     stage.querySelectorAll('[data-dif-open]').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); st.drawer = b.dataset.difOpen; st.tab = 'dif'; draw(); }));
+    // (17-nov-2026, Jordan) Sin fondo: abrir, marcar, aplicar, deshacer, volver a incluir
+    stage.querySelectorAll('[data-sf-open]').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); st.drawer = b.dataset.sfOpen; st.tab = 'sum'; draw(); }));
+    stage.querySelectorAll('[data-sf-sacar]').forEach(b => b.addEventListener('change', () => { const s2 = st.sf && st.sf.sacar; if (!s2) return; if (b.checked) s2.add(b.dataset.sfSacar); else s2.delete(b.dataset.sfSacar); draw(); }));
+    stage.querySelectorAll('[data-sf-subir]').forEach(b => b.addEventListener('change', () => { const s2 = st.sf && st.sf.subir; if (!s2) return; if (b.checked) s2.add(b.dataset.sfSubir); else s2.delete(b.dataset.sfSubir); draw(); }));
+    stage.querySelectorAll('[data-sf-aplicar]').forEach(b => b.addEventListener('click', async e => { e.stopPropagation(); b.disabled = true; try { await aplicarSinFondo(b.dataset.sfAplicar); } finally { b.disabled = false; } }));
+    stage.querySelectorAll('[data-sf-deshacer]').forEach(b => b.addEventListener('click', async e => { e.stopPropagation(); b.disabled = true; try { await deshacerSinFondo(); } finally { b.disabled = false; } }));
+    stage.querySelectorAll('[data-sf-incluir]').forEach(b => b.addEventListener('click', async e => {
+      e.stopPropagation(); b.disabled = true;
+      if (await reactivarEnPlan(Number(b.dataset.sfIncluir))) {
+        await sfLog(st.drawer, [{ doc: b.dataset.sfDoc, mat: b.dataset.sfMat, ton: 0 }], 'INCLUIR_BLOQUEADO');
+        showAlert('Línea incluida de nuevo en el plan de hoy.', 'success'); clearRawCache(); renderPlanCarga(stage);
+      } else b.disabled = false;
+    }));
     stage.querySelectorAll('[data-deshacer-man]').forEach(b => b.addEventListener('click', async e => { e.stopPropagation(); b.disabled = true; await deshacerManual(Number(b.dataset.deshacerMan)); }));
     const dmChecks = [...stage.querySelectorAll('[data-dm-oc]')];
     const dmSum = () => {
@@ -11825,6 +12046,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
   PLAN_V2_STATE._redraw = () => { if (stage.isConnected) draw(); };
 
   draw();
+  _sfPromesa.then(() => { if (stage.isConnected && (sfPorCe.size || sfBloq.size)) draw(); });   // (17-nov-2026) sin fondo
 }
 
 
