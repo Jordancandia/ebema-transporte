@@ -600,6 +600,8 @@ tr.tf-sel td:first-child { box-shadow: inset 3px 0 0 var(--sv-primary); }
 .pc-segchip .material-symbols-outlined { font-size: 16px; }
 .pc-segchip:hover { background: #f0fdf4; }
 .pc-segchip.is-ok { border-style: solid; background: #15803d; color: #fff; }
+.pc-segchip.is-alert { border: 1px solid #ca8a04; background: #fef3c7; color: #713f12; }
+.pc-segchip.is-alert:hover { background: #fde68a; }
 /* Fila del plan en grilla: columnas alineadas entre sucursales, camión acotado y % junto al estado (30-sep-2026) */
 @media (min-width: 1180px) {
   .pc-row { display: grid; grid-template-columns: minmax(170px, 1fr) minmax(320px, 2.2fr) minmax(280px, 1.15fr) minmax(190px, 1fr); justify-content: stretch; gap: 14px 28px; }

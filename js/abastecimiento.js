@@ -10,13 +10,13 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611162219';
-import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611162219';
-import { getDatabase } from './data.js?v=202611162219';
+import { supabase } from './supabase-client.js?v=202611162225';
+import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611162225';
+import { getDatabase } from './data.js?v=202611162225';
 import { COMUNAS_POR_REGION } from './chile-geo.js';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611162219';
-import { confirmar, pedirDato } from './confirmar.js?v=202611162219';
+import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611162225';
+import { confirmar, pedirDato } from './confirmar.js?v=202611162225';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -6015,8 +6015,8 @@ const V2 = {
       const c = r._plan_centro;
       const expl = {
         EN_CAMION: 'Va en el camión CD del plan de hoy.',
-        CAMION2: 'Va en el 2º camión (aceptado).',
-        CAMION2_PROP: 'No cabe en el camión CD; iría en el 2º camión propuesto (falta aceptarlo en el Plan de Carga).',
+        CAMION2: 'Va en el 2º camión del plan de hoy (aceptado en el Plan de Carga).',
+        CAMION2_PROP: 'No cabe en el camión CD. La sucursal tiene carga para un 2º camión: queda fuera hasta que se acepte en el Plan de Carga.',
         NO_CABE: 'Está en la ventana del plan pero no cabe en el camión: queda para el próximo plan.',
         EXCLUIDO: 'Excluida hoy del Plan de Carga.',
         FUERA: 'No entra al plan: fuera de la ventana de fechas (−10/+7 días hábiles) o sin cantidad confirmada.',
@@ -8059,7 +8059,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611162219');
+    const m = await import('./ind-plan-carga.js?v=202611162225');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -8478,8 +8478,10 @@ async function estadoPlanTrasladosCalc() {
 }
 const PLAN_LINEA_V2 = {
   EN_CAMION:    ['En camión', 'ok'],
-  CAMION2:      ['2º camión', 'ok'],
-  CAMION2_PROP: ['2º camión propuesto', 'warn'],
+  // (16-nov-2026, Jordan) La columna sólo muestra «En camión» / «No cabe»: el 2º camión aceptado cuenta como en camión
+  // y el propuesto (sin aceptar) como no cabe. El 2º camión se gestiona como alerta en el Plan de Carga.
+  CAMION2:      ['En camión', 'ok'],
+  CAMION2_PROP: ['No cabe', 'mute'],
   NO_CABE:      ['No cabe', 'mute'],
   EXCLUIDO:     ['Excluida hoy', 'bad'],
   FUERA:        ['No considerada', 'mute'],
@@ -10696,16 +10698,21 @@ async function renderPlanCargaCore(stage, opts = {}) {
     const acept = segAcept.has(r.ce), cerrado = estadoCierre().cerrado;
     const pct2 = r.cap > 0 ? Math.round(r.tonSegundo / r.cap * 100) : 0;
     const prog2 = !!progMap.get(`${r.ce}|2`);
-    const btn = PUEDE_AJUSTAR && (!cerrado || PUEDE_TRANSPORTE)
-      ? `<button class="${acept ? 'sv-btn' : 'sv-btn-p'}" data-seg-accion="${acept ? 'quitar' : 'aceptar'}" data-seg-ce="${escapeHtml(r.ce)}"><span class="material-symbols-outlined">${acept ? 'remove_circle' : 'task_alt'}</span>${acept ? 'Quitar 2º camión' : 'Aceptar 2º camión'}</button>` : '';
+    // (16-nov-2026, Jordan) Flujo: alerta → ver entregas → Aceptar (abre los datos del transporte, igual que la
+    // confirmación del camión CD) o No aceptar (las líneas quedan «No cabe»).
+    const puedeSeg = PUEDE_AJUSTAR && (!cerrado || PUEDE_TRANSPORTE);
+    const btn = !puedeSeg ? '' : acept
+      ? `<button class="sv-btn" data-seg-accion="quitar" data-seg-ce="${escapeHtml(r.ce)}"><span class="material-symbols-outlined">remove_circle</span>Quitar 2º camión</button>`
+      : `<button class="sv-btn-p" ${PUEDE_TRANSPORTE ? `data-seg-directo="${escapeHtml(r.ce)}"` : `data-seg-accion="aceptar" data-seg-ce="${escapeHtml(r.ce)}"`} title="Acepta el 2º camión${PUEDE_TRANSPORTE ? ' y abre los datos del transporte' : ''}"><span class="material-symbols-outlined">task_alt</span>Aceptar 2º camión</button>
+         <button class="sv-btn" data-seg-rechazar="${escapeHtml(r.ce)}" title="No se programa: las líneas quedan «No cabe» para el próximo plan"><span class="material-symbols-outlined">cancel</span>No aceptar</button>`;
     // (4-oct-2026, Jordan) El 2º camión sugerido es una opción: al aceptarlo se despliegan sus SKU
     // y el botón para agregar los datos del transporte.
     const txt = acept
       ? (prog2 ? `Programado: entra a la foto de las ${HHMM_CIERRE}, al correo y a los indicadores.` : `Aceptado: carga confirmada. Agrega los datos del transporte para programarlo.`) + (cerrado ? '' : ' Puedes seguir moviendo líneas hasta el cierre.')
-      : `${fill.manual2 ? 'Armado a mano.' : 'Lo que no cabe llega al 85% de un camión.'} Es opcional: al aceptarlo se confirma la carga de ambos camiones y se despliega el detalle de SKU para agregar los datos del transporte.${cerrado ? (PUEDE_TRANSPORTE ? ' Plan cerrado: aceptación con perfil OWNER.' : ' Plan cerrado: sólo el perfil OWNER puede aceptarlo.') : ''}`;
+      : `${fill.manual2 ? 'Armado a mano.' : 'Lo que no cabe en el camión CD llega al 85% de un camión.'} Revisa las entregas de abajo: al aceptar se confirma la carga de ambos camiones y se piden los datos del transporte; si no se acepta, quedan «No cabe».${cerrado ? (PUEDE_TRANSPORTE ? ' Plan cerrado: aceptación con perfil OWNER.' : ' Plan cerrado: sólo el perfil OWNER puede aceptarlo.') : ''}`;
     return `<div class="pc-extra pc-seg2 ${acept ? 'is-ok' : ''}"><span class="material-symbols-outlined">${acept ? 'check_circle' : 'add_circle'}</span>
-      <div style="flex:1;min-width:0"><b>${acept ? (prog2 ? '2º camión programado' : '2º camión aceptado') : '2º camión sugerido'}</b> · ${t1(r.tonSegundo)} t de ${fmtNum(r.cap, 0)} t (${pct2}%). ${escapeHtml(txt)}
-      ${st.tab === 'seg' || !acept ? '' : `<small>El detalle de SKU está en la pestaña «2º camión».</small>`}</div>${!acept && PUEDE_AJUSTAR && PUEDE_TRANSPORTE ? `<button class="sv-btn-p" data-seg-directo="${escapeHtml(r.ce)}" title="Acepta el 2º camión y abre de inmediato los datos del transporte (un solo paso)"><span class="material-symbols-outlined">bolt</span>Aceptar y programar</button>` : ''}${btn}${!acept && PUEDE_COORD ? `<button class="sv-btn" data-res-new="${escapeHtml(r.ce)}" title="Reserva transporte y día de carga sin amarrar entregas ni materiales; la carga se define al confirmar"><span class="material-symbols-outlined">event_available</span>Reservar para otro día</button>` : ''}</div>` + (acept && st.tab === 'seg' ? progHtml(r, 2) : '') + ajustesHtml(r, fill);
+      <div style="flex:1;min-width:0"><b>${acept ? (prog2 ? '2º camión programado' : '2º camión aceptado') : 'Alerta: carga para un 2º camión'}</b> · ${t1(r.tonSegundo)} t de ${fmtNum(r.cap, 0)} t (${pct2}%). ${escapeHtml(txt)}
+      ${st.tab === 'seg' ? '' : `<small>Las entregas están en la pestaña «2º camión».</small>`}</div>${btn}${!acept && PUEDE_COORD ? `<button class="sv-btn" data-res-new="${escapeHtml(r.ce)}" title="Reserva transporte y día de carga sin amarrar entregas ni materiales; la carga se define al confirmar"><span class="material-symbols-outlined">event_available</span>Reservar para otro día</button>` : ''}</div>` + (acept && st.tab === 'seg' ? progHtml(r, 2) : '') + ajustesHtml(r, fill);
   }
   function estadoCierre() {
     const now = new Date(), c = new Date(now); c.setHours(CIERRE_H, CIERRE_M, 0, 0);
@@ -10742,7 +10749,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
     // (el 2º camión se muestra como chip junto al estado de la fila; aquí sólo en el panel)
     if (r.segundoPropuesto && enPanel) t.push(segAcept.has(r.ce)
       ? TAG('local_shipping', '2º camión programado', `2º camión aceptado (${t1(r.tonSegundo)} t): entra a la foto de las ${HHMM_CIERRE} y a los indicadores`, 'seg-ok')
-      : TAG('local_shipping', '2º camión opcional', `Lo que no cabe (${t1(r.excedente)} t) llega al 85% de un camión: se puede programar un 2º camión de ${t1(r.tonSegundo)} t`, 'extra'));
+      : TAG('warning', 'Carga 2º camión', `Lo que no cabe (${t1(r.excedente)} t) llega al 85% de un camión: se puede programar un 2º camión de ${t1(r.tonSegundo)} t`, 'extra'));
     if (r.tonClienteDiferido > 0) t.push(TAG('event_upcoming', 'CD-Cliente próximo', `CD-Cliente con fecha de entrega posterior: ${t1(r.tonClienteDiferido)} t`, 'h48'));
     // (15-oct-2026, Jordan) Pedidos/OC con PRIORIDAD de carga: alerta (roja si alguno queda fuera del camión CD).
     // (1-nov-2026, Jordan) Incluye las prioridades marcadas por entrega + material (Jefe Sucursal / Operaciones).
@@ -10809,7 +10816,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
   // Chip del 2º camión en la fila: abre el panel en la pestaña «2º camión» con su contenido.
   function segChip(r) {
     const ok = segAcept.has(r.ce), pct2 = r.cap > 0 ? Math.round(r.tonSegundo / r.cap * 100) : 0;
-    return `<button class="pc-segchip ${ok ? 'is-ok' : ''}" data-seg-open="${escapeHtml(r.ce)}" title="${ok ? '2º camión programado' : '2º camión opcional (sin aceptar)'} · ${pct2}% de ${fmtNum(r.cap, 0)} t — ver contenido"><span class="material-symbols-outlined">local_shipping</span>2º camión · ${t1(r.tonSegundo)} t${ok ? ' ✓' : ''}<span class="material-symbols-outlined">chevron_right</span></button>`;
+    return `<button class="pc-segchip ${ok ? 'is-ok' : 'is-alert'}" data-seg-open="${escapeHtml(r.ce)}" title="${ok ? '2º camión aceptado' : 'La sucursal tiene carga para un 2º camión: revisa las entregas y acepta o no'} · ${pct2}% de ${fmtNum(r.cap, 0)} t"><span class="material-symbols-outlined">${ok ? 'local_shipping' : 'warning'}</span>${ok ? `2º camión · ${t1(r.tonSegundo)} t ✓` : `Carga 2º camión · ${t1(r.tonSegundo)} t`}<span class="material-symbols-outlined">chevron_right</span></button>`;
   }
   function filaV2(r) {
     const e = estadoV2(r);
@@ -10897,7 +10904,8 @@ async function renderPlanCargaCore(stage, opts = {}) {
       const pct2 = r.cap > 0 ? Math.round(r.tonSegundo / r.cap * 100) : 0;
       const noCabe = Math.max(0, fill.excede - r.tonSegundo);
       const accS = accMover(r, 'seg');
-      const grupos = acept ? CAT_V2.map((c, i) => { const it = (r.det[c.k] || []).filter(d => d._camion2); return it.length ? grupoHtml(c.color, CAT_LARGO[i], it, c.tipo, accS) : ''; }).join('') : '';
+      // (16-nov-2026, Jordan) Las entregas del 2º camión se ven antes de aceptarlo (para decidir aceptar o no).
+      const grupos = CAT_V2.map((c, i) => { const it = (r.det[c.k] || []).filter(d => d._camion2); return it.length ? grupoHtml(c.color, CAT_LARGO[i], it, c.tipo, acept ? accS : null) : ''; }).join('');
       const prog2 = !!progMap.get(`${r.ce}|2`);
       return kv([
           ['Carga', `${t1(r.tonSegundo)} t · ${pct2}%`], ['Capacidad', `${fmtNum(r.cap, 0)} t`],
@@ -10908,7 +10916,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
           fill.tonNoCarga > 0.05 ? ['No carga (manual)', `${t1(fill.tonNoCarga)} t`] : null,
         ])
         + segundoHtml(r, fill)
-        + (!acept ? '<div class="sv-note-box">Acepta el 2º camión para ver los SKU y el detalle que considera.</div>' : (grupos || '<div class="sv-note-box">Sin líneas para el 2º camión.</div>'));
+        + (grupos || '<div class="sv-note-box">Sin líneas para el 2º camión.</div>');
     }
     if (tab === 'cd') {
       const fill = marcarCapacidadCD(r);
@@ -10977,7 +10985,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
   }
   function drawerHtml(r) {
     const tabs = [{ k: 'cd', lbl: `Camión CD · ${Math.min(r.pct, 100)}%`, color: '#444749' }];
-    if (r.segundoPropuesto) tabs.push({ k: 'seg', lbl: `2º camión · ${t1(r.tonSegundo)} t${segAcept.has(r.ce) ? '' : ' (opcional)'}`, color: '#15803d' });
+    if (r.segundoPropuesto) tabs.push({ k: 'seg', lbl: `2º camión · ${t1(r.tonSegundo)} t${segAcept.has(r.ce) ? '' : ' (por aceptar)'}`, color: '#15803d' });
     DIR_V2.forEach(t => (r[t.lista] || []).forEach(c => tabs.push({ k: `${t.k}:${c.n}`, lbl: `${t.lbl}${(r[t.lista] || []).length > 1 ? ' ' + c.n : ''} · ${t1(c.ton)} t`, color: t.color })));
     if ((r.fabCandidatos || []).length || [...(r.camionesFabSuc || []), ...(r.camionesFabCli || [])].some(c => c.manualId))
       tabs.push({ k: 'dirman', lbl: `Unir directos${(r.fabCandidatos || []).length ? ' · ' + r.fabCandidatos.length + ' OC' : ''}`, color: '#b45309' });
@@ -11438,6 +11446,11 @@ async function renderPlanCargaCore(stage, opts = {}) {
     stage.querySelectorAll('[data-seg-accion]').forEach(b => b.addEventListener('click', async e => {
       e.stopPropagation(); b.disabled = true;
       await accionSegundo(b.dataset.segCe, b.dataset.segAccion);
+    }));
+    stage.querySelectorAll('[data-seg-rechazar]').forEach(b => b.addEventListener('click', e => {
+      e.stopPropagation(); const r = resultado.find(x => x.ce === b.dataset.segRechazar);
+      st.drawer = null; draw();
+      showAlert(`2º camión no aceptado${r ? ' para ' + r.nombre : ''}: esas líneas quedan «No cabe» para el próximo plan.`, 'info');
     }));
     stage.querySelectorAll('[data-seg-directo]').forEach(b => b.addEventListener('click', async e => { e.stopPropagation(); b.disabled = true; try { await aceptarYProgramarSegundo(b.dataset.segDirecto); } finally { b.disabled = false; } }));
     stage.querySelectorAll('[data-mover]').forEach(b => b.addEventListener('click', async e => {
