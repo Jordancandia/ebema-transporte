@@ -10,13 +10,13 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611170103';
-import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611170103';
-import { getDatabase } from './data.js?v=202611170103';
+import { supabase } from './supabase-client.js?v=202611170853';
+import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611170853';
+import { getDatabase } from './data.js?v=202611170853';
 import { COMUNAS_POR_REGION } from './chile-geo.js';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611170103';
-import { confirmar, pedirDato } from './confirmar.js?v=202611170103';
+import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611170853';
+import { confirmar, pedirDato } from './confirmar.js?v=202611170853';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -8217,7 +8217,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611170103');
+    const m = await import('./ind-plan-carga.js?v=202611170853');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -11065,7 +11065,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
     return `<div class="pc-tbl"><table class="sv-table"><thead><tr>${head.map((h, i) => `<th class="${i >= 4 ? 'r' : ''}">${escapeHtml(h)}</th>`).join('')}${accFn ? '<th class="r">Mover</th>' : ''}</tr></thead>
       <tbody>${items.map(d => `<tr class="${d._enCamion === false ? (d._camion2 ? 'is-seg' : 'is-fuera') : ''}" title="${d._enCamion === false ? (d._camion2 ? 'Va en el 2º camión (opcional)' : 'No cabe: queda para el próximo plan') : ''}">
         <td style="white-space:nowrap">${esPrioCarga(d) ? PRIO_BADGE : ''}${docHtml(d)}${d._ingSum ? `<div style="margin-top:2px;font-size:10px">${ingSumPill(true)}</div><div class="sv-sub" style="margin:0">PV ${escapeHtml(String(d.pv ?? ''))}</div>` : ''}${d._guiaFact ? `<div style="margin-top:2px;font-size:10px">${leyendaPv4000Pill(true)}</div>` : ''}${d._ceOrig ? `<div class="sv-sub" style="margin:2px 0 0;color:#7e22ce;font-weight:700" title="Centro destino alternativo asignado al coordinar">Centro alt. · orig. ${escapeHtml(getNombreCentro(d._ceOrig))}</div>` : ''}</td>
-        <td>${ent(d) ? `<span class="sv-mono">${escapeHtml(ent(d))}</span>${(tipo === 'T' || tipo === 'X') && esExtraSum(d) ? EXTRA_BADGE : ''}` : (tipo === 'T' || tipo === 'X') && !d._cargaManual ? '<span title="Pedido de traslado sin entrega SAP creada: falta suministrar" style="display:inline-block;padding:1px 7px;border-radius:8px;background:#fef3c7;color:#92400e;font-size:10.5px;font-weight:800;white-space:nowrap">SIN FONDO</span>' : '<span class="sv-muted">—</span>'}</td>
+        <td>${ent(d) ? `<span class="sv-mono">${escapeHtml(ent(d))}</span>${(tipo === 'T' || tipo === 'X') && esExtraSum(d) ? EXTRA_BADGE : ''}` : ''}</td>   <!-- (17-nov-2026, Jordan) sin entrega: celda vacía -->
         <td><div class="pc-mat"><b>${escapeHtml(d.nombre || '')}</b><small>${escapeHtml(sub(d))}</small></div></td>
         <td class="sv-mono">${escapeHtml(d.fecha || '')}</td><td class="r">${cant(d)}${d._ajustada ? `<div class="sv-sub" style="margin:0" title="Unidades editadas al coordinar">de ${fmtNum(d._pendSap, 0)}</div>` : ''}</td><td class="r"><b>${fmtNum(d.ton, 2)}</b></td>${accFn ? `<td class="r" style="white-space:nowrap">${accFn(d)}</td>` : ''}</tr>`).join('')}</tbody></table></div>`;
   }
@@ -11220,9 +11220,10 @@ async function renderPlanCargaCore(stage, opts = {}) {
           ${(() => { const camP = st.tab === 'cd' ? 1 : st.tab === 'seg' ? 2 : null;
             if (!camP) return '';
             // (16-nov-2026, Jordan) Reemplaza «Descargar sucursal (CSV)»: Lista de Picking del camión, sólo con el camión programado.
-            return progMap.get(`${r.ce}|${camP}`)
-              ? `<button class="sv-btn-p" data-picking="${escapeHtml(r.ce)}|${camP}" title="Excel con lo que va en el camión: REVEX, pedidos de venta, retiros, pedidos de traslado y crossdocking, con priorizados y facturables"><span class="material-symbols-outlined">assignment</span>Lista de picking (Excel)</button>`
-              : `<button class="sv-btn" disabled style="opacity:.55;cursor:not-allowed" title="Se habilita cuando el camión está programado (datos del transporte y patente)"><span class="material-symbols-outlined">lock</span>Lista de picking (Excel)</button>`; })()}</div>
+            const ptBtn = `<button class="sv-btn" data-pt-sin-ent="${escapeHtml(r.ce)}|${camP}" title="Pedidos de traslado de este camión que aún no tienen entrega (CSV)"><span class="material-symbols-outlined">playlist_add_check</span>PT sin entrega (CSV)</button>`;   // (17-nov-2026)
+            return ptBtn + (progMap.get(`${r.ce}|${camP}`)
+              ? `<button class="sv-btn-p" data-picking=""${escapeHtml(r.ce)}|${camP}" title="Excel con lo que va en el camión: REVEX, pedidos de venta, retiros, pedidos de traslado y crossdocking, con priorizados y facturables"><span class="material-symbols-outlined">assignment</span>Lista de picking (Excel)</button>`
+              : `<button class="sv-btn" disabled style="opacity:.55;cursor:not-allowed" title="Se habilita cuando el camión está programado (datos del transporte y patente)"><span class="material-symbols-outlined">lock</span>Lista de picking (Excel)</button>`); })()}</div>
       </aside>`;
   }
 
@@ -11259,6 +11260,34 @@ async function renderPlanCargaCore(stage, opts = {}) {
       cm.patente ? [cm.patente, cm.patenteCarro || '', cm.transportista || '', cm.chofer || '', txtPresentacion({ hora_presentacion: cm.horaPres })] : ['', '', '', '', txtPresentacion({ hora_presentacion: cm.horaPres })])))));
     (r.fabCandidatos || []).forEach(x => (x.items || []).forEach(d => out.push(linea('Directo sin camión', x.tipo === 'fabCli' ? 'Fáb-Cliente' : 'Fáb-Sucursal', 'R', d, 'No (sin camión)', '', '').concat(['No', '', '', '', '', '']))));
     return out;
+  }
+  // (17-nov-2026, Jordan) PT A GENERAR ENTREGA: pedidos de traslado (Revex, Crossdocking, Pedidos de Traslados) que
+  // están DENTRO del Plan de Carga (en el camión CD o en el 2º camión aceptado) y todavía no tienen entrega SAP.
+  // Al crearse la entrega, la línea queda asociada al PT en el plan y sale de este archivo.
+  // Estructura: PEDIDO DE TRASLADO; CENTRO SUMINISTRO; ID MATERIAL; CANTIDAD.
+  const CSV_PT_ENT = ['PEDIDO DE TRASLADO', 'CENTRO SUMINISTRO', 'ID MATERIAL', 'CANTIDAD'];
+  function filasPtSinEntrega(lista, cam = null) {
+    const tx = v => String(v ?? '').trim();
+    const acc = new Map();
+    lista.forEach(r => {
+      marcarCapacidadCD(r);
+      const acept = segAcept.has(r.ce);
+      ['revex', 'cross', 'quiebre', 'stock', 'adelanto'].forEach(k => (r.det[k] || []).forEach(d => {
+        const enPlan = cam === 1 ? !!d._enCamion : cam === 2 ? (acept && !!d._camion2) : (!!d._enCamion || (acept && !!d._camion2));
+        if (!enPlan || tx(d.entrega_entrante || d.entrega) || !tx(d.pt)) return;
+        const cant = k === 'cross' ? (Number(d.ctdPend) || 0) : (parseNum(d.ctd) || 0);
+        const key = `${tx(d.pt)}|${tx(d.material)}`;
+        const x = acc.get(key) || { pt: tx(d.pt), mat: tx(d.material), cant: 0 };
+        x.cant += cant; acc.set(key, x);
+      }));
+    });
+    const num = n => { const v = Math.round(n * 1000) / 1000; return String(v).replace('.', ','); };
+    return [...acc.values()].sort((a, b) => a.pt.localeCompare(b.pt) || a.mat.localeCompare(b.mat)).map(x => [x.pt, planOrigen, x.mat, num(x.cant)]);
+  }
+  function descargarPtSinEntrega(lista, nombre, cam = null) {
+    const filas = filasPtSinEntrega(lista, cam);
+    if (!filas.length) { showAlert('No hay pedidos de traslado sin entrega dentro del plan.', 'success'); return; }
+    bajarCsv(CSV_PT_ENT, filas, nombre);
   }
   function descargarCsvV21(lista, nombre) {
     const cerrado = estadoCierre().cerrado;
@@ -11320,6 +11349,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
       if (enPlan.has(key) || enPlan2.has(k2(doc, mat))) return;
       let motivo;
       if (!ce) motivo = 'Sin destino (el reporte no trae Destinat.)';
+      else if (x.en_sqvi === false) motivo = 'Pedido de traslado no vigente en el archivo SAP';   // (17-nov-2026, Jordan) el plan usa sólo PT vigentes
       else if (estaExcluido(exclusionesPlan, EXCL[tipo] || 'traslados_1003', doc, mat) || excluidaEntrega(exclusionesPlan, EXCL[tipo] || 'traslados_1003', x.entrega, mat)) motivo = 'Excluida del Plan de Carga';
       else if (mat.startsWith('7')) motivo = 'Material 7… no se considera';
       else if (!ceSet.has(ce)) motivo = 'Destino sin plan desde este origen';
@@ -11610,6 +11640,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
           <!-- (16-nov-2026, Jordan) Botón «Estado 14:30» retirado: sin corte intermedio, ajustes hasta las 17:00 -->
           <button class="sv-btn" data-ent-noplan title="Entregas SAP creadas que no están consideradas en el Plan de Carga (con pedido de traslado y motivo) · descargable"><span class="material-symbols-outlined">assignment_late</span>Entregas no consideradas</button>
           <button class="sv-btn" data-descarga="__todo__" title="Descarga el plan completo del origen (sin filtro de KPI)"><span class="material-symbols-outlined">download</span>Descargar plan (CSV)</button>
+          <button class="sv-btn" data-pt-sin-ent="__todo__" title="Pedidos de traslado dentro del plan (camión CD y 2º camión aceptado) que aún no tienen entrega: PEDIDO DE TRASLADO, CENTRO SUMINISTRO, ID MATERIAL, CANTIDAD"><span class="material-symbols-outlined">playlist_add_check</span>PT sin entrega (CSV)</button>
           <button class="sv-btn is-icon" data-refrescar title="Refrescar datos"><span class="material-symbols-outlined">refresh</span></button>
         </div></div>
       <div class="sv-kpis pc-kpis">${kpiDef.map(k => {
@@ -11744,6 +11775,13 @@ async function renderPlanCargaCore(stage, opts = {}) {
       } catch (err) { showAlert('No se pudo generar la lista de picking: ' + (err.message || err), 'error'); }
       finally { btn.disabled = false; }
       void r;
+    }));
+    stage.querySelectorAll('[data-pt-sin-ent]').forEach(btn => btn.addEventListener('click', (e) => {   // (17-nov-2026)
+      e.stopPropagation();
+      const [ce, cam] = String(btn.dataset.ptSinEnt).split('|');
+      if (ce === '__todo__') { descargarPtSinEntrega(resultado, `PT_sin_entrega_${planOrigen}_${isoLocal(hoy00())}.csv`); return; }
+      const r = resultado.find(x => x.ce === ce);
+      if (r) descargarPtSinEntrega([r], `PT_sin_entrega_${planOrigen}_${r.ce}${cam === '2' ? '_camion2' : ''}_${isoLocal(hoy00())}.csv`, Number(cam) || null);
     }));
     stage.querySelectorAll('[data-descarga]').forEach(btn => btn.addEventListener('click', (e) => {
       e.stopPropagation();
