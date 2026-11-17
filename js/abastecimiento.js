@@ -10,13 +10,13 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611170046';
-import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611170046';
-import { getDatabase } from './data.js?v=202611170046';
+import { supabase } from './supabase-client.js?v=202611170100';
+import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611170100';
+import { getDatabase } from './data.js?v=202611170100';
 import { COMUNAS_POR_REGION } from './chile-geo.js';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611170046';
-import { confirmar, pedirDato } from './confirmar.js?v=202611170046';
+import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611170100';
+import { confirmar, pedirDato } from './confirmar.js?v=202611170100';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -8217,7 +8217,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611170046');
+    const m = await import('./ind-plan-carga.js?v=202611170100');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -8238,6 +8238,18 @@ const _rawPend = new Map();
 let _rawGen = 0;
 function clearRawCache() { _rawCache.clear(); _rawPend.clear(); _rawGen++; }
 
+// (17-nov-2026, Jordan · rendimiento) Consulta por lotes de ids EN PARALELO (máx. `conc` a la vez) en vez de uno tras
+// otro. Devuelve los resultados en el mismo orden de los lotes (el procesamiento posterior no cambia).
+async function lotesParalelo(ids, size, fn, conc = 6) {
+  const lotes = [];
+  for (let i = 0; i < ids.length; i += size) lotes.push(ids.slice(i, i + size));
+  const out = new Array(lotes.length);
+  let k = 0;
+  const worker = async () => { while (k < lotes.length) { const j = k++; out[j] = await fn(lotes[j]); } };
+  await Promise.all(Array.from({ length: Math.min(conc, lotes.length) }, worker));
+  return out;
+}
+
 async function fetchAllRows(vista, force = false) {
   const cached = _rawCache.get(vista);
   if (!force && cached && (Date.now() - cached.ts) < RAW_TTL) return cached.rows;
@@ -8257,18 +8269,20 @@ async function fetchAllRowsRed(vista, force, gen) {
   //    RLS), NO hay que asumir que todo cabe en 1 pagina: eso trunca en
   //    silencio a 1000 filas y descarta el resto sin error visible. Por eso
   //    el paso 3 (barrido de seguridad) valida esto siempre.
-  let total = 0;
-  try {
-    const { count, error } = await supabase.from(vista).select('*', { count: 'exact', head: true });
-    if (!error && typeof count === 'number') total = count;
-  } catch { total = 0; }
-
-  let rows = [];
-  if (total > pageSize) {
-    // 2) Traer todas las paginas EN PARALELO (mucho mas rapido que secuencial)
+  // (17-nov-2026, Jordan · rendimiento) La primera página trae también el total (count) en la MISMA llamada:
+  // antes se hacía un HEAD aparte que ejecutaba la vista completa sólo para contar (~1-2 s extra por vista).
+  let total = 0, rows = [];
+  {
+    const { data, error, count } = await supabase.from(vista).select('*', { count: 'exact' }).range(0, pageSize - 1);
+    if (error) { console.error(error); showAlert('Error al cargar datos: ' + error.message, 'error'); return cached ? cached.rows : []; }
+    rows = data || [];
+    if (typeof count === 'number') total = count;
+  }
+  if (total > pageSize && rows.length === pageSize) {
+    // 2) Resto de las paginas EN PARALELO
     const pages = Math.min(Math.ceil(total / pageSize), 100);
     const reqs = [];
-    for (let p = 0; p < pages; p++) {
+    for (let p = 1; p < pages; p++) {
       reqs.push(supabase.from(vista).select('*').range(p * pageSize, p * pageSize + pageSize - 1));
     }
     const results = await Promise.all(reqs);
@@ -8276,10 +8290,6 @@ async function fetchAllRowsRed(vista, force, gen) {
       if (error) { console.error(error); continue; }
       if (data) rows = rows.concat(data);
     }
-  } else {
-    const { data, error } = await supabase.from(vista).select('*').range(0, pageSize - 1);
-    if (error) { console.error(error); showAlert('Error al cargar datos: ' + error.message, 'error'); return cached ? cached.rows : []; }
-    rows = data || [];
   }
 
   // 3) Barrido de seguridad: si el count del paso 1 fue erroneo/menor al
@@ -8731,6 +8741,8 @@ async function renderPlanCargaCore(stage, opts = {}) {
   let planOrigen = opts.origen || planOrigenGlobal();   // origen de ESTE cálculo (sombra la variable global a propósito)
   if (!opts._recarga) stage.innerHTML = opts.soloCalculo ? '' : esqueletoV2('Plan de Carga');
 
+  // (17-nov-2026 · rendimiento) el adelanto se descarga en paralelo con el resto (antes esperaba al final)
+  const adelantoP = fetchAllRows('v_trc_plan_src_traslados_adelanto').catch(e => { console.warn('Plan de carga: adelanto no disponible', e); return []; });
   const [quiebresRaw, trasladosRaw, revexRaw, retirosRaw, ventasRaw, traslados4000Raw, calendarioRows, estadosRetiro, exclusionesPlan, pvRows, feriadosRows, horizonteRows] = await Promise.all([
     fetchAllRows('v_trc_slim_stock'),
     // (7-oct-2026, Jordan) Traslados, Revex y Crossdocking entran al plan sólo con ENTREGA SAP creada
@@ -8750,7 +8762,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
   // (16-nov-2026, Jordan) Relleno sistémico: pedidos de traslado con fecha > +3 hábiles (fuera de la ventana) que
   // pueden completar el espacio libre del camión CD, por fecha más cercana y prioridad. Nunca generan 2º camión.
   let adelantoRaw = [];
-  try { adelantoRaw = await fetchAllRows('v_trc_plan_src_traslados_adelanto'); } catch (e) { console.warn('Plan de carga: adelanto no disponible', e); }
+  try { adelantoRaw = await adelantoP; } catch (e) { console.warn('Plan de carga: adelanto no disponible', e); }
   const [ventasDirectoManual, inclusionesPlan, asigLineas, camManuales, coordVentas, coordTraslados, ajustesUnidades, cargasManualTr, retirosUnidosCD] = await Promise.all([loadVentasDirectoManual(), loadInclusionesPlan(), loadAsignacionLineas(), loadCamionesManuales(), loadCoordinacionesVenta(), loadCoordTraslados(), loadAjustesUnidades(), loadCargaManualTr(), loadRetirosUnidosCD()]);
   const unidoCD = new Map((retirosUnidosCD || []).filter(x => String(x.cd_origen ?? '').trim() === planOrigen).map(x => [String(x.doc_compr ?? '').trim(), x]));
   const ajUMap = mapaAjustesUnidades(ajustesUnidades);
@@ -8799,8 +8811,12 @@ async function renderPlanCargaCore(stage, opts = {}) {
   // (15-oct-2026, Jordan) OC calzada con centro 1003 cuyo pedido de venta es de una sucursal: el plan
   // usa la oficina de ventas (ofvta) de la NV como centro destino → entra como Retiro CD de esa sucursal.
   try {
-    try { await supabase.rpc('fn_abast_calzada_destino_refresh'); } catch (_) { /* opcional */ }
-    const { data: cdz, error: eCdz } = await supabase.from('v_abast_calzada_destino').select('doc_compr,ce_destino').limit(5000);
+    // (17-nov-2026, Jordan · rendimiento) refresco + lectura en una sola llamada (la vista con RLS tardaba ~3,5 s).
+    let { data: cdz, error: eCdz } = await supabase.rpc('fn_abast_calzada_destino_leer');
+    if (eCdz) {
+      try { await supabase.rpc('fn_abast_calzada_destino_refresh'); } catch (_) { /* opcional */ }
+      ({ data: cdz, error: eCdz } = await supabase.from('v_abast_calzada_destino').select('doc_compr,ce_destino').limit(5000));
+    }
     if (eCdz) throw eCdz;
     const destCalz = new Map((cdz || []).map(x => [String(x.doc_compr ?? '').trim(), String(x.ce_destino ?? '').trim()]));
     retirosRaw.forEach(r => {
@@ -8828,10 +8844,13 @@ async function renderPlanCargaCore(stage, opts = {}) {
     // DESPUÉS de ese camión (porque no viajó, ej. NV 1058489) vuelve al plan.
     const tsCam = new Map((cams || []).map(c => [c.id, Math.max(Date.parse(c.programado_en) || 0, Date.parse(c.actualizado_en) || 0)]));
     const cargadosTs = new Map();
-    for (let i = 0; i < ids.length; i += 10) {
-      const { data, error } = await supabase.from('abast_seguimiento_carga').select('camion_id,documento,material,n_entrega').in('camion_id', ids.slice(i, i + 10)).limit(5000);
+    const lotesSeg = await lotesParalelo(ids, 10, async lote => {   // (17-nov-2026 · rendimiento) en paralelo
+      const { data, error } = await supabase.from('abast_seguimiento_carga').select('camion_id,documento,material,n_entrega').in('camion_id', lote).limit(5000);
       if (error) throw error;
-      (data || []).forEach(l => {
+      return data || [];
+    });
+    for (const data of lotesSeg) {
+      data.forEach(l => {
         if (tx(l.documento)) {
           const k = `${tx(l.documento)}|${tx(l.material)}`; cargados.add(k);
           cargadosTs.set(k, Math.max(cargadosTs.get(k) || 0, tsCam.get(l.camion_id) || 0));
@@ -11807,10 +11826,13 @@ async function cargarVentasProgramadas() {
   const prog = (cams || []).filter(c => tx(c.patente_camion));   // programado = con patente
   const byId = new Map(prog.map(c => [c.id, c]));
   const ids = [...byId.keys()];
-  for (let i = 0; i < ids.length; i += 10) {
-    const { data, error: e2 } = await supabase.from('abast_seguimiento_carga').select('id,camion_id,documento,pedido_venta,tipo_carga,n_entrega,material').in('camion_id', ids.slice(i, i + 10)).limit(5000);
+  const lotesVen = await lotesParalelo(ids, 10, async lote => {   // (17-nov-2026 · rendimiento) en paralelo
+    const { data, error: e2 } = await supabase.from('abast_seguimiento_carga').select('id,camion_id,documento,pedido_venta,tipo_carga,n_entrega,material').in('camion_id', lote).limit(5000);
     if (e2) throw e2;
-    (data || []).forEach(l => {
+    return data || [];
+  });
+  for (const data of lotesVen) {
+    data.forEach(l => {
       const c0 = byId.get(l.camion_id);
       // (4-nov-2026, Jordan) YA VIAJÓ = su FECHA DE CARGA ya pasó. Antes bastaba que la fecha del PLAN fuera
       // anterior a hoy, así que un camión planificado ayer para cargar HOY se tomaba por viajado y su NV caía
@@ -11846,10 +11868,13 @@ async function cargarRetirosProgramados() {
   if (error) throw error;
   const byId = new Map((cams || []).filter(c => tx(c.patente_camion)).map(c => [c.id, c]));   // programado = con patente
   const ids = [...byId.keys()];
-  for (let i = 0; i < ids.length; i += 10) {
-    const { data, error: e2 } = await supabase.from('abast_seguimiento_carga').select('camion_id,documento,tipo_carga,n_entrega,material').in('camion_id', ids.slice(i, i + 10)).limit(5000);
+  const lotesRet = await lotesParalelo(ids, 10, async lote => {   // (17-nov-2026 · rendimiento) en paralelo
+    const { data, error: e2 } = await supabase.from('abast_seguimiento_carga').select('camion_id,documento,tipo_carga,n_entrega,material').in('camion_id', lote).limit(5000);
     if (e2) throw e2;
-    (data || []).forEach(l => {
+    return data || [];
+  });
+  for (const data of lotesRet) {
+    data.forEach(l => {
       if (!/retiro/i.test(tx(l.tipo_carga))) return;
       const c = byId.get(l.camion_id), oc = tx(l.documento);
       if (!c || !oc) return;
