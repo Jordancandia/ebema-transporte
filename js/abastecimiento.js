@@ -10,13 +10,13 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611170042';
-import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611170042';
-import { getDatabase } from './data.js?v=202611170042';
+import { supabase } from './supabase-client.js?v=202611170046';
+import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611170046';
+import { getDatabase } from './data.js?v=202611170046';
 import { COMUNAS_POR_REGION } from './chile-geo.js';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611170042';
-import { confirmar, pedirDato } from './confirmar.js?v=202611170042';
+import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611170046';
+import { confirmar, pedirDato } from './confirmar.js?v=202611170046';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -8217,7 +8217,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611170042');
+    const m = await import('./ind-plan-carga.js?v=202611170046');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -10025,7 +10025,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
   const CAT_LARGO = ['1º Pedidos de Traslados REVEX', '2º Pedidos de Venta Directa', '3º Retiros de Proveedor (CD)', '4º Pedidos de Traslados Crossdocking', '5º Abast. Quiebre y Priorizado', '6º Abastecimiento'];
   const CAT_FG = ['#fff', '#fff', '#fff', '#191c1d', '#fff', '#410001'];
   const CAT_CORTO = ['REVEX', 'Venta', 'Retiro', 'Cross', 'Quiebre', 'Abast.'];
-  const CIERRE_H = 17, CIERRE_M = 0;   // (16-nov-2026, Jordan) cierre oficial 17:00, sin cortes intermedios (14:30 eliminado): ajustes hasta las 17:00; el servidor programa todo camión con coordinación de transporte completa
+  const CIERRE_H = 17, CIERRE_M = 0;   // (16-nov-2026, Jordan) cierre oficial 17:00, sin cortes intermedios (14:30 eliminado): ajustes hasta las 17:00; el servidor programa los camiones con coordinación de transporte completa y carga ≥ 85% (bajo 85% lo programa el planner, con alerta)
   const HHMM_CIERRE = `${String(CIERRE_H).padStart(2, '0')}:${String(CIERRE_M).padStart(2, '0')}`;
   const diasMin = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
   const diaCorto = d => `${diasMin[d.getDay()]} ${d.getDate()} ${d.toLocaleDateString('es-CL', { month: 'short' }).replace('.', '')}`;
@@ -10483,8 +10483,8 @@ async function renderPlanCargaCore(stage, opts = {}) {
     // (11-nov-2026, Jordan) Sobrecarga: se alerta pero se deja programar.
     const avisosP = [];   // (16-nov · fluidez) la alerta va dentro del formulario y en la confirmación final
     if ((f.cargado || 0) > r.cap + 0.05) avisosP.push(`El camión CD SUPERA la capacidad: ${t1(f.cargado)} t de ${fmtNum(r.cap, 0)} t (${Math.round((f.cargado || 0) / r.cap * 100)}%), exceso ${t1(f.cargado - r.cap)} t.`);
-    // (16-nov-2026, Jordan) Reserva bajo el umbral: sólo alerta (igual que hoy), se puede confirmar.
-    if (res && r.cap > 0 && (f.cargado || 0) < r.cap * PCT_PROGRAMAR_CD / 100 - 0.05) avisosP.push(`La carga está BAJO el ${PCT_PROGRAMAR_CD}%: ${t1(f.cargado || 0)} t de ${fmtNum(r.cap, 0)} t (${Math.round((f.cargado || 0) / r.cap * 100)}%).`);
+    // (17-nov-2026, Jordan) Bajo el umbral: el planner puede programarlo, pero se le alerta (también en reservas).
+    if (r.cap > 0 && (f.cargado || 0) < r.cap * PCT_PROGRAMAR_CD / 100 - 0.05) avisosP.push(`La carga está BAJO el ${PCT_PROGRAMAR_CD}%: ${t1(f.cargado || 0)} t de ${fmtNum(r.cap, 0)} t (${Math.round((f.cargado || 0) / r.cap * 100)}%). Puedes programarlo igual; a las ${HHMM_CIERRE} el cierre automático sólo programa camiones con ${PCT_PROGRAMAR_CD}% o más.`);
     // (29-oct-2026) Camión CD con retiro Fábrica-Sucursal unido: por defecto el transporte (y día) del retiro.
     const ru = (r.retirosUnidos || [])[0], eRu = ru ? ru.e : null;
     const iniRu = eRu ? { id_transporte: eRu.id_transporte, transportista: eRu.transportista, chofer_nombre: eRu.chofer_nombre, chofer_rut: eRu.chofer_rut,
@@ -10536,7 +10536,9 @@ async function renderPlanCargaCore(stage, opts = {}) {
     if (!PUEDE_TRANSPORTE) { showAlert('Sólo el perfil OWNER puede agregar o modificar los datos del transporte.', 'error'); return; }
     if (!segAcept.has(ce)) { showAlert('Primero acepta el 2º camión.', 'error'); return; }
     res = await ofrecerReserva(ce, res);   // (16-nov-2026) camión reservado
-    const avisosS = (r.tonSegundo || 0) > r.cap + 0.05 ? [`El 2º camión SUPERA la capacidad: ${t1(r.tonSegundo)} t de ${fmtNum(r.cap, 0)} t (${Math.round((r.tonSegundo || 0) / r.cap * 100)}%), exceso ${t1(r.tonSegundo - r.cap)} t.`] : [];   // (16-nov · fluidez) alerta dentro del formulario
+    const avisosS = (r.tonSegundo || 0) > r.cap + 0.05 ? [`El 2º camión SUPERA la capacidad: ${t1(r.tonSegundo)} t de ${fmtNum(r.cap, 0)} t (${Math.round((r.tonSegundo || 0) / r.cap * 100)}%), exceso ${t1(r.tonSegundo - r.cap)} t.`] : [];
+    // (17-nov-2026, Jordan) 2º camión bajo el umbral: se puede programar, con alerta.
+    if (r.cap > 0 && (r.tonSegundo || 0) < r.cap * PCT_PROGRAMAR_CD / 100 - 0.05) avisosS.push(`La carga está BAJO el ${PCT_PROGRAMAR_CD}%: ${t1(r.tonSegundo || 0)} t de ${fmtNum(r.cap, 0)} t (${Math.round((r.tonSegundo || 0) / r.cap * 100)}%). Puedes programarlo igual; a las ${HHMM_CIERRE} el cierre automático sólo programa camiones con ${PCT_PROGRAMAR_CD}% o más.`);   // (16-nov · fluidez) alerta dentro del formulario
     const t = await showTransporteCamionModal({ titulo: `2º camión → ${r.nombre}`, sub: `${t1(r.tonSegundo)} t de ${fmtNum(r.cap, 0)} t · día objetivo ${diaCorto(diaObj(r))}`,
       ini: res || progMap.get(`${ce}|2`) || coordMap.get(`${ce}|2`) || {}, otros: otrosProgramados(ce, 2), fechaDef: isoLocal(diaObj(r)), presentacion: res ? presRes(res) : presCam(ce, 2), avisos: avisosS, choque: { clave: `CAM|${planOrigen}|${ce}|2` } });
     if (!t) return;
@@ -10613,7 +10615,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
     const txt = PUEDE_TRANSPORTE ? 'agrega los datos del transporte para programarlo, o sólo coordínalo y la carga sigue actualizándose'
       : PUEDE_COORD ? 'coordina el transporte: los datos quedan guardados y la carga sigue actualizándose hasta que se programe (Owner o Planner Distribución)'
       : 'faltan los datos del transporte (los agrega Owner o Planner Distribución)';
-    return `<div class="pc-extra is-mute pc-seg2"><span class="material-symbols-outlined">pending</span><div style="flex:1;min-width:0"><b>${cam === 1 ? 'Camión CD sin programar' : '2º camión aceptado, sin transporte'}</b> · ${txt}. Si a las ${HHMM_CIERRE} tiene la coordinación de transporte completa, se programa automáticamente; sin transporte no entra a la foto, al correo ni a los indicadores.${cerrado ? ' Plan cerrado.' : ''}</div>${bt.length ? `<div style="display:flex;gap:6px;flex-wrap:wrap">${bt.join('')}</div>` : ''}</div>`;
+    return `<div class="pc-extra is-mute pc-seg2"><span class="material-symbols-outlined">pending</span><div style="flex:1;min-width:0"><b>${cam === 1 ? 'Camión CD sin programar' : '2º camión aceptado, sin transporte'}</b> · ${txt}. Si a las ${HHMM_CIERRE} tiene la coordinación de transporte completa y ${PCT_PROGRAMAR_CD}% o más de carga, se programa automáticamente; bajo ese % lo programa el planner (con alerta). Sin programar no entra a la foto, al correo ni a los indicadores.${cerrado ? ' Plan cerrado.' : ''}</div>${bt.length ? `<div style="display:flex;gap:6px;flex-wrap:wrap">${bt.join('')}</div>` : ''}</div>`;
   }
   // Mueve una línea: cam = 1 (camión CD) | 2 (2º camión) | 0 (no carga) | 'auto' (vuelve a la regla).
   async function moverLinea(ce, docu, mat, cam) {
