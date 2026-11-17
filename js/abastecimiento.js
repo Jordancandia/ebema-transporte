@@ -10,13 +10,13 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611171146';
-import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611171146';
-import { getDatabase } from './data.js?v=202611171146';
+import { supabase } from './supabase-client.js?v=202611171414';
+import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611171414';
+import { getDatabase } from './data.js?v=202611171414';
 import { COMUNAS_POR_REGION } from './chile-geo.js';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611171146';
-import { confirmar, pedirDato } from './confirmar.js?v=202611171146';
+import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611171414';
+import { confirmar, pedirDato } from './confirmar.js?v=202611171414';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -8217,7 +8217,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611171146');
+    const m = await import('./ind-plan-carga.js?v=202611171414');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -10582,6 +10582,101 @@ async function renderPlanCargaCore(stage, opts = {}) {
     draw();
     showAlert('Ajuste deshecho: las líneas vuelven a como estaban.', 'success');
   }
+  function redibujarPlan() { draw(); }
+  // ── (17-nov-2026, Jordan) CAMBIAR UNA LÍNEA del camión CD por otra(s) en un paso ───────────────
+  // Desde la línea (p. ej. entrega SIN FONDO): sale del camión hoy (vuelve mañana) y el planner elige el reemplazo
+  // viendo el espacio que libera y el % resultante. Primero los candidatos con entrega (fondo confirmado).
+  const sfEstadoLinea = (ce, docu, mat) => (sfPorCe.get(ce) || []).find(x => String(x.documento).trim() === docu && String(x.material).trim() === mat) || null;
+  function cambiarLinea(ce, docu, mat) {
+    const r = resultado.find(x => x.ce === ce);
+    if (!r || bloqueadoPorCierre()) return;
+    if (progMap.get(`${ce}|1`)) { showAlert('El camión CD ya está programado: cambia su carga con «Editar carga» en Seguimiento de Carga.', 'error'); return; }
+    const fill0 = marcarCapacidadCD(r);
+    const plan = sfLineasPlan(r);
+    const sale = plan.get(`${docu}|${mat}`);
+    if (!sale) return;
+    const est = sfEstadoLinea(ce, docu, mat);
+    const libre0 = Math.max(0, r.cap - (fill0.cargado || 0));
+    const espacio = libre0 + sale.tonCam;
+    const todos = [...plan.values()].filter(l => l.key !== sale.key && !l.enCam && !l.noCarga && l.ton > 0.0001)
+      .sort((a, b) => (b.entrega.length ? 1 : 0) - (a.entrega.length ? 1 : 0) || SF_CATS.indexOf(a.cat) - SF_CATS.indexOf(b.cat) || a.ord - b.ord || a.doc.localeCompare(b.doc));
+    const s = { q: '', sel: new Set(), saving: false };
+    const wrap = document.createElement('div');
+    wrap.innerHTML = '<div class="sv-dr-bg" style="z-index:130"></div><aside class="sv-dr" style="z-index:131;width:min(640px,100vw)" role="dialog" aria-label="Cambiar línea del camión"></aside>';
+    document.body.appendChild(wrap);
+    const panel = wrap.querySelector('aside');
+    const onKey = e => { if (e.key === 'Escape') { e.stopPropagation(); fin(); } };
+    const fin = () => { wrap.remove(); document.removeEventListener('keydown', onKey, true); };
+    document.addEventListener('keydown', onKey, true);
+    wrap.querySelector('.sv-dr-bg').addEventListener('click', fin);
+    const pct = t => r.cap > 0 ? Math.round(t / r.cap * 100) : 0;
+    const colPct = p => p >= PCT_PROGRAMAR_CD ? '#15803d' : p >= 70 ? '#a16207' : '#b5000b';
+    const lista = () => { const q = s.q.trim().toLowerCase(); return q ? todos.filter(l => `${l.doc} ${l.mat} ${l.nombre}`.toLowerCase().includes(q)) : todos; };
+    function filasHtml() {
+      const entra = todos.filter(l => s.sel.has(l.key)).reduce((a, l) => a + l.ton, 0);
+      const ls = lista().slice(0, 60);
+      return ls.map(l => {
+        const on = s.sel.has(l.key), cabe = l.ton <= espacio - entra + 1e-6 || on;
+        return `<label style="display:grid;grid-template-columns:22px minmax(0,1fr) auto;gap:8px;align-items:center;padding:8px 10px;border:1px solid ${on ? '#15803d' : 'var(--sv-line)'};border-radius:6px;cursor:pointer;background:${on ? '#f0fdf4' : '#fff'};opacity:${cabe ? 1 : .55}">
+          <input type="checkbox" data-cl-sel="${escapeHtml(l.key)}" ${on ? 'checked' : ''}>
+          <div style="min-width:0"><b class="sv-mono">${escapeHtml(l.doc)}</b> · <span class="sv-mono">${escapeHtml(l.mat)}</span> ${l.entrega.length ? pill('CON ENTREGA', 'ok') : pill('SIN ENTREGA', 'mute')}${l.en2 ? ' ' + pill('2º camión', 'info') : ''}
+            <div class="sv-sub" style="margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(l.nombre)} · ${escapeHtml(SF_LBL[l.cat] || l.cat)}${l.fecha ? ' · ' + escapeHtml(l.fecha) : ''}</div></div>
+          <b style="white-space:nowrap">${escapeHtml(t1(l.ton))} t</b></label>`;
+      }).join('') + (lista().length > ls.length ? `<div class="sv-sub">${lista().length - ls.length} más: usa el buscador.</div>` : '')
+        || '<div class="sv-note-box">Sin candidatos para esta sucursal.</div>';
+    }
+    function draw() {
+      const entra = todos.filter(l => s.sel.has(l.key)).reduce((a, l) => a + l.ton, 0);
+      const desp = Math.max(0, (fill0.cargado || 0) - sale.tonCam + entra);
+      const exc = entra > espacio + 1e-6;
+      panel.innerHTML = `
+        <div class="sv-dr-h"><div style="flex:1;min-width:0">
+          <div class="sv-dr-k">Cambiar línea del camión CD · ${escapeHtml(r.nombre)}</div>
+          <div class="sv-dr-t" style="font-family:inherit"><span class="sv-mono">${escapeHtml(docu)}</span> · <span class="sv-mono">${escapeHtml(mat)}</span></div>
+          <div class="sv-dr-s">${escapeHtml(sale.nombre)} · ${escapeHtml(t1(sale.tonCam))} t ${est ? '· ' + (est.estado === 'SIN FONDO' ? '<b style="color:#b5000b">SIN FONDO</b>' : escapeHtml(est.estado)) + (est.dias >= 2 ? ` · ${est.dias} días` : '') : sale.entrega.length ? '' : '· sin entrega'}</div></div>
+          <button class="sv-iconbtn" data-cx title="Cerrar (Esc)"><span class="material-symbols-outlined">close</span></button></div>
+        <div class="sv-dr-b" style="gap:12px">
+          <div class="sv-card" style="padding:10px 14px;display:grid;grid-template-columns:repeat(3,1fr);gap:10px">
+            <div><div class="sv-sub" style="margin:0">Espacio a llenar</div><b style="font-size:16px">${escapeHtml(t1(espacio))} t</b><div class="sv-sub" style="margin:0">sale ${escapeHtml(t1(sale.tonCam))} t${libre0 > 0.05 ? ` + libre ${escapeHtml(t1(libre0))} t` : ''}</div></div>
+            <div><div class="sv-sub" style="margin:0">Reemplazo elegido</div><b style="font-size:16px;color:${exc ? '#b5000b' : 'inherit'}">${escapeHtml(t1(entra))} t</b><div class="sv-sub" style="margin:0">${s.sel.size} línea${s.sel.size === 1 ? '' : 's'}</div></div>
+            <div><div class="sv-sub" style="margin:0">Camión CD</div><b style="font-size:16px;color:${colPct(pct(desp))}">${pct(fill0.cargado || 0)}% → ${pct(desp)}%</b><div class="sv-sub" style="margin:0">${escapeHtml(t1(desp))} t de ${fmtNum(r.cap, 0)} t</div></div>
+          </div>
+          ${exc ? '<div class="sv-note-box" style="background:#ffdad6;color:#93000a">El reemplazo supera el espacio: el camión queda sobre su capacidad.</div>' : ''}
+          <label class="sv-inp" style="width:100%;box-sizing:border-box"><span class="material-symbols-outlined">search</span><input data-cl-q value="${escapeHtml(s.q)}" placeholder="Buscar pedido de traslado, material o descripción" style="width:100%"></label>
+          <div data-cl-list style="display:flex;flex-direction:column;gap:6px">${filasHtml()}</div>
+        </div>
+        <div class="sv-dr-f"><span class="sv-dr-note">La línea sale hoy (vuelve mañana). Si no eliges reemplazo, el plan completa el espacio según prioridad.</span>
+          <button class="sv-btn" data-cx>Cancelar</button>
+          <button class="sv-btn-p" data-cl-ok ${s.saving ? 'disabled' : ''}><span class="material-symbols-outlined">swap_horiz</span>${s.sel.size ? 'Cambiar' : 'Sacar del camión'}</button></div>`;
+      panel.querySelectorAll('[data-cx]').forEach(b => b.addEventListener('click', fin));
+      const qi = panel.querySelector('[data-cl-q]');
+      qi.addEventListener('input', () => { s.q = qi.value; const pos = qi.selectionStart; draw(); const q2 = panel.querySelector('[data-cl-q]'); q2.focus(); q2.setSelectionRange(pos, pos); });
+      panel.querySelectorAll('[data-cl-sel]').forEach(c => c.addEventListener('change', () => { if (c.checked) s.sel.add(c.dataset.clSel); else s.sel.delete(c.dataset.clSel); const y = panel.querySelector('.sv-dr-b').scrollTop; draw(); panel.querySelector('.sv-dr-b').scrollTop = y; }));
+      panel.querySelector('[data-cl-ok]').addEventListener('click', guardar);
+    }
+    async function guardar() {
+      if (s.saving) return; s.saving = true; draw();
+      const subir = todos.filter(l => s.sel.has(l.key));
+      const filas = [{ doc: docu, mat, ton: sale.tonCam, cam: 0 }, ...subir.map(l => ({ doc: l.doc, mat: l.mat, ton: l.ton, cam: 1 }))];
+      const quien = await getUserEmail(), ahora = new Date().toISOString();
+      const prev = filas.map(f => { const k = `${f.doc}|${f.mat}`; return { doc: f.doc, mat: f.mat, v: r.asig.has(k) ? r.asig.get(k) : null }; });
+      const { error } = await supabase.from('abast_plan_linea_camion').upsert(filas.map(f => ({ fecha: hoyIsoPlan, cd_origen: planOrigen, ce, documento: f.doc, material: f.mat,
+        camion: f.cam, origen: 'manual', updated_by: quien, updated_at: ahora })), { onConflict: 'fecha,cd_origen,ce,documento,material' });
+      if (error) { s.saving = false; draw(); showAlert('No se pudo cambiar la línea: ' + error.message, 'error'); return; }
+      filas.forEach(f => r.asig.set(`${f.doc}|${f.mat}`, f.cam));
+      st.sfUndo = { ce, prev }; st._sfV = (st._sfV || 0) + 1;
+      refrescarFill(r);
+      if (segAcept.has(ce)) await supabase.from('abast_plan_segundo_camion').update({ ton_propuesta: Math.round(r.tonSegundo * 10000) / 10000 }).eq('fecha', hoyIsoPlan).eq('cd_origen', planOrigen).eq('ce', ce);
+      sfLog(ce, filas.slice(0, 1), 'SACAR_HOY'); if (subir.length) sfLog(ce, filas.slice(1), 'SUBIR_REEMPLAZO');
+      fin(); redibujarPlan();
+      showAlert(`${docu} · ${mat} sale hoy del camión${subir.length ? ` · entra${subir.length > 1 ? 'n' : ''} ${subir.length} línea${subir.length > 1 ? 's' : ''}` : ''} (${Math.min(r.pct, 100)}%). Puedes deshacerlo desde el panel.`, 'success');
+    }
+    draw();
+  }
+  function undoBarHtml(r) {
+    if (!st.sfUndo || st.sfUndo.ce !== r.ce || !(PUEDE_AJUSTAR || PUEDE_TRANSPORTE)) return '';
+    return `<div class="pc-extra is-mute" style="margin:6px 0;align-items:center"><span class="material-symbols-outlined">history</span><div style="flex:1">Último cambio de líneas aplicado (${st.sfUndo.prev.length} línea${st.sfUndo.prev.length === 1 ? '' : 's'}).</div><button class="sv-btn" data-sf-deshacer style="padding:3px 10px;font-size:12px"><span class="material-symbols-outlined">undo</span>Deshacer</button></div>`;
+  }
   const otrosProgramados = (ce, cam) => [...progMap.values()]
     .filter(x => !(String(x.ce).trim() === ce && Number(x.camion) === cam))
     .map(x => ({ lbl: `${x.camion === 2 ? '2º camión' : 'camión CD'} ${getNombreCentro(x.ce)}`, patente_camion: x.patente_camion, chofer_rut: x.chofer_rut }));
@@ -11294,7 +11389,15 @@ async function renderPlanCargaCore(stage, opts = {}) {
       const out = [];
       if (d._manual !== null) out.push(`<span style="font-size:10px;color:#7c3aed;font-weight:700" title="Asignación manual/confirmada">${d._manual === 0 ? 'NO CARGA' : 'FIJO'}</span>`);
       if (enTab === 'seg') { out.push(b(d, 1, '→ CD', 'Pasar al camión CD'), b(d, 0, 'Sacar', 'No cargar hoy')); }
-      else if (d._enCamion) { out.push(b(d, 2, '→ 2º', 'Pasar al 2º camión'), b(d, 0, 'Sacar', 'No cargar hoy')); }
+      else if (d._enCamion) {
+        // (17-nov-2026, Jordan) Pedido de traslado: marca SIN FONDO y «Cambiar» por otra línea en un paso.
+        if (String(d.pt ?? '').trim()) {
+          const es = sfEstadoLinea(r.ce, docLinea(d), matLinea(d));
+          if (es && (es.estado === 'SIN FONDO' || es.estado === 'PARCIAL')) out.push(`<span style="font-size:10px;font-weight:700;color:#b5000b" title="Informada a Logística sin entrega creada${es.dias >= 2 ? ' · ' + es.dias + ' días' : ''}">${escapeHtml(es.estado)}</span>`);
+          if (!progMap.get(`${r.ce}|1`)) out.push(`<button style="${MV_STYLE};border-color:#ea580c;color:#9a3412" title="Sacar esta línea hoy y elegir con qué reemplazarla" data-cambiar="${escapeHtml(r.ce)}" data-doc="${escapeHtml(docLinea(d))}" data-mat="${escapeHtml(matLinea(d))}">⇄ Cambiar</button>`);
+        }
+        out.push(b(d, 2, '→ 2º', 'Pasar al 2º camión'), b(d, 0, 'Sacar', 'No cargar hoy'));
+      }
       else { out.push(b(d, 1, '→ CD', 'Cargar en el camión CD'), b(d, 2, '→ 2º', 'Cargar en el 2º camión')); }
       if (d._manual !== null) out.push(b(d, 'auto', '↺', 'Volver a la regla automática'));
       return out.join('');
@@ -11354,6 +11457,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
           r.tonClienteDiferido > 0 ? ['CD-Cliente próximo', `${t1(r.tonClienteDiferido)} t`] : null,
         ])
         + unidoCDHtml(r)
+        + undoBarHtml(r)   // (17-nov-2026) deshacer último cambio de líneas
         // (29-oct-2026, Jordan) Elegir a mano las entregas (traslados / crossdocking…) del camión CD.
         + ((PUEDE_AJUSTAR || PUEDE_TRANSPORTE) && !progMap.get(`${r.ce}|1`) ? `<div style="display:flex;justify-content:flex-end;margin:6px 0"><button class="sv-btn" data-unir-cd="${escapeHtml(r.ce)}" data-unir-n="entregas" title="Marca las entregas que van en el camión CD; el resto queda «No carga» hoy"><span class="material-symbols-outlined">checklist</span>Seleccionar entregas del camión</button></div>` : '')
         + progHtml(r, 1)
@@ -11965,6 +12069,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
     stage.querySelectorAll('[data-separar-cd]').forEach(b => b.addEventListener('click', async e => { e.stopPropagation(); await separarRetiroCD(b.dataset.separarCd); }));
     stage.querySelectorAll('[data-dif-open]').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); st.drawer = b.dataset.difOpen; st.tab = 'dif'; draw(); }));
     // (17-nov-2026, Jordan) Sin fondo: abrir, marcar, aplicar, deshacer, volver a incluir
+    stage.querySelectorAll('[data-cambiar]').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); cambiarLinea(b.dataset.cambiar, b.dataset.doc, b.dataset.mat); }));
     stage.querySelectorAll('[data-sf-open]').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); st.drawer = b.dataset.sfOpen; st.tab = 'sum'; draw(); }));
     stage.querySelectorAll('[data-sf-sacar]').forEach(b => b.addEventListener('change', () => { const s2 = st.sf && st.sf.sacar; if (!s2) return; if (b.checked) s2.add(b.dataset.sfSacar); else s2.delete(b.dataset.sfSacar); draw(); }));
     stage.querySelectorAll('[data-sf-subir]').forEach(b => b.addEventListener('change', () => { const s2 = st.sf && st.sf.subir; if (!s2) return; if (b.checked) s2.add(b.dataset.sfSubir); else s2.delete(b.dataset.sfSubir); draw(); }));
