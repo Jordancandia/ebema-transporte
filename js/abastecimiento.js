@@ -10,13 +10,13 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611170100';
-import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611170100';
-import { getDatabase } from './data.js?v=202611170100';
+import { supabase } from './supabase-client.js?v=202611170103';
+import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611170103';
+import { getDatabase } from './data.js?v=202611170103';
 import { COMUNAS_POR_REGION } from './chile-geo.js';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611170100';
-import { confirmar, pedirDato } from './confirmar.js?v=202611170100';
+import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611170103';
+import { confirmar, pedirDato } from './confirmar.js?v=202611170103';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -8217,7 +8217,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611170100');
+    const m = await import('./ind-plan-carga.js?v=202611170103');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -8563,6 +8563,7 @@ function asignarCamionesCD(r) {
   adel.forEach(d => { d._camion2 = false; d._enCamion = false; d._manualExcede = false; d._prio = false; d._niv = `9|0|${d._orden ?? 0}`;
     const v = asig.get(`${doc(d)}|${mat(d)}`); d._manual = v === 0 ? 0 : null; });
   if (!armadoMano) acc += llenarPorNivelesCD(adel.filter(d => d._manual === null), Math.max(0, r.cap - acc), d => { d._enCamion = true; });
+  const manual2 = orden.some(d => d._manual === 2);   // (17-nov-2026) restituida: se había perdido al agregar el 7º Adelanto
   let segundoPropuesto = manual2 || (excedente > 0 && (armadoMano || excedente >= r.cap * UMBRAL_SEGUNDO_CAMION));
   let acc2 = 0;
   orden.forEach(d => { if (d._manual === 2) { d._camion2 = true; d._sobreCap = acc2 + (d.ton || 0) > r.cap + 1e-9; acc2 += d.ton || 0; } });   // (11-nov-2026) igual que el camión CD
