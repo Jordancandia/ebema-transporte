@@ -10,13 +10,13 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611162309';
-import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611162309';
-import { getDatabase } from './data.js?v=202611162309';
+import { supabase } from './supabase-client.js?v=202611162323';
+import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611162323';
+import { getDatabase } from './data.js?v=202611162323';
 import { COMUNAS_POR_REGION } from './chile-geo.js';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611162309';
-import { confirmar, pedirDato } from './confirmar.js?v=202611162309';
+import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611162323';
+import { confirmar, pedirDato } from './confirmar.js?v=202611162323';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -258,22 +258,26 @@ const esPedidoManualTr = r => { const u = String((r && r.creado_por) ?? '').trim
 //      mismo orden de clasificación que D.
 // Columnas de Plan de Carga: bucket 'prioridad' → "ABAST. QUIEBRE Y PRIORIZADO"
 // (puntos B, C, D); bucket 'abastecimiento' → "ABASTECIMIENTO" (punto E).
-function prioridadTraslado(usuario, claseAbc, quebrado) {
+// (16-nov-2026, Jordan · priorización PT v2) Orden dentro de los pedidos de traslado:
+//   A) ATRASADO: fecha de entrega < hoy y aún sin despachar → primero en la próxima carga.
+//   B) creado MANUALMENTE (usuario ≠ ZE_SIS).
+//   D) QUIEBRE (stock_days ≤ 7), orden interno por clasificación ABC.
+//   C) clasificación ABC AA.
+//   E) resto → «Abastecimiento», orden por clasificación ABC.
+// Los números de orden son los mismos que usa el servidor (v_trc_plan_traslados_prio).
+function prioridadTraslado(usuario, claseAbc, quebrado, atrasado) {
   const u = String(usuario ?? '').trim().toUpperCase();
   const abc = String(claseAbc ?? '').trim().toUpperCase();
-  if (u && u !== USUARIO_SISTEMA) {
-    return { grupo: 'B', bucket: 'prioridad', orden: -2, motivo: `USUARIO (${u})` };
-  }
-  if (abc === 'AA') {
-    return { grupo: 'C', bucket: 'prioridad', orden: -1, motivo: 'CLASIFICACIÓN ABC AA' };
-  }
-  const orden = abcRank(abc);
+  const rk = abcRank(abc);
   const claseLbl = abc || 'SIN CLASIFICACIÓN';
-  if (quebrado) {
-    return { grupo: 'D', bucket: 'prioridad', orden, motivo: `QUIEBRE · ${claseLbl}` };
-  }
-  return { grupo: 'E', bucket: 'abastecimiento', orden, motivo: claseLbl };
+  if (atrasado) return { grupo: 'A', bucket: 'prioridad', orden: -95, motivo: 'ATRASADO (fecha de entrega vencida)' };
+  if (u && u !== USUARIO_SISTEMA) return { grupo: 'B', bucket: 'prioridad', orden: -90, motivo: `MANUAL (${u})` };
+  if (quebrado) return { grupo: 'D', bucket: 'prioridad', orden: -80 + Math.min(rk, 9), motivo: `QUIEBRE · ${claseLbl}` };
+  if (abc === 'AA') return { grupo: 'C', bucket: 'prioridad', orden: -60, motivo: 'CLASIFICACIÓN ABC AA' };
+  return { grupo: 'E', bucket: 'abastecimiento', orden: rk, motivo: claseLbl };
 }
+// PT atrasado: fecha de entrega (SAP dd.mm.aaaa) anterior a hoy.
+function esAtrasadoTr(fecha) { const d = parseDateSAP(fecha); return !!d && d.getTime() < hoy00().getTime(); }
 
 // Normaliza texto: quita acentos/ñ y pasa a MAYÚSCULAS.
 function normTxt(s) {
@@ -4466,7 +4470,8 @@ const VISTAS_TRONCAL = {
       // Badge del grupo de priorización de carga (B/C/D/E, ver prioridadTraslado).
       function prioridadBadgeHtml(prio) {
         const MAP = {
-          B: { txt: 'PRIORIZADO · USUARIO', cls: 'text-white bg-purple-700' },
+          A: { txt: 'ATRASADO',             cls: 'text-white bg-red-800' },
+          B: { txt: 'PRIORIZADO · MANUAL',  cls: 'text-white bg-purple-700' },
           C: { txt: 'PRIORIZADO · ABC AA',  cls: 'text-white bg-indigo-700' },
           D: { txt: 'QUIEBRE',              cls: 'text-white bg-red-600' },
           E: { txt: 'ABASTECIMIENTO',       cls: 'text-black bg-gray-300' },
@@ -4483,7 +4488,7 @@ const VISTAS_TRONCAL = {
         const q = quebrado ? { sd: info.sd, tq: tipoQuiebre(info.sd) } : null;
         const abc = info ? info.abc : '';
         const usuario = String(r.creado_por ?? '').trim();
-        const prio = prioridadTraslado(usuario, abc, quebrado);
+        const prio = prioridadTraslado(usuario, abc, quebrado, esAtrasadoTr(r.fecha_confirmada));
         return {
           doc_compr: String(r.doc_compr ?? '').trim(),
           cesu: r.cesu, ce: r.ce, alm: r.alm, pos: r.pos, creado_el: r.creado_el,
@@ -5078,7 +5083,8 @@ function condExpedicion(den) {
   return { lbl: d, tone: 'mute', raw: d };
 }
 const PRIO_V2 = {
-  B: { lbl: 'Usuario', tone: 'bad' }, C: { lbl: 'ABC AA', tone: 'orange' },
+  A: { lbl: 'Atrasado', tone: 'bad' },
+  B: { lbl: 'Manual', tone: 'bad' }, C: { lbl: 'ABC AA', tone: 'orange' },
   D: { lbl: 'Quiebre', tone: 'warn' }, E: { lbl: 'Abastecimiento', tone: 'mute' },
 };
 const TIPO_RETIRO_TONE = { 'FAB-CLTE': 'purple', 'FAB-SUC': 'info', 'FAB-CD': 'mute' };
@@ -6008,7 +6014,7 @@ const V2 = {
     permisoExcluir: 'ajustar_plan',
     planEstado: (r, excluida) => { if (excluida) return pill('Excluida hoy', 'bad'); const p = PLAN_LINEA_V2[r._plan] || PLAN_LINEA_V2.FUERA; return pill(p[0], p[1]) + (r._plan_inc ? ` ${pill('Manual', 'purple')}` : '') + cargaManualPill(r._cm); },
     edge: r => r._en_plan ? C_GREEN : (r._al.k === 'Atrasado' ? C_RED : null),
-    note: 'Borde verde: línea que va en el camión CD del plan de hoy · Usuario, AA y Quiebre van en «Quiebre y priorizado» (5º); el resto en «Abastecimiento» (6º)',
+    note: 'Borde verde: línea que va en el camión CD del plan de hoy · Prioridad: Atrasado → Manual → Quiebre → ABC AA («Quiebre y priorizado», 5º); el resto «Abastecimiento» (6º); fecha > +3 hábiles sólo como «Adelanto» (7º) si sobra espacio',
     minW: '1080px',
     detalle: r => {
       const p = PLAN_LINEA_V2[r._plan] || PLAN_LINEA_V2.FUERA;
@@ -6022,7 +6028,8 @@ const V2 = {
         FUERA: 'No entra al plan: fuera de la ventana de fechas (−10/+7 días hábiles) o sin cantidad confirmada.',
         SIN_ENTREGA: 'Pendiente sin entrega SAP: no entra al Plan de Carga hasta que se cree la entrega (vista «Entregas»).',
         PEND_SUM: 'Pendiente de suministro: el pedido se informó en el estado de las 14:30 y todavía no tiene entrega; desde esa hora el Plan de Carga cuenta sólo lo suministrado.',
-        FUERA_FECHA: 'No considerado por fecha: la fecha de entrega está fuera de la ventana (10 días hábiles atrás / 3 adelante). Se puede incluir a mano.',
+        FUERA_FECHA: 'No considerado por fecha: la fecha de entrega está fuera de la ventana (10 días hábiles atrás / 3 adelante). Si el camión no se completa, el sistema puede usarlo como adelanto; también se puede incluir a mano (si supera la capacidad, el planificador debe bajar carga excluyendo otras posiciones).',
+        ADELANTO: 'Adelanto: fecha de entrega futura (> +3 días hábiles); entra al camión CD porque había espacio libre (7º en el orden de llenado).',
       }[r._plan] || '';
       const puede = can('incluir_plan');
       const recalcular = async (row, ctx) => { await V2.pedidos_traslados.onPlanChange(ctx._rows, ctx); return { redibujar: true }; };
@@ -7478,7 +7485,7 @@ function agregarModoStockEnCross() {
 // (16-nov-2026, Jordan · ajustes proceso plan) Los pedidos de traslado SIN entrega ya entran al Plan de Carga («SIN FONDO»),
 // así que su estado es el que da el plan. Sólo quedan fuera los «no considerados por fecha» (ventana −10 / +3 hábiles).
 function marcarSinEntrega(rows) {
-  (rows || []).forEach(r => { if (r._plan !== 'EXCLUIDO' && r._considerado === false) { r._plan = /SUMINISTRO/i.test(r._motivo_no || '') ? 'PEND_SUM' : 'FUERA_FECHA'; r._en_plan = false; } });
+  (rows || []).forEach(r => { if (r._plan !== 'EXCLUIDO' && r._plan !== 'ADELANTO' && r._considerado === false) { r._plan = /SUMINISTRO/i.test(r._motivo_no || '') ? 'PEND_SUM' : 'FUERA_FECHA'; r._en_plan = false; } });
 }
 // Columna «Entrega» de las vistas de pedidos de traslado: N° de entrega SAP o «SIN FONDO»; debajo, «No considerado por fecha».
 function entregaFondoHtml(r) {
@@ -7919,7 +7926,7 @@ function v2ModoEntregas(tipo) {
           ['Origen del dato', r.origen_carga === 'MANUAL' ? 'Excel manual' : 'Correo SAP'],
           r._coord ? ['Coordinación', `CD-Cliente · ${fmtFechaISO(r._coord.fecha_entrega)} · ${r._coord.patente_camion || 'patente pendiente'}`] : null,
         ],
-        nota: esTr ? 'Prioridad del Plan de Carga: Usuario, ABC AA y quiebre (5º) · resto Abastecimiento (6º)' : esCx ? '4º en el orden de llenado (o camión directo si es CD-Cliente)' : '1º en el orden de llenado',
+        nota: esTr ? 'Prioridad del Plan de Carga: Atrasado, Manual, Quiebre y ABC AA (5º) · resto Abastecimiento (6º) · fecha futura como Adelanto (7º) si sobra espacio' : esCx ? '4º en el orden de llenado (o camión directo si es CD-Cliente)' : '1º en el orden de llenado',
         acciones,
       };
     },
@@ -8210,7 +8217,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611162309');
+    const m = await import('./ind-plan-carga.js?v=202611162323');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -8540,7 +8547,12 @@ function asignarCamionesCD(r) {
   // que sube más posiciones. Un nivel nunca cede espacio a uno de menor prioridad.
   if (!armadoMano) acc += llenarPorNivelesCD(orden.filter(d => !catAlta(d) && d._manual === null), Math.max(0, r.cap - acc), d => { d._enCamion = true; });
   const excedente = orden.filter(d => !d._enCamion && d._manual !== 0).reduce((s, d) => s + (d.ton || 0), 0);
-  const manual2 = orden.some(d => d._manual === 2);
+  // (16-nov-2026, Jordan) 7º ADELANTO: PT con fecha futura (> +3 hábiles) rellenan SÓLO el espacio libre del camión CD,
+  // por fecha más cercana y prioridad. No cuentan como excedente ni proponen 2º camión.
+  const adel = (r.det.adelanto || []).slice().sort((a, b) => ((a._orden ?? 0) - (b._orden ?? 0)) || cmp(doc(a), doc(b)) || cmp(mat(a), mat(b)));
+  adel.forEach(d => { d._camion2 = false; d._enCamion = false; d._manualExcede = false; d._prio = false; d._niv = `9|0|${d._orden ?? 0}`;
+    const v = asig.get(`${doc(d)}|${mat(d)}`); d._manual = v === 0 ? 0 : null; });
+  if (!armadoMano) acc += llenarPorNivelesCD(adel.filter(d => d._manual === null), Math.max(0, r.cap - acc), d => { d._enCamion = true; });
   let segundoPropuesto = manual2 || (excedente > 0 && (armadoMano || excedente >= r.cap * UMBRAL_SEGUNDO_CAMION));
   let acc2 = 0;
   orden.forEach(d => { if (d._manual === 2) { d._camion2 = true; d._sobreCap = acc2 + (d.ton || 0) > r.cap + 1e-9; acc2 += d.ton || 0; } });   // (11-nov-2026) igual que el camión CD
@@ -8622,6 +8634,7 @@ async function estadoPlanTrasladosCalc() {
           const est = d._enCamion ? 'EN_CAMION' : d._camion2 ? (acept ? 'CAMION2' : 'CAMION2_PROP') : 'NO_CABE';
           lineas.set(`${kc}|${_keyInc(d.pt, d.material)}`, est);
         });
+        (r.det.adelanto || []).filter(d => d._enCamion).forEach(d => lineas.set(`${kc}|${_keyInc(d.pt, d.material)}`, 'ADELANTO'));
       });
     }
   }
@@ -8638,6 +8651,7 @@ const PLAN_LINEA_V2 = {
   FUERA:        ['No considerada', 'mute'],
   SIN_ENTREGA:  ['Sin entrega', 'mute'],
   FUERA_FECHA:  ['No considerado por fecha', 'mute'],
+  ADELANTO:     ['En camión · adelanto', 'ok'],   // (16-nov-2026) fecha > +3: rellena espacio libre del camión CD
   PEND_SUM:     ['Pendiente de suministro', 'warn'],   // (16-nov-2026) después de las 14:30, sin entrega   // (16-nov-2026) fuera de la ventana −10 / +3 hábiles
 };
 // Cantidad de una fila: pendientes (texto SAP ctd_confirmada) o entregas (numérico `cantidad`).
@@ -8689,7 +8703,7 @@ function aplicarEstadoPlanTraslados(rows, ep) {
     r._plan_centro = ep.centros[`${orig}|${ce}`] || null;
     r._plan = (estaExcluido(ep.exclusiones || [], 'traslados_1003', r.doc_compr, r.material) || excluidaEntrega(ep.exclusiones || [], 'traslados_1003', r.entrega, r.material)) ? 'EXCLUIDO'
       : (ep.lineas.get(`${orig}|${ce}|${kl}`) || 'FUERA');
-    r._en_plan = r._plan === 'EN_CAMION' || r._plan === 'CAMION2';
+    r._en_plan = r._plan === 'EN_CAMION' || r._plan === 'CAMION2' || r._plan === 'ADELANTO';
   });
 }
 
@@ -8733,6 +8747,10 @@ async function renderPlanCargaCore(stage, opts = {}) {
     fetchAllRows('abast_feriados'),
     fetchAllRows('abast_horizonte_centro'),
   ]);
+  // (16-nov-2026, Jordan) Relleno sistémico: pedidos de traslado con fecha > +3 hábiles (fuera de la ventana) que
+  // pueden completar el espacio libre del camión CD, por fecha más cercana y prioridad. Nunca generan 2º camión.
+  let adelantoRaw = [];
+  try { adelantoRaw = await fetchAllRows('v_trc_plan_src_traslados_adelanto'); } catch (e) { console.warn('Plan de carga: adelanto no disponible', e); }
   const [ventasDirectoManual, inclusionesPlan, asigLineas, camManuales, coordVentas, coordTraslados, ajustesUnidades, cargasManualTr, retirosUnidosCD] = await Promise.all([loadVentasDirectoManual(), loadInclusionesPlan(), loadAsignacionLineas(), loadCamionesManuales(), loadCoordinacionesVenta(), loadCoordTraslados(), loadAjustesUnidades(), loadCargaManualTr(), loadRetirosUnidosCD()]);
   const unidoCD = new Map((retirosUnidosCD || []).filter(x => String(x.cd_origen ?? '').trim() === planOrigen).map(x => [String(x.doc_compr ?? '').trim(), x]));
   const ajUMap = mapaAjustesUnidades(ajustesUnidades);
@@ -9116,7 +9134,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
     // más abajo (La Calera/San Bernardo usan 15 T con carga bajo 20 T).
     const capRef = CAP_CAMION_DEFAULT;
     const skuInfoCe = skuInfoByCentro[ce] || {};
-    const det = { quiebre: [], stock: [], revex: [], cross: [], ventaCons: [], retiro: [], cliente: [], fabSuc: [], fabCli: [] };
+    const det = { quiebre: [], stock: [], adelanto: [], revex: [], cross: [], ventaCons: [], retiro: [], cliente: [], fabSuc: [], fabCli: [] };
     const itemT = (r, t) => ({ pt: r.doc_compr, material: r.material, nombre: r.texto_breve, fecha: r.fecha_confirmada, ctd: r.ctd_confirmada, ton: t, pv: r.documento, usuario: r.creado_por, entrega_entrante: r.entrega || '' });
     // Clasifica una línea de Traslados 1003 según prioridadTraslado (usuario
     // creador / clasificación ABC / quiebre) — ver AJUSTES PRIORIZACIÓN 2026-09-18.
@@ -9124,7 +9142,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
       const info = skuInfoCe[String(r.material ?? '').trim()] || null;
       const quebrado = !!(info && info.sd <= 7);
       const abc = info ? info.abc : '';
-      return prioridadTraslado(r.creado_por, abc, quebrado);
+      return prioridadTraslado(r.creado_por, abc, quebrado, esAtrasadoTr(r.fecha_confirmada));
     };
 
     // 1. ABAST. QUIEBRE Y PRIORIZADO (puntos B, C, D del ajuste de priorización:
@@ -9184,6 +9202,22 @@ async function renderPlanCargaCore(stage, opts = {}) {
       return sum + t;
     }, 0);
 
+    // 2b. ADELANTO (16-nov-2026, Jordan): PT con fecha de entrega > +3 hábiles. Sólo rellenan el espacio libre del
+    //     camión CD (7º y último), por fecha más cercana y luego prioridad; no suman a la demanda ni al 2º camión.
+    adelantoRaw
+      .filter(r => String(r.ce ?? '').trim() === ce && String(r.cesu ?? '').trim() === planOrigen)
+      .filter(r => String(r.material ?? '').trim() !== '' && !String(r.material ?? '').startsWith('900000'))
+      .filter(r => parseNum(r.ctd_confirmada) > 0)
+      .filter(r => !estaExcluido(exclusionesPlan, 'traslados_1003', r.doc_compr, r.material) && !incSet.has(_keyInc(r.doc_compr, r.material)))
+      .forEach(r => {
+        const prio = clasificaTraslado(r);
+        const d0 = parseDateSAP(r.fecha_confirmada);
+        const dias = d0 ? Math.max(0, Math.round((d0.getTime() - hoy00().getTime()) / 86400000)) : 999;
+        const t = calcTon(maxPesoDim(r.peso_neto, r.tamano_dimens), r.ctd_confirmada);
+        det.adelanto.push({ ...itemT(r, t), _motivo: `ADELANTO · ${prio.motivo}`, _orden: dias * 1000 + prio.orden + 100, _adelanto: true,
+          tonBruto: calcTon(parseNum(r.peso_neto), r.ctd_confirmada), tonVol: calcTon(parseNum(r.tamano_dimens), r.ctd_confirmada) });
+      });
+
     // 3. REVEX (peso_neto_2 × ctd_pedido — igual que la vista REVEX)
     const tonRevex = revex
       .filter(r => String(r.ce ?? '').trim() === ce)
@@ -9228,7 +9262,8 @@ async function renderPlanCargaCore(stage, opts = {}) {
         const tonBruto = calcTon(parseNum(r.peso_neto), pend), tonVol = calcTon(parseNum(r.tamano_dimens), pend);
         const ceO = String(r.ce ?? '').trim();
         det.cross.push({ entrega_entrante: r.entrega || '', pt: r.doc_compr, origen: String(r.cesu ?? '').trim(), ceDestino: ceO, almDestino: String(r.alm ?? '').trim(), material: r.material, nombre: r.texto_breve, fecha: r.fe_entrega, ctdPend: pend, ton: t, pv: r.documento, tonBruto, tonVol,
-          _ceOrig: ceO !== ce ? ceO : '', _ajustada: pend < r._pendSapX - 1e-9, _pendSap: r._pendSapX }); return sum + t; }, 0);
+          _ceOrig: ceO !== ce ? ceO : '', _ajustada: pend < r._pendSapX - 1e-9, _pendSap: r._pendSapX,
+          _orden: String(r.documento ?? '').trim() ? 0 : 1 }); return sum + t; }, 0);   // (16-nov-2026, Jordan) calzado primero, luego stock
 
     // (23-oct-2026, Jordan) Carga manual: las CONSOLIDADO se agregan más abajo, con el día de carga del plan ya
     // resuelto (horizonte efectivo); las CD-CLIENTE salen el día hábil siguiente (como todo camión directo).
@@ -9476,7 +9511,8 @@ async function renderPlanCargaCore(stage, opts = {}) {
       const tonBruto = calcTon(parseNum(r.peso_bruto), cant), tonVol = calcTon(parseNum(r.tamano_dimens), cant);
       // Fecha de Retiro coordinada (prioridad) — si no hay, se usa la fecha de entrega SAP de referencia.
       const fecha = _e.fecha_retiro ? fmtFechaISO(_e.fecha_retiro) : r.fe_entrega;
-      return { oc: r.doc_compr, idProv: r.proveedor, prov: r.nombre_1, material: r.material, nombre: r.texto_breve, fecha, cant, ton: t, tonBruto, tonVol, pv: r.documento, entrega_entrante: ee, _ingSum: esIngSum(r) }; };
+      return { oc: r.doc_compr, idProv: r.proveedor, prov: r.nombre_1, material: r.material, nombre: r.texto_breve, fecha, cant, ton: t, tonBruto, tonVol, pv: r.documento, entrega_entrante: ee, _ingSum: esIngSum(r),
+        _orden: String(r.documento ?? '').trim() ? 0 : 1 }; };   // (16-nov-2026, Jordan) calzado (con pedido de venta) primero, luego stock
     // (AJUSTE 24-sep-2026, pedido Jordan) Se calcula el Retiro CD para AMBAS
     // fechas objetivo posibles (mañana=diaHabil1 y pasado mañana=diaHabil2),
     // en vez de una sola según el horizonte configurado. Esto permite evaluar
@@ -9877,7 +9913,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
     let blocks = '', banner = '', excedeBlocks = '';
     if (tipo === 'cd') {
       const fill = marcarCapacidadCD(r);
-      const cats = ['revex','ventaCons','retiro','cross','quiebre','stock'];
+      const cats = ['revex','ventaCons','retiro','cross','quiebre','stock','adelanto'];
       const inC = {}, outC = {};
       cats.forEach(k => { inC[k] = (r.det[k]||[]).filter(d => d._enCamion); outC[k] = (r.det[k]||[]).filter(d => !d._enCamion); });
       banner = `<div class="mb-sm px-md py-sm rounded-lg bg-blue-50 border border-blue-200 text-[12px] text-blue-900 inline-flex flex-wrap items-center gap-md">
@@ -9891,7 +9927,8 @@ async function renderPlanCargaCore(stage, opts = {}) {
         blkRetiro('3º Retiros de Proveedor Consolidados (CD)', inC.retiro) +
         blkCrossdocking('4º Pedidos de Traslados Crossdocking', inC.cross) +
         blkTraslado('5º Abast. Quiebre y Priorizado', inC.quiebre, false, true) +
-        blkTraslado('6º Abastecimiento', inC.stock, false, true);
+        blkTraslado('6º Abastecimiento', inC.stock, false, true) +
+        blkTraslado('7º Adelanto (fecha futura, relleno)', inC.adelanto, false, true);
       // No se muestra sección de excedentes: el detalle incluye solo lo que entra en el camión.
     }
     // (AJUSTE 28-sep-2026) Un bloque por camión: "Camión 1 de 2 · Cliente · % de carga".
@@ -9930,6 +9967,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
       ['Crossdocking', r.det.cross, 'T'],
       ['Abast. Quiebre y Priorizado', r.det.quiebre, 'T'],
       ['Abastecimiento', r.det.stock, 'T'],
+      ['Adelanto', (r.det.adelanto || []).filter(d => d._enCamion), 'T'],
     ];
     const fmtT = v => (v == null ? '' : fmtNum(v, 4));
     const filas = [];
@@ -10889,7 +10927,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
     { const rs = reservas.filter(x => String(x.ce ?? '').trim() === String(r.ce));   // (16-nov-2026) camiones reservados
       if (rs.length) t.push(TAG('event_available', `Reserva ${rs.map(x => fmtFechaISO(x.fecha_carga).slice(0, 5)).join(' · ')}`, 'Camión reservado (transporte y día, sin carga amarrada): ' + rs.map(txtReservaCam).join(' / '), 'h48')); }
     if (estadoSum.existe && r.det) {   // (16-nov-2026 · fase 4) suministro extra respecto del estado de las 14:30
-      const nx = ['revex', 'cross', 'quiebre', 'stock'].flatMap(k => r.det[k] || []).filter(esExtraSum).length;
+      const nx = ['revex', 'cross', 'quiebre', 'stock', 'adelanto'].flatMap(k => r.det[k] || []).filter(esExtraSum).length;
       if (nx) t.push(TAG('add_task', `Extra (${nx})`, `${nx} línea(s) suministradas fuera de lo informado a las 14:30: suman igual al plan`, 'extra'));
     }
     if (r.enCalendario) t.push(TAG('calendar_today', 'Agenda', 'En calendario de despacho', 'agenda'));
