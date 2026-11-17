@@ -10,13 +10,13 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611171414';
-import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611171414';
-import { getDatabase } from './data.js?v=202611171414';
+import { supabase } from './supabase-client.js?v=202611171417';
+import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611171417';
+import { getDatabase } from './data.js?v=202611171417';
 import { COMUNAS_POR_REGION } from './chile-geo.js';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611171414';
-import { confirmar, pedirDato } from './confirmar.js?v=202611171414';
+import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611171417';
+import { confirmar, pedirDato } from './confirmar.js?v=202611171417';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -5367,12 +5367,20 @@ const V2 = {
         // El bloqueo del 14-oct sigue intacto para el camión programado de HOY o de días futuros.
         const _prog = VENTAS_PROGRAMADAS.get(doc) || null;
         const _progViajo = !!(_prog && String(_prog.fecha_carga || '').slice(0, 10) < isoLocal(hoy00()));
-        const _tienePendV = (r._detalle || []).some(d => (Number(d.pendiente) || 0) > 0);
+        // (17-nov-2026, Jordan) El pendiente incluye las posiciones BLOQUEADAS (MR): una NV cuyo único saldo quedó
+        // bloqueado tras viajar en un camión pasado es SALDO SIN COORDINAR, no «COORDINADO» del camión viejo (NV 1063285).
+        const _tienePendV = (r._detalle || []).some(d => (Number(d.pendiente) || 0) > 0)
+          || (r._bloq_pos || []).some(p => (Number(p.pendiente) || 0) > 0);
         r._saldoSinCoord = !!(_tienePendV && (
           (r._coord && _entCoV.length && _entCoV.every(e => VENTAS_ENT_CARGADAS.has(e)))
-          || (!_coordsV.length && _progViajo)));
+          || (!_coordsV.length && _progViajo)
+          // (17-nov-2026, Jordan) (c) el camión ya viajó y ninguna coordinación es posterior a esa carga: lo que
+          // queda (aunque sean sólo posiciones bloqueadas) es saldo real sin coordinar, aunque la entrega no figure.
+          || (_progViajo && _coordsV.length && _coordsV.every(c => String(c.fecha_entrega || '').slice(0, 10) <= String(_prog.fecha_carga || '').slice(0, 10)))));
         r._viajo = r._saldoSinCoord ? _prog : null;
-        r._cargada = (r._saldoAct || r._saldoSinCoord) ? null : _prog;   // saldo activo o saldo sin coordinar → editable
+        // (17-nov-2026, Jordan) El bloqueo «COORDINADO · en camión programado» vale sólo para camiones de HOY o futuros:
+        // un camión con fecha de carga pasada ya viajó y lo que la NV siga mostrando es saldo real, no esa coordinación.
+        r._cargada = (r._saldoAct || r._saldoSinCoord || _progViajo) ? null : _prog;   // saldo activo / sin coordinar / camión ya viajó → editable
         if (r._cargada) r._plan = 'CARGADA';
         else if (r._saldoSinCoord) r._plan = 'SALDO';
         // (13-nov-2026, Jordan) PENDIENTE DE REGULARIZAR: coordinada para una fecha ya pasada, no está en un camión
@@ -8217,7 +8225,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611171414');
+    const m = await import('./ind-plan-carga.js?v=202611171417');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -11368,12 +11376,12 @@ async function renderPlanCargaCore(stage, opts = {}) {
     const docHtml = d => { const v = String(doc(d) ?? '').trim(), sb = subDoc(d);
       return v && puedeVerMenu('abastecimiento', sb) ? `<span class="sv-mono" role="link" tabindex="0" data-ir-doc="${escapeHtml(sb)}|${escapeHtml(v)}" title="Abrir ${escapeHtml(v)} en ${escapeHtml(LBL_SUB[sb] || sb)}" style="cursor:pointer;text-decoration:underline dotted;text-underline-offset:3px">${escapeHtml(v)}</span>` : `<span class="sv-mono">${escapeHtml(v)}</span>`; };
     const cant = d => tipo === 'X' ? fmtNum(d.ctdPend, 0) : tipo === 'T' ? escapeHtml(d.ctd ?? '') : fmtNum(parseNum(d.cant), 0);
-    return `<div class="pc-tbl"><table class="sv-table"><thead><tr>${head.map((h, i) => `<th class="${i >= 4 ? 'r' : ''}">${escapeHtml(h)}</th>`).join('')}${accFn ? '<th class="r">Mover</th>' : ''}</tr></thead>
+    return `<div class="pc-tbl"><table class="sv-table"><thead><tr>${head.map((h, i) => `<th class="${i >= 4 ? 'r' : ''}">${escapeHtml(h)}</th>`).join('')}${accFn ? '<th class="r pc-acc">Mover</th>' : ''}</tr></thead>
       <tbody>${items.map(d => `<tr class="${d._enCamion === false ? (d._camion2 ? 'is-seg' : 'is-fuera') : ''}" title="${d._enCamion === false ? (d._camion2 ? 'Va en el 2º camión (opcional)' : 'No cabe: queda para el próximo plan') : ''}">
         <td style="white-space:nowrap">${esPrioCarga(d) ? PRIO_BADGE : ''}${docHtml(d)}${d._ingSum ? `<div style="margin-top:2px;font-size:10px">${ingSumPill(true)}</div><div class="sv-sub" style="margin:0">PV ${escapeHtml(String(d.pv ?? ''))}</div>` : ''}${d._guiaFact ? `<div style="margin-top:2px;font-size:10px">${leyendaPv4000Pill(true)}</div>` : ''}${d._ceOrig ? `<div class="sv-sub" style="margin:2px 0 0;color:#7e22ce;font-weight:700" title="Centro destino alternativo asignado al coordinar">Centro alt. · orig. ${escapeHtml(getNombreCentro(d._ceOrig))}</div>` : ''}</td>
         <td>${ent(d) ? `<span class="sv-mono">${escapeHtml(ent(d))}</span>${(tipo === 'T' || tipo === 'X') && esExtraSum(d) ? EXTRA_BADGE : ''}` : ''}</td>   <!-- (17-nov-2026, Jordan) sin entrega: celda vacía -->
         <td><div class="pc-mat"><b>${escapeHtml(d.nombre || '')}</b><small>${escapeHtml(sub(d))}</small></div></td>
-        <td class="sv-mono">${escapeHtml(d.fecha || '')}</td><td class="r">${cant(d)}${d._ajustada ? `<div class="sv-sub" style="margin:0" title="Unidades editadas al coordinar">de ${fmtNum(d._pendSap, 0)}</div>` : ''}</td><td class="r"><b>${fmtNum(d.ton, 2)}</b></td>${accFn ? `<td class="r" style="white-space:nowrap">${accFn(d)}</td>` : ''}</tr>`).join('')}</tbody></table></div>`;
+        <td class="sv-mono">${escapeHtml(d.fecha || '')}</td><td class="r">${cant(d)}${d._ajustada ? `<div class="sv-sub" style="margin:0" title="Unidades editadas al coordinar">de ${fmtNum(d._pendSap, 0)}</div>` : ''}</td><td class="r"><b>${fmtNum(d.ton, 2)}</b></td>${accFn ? `<td class="r pc-acc" style="white-space:nowrap">${accFn(d)}</td>` : ''}</tr>`).join('')}</tbody></table></div>`;
   }
   const kv = pares => `<div class="pc-kv">${pares.filter(Boolean).map(([k, v]) => `<div><span>${escapeHtml(k)}</span><b>${v}</b></div>`).join('')}</div>`;
   const grupoHtml = (color, titulo, items, tipo, accFn) => {

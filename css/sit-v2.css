@@ -566,7 +566,12 @@ tr.tf-sel td:first-child { box-shadow: inset 3px 0 0 var(--sv-primary); }
 .pc-nodir { font-size: 12px; color: #9ca3af; }
 .pc-empty { padding: 32px; text-align: center; color: var(--sv-ink2); display: flex; flex-direction: column; align-items: center; gap: 8px; }
 .pc-empty .material-symbols-outlined { font-size: 36px; color: #c5c7c9; }
-.sv-dr.pc-dr { width: min(600px, 100vw); }
+.sv-dr.pc-dr { width: min(1080px, 96vw); }   /* (17-nov-2026, Jordan) panel más ancho: se ven las acciones de cada línea */
+/* (17-nov-2026) columna «Mover» fija a la derecha: siempre visible aunque la tabla sea ancha */
+.pc-tbl .pc-acc { position: sticky; right: 0; background: #fff; box-shadow: -8px 0 8px -8px rgba(0,0,0,.18); }
+.pc-tbl thead th.pc-acc { z-index: 3; background: var(--sv-bg); }
+.pc-tbl tbody tr:hover td.pc-acc { background: var(--sv-s1); }
+.pc-tbl tr.is-seg td.pc-acc { background: #f0fdf4; }
 .pc-tabs button { display: inline-flex; align-items: center; gap: 6px; }
 .pc-tabs button .material-symbols-outlined { font-size: 18px; }
 .pc-kv { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; background: var(--sv-line); border: 1px solid var(--sv-line); border-radius: 4px; overflow: hidden; flex-shrink: 0; }
