@@ -10,13 +10,13 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611162323';
-import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611162323';
-import { getDatabase } from './data.js?v=202611162323';
+import { supabase } from './supabase-client.js?v=202611170042';
+import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611170042';
+import { getDatabase } from './data.js?v=202611170042';
 import { COMUNAS_POR_REGION } from './chile-geo.js';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611162323';
-import { confirmar, pedirDato } from './confirmar.js?v=202611162323';
+import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611170042';
+import { confirmar, pedirDato } from './confirmar.js?v=202611170042';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -8217,7 +8217,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611162323');
+    const m = await import('./ind-plan-carga.js?v=202611170042');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -10025,7 +10025,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
   const CAT_LARGO = ['1º Pedidos de Traslados REVEX', '2º Pedidos de Venta Directa', '3º Retiros de Proveedor (CD)', '4º Pedidos de Traslados Crossdocking', '5º Abast. Quiebre y Priorizado', '6º Abastecimiento'];
   const CAT_FG = ['#fff', '#fff', '#fff', '#191c1d', '#fff', '#410001'];
   const CAT_CORTO = ['REVEX', 'Venta', 'Retiro', 'Cross', 'Quiebre', 'Abast.'];
-  const CIERRE_H = 17, CIERRE_M = 0;   // (16-nov-2026, Jordan) cierre oficial 17:00 (antes 15:35): el servidor programa solo los coordinados con carga ≥ 85%
+  const CIERRE_H = 17, CIERRE_M = 0;   // (16-nov-2026, Jordan) cierre oficial 17:00, sin cortes intermedios (14:30 eliminado): ajustes hasta las 17:00; el servidor programa todo camión con coordinación de transporte completa
   const HHMM_CIERRE = `${String(CIERRE_H).padStart(2, '0')}:${String(CIERRE_M).padStart(2, '0')}`;
   const diasMin = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
   const diaCorto = d => `${diasMin[d.getDay()]} ${d.getDate()} ${d.toLocaleDateString('es-CL', { month: 'short' }).replace('.', '')}`;
@@ -10613,7 +10613,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
     const txt = PUEDE_TRANSPORTE ? 'agrega los datos del transporte para programarlo, o sólo coordínalo y la carga sigue actualizándose'
       : PUEDE_COORD ? 'coordina el transporte: los datos quedan guardados y la carga sigue actualizándose hasta que se programe (Owner o Planner Distribución)'
       : 'faltan los datos del transporte (los agrega Owner o Planner Distribución)';
-    return `<div class="pc-extra is-mute pc-seg2"><span class="material-symbols-outlined">pending</span><div style="flex:1;min-width:0"><b>${cam === 1 ? 'Camión CD sin programar' : '2º camión aceptado, sin transporte'}</b> · ${txt}. Sólo los camiones programados entran a la foto de las ${HHMM_CIERRE}, al correo y a los indicadores.${cerrado ? ' Plan cerrado.' : ''}</div>${bt.length ? `<div style="display:flex;gap:6px;flex-wrap:wrap">${bt.join('')}</div>` : ''}</div>`;
+    return `<div class="pc-extra is-mute pc-seg2"><span class="material-symbols-outlined">pending</span><div style="flex:1;min-width:0"><b>${cam === 1 ? 'Camión CD sin programar' : '2º camión aceptado, sin transporte'}</b> · ${txt}. Si a las ${HHMM_CIERRE} tiene la coordinación de transporte completa, se programa automáticamente; sin transporte no entra a la foto, al correo ni a los indicadores.${cerrado ? ' Plan cerrado.' : ''}</div>${bt.length ? `<div style="display:flex;gap:6px;flex-wrap:wrap">${bt.join('')}</div>` : ''}</div>`;
   }
   // Mueve una línea: cam = 1 (camión CD) | 2 (2º camión) | 0 (no carga) | 'auto' (vuelve a la regla).
   async function moverLinea(ce, docu, mat, cam) {
@@ -11585,7 +11585,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
           ${PUEDE_EXCLUIR && !cierre.cerrado ? `<button class="sv-btn" data-ver-exclusiones data-chip title="Ver y reactivar exclusiones"><span class="material-symbols-outlined">visibility_off</span>Exclusiones${exclusionesPlan.length ? ` <span class="sv-pill mute" style="padding:0 7px">${exclusionesPlan.length}</span>` : ''}</button>` : ''}
           ${PUEDE_COORD ? `<button class="sv-btn" data-res-new="" title="Reserva un camión (transporte y día de carga) sin amarrar entregas ni materiales"><span class="material-symbols-outlined">event_available</span>Reservar camión${reservas.length ? ` <span class="sv-pill mute" style="padding:0 7px">${reservas.length}</span>` : ''}</button>` : ''}
           ${barraTrabajoHtml()}
-          <button class="sv-btn" data-est-sum title="Estado de las 14:30 para Operaciones: pedidos de traslado informados para suministrar (por sucursal, con prioridades)"><span class="material-symbols-outlined">assignment</span>Estado 14:30</button>
+          <!-- (16-nov-2026, Jordan) Botón «Estado 14:30» retirado: sin corte intermedio, ajustes hasta las 17:00 -->
           <button class="sv-btn" data-ent-noplan title="Entregas SAP creadas que no están consideradas en el Plan de Carga (con pedido de traslado y motivo) · descargable"><span class="material-symbols-outlined">assignment_late</span>Entregas no consideradas</button>
           <button class="sv-btn" data-descarga="__todo__" title="Descarga el plan completo del origen (sin filtro de KPI)"><span class="material-symbols-outlined">download</span>Descargar plan (CSV)</button>
           <button class="sv-btn is-icon" data-refrescar title="Refrescar datos"><span class="material-symbols-outlined">refresh</span></button>
