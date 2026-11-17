@@ -10,13 +10,13 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611162156';
-import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611162156';
-import { getDatabase } from './data.js?v=202611162156';
+import { supabase } from './supabase-client.js?v=202611162219';
+import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611162219';
+import { getDatabase } from './data.js?v=202611162219';
 import { COMUNAS_POR_REGION } from './chile-geo.js';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611162156';
-import { confirmar, pedirDato } from './confirmar.js?v=202611162156';
+import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611162219';
+import { confirmar, pedirDato } from './confirmar.js?v=202611162219';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -7818,6 +7818,10 @@ function v2ModoEntregas(tipo) {
   // posición la toma tal cual (misma marca 'cross' por doc. modelo + material) — se ve y gestiona en ambas pestañas.
   if (tipo === 'CROSSDOCK') cfg.modes.forEach(m => { if (m.id === 'ent' && m.v2mode)
     m.v2mode.prioridad = { tipo: 'cross', doc: r => r.doc_compr, material: r => r.material, centro: r => r.ce }; });
+  // (16-nov-2026, Jordan) Se saca la pestaña «Entregas» de Revex, Crossdocking y Pedidos de Traslados: la vista es sólo el
+  // pedido de traslado. Crossdocking conserva el selector con «Stock Almacén 4000» (agregarModoStockEnCross).
+  cfg.modes = cfg.modes.filter(m => m.id !== 'ent');
+  if (cfg.modes.length < 2 && tipo !== 'CROSSDOCK') delete cfg.modes;
 });
 agregarModoStockEnCross();   // (10-nov-2026, Jordan) después de crear Entregas / Pendientes
 
@@ -8055,7 +8059,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611162156');
+    const m = await import('./ind-plan-carga.js?v=202611162219');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
