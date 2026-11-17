@@ -10,13 +10,13 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611171506';
-import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611171506';
-import { getDatabase } from './data.js?v=202611171506';
+import { supabase } from './supabase-client.js?v=202611171644';
+import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611171644';
+import { getDatabase } from './data.js?v=202611171644';
 import { COMUNAS_POR_REGION } from './chile-geo.js';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611171506';
-import { confirmar, pedirDato } from './confirmar.js?v=202611171506';
+import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611171644';
+import { confirmar, pedirDato } from './confirmar.js?v=202611171644';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -8225,7 +8225,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611171506');
+    const m = await import('./ind-plan-carga.js?v=202611171644');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -11547,7 +11547,11 @@ async function renderPlanCargaCore(stage, opts = {}) {
           ${(() => { const camP = st.tab === 'cd' ? 1 : st.tab === 'seg' ? 2 : null;
             if (!camP) return '';
             // (16-nov-2026, Jordan) Reemplaza «Descargar sucursal (CSV)»: Lista de Picking del camión, sólo con el camión programado.
-            const ptBtn = `<button class="sv-btn" data-pt-sin-ent="${escapeHtml(r.ce)}|${camP}" title="Pedidos de traslado de este camión que aún no tienen entrega (CSV)"><span class="material-symbols-outlined">playlist_add_check</span>PT sin entrega (CSV)</button>`;   // (17-nov-2026)
+            // (17-nov-2026, Jordan) Sólo se habilita con el camión sobre el 85% de su capacidad.
+            const pctCam = pctCamionPt(r, camP);
+            const ptBtn = pctCam >= UMBRAL_PT_SIN_ENT
+              ? `<button class="sv-btn" data-pt-sin-ent="${escapeHtml(r.ce)}|${camP}" title="Pedidos de traslado de este camión que aún no tienen entrega (CSV)"><span class="material-symbols-outlined">playlist_add_check</span>PT sin entrega (CSV)</button>`
+              : `<button class="sv-btn" disabled style="opacity:.55;cursor:not-allowed" title="Se habilita cuando el camión está sobre el ${UMBRAL_PT_SIN_ENT}% (hoy ${pctCam}%)"><span class="material-symbols-outlined">lock</span>PT sin entrega (CSV)</button>`;
             return ptBtn + (progMap.get(`${r.ce}|${camP}`)
               ? `<button class="sv-btn-p" data-picking="${escapeHtml(r.ce)}|${camP}" title="Excel con lo que va en el camión: REVEX, pedidos de venta, retiros, pedidos de traslado y crossdocking, con priorizados y facturables"><span class="material-symbols-outlined">assignment</span>Lista de picking (Excel)</button>`
               : `<button class="sv-btn" disabled style="opacity:.55;cursor:not-allowed" title="Se habilita cuando el camión está programado (datos del transporte y patente)"><span class="material-symbols-outlined">lock</span>Lista de picking (Excel)</button>`); })()}</div>
@@ -11593,14 +11597,24 @@ async function renderPlanCargaCore(stage, opts = {}) {
   // Al crearse la entrega, la línea queda asociada al PT en el plan y sale de este archivo.
   // Estructura: PEDIDO DE TRASLADO; CENTRO SUMINISTRO; ID MATERIAL; CANTIDAD.
   const CSV_PT_ENT = ['PEDIDO DE TRASLADO', 'CENTRO SUMINISTRO', 'ID MATERIAL', 'CANTIDAD'];
+  // (17-nov-2026, Jordan) El archivo sólo se habilita / incluye camiones sobre el 85% de capacidad.
+  const UMBRAL_PT_SIN_ENT = 85;
+  function pctCamionPt(r, cam) {
+    marcarCapacidadCD(r);
+    if (cam === 2) return segAcept.has(r.ce) && r.cap > 0 ? Math.round((r.tonSegundo || 0) / r.cap * 100) : 0;
+    return Math.min(Number(r.pct) || 0, 100);
+  }
+  function ptHabilitado(r, cam) { return pctCamionPt(r, cam) >= UMBRAL_PT_SIN_ENT; }
+  function hayPtHabilitado(lista) { return (lista || []).some(r => ptHabilitado(r, 1) || ptHabilitado(r, 2)); }
   function filasPtSinEntrega(lista, cam = null) {
     const tx = v => String(v ?? '').trim();
     const acc = new Map();
     lista.forEach(r => {
       marcarCapacidadCD(r);
       const acept = segAcept.has(r.ce);
+      const ok1 = ptHabilitado(r, 1), ok2 = ptHabilitado(r, 2);
       ['revex', 'cross', 'quiebre', 'stock', 'adelanto'].forEach(k => (r.det[k] || []).forEach(d => {
-        const enPlan = cam === 1 ? !!d._enCamion : cam === 2 ? (acept && !!d._camion2) : (!!d._enCamion || (acept && !!d._camion2));
+        const enPlan = cam === 1 ? (ok1 && !!d._enCamion) : cam === 2 ? (ok2 && acept && !!d._camion2) : ((ok1 && !!d._enCamion) || (ok2 && acept && !!d._camion2));
         if (!enPlan || tx(d.entrega_entrante || d.entrega) || !tx(d.pt)) return;
         const cant = k === 'cross' ? (Number(d.ctdPend) || 0) : (parseNum(d.ctd) || 0);
         const key = `${tx(d.pt)}|${tx(d.material)}`;
@@ -11613,7 +11627,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
   }
   function descargarPtSinEntrega(lista, nombre, cam = null) {
     const filas = filasPtSinEntrega(lista, cam);
-    if (!filas.length) { showAlert('No hay pedidos de traslado sin entrega dentro del plan.', 'success'); return; }
+    if (!filas.length) { showAlert(`No hay pedidos de traslado sin entrega en camiones sobre el ${UMBRAL_PT_SIN_ENT}%.`, 'success'); return; }
     bajarCsv(CSV_PT_ENT, filas, nombre);
   }
   function descargarCsvV21(lista, nombre) {
@@ -11967,7 +11981,9 @@ async function renderPlanCargaCore(stage, opts = {}) {
           <!-- (16-nov-2026, Jordan) Botón «Estado 14:30» retirado: sin corte intermedio, ajustes hasta las 17:00 -->
           <button class="sv-btn" data-ent-noplan title="Entregas SAP creadas que no están consideradas en el Plan de Carga (con pedido de traslado y motivo) · descargable"><span class="material-symbols-outlined">assignment_late</span>Entregas no consideradas</button>
           <button class="sv-btn" data-descarga="__todo__" title="Descarga el plan completo del origen (sin filtro de KPI)"><span class="material-symbols-outlined">download</span>Descargar plan (CSV)</button>
-          <button class="sv-btn" data-pt-sin-ent="__todo__" title="Pedidos de traslado dentro del plan (camión CD y 2º camión aceptado) que aún no tienen entrega: PEDIDO DE TRASLADO, CENTRO SUMINISTRO, ID MATERIAL, CANTIDAD"><span class="material-symbols-outlined">playlist_add_check</span>PT sin entrega (CSV)</button>
+          ${hayPtHabilitado(resultado)
+            ? `<button class="sv-btn" data-pt-sin-ent="__todo__" title="Pedidos de traslado sin entrega de los camiones sobre el ${UMBRAL_PT_SIN_ENT}% (camión CD y 2º camión aceptado): PEDIDO DE TRASLADO, CENTRO SUMINISTRO, ID MATERIAL, CANTIDAD"><span class="material-symbols-outlined">playlist_add_check</span>PT sin entrega (CSV)</button>`
+            : `<button class="sv-btn" disabled style="opacity:.55;cursor:not-allowed" title="Se habilita cuando al menos un camión está sobre el ${UMBRAL_PT_SIN_ENT}%"><span class="material-symbols-outlined">lock</span>PT sin entrega (CSV)</button>`}
           <button class="sv-btn is-icon" data-refrescar title="Refrescar datos"><span class="material-symbols-outlined">refresh</span></button>
         </div></div>
       <div class="sv-kpis pc-kpis">${kpiDef.map(k => {
