@@ -590,10 +590,29 @@ tr.tf-sel td:first-child { box-shadow: inset 3px 0 0 var(--sv-primary); }
 /* Plan de Carga · 2º camión opcional (30-sep-2026) */
 .pc-tag.seg-ok { background: #15803d; color: #fff; }
 .pc-extra.is-mute { background: #edeeef; color: #444749; }
-.pc-extra.pc-seg2 { align-items: center; }
-.pc-extra.pc-seg2.is-ok { background: #15803d; color: #fff; }
-.pc-extra.pc-seg2 small { display: block; margin-top: 2px; opacity: .85; font-size: 12px; }
-.pc-extra.pc-seg2 .sv-btn, .pc-extra.pc-seg2 .sv-btn-p { flex-shrink: 0; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+/* (17-nov-2026, Jordan · UX) Avisos del panel de sucursal (camión sin programar, coordinado, programado, 2º camión,
+   Fábrica-Sucursal): tarjeta con acento lateral; título, texto y nota a todo el ancho; botones compactos en su fila. */
+.pc-extra.pc-seg2 { display: grid; grid-template-columns: 20px minmax(0, 1fr); column-gap: 10px; row-gap: 10px; align-items: start;
+  background: #fff; color: #191c1d; border: 1px solid #e1e3e4; border-left: 4px solid #8e9192; border-radius: 8px; padding: 12px 14px; }
+.pc-extra.pc-seg2 > .material-symbols-outlined { grid-column: 1; font-size: 20px; line-height: 20px; color: #5c5f61; }
+.pc-extra.pc-seg2 > div:first-of-type { grid-column: 2; display: block; min-width: 0; line-height: 1.45; font-size: 13px; color: #444749; }
+.pc-extra.pc-seg2 > div:first-of-type > b:first-child { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 3px; font-size: 14px; font-weight: 700; color: #191c1d; }
+.pc-extra.pc-seg2 small { display: block; margin-top: 4px; font-size: 12px; color: #5c5f61; opacity: 1; }
+.pc-extra.pc-seg2 > div:not(:first-of-type), .pc-av-btns { grid-column: 2; display: flex; flex-wrap: wrap; gap: 8px; }
+.pc-extra.pc-seg2 > button { grid-column: 2; justify-self: start; }
+.pc-extra.pc-seg2 .sv-btn, .pc-extra.pc-seg2 .sv-btn-p { flex-shrink: 0; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap;
+  height: 32px; padding: 0 12px; font-size: 12.5px; border-radius: 6px; }
+.pc-extra.pc-seg2 .sv-btn .material-symbols-outlined, .pc-extra.pc-seg2 .sv-btn-p .material-symbols-outlined { font-size: 17px; color: inherit; }
+.pc-av-chip { display: inline-flex; align-items: center; padding: 1px 8px; border-radius: 10px; background: #edeeef; color: #191c1d; font-size: 12px; font-weight: 700; }
+/* Variantes */
+.pc-extra.pc-seg2.is-mute { border-left-color: #8e9192; }
+.pc-extra.pc-seg2.is-alert { border-left-color: #ca8a04; background: #fffbeb; }
+.pc-extra.pc-seg2.is-alert > .material-symbols-outlined { color: #a16207; }
+.pc-extra.pc-seg2.is-alert .pc-av-chip { background: #fef3c7; color: #713f12; }
+.pc-extra.pc-seg2.is-ok { border-left-color: #15803d; background: #f0fdf4; color: #191c1d; }
+.pc-extra.pc-seg2.is-ok > .material-symbols-outlined { color: #15803d; }
+.pc-extra.pc-seg2.is-ok .pc-av-chip { background: #dcfce7; color: #14532d; }
+.pc-extra.pc-seg2[style*="eff6ff"] { border-left-color: #1d4ed8; }
 .pc-tbl tr.is-seg td { background: #f0fdf4; }
 .pc-tbl tr.is-seg td:first-child { box-shadow: inset 3px 0 0 #15803d; }
 .pc-segchip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 4px 2px 8px; border-radius: 12px; border: 1px dashed #15803d; background: #fff; color: #14532d; font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; white-space: nowrap; }
