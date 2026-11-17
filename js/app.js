@@ -1,6 +1,6 @@
-import { getDatabase, saveDatabase, initDatabase, loadRoutesData, loadHistoricoFlete360 } from './data.js?v=202611171811';
-import { supabase } from './supabase-client.js?v=202611171811';
-import { setSesionPermisos, puedeVerMenu, can, esSoloLectura, PERFILES, normalizarPerfil } from './permisos.js?v=202611171811';
+import { getDatabase, saveDatabase, initDatabase, loadRoutesData, loadHistoricoFlete360 } from './data.js?v=202611171816';
+import { supabase } from './supabase-client.js?v=202611171816';
+import { setSesionPermisos, puedeVerMenu, can, esSoloLectura, PERFILES, normalizarPerfil } from './permisos.js?v=202611171816';
 // ── Módulos cargados bajo demanda (lazy) — se cachean tras la primera carga ──
 const _mod = {};
 async function loadMod(key, modPath) {
@@ -9,9 +9,9 @@ async function loadMod(key, modPath) {
 }
 // Pre-warm: carga indicadores y abastecimiento en background tras login
 function prewarmMods() {
-  setTimeout(() => loadMod('ind',   './indicadores.js?v=202611171811'), 600);
+  setTimeout(() => loadMod('ind',   './indicadores.js?v=202611171816'), 600);
   setTimeout(() => loadRoutesData(), 800);  // pre-fetch tablas pesadas en background
-  setTimeout(() => loadMod('abast', './abastecimiento.js?v=202611171811'), 2000);
+  setTimeout(() => loadMod('abast', './abastecimiento.js?v=202611171816'), 2000);
 }
 import { showAlert, formatRut, validateRut, formatPhone } from './utils.js';
 
@@ -224,35 +224,12 @@ async function checkSession() {
       // Asegurar que existe su perfil de proveedor (creado desde los datos del registro)
       let { data: provider } = await supabase.from('providers').select('*').eq('email', email).maybeSingle();
       if (!provider) {
-        // Los datos vienen de user_metadata, 100% controlados por el usuario externo en signUp().
-        // Se validan y acotan ANTES de insertar en providers (el RUT/razonSocial quedan
-        // bloqueados para edición posterior por el trigger anti-tamper).
-        const rut = formatRut(meta.rut || '');
-        if (!validateRut(rut)) {
-          await supabase.auth.signOut();
-          currentSession = null;
-          localStorage.removeItem(SESSION_KEY);
-          showAlert('El RUT registrado no es válido. Contacte a EBEMA para activar su cuenta.', 'error');
-          return;
-        }
-        const newProvider = {
-          email,
-          razonSocial: (meta.razonSocial || meta.full_name || email.split('@')[0]).toString().slice(0, 120),
-          rut,
-          telefono: (meta.telefono || '').toString().slice(0, 30),
-          representante: (meta.representante || '').toString().slice(0, 80),
-          estado: 'pendiente'
-        };
-        const { error: insErr } = await supabase.from('providers').insert(newProvider);
-        if (insErr) {
-          console.error('No se pudo crear el perfil de proveedor:', insErr.message);
-          await supabase.auth.signOut();
-          currentSession = null;
-          localStorage.removeItem(SESSION_KEY);
-          showAlert('No se pudo activar su cuenta de proveedor. Contacte a EBEMA.', 'error');
-          return;
-        }
-        provider = newProvider;
+        // Acceso solo por invitación (17-nov-2026): no se auto-crean perfiles de proveedor.
+        await supabase.auth.signOut();
+        currentSession = null;
+        localStorage.removeItem(SESSION_KEY);
+        showAlert('Su cuenta no tiene acceso habilitado. El ingreso a SIT EBEMA es solo por invitación.', 'error');
+        return;
       }
       currentSession = { email, name: provider.razonSocial, role: 'proveedor', tipo: 'proveedor' };
       localStorage.setItem(SESSION_KEY, JSON.stringify(currentSession));
@@ -264,22 +241,13 @@ async function checkSession() {
     const db = getDatabase();
     let u = (db.users || []).find(x => x.email === email);
 
-    // Primer ingreso (ej. vía Google): crear el perfil automáticamente
+    // Acceso solo por invitación (17-nov-2026): sin perfil pre-asignado no hay ingreso
     if (!u) {
-      const googleName = meta.full_name || meta.name;
-      u = {
-        email,
-        name: googleName || email.split('@')[0].toUpperCase(),
-        role: 'VENDEDOR', // perfil inicial (no privilegiado); un OWNER puede cambiarlo después
-        activo: true,
-        lastAccess: new Date().toLocaleDateString('es-CL')
-      };
-      db.users.push(u);
-      // Upsert directo: no usar saveDatabase() aquí porque sincroniza TODOS los usuarios,
-      // lo que genera errores RLS al intentar modificar filas de otros usuarios.
-      // La policy app_users_insert permite auto-registro de la propia fila @ebema.cl.
-      const { error: regErr } = await supabase.from('app_users').upsert(u);
-      if (regErr) console.warn('No se pudo registrar perfil en Supabase:', regErr.message);
+      await supabase.auth.signOut();
+      currentSession = null;
+      localStorage.removeItem(SESSION_KEY);
+      showAlert('Su cuenta no tiene acceso habilitado. El ingreso a SIT EBEMA es solo por invitación; solicítela al administrador.', 'error');
+      return;
     } else {
       // Actualizar lastAccess en cada inicio de sesión
       u.lastAccess = new Date().toLocaleDateString('es-CL');
@@ -315,7 +283,7 @@ function renderApp() {
   if (!currentSession) {
     renderAuthView();
   } else if (currentSession.tipo === 'proveedor') {
-    import('./provider-portal.js?v=202611171811').then(m => m.renderProviderShell(currentSession, handleLogout));
+    import('./provider-portal.js?v=202611171816').then(m => m.renderProviderShell(currentSession, handleLogout));
   } else {
     renderDashboardShell();
   }
@@ -358,8 +326,6 @@ async function handleLogout() {
 function renderAuthView() {
   if (authState === 'login') {
     renderLoginView();
-  } else if (authState === 'register') {
-    renderRegisterView();
   } else if (authState === 'recover') {
     renderRecoverView();
   }
@@ -492,9 +458,9 @@ function renderLoginView() {
             </button>
           </form>
 
-          <!-- Footer -->
+          <!-- Footer: acceso solo por invitación (17-nov-2026) -->
           <div style="margin-top:24px;padding-top:20px;border-top:1px solid #e9bcb6;text-align:center">
-            <p style="font-size:13px;color:#5c5f61">¿Es proveedor y no tiene cuenta? <button id="link-go-register" style="color:#b5000b;background:none;border:none;cursor:pointer;font-weight:700;font-size:13px" onmouseover="this.style.textDecoration='underline'" onmouseout="this.style.textDecoration='none'">Regístrese como Proveedor de Servicio</button></p>
+            <p style="font-size:13px;color:#5c5f61">El acceso es solo por invitación. Si necesita una cuenta, solicítela al administrador de la plataforma.</p>
           </div>
         </div>
       </div>
@@ -553,10 +519,6 @@ function renderLoginView() {
     }
   });
 
-  document.getElementById('link-go-register').addEventListener('click', () => {
-    authState = 'register';
-    renderAuthView();
-  });
 
   document.getElementById('link-go-recover').addEventListener('click', () => {
     authState = 'recover';
@@ -1772,7 +1734,7 @@ function renderDashboardShell() {
   document.getElementById('sv-goto').addEventListener('click', openGotoPalette);
   bindPaletteKey();
   // (12-oct-2026) Campana de notificaciones (menciones, respuestas y me gusta en comentarios de Orden de Carga)
-  import('./comentarios.js?v=202611171811')
+  import('./comentarios.js?v=202611171816')
     .then(m => m.initCampana(document.getElementById('sv-notif-slot'), { navegar: sub => switchTab('abastecimiento', sub) }))
     .catch(e => console.warn('notificaciones:', e));
   wireSidebar();
@@ -1861,37 +1823,37 @@ async function switchTab(tabName, subName = null) {
   _stageSpinner(stage);
   switch (tabName) {
     case 'home': {
-      const m = await loadMod('ind', './indicadores.js?v=202611171811');
+      const m = await loadMod('ind', './indicadores.js?v=202611171816');
       m.renderIndicadoresHome(stage);
       break;
     }
     case 'rates': {
       await loadRoutesData();
-      const m = await loadMod('rates', './rates.js?v=202611171811');
+      const m = await loadMod('rates', './rates.js?v=202611171816');
       m.renderRatesView(stage);
       break;
     }
     case 'transports': {
-      const m = await loadMod('trans', './transports.js?v=202611171811');
+      const m = await loadMod('trans', './transports.js?v=202611171816');
       m.renderTransportsView(stage);
       break;
     }
     case 'routes': {
       await loadRoutesData();
-      const m = await loadMod('routes', './routes.js?v=202611171811');
+      const m = await loadMod('routes', './routes.js?v=202611171816');
       if (alias) m.setRoutesSubTab(alias);
       m.renderRoutesView(stage);
       break;
     }
     case 'roles': {
-      const m = await loadMod('roles', './roles.js?v=202611171811');
+      const m = await loadMod('roles', './roles.js?v=202611171816');
       m.renderRolesView(stage);
       break;
     }
     case 'tarifas-transporte': {
       await loadRoutesData();
       await loadHistoricoFlete360();
-      const m = await loadMod('tt', './tarifas-transporte.js?v=202611171811');
+      const m = await loadMod('tt', './tarifas-transporte.js?v=202611171816');
       if (alias) m.setActiveSub(alias);
       m.renderTariffTransportView(stage);
       break;
@@ -1899,43 +1861,43 @@ async function switchTab(tabName, subName = null) {
     case 'tarifas-clientes': {
       await loadRoutesData();
       await loadHistoricoFlete360();
-      const m = await loadMod('tc', './tarifas-clientes.js?v=202611171811');
+      const m = await loadMod('tc', './tarifas-clientes.js?v=202611171816');
       if (alias) m.setActiveSubC(alias);
       m.renderClientTariffView(stage);
       break;
     }
     case 'abastecimiento': {
       await loadRoutesData();
-      const m = await loadMod('abast', './abastecimiento.js?v=202611171811');
+      const m = await loadMod('abast', './abastecimiento.js?v=202611171816');
       if (subName) m.setAbastSubTab(subName);
       if (m.setAbastNavegar) m.setAbastNavegar(sub => switchTab('abastecimiento', sub));   // (16-nov-2026) saltos entre vistas de Gestión Troncales
       m.renderAbastecimientoView(stage);
       break;
     }
     case 'indicadores': {
-      const m = await loadMod('ind', './indicadores.js?v=202611171811');
+      const m = await loadMod('ind', './indicadores.js?v=202611171816');
       if (subName) m.setIndicadoresSubTab(subName);
       m.renderIndicadoresView(stage);
       break;
     }
     case 'productos': {
-      const m = await loadMod('mprod', './maestro-productos.js?v=202611171811');
+      const m = await loadMod('mprod', './maestro-productos.js?v=202611171816');
       m.renderMaestroProductos(stage);
       break;
     }
     case 'monitor-consolidacion': {
-      const m = await loadMod('mcons', './monitor-consolidacion.js?v=202611171811');
+      const m = await loadMod('mcons', './monitor-consolidacion.js?v=202611171816');
       await m.renderMonitorConsolidacion(stage);
       break;
     }
     case 'porteria': {
-      const m = await loadMod('port', './porteria.js?v=202611171811');
+      const m = await loadMod('port', './porteria.js?v=202611171816');
       await m.renderPorteria(stage, subName || 'registro');
       break;
     }
     case 'flete-tercero': {
       await loadRoutesData();
-      const m = await loadMod('fter', './flete-tercero.js?v=202611171811');
+      const m = await loadMod('fter', './flete-tercero.js?v=202611171816');
       if (subName) m.setFleteTerceroSubTab(subName);
       m.renderFleteTerceroView(stage);
       break;
