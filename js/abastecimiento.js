@@ -10,13 +10,13 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611171017';
-import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611171017';
-import { getDatabase } from './data.js?v=202611171017';
+import { supabase } from './supabase-client.js?v=202611171050';
+import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611171050';
+import { getDatabase } from './data.js?v=202611171050';
 import { COMUNAS_POR_REGION } from './chile-geo.js';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611171017';
-import { confirmar, pedirDato } from './confirmar.js?v=202611171017';
+import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611171050';
+import { confirmar, pedirDato } from './confirmar.js?v=202611171050';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -8217,7 +8217,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611171017');
+    const m = await import('./ind-plan-carga.js?v=202611171050');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -11957,7 +11957,7 @@ async function reponerVentasCoordinadas(ventasRaw) {
     const lin = ventasCoordLin(coordVentas, conDt, VENTAS_ENT_CARGADAS);
     // (15-oct-2026, Jordan) NV programada que ya no viene en el SQVI → se entiende entregada: no se repone.
     const bkUsable = bkVen.filter(r => { const d = tx(r.doc_ventas); return !(VENTAS_PROGRAMADAS.has(d) && !docsLive.has(d)); });
-    reponerCoordPorPosicion(ventasRaw, coordVentas, bkUsable, conDt, VENTAS_ENT_CARGADAS, lin, VENTAS_MAT_CARGADAS);
+    reponerCoordPorPosicion(ventasRaw, coordVentas, bkUsable, conDt, VENTAS_ENT_CARGADAS, lin, VENTAS_MAT_CARGADAS, true);   // (17-nov-2026) sólo pendiente
     aplicarVentasCoordLin(ventasRaw, lin);
   } catch (e) { console.warn('Ventas CD: respaldo de NV coordinadas no disponible', e); }
 }
@@ -12019,7 +12019,7 @@ async function entregasYaViajadas(entregas) {
 // cargadasPos = Set «doc|material» de las líneas que realmente iban en ese camión: la entrega del
 // ENCABEZADO de la coordinación se hereda a cualquier material, así que sin este filtro una posición
 // que nunca se cargó (la pos 20 de la 1058465) se daría por despachada por la entrega de otra.
-function reponerCoordPorPosicion(ventasRaw, coordVentas, bkVen, conDt, cargadasEnt, lin, cargadasPos) {
+function reponerCoordPorPosicion(ventasRaw, coordVentas, bkVen, conDt, cargadasEnt, lin, cargadasPos, soloPendiente = false) {
   const tx = v => String(v ?? '').trim();
   const pendDe = r => parseNum(r.ctd_confirmada) - parseNum(r.cantidad_entrg);
   // (2-nov-2026, Jordan) La clave del respaldo es POR REPARTO (doc|pos|material|fecha): una NV con
@@ -12071,6 +12071,10 @@ function reponerCoordPorPosicion(ventasRaw, coordVentas, bkVen, conDt, cargadasE
       const kmRep = vivoSinConfirmar.get(k);
       if (kmRep && (confPosMat.get(kmRep) || 0) > 0) return;
       const ent = entregaLineaV(co, b.material, b.fe_entrega);
+      // (17-nov-2026, Jordan) Ventas CD muestra sólo lo PENDIENTE en SAP: una posición planificada cuya entrega
+      // coordinada ya está creada (SAP la sacó del archivo) no se repone; va en su camión (Plan / Seguimiento).
+      // Caso NV 1065009: se veían las 7 posiciones (28,7 t) aunque sólo quedaban pendientes las pos. 10 y 20.
+      if (soloPendiente && ent) { if (hayVivo) quitar.add(k); return; }
       const matFue = !cargadasPos || cargadasPos.has(`${tx(b.doc_ventas)}|${tx(b.material)}`);
       if (ent && cargadasEnt && cargadasEnt.has(ent) && matFue) { if (hayVivo) quitar.add(k); return; }  // 2)
       if (lin && lin.has(doc) && hayVivo) return;         // unidades editadas: manda la línea viva
