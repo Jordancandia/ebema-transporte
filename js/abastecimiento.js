@@ -10,13 +10,13 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611181029';
-import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611181029';
-import { getDatabase } from './data.js?v=202611181029';
+import { supabase } from './supabase-client.js?v=202611181037';
+import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611181037';
+import { getDatabase } from './data.js?v=202611181037';
 import { COMUNAS_POR_REGION } from './chile-geo.js';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611181029';
-import { confirmar, pedirDato } from './confirmar.js?v=202611181029';
+import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611181037';
+import { confirmar, pedirDato } from './confirmar.js?v=202611181037';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -1743,7 +1743,7 @@ function showCoordVentaModal(row, ctx) {
       const reglaTxt = `Regla: ${row._tipo_auto === 'CD-CLIENTE' ? 'CD-Cliente' : 'Consolidable'} · el cliente suma ${fmtNum(row._ton_cliente, 1)} t (umbral 23,8 t)`;
       panel.innerHTML = `
         <div class="sv-dr-h"><div style="flex:1;min-width:0">
-          <div class="sv-dr-k">${editando ? 'Editar coordinación' : 'Coordinar despacho'}</div>
+          <div class="sv-dr-k">${editando ? 'Editar coordinación' : row._saldoNuevo ? 'Coordinar saldo · nuevo despacho' : 'Coordinar despacho'}</div>
           <div class="sv-dr-t">${escapeHtml(row.doc_ventas)}</div>
           <div class="sv-dr-s">${escapeHtml(row._cliente || ('Cliente ID ' + (row._id_cliente || '—')))} → ${escapeHtml(getNombreCentro(row.ofvta))} · ${fmtNum(row._ton_num, 2)} t</div></div>
           <button class="sv-iconbtn" data-cx title="Cerrar (Esc)"><span class="material-symbols-outlined">close</span></button></div>
@@ -1859,7 +1859,8 @@ function showCoordVentaModal(row, ctx) {
           doc_ventas: MAIN, reparto: REP, n_entrega: entregaHdr, id_cliente: row._id_cliente || null, nombre_cliente: row._cliente || null,
           comuna: st.comuna.trim() || null, direccion: st.direccion.trim(), telefono: st.telefono.trim(), ...baseCoord,
           ce_alternativo: st.ceAlt && st.ceAlt !== st.ceOrig ? st.ceAlt : null, lineas: lc.lineas,
-          ...((entregasV || (c.entregas && Object.keys(c.entregas).length)) ? { entregas: entregasV } : {}),
+          // (18-nov-2026, Jordan) Saldo: es un despacho NUEVO; no hereda las entregas del despacho que ya viajó.
+          ...(row._saldoNuevo ? { entregas: entregasV } : (entregasV || (c.entregas && Object.keys(c.entregas).length)) ? { entregas: entregasV } : {}),
         }, !editando);
         if (!ok) { btn.disabled = false; return; }
         for (const [d, ex] of extrasG) {
@@ -5718,7 +5719,7 @@ const V2 = {
       const diaObjTxt = r._dia_obj ? fmtFechaISO(isoLocal(r._dia_obj)) : '';
       const k = r._cargada;
       const aviso = k ? `<b>COORDINADO · bloqueado:</b> el pedido ya va en un camión programado (${escV2(k.tipo || 'camión')} · carga ${escV2(fmtFechaISO(String(k.fecha_carga).slice(0, 10)))}${k.patente ? ' · patente ' + escV2(k.patente) : ''}${k.transportista ? ' · ' + escV2(k.transportista) : ''}). No se vuelve a considerar en el Plan de Carga; sale de la vista cuando el SQVI deje de traerlo.`
-        : r._saldoSinCoord ? `<b>Saldo sin coordinar:</b> la coordinación anterior ya viajó${r._viajo ? ` (camión ${escV2(r._viajo.patente || r._viajo.transportista || 'programado')} · carga ${escV2(fmtFechaISO(String(r._viajo.fecha_carga).slice(0, 10)))})` : ''} y SAP todavía muestra pendiente. Ese saldo NO está coordinado: no entra al Plan de Carga hasta que lo coordines con «Coordinar despacho» (fecha y entrega nuevas).`
+        : r._saldoSinCoord ? `<b>Saldo sin coordinar:</b> la coordinación anterior ya viajó${r._viajo ? ` (camión ${escV2(r._viajo.patente || r._viajo.transportista || 'programado')} · carga ${escV2(fmtFechaISO(String(r._viajo.fecha_carga).slice(0, 10)))})` : ''} y SAP todavía muestra pendiente. Ese saldo NO está coordinado: no entra al Plan de Carga hasta que lo coordines con «Coordinar saldo» (despacho nuevo: fecha, unidades y entrega nuevas).`
         : r._vencida ? `<b>Pendiente de regularizar:</b> el despacho estaba coordinado para el ${escV2(r._fecha_plan)} y SAP sigue mostrando ${escV2(fmtNum((r._detalle || []).reduce((s2, d) => s2 + (Number(d.pendiente) || 0), 0), 0))} un pendientes${entregasCoordV(r._coord).length ? ` (entrega ${escV2(entregasCoordV(r._coord).join(', '))} sin DT)` : ''}. <b>No está en el Plan de Carga.</b> Si no se despachó, usa «Editar coordinación» con una fecha nueva; si sí salió, pide crear la DT / cerrar la entrega en SAP; si no va, anula la coordinación.`
         : r._plan === 'EN_PLAN' ? `<b>Plan de carga:</b> pedido coordinado para el ${escV2(r._fecha_plan)}; entra al Plan de Carga de hoy (día objetivo ${escV2(diaObjTxt)}).`
         : r._plan === 'PROGRAMADO' ? `<b>Plan de carga:</b> pedido coordinado para el ${escV2(r._fecha_plan)}; entrará al plan cuyo día objetivo sea esa fecha.`
@@ -5751,17 +5752,22 @@ const V2 = {
       if (!k && puedeCoordV && !(r._sin_ruta_pos || []).length) {
         // (2-nov-2026, Jordan) Con varios repartos pendientes se coordina UN reparto a la vez: el
         // selector pregunta cuál y el diálogo abre con las unidades y la fecha de ese reparto.
-        acciones.push({ label: r._multi_rep ? 'Coordinar reparto' : (c ? 'Editar coordinación' : 'Coordinar despacho'),
+        // (18-nov-2026, Jordan) SALDO SIN COORDINAR: la coordinación anterior ya viajó, así que el saldo se coordina como un
+        // despacho NUEVO («Coordinar saldo»): no se edita ni se anula la coordinación pasada.
+        const saldo = !!r._saldoSinCoord;
+        acciones.push({ label: saldo ? 'Coordinar saldo' : r._multi_rep ? 'Coordinar reparto' : (c ? 'Editar coordinación' : 'Coordinar despacho'),
           icon: 'event_available', primary: true,
+          title: saldo ? 'La coordinación anterior ya viajó: programa el saldo pendiente como un despacho nuevo' : undefined,
           run: async (row, ctx2) => {
             let rp = '';
             if (row._multi_rep) {
               rp = await pickRepartoNV(row, {});
               if (rp === null) return null;
             }
-            return (await showCoordVentaModal(rowDeReparto(row, rp), ctx2)) ? { recargar: true } : null;
+            const base = rowDeReparto(row, rp);
+            return (await showCoordVentaModal(saldo ? { ...base, _coord: null, _saldoNuevo: true } : base, ctx2)) ? { recargar: true } : null;
           } });
-        if (c || (r._reps_coord || 0) > 0) acciones.push({ label: 'Anular coordinación', icon: 'event_busy', run: async row => {
+        if (!saldo && (c || (r._reps_coord || 0) > 0)) acciones.push({ label: 'Anular coordinación', icon: 'event_busy', run: async row => {
           let rp = '';
           if (row._multi_rep) {
             rp = await pickRepartoNV(row, { soloCoordinados: true });
@@ -8488,7 +8494,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611181029');
+    const m = await import('./ind-plan-carga.js?v=202611181037');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
