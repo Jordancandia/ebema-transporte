@@ -18,6 +18,10 @@
 //   · maestro_productos                    ← prioridad de pesos
 //   · obras_georef                         ← coordenadas exactas de obra
 //
+// (18-nov-2026) Flete express = pedido spot (rayo + alerta, primero en la lista). Detalle con fechas, repartos,
+// entregas y flete: traslado (ZFLT), última milla (ZFL0/ZFL1) y sugerido por posición:
+//   $/kg < mínimo → mínimo · $/kg > máximo → máximo · entre ambos → $/kg (máximo 0 = sin tope); total = Σ posiciones.
+//
 // Estado del pedido (sobre posiciones con pendiente, sin MR 60/70/CR que se ocultan):
 //   · bloq    Bloqueado      todas las posiciones pendientes bloqueadas
 //   · sin     Sin entrega    ninguna posición con entrega creada
@@ -25,10 +29,10 @@
 //   · lista   Con entrega    todas las posiciones libres cubiertas por entregas
 //   Marcas: vencido (F. entrega < hoy), bloqueo parcial, unidades sin confirmar.
 // ============================================================================
-import { supabase } from './supabase-client.js?v=202611181651';
-import { getDatabase, loadRoutesData, HIST_ALIAS_PREFIJO } from './data.js?v=202611181651';
+import { supabase } from './supabase-client.js?v=202611181917';
+import { getDatabase, loadRoutesData, HIST_ALIAS_PREFIJO } from './data.js?v=202611181917';
 import { loadLeaflet } from './utils.js';
-import { filtrarPorCentro, can } from './permisos.js?v=202611181651';
+import { filtrarPorCentro, can } from './permisos.js?v=202611181917';
 
 const CFG = {
   tablaGeo: 'obras_georef',
@@ -250,8 +254,8 @@ function evaluar(p) {
   // Flete express (pedido spot): alguna posición con X → se ve con rayo y va primero
   p._express = p.posiciones.some(x => x.express);
   if (p._express) marcas.unshift({ t: 'xp', txt: 'Express · spot' });
-  // Fletes del pedido (posiciones no bloqueadas)
-  const fl = p.posiciones.filter(x => !x.bloqueo);
+  // Fletes del pedido: todas las posiciones visibles (incluye bloqueo MR 79 por liberar; 60/70/CR ya se ocultaron)
+  const fl = p.posiciones;
   const s = k => fl.reduce((a, x) => a + (x[k] || 0), 0);
   p._flete = { min: s('fleteMin'), max: s('fleteMax'), pk: s('fletePk'), sug: s('fleteSug'), traslado: s('fleteTraslado'), ultMilla: s('fleteUltMilla') };
   p._flete.cobrado = p._flete.traslado + p._flete.ultMilla;
@@ -466,15 +470,7 @@ function renderCond() {
 }
 /** Panel lateral: matriz condición × estado + lista de pedidos priorizada. */
 function renderLista() {
-  const base = S.pedidos.filter(coincide);
-  let h = `<div class="cc-sec-t"><span>Resumen por condición</span></div><table class="cc-mx"><thead><tr><th></th>${ESTADOS.map(e => `<th title="${esc(e.label)}"><i style="background:${e.color}"></i></th>`).join('')}<th>Tot.</th></tr></thead><tbody>`;
-  h += CONDS.map(c => {
-    const pc = base.filter(p => p.cond === c.key);
-    return `<tr class="${S.cond.has(c.key) ? '' : 'off'}"><td><span class="cc-ci sm" style="background:${c.color}">${ms(c.icon)}</span>${esc(c.corto)}</td>${ESTADOS.map(e => {
-      const n = pc.filter(p => p._estado === e.key).length;
-      return `<td><button class="cc-mx-n${n ? '' : ' z'}" data-mx="${esc(c.key)}|${e.key}" ${n ? '' : 'disabled'}>${n}</button></td>`;
-    }).join('')}<td class="mono"><b>${pc.length}</b></td></tr>`;
-  }).join('') + '</tbody></table>';
+  let h = '';
   const lista = filtrados().sort((a, b) => a._prio - b._prio).slice(0, 150);
   h += `<div class="cc-sec-t"><span>Pedidos por atender</span><span>${filtrados().length}</span></div>`;
   if (!lista.length) h += `<div class="cc-empty">${ms('inbox')}Sin pedidos para los filtros actuales.</div>`;
@@ -592,7 +588,7 @@ function abrirDetalle(id) {
         <tr><th>Pos</th><th>Material</th><th>Descripción</th><th class="r">Cant.</th><th class="r">Entregado</th><th class="r">Pendiente</th><th>Repartos (fecha · ctd)</th><th>Entrega</th><th>Estado</th>
         <th class="r sep">Traslado</th><th class="r">Últ. milla</th><th class="r sep">Mínimo</th><th class="r">Máximo</th><th class="r">$ por kilo</th><th class="r">Sugerido</th></tr></thead>
         <tbody>${filas}</tbody>
-        <tfoot><tr><td colspan="9"><b>Total pedido</b> <small>(sin posiciones bloqueadas)</small></td>
+        <tfoot><tr><td colspan="9"><b>Total pedido</b></td>
           <td class="r mono sep"><b>${fCLP(F.traslado)}</b></td><td class="r mono"><b>${fCLP(F.ultMilla)}</b></td>
           <td class="r mono sep"><b>${fCLP(F.min)}</b></td><td class="r mono"><b>${fCLP(F.max)}</b></td><td class="r mono"><b>${fCLP(F.pk)}</b></td><td class="r mono sug"><b>${fCLP(F.sug)}</b></td></tr></tfoot>
       </table></div>
@@ -640,11 +636,20 @@ function bindEventos() {
   });
   $('#cc-btn-todas').onclick = () => { S.cond = new Set(CONDS.map(c => c.key)); S.fEstado = 'todos'; S.soloVencidos = false; S.q = ''; $('#cc-q').value = ''; renderTodo(true); };
   $('#cc-btn-geo').onclick = () => activarEdicion(!S.editGeo);
+  $('#cc-btn-encuadrar').onclick = () => ajustarVista();
+  $('#cc-btn-panel').onclick = () => {
+    const off = root.classList.toggle('sin-panel');
+    $('#cc-btn-panel').innerHTML = ms(off ? 'right_panel_open' : 'right_panel_close');
+    setTimeout(() => map.invalidateSize(), 220);
+  };
+  $('#cc-btn-full').onclick = () => {
+    const on = root.classList.toggle('map-full');
+    $('#cc-btn-full').innerHTML = ms(on ? 'fullscreen_exit' : 'fullscreen');
+    setTimeout(() => { map.invalidateSize(); ajustarVista(); }, 120);
+  };
   $('#cc-btn-reload').onclick = () => recargar();
   const pane = $('#cc-pane');
   pane.addEventListener('click', e => {
-    const mx = e.target.closest('[data-mx]');
-    if (mx) { const [c, est] = mx.dataset.mx.split('|'); S.cond = new Set([c]); S.fEstado = est; S.soloVencidos = false; renderTodo(true); return; }
     const li = e.target.closest('.cc-li[data-id]'); if (!li) return;
     seleccionar(li.dataset.id, { sinScroll: true }); abrirDetalle(li.dataset.id);
   });
@@ -675,7 +680,9 @@ function bindEventos() {
 }
 function onKey(e) {
   if (!root || !document.body.contains(root)) { document.removeEventListener('keydown', onKey); return; }
-  if (e.key === 'Escape') $('#cc-modal').classList.remove('show');
+  if (e.key !== 'Escape') return;
+  if ($('#cc-modal').classList.contains('show')) { $('#cc-modal').classList.remove('show'); return; }
+  if (root.classList.contains('map-full')) $('#cc-btn-full').click();
 }
 
 /* ════════════════════════════════════════════════════════════════════════
@@ -703,6 +710,11 @@ function plantilla() {
       <div class="cc-mapwrap">
         <div id="cc-map"></div>
         <div class="cc-maphint" id="cc-maphint"></div>
+        <div class="cc-mapbtns">
+          <button class="cc-mapbtn" id="cc-btn-encuadrar" title="Encuadrar todos los pedidos">${ms('fit_screen')}</button>
+          <button class="cc-mapbtn" id="cc-btn-panel" title="Ocultar / mostrar panel lateral">${ms('right_panel_close')}</button>
+          <button class="cc-mapbtn" id="cc-btn-full" title="Mapa a pantalla completa">${ms('fullscreen')}</button>
+        </div>
         <div class="cc-legend" id="cc-legend"></div>
       </div>
     </div>
@@ -769,11 +781,11 @@ function inyectarEstilos() {
   st.id = 'cc-style';
   st.textContent = `
 .cc{--cc-primary:#b5000b;--cc-sel:#ffdad5;--cc-sel2:#fff5f3;--cc-ink:#191c1d;--cc-ink2:#5c5f61;--cc-ink3:#444749;--cc-s1:#f3f4f5;--cc-s2:#edeeef;--cc-s3:#e7e8e9;--cc-line:#e1e3e4;--cc-line2:#edeeef;--cc-mono:'JetBrains Mono',ui-monospace,Consolas,monospace;--cc-gray:#9ca3af;
-display:grid;grid-template-rows:auto minmax(0,1fr) auto;height:calc(100vh - 112px);min-height:720px;gap:12px;color:var(--cc-ink);font-size:14px}
+display:flex;flex-direction:column;gap:10px;color:var(--cc-ink);font-size:14px}
 .cc *,.cc-toasts *{box-sizing:border-box}
 .cc .material-symbols-outlined,.cc-toasts .material-symbols-outlined,.cc-pin .material-symbols-outlined,.cc-tt .material-symbols-outlined{font-size:18px;line-height:1;vertical-align:middle;display:inline-block;width:1em;overflow:hidden;white-space:nowrap;flex-shrink:0}
 .cc .mono,.cc-tt .mono{font-family:var(--cc-mono,monospace);font-size:12px}.cc .num{font-variant-numeric:tabular-nums}
-.cc-top{display:flex;flex-wrap:wrap;align-items:center;gap:10px 16px;background:#fff;border:1px solid var(--cc-line);border-radius:8px;padding:10px 14px}
+.cc-top{display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px;background:#fff;border:1px solid var(--cc-line);border-radius:8px;padding:8px 12px}
 .cc-brand{display:flex;align-items:center;gap:10px;margin-right:auto;min-width:220px}
 .cc-brand-ic{width:36px;height:36px;border-radius:8px;background:var(--cc-sel);color:var(--cc-primary);display:flex;align-items:center;justify-content:center}
 .cc-brand-ic .material-symbols-outlined{font-size:22px}
@@ -790,16 +802,16 @@ display:grid;grid-template-rows:auto minmax(0,1fr) auto;height:calc(100vh - 112p
 .cc-search input{border:none;outline:none;width:240px;font-size:13px;background:none}
 /* KPIs */
 .cc-kpis{flex-basis:100%;display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:8px}
-.cc-kpi{display:flex;align-items:center;gap:10px;border:1px solid var(--cc-line);background:#fff;border-radius:8px;padding:9px 11px;cursor:pointer;text-align:left;transition:border-color .15s,box-shadow .15s;position:relative;overflow:hidden}
+.cc-kpi{display:flex;align-items:center;gap:8px;border:1px solid var(--cc-line);background:#fff;border-radius:8px;padding:5px 9px;cursor:pointer;text-align:left;transition:border-color .15s,box-shadow .15s;position:relative;overflow:hidden}
 .cc-kpi::before{content:'';position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--kc)}
 .cc-kpi:hover{border-color:var(--kc)}
 .cc-kpi.is-on{border-color:var(--kc);box-shadow:0 0 0 2px var(--kc) inset;background:color-mix(in srgb,var(--kc) 6%,#fff)}
-.cc-kpi-ic{width:32px;height:32px;border-radius:8px;display:flex;align-items:center;justify-content:center;background:color-mix(in srgb,var(--kc) 14%,#fff);color:var(--kc)}
+.cc-kpi-ic{width:26px;height:26px;border-radius:8px;display:flex;align-items:center;justify-content:center;background:color-mix(in srgb,var(--kc) 14%,#fff);color:var(--kc)}
 .cc-kpi-ic .material-symbols-outlined{font-size:20px}
 .cc-kpi-b{display:flex;flex-direction:column;min-width:0}
 .cc-kpi-l{font-size:11px;font-weight:600;color:var(--cc-ink2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.cc-kpi b{font-size:20px;line-height:24px}
-.cc-kpi-s{font-size:10.5px;color:var(--cc-ink2);white-space:nowrap}
+.cc-kpi b{font-size:17px;line-height:20px}
+.cc-kpi-s{display:none}
 /* Condición */
 .cc-ci{width:22px;height:22px;border-radius:6px;display:inline-flex;align-items:center;justify-content:center;color:#fff;flex-shrink:0}
 .cc-ci .material-symbols-outlined{font-size:15px}
@@ -814,15 +826,15 @@ display:grid;grid-template-rows:auto minmax(0,1fr) auto;height:calc(100vh - 112p
 .cc-est-pill{display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:700;padding:2px 8px;border-radius:999px;white-space:nowrap}
 .cc-est-pill .material-symbols-outlined{font-size:14px}
 /* Layout */
-.cc-main{display:grid;grid-template-columns:minmax(0,1fr) 380px;gap:12px;min-height:0}
+.cc-main{display:grid;grid-template-columns:minmax(0,1fr) 330px;gap:10px;height:max(620px,calc(100vh - 290px))}
 .cc-card{background:#fff;border:1px solid var(--cc-line);border-radius:8px;min-height:0;display:flex;flex-direction:column;overflow:hidden}
 .cc-btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;border:1px solid var(--cc-line);background:#fff;border-radius:6px;padding:7px 12px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap;color:var(--cc-ink)}
 .cc-btn:disabled{opacity:.45;cursor:not-allowed}.cc-btn.pri{background:var(--cc-primary);border-color:var(--cc-primary);color:#fff}.cc-btn.sm{padding:4px 9px;font-size:12px}
-.cc-mapwrap{position:relative;flex:1;min-height:320px}
+.cc-mapwrap{position:relative;flex:1;min-height:0}
 #cc-map{position:absolute;inset:0;background:#e8eaeb}
 .cc-maphint{position:absolute;left:50%;top:10px;transform:translateX(-50%);z-index:500;background:var(--cc-ink);color:#fff;font-size:12px;padding:6px 12px;border-radius:999px;box-shadow:0 2px 8px rgba(0,0,0,.2);display:none;align-items:center;gap:6px;pointer-events:none}
 .cc-maphint.show{display:flex}
-.cc-legend{position:absolute;left:10px;bottom:10px;z-index:500;background:rgba(255,255,255,.96);border:1px solid var(--cc-line);border-radius:8px;padding:8px 10px;font-size:11px;display:flex;flex-direction:column;gap:4px;color:var(--cc-ink3);box-shadow:0 2px 8px rgba(0,0,0,.08)}
+.cc-legend{position:absolute;left:10px;bottom:10px;z-index:500;background:rgba(255,255,255,.92);border:1px solid var(--cc-line);border-radius:8px;padding:6px 9px;font-size:10.5px;display:flex;flex-direction:column;gap:4px;color:var(--cc-ink3);box-shadow:0 2px 8px rgba(0,0,0,.08)}
 .cc-legend div{display:flex;align-items:center;gap:7px}
 .cc-legend i{width:10px;height:10px;border-radius:50%;display:inline-block;border:1.5px solid #fff;box-shadow:0 0 0 1px rgba(0,0,0,.15);margin:0 4px 0 4px}
 .cc-legend i.dash{background:#fff;border:1.5px dashed var(--cc-ink2);box-shadow:none}
@@ -880,7 +892,7 @@ table.cc-mx{width:100%;border-collapse:collapse;font-size:12px;margin-bottom:4px
 .cc-tag.am{background:#fef3c7;color:#92400e}.cc-tag.gr{background:#dcfce7;color:#166534}.cc-tag.rd{background:#fee2e2;color:#991b1b}.cc-tag.gy{background:#edeeef;color:#444749}
 .cc-venc{color:#b91c1c!important;font-weight:700}
 /* Tabla */
-.cc-tablecard{height:min(34vh,380px)}
+.cc-tablecard{height:min(46vh,480px)}
 .cc-tbar{display:flex;align-items:center;gap:10px;padding:8px 12px;border-bottom:1px solid var(--cc-line)}
 .cc-tbar-t{font-weight:700;font-size:14px}.cc-tbar-s{font-size:12px;color:var(--cc-ink2)}
 .cc-tscroll{flex:1;overflow:auto}
@@ -922,7 +934,7 @@ table.cc-t{width:100%;border-collapse:separate;border-spacing:0;font-size:13px}
 .cc-modal th{text-align:left;font-size:10.5px;text-transform:uppercase;letter-spacing:.04em;color:var(--cc-ink2);padding:6px 8px;border-bottom:1px solid var(--cc-line);background:var(--cc-s1);white-space:nowrap}
 .cc-modal td{padding:6px 8px;border-bottom:1px solid var(--cc-line2)}
 .cc-modal tr.bad td{background:#fef3c7}.cc-modal tr.blq td{background:#fff5f5;color:#7f1d1d;text-decoration:line-through}
-.cc-modal tr.blq td:last-child{text-decoration:none}
+.cc-modal tr.blq td:last-child,.cc-modal .cc-dtab tr.blq td:nth-child(n+9){text-decoration:none}
 .cc-modal .r{text-align:right}
 /* Express (spot) */
 .cc-rayo{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;background:#facc15;color:#713f12;margin:0 3px;vertical-align:middle;box-shadow:0 0 0 2px #fef9c3;animation:ccXp 1.6s ease-in-out infinite}
@@ -970,6 +982,15 @@ table.cc-t{width:100%;border-collapse:separate;border-spacing:0;font-size:13px}
 .cc-rep{font-family:var(--cc-mono);font-size:11px;background:var(--cc-s1);border-radius:4px;padding:1px 5px;white-space:nowrap}
 .cc-rep.venc{background:#fee2e2;color:#991b1b}
 @media (max-width:1100px){.cc-dgrid{grid-template-columns:1fr}}
+/* Mapa protagonista (18-nov-2026) */
+.cc-mapbtns{position:absolute;top:10px;right:10px;z-index:600;display:flex;flex-direction:column;gap:6px}
+.cc-mapbtn{width:34px;height:34px;border-radius:8px;border:1px solid var(--cc-line);background:#fff;color:var(--cc-ink3);display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 1px 4px rgba(0,0,0,.15)}
+.cc-mapbtn:hover{color:var(--cc-primary);border-color:var(--cc-primary)}
+.cc-mapbtn .material-symbols-outlined{font-size:20px}
+.cc.sin-panel .cc-main{grid-template-columns:minmax(0,1fr) 0}
+.cc.sin-panel .cc-side{display:none}
+.cc.map-full .cc-main{position:fixed;inset:0;z-index:1900;height:100vh;grid-template-columns:minmax(0,1fr) 330px;background:#fff;padding:8px;gap:8px}
+.cc.map-full.sin-panel .cc-main{grid-template-columns:minmax(0,1fr) 0}
 @media (max-width:1280px){.cc-kpis{grid-template-columns:repeat(3,minmax(0,1fr))}}
 @media (max-width:1100px){.cc{height:auto}.cc-main{grid-template-columns:1fr}.cc-mapwrap{height:58vh;flex:none}.cc-side{max-height:560px}.cc-tablecard{height:auto;max-height:70vh}}
 @media (max-width:640px){.cc-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.cc-kv{grid-template-columns:repeat(2,1fr)}.cc-search input{width:140px}.cc-brand{min-width:0;width:100%}}
