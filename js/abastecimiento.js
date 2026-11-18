@@ -10,13 +10,13 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611181041';
-import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611181041';
-import { getDatabase } from './data.js?v=202611181041';
+import { supabase } from './supabase-client.js?v=202611181501';
+import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611181501';
+import { getDatabase } from './data.js?v=202611181501';
 import { COMUNAS_POR_REGION } from './chile-geo.js';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611181041';
-import { confirmar, pedirDato } from './confirmar.js?v=202611181041';
+import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611181501';
+import { confirmar, pedirDato } from './confirmar.js?v=202611181501';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -1266,7 +1266,7 @@ async function loadRetirosUnidosCD() {
 // hoy como NUEVA POR AJUSTE (log abast_plan_sin_fondo_accion: SUBIR_REEMPLAZO; QUITAR_AJUSTE / DESHACER la anulan).
 // Claves: ce|documento|material.
 async function loadSinFondoPlan(origen) {
-  const out = { est: new Map(), bloq: [], ajuste: new Map() };
+  const out = { est: new Map(), bloq: [], ajuste: new Map(), reserva: new Map() };
   const k = x => `${String(x.ce ?? '').trim()}|${String(x.documento ?? '').trim()}|${String(x.material ?? '').trim()}`;
   try {
     const { data, error } = await supabase.rpc('fn_abast_sin_fondo_estado', { p_cd_origen: origen });
@@ -1279,6 +1279,13 @@ async function loadSinFondoPlan(origen) {
     if (error) throw error;
     (data || []).forEach(x => { if (x.accion === 'SUBIR_REEMPLAZO') out.ajuste.set(k(x), x); else out.ajuste.delete(k(x)); });
   } catch (e) { console.warn('Plan de carga: ajustes sin fondo no disponibles', e); }
+  // (18-nov-2026, Jordan) RESERVA del aviso a Logística (R1, R2…): si Operaciones la suministra (tiene entrega) entra sola al camión.
+  try {
+    const { data, error } = await supabase.from('abast_plan_aviso_entregas').select('ce,documento,material,reserva_orden')
+      .eq('fecha', isoLocal(hoy00())).eq('cd_origen', origen).not('reserva_orden', 'is', null).not('enviado_en', 'is', null);
+    if (error) throw error;
+    (data || []).forEach(x => out.reserva.set(k(x), Number(x.reserva_orden)));
+  } catch (e) { console.warn('Plan de carga: reserva del aviso no disponible', e); }
   return out;
 }
 async function loadCamionesManuales() {
@@ -5098,6 +5105,7 @@ const V2_DEPS = {
 const SF_CATS_PT = ['revex', 'cross', 'quiebre', 'stock', 'adelanto'];
 const SF_TIPO = { revex: 'Revex', cross: 'Crossdocking', quiebre: 'Traslado', stock: 'Traslado', adelanto: 'Traslado' };
 const SF_TIPO_TONE = { Revex: 'ok', Crossdocking: 'info', Traslado: 'mute' };
+const reservaBadge = n => `<span class="sv-pill info" style="font-size:10px;padding:0 6px;margin-left:4px" title="Reserva del aviso a Logística: se suministró porque faltó fondo en el plan y entró sola al camión">RESERVA R${escapeHtml(String(n))}</span>`;
 const AJUSTE_BADGE = `<span class="sv-pill purple" style="font-size:10px;padding:0 6px;margin-left:4px" title="Posición nueva: entró al camión para reponer una línea sin fondo">NUEVA POR AJUSTE</span>`;
 const sfCierreHoy = () => { const c = new Date(); c.setHours(17, 0, 0, 0); return new Date() >= c; };
 // Resumen por sucursal (origen|destino) a partir del estado del plan de las vistas.
@@ -5161,7 +5169,8 @@ function sfAccionDetalle(r, vista) {
 // Columna Plan de Carga de las 3 vistas
 function sfPlanPill(r) {
   const p = PLAN_LINEA_V2[r._plan] || PLAN_LINEA_V2.FUERA;
-  return pill(p[0], p[1]) + (r._ajusteSF && r._en_plan ? `<div style="margin-top:4px">${pill('Nueva por ajuste', 'purple')}</div>` : '');
+  return pill(p[0], p[1]) + (r._ajusteSF && r._en_plan ? `<div style="margin-top:4px">${pill('Nueva por ajuste', 'purple')}</div>` : '')
+    + (r._reservaSF && r._en_plan ? `<div style="margin-top:4px">${pill('Reserva R' + r._reservaSF + ' · suministrada', 'info')}</div>` : '');
 }
 // Panel lateral: qué salió por falta de fondo y con qué completar el camión CD de la sucursal.
 function abrirReposicionSinFondo(ep, orig, ce, vista) {
@@ -8545,7 +8554,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611181041');
+    const m = await import('./ind-plan-carga.js?v=202611181501');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -8862,6 +8871,9 @@ function asignarCamionesCD(r) {
     d._ajusteSF = !!(pt && r.sf && r.sf.ajuste.has(kk));
     const e = pt && r.sf ? r.sf.est.get(kk) : null;
     d._sinFondo = !!(e && (e.estado === 'SIN FONDO' || e.estado === 'PARCIAL') && !String(d.entrega_entrante || d.entrega || '').trim());
+    // (18-nov-2026) RESERVA suministrada: posición de la reserva del aviso que ya tiene entrega → entra sola al camión CD
+    const ro = pt && r.sf && r.sf.reserva ? r.sf.reserva.get(kk) : null;
+    d._reservaSF = !!(ro && String(d.entrega_entrante || d.entrega || '').trim()) ? ro : 0;
     return d._sinFondo;
   };
   let acc = 0;
@@ -8872,6 +8884,7 @@ function asignarCamionesCD(r) {
     let v = asig.get(`${doc(d)}|${mat(d)}`);
     if ((v === undefined || v === null) && d._unidoCD) v = 1;   // (29-oct-2026) retiro unido: siempre en el camión CD
     if (sfDe(d)) v = 0;   // (18-nov-2026) sin fondo: fuera del camión
+    else if (d._reservaSF && (v === undefined || v === null)) v = 1;   // (18-nov-2026) reserva suministrada: al camión CD
     d._manual = v === undefined || v === null ? null : Number(v);
     d._camion2 = false; d._enCamion = false; d._manualExcede = false;
   });
@@ -8963,7 +8976,7 @@ function estadoPlanTraslados() {
   return p;
 }
 async function estadoPlanTrasladosCalc() {
-  const lineas = new Map(), lineasEnt = new Map(), ajustes = new Set(), centros = {};
+  const lineas = new Map(), lineasEnt = new Map(), ajustes = new Set(), reservas = new Map(), centros = {};
   let exclusiones = [], inclusiones = [];
   let seg = new Set();
   try {
@@ -8999,6 +9012,7 @@ async function estadoPlanTrasladosCalc() {
           if (!prev || est === 'EN_CAMION' || est === 'ADELANTO' || (est === 'CAMION2' && prev !== 'EN_CAMION')) lineas.set(`${kc}|${kl}`, est);
           lineasEnt.set(`${kc}|${kl}|${ent}`, est);
           if (d._ajusteSF && (d._enCamion || d._camion2)) ajustes.add(`${kc}|${kl}`);
+          if (d._reservaSF && (d._enCamion || d._camion2)) reservas.set(`${kc}|${kl}`, d._reservaSF);
           lin.push({ cat, doc: pt, mat: String(d.material ?? '').trim(), nombre: d.nombre || '', fecha: d.fecha || '', ent, ton: d.ton || 0, est,
             aj: !!d._ajusteSF, prio: !!d._prio, ord: d._orden ?? 0 });
         }));
@@ -9009,7 +9023,7 @@ async function estadoPlanTrasladosCalc() {
       });
     }
   }
-  return { lineas, lineasEnt, ajustes, centros, exclusiones, inclusiones };
+  return { lineas, lineasEnt, ajustes, reservas, centros, exclusiones, inclusiones };
 }
 const PLAN_LINEA_V2 = {
   EN_CAMION:    ['En camión', 'ok'],
@@ -9077,6 +9091,7 @@ function aplicarEstadoPlanTraslados(rows, ep, opts = {}) {
     r._plan_inc = incSet.has(kl);
     r._plan_centro = ep.centros[`${orig}|${ce}`] || null;
     r._ajusteSF = !!(ep.ajustes && ep.ajustes.has(`${orig}|${ce}|${kl}`));
+    r._reservaSF = (ep.reservas && ep.reservas.get(`${orig}|${ce}|${kl}`)) || 0;   // (18-nov-2026) reserva suministrada
     r._plan = (estaExcluido(ep.exclusiones || [], fuente, r.doc_compr, r.material) || excluidaEntrega(ep.exclusiones || [], fuente, r.entrega, r.material)) ? 'EXCLUIDO'
       : ((ep.lineasEnt && ep.lineasEnt.get(`${orig}|${ce}|${kl}|${ent}`)) || ep.lineas.get(`${orig}|${ce}|${kl}`) || 'FUERA');
     r._en_plan = r._plan === 'EN_CAMION' || r._plan === 'CAMION2' || r._plan === 'ADELANTO';
@@ -11700,7 +11715,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
     const cant = d => tipo === 'X' ? fmtNum(d.ctdPend, 0) : tipo === 'T' ? escapeHtml(d.ctd ?? '') : fmtNum(parseNum(d.cant), 0);
     return `<div class="pc-tbl"><table class="sv-table"><thead><tr>${head.map((h, i) => `<th class="${i >= 4 ? 'r' : ''}">${escapeHtml(h)}</th>`).join('')}${accFn ? '<th class="r pc-acc">Mover</th>' : ''}</tr></thead>
       <tbody>${items.map(d => `<tr class="${d._enCamion === false ? (d._camion2 ? 'is-seg' : 'is-fuera') : ''}" title="${d._enCamion === false ? (d._camion2 ? 'Va en el 2º camión (opcional)' : 'No cabe: queda para el próximo plan') : ''}">
-        <td style="white-space:nowrap">${esPrioCarga(d) ? PRIO_BADGE : ''}${docHtml(d)}${d._ajusteSF ? AJUSTE_BADGE : ''}${d._ingSum ? `<div style="margin-top:2px;font-size:10px">${ingSumPill(true)}</div><div class="sv-sub" style="margin:0">PV ${escapeHtml(String(d.pv ?? ''))}</div>` : ''}${d._guiaFact ? `<div style="margin-top:2px;font-size:10px">${leyendaPv4000Pill(true)}</div>` : ''}${d._ceOrig ? `<div class="sv-sub" style="margin:2px 0 0;color:#7e22ce;font-weight:700" title="Centro destino alternativo asignado al coordinar">Centro alt. · orig. ${escapeHtml(getNombreCentro(d._ceOrig))}</div>` : ''}</td>
+        <td style="white-space:nowrap">${esPrioCarga(d) ? PRIO_BADGE : ''}${docHtml(d)}${d._ajusteSF ? AJUSTE_BADGE : ''}${d._reservaSF ? reservaBadge(d._reservaSF) : ''}${d._ingSum ? `<div style="margin-top:2px;font-size:10px">${ingSumPill(true)}</div><div class="sv-sub" style="margin:0">PV ${escapeHtml(String(d.pv ?? ''))}</div>` : ''}${d._guiaFact ? `<div style="margin-top:2px;font-size:10px">${leyendaPv4000Pill(true)}</div>` : ''}${d._ceOrig ? `<div class="sv-sub" style="margin:2px 0 0;color:#7e22ce;font-weight:700" title="Centro destino alternativo asignado al coordinar">Centro alt. · orig. ${escapeHtml(getNombreCentro(d._ceOrig))}</div>` : ''}</td>
         <td>${ent(d) ? `<span class="sv-mono">${escapeHtml(ent(d))}</span>${(tipo === 'T' || tipo === 'X') && esExtraSum(d) ? EXTRA_BADGE : ''}` : ''}</td>   <!-- (17-nov-2026, Jordan) sin entrega: celda vacía -->
         <td><div class="pc-mat"><b>${escapeHtml(d.nombre || '')}</b><small>${escapeHtml(sub(d))}</small></div></td>
         <td class="sv-mono">${escapeHtml(d.fecha || '')}</td><td class="r">${cant(d)}${d._ajustada ? `<div class="sv-sub" style="margin:0" title="Unidades editadas al coordinar">de ${fmtNum(d._pendSap, 0)}</div>` : ''}</td><td class="r"><b>${fmtNum(d.ton, 2)}</b></td>${accFn ? `<td class="r pc-acc" style="white-space:nowrap">${accFn(d)}</td>` : ''}</tr>`).join('')}</tbody></table></div>`;
@@ -11717,7 +11732,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
     const b = (d, cam, lbl, tip) => `<button style="${MV_STYLE}" title="${escapeHtml(tip)}" data-mover="${escapeHtml(r.ce)}" data-doc="${escapeHtml(docLinea(d))}" data-mat="${escapeHtml(matLinea(d))}" data-cam="${cam}">${lbl}</button>`;
     return d => {
       const out = [];
-      if (d._manual !== null && !d._ajusteSF) out.push(`<span style="font-size:10px;color:#7c3aed;font-weight:700" title="Asignación manual/confirmada">${d._manual === 0 ? 'NO CARGA' : 'FIJO'}</span>`);
+      if (d._manual !== null && !d._ajusteSF && !d._reservaSF) out.push(`<span style="font-size:10px;color:#7c3aed;font-weight:700" title="Asignación manual/confirmada">${d._manual === 0 ? 'NO CARGA' : 'FIJO'}</span>`);
       if (enTab === 'seg') { out.push(b(d, 1, '→ CD', 'Pasar al camión CD'), b(d, 0, 'Sacar', 'No cargar hoy')); }
       else if (d._enCamion) {
         // (18-nov-2026, Jordan) Lo sin fondo sale solo del camión y se repone desde las vistas de pedidos de traslado.
