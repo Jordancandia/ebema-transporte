@@ -10,13 +10,13 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611171816';
-import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611171816';
-import { getDatabase } from './data.js?v=202611171816';
+import { supabase } from './supabase-client.js?v=202611180959';
+import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611180959';
+import { getDatabase } from './data.js?v=202611180959';
 import { COMUNAS_POR_REGION } from './chile-geo.js';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611171816';
-import { confirmar, pedirDato } from './confirmar.js?v=202611171816';
+import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611180959';
+import { confirmar, pedirDato } from './confirmar.js?v=202611180959';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -5025,6 +5025,8 @@ const V2_DEPS = {
   loadPrioridades, togglePrioridad, evaluarPrioridad, enAlcance,
 };
 const ORIGENES_CD = [['1003', 'CD Quilicura · 1003'], ['1081', 'CD Concepción · 1081']];
+// (18-nov-2026, Jordan) Revex / Crossdocking / Pedidos de Traslados: con origen 1003 no se muestra el CD Quilicura (1003) como destino.
+const ocultarCdQuilicura = (cross = false) => r => (cross ? '1003' : (String(r.cesu ?? '').trim() || '1003')) === '1003' && String(r.ce ?? '').trim() === '1003';
 const C_INK = '#191c1d', C_RED = '#b5000b', C_ORANGE = '#ea580c', C_YELLOW = '#ca8a04', C_GREEN = '#15803d', C_GREY = '#9ca3af', C_BLUE = '#1d4ed8', C_SEC = '#5c5f61';
 
 const nombreCentro = ce => { const n = getNombreCentro(String(ce ?? '').trim()); return n && n !== ce ? n : ''; };
@@ -5238,6 +5240,7 @@ const V2 = {
   // ── REVEX ─────────────────────────────────────────────────────────────────
   pedidos_traslados_revex: {
     titulo: 'Revex',
+    ocultar: ocultarCdQuilicura(false),
     desc: 'Todos los pedidos de traslado Revex del SQVI (material 900000). Sin ventana de fechas: por defecto quedan disponibles para el próximo camión y van primero en el orden de llenado.',
     enrich(rows) { rows.forEach(r => { r._al = alertaV2(r.fecha_confirmada, 7); r._t = tonNum(r._ton_totales); }); },
     // (2-oct-2026, Jordan) Excluir/Reactivar en la fila principal del pedido; no en el panel de detalle.
@@ -5861,6 +5864,7 @@ const V2 = {
   // Modifican: OWNER y Planner Abastecimiento (permiso ajustar_plan).
   pedidos_traslados_4000: {
     titulo: 'Crossdocking',
+    ocultar: ocultarCdQuilicura(true),
     drawerW: 'min(1180px, 96vw)',   // (10-nov-2026) detalle ancho para ver los productos
     // (10-nov-2026, Jordan) prioridad por PT + posición (material); la entrega creada la hereda
     prioridad: { tipo: 'cross', doc: r => r.doc_compr ?? r.oc ?? r.pt, material: r => r.material, centro: r => r.ce },
@@ -5966,6 +5970,7 @@ const V2 = {
   // ── PEDIDOS DE TRASLADOS ──────────────────────────────────────────────────
   pedidos_traslados: {
     titulo: 'Pedidos de Traslados',
+    ocultar: ocultarCdQuilicura(false),
     drawerW: 'min(1180px, 96vw)',   // (10-nov-2026) detalle ancho para ver los productos
     prioridad: { tipo: 'traslado', doc: r => r.doc_compr ?? r.oc ?? r.pt, centro: r => r.ce },   // (15-oct-2026) check PRIORIDAD
     desc: 'Pedidos de traslados desde centros de distribución a sucursales',
@@ -8225,7 +8230,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611171816');
+    const m = await import('./ind-plan-carga.js?v=202611180959');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.

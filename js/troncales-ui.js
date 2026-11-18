@@ -32,8 +32,8 @@ export function tonHtml(n) {
 }
 
 // Encabezado del shell: fecha y hora de la última actualización SAP de la vista
-import { confirmar } from './confirmar.js?v=202611171816';
-import { comentariosHabilitados, conteosComentarios, celdaComentarios, montarHilo, tomarFoco, abrirHiloSuelto } from './comentarios.js?v=202611171816';
+import { confirmar } from './confirmar.js?v=202611180959';
+import { comentariosHabilitados, conteosComentarios, celdaComentarios, montarHilo, tomarFoco, abrirHiloSuelto } from './comentarios.js?v=202611180959';
 export function setUltimaActualizacion(ts) {
   const el = document.getElementById('sv-upd');
   if (!el) return;
@@ -111,6 +111,8 @@ export async function calcularVistaV2(cfg, deps) {
   let rowsAll = active.transform ? active.transform(rawRows, ctx) : rawRows;
   rowsAll = campoCentro ? deps.filtrarPorCentro(rowsAll, campoCentro) : rowsAll;
   if (active.postFilter) rowsAll = active.postFilter(rowsAll, 'all', ctx);
+  // (18-nov-2026, Jordan) Filas que la vista no muestra (p. ej. destino CD Quilicura con origen 1003)
+  if (AV.ocultar) rowsAll = rowsAll.filter(r => !AV.ocultar(r));
   if (AV.enrich) AV.enrich(rowsAll, ctx);
   const n = filtrosNeutros(cfg), dF = isoToDate(n.dFrom), dT = isoToDate(n.dTo), cal = !!(AV.calendario && n.vista === 'cal');
   const rows = rowsAll.filter(r => {
@@ -238,6 +240,8 @@ async function renderTablaV2Core(stage, cfg, deps, viewKey, recarga = false) {
   let rowsAll = active.transform ? active.transform(rawRows, ctx) : rawRows;
   rowsAll = campoCentro ? deps.filtrarPorCentro(rowsAll, campoCentro) : rowsAll;
   if (active.postFilter) rowsAll = active.postFilter(rowsAll, 'all', ctx);
+  // (18-nov-2026, Jordan) Filas que la vista no muestra (p. ej. destino CD Quilicura con origen 1003)
+  if (AV.ocultar) rowsAll = rowsAll.filter(r => !AV.ocultar(r));
   if (AV.enrich) AV.enrich(rowsAll, ctx);
   // (16-nov-2026 · fluidez P3) contador de pendientes del menú: se actualiza cada vez que la vista se calcula
   if (deps.alCalcularVista && st.mode === 0) { try { deps.alCalcularVista(viewKey, filtrarNeutro(rowsAll, cfg, AV, deps), AV); } catch (_e) { /* contador opcional */ } }
