@@ -265,7 +265,7 @@ export const VISTAS_CATALOGO = [
   { modulo: 'Flete Tercero / Indicadores', items: [['flete-tercero', 'Flete Tercero (Seguimiento)'], ['indicadores', 'Indicadores (Reportes)']] },
   { modulo: 'Tarifas', items: [['tarifas-transporte', 'Tarifas Transporte'], ['tarifas-clientes', 'Tarifas Clientes']] },
   { modulo: 'Maestros', items: [['proveedores', 'Proveedores'], ['rutas', 'Rutas'], ['productos', 'Productos']] },
-  { modulo: 'Distribución', items: [['monitor-consolidacion', 'Monitor de Consolidación']] },
+  { modulo: 'Torre de Control', items: [['monitor-consolidacion', 'Monitor de Pedidos']] },
   { modulo: 'Portería (CD Quilicura)', items: [['porteria:registro', 'Control Puerta'], ['porteria:alertas', 'Monitor de Operaciones'], ['porteria:indicadores', 'Indicadores de Portería']] },
   { modulo: 'Administración', items: [['roles', 'Roles y Perfiles']] },
 ];
