@@ -10,13 +10,13 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611181022';
-import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611181022';
-import { getDatabase } from './data.js?v=202611181022';
+import { supabase } from './supabase-client.js?v=202611181029';
+import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611181029';
+import { getDatabase } from './data.js?v=202611181029';
 import { COMUNAS_POR_REGION } from './chile-geo.js';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611181022';
-import { confirmar, pedirDato } from './confirmar.js?v=202611181022';
+import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611181029';
+import { confirmar, pedirDato } from './confirmar.js?v=202611181029';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -5260,8 +5260,10 @@ function abrirReposicionSinFondo(ep, orig, ce, vista) {
   });
 }
 const ORIGENES_CD = [['1003', 'CD Quilicura · 1003'], ['1081', 'CD Concepción · 1081']];
-// (18-nov-2026, Jordan) Revex / Crossdocking / Pedidos de Traslados: con origen 1003 no se muestra el CD Quilicura (1003) como destino.
-const ocultarCdQuilicura = (cross = false) => r => (cross ? '1003' : (String(r.cesu ?? '').trim() || '1003')) === '1003' && String(r.ce ?? '').trim() === '1003';
+// (18-nov-2026, Jordan) Revex / Crossdocking / Pedidos de Traslados: con origen 1003 no se muestra el CD Quilicura como destino.
+// En el maestro de centros «CD Quilicura» es el 1000 (el 1003 figura como «CD RM»): se ocultan ambos.
+const CE_OCULTOS_ORIGEN_1003 = new Set(['1000', '1003']);
+const ocultarCdQuilicura = (cross = false) => r => (cross ? '1003' : (String(r.cesu ?? '').trim() || '1003')) === '1003' && CE_OCULTOS_ORIGEN_1003.has(String(r.ce ?? '').trim());
 const C_INK = '#191c1d', C_RED = '#b5000b', C_ORANGE = '#ea580c', C_YELLOW = '#ca8a04', C_GREEN = '#15803d', C_GREY = '#9ca3af', C_BLUE = '#1d4ed8', C_SEC = '#5c5f61';
 
 const nombreCentro = ce => { const n = getNombreCentro(String(ce ?? '').trim()); return n && n !== ce ? n : ''; };
@@ -8486,7 +8488,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611181022');
+    const m = await import('./ind-plan-carga.js?v=202611181029');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
