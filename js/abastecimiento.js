@@ -10,13 +10,13 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611181037';
-import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611181037';
-import { getDatabase } from './data.js?v=202611181037';
+import { supabase } from './supabase-client.js?v=202611181041';
+import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611181041';
+import { getDatabase } from './data.js?v=202611181041';
 import { COMUNAS_POR_REGION } from './chile-geo.js';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611181037';
-import { confirmar, pedirDato } from './confirmar.js?v=202611181037';
+import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611181041';
+import { confirmar, pedirDato } from './confirmar.js?v=202611181041';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -549,6 +549,43 @@ async function loadMaestroClientes() {
   const m = new Map();
   (rows || []).forEach(r => { const k = String(r.id_cliente ?? '').trim(); if (k) m.set(k, r); });
   return m;
+}
+// (18-nov-2026, Jordan) SALDO = despacho / retiro NUEVO. Antes de guardar la coordinación del saldo, la del despacho que ya
+// viajó se archiva tal cual en abast_coord_despacho_hist (no se pierde ni se mezcla con la nueva).
+let HIST_DESP = new Map();   // 'VENTA|doc' / 'RETIRO|oc' → [{ fecha_despacho, datos, archivado_en, archivado_por }]
+async function loadHistDespachos() {
+  try {
+    const { data, error } = await supabase.from('abast_coord_despacho_hist').select('tipo,documento,reparto,fecha_despacho,datos,archivado_en,archivado_por')
+      .gte('archivado_en', new Date(Date.now() - 120 * 86400000).toISOString()).order('archivado_en', { ascending: false }).limit(3000);
+    if (error) throw error;
+    const m = new Map();
+    (data || []).forEach(x => { const k = `${x.tipo}|${String(x.documento).trim()}`; if (!m.has(k)) m.set(k, []); m.get(k).push(x); });
+    HIST_DESP = m;
+  } catch (e) { console.warn('Historial de despachos no disponible', e); }
+  return HIST_DESP;
+}
+async function archivarDespacho(tipo, doc, reparto = '') {
+  const d = String(doc ?? '').trim(), rp = String(reparto ?? '').trim();
+  const q = tipo === 'VENTA' ? supabase.from('abast_venta_coordinacion').select('*').eq('doc_ventas', d).eq('reparto', rp)
+    : supabase.from('abast_retiro_estado').select('*').eq('doc_compr', d);
+  const { data, error } = await q.maybeSingle();
+  if (error) { showAlert('No se pudo respaldar el despacho anterior: ' + error.message, 'error'); return false; }
+  if (!data) return true;
+  const { error: e2 } = await supabase.from('abast_coord_despacho_hist').insert({ tipo, documento: d, reparto: rp,
+    fecha_despacho: (tipo === 'VENTA' ? data.fecha_entrega : data.fecha_retiro) || null, datos: data, archivado_por: await getUserEmail() });
+  if (e2) { showAlert('No se pudo respaldar el despacho anterior: ' + e2.message, 'error'); return false; }
+  return true;
+}
+// Filas del detalle con los despachos / retiros anteriores (ya viajaron) de un documento.
+function kvDespachosAnteriores(tipo, doc) {
+  const h = HIST_DESP.get(`${tipo}|${String(doc ?? '').trim()}`) || [];
+  return h.slice(0, 5).map((x, i) => {
+    const d = x.datos || {};
+    const ent = tipo === 'VENTA' ? [d.n_entrega, ...Object.values((d.entregas && typeof d.entregas === 'object') ? d.entregas : {})].filter(Boolean) : [d.entrega_entrante].filter(Boolean);
+    const tr = [d.transportista || d.id_transporte, d.patente_camion].filter(Boolean).join(' · ');
+    return [`${tipo === 'VENTA' ? 'Despacho' : 'Retiro'} anterior${h.length > 1 ? ' ' + (i + 1) : ''}`,
+      [x.fecha_despacho ? fmtFechaISO(String(x.fecha_despacho).slice(0, 10)) : '', ent.length ? 'entrega ' + [...new Set(ent)].join(', ') : '', tr].filter(Boolean).join(' · ') || '—'];
+  });
 }
 async function guardarCoordinacionVenta(p, nuevo) {
   const email = await getUserEmail();
@@ -1855,6 +1892,7 @@ function showCoordVentaModal(row, ctx) {
           patente_camion: cli ? (fmtPatente(st.patCamion) || null) : null, patente_carro: cli ? (fmtPatente(st.patCarro) || null) : null,
           hora_presentacion: cli ? st.horaPres.trim() : null,
         };
+        if (row._saldoNuevo && !(await archivarDespacho('VENTA', MAIN, REP))) { btn.disabled = false; return; }   // (18-nov-2026)
         const ok = await guardarCoordinacionVenta({
           doc_ventas: MAIN, reparto: REP, n_entrega: entregaHdr, id_cliente: row._id_cliente || null, nombre_cliente: row._cliente || null,
           comuna: st.comuna.trim() || null, direccion: st.direccion.trim(), telefono: st.telefono.trim(), ...baseCoord,
@@ -2738,8 +2776,9 @@ async function chequearChoqueRetiro(docsSel, st, ctx) {
 }
 function showCoordRetiroModal(row, ctx) {
   return new Promise(async resolve => {
-    const t0 = row._transp || {};
-    const editando = !!row._modo;
+    const saldoNuevo = !!row._saldoNuevo;   // (18-nov-2026) saldo = retiro nuevo: sin fecha, transporte ni entrega del anterior
+    const t0 = saldoNuevo ? {} : (row._transp || {});
+    const editando = !!row._modo && !saldoNuevo;
     let dirs = [];
     try {
       const { data } = await supabase.from('abast_proveedor_direcciones').select('id, nombre_fabrica, direccion, comuna, region, contacto_nombre, contacto_telefono')
@@ -2752,9 +2791,9 @@ function showCoordRetiroModal(row, ctx) {
     const st = {
       modo: row._modo || 'RM',
       tipo: row._tipo_retiro || '',
-      fecha: row._fecha_retiro || '',
+      fecha: saldoNuevo ? '' : (row._fecha_retiro || ''),
       dirSel: null, dirTxt: '', comuna: row._fab_comuna || '', contacto: row._fab_contacto || '', tel: row._fab_telefono || '',
-      entrega: row._entrega_entrante || '', guardar: true,
+      entrega: saldoNuevo ? '' : (row._entrega_entrante || ''), guardar: true,
       idTrans: t0.id_transporte || '', transportista: t0.transportista || '',
       choferNombre: t0.chofer_nombre || '', choferRut: t0.chofer_rut || '', choferTel: t0.chofer_telefono || '',
       patCamion: t0.patente_camion || '', patCarro: t0.patente_carro || '',
@@ -2770,7 +2809,7 @@ function showCoordRetiroModal(row, ctx) {
     };
     const MAIN = String(row.doc_compr).trim();
     if (editando) st.acop.set(MAIN, !!row._acopio);
-    const initLin = (oc, x) => { if (!st.lin.has(oc)) st.lin.set(oc, new Map((x._detalle || []).map(d => { const c = cantRetiroLinea({ lineas_retiro: x._lineas_retiro }, d.material, d.pendiente);
+    const initLin = (oc, x) => { if (!st.lin.has(oc)) st.lin.set(oc, new Map((x._detalle || []).map(d => { const c = cantRetiroLinea({ lineas_retiro: saldoNuevo && x === row ? null : x._lineas_retiro }, d.material, d.pendiente);
       return [String(d.material ?? '').trim(), { on: c > 0, cant: c > 0 ? c : d.pendiente }]; }))); };
     initLin(MAIN, row);
     if (row._fab_direccion) {
@@ -2875,7 +2914,7 @@ function showCoordRetiroModal(row, ctx) {
       const ton = tonSel();
       panel.innerHTML = `
         <div class="sv-dr-h"><div style="flex:1;min-width:0">
-          <div class="sv-dr-k">${editando ? 'Editar coordinación' : 'Coordinar retiro'}</div>
+          <div class="sv-dr-k">${editando ? 'Editar coordinación' : saldoNuevo ? 'Coordinar saldo · retiro nuevo' : 'Coordinar retiro'}</div>
           <div class="sv-dr-t">${escapeHtml(row.doc_compr)}</div>
           <div class="sv-dr-s">${escapeHtml(row.nombre_1 || '')} → ${escapeHtml(getNombreCentro(row.ce))} · ${fmtNum(row._ton_num, 2)} t · ${row._tipo_pedido === 'CALZADA' ? 'Calzada' : 'Stock'}</div></div>
           <button class="sv-iconbtn" data-cx title="Cerrar (Esc)"><span class="material-symbols-outlined">close</span></button></div>
@@ -3146,6 +3185,11 @@ function showCoordRetiroModal(row, ctx) {
             fab_direccion: mismo ? (fabDir || null) : (x.dir.trim() || null), fab_comuna: mismo ? (st.comuna.trim() || null) : (x.comuna.trim() || null),
             fab_contacto: mismo ? (st.contacto.trim() || null) : (x.contacto.trim() || null), fab_telefono: mismo ? (st.tel.trim() || null) : (x.tel.trim() || null) });
         });
+        // (18-nov-2026, Jordan) Saldo de una carga que ya viajó: se archiva la coordinación anterior antes de guardar la nueva.
+        for (const f of filas) {
+          const x = String(f.doc_compr) === MAIN ? row : (rowOf(f.doc_compr) || {});
+          if ((String(f.doc_compr) === MAIN ? saldoNuevo : !!(x._saldoSinCoord || x._saldo_todo)) && !(await archivarDespacho('RETIRO', f.doc_compr))) { btn.disabled = false; return; }
+        }
         const { error } = await supabase.from('abast_retiro_estado').upsert(filas, { onConflict: 'doc_compr' });
         if (error) { showAlert('Error al coordinar: ' + error.message, 'error'); btn.disabled = false; return; }
         if (rm() && st.tipo) await registrarSeguimientoCoord(filas.map(f => {
@@ -5537,7 +5581,7 @@ const V2 = {
     desc: 'Pedidos de ventas con centro expedición CDRM. Sólo los pedidos coordinados entran al Plan de Carga del día de su fecha de entrega.',
     async preload() {
       const [pvMap, ventasDirectoManual, feriadosRows, coordMap, maestro, horizRows, manualMap] = await Promise.all([
-        pvRefMap(), loadVentasDirectoManual(), fetchAllRows('abast_feriados'), loadCoordinacionesVenta(), loadMaestroClientes(), fetchAllRows('abast_horizonte_centro'), loadVentasManual()]);
+        pvRefMap(), loadVentasDirectoManual(), fetchAllRows('abast_feriados'), loadCoordinacionesVenta(), loadMaestroClientes(), fetchAllRows('abast_horizonte_centro'), loadVentasManual(), loadHistDespachos()]);
       const feriadosSet = new Set((feriadosRows || []).map(r => String(r.fecha ?? '').trim()).filter(Boolean));
       const horiz = {};
       (horizRows || []).filter(r => String(r.centro_origen ?? '').trim() === '1003')
@@ -5867,6 +5911,7 @@ const V2 = {
         sub: `${r._cliente || (r._id_cliente ? 'Cliente ID ' + r._id_cliente : 'Cliente sin identificar')} → ${nombreCentro(r.ofvta) || r.ofvta}`,
         aviso,
         kv: [
+          ...kvDespachosAnteriores('VENTA', r.doc_ventas),   // (18-nov-2026) despachos anteriores (ya viajaron)
           (r._bloq_pos || []).length ? ['Posiciones bloqueadas', r._bloq_pos.map(p => `<div style="text-decoration:line-through;color:#93000a" title="Bloqueada en SAP: no se considera hasta liberarla">pos ${escV2(p.pos)} · ${escV2(p.material)} ${escV2(p.nombre)} · ${fmtNum(p.pendiente, 0)} un · ${escV2(p.mr)}</div>`).join(''), true] : null,
           vm ? ['Origen', `Pedido manual · ${vm.created_by || ''}${vm.created_at ? ' · ' + horaChile(vm.created_at) : ''}${vm.updated_by ? ' · editado por ' + vm.updated_by : ''}`] : null,
           vm && vm.observacion ? ['Observación', vm.observacion] : null,
@@ -5952,6 +5997,7 @@ const V2 = {
     prioridad: { tipo: 'retiro', doc: r => r.doc_compr ?? r.oc ?? r.pt, centro: r => r.ce },   // (15-oct-2026) check PRIORIDAD
     desc: 'Órdenes de compra con retiro a proveedor. Sólo los Retiro RM entran al Plan de Carga, el día de su fecha de retiro (día en que se carga).',
     rowId: r => String(r.doc_compr ?? '').trim(),
+    async preload() { await loadHistDespachos(); return {}; },   // (18-nov-2026) retiros anteriores de la OC
     enrich(rows, ctx) { ctx._rows = rows; RET_ROWS_V2 = rows; rows.forEach(r => { r._al = alertaV2(r.fe_entrega, 5); }); },
     // (29-oct-2026, Jordan) Agregar OC de retiro manual (aún no viene en el SQVI).
     headBtns: [{ label: 'Agregar OC manual', icon: 'add_circle', perm: 'retiro_manual', run: async () => {
@@ -6021,11 +6067,15 @@ const V2 = {
     detalle: r => {
       const t = r._transp || {};
       const puede = can('coordinar_retiro');
+      // (18-nov-2026, Jordan) SALDO: la carga anterior ya viajó → el saldo se coordina como un retiro NUEVO («Coordinar saldo»);
+      // la coordinación anterior queda archivada con sus datos y no se edita ni se anula desde aquí.
+      const saldoRet = !!(r._saldoSinCoord || r._saldo_todo);
       const acciones = !puede ? [] : [
-        { label: r._modo ? 'Editar coordinación' : 'Coordinar retiro', icon: 'event_available', primary: true,
-          run: async (row, ctx) => ((await showCoordRetiroModal(row, ctx)) ? { recargar: true } : null) },
+        { label: saldoRet ? 'Coordinar saldo' : r._modo ? 'Editar coordinación' : 'Coordinar retiro', icon: 'event_available', primary: true,
+          title: saldoRet ? 'La carga anterior ya viajó: programa el saldo pendiente como un retiro nuevo' : undefined,
+          run: async (row, ctx) => ((await showCoordRetiroModal(saldoRet ? { ...row, _saldoNuevo: true } : row, ctx)) ? { recargar: true } : null) },
       ];
-      if (puede && r._modo) acciones.push({ label: 'Anular coordinación', icon: 'event_busy', run: async row => {
+      if (puede && r._modo && !saldoRet) acciones.push({ label: 'Anular coordinación', icon: 'event_busy', run: async row => {
         if (!await confirmar(`¿Anular la coordinación de la OC ${row.doc_compr}?\n\nVuelve a «Sin coordinar»: se limpian fecha, dirección, contacto y transporte, y sale del Plan de Carga.`)) return null;
         return (await anularCoordRetiro([row.doc_compr])) ? (showAlert('Coordinación anulada', 'success'), { recargar: true }) : null;
       } });
@@ -6058,6 +6108,7 @@ const V2 = {
         kind: 'Orden de compra · ' + (r._tipo_pedido === 'CALZADA' ? 'Calzada' : 'Stock'), title: r.doc_compr, sub: `${r.nombre_1 || ''} → ${nombreCentro(r.ce) || r.ce} · ${fmtNum(r._ton_num, 2)} t`,
         aviso: avisos.join('<br>'),
         kv: [
+          ...kvDespachosAnteriores('RETIRO', r.doc_compr),   // (18-nov-2026) retiros anteriores (ya viajaron)
           ['Tipo retiro', pill(r._tipo_retiro, TIPO_RETIRO_TONE[r._tipo_retiro] || 'mute') + (r._acopio ? ' ' + pill('ACOPIO', 'warn') : '') + ` <span class="sv-muted">${r._tipo_origen === 'COORDINACION' ? 'coordinado' : 'automático'}${r._acopio ? ' · acopia en destino, no suma al Plan de Carga' : ''}</span>`, true],
           ['Regla automática', `${r._tipo_auto} · ${fmtNum(r._ton_num, 1)} t (umbral 23,8 t)`],
           ['Coordinación', r._modo === 'RM' ? pill('Retiro RM', 'ok') : r._modo === 'LOCAL' ? pill('Retiro local', 'orange') : pill('Sin coordinar', 'mute'), true],
@@ -8494,7 +8545,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611181037');
+    const m = await import('./ind-plan-carga.js?v=202611181041');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
