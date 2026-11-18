@@ -25,10 +25,10 @@
 //   · lista   Con entrega    todas las posiciones libres cubiertas por entregas
 //   Marcas: vencido (F. entrega < hoy), bloqueo parcial, unidades sin confirmar.
 // ============================================================================
-import { supabase } from './supabase-client.js?v=202611181613';
-import { getDatabase, loadRoutesData, HIST_ALIAS_PREFIJO } from './data.js?v=202611181613';
+import { supabase } from './supabase-client.js?v=202611181640';
+import { getDatabase, loadRoutesData, HIST_ALIAS_PREFIJO } from './data.js?v=202611181640';
 import { loadLeaflet } from './utils.js';
-import { filtrarPorCentro, can } from './permisos.js?v=202611181613';
+import { filtrarPorCentro, can } from './permisos.js?v=202611181640';
 
 const CFG = {
   tablaGeo: 'obras_georef',
@@ -63,7 +63,7 @@ const S = {
   raw: null, sucursal: '', centro: null,
   pedidos: [], byId: new Map(),
   cond: new Set(CONDS.map(c => c.key)),
-  fEstado: 'todos', soloVencidos: false, q: '',
+  fEstado: 'todos', soloVencidos: false, soloExpress: false, q: '',
   sel: null, editGeo: false,
   orden: { col: 'prio', dir: 1 },
 };
@@ -86,6 +86,19 @@ const diasHasta = k => { if (!k) return null; const a = new Date(k + 'T00:00:00'
 const tieneGeo = p => Number.isFinite(p.latitud) && Number.isFinite(p.longitud);
 const hash = s => { let h = 2166136261; for (const c of String(s)) { h ^= c.charCodeAt(0); h = Math.imul(h, 16777619); } return h >>> 0; };
 const ms = (ic, extra = '') => `<span class="material-symbols-outlined"${extra}>${ic}</span>`;
+const fCLP = n => '$' + Math.round(Number.isFinite(n) ? n : 0).toLocaleString('es-CL');
+const RAYO = '<span class="cc-rayo" title="Flete express · pedido spot">' + '<span class="material-symbols-outlined">bolt</span></span>';
+
+/**
+ * Flete sugerido por posición (18-nov-2026, Jordan):
+ *   $ por kilo < mínimo → mínimo · $ por kilo > máximo → máximo · entre ambos → $ por kilo.
+ *   Máximo = 0 se toma como "sin tope" (no lleva el sugerido a 0).
+ */
+function fleteSugerido(min, max, pk) {
+  if (pk < min) return min;
+  if (max > 0 && pk > max) return max;
+  return pk;
+}
 
 async function leerPaginado(fn) {
   const out = [];
@@ -171,13 +184,29 @@ function construirPedidos(sucursal) {
     const kgUnit = um === 'KG' ? 1 : (maestro.get(mat) || (cant > 0 ? kgPos / cant : 0));
     const bloqTxt = [mr, d.dcto_vendedor].map(x => String(x || '').trim()).filter(Boolean).join(' / ');
     const bloq = String(d.bloqueada || '').trim().toUpperCase() === 'X' || !!bloqTxt;
-    const e = entPos.get(doc + '|' + z(d.pos));
-    p.posiciones.push({
-      pos: z(d.pos), sku: mat, descripcion: d.denominacion_de_posicion || '', um, cantidad: cant, confirmada: num(d.ctd_confirmada),
-      entregado: num(d.cantidad_entrg), pendiente: pend, kgUnit: kgUnit > CFG.kgUnitSospechoso ? 0 : kgUnit,
-      bloqueo: bloq ? (bloqTxt || 'X') : null, fecha: fechaKey(d.fe_entrega),
-      entTrat: e ? e.cant : 0, entregas: e ? [...e.entregas] : [],
-    });
+    const posK = z(d.pos);
+    const rep = { reparto: z(d.reparto) || '—', fecha: fechaKey(d.fe_entrega), confirmada: num(d.reparto_confirmado || d.ctd_confirmada), pendiente: pend, entregado: num(d.cantidad_entrg) };
+    // (18-nov-2026) Una posición puede venir en varias filas (repartos SAP): se agrupa por posición.
+    let x = p.posiciones.find(q => q.pos === posK);
+    if (!x) {
+      const e = entPos.get(doc + '|' + posK);
+      x = {
+        pos: posK, sku: mat, descripcion: d.denominacion_de_posicion || '', um, cantidad: cant, confirmada: 0,
+        entregado: 0, pendiente: 0, kgUnit: kgUnit > CFG.kgUnitSospechoso ? 0 : kgUnit,
+        bloqueo: bloq ? (bloqTxt || 'X') : null, fecha: '', repartos: [],
+        entTrat: e ? e.cant : 0, entregas: e ? [...e.entregas] : [],
+        // Fletes (vienen repetidos en cada reparto: se toman una vez por posición)
+        fleteTraslado: num(d.flete_zflt), fleteUltMilla: num(d.flete_zfl0_zfl1),
+        fleteMin: num(d.flete_minimo), fleteMax: num(d.flete_maximo), fletePk: num(d.flete_peso_kilo),
+        express: String(d.flete_express || '').trim().toUpperCase() === 'X',
+      };
+      x.fleteSug = fleteSugerido(x.fleteMin, x.fleteMax, x.fletePk);
+      p.posiciones.push(x);
+    }
+    x.repartos.push(rep);
+    x.confirmada += rep.confirmada; x.entregado += rep.entregado; x.pendiente += rep.pendiente;
+    if (pend > 0 && rep.fecha && (!x.fecha || rep.fecha < x.fecha)) x.fecha = rep.fecha;
+    if (!x.fecha && rep.fecha) x.fecha = rep.fecha;
   });
   const lista = [...peds.values()].filter(p => p.posiciones.some(x => x.pendiente > 0));
   lista.forEach(p => {
@@ -218,11 +247,19 @@ function evaluar(p) {
   if (!p.geoExacta) marcas.push({ t: 'gy', txt: tieneGeo(p) ? 'Ubicación aprox.' : 'Sin ubicación' });
   p._marcas = marcas;
   p.codigo_bloqueo = [...new Set(bloq.map(x => x.bloqueo))].join(', ');
-  // Prioridad de atención: bloqueado/vencido primero, luego sin entrega próxima
-  p._prio = (p._estado === 'bloq' ? 0 : p._vencido ? 1 : p._estado === 'sin' ? 2 : p._estado === 'parcial' ? 3 : 4) * 1e6 + (p._dias ?? 9999);
+  // Flete express (pedido spot): alguna posición con X → se ve con rayo y va primero
+  p._express = p.posiciones.some(x => x.express);
+  if (p._express) marcas.unshift({ t: 'xp', txt: 'Express · spot' });
+  // Fletes del pedido (posiciones no bloqueadas)
+  const fl = p.posiciones.filter(x => !x.bloqueo);
+  const s = k => fl.reduce((a, x) => a + (x[k] || 0), 0);
+  p._flete = { min: s('fleteMin'), max: s('fleteMax'), pk: s('fletePk'), sug: s('fleteSug'), traslado: s('fleteTraslado'), ultMilla: s('fleteUltMilla') };
+  p._flete.cobrado = p._flete.traslado + p._flete.ultMilla;
+  // Prioridad de atención: express, bloqueado, vencido, sin entrega, parcial
+  p._prio = (p._express ? 0 : 1) * 1e8 + (p._estado === 'bloq' ? 0 : p._vencido ? 1 : p._estado === 'sin' ? 2 : p._estado === 'parcial' ? 3 : 4) * 1e6 + (p._dias ?? 9999);
 }
 
-const visible = p => S.cond.has(p.cond) && (S.fEstado === 'todos' || p._estado === S.fEstado) && (!S.soloVencidos || p._vencido);
+const visible = p => S.cond.has(p.cond) && (S.fEstado === 'todos' || p._estado === S.fEstado) && (!S.soloVencidos || p._vencido) && (!S.soloExpress || p._express);
 function coincide(p) {
   const q = S.q.trim().toLowerCase();
   return !q || [p.id_pedido, p.id_obra, p.cliente, p.comuna, p.direccion, p.rutaCodigo, ...p._entregas].some(x => String(x || '').toLowerCase().includes(q));
@@ -240,6 +277,8 @@ function setSucursal(suc) {
   S.sel = null;
   reiniciarMapa();
   renderSucursales(); renderTodo(true);
+  const nx = S.pedidos.filter(p => p._express && S.cond.has(p.cond)).length;
+  if (nx) toast('xp', `${nx} pedido${nx > 1 ? 's' : ''} express (spot) en ${S.centro.nombre}`, 'Flete express: revisar y coordinar a la brevedad. Filtre con la tarjeta Express.');
 }
 
 /* ════════════════════════════════════════════════════════════════════════
@@ -268,13 +307,13 @@ function ajustarVista() {
 }
 function iconoPedido(p) {
   const c = COND.get(p.cond), e = EST.get(p._estado), sel = S.sel === p.id_pedido;
-  const cls = `cc-pin${sel ? ' sel' : ''}${p.geoExacta ? '' : ' aprox'}${S.editGeo && !p.geoExacta ? ' drag' : ''}${p._vencido ? ' venc' : ''}`;
-  const html = `<div class="${cls}" style="--pc:${c.color}" data-id="${esc(p.id_pedido)}">${ms(c.icon)}<i class="cc-pin-st" style="background:${e.color}" title="${esc(e.label)}"></i></div>`;
+  const cls = `cc-pin${sel ? ' sel' : ''}${p.geoExacta ? '' : ' aprox'}${S.editGeo && !p.geoExacta ? ' drag' : ''}${p._vencido ? ' venc' : ''}${p._express ? ' xp' : ''}`;
+  const html = `<div class="${cls}" style="--pc:${c.color}" data-id="${esc(p.id_pedido)}">${ms(c.icon)}<i class="cc-pin-st" style="background:${e.color}" title="${esc(e.label)}"></i>${p._express ? `<b class="cc-pin-xp">${ms('bolt')}</b>` : ''}</div>`;
   return { firma: html, icon: L.divIcon({ className: 'cc-pin-wrap', html, iconSize: [30, 30], iconAnchor: [15, 15] }) };
 }
 function tooltipPedido(p) {
   const c = COND.get(p.cond), e = EST.get(p._estado);
-  return `<div class="cc-tt-h"><span class="cc-ci" style="background:${c.color}">${ms(c.icon)}</span><span class="mono">${esc(p.id_pedido)}</span><span class="cc-est-pill" style="background:${e.bg};color:${e.ink}">${esc(e.label)}</span></div>
+  return `<div class="cc-tt-h"><span class="cc-ci" style="background:${c.color}">${ms(c.icon)}</span><span class="mono">${esc(p.id_pedido)}</span>${p._express ? RAYO : ''}<span class="cc-est-pill" style="background:${e.bg};color:${e.ink}">${esc(e.label)}</span></div>
     <div class="cc-tt-r"><b>${esc(p.cliente)}</b><br>${esc(c.label)}<br>${esc(p.direccion || '—')} · ${esc(p.comuna)}<br>F. entrega <b>${fechaTxt(p.fecha)}</b> · ${p._nCub}/${p._nLib} pos. con entrega · ${fT(p._ton, 1)} t</div>
     ${p._marcas.length ? `<div class="cc-tt-r" style="margin-top:3px">${p._marcas.map(m => `<span class="cc-tag ${m.t}">${esc(m.txt)}</span>`).join(' ')}</div>` : ''}
     <div class="cc-tt-f">${S.editGeo && !p.geoExacta ? 'Arrastre al punto de la obra y guarde' : 'Clic para ver el detalle'}</div>`;
@@ -299,7 +338,7 @@ function renderMarcadores() {
     if (arr && !mk.getPopup()) mk.bindPopup(() => popupGeo(p, mk), { minWidth: 240 });
     if (!arr && mk.getPopup()) mk.unbindPopup();
     if (mk.dragging) { if (arr) mk.dragging.enable(); else mk.dragging.disable(); }
-    mk.setZIndexOffset(S.sel === id ? 1500 : p._estado === 'bloq' || p._vencido ? 300 : 0);
+    mk.setZIndexOffset(S.sel === id ? 1500 : p._express ? 900 : p._estado === 'bloq' || p._vencido ? 300 : 0);
     const v = vis.has(id);
     if (v && !capaPedidos.hasLayer(mk)) capaPedidos.addLayer(mk);
     if (!v && capaPedidos.hasLayer(mk)) capaPedidos.removeLayer(mk);
@@ -308,8 +347,8 @@ function renderMarcadores() {
 function pinDe(id) { const mk = marcadores.get(id); return mk && mk.getElement() ? mk.getElement().querySelector('.cc-pin') : null; }
 function hlPin(id, on) { const el = pinDe(id); if (el) el.classList.toggle('hl', on); }
 function hlFila(id, on) { root.querySelectorAll(`[data-id="${CSS.escape(id)}"]`).forEach(el => { if (!el.classList.contains('cc-pin')) el.classList.toggle('is-hl', on); }); }
-function seleccionar(id, { desdeMapa = false } = {}) {
-  S.sel = S.sel === id && !desdeMapa ? null : id;
+function seleccionar(id, { desdeMapa = false, sinScroll = false } = {}) {
+  S.sel = id;
   renderMarcadores(); renderLista(); renderTabla();
   if (!S.sel) return;
   const p = S.byId.get(id);
@@ -317,6 +356,7 @@ function seleccionar(id, { desdeMapa = false } = {}) {
     map.setView([p.latitud, p.longitud], Math.max(map.getZoom(), 14));
     setTimeout(() => { const mk = marcadores.get(id); if (mk) mk.openTooltip(); }, 260);
   }
+  if (sinScroll) return;
   const tr = root.querySelector(`tr[data-id="${CSS.escape(id)}"]`); if (tr) tr.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
   const li = root.querySelector(`.cc-li[data-id="${CSS.escape(id)}"]`); if (li) li.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
 }
@@ -410,6 +450,7 @@ function renderKpis() {
   ];
   $('#cc-kpis').innerHTML = tarj.map(t => `<button class="cc-kpi${S.fEstado === t.k ? ' is-on' : ''}" data-est="${t.k}" style="--kc:${t.color}">
       <span class="cc-kpi-ic">${ms(t.icon)}</span><span class="cc-kpi-b"><span class="cc-kpi-l">${esc(t.label)}</span><b class="num">${t.v}</b><span class="cc-kpi-s">${esc(t.sub)}</span></span></button>`).join('') +
+    `<button class="cc-kpi xp${S.soloExpress ? ' is-on' : ''}${base.some(p => p._express) ? ' alerta' : ''}" data-xp="1" style="--kc:#ca8a04"><span class="cc-kpi-ic">${ms('bolt')}</span><span class="cc-kpi-b"><span class="cc-kpi-l">Express (spot)</span><b class="num">${base.filter(p => p._express).length}</b><span class="cc-kpi-s">Atender a la brevedad</span></span></button>` +
     `<button class="cc-kpi venc${S.soloVencidos ? ' is-on' : ''}" data-venc="1" style="--kc:#b91c1c"><span class="cc-kpi-ic">${ms('event_busy')}</span><span class="cc-kpi-b"><span class="cc-kpi-l">Vencidos</span><b class="num">${venc}</b><span class="cc-kpi-s">F. entrega &lt; hoy</span></span></button>`;
 }
 function renderCond() {
@@ -440,12 +481,12 @@ function renderLista() {
   h += lista.map(p => {
     const c = COND.get(p.cond), e = EST.get(p._estado);
     const f = p._dias === null ? 'Sin fecha' : p._dias < 0 ? `Vencido hace ${-p._dias} d` : p._dias === 0 ? 'Entrega hoy' : p._dias === 1 ? 'Entrega mañana' : `En ${p._dias} días`;
-    return `<div class="cc-li${S.sel === p.id_pedido ? ' is-sel' : ''}" data-id="${esc(p.id_pedido)}">
+    return `<div class="cc-li${S.sel === p.id_pedido ? ' is-sel' : ''}${p._express ? ' xp' : ''}" data-id="${esc(p.id_pedido)}">
       <span class="cc-ci" style="background:${c.color}">${ms(c.icon)}</span>
-      <div style="min-width:0"><div class="cc-li-id">${esc(p.id_pedido)}<span class="cc-est-pill" style="background:${e.bg};color:${e.ink}">${esc(e.label)}</span></div>
+      <div style="min-width:0"><div class="cc-li-id">${esc(p.id_pedido)}${p._express ? RAYO : ''}<span class="cc-est-pill" style="background:${e.bg};color:${e.ink}">${esc(e.label)}</span></div>
       <div class="cc-li-sub">${esc(p.cliente)} · ${esc(p.comuna)}</div>
       <div class="cc-li-f"><span class="${p._vencido ? 'cc-venc' : ''}">${ms('event')}${f}</span><span class="cc-mini"><i style="width:${p._avance * 100}%;background:${e.color}"></i></span><span class="mono">${p._nCub}/${p._nLib}</span></div></div>
-      <button class="cc-x" data-act="detalle" title="Ver detalle">${ms('chevron_right')}</button></div>`;
+      <span class="cc-x">${ms('chevron_right')}</span></div>`;
   }).join('');
   $('#cc-pane').innerHTML = h;
 }
@@ -453,7 +494,7 @@ function filasTabla() {
   const rows = filtrados();
   const key = {
     prio: p => p._prio, estado: p => ESTADOS.findIndex(e => e.key === p._estado), id: p => p.id_pedido, cond: p => CONDS.findIndex(c => c.key === p.cond),
-    cliente: p => p.cliente, comuna: p => p.comuna, fecha: p => p.fecha || '9999', avance: p => p._avance, ton: p => p._ton,
+    cliente: p => p.cliente, comuna: p => p.comuna, fecha: p => p.fecha || '9999', creado: p => p.creado || '9999', flete: p => p._flete.sug, avance: p => p._avance, ton: p => p._ton,
   }[S.orden.col];
   rows.sort((a, b) => { const x = key(a), y = key(b); return (x > y ? 1 : x < y ? -1 : 0) * S.orden.dir || a.id_pedido.localeCompare(b.id_pedido); });
   return rows;
@@ -462,14 +503,16 @@ function renderTabla() {
   const rows = filasTabla();
   $('#cc-tbody').innerHTML = rows.map(p => {
     const c = COND.get(p.cond), e = EST.get(p._estado), id = p.id_pedido;
-    return `<tr data-id="${esc(id)}" class="${S.sel === id ? 'is-sel' : ''}">
+    return `<tr data-id="${esc(id)}" class="${S.sel === id ? 'is-sel' : ''}${p._express ? ' xp' : ''}">
       <td><span class="cc-est-pill" style="background:${e.bg};color:${e.ink}">${ms(e.icon)}${esc(e.label)}</span></td>
-      <td class="mono"><b>${esc(id)}</b></td>
+      <td class="mono"><b>${esc(id)}</b>${p._express ? RAYO : ''}</td>
       <td><span class="cc-cond" style="background:${c.bg};color:${c.ink}"><span class="cc-ci xs" style="background:${c.color}">${ms(c.icon)}</span>${esc(c.label)}</span></td>
       <td class="cc-td-cli" title="${esc(p.cliente)}">${esc(p.cliente)}</td>
       <td class="mono">${esc(p.id_obra)}</td>
       <td>${esc(p.comuna)}</td>
+      <td class="mono">${fechaTxt(p.creado)}</td>
       <td class="mono${p._vencido ? ' cc-venc' : ''}">${fechaTxt(p.fecha)}</td>
+      <td class="r mono">${p._flete.sug ? fCLP(p._flete.sug) : '—'}</td>
       <td><span class="cc-av"><span class="cc-mini"><i style="width:${p._avance * 100}%;background:${e.color}"></i></span><span class="mono">${p._nCub}/${p._nLib} pos.</span></span></td>
       <td class="mono">${p._entregas.length ? esc(p._entregas.slice(0, 2).join(', ')) + (p._entregas.length > 2 ? ` +${p._entregas.length - 2}` : '') : '—'}</td>
       <td class="r mono">${fT(p._ton, 2)}</td>
@@ -477,7 +520,7 @@ function renderTabla() {
       <td><div class="cc-acts">
         <button class="cc-ib" data-act="ver" title="${tieneGeo(p) ? 'Ver en mapa' : 'Sin ubicación'}" ${tieneGeo(p) ? '' : 'disabled'}>${ms('my_location')}</button>
         <button class="cc-ib" data-act="detalle" title="Detalle de posiciones y entregas">${ms('fact_check')}</button></div></td></tr>`;
-  }).join('') || '<tr><td colspan="12" style="text-align:center;color:var(--cc-ink2);padding:24px">Sin pedidos para los filtros actuales.</td></tr>';
+  }).join('') || '<tr><td colspan="14" style="text-align:center;color:var(--cc-ink2);padding:24px">Sin pedidos para los filtros actuales.</td></tr>';
   $('#cc-tbar-s').textContent = `${rows.length} de ${S.pedidos.length} pedidos · ${fT(rows.reduce((a, p) => a + p._ton, 0), 1)} t pendientes`;
   root.querySelectorAll('.cc-t th.sort').forEach(th => {
     th.querySelector('.material-symbols-outlined')?.remove();
@@ -490,30 +533,69 @@ function renderTodo(encuadrar = false) {
   if (encuadrar && map) ajustarVista();
 }
 function abrirDetalle(id) {
-  const p = S.byId.get(id), c = COND.get(p.cond), e = EST.get(p._estado), hoy = hoyKey();
-  const filas = p.posiciones.filter(x => x.pendiente > 0).map(x => {
-    const st = x.bloqueo ? 'Bloqueada' : x.entTrat + 1e-6 >= x.pendiente ? 'Con entrega' : x.entTrat > 0 ? 'Parcial' : 'Sin entrega';
-    return `<tr class="${x.bloqueo ? 'blq' : st === 'Parcial' ? 'bad' : ''}"><td class="mono">${esc(x.pos)}</td><td class="mono">${esc(x.sku)}</td><td>${esc(x.descripcion)}</td>
-      <td class="r mono">${fT(x.cantidad, 0)} ${esc(x.um)}</td><td class="r mono">${fT(x.entregado, 0)}</td><td class="r mono">${fT(x.pendiente, 0)}</td><td class="r mono">${fT(x.entTrat, 0)}</td>
-      <td class="mono">${x.entregas.map(esc).join(', ') || '—'}</td>
-      <td class="mono${x.fecha && x.fecha < hoy ? ' cc-venc' : ''}">${fechaTxt(x.fecha)}</td><td>${x.bloqueo ? `<span class="cc-tag rd">${esc(x.bloqueo)}</span>` : esc(st)}</td></tr>`;
+  const p = S.byId.get(id), c = COND.get(p.cond), e = EST.get(p._estado), hoy = hoyKey(), F = p._flete;
+  const posOrd = [...p.posiciones].sort((a, b) => a.pos.localeCompare(b.pos, 'es', { numeric: true }));
+  const sinDatoFlete = !posOrd.some(x => x.fleteMin || x.fleteMax || x.fletePk);
+  // ── Productos (posición) con repartos, entrega y flete sugerido
+  const filas = posOrd.map(x => {
+    const st = x.bloqueo ? 'Bloqueada' : x.pendiente <= 0 ? 'Entregada' : x.entTrat + 1e-6 >= x.pendiente ? 'Con entrega' : x.entTrat > 0 ? 'Entrega parcial' : 'Sin entrega';
+    const regla = x.fletePk < x.fleteMin ? 'Mín.' : x.fleteMax > 0 && x.fletePk > x.fleteMax ? 'Máx.' : '$/kg';
+    const reps = x.repartos.map(r => `<span class="cc-rep${r.fecha && r.fecha < hoy && r.pendiente > 0 ? ' venc' : ''}" title="Reparto ${esc(r.reparto)} · confirmado ${fT(r.confirmada, 0)} · pendiente ${fT(r.pendiente, 0)}">${fechaTxt(r.fecha)} <small>${fT(r.confirmada, 0)}</small></span>`).join('');
+    return `<tr class="${x.bloqueo ? 'blq' : st === 'Entrega parcial' ? 'bad' : ''}">
+      <td class="mono">${esc(x.pos)}${x.express ? RAYO : ''}</td><td class="mono">${esc(x.sku)}</td><td class="cc-desc" title="${esc(x.descripcion)}">${esc(x.descripcion)}</td>
+      <td class="r mono">${fT(x.cantidad, 0)} <small>${esc(x.um)}</small></td><td class="r mono">${fT(x.entregado, 0)}</td><td class="r mono">${fT(x.pendiente, 0)}</td>
+      <td><div class="cc-reps">${reps || '—'}</div></td>
+      <td class="mono">${x.entregas.length ? x.entregas.map(esc).join(', ') + ` <small>(${fT(x.entTrat, 0)})</small>` : '—'}</td>
+      <td>${x.bloqueo ? `<span class="cc-tag rd">${esc(x.bloqueo)}</span>` : esc(st)}</td>
+      <td class="r mono sep">${fCLP(x.fleteTraslado)}</td><td class="r mono">${fCLP(x.fleteUltMilla)}</td>
+      <td class="r mono sep">${fCLP(x.fleteMin)}</td><td class="r mono">${x.fleteMax ? fCLP(x.fleteMax) : '<small>sin tope</small>'}</td><td class="r mono">${fCLP(x.fletePk)}</td>
+      <td class="r mono sug"><b>${fCLP(x.fleteSug)}</b> <small class="cc-regla">${regla}</small></td></tr>`;
   }).join('');
+  const dif = F.cobrado - F.sug;
+  const entregas = [...new Set(p.posiciones.flatMap(x => x.entregas))];
+  const fechasRep = [...new Set(p.posiciones.flatMap(x => x.repartos.map(r => r.fecha)).filter(Boolean))].sort();
   $('#cc-modal-c').innerHTML = `
-    <div class="cc-modal-h"><span class="cc-ci lg" style="background:${c.color}">${ms(c.icon)}</span>
-      <div style="flex:1"><h3>${esc(p.id_pedido)} <span class="cc-est-pill" style="background:${e.bg};color:${e.ink}">${ms(e.icon)}${esc(e.label)}</span></h3>
-      <p><b>${esc(c.label)}</b> · ${esc(p.cliente)} (${esc(p.solic)})${p.interlocutor ? ' · ' + esc(p.interlocutor) : ''}</p>
-      <p>${esc(p.direccion || '—')} · ${esc(p.comuna)} · ruta ${esc(p.rutaCodigo || '—')}</p>
+    <div class="cc-modal-h${p._express ? ' xp' : ''}"><span class="cc-ci lg" style="background:${c.color}">${ms(c.icon)}</span>
+      <div style="flex:1;min-width:0"><h3>Pedido ${esc(p.id_pedido)} ${p._express ? '<span class="cc-xp-badge">' + ms('bolt') + 'FLETE EXPRESS · SPOT</span>' : ''}<span class="cc-est-pill" style="background:${e.bg};color:${e.ink}">${ms(e.icon)}${esc(e.label)}</span></h3>
+      <p><b>${esc(c.label)}</b> · clase ${esc(p.clase)} · sucursal ${esc(S.centro.nombre)}</p>
       ${p._marcas.length ? `<div style="margin-top:6px;display:flex;gap:4px;flex-wrap:wrap">${p._marcas.map(x => `<span class="cc-tag ${x.t}">${esc(x.txt)}</span>`).join('')}</div>` : ''}</div>
-      <button class="cc-x" data-act="cerrar-modal">${ms('close')}</button></div>
+      ${tieneGeo(p) ? `<button class="cc-btn sm" data-act="ver-mapa" data-id="${esc(p.id_pedido)}">${ms('my_location')}Ver en mapa</button>` : ''}
+      <button class="cc-x" data-act="cerrar-modal" title="Cerrar (Esc)">${ms('close')}</button></div>
     <div class="cc-modal-b">
       <div class="cc-steps">${pasos(p)}</div>
-      <div class="cc-kv">
-        <div><span>Creado</span><b>${fechaTxt(p.creado)}</b></div>
-        <div><span>F. entrega</span><b class="${p._vencido ? 'cc-venc' : ''}">${fechaTxt(p.fecha)}</b></div>
-        <div><span>Posiciones con entrega</span><b>${p._nCub} de ${p._nLib}${p._nBloq ? ` · ${p._nBloq} bloq.` : ''}</b></div>
-        <div><span>Ton pendiente</span><b class="num">${fT(p._ton, 3)}</b></div>
+      <div class="cc-dgrid">
+        <section class="cc-dbox"><h4>${ms('person')}Cliente y destino</h4>
+          <dl><dt>Cliente</dt><dd><b>${esc(p.cliente)}</b> <span class="mono">(${esc(p.solic)})</span></dd>
+          <dt>Dirección</dt><dd>${esc(p.direccion || '—')}</dd>
+          <dt>Comuna</dt><dd>${esc(p.comuna)} · ruta <span class="mono">${esc(p.rutaCodigo || '—')}</span></dd>
+          <dt>Obra</dt><dd class="mono">${esc(p.id_obra)} ${p.geoExacta ? '' : '<span class="cc-tag gy">Ubicación aprox.</span>'}</dd>
+          <dt>Vendedor</dt><dd>${esc(p.interlocutor || '—')}</dd></dl></section>
+        <section class="cc-dbox"><h4>${ms('event')}Fechas y entrega</h4>
+          <dl><dt>Creación pedido</dt><dd><b>${fechaTxt(p.creado)}</b>${p.creado ? ` <small>(hace ${-diasHasta(p.creado)} d)</small>` : ''}</dd>
+          <dt>Próximo reparto</dt><dd class="${p._vencido ? 'cc-venc' : ''}"><b>${fechaTxt(p.fecha)}</b>${p._vencido ? ` · vencido ${-p._dias} d` : ''}</dd>
+          <dt>Fechas de reparto</dt><dd>${fechasRep.map(fechaTxt).join(' · ') || '—'}</dd>
+          <dt>Entrega(s) SAP</dt><dd class="mono">${entregas.length ? entregas.map(esc).join(', ') : '<span class="cc-tag gy">Sin entrega asociada</span>'}</dd>
+          <dt>Avance</dt><dd>${p._nCub} de ${p._nLib} posiciones con entrega · ${fT(p._ton, 2)} t pendientes</dd></dl></section>
+        <section class="cc-dbox cc-flete"><h4>${ms('payments')}Flete</h4>
+          <div class="cc-fl-row"><span>Flete traslado (ZFLT)</span><b class="mono">${fCLP(F.traslado)}</b></div>
+          <div class="cc-fl-row"><span>Flete última milla (ZFL0/ZFL1)</span><b class="mono">${fCLP(F.ultMilla)}</b></div>
+          <div class="cc-fl-row tot"><span>Flete cobrado</span><b class="mono">${fCLP(F.cobrado)}</b></div>
+          <div class="cc-fl-row sug"><span>${ms('auto_awesome')}Flete sugerido sistema</span><b class="mono">${sinDatoFlete ? '—' : fCLP(F.sug)}</b></div>
+          ${sinDatoFlete ? '<p class="cc-fl-nota">Sin datos de flete mínimo / máximo / $ por kilo en la carga SAP.</p>'
+            : `<div class="cc-fl-row dif ${dif < 0 ? 'neg' : 'pos'}"><span>Cobrado − sugerido</span><b class="mono">${dif < 0 ? '−' : '+'}${fCLP(Math.abs(dif))}</b></div>
+          <p class="cc-fl-nota">Por posición: $/kg bajo el mínimo → mínimo; sobre el máximo → máximo; entre ambos → $/kg. Σ mín ${fCLP(F.min)} · Σ máx ${fCLP(F.max)} · Σ $/kg ${fCLP(F.pk)}</p>`}
+        </section>
       </div>
-      <div style="overflow:auto"><table><thead><tr><th>Pos</th><th>Material</th><th>Descripción</th><th class="r">Cant.</th><th class="r">Entregado</th><th class="r">Pendiente</th><th class="r">En entrega</th><th>Entrega(s)</th><th>F. entrega</th><th>Estado</th></tr></thead><tbody>${filas}</tbody></table></div>
+      <h4 class="cc-dtit">${ms('inventory_2')}Detalle de productos <small>${posOrd.length} posiciones</small></h4>
+      <div class="cc-dtab"><table><thead>
+        <tr class="grp"><th colspan="9"></th><th colspan="2" class="sep">Flete cobrado</th><th colspan="4" class="sep">Flete sugerido sistema</th></tr>
+        <tr><th>Pos</th><th>Material</th><th>Descripción</th><th class="r">Cant.</th><th class="r">Entregado</th><th class="r">Pendiente</th><th>Repartos (fecha · ctd)</th><th>Entrega</th><th>Estado</th>
+        <th class="r sep">Traslado</th><th class="r">Últ. milla</th><th class="r sep">Mínimo</th><th class="r">Máximo</th><th class="r">$ por kilo</th><th class="r">Sugerido</th></tr></thead>
+        <tbody>${filas}</tbody>
+        <tfoot><tr><td colspan="9"><b>Total pedido</b> <small>(sin posiciones bloqueadas)</small></td>
+          <td class="r mono sep"><b>${fCLP(F.traslado)}</b></td><td class="r mono"><b>${fCLP(F.ultMilla)}</b></td>
+          <td class="r mono sep"><b>${fCLP(F.min)}</b></td><td class="r mono"><b>${fCLP(F.max)}</b></td><td class="r mono"><b>${fCLP(F.pk)}</b></td><td class="r mono sug"><b>${fCLP(F.sug)}</b></td></tr></tfoot>
+      </table></div>
     </div>`;
   $('#cc-modal').classList.add('show');
 }
@@ -525,7 +607,7 @@ function pasos(p) {
   return st.map((s, i) => `<div class="cc-step${i < n ? ' on' : ''}">${ms(s[0])}<span>${esc(s[1])}</span></div>`).join('<i class="cc-step-l"></i>');
 }
 function toast(tipo, titulo, texto) {
-  const ic = { ok: 'check_circle', err: 'error', warn: 'warning', info: 'info' }[tipo] || 'info';
+  const ic = { ok: 'check_circle', err: 'error', warn: 'warning', info: 'info', xp: 'bolt' }[tipo] || 'info';
   const el = document.createElement('div');
   el.className = `cc-toast ${tipo}`;
   el.innerHTML = `${ms(ic)}<div><b>${esc(titulo)}</b>${texto ? `<p>${esc(texto)}</p>` : ''}</div><button class="cc-x" title="Cerrar">${ms('close')}</button>`;
@@ -534,7 +616,7 @@ function toast(tipo, titulo, texto) {
   const box = document.getElementById('cc-toasts'); if (!box) return;
   box.appendChild(el);
   while (box.children.length > 4) box.firstChild.remove();
-  setTimeout(cerrar, 4800);
+  setTimeout(cerrar, tipo === 'xp' ? 9000 : 4800);
 }
 
 /* ════════════════════════════════════════════════════════════════════════
@@ -545,6 +627,7 @@ function bindEventos() {
   $('#cc-kpis').addEventListener('click', e => {
     const b = e.target.closest('.cc-kpi'); if (!b) return;
     if (b.dataset.venc) S.soloVencidos = !S.soloVencidos;
+    else if (b.dataset.xp) S.soloExpress = !S.soloExpress;
     else S.fEstado = S.fEstado === b.dataset.est ? 'todos' : b.dataset.est;
     S.sel = null; renderTodo(true);
   });
@@ -563,8 +646,7 @@ function bindEventos() {
     const mx = e.target.closest('[data-mx]');
     if (mx) { const [c, est] = mx.dataset.mx.split('|'); S.cond = new Set([c]); S.fEstado = est; S.soloVencidos = false; renderTodo(true); return; }
     const li = e.target.closest('.cc-li[data-id]'); if (!li) return;
-    if (e.target.closest('[data-act="detalle"]')) { abrirDetalle(li.dataset.id); return; }
-    seleccionar(li.dataset.id);
+    seleccionar(li.dataset.id, { sinScroll: true }); abrirDetalle(li.dataset.id);
   });
   pane.addEventListener('mouseover', e => { const li = e.target.closest('.cc-li[data-id]'); if (li) hlPin(li.dataset.id, true); });
   pane.addEventListener('mouseout', e => { const li = e.target.closest('.cc-li[data-id]'); if (li) hlPin(li.dataset.id, false); });
@@ -572,21 +654,24 @@ function bindEventos() {
   tb.addEventListener('click', e => {
     const tr = e.target.closest('tr[data-id]'); if (!tr) return;
     const id = tr.dataset.id, act = e.target.closest('[data-act]')?.dataset.act;
-    if (act === 'detalle') { abrirDetalle(id); return; }
-    seleccionar(id);
+    if (act === 'ver') { seleccionar(id); return; }
+    seleccionar(id, { sinScroll: true }); abrirDetalle(id);
   });
-  tb.addEventListener('dblclick', e => { const tr = e.target.closest('tr[data-id]'); if (tr) abrirDetalle(tr.dataset.id); });
   tb.addEventListener('mouseover', e => { const tr = e.target.closest('tr[data-id]'); if (tr) hlPin(tr.dataset.id, true); });
   tb.addEventListener('mouseout', e => { const tr = e.target.closest('tr[data-id]'); if (tr) hlPin(tr.dataset.id, false); });
   root.querySelector('.cc-t thead').addEventListener('click', e => {
     const th = e.target.closest('th.sort'); if (!th) return;
     const col = th.dataset.col;
-    S.orden = { col, dir: S.orden.col === col ? -S.orden.dir : (col === 'ton' || col === 'avance' ? -1 : 1) };
+    S.orden = { col, dir: S.orden.col === col ? -S.orden.dir : (col === 'ton' || col === 'avance' || col === 'flete' ? -1 : 1) };
     renderTabla();
   });
   let tq;
   $('#cc-q').addEventListener('input', e => { clearTimeout(tq); tq = setTimeout(() => { S.q = e.target.value; renderTodo(); }, 160); });
-  $('#cc-modal').addEventListener('click', e => { if (e.target.id === 'cc-modal' || e.target.closest('[data-act="cerrar-modal"]')) $('#cc-modal').classList.remove('show'); });
+  $('#cc-modal').addEventListener('click', e => {
+    if (e.target.id === 'cc-modal' || e.target.closest('[data-act="cerrar-modal"]')) { $('#cc-modal').classList.remove('show'); return; }
+    const vm = e.target.closest('[data-act="ver-mapa"]');
+    if (vm) { $('#cc-modal').classList.remove('show'); seleccionar(vm.dataset.id); }
+  });
 }
 function onKey(e) {
   if (!root || !document.body.contains(root)) { document.removeEventListener('keydown', onKey); return; }
@@ -628,7 +713,7 @@ function plantilla() {
     <div class="cc-tscroll"><table class="cc-t"><thead><tr>
       <th class="sort" data-col="estado">Estado</th><th class="sort" data-col="id">Pedido</th><th class="sort" data-col="cond">Condición</th>
       <th class="sort" data-col="cliente">Cliente</th><th>Obra</th><th class="sort" data-col="comuna">Comuna</th>
-      <th class="sort" data-col="fecha">F. entrega</th><th class="sort" data-col="avance">Avance entrega</th><th>Entrega(s)</th>
+      <th class="sort" data-col="creado">Creado</th><th class="sort" data-col="fecha">F. reparto</th><th class="sort r" data-col="flete">Flete sug.</th><th class="sort" data-col="avance">Avance entrega</th><th>Entrega(s)</th>
       <th class="sort r" data-col="ton">Ton</th><th>Observaciones</th><th></th>
     </tr></thead><tbody id="cc-tbody"></tbody></table></div>
   </section>
@@ -704,7 +789,7 @@ display:grid;grid-template-rows:auto minmax(0,1fr) auto;height:calc(100vh - 112p
 .cc-search{display:flex;align-items:center;gap:6px;border:1px solid var(--cc-line);border-radius:6px;padding:5px 9px;background:#fff;align-self:flex-end}
 .cc-search input{border:none;outline:none;width:240px;font-size:13px;background:none}
 /* KPIs */
-.cc-kpis{flex-basis:100%;display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px}
+.cc-kpis{flex-basis:100%;display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:8px}
 .cc-kpi{display:flex;align-items:center;gap:10px;border:1px solid var(--cc-line);background:#fff;border-radius:8px;padding:9px 11px;cursor:pointer;text-align:left;transition:border-color .15s,box-shadow .15s;position:relative;overflow:hidden}
 .cc-kpi::before{content:'';position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--kc)}
 .cc-kpi:hover{border-color:var(--kc)}
@@ -839,6 +924,52 @@ table.cc-t{width:100%;border-collapse:separate;border-spacing:0;font-size:13px}
 .cc-modal tr.bad td{background:#fef3c7}.cc-modal tr.blq td{background:#fff5f5;color:#7f1d1d;text-decoration:line-through}
 .cc-modal tr.blq td:last-child{text-decoration:none}
 .cc-modal .r{text-align:right}
+/* Express (spot) */
+.cc-rayo{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;background:#facc15;color:#713f12;margin:0 3px;vertical-align:middle;box-shadow:0 0 0 2px #fef9c3;animation:ccXp 1.6s ease-in-out infinite}
+.cc-rayo .material-symbols-outlined{font-size:14px!important;font-variation-settings:'FILL' 1}
+@keyframes ccXp{50%{box-shadow:0 0 0 5px rgba(250,204,21,.35)}}
+.cc-pin-xp{position:absolute;bottom:-7px;left:-7px;width:17px;height:17px;border-radius:50%;background:#facc15;color:#713f12;border:2px solid #fff;display:flex;align-items:center;justify-content:center;transform:rotate(45deg)}
+.cc-pin-xp .material-symbols-outlined{font-size:12px!important;font-variation-settings:'FILL' 1}
+.cc-pin.xp{animation:ccPinXp 1.4s ease-in-out infinite}
+@keyframes ccPinXp{50%{box-shadow:0 0 0 6px rgba(250,204,21,.55),0 1px 5px rgba(0,0,0,.38)}}
+.cc-kpi.xp.alerta{background:#fefce8;border-color:#facc15}.cc-kpi.xp.alerta .cc-kpi-ic{animation:ccXp 1.6s ease-in-out infinite}
+.cc-kpi.xp .material-symbols-outlined{font-variation-settings:'FILL' 1}
+.cc-li.xp{border-left:3px solid #facc15;background:#fffdf0}
+.cc-t tbody tr.xp td:first-child{box-shadow:inset 3px 0 0 #facc15}
+.cc-t tbody tr.xp{background:#fffdf0}
+.cc-tag.xp{background:#facc15;color:#713f12}
+.cc-toast.xp{border-left-color:#facc15;background:#fffdf0}.cc-toast.xp>.material-symbols-outlined{color:#ca8a04}
+.cc-xp-badge{display:inline-flex;align-items:center;gap:3px;background:#facc15;color:#713f12;font-family:Inter,system-ui,sans-serif;font-size:11px;font-weight:800;padding:2px 9px 2px 5px;border-radius:999px;letter-spacing:.03em}
+.cc-xp-badge .material-symbols-outlined{font-size:15px;font-variation-settings:'FILL' 1}
+.cc-modal-h.xp{background:linear-gradient(90deg,#fefce8,#fff 60%)}
+/* Vista detalle */
+.cc-modal-c{width:min(1320px,100%);max-height:92vh}
+.cc-dgrid{display:grid;grid-template-columns:1.1fr 1.1fr 1fr;gap:10px;margin-bottom:14px}
+.cc-dbox{border:1px solid var(--cc-line);border-radius:8px;padding:10px 12px}
+.cc-dbox h4,.cc-dtit{margin:0 0 8px;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--cc-ink2);display:flex;align-items:center;gap:6px}
+.cc-dtit small{text-transform:none;font-weight:500;letter-spacing:0}
+.cc-dbox dl{margin:0;display:grid;grid-template-columns:auto 1fr;gap:5px 10px;font-size:12.5px}
+.cc-dbox dt{color:var(--cc-ink2)}.cc-dbox dd{margin:0}
+.cc-flete{background:#fafafa}
+.cc-fl-row{display:flex;justify-content:space-between;align-items:center;font-size:12.5px;padding:3px 0}
+.cc-fl-row.tot{border-top:1px solid var(--cc-line);margin-top:2px;padding-top:6px;font-weight:600}
+.cc-fl-row.sug{background:#eef2ff;border-radius:6px;padding:6px 8px;margin-top:6px;color:#3730a3;font-weight:700}
+.cc-fl-row.sug span{display:flex;align-items:center;gap:5px}
+.cc-fl-row.dif.neg b{color:#b91c1c}.cc-fl-row.dif.pos b{color:#15803d}
+.cc-fl-nota{font-size:11px;color:var(--cc-ink2);margin:6px 0 0;line-height:1.4}
+.cc-dtab{overflow:auto;border:1px solid var(--cc-line);border-radius:8px}
+.cc-modal .cc-dtab table{font-size:12px}
+.cc-modal .cc-dtab th.sep,.cc-modal .cc-dtab td.sep{border-left:2px solid var(--cc-line)}
+.cc-modal .cc-dtab tr.grp th{background:#fff;font-size:10px;text-align:center;border-bottom:none}
+.cc-modal .cc-dtab td.sug{background:#eef2ff}
+.cc-modal .cc-dtab tfoot td{background:var(--cc-s1);border-top:2px solid var(--cc-line);padding:7px 8px}
+.cc-modal .cc-dtab td small{color:var(--cc-ink2)}
+.cc-desc{max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cc-regla{font-size:9.5px;font-weight:700;color:#4338ca;background:#e0e7ff;border-radius:3px;padding:0 4px}
+.cc-reps{display:flex;flex-wrap:wrap;gap:3px}
+.cc-rep{font-family:var(--cc-mono);font-size:11px;background:var(--cc-s1);border-radius:4px;padding:1px 5px;white-space:nowrap}
+.cc-rep.venc{background:#fee2e2;color:#991b1b}
+@media (max-width:1100px){.cc-dgrid{grid-template-columns:1fr}}
 @media (max-width:1280px){.cc-kpis{grid-template-columns:repeat(3,minmax(0,1fr))}}
 @media (max-width:1100px){.cc{height:auto}.cc-main{grid-template-columns:1fr}.cc-mapwrap{height:58vh;flex:none}.cc-side{max-height:560px}.cc-tablecard{height:auto;max-height:70vh}}
 @media (max-width:640px){.cc-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.cc-kv{grid-template-columns:repeat(2,1fr)}.cc-search input{width:140px}.cc-brand{min-width:0;width:100%}}
