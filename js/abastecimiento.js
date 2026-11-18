@@ -10,13 +10,13 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611181640';
-import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611181640';
-import { getDatabase } from './data.js?v=202611181640';
+import { supabase } from './supabase-client.js?v=202611181651';
+import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611181651';
+import { getDatabase } from './data.js?v=202611181651';
 import { COMUNAS_POR_REGION } from './chile-geo.js';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611181640';
-import { confirmar, pedirDato } from './confirmar.js?v=202611181640';
+import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611181651';
+import { confirmar, pedirDato } from './confirmar.js?v=202611181651';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -7892,6 +7892,13 @@ async function descargarPickingCamion(filtros, nombreArchivo) {
   const porCam = new Map();
   filas.forEach(f => { if (!porCam.has(f.camion_id)) porCam.set(f.camion_id, []); porCam.get(f.camion_id).push(f); });
 
+  // (18-nov-2026, Jordan) RUT del transportista desde el maestro (transports.id = código SAP del transporte)
+  const idsT = [...new Set(filas.map(f => s(f.id_transporte)).filter(Boolean))];
+  const rutT = {};
+  if (idsT.length) {
+    const rT = await supabase.from('transports').select('id,rut').in('id', idsT);
+    (rT.data || []).forEach(t => { rutT[s(t.id)] = s(t.rut); });
+  }
   const ExcelJS = await loadExcelJsAbast();
   const wb = new ExcelJS.Workbook();
   let logoId = null;
@@ -7899,9 +7906,12 @@ async function descargarPickingCamion(filtros, nombreArchivo) {
     const resp = await fetch('img/ebema-logo.png', { cache: 'force-cache' });
     if (resp.ok) logoId = wb.addImage({ buffer: await resp.arrayBuffer(), extension: 'png' });
   } catch (_e) { /* sin logo */ }
-  const NEGRO = 'FF000000', GRIS = 'FFD9D9D9', OSCURO = 'FF404040', ROJO = 'FFC00000';
+  const NEGRO = 'FF000000', GRIS = 'FFD9D9D9', OSCURO = 'FF404040', ROJO = 'FFC00000', BLANCO = 'FFFFFFFF';
   const fill = c => ({ type: 'pattern', pattern: 'solid', fgColor: { argb: c } });
-  const borde = { top: { style: 'thin', color: { argb: 'FFBFBFBF' } }, left: { style: 'thin', color: { argb: 'FFBFBFBF' } }, bottom: { style: 'thin', color: { argb: 'FFBFBFBF' } }, right: { style: 'thin', color: { argb: 'FFBFBFBF' } } };
+  const fino = { style: 'thin', color: { argb: 'FFBFBFBF' } }, grueso = { style: 'medium', color: { argb: NEGRO } };
+  const borde = { top: fino, left: fino, bottom: fino, right: fino };
+  const LASTC = 11;   // columnas B..K
+  const entNum = e => { const x = Number(String(e || '').replace(/\D/g, '')); return isFinite(x) && x > 0 ? x : -1; };
   const usados = new Set();
   [...porCam.values()].forEach((ls, iCam) => {
     const h = ls[0];
@@ -7910,66 +7920,75 @@ async function descargarPickingCamion(filtros, nombreArchivo) {
     while (usados.has(nom)) nom = nom.slice(0, 26) + ' ' + (iCam + 2);
     usados.add(nom);
     const ws = wb.addWorksheet(nom, { views: [{ showGridLines: false }], pageSetup: { orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0, paperSize: 9 } });
-    ws.columns = [3, 15, 13, 8, 12, 11, 46, 12, 12, 12, 11, 36, 10].map(w => ({ width: w }));
+    ws.columns = [3, 16, 14, 9, 13, 50, 12, 12, 13, 14, 11].map(w => ({ width: w }));
     if (logoId != null) ws.addImage(logoId, { tl: { col: 1, row: 0.2 }, ext: { width: 64, height: 64 } });
-    ws.mergeCells('C2:M3');
+    ws.mergeCells('C2:K3');
     Object.assign(ws.getCell('C2'), { value: 'LISTA DE PICKING · CAMIÓN PROGRAMADO' });
     ws.getCell('C2').font = { name: 'Arial', size: 22, bold: true }; ws.getCell('C2').alignment = { horizontal: 'center', vertical: 'middle' };
+    // Destino destacado (grande)
+    ws.mergeCells(5, 2, 5, LASTC);
+    const dc = ws.getCell(5, 2);
+    dc.value = 'DESTINO:  ' + (/Cliente/i.test(s(h.tipo_camion)) && s(h.cliente) ? s(h.cliente) + (s(h.comuna) ? ' · ' + s(h.comuna) : '') : s(h.destino));
+    dc.fill = fill(NEGRO); dc.font = { name: 'Arial', size: 20, bold: true, color: { argb: BLANCO } }; dc.alignment = { horizontal: 'center', vertical: 'middle' };
+    ws.getRow(5).height = 36;
     const kg = ls.reduce((a, f) => a + n(f.ton) * 1000, 0);
     const fc = s(h.fecha_carga) ? s(h.fecha_carga).split('-').reverse().join('-') : '';
     const pres = s(h.hora_presentacion) || ({ 1: '07:00 a 11:00', 2: '11:30 a 15:00', 3: '15:30 a 18:00' })[h.bloque_presentacion] || '';
     const cab = [
-      ['FECHA CARGA', fc, 'DESTINO', s(h.destino)],
+      ['FECHA CARGA', fc, 'PRESENTACIÓN', pres],
       ['PATENTE', s(h.patente_camion) + (s(h.patente_carro) ? ' / ' + s(h.patente_carro) : ''), 'TIPO CAMIÓN', `${s(h.tipo_camion)} · CD ${s(h.cd_origen)}`],
-      ['CHOFER', s(h.chofer_nombre) + (s(h.chofer_telefono) ? ' · ' + s(h.chofer_telefono) : ''), 'PESO TOTAL (kg)', Math.round(kg * 10) / 10],
-      ['TRANSPORTISTA', s(h.transportista), '% CAMIÓN', h.pct_camion != null && h.pct_camion !== '' ? Math.round(n(h.pct_camion)) + '%' : ''],
-      ['PRESENTACIÓN', pres, 'PICKER', ''],
+      ['CHOFER', s(h.chofer_nombre) + (s(h.chofer_telefono) ? ' · ' + s(h.chofer_telefono) : ''), 'RUT CHOFER', s(h.chofer_rut)],
+      ['TRANSPORTISTA', s(h.transportista), 'RUT TRANSPORTISTA', rutT[s(h.id_transporte)] || ''],
+      ['COD. TRANSPORTE', s(h.id_transporte), 'PESO TOTAL (kg)', Math.round(kg * 10) / 10],
+      ['% CAMIÓN', h.pct_camion != null && h.pct_camion !== '' ? Math.round(n(h.pct_camion)) + '%' : '', 'PICKER', ''],
     ];
     cab.forEach((c, i) => {
-      const row = 5 + i; ws.getRow(row).height = 20;
+      const row = 7 + i; ws.getRow(row).height = 20;
       const l1 = ws.getCell(row, 2); l1.value = c[0]; l1.font = { name: 'Arial', size: 10, bold: true }; l1.alignment = { horizontal: 'center', vertical: 'middle' };
       ws.mergeCells(row, 3, row, 6);
-      const v1 = ws.getCell(row, 3); v1.value = c[1]; v1.fill = fill(NEGRO); v1.font = { name: 'Arial', size: 10, bold: true, color: { argb: 'FFFFFFFF' } }; v1.alignment = { horizontal: 'center', vertical: 'middle' };
-      ws.mergeCells(row, 9, row, 10);
-      const l2 = ws.getCell(row, 9); l2.value = c[2]; l2.font = { name: 'Arial', size: 10, bold: true }; l2.alignment = { horizontal: 'right', vertical: 'middle' };
-      ws.mergeCells(row, 11, row, 13);
-      const v2 = ws.getCell(row, 11); v2.value = c[3];
+      const v1 = ws.getCell(row, 3); v1.value = c[1]; v1.fill = fill(NEGRO); v1.font = { name: 'Arial', size: 10, bold: true, color: { argb: BLANCO } }; v1.alignment = { horizontal: 'center', vertical: 'middle' };
+      ws.mergeCells(row, 7, row, 8);
+      const l2 = ws.getCell(row, 7); l2.value = c[2]; l2.font = { name: 'Arial', size: 10, bold: true }; l2.alignment = { horizontal: 'right', vertical: 'middle' };
+      ws.mergeCells(row, 9, row, LASTC);
+      const v2 = ws.getCell(row, 9); v2.value = c[3];
       if (c[2] === 'PICKER') { v2.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } }; }
-      else { v2.fill = fill(NEGRO); v2.font = { name: 'Arial', size: 10, bold: true, color: { argb: 'FFFFFFFF' } }; }
+      else { v2.fill = fill(NEGRO); v2.font = { name: 'Arial', size: 10, bold: true, color: { argb: BLANCO } }; }
       if (typeof c[3] === 'number') v2.numFmt = '#,##0.0';
       v2.alignment = { horizontal: 'center', vertical: 'middle' };
     });
-    let row = 12;
+    // SKU que se repite dentro del camión → celda negra con letra blanca
+    const cntMat = {};
+    ls.forEach(f => { const m = s(f.material); if (m) cntMat[m] = (cntMat[m] || 0) + 1; });
+    let row = 14;
     PICK_GRUPOS_WEB.forEach(gr => {
-      const g = ls.filter(f => f._g === gr.k);
+      const g = ls.filter(f => f._g === gr.k)
+        .sort((a, b) => entNum(b.n_entrega) - entNum(a.n_entrega) || s(a.material).localeCompare(s(b.material)));
       if (!g.length) return;
       const kgG = g.reduce((a, f) => a + n(f.ton) * 1000, 0), np = g.filter(f => f._prio).length, nf = g.filter(f => f._fact).length;
-      ws.mergeCells(row, 2, row, 13);
+      ws.mergeCells(row, 2, row, LASTC);
       const t = ws.getCell(row, 2);
       t.value = `${gr.titulo}  ·  ${g.length} líneas  ·  ${kgG.toFixed(1).replace('.', ',')} kg${np ? `  ·  ${np} priorizadas` : ''}${nf ? `  ·  ${nf} facturables` : ''}`;
-      t.fill = fill(OSCURO); t.font = { name: 'Arial', size: 11, bold: true, color: { argb: 'FFFFFFFF' } }; t.alignment = { vertical: 'middle' };
-      ws.getRow(row).height = 20; row++;
-      const hdr = [gr.doc, gr.ent, 'Centro', 'Destinatario', 'Material', 'Denominación de posición', 'Cant. Solicitada', 'Cant. Pickeada', 'Peso total (kg)', 'Priorizado', 'Observación', '¿Cargado?'];
+      t.fill = fill(OSCURO); t.font = { name: 'Arial', size: 15, bold: true, color: { argb: BLANCO } }; t.alignment = { vertical: 'middle' };
+      ws.getRow(row).height = 28; row++;
+      const hdr = [gr.doc, gr.ent, 'Centro', 'Material', 'Denominación de posición', 'Cant. Solicitada', 'Cant. Pickeada', 'Peso total (kg)', 'Priorizado / Facturable', '¿Cargado?'];
       hdr.forEach((v, i) => { const c = ws.getCell(row, 2 + i); c.value = v; c.fill = fill(GRIS); c.font = { name: 'Arial', size: 10, bold: true }; c.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true }; c.border = borde; });
       ws.getRow(row).height = 28; row++;
-      g.forEach(f => {
-        const obs = [];
-        if (f._fact) obs.push(PICK_FACTURABLE_WEB);
-        if (gr.k === 'PV' && s(f.cliente)) obs.push(s(f.cliente) + (s(f.comuna) ? ' · ' + s(f.comuna) : ''));
-        if (gr.k === 'RET' && s(f.proveedor)) obs.push(s(f.proveedor));
-        if (gr.k !== 'PV' && gr.k !== 'RET' && s(f.pedido_venta)) obs.push('NV ' + s(f.pedido_venta));
-        if (!s(f.n_entrega)) obs.push('SIN ENTREGA');
-        const vals = [gr.k === 'PV' ? (s(f.pedido_venta) || s(f.documento)) : s(f.documento), s(f.n_entrega) || 'SIN ENTREGA', s(f.cd_origen), s(f.ce), s(f.material), s(f.nombre),
-          n(f.cantidad), null, Math.round(n(f.ton) * 1000 * 10) / 10, f._prio ? 'PRIORIZADO' : '', obs.join(' · '), '☐'];
+      g.forEach((f, iF) => {
+        const marca = [f._prio ? 'PRIORIZADO' : '', f._fact ? 'FACTURABLE' : ''].filter(Boolean).join(' · ');
+        // Crossdocking: el material está en la bodega del centro destino dentro del 1003 → se muestra el centro destino
+        const centro = gr.k === 'CROSS' ? s(f.ce) : s(f.cd_origen);
+        const vals = [gr.k === 'PV' ? (s(f.pedido_venta) || s(f.documento)) : s(f.documento), s(f.n_entrega) || 'SIN ENTREGA', centro, s(f.material), s(f.nombre),
+          n(f.cantidad), null, Math.round(n(f.ton) * 1000 * 10) / 10, marca, '☐'];
+        const finGrupoEnt = iF === g.length - 1 || s(g[iF + 1].n_entrega) !== s(f.n_entrega);
         vals.forEach((v, i) => {
-          const c = ws.getCell(row, 2 + i); c.value = v; c.border = borde; c.font = { name: 'Arial', size: 10 };
-          c.alignment = { horizontal: i === 5 || i === 10 ? 'left' : 'center', vertical: 'middle', wrapText: i === 10 };
+          const c = ws.getCell(row, 2 + i); c.value = v; c.font = { name: 'Arial', size: 10 };
+          c.border = finGrupoEnt ? { ...borde, bottom: grueso } : borde;
+          c.alignment = { horizontal: i === 4 ? 'left' : 'center', vertical: 'middle', wrapText: i === 8 };
         });
-        ws.getCell(row, 8).numFmt = '#,##0.##'; ws.getCell(row, 10).numFmt = '#,##0.0';
-        ws.getCell(row, 13).font = { name: 'Arial', size: 14 };
-        if (f._prio) ws.getCell(row, 11).font = { name: 'Arial', size: 10, bold: true, color: { argb: ROJO } };
-        if (f._fact) ws.getCell(row, 12).font = { name: 'Arial', size: 9, bold: true, color: { argb: ROJO } };
-        else ws.getCell(row, 12).font = { name: 'Arial', size: 9 };
+        ws.getCell(row, 7).numFmt = '#,##0.##'; ws.getCell(row, 9).numFmt = '#,##0.0';
+        ws.getCell(row, LASTC).font = { name: 'Arial', size: 14 };
+        if (marca) ws.getCell(row, 10).font = { name: 'Arial', size: 9, bold: true, color: { argb: ROJO } };
+        if (cntMat[s(f.material)] > 1) { const mc = ws.getCell(row, 5); mc.fill = fill(NEGRO); mc.font = { name: 'Arial', size: 10, bold: true, color: { argb: BLANCO } }; }
         row++;
       });
       row++;
@@ -8554,7 +8573,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611181640');
+    const m = await import('./ind-plan-carga.js?v=202611181651');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
