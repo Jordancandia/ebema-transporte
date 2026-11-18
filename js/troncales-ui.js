@@ -32,8 +32,8 @@ export function tonHtml(n) {
 }
 
 // Encabezado del shell: fecha y hora de la última actualización SAP de la vista
-import { confirmar } from './confirmar.js?v=202611180959';
-import { comentariosHabilitados, conteosComentarios, celdaComentarios, montarHilo, tomarFoco, abrirHiloSuelto } from './comentarios.js?v=202611180959';
+import { confirmar } from './confirmar.js?v=202611181022';
+import { comentariosHabilitados, conteosComentarios, celdaComentarios, montarHilo, tomarFoco, abrirHiloSuelto } from './comentarios.js?v=202611181022';
 export function setUltimaActualizacion(ts) {
   const el = document.getElementById('sv-upd');
   if (!el) return;
@@ -474,6 +474,7 @@ async function renderTablaV2Core(stage, cfg, deps, viewKey, recarga = false) {
 
     stage.innerHTML = `<div class="sv-view">
       ${headHTML()}
+      ${AV.banner ? AV.banner(rowsAll, ctx) : ''}
       ${kpis}
       ${filtros}
       ${!esCal() && selAcc.length && st.sel.size ? `<div class="sv-card" style="padding:10px 14px;margin-bottom:10px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;position:sticky;top:60px;z-index:5;border:1px solid #b5000b33">
@@ -663,6 +664,8 @@ async function renderTablaV2Core(stage, cfg, deps, viewKey, recarga = false) {
       try { const res = await hb.run(filt); if (res) { if (res.abrir) st._reopen = String(res.abrir); deps.clearRawCache(); renderTablaV2(stage, cfg, deps, viewKey); return; } } finally { b.disabled = false; }
     }));
     stage.querySelector('[data-csv]')?.addEventListener('click', () => deps.exportarCSV(active, filt));
+    // (18-nov-2026) Aviso propio de la vista (p. ej. reposición sin fondo): wireBanner(stage, ctx, recargar)
+    if (AV.wireBanner) AV.wireBanner(stage, ctx, () => { deps.clearRawCache(); renderTablaV2(stage, cfg, deps, viewKey); });
     const accFila = (sel, fn) => stage.querySelectorAll(sel).forEach(b => b.addEventListener('click', async e => {
       e.stopPropagation();
       const r = rowsAll.find(x => rowId(x) === (b.dataset.filaExcl || b.dataset.filaReac));

@@ -10,13 +10,13 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611180959';
-import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611180959';
-import { getDatabase } from './data.js?v=202611180959';
+import { supabase } from './supabase-client.js?v=202611181022';
+import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611181022';
+import { getDatabase } from './data.js?v=202611181022';
 import { COMUNAS_POR_REGION } from './chile-geo.js';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611180959';
-import { confirmar, pedirDato } from './confirmar.js?v=202611180959';
+import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611181022';
+import { confirmar, pedirDato } from './confirmar.js?v=202611181022';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -1223,6 +1223,26 @@ async function loadRetirosUnidosCD() {
     const { data, error } = await supabase.from('abast_plan_camion_retiro_cd').select('cd_origen,ce,doc_compr,creado_por').eq('fecha', isoLocal(hoy00()));
     if (error) throw error; return data || [];
   } catch (e) { console.warn('Retiros unidos al camión CD no disponibles', e); return []; }
+}
+// (18-nov-2026, Jordan) Plan de Carga = lo REALMENTE considerado. Estado de suministro de lo informado a Logística
+// (fn_abast_sin_fondo_estado: SUMINISTRADO / PARCIAL / SIN FONDO / PENDIENTE + bloqueadas 2+ días) y posiciones subidas
+// hoy como NUEVA POR AJUSTE (log abast_plan_sin_fondo_accion: SUBIR_REEMPLAZO; QUITAR_AJUSTE / DESHACER la anulan).
+// Claves: ce|documento|material.
+async function loadSinFondoPlan(origen) {
+  const out = { est: new Map(), bloq: [], ajuste: new Map() };
+  const k = x => `${String(x.ce ?? '').trim()}|${String(x.documento ?? '').trim()}|${String(x.material ?? '').trim()}`;
+  try {
+    const { data, error } = await supabase.rpc('fn_abast_sin_fondo_estado', { p_cd_origen: origen });
+    if (error) throw error;
+    (data || []).forEach(x => { if (x.fila === 'BLOQUEADO') out.bloq.push(x); else out.est.set(k(x), x); });
+  } catch (e) { console.warn('Plan de carga: estado sin fondo no disponible', e); }
+  try {
+    const { data, error } = await supabase.from('abast_plan_sin_fondo_accion').select('ce,documento,material,accion,usuario,created_at')
+      .eq('fecha', isoLocal(hoy00())).eq('cd_origen', origen).in('accion', ['SUBIR_REEMPLAZO', 'QUITAR_AJUSTE', 'DESHACER']).order('created_at');
+    if (error) throw error;
+    (data || []).forEach(x => { if (x.accion === 'SUBIR_REEMPLAZO') out.ajuste.set(k(x), x); else out.ajuste.delete(k(x)); });
+  } catch (e) { console.warn('Plan de carga: ajustes sin fondo no disponibles', e); }
+  return out;
 }
 async function loadCamionesManuales() {
   try {
@@ -5024,6 +5044,221 @@ const V2_DEPS = {
   loadExclusionesPlan, excluirDelPlan, reactivarEnPlan,
   loadPrioridades, togglePrioridad, evaluarPrioridad, enAlcance,
 };
+// ============================================================================
+// (18-nov-2026, Jordan) REPOSICIÓN SIN FONDO desde Revex / Crossdocking / Pedidos de Traslados
+// El Plan de Carga muestra sólo lo realmente considerado: la posición informada a Logística que quedó sin fondo sale
+// sola del camión CD. Desde estas vistas Abastecimiento ve qué salió y elige con qué completar el espacio libre; lo que
+// sube queda en el camión CD marcado «NUEVA POR AJUSTE» (log abast_plan_sin_fondo_accion · SUBIR_REEMPLAZO).
+// ============================================================================
+const SF_CATS_PT = ['revex', 'cross', 'quiebre', 'stock', 'adelanto'];
+const SF_TIPO = { revex: 'Revex', cross: 'Crossdocking', quiebre: 'Traslado', stock: 'Traslado', adelanto: 'Traslado' };
+const SF_TIPO_TONE = { Revex: 'ok', Crossdocking: 'info', Traslado: 'mute' };
+const AJUSTE_BADGE = `<span class="sv-pill purple" style="font-size:10px;padding:0 6px;margin-left:4px" title="Posición nueva: entró al camión para reponer una línea sin fondo">NUEVA POR AJUSTE</span>`;
+const sfCierreHoy = () => { const c = new Date(); c.setHours(17, 0, 0, 0); return new Date() >= c; };
+// Resumen por sucursal (origen|destino) a partir del estado del plan de las vistas.
+function sfResumenCentro(c) {
+  const porKey = (arr) => { const m = new Map(); arr.forEach(l => { const k = `${l.doc}|${l.mat}`; const x = m.get(k) || { key: k, doc: l.doc, mat: l.mat, nombre: l.nombre, cat: l.cat, tipo: SF_TIPO[l.cat], fecha: l.fecha, ton: 0, ent: new Set(), prio: false, ord: l.ord, aj: false };
+    x.ton += l.ton; if (l.ent) x.ent.add(l.ent); x.prio = x.prio || l.prio; x.aj = x.aj || l.aj; x.ord = Math.min(x.ord, l.ord); m.set(k, x); }); return [...m.values()]; };
+  const lin = c.lin || [];
+  const est = new Map((c.sfE || []).map(x => [`${String(x.documento).trim()}|${String(x.material).trim()}`, x]));
+  const fuera = porKey(lin.filter(l => l.est === 'SIN_FONDO')).map(x => ({ ...x, e: est.get(x.key) || null }));
+  const enCam = new Set(lin.filter(l => l.est === 'EN_CAMION' || l.est === 'ADELANTO' || (l.est === 'CAMION2' && c.acept)).map(l => `${l.doc}|${l.mat}`));
+  const fueraK = new Set(fuera.map(x => x.key));
+  const ordCat = k => SF_CATS_PT.indexOf(k);
+  const cand = porKey(lin.filter(l => (l.est === 'NO_CABE' || l.est === 'CAMION2_PROP') && l.ton > 0.0001))
+    .filter(x => !enCam.has(x.key) && !fueraK.has(x.key))
+    .sort((a, b) => (b.ent.size ? 1 : 0) - (a.ent.size ? 1 : 0) || (b.prio ? 1 : 0) - (a.prio ? 1 : 0) || ordCat(a.cat) - ordCat(b.cat) || a.ord - b.ord || a.doc.localeCompare(b.doc));
+  const ajustes = porKey(lin.filter(l => l.aj && (l.est === 'EN_CAMION' || l.est === 'ADELANTO' || l.est === 'CAMION2')));
+  const libre = Math.max(0, (c.cap || 0) - (c.cargado || 0));
+  return { fuera, cand, ajustes, libre, tonFuera: fuera.reduce((s, x) => s + x.ton, 0), bloq: c.bloq || [] };
+}
+function sfCentrosVista(ep) {
+  return Object.values((ep && ep.centros) || {}).filter(c => c.ce && enAlcance(c.ce))
+    .map(c => ({ c, r: sfResumenCentro(c) })).filter(x => x.r.fuera.length || x.r.ajustes.length || x.r.bloq.length)
+    .sort((a, b) => b.r.tonFuera - a.r.tonFuera || a.c.nombre.localeCompare(b.c.nombre));
+}
+const t1sf = n => fmtNum(Number(n) || 0, 1);
+// Aviso arriba de la tabla de la vista
+function sfBannerVista(vista) {
+  return (rowsAll, ctx) => {
+    const lst = sfCentrosVista(ctx && ctx.estadoPlan);
+    if (!lst.length) return '';
+    const n = lst.reduce((s, x) => s + x.r.fuera.length, 0), ton = lst.reduce((s, x) => s + x.r.tonFuera, 0);
+    const nAj = lst.reduce((s, x) => s + x.r.ajustes.length, 0), nb = lst.reduce((s, x) => s + x.r.bloq.length, 0);
+    const pend = lst.filter(x => x.r.fuera.length);
+    const cerr = sfCierreHoy();
+    return `<div class="sv-card" style="border:1px solid ${n ? '#fed7aa' : '#ddd6fe'};background:${n ? '#fff7ed' : '#f5f3ff'};padding:12px 14px;margin-bottom:12px">
+      <div style="display:flex;align-items:flex-start;gap:10px;flex-wrap:wrap">
+        <span class="material-symbols-outlined" style="color:${n ? '#9a3412' : '#6d28d9'};margin-top:2px">${n ? 'inventory' : 'published_with_changes'}</span>
+        <div style="flex:1;min-width:260px">
+          <b style="color:${n ? '#9a3412' : '#5b21b6'}">${n ? `${n} posición${n === 1 ? '' : 'es'} sin fondo salieron del Plan de Carga · ${t1sf(ton)} t por reponer` : 'Reposición sin fondo al día'}</b>
+          <div class="sv-sub" style="margin:2px 0 0">${n ? 'Logística no las pudo suministrar: ya no cuentan en el camión CD. Elige con qué completar el espacio que dejaron.' : ''}${nAj ? ` ${nAj} posición${nAj === 1 ? '' : 'es'} nueva${nAj === 1 ? '' : 's'} por ajuste hoy.` : ''}${nb ? ` ${nb} bloqueada${nb === 1 ? '' : 's'} por llevar 2+ días sin fondo.` : ''}${cerr ? ' · El plan ya cerró (17:00): sólo consulta.' : ''}</div>
+        </div></div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px">${lst.map(x => `<button class="sv-btn${x.r.fuera.length ? '-p' : ''}" data-sf-rep="${escapeHtml(x.c.orig)}|${escapeHtml(x.c.ce)}" data-sf-vista="${escapeHtml(vista)}" style="padding:4px 10px;font-size:12px">
+          <span class="material-symbols-outlined" style="font-size:16px">${x.r.fuera.length ? 'swap_horiz' : 'visibility'}</span>${escapeHtml(x.c.nombre)}${x.c.orig !== '1003' ? ` <small>(${escapeHtml(x.c.orig)})</small>` : ''}
+          <span style="opacity:.85;margin-left:4px">${x.r.fuera.length ? `${x.r.fuera.length} · ${t1sf(x.r.tonFuera)} t` : ''}${x.r.ajustes.length ? `${x.r.fuera.length ? ' · ' : ''}${x.r.ajustes.length} nueva${x.r.ajustes.length === 1 ? '' : 's'}` : ''}${x.r.bloq.length ? ` · ${x.r.bloq.length} bloq.` : ''}</span></button>`).join('')}
+        ${pend.length > 1 ? '' : ''}</div>
+    </div>`;
+  };
+}
+function sfWireVista(stage, ctx, recargar) {
+  stage.querySelectorAll('[data-sf-rep]').forEach(b => b.addEventListener('click', async () => {
+    const [orig, ce] = b.dataset.sfRep.split('|');
+    if (await abrirReposicionSinFondo(ctx && ctx.estadoPlan, orig, ce, b.dataset.sfVista)) recargar();
+  }));
+}
+// Acción del detalle de una fila sin fondo
+function sfAccionDetalle(r, vista) {
+  if (r._plan !== 'SIN_FONDO' || !r._plan_centro) return null;
+  return { label: 'Reponer espacio (sin fondo)', icon: 'swap_horiz', primary: true,
+    run: async (row, ctx) => ((await abrirReposicionSinFondo(ctx && ctx.estadoPlan, row._plan_centro.orig, row._plan_centro.ce, vista)) ? { recargar: true } : null) };
+}
+// Columna Plan de Carga de las 3 vistas
+function sfPlanPill(r) {
+  const p = PLAN_LINEA_V2[r._plan] || PLAN_LINEA_V2.FUERA;
+  return pill(p[0], p[1]) + (r._ajusteSF && r._en_plan ? `<div style="margin-top:4px">${pill('Nueva por ajuste', 'purple')}</div>` : '');
+}
+// Panel lateral: qué salió por falta de fondo y con qué completar el camión CD de la sucursal.
+function abrirReposicionSinFondo(ep, orig, ce, vista) {
+  return new Promise(resolve => {
+    const c = ep && ep.centros && ep.centros[`${orig}|${ce}`];
+    if (!c) { showAlert('No se encontró el camión CD de la sucursal en el plan de hoy.', 'error'); resolve(false); return; }
+    const R = sfResumenCentro(c);
+    const puede = can('ajustar_plan') && !sfCierreHoy() && !c.prog;
+    const filtroIni = { pedidos_traslados_revex: 'Revex', pedidos_traslados_4000: 'Crossdocking', pedidos_traslados: 'Traslado' }[vista] || 'all';
+    const st = { tipo: R.cand.some(x => x.tipo === filtroIni) ? filtroIni : 'all', soloEnt: false, sel: new Set(), cambio: false };
+    // Sugerencia inicial: llena el espacio libre por prioridad (con entrega primero)
+    { let lib = R.libre; R.cand.forEach(x => { if (x.ton <= lib + 1e-6) { st.sel.add(x.key); lib -= x.ton; } }); }
+    const wrap = document.createElement('div');
+    wrap.innerHTML = '<div class="sv-dr-bg" style="z-index:120"></div><aside class="sv-dr" style="z-index:121;width:min(980px,100vw)" role="dialog" aria-label="Reponer sin fondo"></aside>';
+    document.body.appendChild(wrap);
+    const panel = wrap.querySelector('aside');
+    const fin = v => { wrap.remove(); document.removeEventListener('keydown', onKey, true); resolve(v || st.cambio); };
+    const onKey = e => { if (e.key === 'Escape' && !document.querySelector('.sv-cf-bg')) { e.stopPropagation(); fin(false); } };
+    document.addEventListener('keydown', onKey, true);
+    wrap.querySelector('.sv-dr-bg').addEventListener('click', () => fin(false));
+    const pct = t => c.cap > 0 ? Math.round(t / c.cap * 100) : 0;
+    const col = p => p >= PCT_PROGRAMAR_CD ? '#15803d' : p >= 70 ? '#a16207' : '#b5000b';
+    const barra = (base, extra) => `<div style="height:10px;border-radius:5px;background:#edeeef;overflow:hidden;display:flex;margin-top:6px">
+      <div style="width:${Math.min(100, pct(base))}%;background:#64748b"></div><div style="width:${Math.max(0, Math.min(100 - pct(base), pct(extra)))}%;background:#7c3aed"></div></div>`;
+    const tipoPill = t => pill(t, SF_TIPO_TONE[t] || 'mute');
+    const entCell = x => x.ent.size ? `${pill('Con entrega', 'ok')}<div class="sv-sub" style="margin:0">${escapeHtml([...x.ent].join(', '))}</div>` : pill('Sin entrega aún', 'mute');
+    function draw() {
+      const elegidos = R.cand.filter(x => st.sel.has(x.key));
+      const entra = elegidos.reduce((s, x) => s + x.ton, 0), despues = (c.cargado || 0) + entra, exc = entra > R.libre + 0.05;
+      const vis = R.cand.filter(x => (st.tipo === 'all' || x.tipo === st.tipo) && (!st.soloEnt || x.ent.size)).slice(0, 80);
+      const nTipo = t => R.cand.filter(x => t === 'all' || x.tipo === t).length;
+      panel.innerHTML = `
+        <div class="sv-dr-h"><div style="flex:1;min-width:0">
+          <div class="sv-dr-k">Reponer sin fondo · camión CD</div>
+          <div class="sv-dr-t">${escapeHtml(c.nombre || ce)}</div>
+          <div class="sv-dr-s">${escapeHtml(getNombreCentro(orig) || orig)} → ${escapeHtml(c.nombre || ce)} · plan de hoy</div></div>
+          <button class="sv-iconbtn" data-cx title="Cerrar (Esc)"><span class="material-symbols-outlined">close</span></button></div>
+        <div class="sv-dr-b" style="gap:14px">
+          <div class="sv-card" style="padding:12px 14px">
+            <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px">
+              <div><div class="sv-sub" style="margin:0">Considerado hoy</div><b style="font-size:17px;color:${col(pct(c.cargado))}">${t1sf(c.cargado)} t · ${pct(c.cargado)}%</b></div>
+              <div><div class="sv-sub" style="margin:0">Salió sin fondo</div><b style="font-size:17px;color:${R.tonFuera > 0.05 ? '#b5000b' : 'inherit'}">${t1sf(R.tonFuera)} t</b></div>
+              <div><div class="sv-sub" style="margin:0">Espacio libre</div><b style="font-size:17px">${t1sf(R.libre)} t</b></div>
+              <div><div class="sv-sub" style="margin:0">Con lo elegido</div><b style="font-size:17px;color:${col(pct(despues))}">${t1sf(despues)} t · ${pct(despues)}%</b></div>
+            </div>
+            ${barra(c.cargado || 0, entra)}
+            <div class="sv-sub" style="margin:6px 0 0"><span style="display:inline-block;width:10px;height:10px;background:#64748b;border-radius:2px"></span> considerado
+              <span style="display:inline-block;width:10px;height:10px;background:#7c3aed;border-radius:2px;margin-left:10px"></span> nuevo por ajuste · capacidad ${fmtNum(c.cap, 0)} t</div>
+          </div>
+          ${c.prog ? '<div class="sv-note-box">El camión CD ya está <b>programado</b>: su carga se cambia con «Editar carga» en Seguimiento de Carga.</div>' : ''}
+          ${sfCierreHoy() ? '<div class="sv-note-box">El plan de hoy ya cerró (17:00): sólo consulta.</div>' : ''}
+          ${!can('ajustar_plan') ? '<div class="sv-note-box">Tu perfil puede consultar, pero no ajustar el plan.</div>' : ''}
+
+          <div>
+            <div class="sv-dr-k" style="margin:0 0 4px">1 · Salieron del camión por falta de fondo</div>
+            ${R.fuera.length ? `<div class="sv-table-wrap"><table class="sv-table"><thead><tr><th>Pedido · material</th><th>Tipo</th><th>Estado</th><th class="r">Ton</th><th>Días</th></tr></thead><tbody>${R.fuera.map(x => {
+              const d = (x.e && x.e.dias) || 1;
+              return `<tr style="cursor:default"><td><b class="sv-mono">${escapeHtml(x.doc)}</b> · <span class="sv-mono">${escapeHtml(x.mat)}</span><div class="sv-sub" style="margin:0">${escapeHtml(x.nombre)}</div></td>
+                <td>${tipoPill(x.tipo)}</td>
+                <td>${x.e && x.e.estado === 'PARCIAL' ? `${pill('Parcial', 'warn')}<div class="sv-sub" style="margin:0">entregó ${escapeHtml(fmtNum(x.e.cant_ent, 0))} de ${escapeHtml(fmtNum(x.e.cant_inf, 0))} · sale el saldo</div>` : pill('Sin fondo', 'bad')}</td>
+                <td class="r">${t1sf(x.ton)} t</td>
+                <td>${d >= 2 ? `<span class="sv-pill bad" title="Mañana deja de entrar sola al plan">${d} días · se bloquea</span>` : '<span class="sv-sub" style="margin:0">1er día · vuelve mañana</span>'}</td></tr>`; }).join('')}</tbody></table></div>`
+              : '<div class="sv-note-box">Ninguna posición de esta sucursal salió por falta de fondo.</div>'}
+          </div>
+
+          ${R.ajustes.length ? `<div>
+            <div class="sv-dr-k" style="margin:0 0 4px">Ya repuestas hoy · nuevas por ajuste</div>
+            <div class="sv-table-wrap"><table class="sv-table"><thead><tr><th>Pedido · material</th><th>Tipo</th><th>Entrega</th><th class="r">Ton</th><th></th></tr></thead><tbody>${R.ajustes.map(x => `<tr style="cursor:default">
+              <td><b class="sv-mono">${escapeHtml(x.doc)}</b> · <span class="sv-mono">${escapeHtml(x.mat)}</span>${AJUSTE_BADGE}<div class="sv-sub" style="margin:0">${escapeHtml(x.nombre)}</div></td>
+              <td>${tipoPill(x.tipo)}</td><td>${entCell(x)}</td><td class="r">${t1sf(x.ton)} t</td>
+              <td class="r">${puede ? `<button class="sv-btn" data-quitar="${escapeHtml(x.key)}" style="padding:3px 10px;font-size:12px" title="Sale del camión y vuelve a la regla automática"><span class="material-symbols-outlined">undo</span>Quitar</button>` : ''}</td></tr>`).join('')}</tbody></table></div></div>` : ''}
+
+          <div>
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0 0 6px">
+              <div class="sv-dr-k" style="margin:0;flex:1">2 · Elige con qué completar el espacio</div>
+              <div class="sv-seg" role="group">${['all', 'Revex', 'Crossdocking', 'Traslado'].map(t => `<button data-tipo="${t}" class="${st.tipo === t ? 'is-on' : ''}">${t === 'all' ? 'Todas' : t === 'Traslado' ? 'Traslados' : t} <small>${nTipo(t)}</small></button>`).join('')}</div>
+              <label style="font-size:12px;display:flex;align-items:center;gap:4px"><input type="checkbox" data-solo-ent ${st.soloEnt ? 'checked' : ''}> Sólo con entrega (fondo confirmado)</label>
+            </div>
+            ${vis.length ? `<div class="sv-table-wrap"><table class="sv-table"><thead><tr><th style="width:28px"></th><th>Pedido · material</th><th>Tipo</th><th>Entrega</th><th>Fecha</th><th class="r">Ton</th></tr></thead><tbody>${vis.map(x => `<tr style="cursor:${puede ? 'pointer' : 'default'}" ${puede ? `data-fila="${escapeHtml(x.key)}"` : ''}>
+              <td>${puede ? `<input type="checkbox" data-sel="${escapeHtml(x.key)}" ${st.sel.has(x.key) ? 'checked' : ''}>` : ''}</td>
+              <td>${x.prio ? '<span class="sv-pill ok" style="font-size:10px;padding:0 6px;margin-right:4px" title="Prioridad de carga">P</span>' : ''}<b class="sv-mono">${escapeHtml(x.doc)}</b> · <span class="sv-mono">${escapeHtml(x.mat)}</span><div class="sv-sub" style="margin:0">${escapeHtml(x.nombre)}</div></td>
+              <td>${tipoPill(x.tipo)}</td><td>${entCell(x)}</td><td class="sv-mono">${escapeHtml(x.fecha || '')}</td><td class="r"><b>${t1sf(x.ton)}</b> t</td></tr>`).join('')}</tbody></table></div>
+              ${R.cand.length > 80 ? '<div class="sv-sub" style="margin-top:4px">Se muestran las 80 primeras por prioridad.</div>' : ''}`
+              : '<div class="sv-note-box">No hay posiciones disponibles para reponer con estos filtros.</div>'}
+          </div>
+
+          ${R.bloq.length ? `<div>
+            <div class="sv-dr-k" style="margin:0 0 4px">Bloqueadas · 2+ días sin fondo (no entran solas al plan)</div>
+            <div class="sv-table-wrap"><table class="sv-table"><tbody>${R.bloq.map(b => `<tr style="cursor:default"><td><b class="sv-mono">${escapeHtml(b.documento)}</b> · <span class="sv-mono">${escapeHtml(b.material)}</span><div class="sv-sub" style="margin:0">${escapeHtml(b.nombre || '')}</div></td>
+              <td><span class="sv-pill bad">${escapeHtml(String(b.dias || 2))} días</span></td>
+              <td class="r">${puede && b.excl_id ? `<button class="sv-btn" data-incluir="${escapeHtml(String(b.excl_id))}" data-doc="${escapeHtml(b.documento)}" data-mat="${escapeHtml(b.material)}" style="padding:3px 10px;font-size:12px" title="Ya hay stock: vuelve a entrar al plan de hoy"><span class="material-symbols-outlined">undo</span>Volver a incluir</button>` : ''}</td></tr>`).join('')}</tbody></table></div></div>` : ''}
+        </div>
+        <div class="sv-dr-f"><span class="sv-dr-note">${exc ? '<b style="color:#b5000b">Lo elegido supera el espacio libre: el camión queda sobre su capacidad.</b>' : 'Lo elegido entra al camión CD marcado <b>NUEVA POR AJUSTE</b> en el Plan de Carga; si aún no tiene entrega, va en el próximo aviso a Logística.'}</span>
+          <div style="display:flex;gap:8px"><button class="sv-btn" data-cx>Cerrar</button>
+          ${puede ? `<button class="sv-btn-p" data-ok ${elegidos.length ? '' : 'disabled style="opacity:.55;cursor:not-allowed"'}><span class="material-symbols-outlined">add_task</span>Subir ${elegidos.length} posición${elegidos.length === 1 ? '' : 'es'} · ${t1sf(entra)} t</button>` : ''}</div></div>`;
+      panel.querySelectorAll('[data-cx]').forEach(b => b.addEventListener('click', () => fin(false)));
+      panel.querySelectorAll('[data-tipo]').forEach(b => b.addEventListener('click', () => { st.tipo = b.dataset.tipo; draw(); }));
+      panel.querySelector('[data-solo-ent]')?.addEventListener('change', e => { st.soloEnt = e.target.checked; draw(); });
+      panel.querySelectorAll('[data-fila]').forEach(tr => tr.addEventListener('click', e => {
+        const k = tr.dataset.fila; if (e.target.matches('input')) { if (e.target.checked) st.sel.add(k); else st.sel.delete(k); } else if (st.sel.has(k)) st.sel.delete(k); else st.sel.add(k);
+        draw(); }));
+      panel.querySelector('[data-ok]')?.addEventListener('click', subir);
+      panel.querySelectorAll('[data-quitar]').forEach(b => b.addEventListener('click', () => quitar(b.dataset.quitar)));
+      panel.querySelectorAll('[data-incluir]').forEach(b => b.addEventListener('click', async () => {
+        b.disabled = true;
+        if (await reactivarEnPlan(Number(b.dataset.incluir))) { await logSf([{ doc: b.dataset.doc, mat: b.dataset.mat, ton: 0 }], 'INCLUIR_BLOQUEADO'); showAlert('Línea incluida de nuevo en el plan de hoy.', 'success'); fin(true); }
+        else b.disabled = false;
+      }));
+    }
+    async function logSf(filas, accion) {
+      try { const quien = await getUserEmail();
+        const { error } = await supabase.from('abast_plan_sin_fondo_accion').insert(filas.map(f => ({ fecha: isoLocal(hoy00()), cd_origen: orig, ce, documento: f.doc, material: f.mat, accion, ton: Math.round((f.ton || 0) * 10000) / 10000, usuario: quien })));
+        if (error) throw error; return true;
+      } catch (e) { console.warn('log sin fondo', e); return false; }
+    }
+    async function subir() {
+      const elegidos = R.cand.filter(x => st.sel.has(x.key));
+      if (!elegidos.length) return;
+      const entra = elegidos.reduce((s, x) => s + x.ton, 0);
+      if (entra > R.libre + 0.05 && !await confirmar(`Lo elegido (${t1sf(entra)} t) supera el espacio libre (${t1sf(R.libre)} t).\n\nEl camión CD de ${c.nombre} queda sobre su capacidad. ¿Subir igual?`, { aceptar: 'Subir igual', tono: 'peligro' })) return;
+      const quien = await getUserEmail(), ahora = new Date().toISOString();
+      const { error } = await supabase.from('abast_plan_linea_camion').upsert(elegidos.map(x => ({ fecha: isoLocal(hoy00()), cd_origen: orig, ce, documento: x.doc, material: x.mat,
+        camion: 1, origen: 'manual', updated_by: quien, updated_at: ahora })), { onConflict: 'fecha,cd_origen,ce,documento,material' });
+      if (error) { showAlert('No se pudo subir al camión: ' + error.message, 'error'); return; }
+      await logSf(elegidos, 'SUBIR_REEMPLAZO');
+      clearRawCache();
+      showAlert(`${elegidos.length} posición${elegidos.length === 1 ? '' : 'es'} nueva${elegidos.length === 1 ? '' : 's'} por ajuste en el camión CD de ${c.nombre} (${t1sf(entra)} t).`, 'success');
+      fin(true);
+    }
+    async function quitar(key) {
+      const x = R.ajustes.find(a => a.key === key); if (!x) return;
+      if (!await confirmar(`¿Quitar del camión CD la posición ${x.doc} · ${x.mat}?\n\nDeja de ser «nueva por ajuste» y vuelve a la regla automática del plan.`, { aceptar: 'Quitar' })) return;
+      const { error } = await supabase.from('abast_plan_linea_camion').delete().eq('fecha', isoLocal(hoy00())).eq('cd_origen', orig).eq('ce', ce).eq('documento', x.doc).eq('material', x.mat).eq('camion', 1);
+      if (error) { showAlert('No se pudo quitar: ' + error.message, 'error'); return; }
+      await logSf([x], 'QUITAR_AJUSTE');
+      clearRawCache();
+      showAlert(`Posición ${x.doc} · ${x.mat} quitada del ajuste.`, 'success');
+      fin(true);
+    }
+    draw();
+  });
+}
 const ORIGENES_CD = [['1003', 'CD Quilicura · 1003'], ['1081', 'CD Concepción · 1081']];
 // (18-nov-2026, Jordan) Revex / Crossdocking / Pedidos de Traslados: con origen 1003 no se muestra el CD Quilicura (1003) como destino.
 const ocultarCdQuilicura = (cross = false) => r => (cross ? '1003' : (String(r.cesu ?? '').trim() || '1003')) === '1003' && String(r.ce ?? '').trim() === '1003';
@@ -5242,7 +5477,11 @@ const V2 = {
     titulo: 'Revex',
     ocultar: ocultarCdQuilicura(false),
     desc: 'Todos los pedidos de traslado Revex del SQVI (material 900000). Sin ventana de fechas: por defecto quedan disponibles para el próximo camión y van primero en el orden de llenado.',
-    enrich(rows) { rows.forEach(r => { r._al = alertaV2(r.fecha_confirmada, 7); r._t = tonNum(r._ton_totales); }); },
+    // (18-nov-2026, Jordan) Estado real en el Plan de Carga + reposición de lo sin fondo
+    async preload() { return { estadoPlan: await estadoPlanTraslados() }; },
+    enrich(rows, ctx) { rows.forEach(r => { r._al = alertaV2(r.fecha_confirmada, 7); r._t = tonNum(r._ton_totales); });
+      ctx._rows = rows; aplicarEstadoPlanTraslados(rows, ctx.estadoPlan, { fuente: 'traslados_revex' }); },
+    banner: sfBannerVista('pedidos_traslados_revex'), wireBanner: sfWireVista,
     // (2-oct-2026, Jordan) Excluir/Reactivar en la fila principal del pedido; no en el panel de detalle.
     excluirEnFila: true,
     chip: { label: 'Destino', of: r => String(r.ce ?? '').trim(), name: v => nombreCentro(v) || v },
@@ -5253,6 +5492,8 @@ const V2 = {
       { key: 'at', label: 'Atrasados', color: C_RED, sub: 'fecha de entrega vencida', fn: r => r._al.k === 'Atrasado' },
       { key: 'pv', label: 'Pronto a vencer', color: C_ORANGE, sub: '7 días o menos', fn: r => r._al.k === 'Pronto a vencer' },
       { key: 'vi', label: 'Vigentes', color: C_GREEN, sub: 'en plazo', fn: r => r._al.k === 'Vigente' },
+      { key: 'rep', label: 'Sin fondo · por reponer', color: '#ea580c', sub: 'salieron del camión CD hoy', fn: r => r._plan === 'SIN_FONDO' },
+      { key: 'aj', label: 'Nuevas por ajuste', color: '#7e22ce', sub: 'repuestas hoy en el camión', fn: r => !!r._ajusteSF && !!r._en_plan },
     ],
     cols: [
       { label: 'Pedido', html: r => mono(r.doc_compr, r.creado_el ? 'creado ' + r.creado_el : '') },
@@ -5264,9 +5505,12 @@ const V2 = {
       { label: 'Fecha entrega', html: r => mono(r.fecha_confirmada) },
       { label: 'Alerta', html: r => pill(r._al.k, r._al.tone) },
     ],
-    edge: r => r._al.k === 'Atrasado' ? C_RED : null,
-    planEstado: (r, excluida) => excluida ? pill('Excluida hoy', 'bad') : pill('Sin entrega', 'mute'),
+    edge: r => r._plan === 'SIN_FONDO' ? '#ea580c' : r._en_plan ? C_GREEN : (r._al.k === 'Atrasado' ? C_RED : null),
+    planEstado: (r, excluida) => excluida ? pill('Excluida hoy', 'bad') : sfPlanPill(r),
     detalle: r => ({
+      acciones: [sfAccionDetalle(r, 'pedidos_traslados_revex')].filter(Boolean),
+      aviso: r._plan === 'SIN_FONDO' ? '<b>Sin fondo:</b> se informó a Logística y no se suministró, así que salió del camión CD de hoy. Usa «Reponer espacio» para elegir con qué completarlo.'
+        : r._ajusteSF && r._en_plan ? '<b>Nueva por ajuste:</b> entró hoy al camión CD para reponer una posición sin fondo.' : undefined,
       kind: 'Traslado Revex', title: r.doc_compr, sub: `${nombreCentro(r.cesu) || r.cesu} → ${nombreCentro(r.ce) || r.ce} · ${r.texto_breve || ''}`,
       kv: [
         ['Centro origen', r.cesu], ['Centro destino', `${r.ce}${nombreCentro(r.ce) ? ' · ' + nombreCentro(r.ce) : ''}`],
@@ -5871,13 +6115,13 @@ const V2 = {
     desc: 'Pedidos de traslado desde Almacén 4000 (CD Quilicura) sin entrega creada. Sólo consulta y priorización: la prioridad del PT y posición pasa a su entrega.',
     rowId: r => `${r.doc_compr}|${r._pos || r.material}${r.entrega ? '|' + r.entrega : ''}`,
     async preload() {
-      const [coordMap, feriadosRows, horizRows, cm] = await Promise.all([loadCoordTraslados(), fetchAllRows('abast_feriados'), fetchAllRows('abast_horizonte_centro'), loadCargaManualTr()]);
+      const [coordMap, feriadosRows, horizRows, cm, estadoPlan] = await Promise.all([loadCoordTraslados(), fetchAllRows('abast_feriados'), fetchAllRows('abast_horizonte_centro'), loadCargaManualTr(), estadoPlanTraslados()]);
       const feriadosSet = new Set((feriadosRows || []).map(r => String(r.fecha ?? '').trim()).filter(Boolean));
       const horiz = {};
       (horizRows || []).filter(r => String(r.centro_origen ?? '').trim() === '1003')
         .forEach(r => { horiz[String(r.centro_destino ?? '').trim()] = Number(r.horizonte_horas) === 48 ? 48 : 24; });
       const d1 = addBusinessDays(hoy00(), 1, feriadosSet), d2 = addBusinessDays(hoy00(), 2, feriadosSet);
-      return { coordMap, cmMap: mapaCargaManualTr(cm, 'CROSSDOCK'), diaObj: ce => (horiz[String(ce ?? '').trim()] === 48 ? d2 : d1) };
+      return { coordMap, estadoPlan, cmMap: mapaCargaManualTr(cm, 'CROSSDOCK'), diaObj: ce => (horiz[String(ce ?? '').trim()] === 48 ? d2 : d1) };
     },
     enrich(rows, ctx) {
       ctx._rows = rows;
@@ -5894,7 +6138,9 @@ const V2 = {
         const f = r._coord ? parseISODate(r._coord.fecha_entrega) : null;
         r._cd_hoy = !!(f && f.getTime() <= ctx.diaObj(r._ce_alt || r.ce).getTime());
       });
+      aplicarEstadoPlanTraslados(rows, ctx.estadoPlan, { cross: true, fuente: 'crossdock_4000' });   // (18-nov-2026)
     },
+    banner: sfBannerVista('pedidos_traslados_4000'), wireBanner: sfWireVista,
     chip: { label: 'Destino', of: r => String(r.ce ?? '').trim(), name: v => nombreCentro(v) || v },
     chips: [{ key: 'te', label: 'Tipo entrega', of: r => r._cdcli ? 'CD-Cliente' : 'Consolidable' }],
     docSearch: { ph: 'N° pedido de traslado', of: r => r.doc_compr },
@@ -5906,6 +6152,8 @@ const V2 = {
       { key: 'cd', label: 'CD-Cliente', color: '#7e22ce', sub: 'camión directo coordinado', fn: r => r._cdcli },
       { key: 'pv', label: 'Pedido de venta', color: C_SEC, sub: 'asociadas a un cliente', fn: r => r._pv },
       { key: 'at', label: 'Atrasadas', color: C_RED, sub: 'fecha de entrega vencida', fn: r => r._al.k === 'Atrasado' },
+      { key: 'rep', label: 'Sin fondo · por reponer', color: '#ea580c', sub: 'salieron del camión CD hoy', fn: r => r._plan === 'SIN_FONDO' },
+      { key: 'aj', label: 'Nuevas por ajuste', color: '#7e22ce', sub: 'repuestas hoy en el camión', fn: r => !!r._ajusteSF && !!r._en_plan },
     ],
     cols: [
       { label: 'Pedido traslado', html: r => mono(r.doc_compr) },
@@ -5924,8 +6172,8 @@ const V2 = {
     permisoExcluir: 'ajustar_plan',
     planEstado: (r, excluida) => (excluida ? pill('Excluida hoy', 'bad')
       : r._cdcli ? pill(r._cd_hoy ? 'En plan · CD-Cliente' : 'CD-Cliente', 'purple') + `<div class="sv-sub">día ${escV2(fmtFechaISO(r._coord.fecha_entrega))}</div>`
-      : pill('Sin entrega', 'mute')) + cargaManualPill(r._cm),
-    edge: r => r._cdcli ? '#7e22ce' : (r._al.k === 'Atrasado' ? C_RED : null),
+      : sfPlanPill(r)) + cargaManualPill(r._cm),
+    edge: r => r._cdcli ? '#7e22ce' : r._plan === 'SIN_FONDO' ? '#ea580c' : r._en_plan ? C_GREEN : (r._al.k === 'Atrasado' ? C_RED : null),
     note: 'Consolidable: va en el camión CD (4º en el orden de llenado) · CD-Cliente: camión directo coordinado, sale el día de su fecha de entrega',
     minW: '1180px',
     detalle: r => {
@@ -5933,7 +6181,7 @@ const V2 = {
       const puede = can('ajustar_plan');
       // (10-nov-2026, Jordan) Los pedidos de traslado de Crossdocking (pendientes sin entrega) son SÓLO de consulta y
       // priorización: no se coordinan ni se suben a camión. La prioridad del PT + posición la hereda su entrega.
-      const acciones = [];
+      const acciones = [sfAccionDetalle(r, 'pedidos_traslados_4000')].filter(Boolean);   // (18-nov-2026) reponer sin fondo
       if (puede && r._cdcli) acciones.push({ label: 'Volver a Consolidable', icon: 'undo', run: async row => {
         if (!await confirmar(`¿Quitar el camión directo CD-Cliente del pedido ${row.doc_compr}?\n\nVuelve a Consolidable y entra al camión CD.`)) return null;
         return (await volverConsolidableTraslado(row.doc_compr, row._coord)) ? (showAlert('Pedido vuelve a Consolidable', 'success'), { recargar: true }) : null;
@@ -5941,7 +6189,9 @@ const V2 = {
       return {
         kind: 'Traslado desde almacén 4000 · ' + (r._pv ? 'Pedido de venta' : 'Stock'), title: r.doc_compr,
         sub: `CD Quilicura → ${nombreCentro(r.ce) || r.ce} · ${r.texto_breve || ''}`,
-        aviso: r._cdcli ? `<b>CD-Cliente:</b> camión directo coordinado para el ${escV2(fmtFechaISO(c.fecha_entrega))}${r._cd_hoy ? ' — entra al Plan de Carga de hoy.' : '.'} No va en el camión CD.`
+        aviso: r._plan === 'SIN_FONDO' && !r._cdcli ? '<b>Sin fondo:</b> se informó a Logística y no se suministró, así que salió del camión CD de hoy. Usa «Reponer espacio» para elegir con qué completarlo.'
+          : r._ajusteSF && r._en_plan && !r._cdcli ? '<b>Nueva por ajuste:</b> entró hoy al camión CD para reponer una posición sin fondo.'
+          : r._cdcli ? `<b>CD-Cliente:</b> camión directo coordinado para el ${escV2(fmtFechaISO(c.fecha_entrega))}${r._cd_hoy ? ' — entra al Plan de Carga de hoy.' : '.'} No va en el camión CD.`
           : '<b>Consolidable:</b> va en el camión CD de la sucursal (4º en el orden de llenado).',
         kv: [
           ['Tipo entrega', r._cdcli ? pill('CD-Cliente', 'purple') : pill('Consolidable', 'info'), true],
@@ -5993,6 +6243,7 @@ const V2 = {
     chip: { label: 'Destino', of: r => String(r.ce ?? '').trim(), name: v => nombreCentro(v) || v },
     docSearch: { ph: 'N° pedido de traslado', of: r => r.doc_compr },
     fecha: { label: 'Entrega', of: r => r.fecha_confirmada },
+    banner: sfBannerVista('pedidos_traslados'), wireBanner: sfWireVista,   // (18-nov-2026) reposición sin fondo
     search: { ph: 'Buscar material', of: r => `${r.material} ${r.texto_breve}` },
     kpis: [
       { key: 'all', label: 'Líneas', color: C_INK, sub: 'pendientes' },
@@ -6005,6 +6256,8 @@ const V2 = {
       { key: 'D', label: 'Quiebre', color: C_YELLOW, sub: '≤7 días de stock', fn: r => r._prioridad_grupo === 'D' },
       { key: 'E', label: 'Abastecimiento', color: C_GREY, sub: 'reposición normal', fn: r => r._prioridad_grupo === 'E' },
       { key: 'at', label: 'Atrasadas', color: C_RED, sub: 'fecha de entrega vencida', fn: r => r._al.k === 'Atrasado' },
+      { key: 'rep', label: 'Sin fondo · por reponer', color: '#ea580c', sub: 'salieron del camión CD hoy', fn: r => r._plan === 'SIN_FONDO' },
+      { key: 'aj', label: 'Nuevas por ajuste', color: '#7e22ce', sub: 'repuestas hoy en el camión', fn: r => !!r._ajusteSF && !!r._en_plan },
     ],
     cols: [
       { label: 'Pedido', html: r => mono(r.doc_compr) },
@@ -6025,8 +6278,8 @@ const V2 = {
     rowId: r => `${r.doc_compr}|${String(r.pos ?? '').trim() || r.material}${r.entrega ? '|' + r.entrega : ''}`,
     excluirEnFila: true,
     permisoExcluir: 'ajustar_plan',
-    planEstado: (r, excluida) => { if (excluida) return pill('Excluida hoy', 'bad'); const p = PLAN_LINEA_V2[r._plan] || PLAN_LINEA_V2.FUERA; return pill(p[0], p[1]) + (r._plan_inc ? ` ${pill('Manual', 'purple')}` : '') + cargaManualPill(r._cm); },
-    edge: r => r._en_plan ? C_GREEN : (r._al.k === 'Atrasado' ? C_RED : null),
+    planEstado: (r, excluida) => { if (excluida) return pill('Excluida hoy', 'bad'); return sfPlanPill(r) + (r._plan_inc ? ` ${pill('Manual', 'purple')}` : '') + cargaManualPill(r._cm); },
+    edge: r => r._plan === 'SIN_FONDO' ? '#ea580c' : r._en_plan ? C_GREEN : (r._al.k === 'Atrasado' ? C_RED : null),
     note: 'Borde verde: línea que va en el camión CD del plan de hoy · Prioridad: Atrasado → Manual → Quiebre → ABC AA («Quiebre y priorizado», 5º); el resto «Abastecimiento» (6º); fecha > +3 hábiles sólo como «Adelanto» (7º) si sobra espacio',
     minW: '1080px',
     detalle: r => {
@@ -6043,6 +6296,8 @@ const V2 = {
         PEND_SUM: 'Pendiente de suministro: el pedido se informó en el estado de las 14:30 y todavía no tiene entrega; desde esa hora el Plan de Carga cuenta sólo lo suministrado.',
         FUERA_FECHA: 'No considerado por fecha: la fecha de entrega está fuera de la ventana (10 días hábiles atrás / 3 adelante). Si el camión no se completa, el sistema puede usarlo como adelanto; también se puede incluir a mano (si supera la capacidad, el planificador debe bajar carga excluyendo otras posiciones).',
         ADELANTO: 'Adelanto: fecha de entrega futura (> +3 días hábiles); entra al camión CD porque había espacio libre (7º en el orden de llenado).',
+        SIN_FONDO: 'Sin fondo: se informó a Logística y no se suministró, así que salió del camión CD de hoy (mañana vuelve a evaluarse; con 2+ días queda bloqueada). Usa «Reponer espacio» para elegir con qué completarlo.',
+        NO_CARGA: 'Sacada a mano del camión hoy («No carga»).',
       }[r._plan] || '';
       const puede = can('incluir_plan');
       const recalcular = async (row, ctx) => { await V2.pedidos_traslados.onPlanChange(ctx._rows, ctx); return { redibujar: true }; };
@@ -6052,13 +6307,14 @@ const V2 = {
           if (!(await quitarInclusionPlan(row.doc_compr, row.material))) return null;
           showAlert('Inclusión manual quitada', 'success'); return recalcular(row, ctx);
         } },
-      ] : (!r._en_plan && r._plan !== 'EXCLUIDO' && r._plan !== 'SIN_ENTREGA') ? [
+      ] : (!r._en_plan && r._plan !== 'EXCLUIDO' && r._plan !== 'SIN_ENTREGA' && r._plan !== 'SIN_FONDO') ? [
         { label: 'Incluir en plan de carga', icon: 'playlist_add', primary: true, run: async (row, ctx) => {
           if (!await confirmar(`¿Incluir hoy en el Plan de Carga el material ${row.material} del pedido ${row.doc_compr}?\n\nEntra al camión CD antes que el resto de los traslados y puede dejar fuera otras líneas. Vale sólo para el plan de hoy.`)) return null;
           if (!(await incluirEnPlan(row.doc_compr, row.material))) return null;
           showAlert('Línea incluida en el Plan de Carga', 'success'); return recalcular(row, ctx);
         } },
       ] : [];
+      { const a = sfAccionDetalle(r, 'pedidos_traslados'); if (a) acciones.unshift(a); }   // (18-nov-2026) reponer sin fondo
       // (23-oct-2026, Jordan) Carga manual sin entrega SAP: subir el pedido a un camión eligiendo día y unidades.
       if (puede && r._plan === 'SIN_ENTREGA') acciones.unshift({ label: r._cm ? 'Editar carga manual (camión)' : 'Subir a camión (carga manual)', icon: 'local_shipping', primary: true,
         run: async (row, ctx) => ((await showCargaManualModal(row, ctx, 'TRASLADO')) ? { recargar: true } : null) });
@@ -6072,7 +6328,7 @@ const V2 = {
       } });
       return {
       kind: 'Pedido de traslado · origen ' + r.cesu, title: r.doc_compr,
-      aviso: `<b>Plan de carga:</b> ${escV2(p[0])}${r._plan_inc ? ' (incluida manual)' : ''}. ${escV2(expl)}${c ? ` Camión CD ${escV2(nombreCentro(r.ce) || r.ce)}: ${escV2(fmtNum(c.total, 1))} t · ${escV2(c.pct)}% · ${escV2(c.status)}.` : ''}`,
+      aviso: `<b>Plan de carga:</b> ${escV2(p[0])}${r._plan_inc ? ' (incluida manual)' : ''}${r._ajusteSF && r._en_plan ? ' · <b>nueva por ajuste</b> (repone una posición sin fondo)' : ''}. ${escV2(expl)}${c ? ` Camión CD ${escV2(nombreCentro(r.ce) || r.ce)}: ${escV2(fmtNum(c.total, 1))} t · ${escV2(c.pct)}% · ${escV2(c.status)}.` : ''}`,
       sub: `${nombreCentro(r.cesu) || r.cesu} → ${nombreCentro(r.ce) || r.ce} · ${r.texto_breve || ''}`,
       kv: [
         ['Prioridad', pill(r._pr.lbl, r._pr.tone), true], ['Motivo prioridad', r._motivo_prio],
@@ -8016,11 +8272,11 @@ function irASub(sub) {
 }
 // Vistas que participan (orden del proceso). pend = indicadores de la propia vista que son trabajo por hacer.
 const SUBS_TRABAJO = [
-  { sub: 'pedidos_traslados_revex', lbl: 'Revex', icon: 'recycling', pend: ['at'] },
+  { sub: 'pedidos_traslados_revex', lbl: 'Revex', icon: 'recycling', pend: ['at', 'rep'] },
   { sub: 'pedidos_venta', lbl: 'Ventas CD (1003)', icon: 'sell', pend: ['sc', 'sr', 'bq', 'sl', 'vc', 'at'] },
   { sub: 'retiros', lbl: 'Retiros de Fábrica', icon: 'factory', pend: ['no', 'vc', 'sl', 'fv', 'ee'] },
-  { sub: 'pedidos_traslados_4000', lbl: 'Crossdocking', icon: 'local_shipping', pend: ['at'] },
-  { sub: 'pedidos_traslados', lbl: 'Pedidos de Traslados', icon: 'swap_horiz', pend: ['at'] },
+  { sub: 'pedidos_traslados_4000', lbl: 'Crossdocking', icon: 'local_shipping', pend: ['at', 'rep'] },
+  { sub: 'pedidos_traslados', lbl: 'Pedidos de Traslados', icon: 'swap_horiz', pend: ['at', 'rep'] },
   { sub: 'seguimiento_carga', lbl: 'Seguimiento de Carga', icon: 'fact_check', pend: ['dif', 'revisar', 'pendoc'] },
 ];
 const LBL_SUB = Object.assign({ plan_carga: 'Plan de Carga' }, Object.fromEntries(SUBS_TRABAJO.map(x => [x.sub, x.lbl])));
@@ -8230,7 +8486,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611180959');
+    const m = await import('./ind-plan-carga.js?v=202611181022');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -8539,6 +8795,16 @@ function asignarCamionesCD(r) {
   // (1-oct-2026) Asignación manual/confirmada (r.asig: doc|material → 1 CD, 2 2º camión, 0 no carga).
   // Primero se ubican las líneas asignadas; el resto se llena en el orden de prioridad (igual que la foto 15:35).
   const asig = r.asig || new Map();
+  // (18-nov-2026, Jordan) Sólo lo REALMENTE considerado: la posición de un pedido de traslado informada a Logística que quedó
+  // SIN FONDO (o el saldo sin entrega de una PARCIAL) sale sola del camión hoy. Se repone desde Revex / Crossdocking /
+  // Pedidos de Traslados; lo subido ahí queda marcado «NUEVA POR AJUSTE».
+  const sfDe = d => {
+    const pt = String(d.pt ?? '').trim(), kk = `${r.ce}|${doc(d)}|${mat(d)}`;
+    d._ajusteSF = !!(pt && r.sf && r.sf.ajuste.has(kk));
+    const e = pt && r.sf ? r.sf.est.get(kk) : null;
+    d._sinFondo = !!(e && (e.estado === 'SIN FONDO' || e.estado === 'PARCIAL') && !String(d.entrega_entrante || d.entrega || '').trim());
+    return d._sinFondo;
+  };
   let acc = 0;
   // (23-oct-2026, Jordan) TOPE 100%: lo asignado/priorizado a mano también respeta la capacidad. Entra en
   // orden de prioridad mientras quepa; lo que no cabe queda fuera (puede ir al 2º camión) y el resto de la
@@ -8546,6 +8812,7 @@ function asignarCamionesCD(r) {
   orden.forEach(d => {
     let v = asig.get(`${doc(d)}|${mat(d)}`);
     if ((v === undefined || v === null) && d._unidoCD) v = 1;   // (29-oct-2026) retiro unido: siempre en el camión CD
+    if (sfDe(d)) v = 0;   // (18-nov-2026) sin fondo: fuera del camión
     d._manual = v === undefined || v === null ? null : Number(v);
     d._camion2 = false; d._enCamion = false; d._manualExcede = false;
   });
@@ -8574,7 +8841,7 @@ function asignarCamionesCD(r) {
   // por fecha más cercana y prioridad. No cuentan como excedente ni proponen 2º camión.
   const adel = (r.det.adelanto || []).slice().sort((a, b) => ((a._orden ?? 0) - (b._orden ?? 0)) || cmp(doc(a), doc(b)) || cmp(mat(a), mat(b)));
   adel.forEach(d => { d._camion2 = false; d._enCamion = false; d._manualExcede = false; d._prio = false; d._niv = `9|0|${d._orden ?? 0}`;
-    const v = asig.get(`${doc(d)}|${mat(d)}`); d._manual = v === 0 ? 0 : null; });
+    const v = asig.get(`${doc(d)}|${mat(d)}`); d._manual = v === 0 || sfDe(d) ? 0 : null; });
   if (!armadoMano) acc += llenarPorNivelesCD(adel.filter(d => d._manual === null), Math.max(0, r.cap - acc), d => { d._enCamion = true; });
   const manual2 = orden.some(d => d._manual === 2);   // (17-nov-2026) restituida: se había perdido al agregar el 7º Adelanto
   let segundoPropuesto = manual2 || (excedente > 0 && (armadoMano || excedente >= r.cap * UMBRAL_SEGUNDO_CAMION));
@@ -8585,7 +8852,8 @@ function asignarCamionesCD(r) {
   // volumétrico erróneo), no cabe en ningún camión: no se propone un 2º camión vacío (0 t).
   if (segundoPropuesto && !manual2 && acc2 <= 1e-9) segundoPropuesto = false;
   const tonNoCarga = orden.filter(d => d._manual === 0).reduce((s, d) => s + (d.ton || 0), 0);
-  return { cargado: acc, excedente, segundoPropuesto, tonSegundo: acc2, manual2, tonNoCarga, nManual: orden.filter(d => d._manual !== null).length, orden, armadoMano };
+  const tonSinFondo = [...orden, ...adel].filter(d => d._sinFondo).reduce((s, d) => s + (d.ton || 0), 0);
+  return { tonSinFondo, cargado: acc, excedente, segundoPropuesto, tonSegundo: acc2, manual2, tonNoCarga, nManual: orden.filter(d => d._manual !== null).length, orden, armadoMano };
 }
 
 // (9-oct-2026, Jordan) Las líneas sacadas a mano del camión («No carga», camion 0) se
@@ -8617,7 +8885,7 @@ function recalcCargaCD(r) {
   Object.entries(r.det || {}).forEach(([k, arr]) => { noCat[k] = (arr || []).filter(d => d._manual === 0).reduce((s, d) => s + (d.ton || 0), 0); });
   r._noCargaCat = noCat;
   Object.assign(r, { total: tot, cap, pct, sobrecarga: f.excedente || 0, faltan: Math.max(0, cap - cargado), status, statusCls, obs, tonNoCarga: f.tonNoCarga || 0,
-    cargadoCD: f.cargado, excedente: f.excedente, segundoPropuesto: f.segundoPropuesto, tonSegundo: f.tonSegundo });
+    cargadoCD: f.cargado, excedente: f.excedente, segundoPropuesto: f.segundoPropuesto, tonSegundo: f.tonSegundo, tonSinFondo: f.tonSinFondo || 0 });
   return f;
 }
 
@@ -8636,13 +8904,19 @@ function estadoPlanTraslados() {
   return p;
 }
 async function estadoPlanTrasladosCalc() {
-  const lineas = new Map(), centros = {};
+  const lineas = new Map(), lineasEnt = new Map(), ajustes = new Set(), centros = {};
   let exclusiones = [], inclusiones = [];
   let seg = new Set();
   try {
     const { data } = await supabase.from('abast_plan_segundo_camion').select('cd_origen,ce').eq('fecha', isoLocal(hoy00()));
     seg = new Set((data || []).map(x => `${String(x.cd_origen ?? '').trim()}|${String(x.ce ?? '').trim()}`));
   } catch (_e) { /* sin 2º camión */ }
+  // (18-nov-2026) Camión CD ya programado: su carga se edita en Seguimiento de Carga, no en la reposición sin fondo.
+  let prog = new Set();
+  try {
+    const { data } = await supabase.from('abast_plan_camion_programado').select('cd_origen,ce,camion').eq('fecha', isoLocal(hoy00())).eq('camion', 1);
+    prog = new Set((data || []).map(x => `${String(x.cd_origen ?? '').trim()}|${String(x.ce ?? '').trim()}`));
+  } catch (_e) { /* sin programados */ }
   // (16-nov-2026) El origen va como parámetro del cálculo: ya NO se cambia el origen global del Plan de Carga mientras
   // se calcula (antes, una acción hecha en ese lapso podía quedar con el CD equivocado).
   {
@@ -8653,16 +8927,30 @@ async function estadoPlanTrasladosCalc() {
       res.resultadoTodos.forEach(r => {
         const kc = `${orig}|${r.ce}`;
         const acept = seg.has(kc);
-        centros[kc] = { pct: r.pct, status: r.status, cap: r.cap, total: r.total, cargado: r.cargadoCD || 0, enCalendario: r.enCalendario, acept };
-        [...(r.det.quiebre || []), ...(r.det.stock || [])].forEach(d => {
-          const est = d._enCamion ? 'EN_CAMION' : d._camion2 ? (acept ? 'CAMION2' : 'CAMION2_PROP') : 'NO_CABE';
-          lineas.set(`${kc}|${_keyInc(d.pt, d.material)}`, est);
-        });
-        (r.det.adelanto || []).filter(d => d._enCamion).forEach(d => lineas.set(`${kc}|${_keyInc(d.pt, d.material)}`, 'ADELANTO'));
+        // (18-nov-2026, Jordan) Detalle por línea de pedido de traslado (Revex, Crossdocking, Traslados, Adelanto) para la
+        // reposición de lo sin fondo desde las vistas: qué salió del camión, qué cabe y qué se subió por ajuste.
+        const lin = [];
+        SF_CATS_PT.forEach(cat => (r.det[cat] || []).forEach(d => {
+          const pt = String(d.pt ?? '').trim(); if (!pt) return;
+          const ent = String(d.entrega_entrante || d.entrega || '').trim(), kl = _keyInc(pt, d.material);
+          const est = d._sinFondo ? 'SIN_FONDO' : d._enCamion ? (cat === 'adelanto' ? 'ADELANTO' : 'EN_CAMION')
+            : d._camion2 ? (acept ? 'CAMION2' : 'CAMION2_PROP') : d._manual === 0 ? 'NO_CARGA' : 'NO_CABE';
+          // Por línea (doc|material) manda lo que va en el camión; por entrega, su estado exacto.
+          const prev = lineas.get(`${kc}|${kl}`);
+          if (!prev || est === 'EN_CAMION' || est === 'ADELANTO' || (est === 'CAMION2' && prev !== 'EN_CAMION')) lineas.set(`${kc}|${kl}`, est);
+          lineasEnt.set(`${kc}|${kl}|${ent}`, est);
+          if (d._ajusteSF && (d._enCamion || d._camion2)) ajustes.add(`${kc}|${kl}`);
+          lin.push({ cat, doc: pt, mat: String(d.material ?? '').trim(), nombre: d.nombre || '', fecha: d.fecha || '', ent, ton: d.ton || 0, est,
+            aj: !!d._ajusteSF, prio: !!d._prio, ord: d._orden ?? 0 });
+        }));
+        const sfE = [...((res.sfPlan && res.sfPlan.est) || new Map()).values()].filter(x => String(x.ce ?? '').trim() === r.ce);
+        const bloq = ((res.sfPlan && res.sfPlan.bloq) || []).filter(x => String(x.ce ?? '').trim() === r.ce);
+        centros[kc] = { pct: r.pct, status: r.status, cap: r.cap, total: r.total, cargado: r.cargadoCD || 0, enCalendario: r.enCalendario, acept,
+          ce: r.ce, orig, nombre: r.nombre, prog: prog.has(kc), lin, sfE, bloq, tonSinFondo: r.tonSinFondo || 0 };
       });
     }
   }
-  return { lineas, centros, exclusiones, inclusiones };
+  return { lineas, lineasEnt, ajustes, centros, exclusiones, inclusiones };
 }
 const PLAN_LINEA_V2 = {
   EN_CAMION:    ['En camión', 'ok'],
@@ -8676,7 +8964,9 @@ const PLAN_LINEA_V2 = {
   SIN_ENTREGA:  ['Sin entrega', 'mute'],
   FUERA_FECHA:  ['No considerado por fecha', 'mute'],
   ADELANTO:     ['En camión · adelanto', 'ok'],   // (16-nov-2026) fecha > +3: rellena espacio libre del camión CD
-  PEND_SUM:     ['Pendiente de suministro', 'warn'],   // (16-nov-2026) después de las 14:30, sin entrega   // (16-nov-2026) fuera de la ventana −10 / +3 hábiles
+  PEND_SUM:     ['Pendiente de suministro', 'warn'],
+  SIN_FONDO:    ['Sin fondo · fuera del camión', 'bad'],   // (18-nov-2026) informada a Logística y no suministrada: sale sola del plan
+  NO_CARGA:     ['No carga hoy', 'mute'],   // (16-nov-2026) después de las 14:30, sin entrega   // (16-nov-2026) fuera de la ventana −10 / +3 hábiles
 };
 // Cantidad de una fila: pendientes (texto SAP ctd_confirmada) o entregas (numérico `cantidad`).
 const cantFilaTr = x => (x.ctd_confirmada === undefined && x.ctd_pedido === undefined) ? (Number(x.cantidad) || 0) : parseNum(x.ctd_confirmada ?? x.ctd_pedido);
@@ -8717,16 +9007,19 @@ async function ajustarUnidadesTraslado(row, ctx) {
   showAlert(`Pedido ${row.doc_compr} · ${row.material}: ${dec(q)} u. (${fmtNum(q * tonU, 2)} t) a cargar hoy`, 'success');
   return true;
 }
-function aplicarEstadoPlanTraslados(rows, ep) {
+// (18-nov-2026) opts.cross: Crossdocking (origen siempre 1003, cesu = destino) · opts.fuente: clave de exclusión de la vista.
+function aplicarEstadoPlanTraslados(rows, ep, opts = {}) {
   if (!ep) return;
+  const fuente = opts.fuente || 'traslados_1003';
   const incSet = new Set((ep.inclusiones || []).map(e => _keyInc(e.doc, e.material)));
   (rows || []).forEach(r => {
-    const orig = String(r.cesu ?? '').trim(), ce = String(r.ce ?? '').trim();
-    const kl = _keyInc(r.doc_compr, r.material);
+    const orig = opts.cross ? '1003' : (String(r.cesu ?? '').trim() || '1003'), ce = String(r.ce ?? '').trim();
+    const kl = _keyInc(r.doc_compr, r.material), ent = String(r.entrega ?? '').trim();
     r._plan_inc = incSet.has(kl);
     r._plan_centro = ep.centros[`${orig}|${ce}`] || null;
-    r._plan = (estaExcluido(ep.exclusiones || [], 'traslados_1003', r.doc_compr, r.material) || excluidaEntrega(ep.exclusiones || [], 'traslados_1003', r.entrega, r.material)) ? 'EXCLUIDO'
-      : (ep.lineas.get(`${orig}|${ce}|${kl}`) || 'FUERA');
+    r._ajusteSF = !!(ep.ajustes && ep.ajustes.has(`${orig}|${ce}|${kl}`));
+    r._plan = (estaExcluido(ep.exclusiones || [], fuente, r.doc_compr, r.material) || excluidaEntrega(ep.exclusiones || [], fuente, r.entrega, r.material)) ? 'EXCLUIDO'
+      : ((ep.lineasEnt && ep.lineasEnt.get(`${orig}|${ce}|${kl}|${ent}`)) || ep.lineas.get(`${orig}|${ce}|${kl}`) || 'FUERA');
     r._en_plan = r._plan === 'EN_CAMION' || r._plan === 'CAMION2' || r._plan === 'ADELANTO';
   });
 }
@@ -8777,7 +9070,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
   // pueden completar el espacio libre del camión CD, por fecha más cercana y prioridad. Nunca generan 2º camión.
   let adelantoRaw = [];
   try { adelantoRaw = await adelantoP; } catch (e) { console.warn('Plan de carga: adelanto no disponible', e); }
-  const [ventasDirectoManual, inclusionesPlan, asigLineas, camManuales, coordVentas, coordTraslados, ajustesUnidades, cargasManualTr, retirosUnidosCD] = await Promise.all([loadVentasDirectoManual(), loadInclusionesPlan(), loadAsignacionLineas(), loadCamionesManuales(), loadCoordinacionesVenta(), loadCoordTraslados(), loadAjustesUnidades(), loadCargaManualTr(), loadRetirosUnidosCD()]);
+  const [ventasDirectoManual, inclusionesPlan, asigLineas, camManuales, coordVentas, coordTraslados, ajustesUnidades, cargasManualTr, retirosUnidosCD, sfPlan] = await Promise.all([loadVentasDirectoManual(), loadInclusionesPlan(), loadAsignacionLineas(), loadCamionesManuales(), loadCoordinacionesVenta(), loadCoordTraslados(), loadAjustesUnidades(), loadCargaManualTr(), loadRetirosUnidosCD(), loadSinFondoPlan(planOrigen)]);
   const unidoCD = new Map((retirosUnidosCD || []).filter(x => String(x.cd_origen ?? '').trim() === planOrigen).map(x => [String(x.doc_compr ?? '').trim(), x]));
   const ajUMap = mapaAjustesUnidades(ajustesUnidades);
   // (23-oct-2026, Jordan) Cargas manuales (sin entrega SAP) de este CD origen. Entran al plan cuyo DÍA DE CARGA
@@ -9792,6 +10085,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
       camionCliente: tonVentaCliente > 0, camionFabSuc: tonFabSuc > 0, camionFabCli: tonFabCli > 0,
       camionesCliente, camionesFabSuc, camionesFabCli, tonClienteDiferido, fabCandidatos,
       det, asig: asigMap.get(`${planOrigen}|${ce}`) || new Map(),
+      sf: sfPlan,   // (18-nov-2026) sin fondo fuera del camión + posiciones nuevas por ajuste
       retirosUnidos: retUnidosCe,   // (29-oct-2026) [{ item, e }] Fábrica-Sucursal que pasan por el CD
     };
     // (AJUSTE 30-sep-2026) Llenado del camión CD y propuesta de 2º camión (≥85% de la capacidad).
@@ -9815,7 +10109,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
   const resultado = resultadoTodos.filter(r => enAlcance(r.ce));
   // (30-sep-2026) Modo sólo-cálculo: lo usa la vista Pedidos de Traslado para marcar
   // qué líneas van en el camión, con exactamente la misma lógica del Plan de Carga.
-  if (opts.soloCalculo) return { resultadoTodos, exclusionesPlan, inclusionesPlan };
+  if (opts.soloCalculo) return { resultadoTodos, exclusionesPlan, inclusionesPlan, sfPlan };
 
   const diasSemana = ['Domingo','Lunes','Martes','Miércoles','Jueves','Viernes','Sábado'];
   const fmtDiaHabil = d => `${diasSemana[d.getDay()]} ${d.toLocaleDateString('es-CL', { day: 'numeric', month: 'long' })}`;
@@ -10399,13 +10693,11 @@ async function renderPlanCargaCore(stage, opts = {}) {
   // Abastecimiento saca lo sin fondo del camión hoy (vuelve mañana) y elige reemplazos en un solo paso; con ≥2 días
   // sin fondo la línea deja de entrar sola al plan (exclusión del día «SIN FONDO») hasta volver a incluirla.
   let sfPorCe = new Map(), sfBloq = new Map();
+  // (18-nov-2026) Usa el estado ya leído por el cálculo del plan (loadSinFondoPlan): sin segunda llamada al servidor.
   async function leerSinFondo() {
-    try {
-      const { data, error } = await supabase.rpc('fn_abast_sin_fondo_estado', { p_cd_origen: planOrigen });
-      if (error) throw error;
-      sfPorCe = new Map(); sfBloq = new Map();
-      (data || []).forEach(x => { const m = x.fila === 'BLOQUEADO' ? sfBloq : sfPorCe; const ce = String(x.ce ?? '').trim(); if (!m.has(ce)) m.set(ce, []); m.get(ce).push(x); });
-    } catch (e) { console.warn('Estado sin fondo no disponible', e); sfPorCe = new Map(); sfBloq = new Map(); }
+    sfPorCe = new Map(); sfBloq = new Map();
+    [...((sfPlan && sfPlan.est) || new Map()).values()].forEach(x => { const ce = String(x.ce ?? '').trim(); if (!sfPorCe.has(ce)) sfPorCe.set(ce, []); sfPorCe.get(ce).push(x); });
+    ((sfPlan && sfPlan.bloq) || []).forEach(x => { const ce = String(x.ce ?? '').trim(); if (!sfBloq.has(ce)) sfBloq.set(ce, []); sfBloq.get(ce).push(x); });
     st._sfV = (st._sfV || 0) + 1;
   }
   const _sfPromesa = leerSinFondo();   // no bloquea la carga: al llegar redibuja
@@ -10459,93 +10751,59 @@ async function renderPlanCargaCore(stage, opts = {}) {
     return st.sf;
   }
   function sinFondoTag(r) {
-    const n = (sfPorCe.get(r.ce) || []).filter(x => x.estado === 'SIN FONDO' || x.estado === 'PARCIAL').length, nb = (sfBloq.get(r.ce) || []).length;
-    if (!n && !nb) return '';
-    const txt = [n ? `${n} sin fondo` : '', nb ? `${nb} bloqueada${nb > 1 ? 's' : ''}` : ''].filter(Boolean).join(' · ');
-    return `<span data-sf-open="${escapeHtml(r.ce)}" style="cursor:pointer" class="pc-tag baja" title="Líneas informadas a Logística que no se suministraron: clic para sacarlas y elegir reemplazos"><span class="material-symbols-outlined">inventory</span>${escapeHtml(txt)}</span>`;
+    const n = (r.tonSinFondo || 0) > 0.05 ? SF_CATS.reduce((s, k) => s + new Set((r.det[k] || []).filter(d => d._sinFondo).map(sfKey)).size, 0) : 0;
+    const na = SF_CATS.reduce((s, k) => s + new Set((r.det[k] || []).filter(d => d._ajusteSF && (d._enCamion || d._camion2)).map(sfKey)).size, 0);
+    const t = [];
+    if (n) t.push(`<span data-sf-open="${escapeHtml(r.ce)}" style="cursor:pointer" class="pc-tag baja" title="Posiciones informadas a Logística que no se suministraron: ya no cuentan en el camión. Se reponen desde Revex, Crossdocking o Pedidos de Traslados."><span class="material-symbols-outlined">inventory</span>${n} sin fondo · fuera</span>`);
+    if (na) t.push(`<span data-sf-open="${escapeHtml(r.ce)}" style="cursor:pointer;background:#f3e8ff;color:#581c87" class="pc-tag" title="Posiciones que entraron hoy al camión para reponer lo sin fondo"><span class="material-symbols-outlined">published_with_changes</span>${na} nueva${na > 1 ? 's' : ''} por ajuste</span>`);
+    return t.join('');
   }
+  // (18-nov-2026, Jordan) El Plan de Carga ya no ajusta lo sin fondo: lo informa y lleva a las vistas donde se repone.
+  const SF_IR = [['pedidos_traslados_revex', 'Revex'], ['pedidos_traslados_4000', 'Crossdocking'], ['pedidos_traslados', 'Pedidos de Traslados']];
+  const sfIrBtns = () => SF_IR.filter(([sb]) => puedeVerMenu('abastecimiento', sb)).map(([sb, l]) => `<button class="sv-btn" data-sf-ir="${sb}" style="padding:3px 10px;font-size:12px"><span class="material-symbols-outlined" style="font-size:16px">open_in_new</span>Ajustar en ${l}</button>`).join('');
   function sinFondoBannerHtml() {
     const sucs = resultado.map(r => {
-      const a = sfPorCe.get(r.ce) || [], b = sfBloq.get(r.ce) || [];
-      const sf = a.filter(x => x.estado === 'SIN FONDO' || x.estado === 'PARCIAL');
-      const ton = a.filter(x => x.estado === 'SIN FONDO').reduce((s, x) => s + (Number(x.ton_inf) || 0), 0) + a.filter(x => x.estado === 'PARCIAL').reduce((s, x) => s + (Number(x.ton_falta) || 0), 0);
-      return { r, n: sf.length, nb: b.length, ton };
-    }).filter(x => x.n || x.nb).sort((a, b) => b.ton - a.ton);
+      const n = SF_CATS.reduce((s, k) => s + new Set((r.det[k] || []).filter(d => d._sinFondo).map(sfKey)).size, 0);
+      const na = SF_CATS.reduce((s, k) => s + new Set((r.det[k] || []).filter(d => d._ajusteSF && (d._enCamion || d._camion2)).map(sfKey)).size, 0);
+      return { r, n, na, ton: r.tonSinFondo || 0 };
+    }).filter(x => x.n || x.na).sort((a, b) => b.ton - a.ton);
     if (!sucs.length) return '';
-    const n = sucs.reduce((s, x) => s + x.n, 0), nb = sucs.reduce((s, x) => s + x.nb, 0), ton = sucs.reduce((s, x) => s + x.ton, 0);
-    return `<div class="sv-card" style="border:1px solid #fed7aa;background:#fff7ed;padding:10px 14px;margin-bottom:12px">
+    const n = sucs.reduce((s, x) => s + x.n, 0), na = sucs.reduce((s, x) => s + x.na, 0), ton = sucs.reduce((s, x) => s + x.ton, 0);
+    return `<div class="sv-card" style="border:1px solid ${n ? '#fed7aa' : '#ddd6fe'};background:${n ? '#fff7ed' : '#f5f3ff'};padding:10px 14px;margin-bottom:12px">
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-        <span class="material-symbols-outlined" style="color:#9a3412">inventory</span>
-        <b style="color:#9a3412">Sin fondo · ${n} línea${n === 1 ? '' : 's'} · ${escapeHtml(t1(ton))} t por reponer</b>
-        <span class="sv-sub" style="margin:0">Informadas a Logística sin entrega creada${nb ? ` · <b>${nb}</b> bloqueada${nb === 1 ? '' : 's'} hoy por llevar 2+ días sin fondo` : ''}. Abre la sucursal para sacarlas y elegir reemplazos.</span>
+        <span class="material-symbols-outlined" style="color:${n ? '#9a3412' : '#6d28d9'}">${n ? 'inventory' : 'published_with_changes'}</span>
+        <b style="color:${n ? '#9a3412' : '#5b21b6'}">${n ? `Sin fondo · ${n} posición${n === 1 ? '' : 'es'} fuera del plan (${escapeHtml(t1(ton))} t)` : ''}${n && na ? ' · ' : ''}${na ? `${na} nueva${na === 1 ? '' : 's'} por ajuste` : ''}</b>
+        <span class="sv-sub" style="margin:0">El plan muestra sólo lo realmente considerado: lo que Logística no suministró ya no cuenta en el camión. Se repone desde las vistas de pedidos de traslado.</span>
       </div>
-      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">${sucs.map(x => `<button class="sv-btn" data-sf-open="${escapeHtml(x.r.ce)}" style="padding:3px 10px;font-size:12px">${escapeHtml(x.r.nombre)}<span class="sv-pill mute" style="padding:0 7px;margin-left:4px">${x.n}${x.nb ? ' +' + x.nb + ' bloq.' : ''} · ${escapeHtml(t1(x.ton))} t</span></button>`).join('')}</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">${sucs.map(x => `<button class="sv-btn" data-sf-open="${escapeHtml(x.r.ce)}" style="padding:3px 10px;font-size:12px">${escapeHtml(x.r.nombre)}<span class="sv-pill mute" style="padding:0 7px;margin-left:4px">${x.n ? `${x.n} fuera · ${escapeHtml(t1(x.ton))} t` : ''}${x.n && x.na ? ' · ' : ''}${x.na ? `${x.na} nueva${x.na === 1 ? '' : 's'}` : ''}</span></button>`).join('')}
+        <span style="flex:1"></span>${sfIrBtns()}</div>
     </div>`;
   }
+  // Pestaña «Suministro» del panel de la sucursal: sólo informa (el ajuste se hace en las vistas).
   function sinFondoHtml(r) {
-    const dt = sfDatos(r), sel = sfSel(r, dt), fill = marcarCapacidadCD(r);
-    const puede = (PUEDE_AJUSTAR || PUEDE_TRANSPORTE) && !estadoCierre().cerrado;
-    const prog = !!progMap.get(`${r.ce}|1`);
-    const sale = dt.sfEnCam.filter(x => sel.sacar.has(x.key)).reduce((s, x) => s + (x.pl ? x.pl.tonCam : 0), 0);
-    const entra = dt.cand.filter(l => sel.subir.has(l.key)).reduce((s, l) => s + l.ton, 0);
-    const ahora = fill.cargado || 0, despues = Math.max(0, ahora - sale + entra);
-    const pct = t => r.cap > 0 ? Math.round(t / r.cap * 100) : 0;
-    const colPct = p => p >= PCT_PROGRAMAR_CD ? '#15803d' : p >= 70 ? '#a16207' : '#b5000b';
-    const barra = t => `<div style="height:8px;border-radius:4px;background:#edeeef;overflow:hidden;margin-top:4px"><div style="height:100%;width:${Math.min(100, pct(t))}%;background:${colPct(pct(t))}"></div></div>`;
-    const estPill = est => est === 'SIN FONDO' ? pill('SIN FONDO', 'warn') : est === 'PARCIAL' ? pill('PARCIAL', 'warn') : est === 'SUMINISTRADO' ? pill('CON ENTREGA', 'ok') : pill('SIN ENTREGA AÚN', 'mute');
-    const diasHtml = d => d >= 2 ? `<span class="pc-tag baja" title="Mañana deja de entrar sola al plan (queda bloqueada hasta volver a incluirla)">${d} días</span>` : d === 1 ? '<span class="sv-sub" style="margin:0">1er día</span>' : '';
-    const ubic = x => !x.pl ? '<span class="sv-muted">fuera del plan</span>' : x.pl.noCarga ? '<span class="sv-muted">No carga hoy</span>' : x.pl.enCam ? 'En camión CD' : x.pl.en2 ? '2º camión' : '<span class="sv-muted">No cabe</span>';
-    const filaSf = x => {
-      const chk = puede && !prog && x.estado === 'SIN FONDO' && x.pl && x.pl.enCam && !x.pl.noCarga;
-      return `<tr style="cursor:default">
-        <td style="width:28px">${chk ? `<input type="checkbox" data-sf-sacar="${escapeHtml(x.key)}" ${sel.sacar.has(x.key) ? 'checked' : ''}>` : ''}</td>
-        <td><b class="sv-mono">${escapeHtml(x.documento)}</b> · <span class="sv-mono">${escapeHtml(x.material)}</span><div class="sv-sub" style="margin:0">${escapeHtml(x.nombre || '')}</div></td>
-        <td>${estPill(x.estado)}${x.estado === 'PARCIAL' ? `<div class="sv-sub" style="margin:0">entregó ${escapeHtml(fmtNum(x.cant_ent, 0))} de ${escapeHtml(fmtNum(x.cant_inf, 0))}</div>` : ''}</td>
-        <td class="r">${escapeHtml(t1(x.estado === 'PARCIAL' ? x.ton_falta : x.ton_inf))} t</td>
-        <td>${diasHtml(x.dias || 0)}</td>
-        <td style="font-size:12px">${ubic(x)}</td></tr>`;
-    };
-    const sfFilas = [...dt.sf, ...dt.par].sort((a, b) => (b.dias || 0) - (a.dias || 0) || String(a.documento).localeCompare(String(b.documento)));
-    const candTop = dt.cand.slice(0, 40);
-    const filaCand = l => `<tr style="cursor:default">
-        <td style="width:28px">${puede && !prog ? `<input type="checkbox" data-sf-subir="${escapeHtml(l.key)}" ${sel.subir.has(l.key) ? 'checked' : ''}>` : ''}</td>
-        <td><b class="sv-mono">${escapeHtml(l.doc)}</b> · <span class="sv-mono">${escapeHtml(l.mat)}</span><div class="sv-sub" style="margin:0">${escapeHtml(l.nombre)}</div></td>
-        <td>${l.entrega.length ? pill('CON ENTREGA', 'ok') : pill('SIN ENTREGA', 'mute')}<div class="sv-sub" style="margin:0">${escapeHtml(SF_LBL[l.cat] || l.cat)}${l.fecha ? ' · ' + escapeHtml(l.fecha) : ''}</div></td>
-        <td class="r">${escapeHtml(t1(l.ton))} t</td></tr>`;
-    const undo = st.sfUndo && st.sfUndo.ce === r.ce;
+    const dt = sfDatos(r);
+    const plan = sfLineasPlan(r);
+    const fuera = [...plan.values()].filter(l => l.items.some(d => d._sinFondo));
+    const nuevas = [...plan.values()].filter(l => l.items.some(d => d._ajusteSF && (d._enCamion || d._camion2)));
+    const estPill = est => est === 'SIN FONDO' ? pill('SIN FONDO', 'bad') : est === 'PARCIAL' ? pill('PARCIAL', 'warn') : est === 'SUMINISTRADO' ? pill('CON ENTREGA', 'ok') : pill('SIN ENTREGA AÚN', 'mute');
+    const tabla = (lst, conEst) => `<div class="sv-table-wrap"><table class="sv-table"><thead><tr><th>Pedido · material</th><th>Tipo</th>${conEst ? '<th>Estado</th><th>Días</th>' : '<th>Entrega</th>'}<th class="r">Ton</th></tr></thead><tbody>${lst.map(l => {
+      const e = sfEstadoLinea(r.ce, l.doc, l.mat), ton = l.items.filter(d => conEst ? d._sinFondo : (d._enCamion || d._camion2)).reduce((s, d) => s + (d.ton || 0), 0);
+      return `<tr style="cursor:default"><td><b class="sv-mono">${escapeHtml(l.doc)}</b> · <span class="sv-mono">${escapeHtml(l.mat)}</span>${conEst ? '' : AJUSTE_BADGE}<div class="sv-sub" style="margin:0">${escapeHtml(l.nombre)}</div></td>
+        <td>${escapeHtml(SF_LBL[l.cat] || l.cat)}</td>
+        ${conEst ? `<td>${estPill(e ? e.estado : 'SIN FONDO')}</td><td>${e && e.dias >= 2 ? `<span class="pc-tag baja">${e.dias} días</span>` : '<span class="sv-sub" style="margin:0">1er día</span>'}</td>` : `<td>${l.entrega.length ? `<span class="sv-mono">${escapeHtml(l.entrega.join(', '))}</span>` : '<span class="sv-muted">sin entrega aún · próximo aviso a Logística</span>'}</td>`}
+        <td class="r">${escapeHtml(t1(ton))} t</td></tr>`; }).join('')}</tbody></table></div>`;
     return kv([
         ['Informado a Logística', `${t1(dt.tonInf)} t · ${dt.lineas.length} línea${dt.lineas.length === 1 ? '' : 's'}`],
         ['Con entrega', `<span style="color:#15803d">${t1(dt.tonSum)} t</span>`],
-        ['Sin fondo', `<span style="color:${dt.tonSf > 0.05 ? '#b5000b' : 'inherit'}">${t1(dt.tonSf)} t · ${dt.sf.length + dt.par.length} línea${dt.sf.length + dt.par.length === 1 ? '' : 's'}</span>`],
+        ['Sin fondo · fuera del camión', `<span style="color:${(r.tonSinFondo || 0) > 0.05 ? '#b5000b' : 'inherit'}">${t1(r.tonSinFondo || 0)} t · ${fuera.length} posición${fuera.length === 1 ? '' : 'es'}</span>`],
+        ['Nuevas por ajuste', `<span style="color:#7e22ce">${nuevas.length} posición${nuevas.length === 1 ? '' : 'es'}</span>`],
         dt.nPend ? ['Sin entrega aún', `${t1(dt.tonPend)} t · ${dt.nPend} línea${dt.nPend === 1 ? '' : 's'} (el PT todavía no tiene entregas)`] : null,
       ])
-      + (prog ? '<div class="sv-note-box" style="margin:8px 0">El camión CD ya está programado: para cambiar su carga usa «Editar carga» en Seguimiento de Carga.</div>' : '')
-      + (sfFilas.length || dt.sfEnCam.length ? `
-      <div class="pc-extra is-mute pc-seg2" style="margin:10px 0">
-        <span class="material-symbols-outlined">tune</span>
-        <div><b>Ajuste del camión CD</b>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:6px">
-            <div><small style="margin:0">Ahora</small><b style="font-size:15px;color:${colPct(pct(ahora))}">${t1(ahora)} t · ${pct(ahora)}%</b>${barra(ahora)}</div>
-            <div><small style="margin:0">Con el ajuste</small><b style="font-size:15px;color:${colPct(pct(despues))}">${t1(despues)} t · ${pct(despues)}%</b>${barra(despues)}</div>
-          </div>
-          <small>Sale ${t1(sale)} t sin fondo · entra ${t1(entra)} t de reemplazo. El espacio que quede libre lo completa el plan según prioridad; los reemplazos sin entrega se informan a Logística en el próximo aviso.</small>
-        </div>
-        ${puede && !prog ? `<div class="pc-av-btns">
-          ${undo ? '<button class="sv-btn" data-sf-deshacer title="Devuelve las líneas a como estaban antes del último ajuste"><span class="material-symbols-outlined">undo</span>Deshacer</button>' : ''}
-          <button class="sv-btn-p" data-sf-aplicar="${escapeHtml(r.ce)}" ${sel.sacar.size || sel.subir.size ? '' : 'disabled style="opacity:.55;cursor:not-allowed"'}><span class="material-symbols-outlined">published_with_changes</span>Aplicar ajuste</button></div>` : ''}
-      </div>` : '')
-      + (sfFilas.length ? `<div class="sv-dr-k" style="margin:12px 0 4px">1 · Líneas sin fondo — marca las que salen hoy del camión (vuelven mañana)</div>
-        <div class="sv-table-wrap"><table class="sv-table"><thead><tr><th></th><th>Pedido · material</th><th>Estado</th><th class="r">Falta</th><th>Días</th><th>Hoy</th></tr></thead><tbody>${sfFilas.map(filaSf).join('')}</tbody></table></div>
-        ${dt.par.length ? '<div class="sv-sub" style="margin-top:4px">PARCIAL: lo entregado viaja; el saldo queda pendiente en SAP para el próximo plan.</div>' : ''}`
-        : '<div class="sv-note-box" style="margin-top:8px">Sin líneas sin fondo: todo lo informado tiene entrega o aún está en proceso.</div>')
-      + (dt.sfEnCam.length && dt.cand.length ? `<div class="sv-dr-k" style="margin:14px 0 4px">2 · Reemplazos — primero los que ya tienen entrega (fondo confirmado), luego por prioridad del plan</div>
-        <div class="sv-table-wrap"><table class="sv-table"><thead><tr><th></th><th>Pedido · material</th><th>Fondo</th><th class="r">Ton</th></tr></thead><tbody>${candTop.map(filaCand).join('')}</tbody></table></div>
-        ${dt.cand.length > candTop.length ? `<div class="sv-sub" style="margin-top:4px">${dt.cand.length - candTop.length} candidato(s) más: el plan los toma solo si queda espacio.</div>` : ''}` : '')
+      + `<div class="sv-note-box" style="margin:8px 0">Lo que Logística no suministró <b>sale solo del camión CD</b> y el % ya está medido sin eso. Para completar el espacio entra a Revex, Crossdocking o Pedidos de Traslados → <b>Reponer espacio</b>.<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">${sfIrBtns()}</div></div>`
+      + (fuera.length ? `<div class="sv-dr-k" style="margin:12px 0 4px">Fuera del camión por falta de fondo</div>${tabla(fuera, true)}` : '')
+      + (nuevas.length ? `<div class="sv-dr-k" style="margin:14px 0 4px">Nuevas por ajuste · en el camión</div>${tabla(nuevas, false)}` : '')
       + (dt.bloq.length ? `<div class="sv-dr-k" style="margin:14px 0 4px">Bloqueadas hoy por sin fondo (2+ días) — no entran solas al plan</div>
-        <div class="sv-table-wrap"><table class="sv-table"><thead><tr><th>Pedido · material</th><th>Días</th><th></th></tr></thead><tbody>${dt.bloq.map(b => `<tr style="cursor:default">
-          <td><b class="sv-mono">${escapeHtml(b.documento)}</b> · <span class="sv-mono">${escapeHtml(b.material)}</span><div class="sv-sub" style="margin:0">${escapeHtml(b.nombre || '')} · ${escapeHtml(SF_LBL[{ REVEX: 'revex', Crossdocking: 'cross' }[b.categoria] || 'stock'] || '')}</div></td>
-          <td>${diasHtml(b.dias || 2)}</td>
-          <td class="r">${puede ? `<button class="sv-btn" data-sf-incluir="${escapeHtml(String(b.excl_id))}" data-sf-doc="${escapeHtml(b.documento)}" data-sf-mat="${escapeHtml(b.material)}" style="padding:3px 10px;font-size:12px" title="Ya hay stock: vuelve a entrar al plan de hoy"><span class="material-symbols-outlined">undo</span>Volver a incluir</button>` : ''}</td></tr>`).join('')}</tbody></table></div>` : '');
+        <div class="sv-table-wrap"><table class="sv-table"><tbody>${dt.bloq.map(b => `<tr style="cursor:default"><td><b class="sv-mono">${escapeHtml(b.documento)}</b> · <span class="sv-mono">${escapeHtml(b.material)}</span><div class="sv-sub" style="margin:0">${escapeHtml(b.nombre || '')}</div></td><td><span class="pc-tag baja">${escapeHtml(String(b.dias || 2))} días</span></td></tr>`).join('')}</tbody></table></div>` : '');
   }
   async function sfLog(ce, filas, accion) {
     try { const quien = await getUserEmail();
@@ -11383,7 +11641,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
     const cant = d => tipo === 'X' ? fmtNum(d.ctdPend, 0) : tipo === 'T' ? escapeHtml(d.ctd ?? '') : fmtNum(parseNum(d.cant), 0);
     return `<div class="pc-tbl"><table class="sv-table"><thead><tr>${head.map((h, i) => `<th class="${i >= 4 ? 'r' : ''}">${escapeHtml(h)}</th>`).join('')}${accFn ? '<th class="r pc-acc">Mover</th>' : ''}</tr></thead>
       <tbody>${items.map(d => `<tr class="${d._enCamion === false ? (d._camion2 ? 'is-seg' : 'is-fuera') : ''}" title="${d._enCamion === false ? (d._camion2 ? 'Va en el 2º camión (opcional)' : 'No cabe: queda para el próximo plan') : ''}">
-        <td style="white-space:nowrap">${esPrioCarga(d) ? PRIO_BADGE : ''}${docHtml(d)}${d._ingSum ? `<div style="margin-top:2px;font-size:10px">${ingSumPill(true)}</div><div class="sv-sub" style="margin:0">PV ${escapeHtml(String(d.pv ?? ''))}</div>` : ''}${d._guiaFact ? `<div style="margin-top:2px;font-size:10px">${leyendaPv4000Pill(true)}</div>` : ''}${d._ceOrig ? `<div class="sv-sub" style="margin:2px 0 0;color:#7e22ce;font-weight:700" title="Centro destino alternativo asignado al coordinar">Centro alt. · orig. ${escapeHtml(getNombreCentro(d._ceOrig))}</div>` : ''}</td>
+        <td style="white-space:nowrap">${esPrioCarga(d) ? PRIO_BADGE : ''}${docHtml(d)}${d._ajusteSF ? AJUSTE_BADGE : ''}${d._ingSum ? `<div style="margin-top:2px;font-size:10px">${ingSumPill(true)}</div><div class="sv-sub" style="margin:0">PV ${escapeHtml(String(d.pv ?? ''))}</div>` : ''}${d._guiaFact ? `<div style="margin-top:2px;font-size:10px">${leyendaPv4000Pill(true)}</div>` : ''}${d._ceOrig ? `<div class="sv-sub" style="margin:2px 0 0;color:#7e22ce;font-weight:700" title="Centro destino alternativo asignado al coordinar">Centro alt. · orig. ${escapeHtml(getNombreCentro(d._ceOrig))}</div>` : ''}</td>
         <td>${ent(d) ? `<span class="sv-mono">${escapeHtml(ent(d))}</span>${(tipo === 'T' || tipo === 'X') && esExtraSum(d) ? EXTRA_BADGE : ''}` : ''}</td>   <!-- (17-nov-2026, Jordan) sin entrega: celda vacía -->
         <td><div class="pc-mat"><b>${escapeHtml(d.nombre || '')}</b><small>${escapeHtml(sub(d))}</small></div></td>
         <td class="sv-mono">${escapeHtml(d.fecha || '')}</td><td class="r">${cant(d)}${d._ajustada ? `<div class="sv-sub" style="margin:0" title="Unidades editadas al coordinar">de ${fmtNum(d._pendSap, 0)}</div>` : ''}</td><td class="r"><b>${fmtNum(d.ton, 2)}</b></td>${accFn ? `<td class="r pc-acc" style="white-space:nowrap">${accFn(d)}</td>` : ''}</tr>`).join('')}</tbody></table></div>`;
@@ -11400,15 +11658,10 @@ async function renderPlanCargaCore(stage, opts = {}) {
     const b = (d, cam, lbl, tip) => `<button style="${MV_STYLE}" title="${escapeHtml(tip)}" data-mover="${escapeHtml(r.ce)}" data-doc="${escapeHtml(docLinea(d))}" data-mat="${escapeHtml(matLinea(d))}" data-cam="${cam}">${lbl}</button>`;
     return d => {
       const out = [];
-      if (d._manual !== null) out.push(`<span style="font-size:10px;color:#7c3aed;font-weight:700" title="Asignación manual/confirmada">${d._manual === 0 ? 'NO CARGA' : 'FIJO'}</span>`);
+      if (d._manual !== null && !d._ajusteSF) out.push(`<span style="font-size:10px;color:#7c3aed;font-weight:700" title="Asignación manual/confirmada">${d._manual === 0 ? 'NO CARGA' : 'FIJO'}</span>`);
       if (enTab === 'seg') { out.push(b(d, 1, '→ CD', 'Pasar al camión CD'), b(d, 0, 'Sacar', 'No cargar hoy')); }
       else if (d._enCamion) {
-        // (17-nov-2026, Jordan) Pedido de traslado: marca SIN FONDO y «Cambiar» por otra línea en un paso.
-        if (String(d.pt ?? '').trim()) {
-          const es = sfEstadoLinea(r.ce, docLinea(d), matLinea(d));
-          if (es && (es.estado === 'SIN FONDO' || es.estado === 'PARCIAL')) out.push(`<span style="font-size:10px;font-weight:700;color:#b5000b" title="Informada a Logística sin entrega creada${es.dias >= 2 ? ' · ' + es.dias + ' días' : ''}">${escapeHtml(es.estado)}</span>`);
-          if (!progMap.get(`${r.ce}|1`)) out.push(`<button style="${MV_STYLE};border-color:#ea580c;color:#9a3412" title="Sacar esta línea hoy y elegir con qué reemplazarla" data-cambiar="${escapeHtml(r.ce)}" data-doc="${escapeHtml(docLinea(d))}" data-mat="${escapeHtml(matLinea(d))}">⇄ Cambiar</button>`);
-        }
+        // (18-nov-2026, Jordan) Lo sin fondo sale solo del camión y se repone desde las vistas de pedidos de traslado.
         out.push(b(d, 2, '→ 2º', 'Pasar al 2º camión'), b(d, 0, 'Sacar', 'No cargar hoy'));
       }
       else { out.push(b(d, 1, '→ CD', 'Cargar en el camión CD'), b(d, 2, '→ 2º', 'Cargar en el 2º camión')); }
@@ -11451,7 +11704,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
             : prog2 ? '<span class="pc-st" style="background:#dcfce7;color:#14532d"><i style="background:#15803d"></i>Programado</span>'
             : '<span class="pc-st" style="background:#fef3c7;color:#713f12"><i style="background:#ca8a04"></i>Aceptado · sin transporte</span>'],
           ['No cabe en ningún camión', noCabe > 0.05 ? `${t1(noCabe)} t` : '—'],
-          fill.tonNoCarga > 0.05 ? ['No carga (manual)', `${t1(fill.tonNoCarga)} t`] : null,
+          fill.tonNoCarga - (fill.tonSinFondo || 0) > 0.05 ? ['No carga (manual)', `${t1(fill.tonNoCarga - (fill.tonSinFondo || 0))} t`] : null,
         ])
         + segundoHtml(r, fill)
         + (grupos || '<div class="sv-note-box">Sin líneas para el 2º camión.</div>');
@@ -11467,6 +11720,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
           ['Estado', pillEstado(e)],
           ['Horizonte', `${r.horizonte}h${r.promovido24 ? ' (adelantado desde 48h)' : ''}`], ['Día objetivo', escapeHtml(cap1(diaCorto(diaObj(r))))],
           ['Agenda', r.enCalendario ? 'En calendario del día' : 'Fuera de agenda'],
+          (r.tonSinFondo || 0) > 0.05 ? ['Sin fondo · fuera', `<span style="color:#b5000b">${t1(r.tonSinFondo)} t · no cuentan en el camión (se reponen en las vistas de traslados)</span>`] : null,
           r.tonClienteDiferido > 0 ? ['CD-Cliente próximo', `${t1(r.tonClienteDiferido)} t`] : null,
         ])
         + unidoCDHtml(r)
@@ -11588,7 +11842,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
     const p1 = progMap.get(`${r.ce}|1`), p2 = progMap.get(`${r.ce}|2`);
     const trp = p => p ? [p.patente_camion || '', p.patente_carro || '', [p.id_transporte, p.transportista].filter(Boolean).join(' · '), [p.chofer_nombre, p.chofer_rut, p.chofer_telefono].filter(Boolean).join(' · '), txtPresentacion(p)] : ['', '', '', '', ''];
     const camTxt = d => d._enCamion ? 'Camión CD' : d._camion2 ? '2º camión' : 'Fuera del camión';
-    const enCamTxt = d => d._enCamion ? 'Sí' : d._camion2 ? (acept ? (p2 ? '2º camión (programado)' : '2º camión (aceptado, sin transporte)') : '2º camión (sugerido, sin aceptar)') : (d._manual === 0 ? 'No carga (manual)' : 'No cabe');
+    const enCamTxt = d => d._enCamion ? 'Sí' : d._camion2 ? (acept ? (p2 ? '2º camión (programado)' : '2º camión (aceptado, sin transporte)') : '2º camión (sugerido, sin aceptar)') : (d._sinFondo ? 'Sin fondo (fuera del camión)' : d._manual === 0 ? 'No carga (manual)' : 'No cabe');
     const mide = d => (d._enCamion ? !!p1 : (d._camion2 && acept && !!p2)) ? 'Sí' : 'No';
     CAT_V2.forEach((c, i) => (r.det[c.k] || []).forEach(d => out.push(linea(camTxt(d), CAT_CSV[i], c.tipo, d, enCamTxt(d),
       d._camion2 ? (r.cap > 0 ? Math.round(r.tonSegundo / r.cap * 100) : 0) + '%' : d._enCamion ? pctCd : '', e).concat([mide(d)], trp(d._enCamion ? p1 : d._camion2 ? p2 : null)))));
@@ -11674,7 +11928,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
         let m;
         if (d._enCamion) m = f1 ? (f1.size ? 'No quedó en la foto del camión CD programado' : null) : 'Va en el camión CD sin programar (falta transporte)';
         else if (d._camion2 && acept) m = f2 ? (f2.size ? 'No quedó en la foto del 2º camión programado' : null) : 'Va en el 2º camión aceptado sin programar (falta transporte)';
-        else m = d._camion2 ? '2º camión sugerido sin aceptar' : d._manual === 0 ? 'Sacada manualmente del camión (no carga)' : 'No cabe en el camión (queda para el próximo plan)';
+        else m = d._camion2 ? '2º camión sugerido sin aceptar' : d._sinFondo ? 'Sin fondo: informada a Logística y no suministrada' : d._manual === 0 ? 'Sacada manualmente del camión (no carga)' : 'No cabe en el camión (queda para el próximo plan)';
         if (m === null) enPlan.add(key);   // programado sin foto guardada: se toma el cálculo
         else detMap.set(key, m);
       }));
@@ -12100,6 +12354,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
     // (17-nov-2026, Jordan) Sin fondo: abrir, marcar, aplicar, deshacer, volver a incluir
     stage.querySelectorAll('[data-cambiar]').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); cambiarLinea(b.dataset.cambiar, b.dataset.doc, b.dataset.mat); }));
     stage.querySelectorAll('[data-sf-open]').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); st.drawer = b.dataset.sfOpen; st.tab = 'sum'; draw(); }));
+    stage.querySelectorAll('[data-sf-ir]').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); irASub(b.dataset.sfIr); }));   // (18-nov-2026)
     stage.querySelectorAll('[data-sf-sacar]').forEach(b => b.addEventListener('change', () => { const s2 = st.sf && st.sf.sacar; if (!s2) return; if (b.checked) s2.add(b.dataset.sfSacar); else s2.delete(b.dataset.sfSacar); draw(); }));
     stage.querySelectorAll('[data-sf-subir]').forEach(b => b.addEventListener('change', () => { const s2 = st.sf && st.sf.subir; if (!s2) return; if (b.checked) s2.add(b.dataset.sfSubir); else s2.delete(b.dataset.sfSubir); draw(); }));
     stage.querySelectorAll('[data-sf-aplicar]').forEach(b => b.addEventListener('click', async e => { e.stopPropagation(); b.disabled = true; try { await aplicarSinFondo(b.dataset.sfAplicar); } finally { b.disabled = false; } }));
