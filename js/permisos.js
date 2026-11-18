@@ -27,7 +27,7 @@ const TRONCALES_PLANIF = [
   'abastecimiento:ind_plan_carga',   // (24-oct-2026) control_diferencias deshabilitada
 ];
 const TRONCALES = [...TRONCALES_CONFIG, ...TRONCALES_ORDEN, ...TRONCALES_PLANIF];
-const MAESTROS = ['proveedores', 'rutas', 'productos'];
+const MAESTROS = ['proveedores', 'rutas', 'productos', 'maestro-obras'];
 
 // Privilegios de la planilla → acciones de la plataforma
 //   VISUALIZAR: base de todos (descarga del Plan de Carga incluida, como hasta ahora)
@@ -264,7 +264,7 @@ export const VISTAS_CATALOGO = [
   { modulo: 'Gestión Troncales · Planificación', items: [['abastecimiento:plan_carga', 'Plan de Carga'], ['abastecimiento:seguimiento_carga', 'Seguimiento de Carga'], ['abastecimiento:ind_plan_carga', 'Indicadores Plan de Carga']] },
   { modulo: 'Flete Tercero / Indicadores', items: [['flete-tercero', 'Flete Tercero (Seguimiento)'], ['indicadores', 'Indicadores (Reportes)']] },
   { modulo: 'Tarifas', items: [['tarifas-transporte', 'Tarifas Transporte'], ['tarifas-clientes', 'Tarifas Clientes']] },
-  { modulo: 'Maestros', items: [['proveedores', 'Proveedores'], ['rutas', 'Rutas'], ['productos', 'Productos']] },
+  { modulo: 'Maestros', items: [['proveedores', 'Proveedores'], ['rutas', 'Rutas'], ['productos', 'Productos'], ['maestro-obras', 'Obras y Clientes']] },
   { modulo: 'Torre de Control', items: [['monitor-consolidacion', 'Monitor de Pedidos']] },
   { modulo: 'Portería (CD Quilicura)', items: [['porteria:registro', 'Control Puerta'], ['porteria:alertas', 'Monitor de Operaciones'], ['porteria:indicadores', 'Indicadores de Portería']] },
   { modulo: 'Administración', items: [['roles', 'Roles y Perfiles']] },

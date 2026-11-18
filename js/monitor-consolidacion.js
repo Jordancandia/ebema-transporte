@@ -16,7 +16,7 @@
 //   · trc_live 'entregas_periodo'          ← Entregas_Periodo.csv (entregas en tratamiento ZE*)
 //   · routes / logistics_centres           ← coordenadas de ruta (comuna) y del centro
 //   · maestro_productos                    ← prioridad de pesos
-//   · obras_georef                         ← coordenadas exactas de obra
+//   · maestro_obras                        ← georreferencia (auto OSM / manual) y contacto de la obra (18-nov-2026)
 //
 // (18-nov-2026) Flete express = pedido spot (rayo + alerta, primero en la lista). Detalle con fechas, repartos,
 // entregas y flete: traslado (ZFLT), última milla (ZFL0/ZFL1) y sugerido por posición:
@@ -29,13 +29,13 @@
 //   · lista   Con entrega    todas las posiciones libres cubiertas por entregas
 //   Marcas: vencido (F. entrega < hoy), bloqueo parcial, unidades sin confirmar.
 // ============================================================================
-import { supabase } from './supabase-client.js?v=202611181917';
-import { getDatabase, loadRoutesData, HIST_ALIAS_PREFIJO } from './data.js?v=202611181917';
+import { supabase } from './supabase-client.js?v=202611181936';
+import { getDatabase, loadRoutesData, HIST_ALIAS_PREFIJO } from './data.js?v=202611181936';
 import { loadLeaflet } from './utils.js';
-import { filtrarPorCentro, can } from './permisos.js?v=202611181917';
+import { filtrarPorCentro, can } from './permisos.js?v=202611181936';
+import { cargarObras, abrirEditorObra, tieneUbicacion, geoDe, badgeGeo } from './maestro-obras.js?v=202611181936';
 
 const CFG = {
-  tablaGeo: 'obras_georef',
   tiles: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
   kgUnitSospechoso: 5000,
 };
@@ -67,7 +67,7 @@ const S = {
   raw: null, sucursal: '', centro: null,
   pedidos: [], byId: new Map(),
   cond: new Set(CONDS.map(c => c.key)),
-  fEstado: 'todos', soloVencidos: false, soloExpress: false, q: '',
+  fEstado: 'todos', soloVencidos: false, soloExpress: false, soloSinGeo: false, q: '',
   sel: null, editGeo: false,
   orden: { col: 'prio', dir: 1 },
 };
@@ -120,13 +120,10 @@ async function leerPaginado(fn) {
    ════════════════════════════════════════════════════════════════════════ */
 async function cargarFuentes() {
   await loadRoutesData();
-  const [suc, ent, geoRes] = await Promise.all([
+  const [suc, ent] = await Promise.all([
     leerPaginado(() => supabase.from('trc_live').select('data,cargado_en').eq('fuente', 'pedidos_ventas_sucursal').order('fila')),
     leerPaginado(() => supabase.from('trc_live').select('data').eq('fuente', 'entregas_periodo').order('fila')),
-    supabase.from(CFG.tablaGeo).select('id_obra,lat,lon').then(r => r, e => ({ error: e })),
   ]);
-  const geo = new Map(), geoOk = !geoRes.error;
-  (geoRes.data || []).forEach(g => { if (Number.isFinite(+g.lat) && Number.isFinite(+g.lon)) geo.set(z(g.id_obra), { lat: +g.lat, lon: +g.lon }); });
   // Sólo las 4 condiciones del monitor
   const filas = suc.map(r => r.data).filter(d => COND.has(normCond(d?.cond_expedicion)));
   const mats = [...new Set(filas.map(d => z(d.material)).filter(Boolean))];
@@ -137,6 +134,9 @@ async function cargarFuentes() {
     (data || []).forEach(m => { if (+m.peso_bruto > 0) maestro.set(z(m.id_material), +m.peso_bruto); });
   }
   const cargado = suc.reduce((m, r) => (r.cargado_en && r.cargado_en > m ? r.cargado_en : m), '');
+  // (18-nov-2026) Maestro de obras: georreferencia y contacto
+  let geo = new Map(), geoOk = true;
+  try { geo = await cargarObras(filas.map(d => d.id_obra)); } catch (_e) { geoOk = false; }
   S.raw = { suc: filtrarPorCentro(filas, r => z(r.ofvta)), ent: ent.map(r => r.data), geo, geoOk, maestro, cargado };
 }
 
@@ -215,7 +215,8 @@ function construirPedidos(sucursal) {
   const lista = [...peds.values()].filter(p => p.posiciones.some(x => x.pendiente > 0));
   lista.forEach(p => {
     const g = geo.get(p.id_obra);
-    if (g) { p.latitud = g.lat; p.longitud = g.lon; p.geoExacta = true; }
+    p.obra = g || null;
+    if (tieneUbicacion(g)) { p.latitud = +g.lat; p.longitud = +g.lon; p.geoExacta = true; }
     else if (p._rutaObj && Number.isFinite(+p._rutaObj.lat) && Number.isFinite(+p._rutaObj.lon) && +p._rutaObj.lat !== 0) {
       const h = hash(p.id_pedido), ang = (h % 360) * Math.PI / 180, rad = 0.0012 + ((h >>> 9) % 100) / 100 * 0.0045;
       p.latitud = +p._rutaObj.lat + rad * Math.sin(ang); p.longitud = +p._rutaObj.lon + rad * 1.2 * Math.cos(ang);
@@ -248,7 +249,9 @@ function evaluar(p) {
   if (p._vencido) marcas.push({ t: 'rd', txt: `Vencido ${-p._dias} d` });
   if (p._estado !== 'bloq' && bloq.length) marcas.push({ t: 'am', txt: `Bloqueo parcial · ${bloq.length} pos.` });
   if (lib.some(x => x.confirmada + 1e-6 < x.cantidad)) marcas.push({ t: 'am', txt: 'Unidades sin confirmar' });
-  if (!p.geoExacta) marcas.push({ t: 'gy', txt: tieneGeo(p) ? 'Ubicación aprox.' : 'Sin ubicación' });
+  p._sinGeo = !p.geoExacta;
+  if (p._sinGeo) marcas.push({ t: 'rd', txt: p.obra && p.obra.geo_estado === 'PENDIENTE' ? 'Georref. pendiente' : 'Falta georreferencia' });
+  else if (p.obra && p.obra.geo_estado === 'AUTO_CALLE') marcas.push({ t: 'am', txt: 'Ubicación calle (aprox.)' });
   p._marcas = marcas;
   p.codigo_bloqueo = [...new Set(bloq.map(x => x.bloqueo))].join(', ');
   // Flete express (pedido spot): alguna posición con X → se ve con rayo y va primero
@@ -263,7 +266,7 @@ function evaluar(p) {
   p._prio = (p._express ? 0 : 1) * 1e8 + (p._estado === 'bloq' ? 0 : p._vencido ? 1 : p._estado === 'sin' ? 2 : p._estado === 'parcial' ? 3 : 4) * 1e6 + (p._dias ?? 9999);
 }
 
-const visible = p => S.cond.has(p.cond) && (S.fEstado === 'todos' || p._estado === S.fEstado) && (!S.soloVencidos || p._vencido) && (!S.soloExpress || p._express);
+const visible = p => S.cond.has(p.cond) && (S.fEstado === 'todos' || p._estado === S.fEstado) && (!S.soloVencidos || p._vencido) && (!S.soloExpress || p._express) && (!S.soloSinGeo || p._sinGeo);
 function coincide(p) {
   const q = S.q.trim().toLowerCase();
   return !q || [p.id_pedido, p.id_obra, p.cliente, p.comuna, p.direccion, p.rutaCodigo, ...p._entregas].some(x => String(x || '').toLowerCase().includes(q));
@@ -311,8 +314,8 @@ function ajustarVista() {
 }
 function iconoPedido(p) {
   const c = COND.get(p.cond), e = EST.get(p._estado), sel = S.sel === p.id_pedido;
-  const cls = `cc-pin${sel ? ' sel' : ''}${p.geoExacta ? '' : ' aprox'}${S.editGeo && !p.geoExacta ? ' drag' : ''}${p._vencido ? ' venc' : ''}${p._express ? ' xp' : ''}`;
-  const html = `<div class="${cls}" style="--pc:${c.color}" data-id="${esc(p.id_pedido)}">${ms(c.icon)}<i class="cc-pin-st" style="background:${e.color}" title="${esc(e.label)}"></i>${p._express ? `<b class="cc-pin-xp">${ms('bolt')}</b>` : ''}</div>`;
+  const cls = `cc-pin${sel ? ' sel' : ''}${p.geoExacta ? '' : ' aprox nogeo'}${S.editGeo && !p.geoExacta ? ' drag' : ''}${p._vencido ? ' venc' : ''}${p._express ? ' xp' : ''}`;
+  const html = `<div class="${cls}" style="--pc:${c.color}" data-id="${esc(p.id_pedido)}">${ms(c.icon)}<i class="cc-pin-st" style="background:${e.color}" title="${esc(e.label)}"></i>${p._express ? `<b class="cc-pin-xp">${ms('bolt')}</b>` : ''}${p._sinGeo ? `<b class="cc-pin-ng" title="Falta georreferencia">${ms('question_mark')}</b>` : ''}</div>`;
   return { firma: html, icon: L.divIcon({ className: 'cc-pin-wrap', html, iconSize: [30, 30], iconAnchor: [15, 15] }) };
 }
 function tooltipPedido(p) {
@@ -367,14 +370,36 @@ function seleccionar(id, { desdeMapa = false, sinScroll = false } = {}) {
 
 /* ── Georreferenciación de obras (obras_georef) ── */
 const obrasPendientes = () => { const m = new Map(); filtrados().forEach(p => { if (!p.geoExacta && p.id_obra && !m.has(p.id_obra)) m.set(p.id_obra, p); }); return [...m.values()]; };
-async function guardarCoordenadasObra(idObra, lat, lng, direccion) {
-  const payload = { id_obra: idObra, lat: +(+lat).toFixed(6), lon: +(+lng).toFixed(6), direccion: direccion || null, updated_at: new Date().toISOString() };
-  const { error } = await supabase.from(CFG.tablaGeo).upsert(payload, { onConflict: 'id_obra' });
+async function guardarCoordenadasObra(idObra, lat, lng) {
+  const payload = { lat: +(+lat).toFixed(6), lon: +(+lng).toFixed(6), geo_estado: 'MANUAL', geo_detalle: 'Ubicada a mano en el Monitor de Pedidos' };
+  const { data, error } = await supabase.from('maestro_obras').update(payload).eq('id_obra', idObra).select('*').maybeSingle();
   if (error) throw new Error(error.message);
-  return payload;
+  if (!data) throw new Error('La obra aún no está en el maestro (se sincroniza cada 10 min) o su perfil no puede editarla.');
+  return data;
+}
+/** Aplica una obra guardada (editor o arrastre) a todos los pedidos que la usan. */
+function aplicarObra(o) {
+  if (!o) return;
+  S.raw.geo.set(z(o.id_obra), o);
+  S.pedidos.forEach(x => {
+    if (x.id_obra !== z(o.id_obra)) return;
+    x.obra = o;
+    if (tieneUbicacion(o)) { x.latitud = +o.lat; x.longitud = +o.lon; x.geoExacta = true; }
+    evaluar(x);
+    const m2 = marcadores.get(x.id_pedido); if (m2 && tieneGeo(x)) m2.setLatLng([x.latitud, x.longitud]);
+  });
+  renderTodo();
+}
+async function editarObra(p) {
+  const o = await abrirEditorObra(p.id_obra, {
+    base: { direccion: p.direccion, comuna: p.comuna, nombre_cliente: p.cliente, id_cliente: p.solic, ruta: p.rutaCodigo },
+    centro: tieneGeo(p) ? { lat: p.latitud, lon: p.longitud } : { lat: S.centro.lat, lon: S.centro.lon },
+  });
+  if (o) { aplicarObra(o); toast('ok', `Obra ${o.id_obra} guardada`, tieneUbicacion(o) ? 'Los pedidos de esta obra (actuales y futuros) toman esta ubicación.' : 'Datos de contacto guardados.'); }
+  return o;
 }
 function activarEdicion(on) {
-  if (on && !S.raw.geoOk) { toast('err', 'Georreferenciación no disponible', `Falta la tabla ${CFG.tablaGeo} en Supabase.`); return; }
+  if (on && !S.raw.geoOk) { toast('err', 'Georreferenciación no disponible', 'No se pudo leer el maestro de obras.'); return; }
   if (on && !can('editar')) { toast('warn', 'Sin permiso de edición', 'Su perfil no puede guardar coordenadas de obra.'); return; }
   S.editGeo = on;
   $('#cc-btn-geo').classList.toggle('is-on', on);
@@ -409,9 +434,8 @@ function popupGeo(p, mk) {
     b.disabled = true; b.textContent = 'Guardando…';
     const pos = mk.getLatLng();
     try {
-      const r = await guardarCoordenadasObra(p.id_obra, pos.lat, pos.lng, p.direccion);
-      S.raw.geo.set(p.id_obra, { lat: r.lat, lon: r.lon });
-      S.pedidos.forEach(x => { if (x.id_obra === p.id_obra) { x.latitud = r.lat; x.longitud = r.lon; x.geoExacta = true; evaluar(x); } });
+      const r = await guardarCoordenadasObra(p.id_obra, pos.lat, pos.lng);
+      aplicarObra(r);
       if (tmpMarkers.has(p.id_obra)) { capaTmp.removeLayer(tmpMarkers.get(p.id_obra)); tmpMarkers.delete(p.id_obra); }
       ped.forEach(id => { const m2 = marcadores.get(id); if (m2) { m2.closePopup(); m2.setLatLng([r.lat, r.lon]); } });
       mk.closePopup();
@@ -455,6 +479,7 @@ function renderKpis() {
   $('#cc-kpis').innerHTML = tarj.map(t => `<button class="cc-kpi${S.fEstado === t.k ? ' is-on' : ''}" data-est="${t.k}" style="--kc:${t.color}">
       <span class="cc-kpi-ic">${ms(t.icon)}</span><span class="cc-kpi-b"><span class="cc-kpi-l">${esc(t.label)}</span><b class="num">${t.v}</b><span class="cc-kpi-s">${esc(t.sub)}</span></span></button>`).join('') +
     `<button class="cc-kpi xp${S.soloExpress ? ' is-on' : ''}${base.some(p => p._express) ? ' alerta' : ''}" data-xp="1" style="--kc:#ca8a04"><span class="cc-kpi-ic">${ms('bolt')}</span><span class="cc-kpi-b"><span class="cc-kpi-l">Express (spot)</span><b class="num">${base.filter(p => p._express).length}</b><span class="cc-kpi-s">Atender a la brevedad</span></span></button>` +
+    `<button class="cc-kpi ng${S.soloSinGeo ? ' is-on' : ''}" data-ng="1" style="--kc:#7c2d12"><span class="cc-kpi-ic">${ms('wrong_location')}</span><span class="cc-kpi-b"><span class="cc-kpi-l">Sin georreferencia</span><b class="num">${base.filter(p => p._sinGeo).length}</b><span class="cc-kpi-s">Ubicar obra</span></span></button>` +
     `<button class="cc-kpi venc${S.soloVencidos ? ' is-on' : ''}" data-venc="1" style="--kc:#b91c1c"><span class="cc-kpi-ic">${ms('event_busy')}</span><span class="cc-kpi-b"><span class="cc-kpi-l">Vencidos</span><b class="num">${venc}</b><span class="cc-kpi-s">F. entrega &lt; hoy</span></span></button>`;
 }
 function renderCond() {
@@ -479,7 +504,7 @@ function renderLista() {
     const f = p._dias === null ? 'Sin fecha' : p._dias < 0 ? `Vencido hace ${-p._dias} d` : p._dias === 0 ? 'Entrega hoy' : p._dias === 1 ? 'Entrega mañana' : `En ${p._dias} días`;
     return `<div class="cc-li${S.sel === p.id_pedido ? ' is-sel' : ''}${p._express ? ' xp' : ''}" data-id="${esc(p.id_pedido)}">
       <span class="cc-ci" style="background:${c.color}">${ms(c.icon)}</span>
-      <div style="min-width:0"><div class="cc-li-id">${esc(p.id_pedido)}${p._express ? RAYO : ''}<span class="cc-est-pill" style="background:${e.bg};color:${e.ink}">${esc(e.label)}</span></div>
+      <div style="min-width:0"><div class="cc-li-id">${esc(p.id_pedido)}${p._express ? RAYO : ''}${p._sinGeo ? '<span class="cc-ng" title="Falta georreferencia de la obra">' + ms('wrong_location') + '</span>' : ''}<span class="cc-est-pill" style="background:${e.bg};color:${e.ink}">${esc(e.label)}</span></div>
       <div class="cc-li-sub">${esc(p.cliente)} · ${esc(p.comuna)}</div>
       <div class="cc-li-f"><span class="${p._vencido ? 'cc-venc' : ''}">${ms('event')}${f}</span><span class="cc-mini"><i style="width:${p._avance * 100}%;background:${e.color}"></i></span><span class="mono">${p._nCub}/${p._nLib}</span></div></div>
       <span class="cc-x">${ms('chevron_right')}</span></div>`;
@@ -564,8 +589,11 @@ function abrirDetalle(id) {
           <dl><dt>Cliente</dt><dd><b>${esc(p.cliente)}</b> <span class="mono">(${esc(p.solic)})</span></dd>
           <dt>Dirección</dt><dd>${esc(p.direccion || '—')}</dd>
           <dt>Comuna</dt><dd>${esc(p.comuna)} · ruta <span class="mono">${esc(p.rutaCodigo || '—')}</span></dd>
-          <dt>Obra</dt><dd class="mono">${esc(p.id_obra)} ${p.geoExacta ? '' : '<span class="cc-tag gy">Ubicación aprox.</span>'}</dd>
-          <dt>Vendedor</dt><dd>${esc(p.interlocutor || '—')}</dd></dl></section>
+          <dt>Obra</dt><dd><span class="mono">${esc(p.id_obra)}</span> ${badgeGeo(p.obra)}</dd>
+          <dt>Contacto obra</dt><dd>${p.obra && (p.obra.contacto_nombre || p.obra.contacto_telefono || p.obra.contacto_email)
+            ? [p.obra.contacto_nombre, p.obra.contacto_telefono, p.obra.contacto_email].filter(Boolean).map(esc).join(' · ') : '<span class="cc-tag gy">Sin contacto</span>'}</dd>
+          <dt>Vendedor</dt><dd>${esc(p.interlocutor || '—')}</dd></dl>
+          <button class="cc-btn sm${p._sinGeo ? ' pri' : ''}" data-act="obra-edit" data-id="${esc(p.id_pedido)}" style="margin-top:8px">${ms(p._sinGeo ? 'edit_location_alt' : 'contact_page')}${p._sinGeo ? 'Georreferenciar obra y contacto' : 'Editar ubicación y contacto'}</button></section>
         <section class="cc-dbox"><h4>${ms('event')}Fechas y entrega</h4>
           <dl><dt>Creación pedido</dt><dd><b>${fechaTxt(p.creado)}</b>${p.creado ? ` <small>(hace ${-diasHasta(p.creado)} d)</small>` : ''}</dd>
           <dt>Próximo reparto</dt><dd class="${p._vencido ? 'cc-venc' : ''}"><b>${fechaTxt(p.fecha)}</b>${p._vencido ? ` · vencido ${-p._dias} d` : ''}</dd>
@@ -624,6 +652,7 @@ function bindEventos() {
     const b = e.target.closest('.cc-kpi'); if (!b) return;
     if (b.dataset.venc) S.soloVencidos = !S.soloVencidos;
     else if (b.dataset.xp) S.soloExpress = !S.soloExpress;
+    else if (b.dataset.ng) S.soloSinGeo = !S.soloSinGeo;
     else S.fEstado = S.fEstado === b.dataset.est ? 'todos' : b.dataset.est;
     S.sel = null; renderTodo(true);
   });
@@ -634,7 +663,7 @@ function bindEventos() {
     else if (S.cond.has(k)) { if (S.cond.size > 1) S.cond.delete(k); } else S.cond.add(k);
     renderTodo(true);
   });
-  $('#cc-btn-todas').onclick = () => { S.cond = new Set(CONDS.map(c => c.key)); S.fEstado = 'todos'; S.soloVencidos = false; S.q = ''; $('#cc-q').value = ''; renderTodo(true); };
+  $('#cc-btn-todas').onclick = () => { S.cond = new Set(CONDS.map(c => c.key)); S.fEstado = 'todos'; S.soloVencidos = false; S.soloExpress = false; S.soloSinGeo = false; S.q = ''; $('#cc-q').value = ''; renderTodo(true); };
   $('#cc-btn-geo').onclick = () => activarEdicion(!S.editGeo);
   $('#cc-btn-encuadrar').onclick = () => ajustarVista();
   $('#cc-btn-panel').onclick = () => {
@@ -674,6 +703,8 @@ function bindEventos() {
   $('#cc-q').addEventListener('input', e => { clearTimeout(tq); tq = setTimeout(() => { S.q = e.target.value; renderTodo(); }, 160); });
   $('#cc-modal').addEventListener('click', e => {
     if (e.target.id === 'cc-modal' || e.target.closest('[data-act="cerrar-modal"]')) { $('#cc-modal').classList.remove('show'); return; }
+    const oe = e.target.closest('[data-act="obra-edit"]');
+    if (oe) { const p = S.byId.get(oe.dataset.id); editarObra(p).then(o => { if (o) abrirDetalle(p.id_pedido); }); return; }
     const vm = e.target.closest('[data-act="ver-mapa"]');
     if (vm) { $('#cc-modal').classList.remove('show'); seleccionar(vm.dataset.id); }
   });
@@ -801,7 +832,7 @@ display:flex;flex-direction:column;gap:10px;color:var(--cc-ink);font-size:14px}
 .cc-search{display:flex;align-items:center;gap:6px;border:1px solid var(--cc-line);border-radius:6px;padding:5px 9px;background:#fff;align-self:flex-end}
 .cc-search input{border:none;outline:none;width:240px;font-size:13px;background:none}
 /* KPIs */
-.cc-kpis{flex-basis:100%;display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:8px}
+.cc-kpis{flex-basis:100%;display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:8px}
 .cc-kpi{display:flex;align-items:center;gap:8px;border:1px solid var(--cc-line);background:#fff;border-radius:8px;padding:5px 9px;cursor:pointer;text-align:left;transition:border-color .15s,box-shadow .15s;position:relative;overflow:hidden}
 .cc-kpi::before{content:'';position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--kc)}
 .cc-kpi:hover{border-color:var(--kc)}
@@ -866,15 +897,6 @@ display:flex;flex-direction:column;gap:10px;color:var(--cc-ink);font-size:14px}
 .cc-sec-t{font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--cc-ink2);margin:10px 2px 6px;display:flex;justify-content:space-between;align-items:center}
 .cc-empty{color:var(--cc-ink2);font-size:13px;text-align:center;padding:22px 10px;border:1px dashed var(--cc-line);border-radius:8px}
 .cc-empty .material-symbols-outlined{font-size:28px;display:block;margin:0 auto 6px;color:var(--cc-gray)}
-table.cc-mx{width:100%;border-collapse:collapse;font-size:12px;margin-bottom:4px}
-.cc-mx th{font-size:10px;color:var(--cc-ink2);font-weight:700;padding:3px 2px;text-align:center}
-.cc-mx th i{width:10px;height:10px;border-radius:50%;display:inline-block}
-.cc-mx td{padding:3px 2px;border-top:1px solid var(--cc-line2);text-align:center}
-.cc-mx td:first-child{text-align:left;white-space:nowrap;font-weight:600;color:var(--cc-ink3);display:flex;align-items:center;padding:5px 2px}
-.cc-mx tr.off td{opacity:.45}
-.cc-mx-n{border:none;background:var(--cc-s1);border-radius:5px;min-width:30px;padding:3px 4px;font-family:var(--cc-mono);font-size:12px;font-weight:600;cursor:pointer;color:var(--cc-ink)}
-.cc-mx-n:hover:not(:disabled){background:var(--cc-sel);color:var(--cc-primary)}
-.cc-mx-n.z{background:none;color:var(--cc-gray);cursor:default}
 .cc-li{display:grid;grid-template-columns:24px minmax(0,1fr) auto;align-items:center;gap:9px;padding:8px 6px;border-radius:8px;border:1px solid transparent;cursor:pointer}
 .cc-li:hover,.cc-li.is-hl{background:var(--cc-s1);border-color:var(--cc-line2)}
 .cc-li.is-sel{background:var(--cc-sel2);border-color:var(--cc-sel)}
@@ -991,8 +1013,14 @@ table.cc-t{width:100%;border-collapse:separate;border-spacing:0;font-size:13px}
 .cc.sin-panel .cc-side{display:none}
 .cc.map-full .cc-main{position:fixed;inset:0;z-index:1900;height:100vh;grid-template-columns:minmax(0,1fr) 330px;background:#fff;padding:8px;gap:8px}
 .cc.map-full.sin-panel .cc-main{grid-template-columns:minmax(0,1fr) 0}
+/* Georreferencia de obra (maestro_obras) */
+.cc-pin.nogeo{border-color:#fff;border-style:dashed;opacity:.9}
+.cc-pin-ng{position:absolute;top:-7px;left:-7px;width:16px;height:16px;border-radius:50%;background:#7c2d12;color:#fff;border:2px solid #fff;display:flex;align-items:center;justify-content:center;transform:rotate(45deg)}
+.cc-pin-ng .material-symbols-outlined{font-size:11px!important;font-weight:700}
+.cc-ng{display:inline-flex;color:#b91c1c;margin-left:2px}.cc-ng .material-symbols-outlined{font-size:15px!important}
+.cc-btn.pri{background:#b5000b;border-color:#b5000b;color:#fff}
 @media (max-width:1280px){.cc-kpis{grid-template-columns:repeat(3,minmax(0,1fr))}}
-@media (max-width:1100px){.cc{height:auto}.cc-main{grid-template-columns:1fr}.cc-mapwrap{height:58vh;flex:none}.cc-side{max-height:560px}.cc-tablecard{height:auto;max-height:70vh}}
+@media (max-width:1100px){.cc{height:auto}.cc-main{grid-template-columns:1fr;height:auto}.cc-mapwrap{height:58vh;flex:none}.cc-side{max-height:560px}.cc-tablecard{height:auto;max-height:70vh}}
 @media (max-width:640px){.cc-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.cc-kv{grid-template-columns:repeat(2,1fr)}.cc-search input{width:140px}.cc-brand{min-width:0;width:100%}}
 `;
   document.head.appendChild(st);

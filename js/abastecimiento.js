@@ -10,13 +10,13 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611181917';
-import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611181917';
-import { getDatabase } from './data.js?v=202611181917';
+import { supabase } from './supabase-client.js?v=202611181936';
+import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611181936';
+import { getDatabase } from './data.js?v=202611181936';
 import { COMUNAS_POR_REGION } from './chile-geo.js';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611181917';
-import { confirmar, pedirDato } from './confirmar.js?v=202611181917';
+import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611181936';
+import { confirmar, pedirDato } from './confirmar.js?v=202611181936';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -1090,12 +1090,44 @@ function obraIni(row, comunaRuta) {
 function obraPickHtml(row, st) {
   const l = obrasDe(row).filter(o => o.dir);
   if (!l.length) return '';
-  if (l.length === 1) return `<div class="sv-sub" style="margin:0;max-width:none"><span class="material-symbols-outlined" style="font-size:14px;vertical-align:-2px">apartment</span> Obra de la NV${l[0].id ? ' ' + escapeHtml(l[0].id) : ''}: ${escapeHtml(l[0].dir)} <button type="button" class="sv-link" data-obra="0" style="border:none;background:none;color:#0b57d0;cursor:pointer;padding:0;font:inherit;text-decoration:underline">usar</button></div>`;
+  if (l.length === 1) return `<div class="sv-sub" style="margin:0;max-width:none"><span class="material-symbols-outlined" style="font-size:14px;vertical-align:-2px">apartment</span> Obra de la NV${l[0].id ? ' ' + escapeHtml(l[0].id) : ''}: ${escapeHtml(l[0].dir)} <button type="button" class="sv-link" data-obra="0" style="border:none;background:none;color:#0b57d0;cursor:pointer;padding:0;font:inherit;text-decoration:underline">usar</button></div>${obraGeoHtml(l)}`;
   return `<div class="sv-sub" style="margin:0;max-width:none">La NV tiene ${l.length} obras (clic para usar su dirección):</div>
     <div style="display:flex;flex-wrap:wrap;gap:6px">${l.map((o, i) => { const on = _normCom(o.dir) === _normCom(st.direccion);
-      return `<button type="button" class="sv-opt ${on ? 'is-on' : ''}" data-obra="${i}" style="padding:4px 10px;width:auto"><span class="material-symbols-outlined" style="font-size:16px">${on ? 'check_circle' : 'apartment'}</span><span style="text-align:left"><b>${escapeHtml(o.dir)}</b>${o.id ? ` <span class="sv-sub" style="display:inline;margin:0">obra ${escapeHtml(o.id)}</span>` : ''}</span></button>`; }).join('')}</div>`;
+      return `<button type="button" class="sv-opt ${on ? 'is-on' : ''}" data-obra="${i}" style="padding:4px 10px;width:auto"><span class="material-symbols-outlined" style="font-size:16px">${on ? 'check_circle' : 'apartment'}</span><span style="text-align:left"><b>${escapeHtml(o.dir)}</b>${o.id ? ` <span class="sv-sub" style="display:inline;margin:0">obra ${escapeHtml(o.id)}</span>` : ''}</span></button>`; }).join('')}</div>${obraGeoHtml(l)}`;
+}
+// (18-nov-2026, Jordan) Maestro de obras: estado de georreferencia + botón para ubicar la obra y guardar el
+// contacto (nombre, teléfono, correo). El teléfono del maestro se propone si la coordinación no trae uno.
+const _obrasMaestro = new Map();   // id_obra → fila maestro_obras (caché de la sesión)
+function obraGeoHtml(l) {
+  const ids = [...new Set(l.map(o => String(o.id || '').trim()).filter(Boolean))];
+  if (!ids.length) return '';
+  return `<div style="display:flex;flex-direction:column;gap:4px">${ids.map(id => `<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+    <span class="sv-sub" style="margin:0">Obra ${escapeHtml(id)}</span><span data-geo-obra="${escapeHtml(id)}"><span class="sv-sub" style="margin:0">…</span></span>
+    <button type="button" class="sv-btn" data-obra-geo="${escapeHtml(id)}" style="padding:3px 10px;font-size:12px"><span class="material-symbols-outlined" style="font-size:16px">edit_location_alt</span>Ubicación y contacto</button></div>`).join('')}</div>`;
+}
+async function wireObraGeo(panel, row, st, comunaRuta, draw) {
+  const l = obrasDe(row);
+  const ids = [...new Set(l.map(o => String(o.id || '').trim()).filter(Boolean))];
+  if (!ids.length) return;
+  const m = await import('./maestro-obras.js?v=202611181936');
+  const faltan = ids.filter(id => !_obrasMaestro.has(id));
+  if (faltan.length) { try { (await m.cargarObras(faltan)).forEach((o, k) => _obrasMaestro.set(k, o)); faltan.forEach(id => { if (!_obrasMaestro.has(id)) _obrasMaestro.set(id, null); }); } catch (_e) { /* sin maestro */ } }
+  panel.querySelectorAll('[data-geo-obra]').forEach(sp => { sp.innerHTML = m.badgeGeo(_obrasMaestro.get(sp.dataset.geoObra)); });
+  if (!String(st.telefono || '').trim()) {
+    const o = ids.map(id => _obrasMaestro.get(id)).find(x => x && x.contacto_telefono);
+    if (o) { st.telefono = o.contacto_telefono; const i = panel.querySelector('[data-k="telefono"]'); if (i) i.value = st.telefono; }
+  }
+  panel.querySelectorAll('[data-obra-geo]').forEach(b => b.addEventListener('click', async () => {
+    const id = b.dataset.obraGeo, ob = l.find(o => String(o.id || '').trim() === id) || {};
+    const o = await m.abrirEditorObra(id, { base: { direccion: ob.dir || st.direccion, comuna: comunaDeObra(ob.dir || st.direccion, comunaRuta) || st.comuna, nombre_cliente: row._cliente || row._nombre_cliente_sap || '', id_cliente: row._id_cliente || '', ruta: row._ruta || row.ruta || '' } });
+    if (!o) return;
+    _obrasMaestro.set(id, o);
+    if (o.contacto_telefono && !String(st.telefono || '').trim()) st.telefono = o.contacto_telefono;
+    draw();
+  }));
 }
 function wireObraPick(panel, row, st, comunaRuta, draw) {
+  wireObraGeo(panel, row, st, comunaRuta, draw).catch(() => { /* maestro de obras no disponible */ });
   const l = obrasDe(row).filter(o => o.dir);
   panel.querySelectorAll('[data-obra]').forEach(b => b.addEventListener('click', () => {
     const o = l[+b.dataset.obra]; if (!o) return;
@@ -8573,7 +8605,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611181917');
+    const m = await import('./ind-plan-carga.js?v=202611181936');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
