@@ -15,9 +15,9 @@
 //   mapa con pin arrastrable, búsqueda de dirección y datos de contacto
 //   (nombre, teléfono y correo opcional).
 // ============================================================================
-import { supabase } from './supabase-client.js?v=202611182136';
+import { supabase } from './supabase-client.js?v=202611182139';
 import { loadLeaflet, escapeHtml as esc } from './utils.js';
-import { can } from './permisos.js?v=202611182136';
+import { can } from './permisos.js?v=202611182139';
 
 export const GEO = {
   PENDIENTE:  { txt: 'Pendiente',           largo: 'Pendiente de georreferenciar (automático en curso)', color: '#6b7280', bg: '#f3f4f6', ink: '#374151', icon: 'hourglass_top', falta: true },
@@ -92,6 +92,11 @@ export async function abrirEditorObra(idObra, opts = {}) {
           <label class="mo-f"><span>Dirección</span><input data-k="direccion" value="${esc(st.direccion)}" ${editable ? '' : 'disabled'}></label>
           <label class="mo-f"><span>Comuna</span><input data-k="comuna" value="${esc(st.comuna)}" ${editable ? '' : 'disabled'}></label>
           <div class="mo-geo" data-geo></div>
+          <div class="mo-ll">
+            <label class="mo-f"><span>Latitud</span><input data-ll="lat" inputmode="decimal" value="${Number.isFinite(+st.lat) && st.lat !== null ? (+st.lat).toFixed(6) : ''}" ${editable ? '' : 'disabled'} placeholder="-33.456789"></label>
+            <label class="mo-f"><span>Longitud</span><input data-ll="lon" inputmode="decimal" value="${Number.isFinite(+st.lon) && st.lon !== null ? (+st.lon).toFixed(6) : ''}" ${editable ? '' : 'disabled'} placeholder="-70.654321"></label>
+          </div>
+          ${editable ? '<div class="mo-muted">Puede pegar «lat, lon» copiado de Google Maps en cualquiera de los dos campos.</div>' : ''}
           <div class="mo-sec">Contacto en obra</div>
           <label class="mo-f"><span>Nombre contacto</span><input data-k="contacto_nombre" value="${esc(st.contacto_nombre)}" ${editable ? '' : 'disabled'} placeholder="Nombre y apellido"></label>
           <label class="mo-f"><span>Teléfono</span><input data-k="contacto_telefono" value="${esc(st.contacto_telefono)}" ${editable ? '' : 'disabled'} placeholder="+56 9 …"></label>
@@ -119,7 +124,22 @@ export async function abrirEditorObra(idObra, opts = {}) {
     const map = L.map($('[data-map]')).setView(ini, st.lat !== null && st.lat !== undefined ? 17 : 13);
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '&copy; OpenStreetMap' }).addTo(map);
     const pin = L.marker(ini, { draggable: editable, icon: L.divIcon({ className: 'mo-pin-wrap', html: `<div class="mo-pin">${ms('location_on')}</div>`, iconSize: [36, 36], iconAnchor: [18, 34] }) }).addTo(map);
-    const mover = ll => { pin.setLatLng(ll); st.lat = ll.lat; st.lon = ll.lng; st.movido = true; pintarGeo(); };
+    const mover = (ll, desdeInput = false) => {
+      pin.setLatLng(ll); st.lat = ll.lat; st.lon = ll.lng; st.movido = true; pintarGeo();
+      if (!desdeInput) { $('[data-ll="lat"]').value = (+ll.lat).toFixed(6); $('[data-ll="lon"]').value = (+ll.lng).toFixed(6); }
+    };
+    // Coordenadas escritas o pegadas (acepta «-33.45, -70.66» en un solo campo). Rango Chile continental e insular.
+    const enChile = (la, lo) => la >= -56.5 && la <= -17 && lo >= -110 && lo <= -66;
+    bg.querySelectorAll('[data-ll]').forEach(i => i.addEventListener('input', () => {
+      const par = i.value.match(/(-?\d+(?:\.\d+)?)\s*(?:[,;]\s*|\s+)(-\d+(?:\.\d+)?)/);
+      if (par) { $('[data-ll="lat"]').value = par[1].replace(',', '.'); $('[data-ll="lon"]').value = par[2].replace(',', '.'); }
+      const la = parseFloat(String($('[data-ll="lat"]').value).replace(',', '.')), lo = parseFloat(String($('[data-ll="lon"]').value).replace(',', '.'));
+      const err = $('[data-err]');
+      if (!Number.isFinite(la) || !Number.isFinite(lo)) return;
+      if (!enChile(la, lo)) { err.textContent = 'Coordenadas fuera de Chile: revise latitud (−17 a −56) y longitud (−66 a −110).'; return; }
+      err.textContent = '';
+      const ll = L.latLng(la, lo); map.setView(ll, Math.max(map.getZoom(), 16)); mover(ll, true);
+    }));
     pin.on('dragend', () => mover(pin.getLatLng()));
     if (editable) map.on('click', e => mover(e.latlng));
     setTimeout(() => map.invalidateSize(), 50);
@@ -164,6 +184,7 @@ export async function abrirEditorObra(idObra, opts = {}) {
       const btn = e.currentTarget, err = $('[data-err]');
       err.textContent = '';
       if (st.contacto_email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(st.contacto_email.trim())) { err.textContent = 'Correo inválido.'; return; }
+      if (st.movido && !(Number.isFinite(+st.lat) && Number.isFinite(+st.lon) && enChile(+st.lat, +st.lon))) { err.textContent = 'Latitud / longitud inválidas.'; return; }
       const fila = {
         id_obra: id,
         direccion: st.direccion.trim() || null, comuna: st.comuna.trim() || null,
@@ -247,14 +268,15 @@ function pintarV() {
     .sort((a, b) => String(b.visto_en || '').localeCompare(String(a.visto_en || '')));
   const PAG = 200, tot = rows.length, ver = rows.slice(V.pag * PAG, (V.pag + 1) * PAG);
   $('[data-cont]').innerHTML = `<div class="mo-tscroll"><table class="mo-t"><thead><tr>
-      <th>Georreferencia</th><th>Obra</th><th>Cliente</th><th>Dirección</th><th>Comuna</th><th>Contacto</th><th>Teléfono</th><th>Correo</th><th></th></tr></thead>
+      <th>Georreferencia</th><th>Obra</th><th>Cliente</th><th>Dirección</th><th>Comuna</th><th class="r">Latitud</th><th class="r">Longitud</th><th>Contacto</th><th>Teléfono</th><th>Correo</th><th></th></tr></thead>
     <tbody>${ver.map(o => `<tr data-id="${esc(o.id_obra)}">
       <td>${badgeGeo(o)}</td><td class="mono"><b>${esc(o.id_obra)}</b></td>
       <td class="mo-trunc" title="${esc(o.nombre_cliente || '')}">${esc(o.nombre_cliente || '—')} <span class="mo-muted mono">${esc(o.id_cliente || '')}</span></td>
       <td class="mo-trunc" title="${esc(o.direccion || '')}">${esc(o.direccion || '—')}</td><td>${esc(o.comuna || '—')}</td>
+      <td class="r mono">${o.lat != null ? (+o.lat).toFixed(6) : '—'}</td><td class="r mono">${o.lon != null ? (+o.lon).toFixed(6) : '—'}</td>
       <td>${esc(o.contacto_nombre || '—')}</td><td class="mono">${esc(o.contacto_telefono || '—')}</td><td>${esc(o.contacto_email || '—')}</td>
       <td><button class="mo-btn sm" data-edit>${ms(geoDe(o).falta ? 'edit_location_alt' : 'edit')}${geoDe(o).falta ? 'Ubicar' : 'Editar'}</button></td></tr>`).join('')
-      || '<tr><td colspan="9" class="mo-muted" style="text-align:center;padding:24px">Sin obras para el filtro.</td></tr>'}</tbody></table></div>
+      || '<tr><td colspan="11" class="mo-muted" style="text-align:center;padding:24px">Sin obras para el filtro.</td></tr>'}</tbody></table></div>
     <div class="mo-pag"><span class="mo-muted">${tot} obras${tot > PAG ? ` · página ${V.pag + 1} de ${Math.ceil(tot / PAG)}` : ''}</span>
       ${tot > PAG ? `<button class="mo-btn sm" data-p="-1" ${V.pag ? '' : 'disabled'}>‹</button><button class="mo-btn sm" data-p="1" ${(V.pag + 1) * PAG < tot ? '' : 'disabled'}>›</button>` : ''}</div>`;
   $('[data-cont]').querySelectorAll('[data-p]').forEach(b => b.addEventListener('click', () => { V.pag += +b.dataset.p; pintarV(); }));
@@ -328,6 +350,8 @@ function estilos() {
 .mo-f input:focus,.mo-in:focus{outline:2px solid #ffdad5;border-color:#b5000b}
 .mo-f input:disabled{background:#f3f4f5}
 .mo-geo{background:#f8f9fa;border:1px solid #edeeef;border-radius:8px;padding:9px 10px;display:flex;flex-direction:column;gap:4px;font-size:12.5px}
+.mo-ll{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.mo-ll input{font-family:'JetBrains Mono',ui-monospace,monospace;font-size:12.5px}
 .mo-geo-l{display:flex;align-items:center;gap:6px}.mo-geo-l.ok{color:#166534}
 .mo-warn{color:#991b1b;font-size:12px;font-weight:600}
 .mo-chk{display:flex;align-items:center;gap:6px;font-size:12.5px;cursor:pointer}
