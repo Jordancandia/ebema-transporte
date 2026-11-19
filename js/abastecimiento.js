@@ -10,13 +10,13 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611190929';
-import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611190929';
-import { getDatabase } from './data.js?v=202611190929';
+import { supabase } from './supabase-client.js?v=202611191125';
+import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611191125';
+import { getDatabase } from './data.js?v=202611191125';
 import { COMUNAS_POR_REGION } from './chile-geo.js';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611190929';
-import { confirmar, pedirDato } from './confirmar.js?v=202611190929';
+import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611191125';
+import { confirmar, pedirDato } from './confirmar.js?v=202611191125';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -1109,7 +1109,7 @@ async function wireObraGeo(panel, row, st, comunaRuta, draw) {
   const l = obrasDe(row);
   const ids = [...new Set(l.map(o => String(o.id || '').trim()).filter(Boolean))];
   if (!ids.length) return;
-  const m = await import('./maestro-obras.js?v=202611190929');
+  const m = await import('./maestro-obras.js?v=202611191125');
   const faltan = ids.filter(id => !_obrasMaestro.has(id));
   if (faltan.length) { try { (await m.cargarObras(faltan)).forEach((o, k) => _obrasMaestro.set(k, o)); faltan.forEach(id => { if (!_obrasMaestro.has(id)) _obrasMaestro.set(id, null); }); } catch (_e) { /* sin maestro */ } }
   panel.querySelectorAll('[data-geo-obra]').forEach(sp => { sp.innerHTML = m.badgeGeo(_obrasMaestro.get(sp.dataset.geoObra)); });
@@ -4677,6 +4677,7 @@ const VISTAS_TRONCAL = {
       { key: 'creado_el', label: 'Fecha de Creación' },
       { key: 'cl', label: 'Tipo de Documento' },
       { key: 'doc_compr', label: 'Pedido de Traslado' },
+      { key: 'documento', label: 'Pedido de Venta (doc. modelo)' },
       { key: 'material', label: 'ID Material' },
       { key: 'texto_breve', label: 'Nombre Material' },
       { key: 'ce', label: 'Centro Destino' },
@@ -5586,6 +5587,7 @@ const V2 = {
     cols: [
       { label: 'Pedido', html: r => mono(r.doc_compr, r.creado_el ? 'creado ' + r.creado_el : '') },
       { label: 'Entrega', html: r => entregaFondoHtml(r) },
+      { label: 'NV (doc. modelo)', html: r => String(r.documento ?? '').trim() ? mono(String(r.documento).trim(), String(r.pos_2 ?? '').trim() ? 'pos ' + String(r.pos_2).trim() : '') : '<span class="sv-muted">—</span>' },   // (19-nov-2026, Jordan)
       { label: 'Destino', html: r => sucHtml(r.ce) },
       { label: 'Material', html: r => matHtml(r.material, r.texto_breve) },
       { label: 'Cant. pend.', al: 'r', html: r => escV2(r.ctd_pedido) + (r.ump ? ` <span class="sv-muted">${escV2(r.ump)}</span>` : '') },
@@ -5606,6 +5608,8 @@ const V2 = {
         ['Cantidad pedido', `${r.ctd_pedido || 0} ${r.ump || ''}`.trim()], ['Toneladas', tonHtml(r._t), true],
         ['Fecha entrega', r.fecha_confirmada], ['Alerta', pill(r._al.k, r._al.tone), true],
         ['Fecha creación', r.creado_el], ['Tipo documento', r.cl],
+        // (19-nov-2026, Jordan) Documento modelo / precedente del pedido de traslado Revex (la NV)
+        ['Pedido de venta (doc. modelo)', String(r.documento ?? '').trim() ? `${String(r.documento).trim()}${String(r.pos_2 ?? '').trim() ? ' · pos ' + String(r.pos_2).trim() : ''}` : '—'],
       ],
       nota: '1º en el orden de llenado · disponible por defecto para el próximo camión',
     }),
@@ -8605,7 +8609,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611190929');
+    const m = await import('./ind-plan-carga.js?v=202611191125');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
