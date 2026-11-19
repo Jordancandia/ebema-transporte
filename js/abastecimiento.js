@@ -10,13 +10,13 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611182139';
-import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611182139';
-import { getDatabase } from './data.js?v=202611182139';
+import { supabase } from './supabase-client.js?v=202611190923';
+import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611190923';
+import { getDatabase } from './data.js?v=202611190923';
 import { COMUNAS_POR_REGION } from './chile-geo.js';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611182139';
-import { confirmar, pedirDato } from './confirmar.js?v=202611182139';
+import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611190923';
+import { confirmar, pedirDato } from './confirmar.js?v=202611190923';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -1109,7 +1109,7 @@ async function wireObraGeo(panel, row, st, comunaRuta, draw) {
   const l = obrasDe(row);
   const ids = [...new Set(l.map(o => String(o.id || '').trim()).filter(Boolean))];
   if (!ids.length) return;
-  const m = await import('./maestro-obras.js?v=202611182139');
+  const m = await import('./maestro-obras.js?v=202611190923');
   const faltan = ids.filter(id => !_obrasMaestro.has(id));
   if (faltan.length) { try { (await m.cargarObras(faltan)).forEach((o, k) => _obrasMaestro.set(k, o)); faltan.forEach(id => { if (!_obrasMaestro.has(id)) _obrasMaestro.set(id, null); }); } catch (_e) { /* sin maestro */ } }
   panel.querySelectorAll('[data-geo-obra]').forEach(sp => { sp.innerHTML = m.badgeGeo(_obrasMaestro.get(sp.dataset.geoObra)); });
@@ -8605,7 +8605,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611182139');
+    const m = await import('./ind-plan-carga.js?v=202611190923');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -8886,6 +8886,30 @@ function llenarPorNivelesCD(lineas, rem, marcar) {
 }
 // (11-nov-2026, Jordan) Marca «camión CD armado a mano» del centro (fila centinela en abast_plan_linea_camion).
 const CAMION_MANO_DOC = '__ARMADO_MANUAL__', CAMION_MANO_KEY = CAMION_MANO_DOC + '|-';
+// (19-nov-2026, Jordan) Camión CD / 2º camión PROGRAMADO HOY: su carga (Seguimiento de Carga, incluye «Editar carga») queda
+// fija. Esas líneas no se vuelven a planificar en otro camión ni cambian por el llenado automático; los planes de otros
+// días ya las descuentan en el servidor (fn_abast_entregas_programadas_prev / fn_abast_pt_programados_prev).
+async function loadLockProgramadosHoy(cd) {
+  const out = new Map(), tx = v => String(v ?? '').trim();
+  try {
+    const { data: cams, error } = await supabase.from('abast_seguimiento_camion').select('id,ce,clave,patente_camion')
+      .eq('fecha_plan', isoLocal(hoy00())).eq('cd_origen', cd).in('clave', ['CD', '2']);
+    if (error) throw error;
+    const vivos = (cams || []).filter(c => tx(c.patente_camion));
+    if (!vivos.length) return out;
+    const byId = new Map(vivos.map(c => [c.id, c]));
+    const { data: lin, error: e2 } = await supabase.from('abast_seguimiento_carga').select('camion_id,documento,material').in('camion_id', [...byId.keys()]).limit(5000);
+    if (e2) throw e2;
+    (lin || []).forEach(l => {
+      const c = byId.get(l.camion_id); if (!c || !tx(l.documento)) return;
+      const ce = tx(c.ce), cam = tx(c.clave) === '2' ? 2 : 1;
+      if (!out.has(ce)) out.set(ce, new Map());
+      const m = out.get(ce); if (!m.has(cam)) m.set(cam, new Set());
+      m.get(cam).add(`${tx(l.documento)}|${tx(l.material)}`);
+    });
+  } catch (e) { console.warn('Plan de carga: carga de camiones programados hoy no disponible', e); }
+  return out;
+}
 function asignarCamionesCD(r) {
   const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
   const doc = d => String(d.pt ?? d.oc ?? d.pv ?? '').trim();
@@ -8927,6 +8951,16 @@ function asignarCamionesCD(r) {
     d._reservaSF = !!(ro && String(d.entrega_entrante || d.entrega || '').trim()) ? ro : 0;
     return d._sinFondo;
   };
+  // (19-nov-2026, Jordan) Carga fija de los camiones programados hoy (r.lock: 1 → camión CD, 2 → 2º camión).
+  const lk1 = r.lock && r.lock.get(1), lk2 = r.lock && r.lock.get(2);
+  const lockDe = (d, v) => {
+    if (!lk1 && !lk2) return v;
+    const kk = `${doc(d)}|${mat(d)}`;
+    if (lk1 && lk1.has(kk)) { d._sinFondo = false; d._lock = 1; return 1; }
+    if (lk2 && lk2.has(kk)) { d._sinFondo = false; d._lock = 2; return 2; }
+    d._lock = 0;
+    return (lk1 && Number(v) === 1) || (lk2 && Number(v) === 2) ? null : v;   // no entra a un camión ya programado
+  };
   let acc = 0;
   // (23-oct-2026, Jordan) TOPE 100%: lo asignado/priorizado a mano también respeta la capacidad. Entra en
   // orden de prioridad mientras quepa; lo que no cabe queda fuera (puede ir al 2º camión) y el resto de la
@@ -8936,6 +8970,7 @@ function asignarCamionesCD(r) {
     if ((v === undefined || v === null) && d._unidoCD) v = 1;   // (29-oct-2026) retiro unido: siempre en el camión CD
     if (sfDe(d)) v = 0;   // (18-nov-2026) sin fondo: fuera del camión
     else if (d._reservaSF && (v === undefined || v === null)) v = 1;   // (18-nov-2026) reserva suministrada: al camión CD
+    v = lockDe(d, v);   // (19-nov-2026) camión programado hoy: manda su carga
     d._manual = v === undefined || v === null ? null : Number(v);
     d._camion2 = false; d._enCamion = false; d._manualExcede = false;
   });
@@ -8953,24 +8988,25 @@ function asignarCamionesCD(r) {
   // no se completa automático y todo el saldo queda habilitado para el 2º camión.
   const armadoMano = asig.get(CAMION_MANO_KEY) === 1;
   subirManual(orden.filter(catAlta));
-  if (!armadoMano) acc += llenarPorNivelesCD(orden.filter(d => catAlta(d) && d._manual === null), Math.max(0, r.cap - acc), d => { d._enCamion = true; });
+  if (!armadoMano && !lk1) acc += llenarPorNivelesCD(orden.filter(d => catAlta(d) && d._manual === null), Math.max(0, r.cap - acc), d => { d._enCamion = true; });
   subirManual(orden.filter(d => !catAlta(d)));
   // (23-oct-2026, Jordan) Se llena por niveles de prioridad (categoría → PRIORIDAD → orden); dentro de un
   // mismo nivel se elige la combinación de líneas que más llena el espacio libre y, a igual tonelaje, la
   // que sube más posiciones. Un nivel nunca cede espacio a uno de menor prioridad.
-  if (!armadoMano) acc += llenarPorNivelesCD(orden.filter(d => !catAlta(d) && d._manual === null), Math.max(0, r.cap - acc), d => { d._enCamion = true; });
+  if (!armadoMano && !lk1) acc += llenarPorNivelesCD(orden.filter(d => !catAlta(d) && d._manual === null), Math.max(0, r.cap - acc), d => { d._enCamion = true; });
   const excedente = orden.filter(d => !d._enCamion && d._manual !== 0).reduce((s, d) => s + (d.ton || 0), 0);
   // (16-nov-2026, Jordan) 7º ADELANTO: PT con fecha futura (> +3 hábiles) rellenan SÓLO el espacio libre del camión CD,
   // por fecha más cercana y prioridad. No cuentan como excedente ni proponen 2º camión.
   const adel = (r.det.adelanto || []).slice().sort((a, b) => ((a._orden ?? 0) - (b._orden ?? 0)) || cmp(doc(a), doc(b)) || cmp(mat(a), mat(b)));
   adel.forEach(d => { d._camion2 = false; d._enCamion = false; d._manualExcede = false; d._prio = false; d._niv = `9|0|${d._orden ?? 0}`;
-    const v = asig.get(`${doc(d)}|${mat(d)}`); d._manual = v === 0 || sfDe(d) ? 0 : null; });
-  if (!armadoMano) acc += llenarPorNivelesCD(adel.filter(d => d._manual === null), Math.max(0, r.cap - acc), d => { d._enCamion = true; });
+    const v0 = asig.get(`${doc(d)}|${mat(d)}`); const sf0 = sfDe(d); const v = lockDe(d, v0 === 0 || sf0 ? 0 : null); d._manual = v === undefined || v === null ? null : Number(v);
+    if (d._manual === 1) { d._enCamion = true; acc += d.ton || 0; } });
+  if (!armadoMano && !lk1) acc += llenarPorNivelesCD(adel.filter(d => d._manual === null), Math.max(0, r.cap - acc), d => { d._enCamion = true; });
   const manual2 = orden.some(d => d._manual === 2);   // (17-nov-2026) restituida: se había perdido al agregar el 7º Adelanto
   let segundoPropuesto = manual2 || (excedente > 0 && (armadoMano || excedente >= r.cap * UMBRAL_SEGUNDO_CAMION));
   let acc2 = 0;
   orden.forEach(d => { if (d._manual === 2) { d._camion2 = true; d._sobreCap = acc2 + (d.ton || 0) > r.cap + 1e-9; acc2 += d.ton || 0; } });   // (11-nov-2026) igual que el camión CD
-  if (segundoPropuesto) acc2 += llenarPorNivelesCD(orden.filter(d => (d._manual === null || d._manualExcede) && !d._enCamion && !d._camion2), Math.max(0, r.cap - acc2), d => { d._camion2 = true; });
+  if (segundoPropuesto && !lk2) acc2 += llenarPorNivelesCD(orden.filter(d => (d._manual === null || d._manualExcede) && !d._enCamion && !d._camion2), Math.max(0, r.cap - acc2), d => { d._camion2 = true; });
   // (16-oct-2026) Si el excedente es una línea que por sí sola supera la capacidad (p.ej. peso
   // volumétrico erróneo), no cabe en ningún camión: no se propone un 2º camión vacío (0 t).
   if (segundoPropuesto && !manual2 && acc2 <= 1e-9) segundoPropuesto = false;
@@ -9196,6 +9232,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
   let adelantoRaw = [];
   try { adelantoRaw = await adelantoP; } catch (e) { console.warn('Plan de carga: adelanto no disponible', e); }
   const [ventasDirectoManual, inclusionesPlan, asigLineas, camManuales, coordVentas, coordTraslados, ajustesUnidades, cargasManualTr, retirosUnidosCD, sfPlan] = await Promise.all([loadVentasDirectoManual(), loadInclusionesPlan(), loadAsignacionLineas(), loadCamionesManuales(), loadCoordinacionesVenta(), loadCoordTraslados(), loadAjustesUnidades(), loadCargaManualTr(), loadRetirosUnidosCD(), loadSinFondoPlan(planOrigen)]);
+  const lockProgHoy = await loadLockProgramadosHoy(planOrigen);   // (19-nov-2026) carga fija de camiones programados hoy
   const unidoCD = new Map((retirosUnidosCD || []).filter(x => String(x.cd_origen ?? '').trim() === planOrigen).map(x => [String(x.doc_compr ?? '').trim(), x]));
   const ajUMap = mapaAjustesUnidades(ajustesUnidades);
   // (23-oct-2026, Jordan) Cargas manuales (sin entrega SAP) de este CD origen. Entran al plan cuyo DÍA DE CARGA
@@ -10210,6 +10247,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
       camionCliente: tonVentaCliente > 0, camionFabSuc: tonFabSuc > 0, camionFabCli: tonFabCli > 0,
       camionesCliente, camionesFabSuc, camionesFabCli, tonClienteDiferido, fabCandidatos,
       det, asig: asigMap.get(`${planOrigen}|${ce}`) || new Map(),
+      lock: lockProgHoy.get(ce) || null,   // (19-nov-2026) camión programado hoy: carga fija
       sf: sfPlan,   // (18-nov-2026) sin fondo fuera del camión + posiciones nuevas por ajuste
       retirosUnidos: retUnidosCe,   // (29-oct-2026) [{ item, e }] Fábrica-Sucursal que pasan por el CD
     };
