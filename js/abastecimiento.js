@@ -10,13 +10,13 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611191514';
-import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611191514';
-import { getDatabase } from './data.js?v=202611191514';
+import { supabase } from './supabase-client.js?v=202611191934';
+import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611191934';
+import { getDatabase } from './data.js?v=202611191934';
 import { COMUNAS_POR_REGION } from './chile-geo.js';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611191514';
-import { confirmar, pedirDato } from './confirmar.js?v=202611191514';
+import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611191934';
+import { confirmar, pedirDato } from './confirmar.js?v=202611191934';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -1109,7 +1109,7 @@ async function wireObraGeo(panel, row, st, comunaRuta, draw) {
   const l = obrasDe(row);
   const ids = [...new Set(l.map(o => String(o.id || '').trim()).filter(Boolean))];
   if (!ids.length) return;
-  const m = await import('./maestro-obras.js?v=202611191514');
+  const m = await import('./maestro-obras.js?v=202611191934');
   const faltan = ids.filter(id => !_obrasMaestro.has(id));
   if (faltan.length) { try { (await m.cargarObras(faltan)).forEach((o, k) => _obrasMaestro.set(k, o)); faltan.forEach(id => { if (!_obrasMaestro.has(id)) _obrasMaestro.set(id, null); }); } catch (_e) { /* sin maestro */ } }
   panel.querySelectorAll('[data-geo-obra]').forEach(sp => { sp.innerHTML = m.badgeGeo(_obrasMaestro.get(sp.dataset.geoObra)); });
@@ -7201,7 +7201,18 @@ function accionesDescargaSeg(r) {
     label: `Descargar plan vs DT${varios ? ' · ' + c.lbl + (c.patente_camion ? ' ' + c.patente_camion : '') : ''}`, icon: 'difference',
     title: 'CSV de este camión: planificado, DT, cargado y diferencias por SKU',
     run: async () => { descargarPlanVsDtSeg([{ ...r, camiones: [c], _fechasCarga: [c.fecha_carga || r.fecha_carga].filter(Boolean) }],
-      `Plan_vs_DT_${f(r.ce)}_${f(c.tipo)}_${f(c.patente_camion || 'SINPATENTE')}_${f(c.fecha_carga || r.fecha_carga)}.csv`); return null; } }));
+      `Plan_vs_DT_${f(r.ce)}_${f(c.tipo)}_${f(c.patente_camion || 'SINPATENTE')}_${f(c.fecha_carga || r.fecha_carga)}.csv`); return null; } }))
+    // (19-nov-2026, Jordan) Lista de picking del camión, igual a la del Plan de Carga.
+    .concat(r.camiones.filter(c => (c.camionIds || []).length).map(c => ({
+      label: `Lista de picking (Excel)${varios ? ' · ' + c.lbl + (c.patente_camion ? ' ' + c.patente_camion : '') : ''}`, icon: 'assignment',
+      title: 'Excel con lo que va en el camión: REVEX, pedidos de venta, retiros, pedidos de traslado y crossdocking, con priorizados y facturables',
+      run: async () => {
+        try {
+          await descargarPickingCamion({ camion_ids: c.camionIds },
+            `ListaPicking_${f(r.cd_origen)}_${f(r.ce)}_${f(c.tipo)}_${f(c.patente_camion || 'SINPATENTE')}_${f(c.fecha_carga || r.fecha_carga)}.xlsx`);
+        } catch (err) { showAlert('No se pudo generar la lista de picking: ' + (err.message || err), 'error'); }
+        return null;
+      } })));
 }
 function accionesEditarCargaSeg(r) {
   if (!can('editar_carga_seguimiento')) return [];   // OWNER y Planner Distribución, plan cerrado o del día
@@ -7907,8 +7918,11 @@ function loadExcelJsAbast() {
 async function descargarPickingCamion(filtros, nombreArchivo) {
   const s = v => (v == null ? '' : String(v).trim()), n = v => { const x = Number(v); return isFinite(x) ? x : 0; };
   const [rSeg, rPv, rPr] = await Promise.all([
-    supabase.from('v_abast_seguimiento_carga').select('*').eq('fecha_plan', filtros.fecha_plan).eq('cd_origen', filtros.cd_origen)
-      .eq('ce', filtros.ce).eq('tipo_camion', filtros.tipo_camion).order('tipo_carga').order('documento').order('material').limit(5000),
+    // (19-nov-2026, Jordan) Desde Seguimiento de Carga se filtra por camion_id del camión buscado.
+    (filtros.camion_ids && filtros.camion_ids.length
+      ? supabase.from('v_abast_seguimiento_carga').select('*').in('camion_id', filtros.camion_ids)
+      : supabase.from('v_abast_seguimiento_carga').select('*').eq('fecha_plan', filtros.fecha_plan).eq('cd_origen', filtros.cd_origen)
+        .eq('ce', filtros.ce).eq('tipo_camion', filtros.tipo_camion)).order('tipo_carga').order('documento').order('material').limit(5000),
     supabase.from('abast_pv4000_coordinacion').select('documento').limit(5000),
     supabase.from('abast_prioridad_carga').select('tipo,documento,material').eq('activo', true).eq('estado', 'ACEPTADA').limit(5000),
   ]);
@@ -8616,7 +8630,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611191514');
+    const m = await import('./ind-plan-carga.js?v=202611191934');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -11983,8 +11997,8 @@ async function renderPlanCargaCore(stage, opts = {}) {
             // (17-nov-2026, Jordan) Sólo se habilita con el camión sobre el 85% de su capacidad.
             const pctCam = pctCamionPt(r, camP);
             const ptBtn = pctCam >= UMBRAL_PT_SIN_ENT
-              ? `<button class="sv-btn" data-pt-sin-ent="${escapeHtml(r.ce)}|${camP}" title="Pedidos de traslado de este camión que aún no tienen entrega (CSV)"><span class="material-symbols-outlined">playlist_add_check</span>PT sin entrega (CSV)</button>`
-              : `<button class="sv-btn" disabled style="opacity:.55;cursor:not-allowed" title="Se habilita cuando el camión está sobre el ${UMBRAL_PT_SIN_ENT}% (hoy ${pctCam}%)"><span class="material-symbols-outlined">lock</span>PT sin entrega (CSV)</button>`;
+              ? `<button class="sv-btn" data-pt-sin-ent="${escapeHtml(r.ce)}|${camP}" title="Pedidos de traslado de este camión que aún no tienen entrega (Excel: hoja PT y hoja PT REVEX)"><span class="material-symbols-outlined">playlist_add_check</span>PT sin entrega (Excel)</button>`
+              : `<button class="sv-btn" disabled style="opacity:.55;cursor:not-allowed" title="Se habilita cuando el camión está sobre el ${UMBRAL_PT_SIN_ENT}% (hoy ${pctCam}%)"><span class="material-symbols-outlined">lock</span>PT sin entrega (Excel)</button>`;
             return ptBtn + (progMap.get(`${r.ce}|${camP}`)
               ? `<button class="sv-btn-p" data-picking="${escapeHtml(r.ce)}|${camP}" title="Excel con lo que va en el camión: REVEX, pedidos de venta, retiros, pedidos de traslado y crossdocking, con priorizados y facturables"><span class="material-symbols-outlined">assignment</span>Lista de picking (Excel)</button>`
               : `<button class="sv-btn" disabled style="opacity:.55;cursor:not-allowed" title="Se habilita cuando el camión está programado (datos del transporte y patente)"><span class="material-symbols-outlined">lock</span>Lista de picking (Excel)</button>`); })()}</div>
@@ -12039,14 +12053,17 @@ async function renderPlanCargaCore(stage, opts = {}) {
   }
   function ptHabilitado(r, cam) { return pctCamionPt(r, cam) >= UMBRAL_PT_SIN_ENT; }
   function hayPtHabilitado(lista) { return (lista || []).some(r => ptHabilitado(r, 1) || ptHabilitado(r, 2)); }
-  function filasPtSinEntrega(lista, cam = null) {
+  // (19-nov-2026, Jordan) Archivo en Excel con 2 hojas: «PT» (Crossdocking + pedidos de abastecimiento) y «PT REVEX».
+  const PT_CATS_ABAST = ['cross', 'quiebre', 'stock', 'adelanto'];
+  const PT_CATS_REVEX = ['revex'];
+  function filasPtSinEntrega(lista, cam = null, cats = ['revex', 'cross', 'quiebre', 'stock', 'adelanto'], comoNumero = false) {
     const tx = v => String(v ?? '').trim();
     const acc = new Map();
     lista.forEach(r => {
       marcarCapacidadCD(r);
       const acept = segAcept.has(r.ce);
       const ok1 = ptHabilitado(r, 1), ok2 = ptHabilitado(r, 2);
-      ['revex', 'cross', 'quiebre', 'stock', 'adelanto'].forEach(k => (r.det[k] || []).forEach(d => {
+      cats.forEach(k => (r.det[k] || []).forEach(d => {
         const enPlan = cam === 1 ? (ok1 && !!d._enCamion) : cam === 2 ? (ok2 && acept && !!d._camion2) : ((ok1 && !!d._enCamion) || (ok2 && acept && !!d._camion2));
         if (!enPlan || tx(d.entrega_entrante || d.entrega) || !tx(d.pt)) return;
         const cant = k === 'cross' ? (Number(d.ctdPend) || 0) : (parseNum(d.ctd) || 0);
@@ -12055,13 +12072,33 @@ async function renderPlanCargaCore(stage, opts = {}) {
         x.cant += cant; acc.set(key, x);
       }));
     });
-    const num = n => { const v = Math.round(n * 1000) / 1000; return String(v).replace('.', ','); };
+    const num = n => { const v = Math.round(n * 1000) / 1000; return comoNumero ? v : String(v).replace('.', ','); };
     return [...acc.values()].sort((a, b) => a.pt.localeCompare(b.pt) || a.mat.localeCompare(b.mat)).map(x => [x.pt, planOrigen, x.mat, num(x.cant)]);
   }
-  function descargarPtSinEntrega(lista, nombre, cam = null) {
-    const filas = filasPtSinEntrega(lista, cam);
-    if (!filas.length) { showAlert(`No hay pedidos de traslado sin entrega en camiones sobre el ${UMBRAL_PT_SIN_ENT}%.`, 'success'); return; }
-    bajarCsv(CSV_PT_ENT, filas, nombre);
+  async function descargarPtSinEntrega(lista, nombre, cam = null) {
+    const fPt = filasPtSinEntrega(lista, cam, PT_CATS_ABAST, true);
+    const fRx = filasPtSinEntrega(lista, cam, PT_CATS_REVEX, true);
+    if (!fPt.length && !fRx.length) { showAlert(`No hay pedidos de traslado sin entrega en camiones sobre el ${UMBRAL_PT_SIN_ENT}%.`, 'success'); return; }
+    try {
+      const ExcelJS = await loadExcelJsAbast();
+      const wb = new ExcelJS.Workbook();
+      const hoja = (titulo, filas) => {
+        const ws = wb.addWorksheet(titulo);
+        ws.columns = [{ width: 20 }, { width: 20 }, { width: 16 }, { width: 14 }];
+        const h = ws.addRow(CSV_PT_ENT);
+        h.font = { name: 'Arial', size: 10, bold: true, color: { argb: 'FFFFFFFF' } };
+        h.eachCell(c => { c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F2937' } }; c.alignment = { horizontal: 'center' }; });
+        filas.forEach(f => { const r = ws.addRow(f); r.font = { name: 'Arial', size: 10 }; r.getCell(4).numFmt = '#,##0.###'; });
+        ws.views = [{ state: 'frozen', ySplit: 1 }];
+        ws.autoFilter = { from: 'A1', to: 'D1' };
+      };
+      hoja('PT', fPt);
+      hoja('PT REVEX', fRx);
+      const buf = await wb.xlsx.writeBuffer();
+      const url = URL.createObjectURL(new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
+      const a = document.createElement('a'); a.href = url; a.download = nombre; document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+    } catch (err) { showAlert('No se pudo generar el archivo de PT sin entrega: ' + (err.message || err), 'error'); }
   }
   function descargarCsvV21(lista, nombre) {
     const cerrado = estadoCierre().cerrado;
@@ -12415,8 +12452,8 @@ async function renderPlanCargaCore(stage, opts = {}) {
           <button class="sv-btn" data-ent-noplan title="Entregas SAP creadas que no están consideradas en el Plan de Carga (con pedido de traslado y motivo) · descargable"><span class="material-symbols-outlined">assignment_late</span>Entregas no consideradas</button>
           <button class="sv-btn" data-descarga="__todo__" title="Descarga el plan completo del origen (sin filtro de KPI)"><span class="material-symbols-outlined">download</span>Descargar plan (CSV)</button>
           ${hayPtHabilitado(resultado)
-            ? `<button class="sv-btn" data-pt-sin-ent="__todo__" title="Pedidos de traslado sin entrega de los camiones sobre el ${UMBRAL_PT_SIN_ENT}% (camión CD y 2º camión aceptado): PEDIDO DE TRASLADO, CENTRO SUMINISTRO, ID MATERIAL, CANTIDAD"><span class="material-symbols-outlined">playlist_add_check</span>PT sin entrega (CSV)</button>`
-            : `<button class="sv-btn" disabled style="opacity:.55;cursor:not-allowed" title="Se habilita cuando al menos un camión está sobre el ${UMBRAL_PT_SIN_ENT}%"><span class="material-symbols-outlined">lock</span>PT sin entrega (CSV)</button>`}
+            ? `<button class="sv-btn" data-pt-sin-ent="__todo__" title="Pedidos de traslado sin entrega de los camiones sobre el ${UMBRAL_PT_SIN_ENT}% (camión CD y 2º camión aceptado): PEDIDO DE TRASLADO, CENTRO SUMINISTRO, ID MATERIAL, CANTIDAD"><span class="material-symbols-outlined">playlist_add_check</span>PT sin entrega (Excel)</button>`
+            : `<button class="sv-btn" disabled style="opacity:.55;cursor:not-allowed" title="Se habilita cuando al menos un camión está sobre el ${UMBRAL_PT_SIN_ENT}%"><span class="material-symbols-outlined">lock</span>PT sin entrega (Excel)</button>`}
           <button class="sv-btn is-icon" data-refrescar title="Refrescar datos"><span class="material-symbols-outlined">refresh</span></button>
         </div></div>
       <div class="sv-kpis pc-kpis">${kpiDef.map(k => {
@@ -12571,9 +12608,9 @@ async function renderPlanCargaCore(stage, opts = {}) {
     stage.querySelectorAll('[data-pt-sin-ent]').forEach(btn => btn.addEventListener('click', (e) => {   // (17-nov-2026)
       e.stopPropagation();
       const [ce, cam] = String(btn.dataset.ptSinEnt).split('|');
-      if (ce === '__todo__') { descargarPtSinEntrega(resultado, `PT_sin_entrega_${planOrigen}_${isoLocal(hoy00())}.csv`); return; }
+      if (ce === '__todo__') { descargarPtSinEntrega(resultado, `PT_sin_entrega_${planOrigen}_${isoLocal(hoy00())}.xlsx`); return; }
       const r = resultado.find(x => x.ce === ce);
-      if (r) descargarPtSinEntrega([r], `PT_sin_entrega_${planOrigen}_${r.ce}${cam === '2' ? '_camion2' : ''}_${isoLocal(hoy00())}.csv`, Number(cam) || null);
+      if (r) descargarPtSinEntrega([r], `PT_sin_entrega_${planOrigen}_${r.ce}${cam === '2' ? '_camion2' : ''}_${isoLocal(hoy00())}.xlsx`, Number(cam) || null);
     }));
     stage.querySelectorAll('[data-descarga]').forEach(btn => btn.addEventListener('click', (e) => {
       e.stopPropagation();
