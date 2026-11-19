@@ -15,9 +15,9 @@
 //   mapa con pin arrastrable, búsqueda de dirección y datos de contacto
 //   (nombre, teléfono y correo opcional).
 // ============================================================================
-import { supabase } from './supabase-client.js?v=202611181936';
+import { supabase } from './supabase-client.js?v=202611182136';
 import { loadLeaflet, escapeHtml as esc } from './utils.js';
-import { can } from './permisos.js?v=202611181936';
+import { can } from './permisos.js?v=202611182136';
 
 export const GEO = {
   PENDIENTE:  { txt: 'Pendiente',           largo: 'Pendiente de georreferenciar (automático en curso)', color: '#6b7280', bg: '#f3f4f6', ink: '#374151', icon: 'hourglass_top', falta: true },
@@ -188,13 +188,14 @@ export async function abrirEditorObra(idObra, opts = {}) {
    ════════════════════════════════════════════════════════════════════════ */
 const V = { obras: [], clientes: [], tab: 'obras', q: '', est: 'falta', soloDespacho: true, pag: 0 };
 let vroot = null;
-export async function renderMaestroObras(stage) {
+export async function renderMaestroObras(stage, sub = 'obras') {
   estilos();
+  V.tab = sub === 'clientes' ? 'clientes' : 'obras'; V.pag = 0;
   stage.innerHTML = `<div class="mo-v">
     <header class="mo-v-top">
       <div class="mo-h-ic">${ms('apartment')}</div>
-      <div style="margin-right:auto"><div class="mo-h-t">Obras y Clientes</div><div class="mo-h-s">Se cargan solas desde SAP y se georreferencian automáticamente; las que no se encuentran quedan para ubicar a mano.</div></div>
-      <nav class="mo-tabs"><button data-tab="obras" class="is-on">${ms('apartment')}Obras</button><button data-tab="clientes">${ms('groups')}Clientes</button></nav>
+      <div style="margin-right:auto"><div class="mo-h-t">Socios de Negocios · Obras y Clientes</div><div class="mo-h-s">Se cargan solas desde SAP y se georreferencian automáticamente; las que no se encuentran quedan para ubicar a mano.</div></div>
+      <nav class="mo-tabs"><button data-tab="obras" class="${V.tab === 'obras' ? 'is-on' : ''}">${ms('apartment')}Obras</button><button data-tab="clientes" class="${V.tab === 'clientes' ? 'is-on' : ''}">${ms('groups')}Clientes</button></nav>
     </header>
     <div class="mo-v-bar">
       <label class="mo-search" style="flex:1;max-width:420px">${ms('search')}<input data-q placeholder="Obra, cliente, dirección, comuna, contacto…"></label>

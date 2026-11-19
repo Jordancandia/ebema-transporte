@@ -27,7 +27,7 @@ const TRONCALES_PLANIF = [
   'abastecimiento:ind_plan_carga',   // (24-oct-2026) control_diferencias deshabilitada
 ];
 const TRONCALES = [...TRONCALES_CONFIG, ...TRONCALES_ORDEN, ...TRONCALES_PLANIF];
-const MAESTROS = ['proveedores', 'rutas', 'productos', 'maestro-obras'];
+const MAESTROS = ['proveedores', 'rutas', 'productos', 'socios-negocios'];
 
 // Privilegios de la planilla → acciones de la plataforma
 //   VISUALIZAR: base de todos (descarga del Plan de Carga incluida, como hasta ahora)
@@ -184,7 +184,11 @@ export function esSoloLectura() { return !can('editar'); }
 
 // ── Menú ────────────────────────────────────────────────────────────────────
 // key: 'home' | 'proveedores' (grupo) | 'abastecimiento:plan_carga' (pestaña)
+// (18-nov-2026, Jordan) Transportistas/Flota/Conductores pasaron de 'proveedores' a Gestión de Recursos ›
+// Socios de Negocios: quien tenía 'proveedores' (perfil o vista extra) los sigue viendo.
+const SUBS_TRANSPORTE = ['transportistas', 'flota', 'conductores'];
 function _match(m, grupoOTab, sub) {
+  if (grupoOTab === 'socios-negocios' && m.includes('proveedores') && (sub == null || SUBS_TRANSPORTE.includes(sub))) return true;
   if (m.includes(grupoOTab)) return true;
   if (sub != null && m.includes(`${grupoOTab}:${sub}`)) return true;
   if (sub == null && m.some(k => k.startsWith(grupoOTab + ':'))) return true; // grupo con alguna pestaña visible
@@ -264,7 +268,8 @@ export const VISTAS_CATALOGO = [
   { modulo: 'Gestión Troncales · Planificación', items: [['abastecimiento:plan_carga', 'Plan de Carga'], ['abastecimiento:seguimiento_carga', 'Seguimiento de Carga'], ['abastecimiento:ind_plan_carga', 'Indicadores Plan de Carga']] },
   { modulo: 'Flete Tercero / Indicadores', items: [['flete-tercero', 'Flete Tercero (Seguimiento)'], ['indicadores', 'Indicadores (Reportes)']] },
   { modulo: 'Tarifas', items: [['tarifas-transporte', 'Tarifas Transporte'], ['tarifas-clientes', 'Tarifas Clientes']] },
-  { modulo: 'Maestros', items: [['proveedores', 'Proveedores'], ['rutas', 'Rutas'], ['productos', 'Productos'], ['maestro-obras', 'Obras y Clientes']] },
+  { modulo: 'Torre de Control · Gestión de Recursos (Socios de Negocios)', items: [['socios-negocios:transportistas', 'Transportistas'], ['socios-negocios:flota', 'Flota Camiones'], ['socios-negocios:conductores', 'Conductores'], ['socios-negocios:obras', 'Obras'], ['socios-negocios:clientes', 'Clientes']] },
+  { modulo: 'Maestros', items: [['proveedores', 'Proveedores (Fábricas)'], ['rutas', 'Rutas'], ['productos', 'Productos']] },
   { modulo: 'Torre de Control', items: [['monitor-consolidacion', 'Monitor de Pedidos']] },
   { modulo: 'Portería (CD Quilicura)', items: [['porteria:registro', 'Control Puerta'], ['porteria:alertas', 'Monitor de Operaciones'], ['porteria:indicadores', 'Indicadores de Portería']] },
   { modulo: 'Administración', items: [['roles', 'Roles y Perfiles']] },
