@@ -10,13 +10,13 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611201545';
-import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611201545';
-import { getDatabase } from './data.js?v=202611201545';
+import { supabase } from './supabase-client.js?v=202611201602';
+import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611201602';
+import { getDatabase } from './data.js?v=202611201602';
 import { COMUNAS_POR_REGION } from './chile-geo.js';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611201545';
-import { confirmar, pedirDato } from './confirmar.js?v=202611201545';
+import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611201602';
+import { confirmar, pedirDato } from './confirmar.js?v=202611201602';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -1109,7 +1109,7 @@ async function wireObraGeo(panel, row, st, comunaRuta, draw) {
   const l = obrasDe(row);
   const ids = [...new Set(l.map(o => String(o.id || '').trim()).filter(Boolean))];
   if (!ids.length) return;
-  const m = await import('./maestro-obras.js?v=202611201545');
+  const m = await import('./maestro-obras.js?v=202611201602');
   const faltan = ids.filter(id => !_obrasMaestro.has(id));
   if (faltan.length) { try { (await m.cargarObras(faltan)).forEach((o, k) => _obrasMaestro.set(k, o)); faltan.forEach(id => { if (!_obrasMaestro.has(id)) _obrasMaestro.set(id, null); }); } catch (_e) { /* sin maestro */ } }
   panel.querySelectorAll('[data-geo-obra]').forEach(sp => { sp.innerHTML = m.badgeGeo(_obrasMaestro.get(sp.dataset.geoObra)); });
@@ -1311,6 +1311,14 @@ async function loadSinFondoPlan(origen) {
     if (error) throw error;
     (data || []).forEach(x => { if (x.accion === 'SUBIR_REEMPLAZO') out.ajuste.set(k(x), x); else out.ajuste.delete(k(x)); });
   } catch (e) { console.warn('Plan de carga: ajustes sin fondo no disponibles', e); }
+  // (20-nov-2026, Jordan) Desde las 15:10 el aviso a Logística marca NUEVA cada línea que entra al camión para reemplazar lo sin
+  // fondo (recalculo automático en cada barrido): en el Plan de Carga y en las vistas de pedidos se ve como «NUEVA POR AJUSTE».
+  try {
+    const { data, error } = await supabase.from('abast_plan_aviso_entregas').select('ce,documento,material,detectado_en')
+      .eq('fecha', isoLocal(hoy00())).eq('cd_origen', origen).eq('nueva', true);
+    if (error) throw error;
+    (data || []).forEach(x => { if (!out.ajuste.has(k(x))) out.ajuste.set(k(x), { ...x, accion: 'AVISO_NUEVA', usuario: 'automático', created_at: x.detectado_en }); });
+  } catch (e) { console.warn('Plan de carga: líneas nuevas del aviso no disponibles', e); }
   // (18-nov-2026, Jordan) RESERVA del aviso a Logística (R1, R2…): si Operaciones la suministra (tiene entrega) entra sola al camión.
   try {
     const { data, error } = await supabase.from('abast_plan_aviso_entregas').select('ce,documento,material,reserva_orden')
@@ -8677,7 +8685,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611201545');
+    const m = await import('./ind-plan-carga.js?v=202611201602');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
