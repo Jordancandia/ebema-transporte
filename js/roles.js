@@ -1,8 +1,8 @@
-import { getDatabase, saveDatabase, getCentreName } from './data.js?v=202611201029';
+import { getDatabase, saveDatabase, getCentreName } from './data.js?v=202611201101';
 import { showAlert, escapeHtml } from './utils.js';
-import { supabase } from './supabase-client.js?v=202611201029';
-import { ROLES_CON_CENTROS, PERFILES, ALIAS_PERFIL, ACCIONES_EXTRA, VISTAS_CATALOGO, perfilVeMenu, esOwner, can, TODOS_CENTROS } from './permisos.js?v=202611201029';
-import { confirmar } from './confirmar.js?v=202611201029';
+import { supabase } from './supabase-client.js?v=202611201101';
+import { ROLES_CON_CENTROS, PERFILES, ALIAS_PERFIL, ACCIONES_EXTRA, VISTAS_CATALOGO, perfilVeMenu, esOwner, can, TODOS_CENTROS } from './permisos.js?v=202611201101';
+import { confirmar } from './confirmar.js?v=202611201101';
 
 // --- Perfiles de Acceso (Roles y Perfiles + Row Level Security) ---
 // 5 perfiles canónicos. Cada uno determina qué puede ver/editar el usuario
@@ -38,7 +38,7 @@ const ROLE_DESCRIPTIONS = {
   'CONTROL_PUERTA': 'Sólo Portería · Control Puerta del centro asignado (1003): registra llegadas, ingresos, salidas, pesos, guías y retornos. Edita, no borra.',
   'JEFE_SUCURSAL': 'Sus centros: Home, Cotizador, Gestión Troncales, Flete Tercero, Indicadores y Tarifas Clientes. Comenta (sin edición).',
   'JEFE_CATEGORIA': 'Todos los centros: Home, Gestión Troncales e Indicadores. Comenta (sin edición).',
-  'VENDEDOR': 'Sus centros: Home, Cotizador Despacho y Planificación de Gestión Troncales. Solo visualización.',
+  'VENDEDOR': 'Sólo Cotizador Despacho: puede cotizar. No ve ninguna otra vista.',
   'TRANSPORTISTA': 'Ve el estado de sus camiones, cuenta bancaria asociada, transportes y choferes. Edita solo lo que está en su perfil.',
   'CHOFER': 'Ve el estado de su camión asignado, datos del transporte y sus datos personales (nombre, RUT, correo, teléfono, licencia y carnet).'
 };

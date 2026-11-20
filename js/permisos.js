@@ -109,11 +109,14 @@ export const PERFILES = {
     privilegios: ['COMENTAR'],
     acciones: [...P_VISUALIZAR, ...P_COMENTAR],
   },
+  // (20-nov-2026, Jordan) Vendedor: SÓLO Cotizador Despacho (cotizar). Sin Home, sin Gestión Troncales y sin
+  // ninguna acción (tampoco descargar el Plan de Carga). En BD la política restrictiva vendedor_solo_cotizador
+  // le bloquea todas las tablas salvo las que usa el cotizador (supabase/sql/2026-11-20_vendedor_solo_cotizador.sql).
   VENDEDOR: {
     label: 'Vendedor', clase: 'AGENTE_COMERCIAL', alcance: 'CENTROS',
-    menu: ['home', 'rates', ...TRONCALES_PLANIF],
+    menu: ['rates'],
     privilegios: ['VISUALIZAR'],
-    acciones: [...P_VISUALIZAR],
+    acciones: [],
   },
   // (1-nov-2026, Jordan) Control puerta del CD Quilicura: entra a la plataforma y sólo ve
   // Portería → Control Puerta, donde registra y edita las visitas (llegada, ingreso, salida,
