@@ -10,13 +10,13 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611201452';
-import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611201452';
-import { getDatabase } from './data.js?v=202611201452';
+import { supabase } from './supabase-client.js?v=202611201459';
+import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611201459';
+import { getDatabase } from './data.js?v=202611201459';
 import { COMUNAS_POR_REGION } from './chile-geo.js';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611201452';
-import { confirmar, pedirDato } from './confirmar.js?v=202611201452';
+import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611201459';
+import { confirmar, pedirDato } from './confirmar.js?v=202611201459';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -1109,7 +1109,7 @@ async function wireObraGeo(panel, row, st, comunaRuta, draw) {
   const l = obrasDe(row);
   const ids = [...new Set(l.map(o => String(o.id || '').trim()).filter(Boolean))];
   if (!ids.length) return;
-  const m = await import('./maestro-obras.js?v=202611201452');
+  const m = await import('./maestro-obras.js?v=202611201459');
   const faltan = ids.filter(id => !_obrasMaestro.has(id));
   if (faltan.length) { try { (await m.cargarObras(faltan)).forEach((o, k) => _obrasMaestro.set(k, o)); faltan.forEach(id => { if (!_obrasMaestro.has(id)) _obrasMaestro.set(id, null); }); } catch (_e) { /* sin maestro */ } }
   panel.querySelectorAll('[data-geo-obra]').forEach(sp => { sp.innerHTML = m.badgeGeo(_obrasMaestro.get(sp.dataset.geoObra)); });
@@ -8677,7 +8677,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611201452');
+    const m = await import('./ind-plan-carga.js?v=202611201459');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -12068,8 +12068,8 @@ async function renderPlanCargaCore(stage, opts = {}) {
         ton > r.cap + 0.05 ? ['Sobrecarga', `<span style="color:#b5000b;font-weight:700">⚠ ${t1(ton - r.cap)} t sobre la capacidad · se puede programar igual</span>`] : null,
       ])
       + (p ? progHtml(r, k) : (btns.length ? `<div class="pc-extra pc-seg2" style="background:#f5f3ff;border-color:#c4b5fd"><span class="material-symbols-outlined" style="color:#7c3aed">local_shipping</span><div style="flex:1;min-width:0"><b>${k}º camión · ${co ? 'transporte coordinado, sin programar' : porRegla ? `habilitado: el saldo supera el ${Math.round(UMBRAL_CAMION_EXTRA * 100)}% de un camión` : 'sin programar'}</b>${co
-        ? `Carga ${escapeHtml(cap1(diaCorto(parseISODate(co.fecha_carga) || diaObj(r))))}${presLinea(co)} · Patente ${escapeHtml(co.patente_camion || '')} · ${escapeHtml([co.id_transporte, co.transportista].filter(Boolean).join(' · '))}<br><small style="color:#5c5f61">La carga sigue actualizándose hasta que se programe. No lo programa el cierre automático de las ${HHMM_CIERRE}.</small>`
-        : `Ajusta la carga y coordina o programa el transporte con su día de carga (Sáb, Lun, Mar…). No lo programa el cierre automático de las ${HHMM_CIERRE}.`}</div><div class="pc-av-btns">${btns.join('')}</div></div>` : ''))
+        ? `Carga ${escapeHtml(cap1(diaCorto(parseISODate(co.fecha_carga) || diaObj(r))))}${presLinea(co)} · Patente ${escapeHtml(co.patente_camion || '')} · ${escapeHtml([co.id_transporte, co.transportista].filter(Boolean).join(' · '))}<br><small style="color:#5c5f61">La carga sigue actualizándose hasta que se programe. Si está coordinado con 85% o más, el cierre de las ${HHMM_CIERRE} lo programa solo.</small>`
+        : `Ajusta la carga y coordina o programa el transporte con su día de carga (Sáb, Lun, Mar…). Si está coordinado con 85% o más, el cierre de las ${HHMM_CIERRE} lo programa solo.`}</div><div class="pc-av-btns">${btns.join('')}</div></div>` : ''))
       + (grupos || '<div class="sv-note-box">Sin carga todavía: sube líneas desde «Sin camión», el camión CD o el 2º camión.</div>')
       + (saldo ? `<div class="sv-sub" style="margin:14px 0 6px;max-width:none;font-weight:700">Disponible sin camión (no cabe en los anteriores)</div>${saldo}` : '')
       + (p ? extraAgregarHtml(r) : '');
