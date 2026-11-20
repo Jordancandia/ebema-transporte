@@ -10,13 +10,13 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611201443';
-import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611201443';
-import { getDatabase } from './data.js?v=202611201443';
+import { supabase } from './supabase-client.js?v=202611201452';
+import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611201452';
+import { getDatabase } from './data.js?v=202611201452';
 import { COMUNAS_POR_REGION } from './chile-geo.js';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611201443';
-import { confirmar, pedirDato } from './confirmar.js?v=202611201443';
+import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611201452';
+import { confirmar, pedirDato } from './confirmar.js?v=202611201452';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -1109,7 +1109,7 @@ async function wireObraGeo(panel, row, st, comunaRuta, draw) {
   const l = obrasDe(row);
   const ids = [...new Set(l.map(o => String(o.id || '').trim()).filter(Boolean))];
   if (!ids.length) return;
-  const m = await import('./maestro-obras.js?v=202611201443');
+  const m = await import('./maestro-obras.js?v=202611201452');
   const faltan = ids.filter(id => !_obrasMaestro.has(id));
   if (faltan.length) { try { (await m.cargarObras(faltan)).forEach((o, k) => _obrasMaestro.set(k, o)); faltan.forEach(id => { if (!_obrasMaestro.has(id)) _obrasMaestro.set(id, null); }); } catch (_e) { /* sin maestro */ } }
   panel.querySelectorAll('[data-geo-obra]').forEach(sp => { sp.innerHTML = m.badgeGeo(_obrasMaestro.get(sp.dataset.geoObra)); });
@@ -6610,7 +6610,7 @@ function agruparSeguimiento(rows, dtRows, ajustes, clientes, transp) {
   // Coordinaciones (COORD|…): se ocultan las líneas cuyo documento ya va en un camión programado del plan,
   // y las de un mismo camión (misma patente, tipo y fecha de carga) se juntan en uno.
   const esCoord = r => String(r.clave || '').startsWith('COORD|');
-  const docsPlan = new Set(rows.filter(r => !esCoord(r)).map(r => String(r.documento ?? '').trim()).filter(Boolean));
+  const docsPlan = new Set(rows.filter(r => !esCoord(r) && !r._previsto).map(r => String(r.documento ?? '').trim()).filter(Boolean));
   rows = rows.filter(r => !esCoord(r) || !docsPlan.has(String(r.documento ?? '').trim()));
   // (4-nov-2026, Jordan) Un mismo camión y día de carga va en UNA sola posición: la coordinación suelta (COORD|…) cuyo
   // centro, tipo, patente y día de carga coinciden con un camión directo del plan (patente|n) se junta con él, aunque
@@ -6694,13 +6694,14 @@ function agruparSeguimiento(rows, dtRows, ajustes, clientes, transp) {
     // (8-oct-2026, Jordan) Cada coordinación va en su propia posición (fila), aunque comparta
     // transportista, chofer o patente con otra; los camiones del plan siguen agrupados por centro destino.
     // (8-oct-2026, Jordan) Camiones del mismo centro con distinto día de carga van en filas separadas.
-    const k = `${r.fecha_plan}|${String(r.cd_origen ?? '').trim()}|${ce}|${r.fecha_carga || ''}` + (co ? `|${r.tipo_camion}|${r.clave}` : '');
+    const k = `${r.fecha_plan}|${String(r.cd_origen ?? '').trim()}|${ce}|${r.fecha_carga || ''}` + (co ? `|${r.tipo_camion}|${r.clave}` : '') + (r._previsto ? '|PREV' : '');
     if (!grupos.has(k)) grupos.set(k, { id: k, fecha_plan: r.fecha_plan, cd_origen: r.cd_origen, origen: r.origen, ce, _lineas: [], _cams: new Map(),
       _coordRow: co, _coordDoc: co ? String(r.clave).slice(6) : '', _coordTipo: co ? r.tipo_camion : '' });
     const g = grupos.get(k);
     g._lineas.push(r);
-    const kc = co ? `C|${r.tipo_camion}|${r.clave}` : `${r.tipo_camion}|${r.clave}`;
-    if (!g._cams.has(kc)) g._cams.set(kc, { tipo: r.tipo_camion, clave: r.clave, coord: co, dir: !['Camión CD', '2º camión'].includes(r.tipo_camion),
+    if (r._previsto) g._previsto = true;
+    const kc = (co ? `C|${r.tipo_camion}|${r.clave}` : `${r.tipo_camion}|${r.clave}`) + (r._previsto ? '|PREV' : '');
+    if (!g._cams.has(kc)) g._cams.set(kc, { tipo: r.tipo_camion, clave: r.clave, coord: co, previsto: !!r._previsto, dir: !['Camión CD', '2º camión'].includes(r.tipo_camion),
       fecha_carga: r.fecha_carga, destino: r.destino, origen: r.origen, id_transporte: r.id_transporte, transportista: r.transportista,
       transportista_rut: (transp && transp.get(String(r.id_transporte ?? '').trim())) || '',
       chofer_nombre: r.chofer_nombre, chofer_rut: r.chofer_rut, chofer_telefono: r.chofer_telefono, patente_camion: r.patente_camion, patente_carro: r.patente_carro,
@@ -6721,7 +6722,7 @@ function agruparSeguimiento(rows, dtRows, ajustes, clientes, transp) {
       c.dts.forEach(d => d.lineas.forEach(x => { const mt = String(x.material ?? '').trim(); if (!matDt.has(mt)) matDt.set(mt, new Set()); matDt.get(mt).add(d.transporte); }));
       c.lineas.forEach(x => { x.dt = [...(matDt.get(String(x.material ?? '').trim()) || [])].join(' / '); x._cargadoDt = matDt.has(String(x.material ?? '').trim()); });
       c.nSinDt = c.dts.length ? new Set(c.lineas.filter(x => !x._cargadoDt).map(x => String(x.material ?? '').trim())).size : 0;
-      c.cat = segCategoria(c, g); c.lbl = SEG_CAT[c.cat];
+      c.cat = segCategoria(c, g); c.lbl = SEG_CAT[c.cat] + (c.previsto ? ' · PREVISTO (coordinado, sin programar)' : '');
       { const tr = [...new Set(c.lineas.map(x => x._tipoOrig).filter(Boolean))];   // (11-nov-2026) camión mixto
         if (tr.length > 1) { c.mixto = tr; c.lbl = 'Camión mixto · ' + tr.map(t => t === 'Retiro FAB-CD' ? 'Retiro de fábrica' : t).join(' + '); } }
       c.clientes = clientesCamionSeg(c, clientes);
@@ -6757,6 +6758,7 @@ function puedeAnularCoordSeg(r) {
 // (8-oct-2026, Jordan) Editar datos de transporte (y día de carga) desde Seguimiento de Carga.
 // Camión CD / 2º → abast_plan_camion_programado (perfil OWNER); coordinaciones → su tabla de origen.
 function puedeEditarTranspSeg(r, c) {
+  if (c.previsto) return false;   // (20-nov-2026) previsto: se gestiona en el Plan de Carga
   if (c.coord) return puedeAnularCoordSeg(r);
   // (19-oct-2026, Jordan) Camión directo programado (CD-Cliente, Fábrica-Cliente / Sucursal, retiros): el
   // pedido queda bloqueado en su vista de origen, así que el transporte se edita desde aquí.
@@ -6923,6 +6925,29 @@ async function anularCoordDesdeSeguimiento(r) {
 }
 // Foto de cada camión programado (camión CD, 2º camión y directos con transporte):
 // una fila por línea cargada, con su camión y transportista.
+// (20-nov-2026, Jordan) Camiones PREVISTOS: coordinados con transporte en el Plan de Carga de hoy, aún sin programar.
+// Se muestran con su carga actual (la que guarda el Plan de Carga); no tienen acciones (no son camiones programados).
+async function cargarPrevistosSeg() {
+  try {
+    // Vigentes: del plan de hoy, o de un plan anterior cuya fecha de carga aún no pasa (p. ej. coordinado el viernes para el lunes).
+    const hoyP = isoLocal(hoy00());
+    const { data, error } = await supabase.from('abast_seguimiento_previsto').select('*').gte('fecha_plan', isoLocal(new Date(hoy00().getTime() - 10 * 864e5)));
+    if (error) throw error;
+    const out = [];
+    (data || []).forEach((x, i) => {
+      const c = x.cab || {};
+      const fc = String(c.fecha_carga || '').slice(0, 10);
+      if (!(String(x.fecha_plan) === hoyP || (fc && fc >= hoyP))) return;
+      (x.lineas || []).forEach((l, j) => out.push({ ...l, id: `prev-${i}-${j}`, camion_id: null, _previsto: true,
+        fecha_plan: x.fecha_plan, fecha_carga: c.fecha_carga || null, cd_origen: x.cd_origen, ce: x.ce, tipo_camion: c.tipo_camion, clave: c.clave,
+        origen: c.origen, destino: c.destino, ton_camion: c.ton, cap: c.cap, pct_camion: c.pct, id_transporte: c.id_transporte, transportista: c.transportista,
+        chofer_nombre: c.chofer_nombre, chofer_rut: c.chofer_rut, chofer_telefono: c.chofer_telefono, patente_camion: c.patente_camion, patente_carro: c.patente_carro,
+        programado_por: c.programado_por || 'PREVISTO', programado_en: x.actualizado_en, actualizado_en: x.actualizado_en,
+        bloque_presentacion: c.bloque_presentacion ?? null, hora_presentacion: c.hora_presentacion || null }));
+    });
+    return filtrarPorCentro(out, 'ce');
+  } catch (e) { console.warn('Seguimiento: camiones previstos no disponibles', e); return []; }
+}
 VISTAS_TRONCAL.seguimiento_carga = {
   titulo: 'GESTIÓN TRONCALES – SEGUIMIENTO DE CARGA',
   vista: 'v_abast_seguimiento_carga',
@@ -6946,10 +6971,11 @@ VISTAS_TRONCAL.seguimiento_carga = {
       ((ct && ct.data) || []).forEach(x => clientes.set(String(x.doc_compr ?? '').trim(), x));
       ((cp4 && cp4.data) || []).forEach(x => clientes.set(String(x.documento ?? '').trim(), x));   // (18-oct-2026) PV Stock 4000
       await Promise.all([cargarAjustesCargaSeg(), cargarSaldosSeg()]);   // (19-oct-2026) historial de «Editar carga» · (24-oct-2026) saldos activados
-      return { dt, ajustes: (aj && aj.data) || [], clientes, transp };
+      const previstos = await cargarPrevistosSeg();   // (20-nov-2026) camiones coordinados sin programar
+      return { dt, ajustes: (aj && aj.data) || [], clientes, transp, previstos };
     } catch (e) { console.warn('Seguimiento: DT no disponible', e); return { dt: [], ajustes: [], clientes: new Map(), transp: new Map() }; }
   },
-  transform: (rows, ctx) => agruparSeguimiento(rows, ctx && ctx.dt, ctx && ctx.ajustes, ctx && ctx.clientes, ctx && ctx.transp),
+  transform: (rows, ctx) => agruparSeguimiento(rows.concat((ctx && ctx.previstos) || []), ctx && ctx.dt, ctx && ctx.ajustes, ctx && ctx.clientes, ctx && ctx.transp),
   csvFilas: grupos => grupos.flatMap(g => g._lineas),
   columnas: [
     { key: 'fecha_plan', label: 'Fecha Planificación' }, { key: 'fecha_carga', label: 'Fecha Carga' },
@@ -7217,13 +7243,13 @@ const planCerradoSeg = r => String(r.fecha_plan || '') < isoLocal(hoy00());
 // (28-oct-2026, Jordan) Descarga «Plan vs DT» de cada camión desde su detalle (todos los usuarios con la vista).
 function accionesDescargaSeg(r) {
   const varios = r.camiones.length > 1, f = v => String(v ?? '').replace(/[^\w-]+/g, '');
-  return r.camiones.filter(c => c.res).map(c => ({
+  return r.camiones.filter(c => c.res && !c.previsto).map(c => ({
     label: `Descargar plan vs DT${varios ? ' · ' + c.lbl + (c.patente_camion ? ' ' + c.patente_camion : '') : ''}`, icon: 'difference',
     title: 'CSV de este camión: planificado, DT, cargado y diferencias por SKU',
     run: async () => { descargarPlanVsDtSeg([{ ...r, camiones: [c], _fechasCarga: [c.fecha_carga || r.fecha_carga].filter(Boolean) }],
       `Plan_vs_DT_${f(r.ce)}_${f(c.tipo)}_${f(c.patente_camion || 'SINPATENTE')}_${f(c.fecha_carga || r.fecha_carga)}.csv`); return null; } }))
     // (19-nov-2026, Jordan) Lista de picking del camión, igual a la del Plan de Carga.
-    .concat(r.camiones.filter(c => (c.camionIds || []).length).map(c => ({
+    .concat(r.camiones.filter(c => !c.previsto && (c.camionIds || []).filter(Boolean).length).map(c => ({
       label: `Lista de picking (Excel)${varios ? ' · ' + c.lbl + (c.patente_camion ? ' ' + c.patente_camion : '') : ''}`, icon: 'assignment',
       title: 'Excel con lo que va en el camión: REVEX, pedidos de venta, retiros, pedidos de traslado y crossdocking, con priorizados y facturables',
       run: async () => {
@@ -7237,7 +7263,7 @@ function accionesDescargaSeg(r) {
 function accionesEditarCargaSeg(r) {
   if (!can('editar_carga_seguimiento')) return [];   // OWNER y Planner Distribución, plan cerrado o del día
   const varios = r.camiones.length > 1;
-  return r.camiones.filter(c => (c.camionIds || []).length).map(c => ({
+  return r.camiones.filter(c => !c.previsto && (c.camionIds || []).filter(Boolean).length).map(c => ({
     label: `Editar carga${varios ? ' · ' + c.lbl : ''}`, icon: 'swap_horiz',
     title: `Quitar o agregar pedidos / entregas a este camión${planCerradoSeg(r) ? ' (plan cerrado)' : ' (programado hoy)'}`, run: async () => {
       const ok = await showEditarCargaModal(r, c);
@@ -7417,7 +7443,7 @@ function showEditarCargaModal(r, c) {
 function accionesSaldoSeg(r) {
   if (!can('activar_saldo')) return [];
   const varios = r.camiones.length > 1;
-  return r.camiones.filter(c => (c.lineas || []).length).map(c => ({
+  return r.camiones.filter(c => !c.previsto && (c.lineas || []).length).map(c => ({
     label: `Activar saldo${varios ? ' · ' + c.lbl : ''}`, icon: 'replay', run: async () => {
       const ok = await showActivarSaldoModal(r, c);
       if (!ok) return null;
@@ -7517,6 +7543,7 @@ function accionesDtSeg(r) {
   if (!can('editar_dt_seguimiento')) return [];
   const acc = [], varios = r.camiones.length > 1;
   r.camiones.forEach(c => {
+    if (c.previsto) return;   // (20-nov-2026) previsto: sin DT
     const id = c.camionIds[0], suf = varios ? ` · ${c.lbl}` : '';
     c.dts.forEach(d => {
       if (dtRevisar(d)) acc.push({ label: `Confirmar DT ${d.transporte}${suf}`, icon: 'task_alt', primary: true, run: async () => {
@@ -8650,7 +8677,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611201443');
+    const m = await import('./ind-plan-carga.js?v=202611201452');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -11248,6 +11275,8 @@ async function renderPlanCargaCore(stage, opts = {}) {
       r.extras = [...(r.extras || []), cam].sort((a, b) => a - b);
     }
     await leerCoordinados();
+    refrescarFill(r);
+    await guardarPrevisto(r, cam);   // (20-nov-2026) visible en Seguimiento de Carga como PREVISTO
     showAlert(`Transporte del ${nom.toLowerCase()} de ${r.nombre} coordinado (${t.patente_camion}). Falta programarlo (Owner o Planner Distribución); la carga sigue actualizándose.`, 'success');
     draw();
   }
@@ -12484,8 +12513,8 @@ async function renderPlanCargaCore(stage, opts = {}) {
     n_entrega: String(d.entrega || d.entrega_entrante || ''), material: String(d.material ?? ''), nombre: d.nombre || '',
     cantidad: r4(tipo === 'X' ? d.ctdPend : parseNum(tipo === 'T' ? d.ctd : d.cant)), ton: r4(d.ton), ton_bruta: d.tonBruto == null ? null : r4(d.tonBruto),
     pedido_venta: String(d.pv ?? ''), ruta: d.ruta || '', comuna: d.comuna || '', proveedor: tipo === 'R' ? (d.prov || '') : '', cliente: d.cliente || '' });
-  function segCamionCD(r, cam) {
-    const p = progMap.get(`${r.ce}|${cam}`);
+  function segCamionCD(r, cam, pIn = null) {
+    const p = pIn || progMap.get(`${r.ce}|${cam}`);
     if (!p) return null;
     marcarCapacidadCD(r);
     const lineas = [];
@@ -12496,6 +12525,22 @@ async function renderPlanCargaCore(stage, opts = {}) {
       id_transporte: p.id_transporte || '', transportista: p.transportista || '', chofer_nombre: p.chofer_nombre || '', chofer_rut: p.chofer_rut || '',
       chofer_telefono: p.chofer_telefono || '', patente_camion: p.patente_camion || '', patente_carro: p.patente_carro || '',
       bloque_presentacion: p.bloque_presentacion ?? null, hora_presentacion: p.hora_presentacion || null }, lineas };
+  }
+  // (20-nov-2026, Jordan) Camión con transporte COORDINADO (sin programar) → Seguimiento de Carga como PREVISTO,
+  // con su carga actual (abast_seguimiento_previsto). Al programarlo o quitar la coordinación sale solo (triggers en BD).
+  function segPrevisto(r, cam) {
+    if (progMap.get(`${r.ce}|${cam}`)) return null;
+    const co = coordMap.get(`${r.ce}|${cam}`);
+    if (!co) return null;
+    const sg = segCamionCD(r, cam, co);
+    if (!sg || !sg.lineas.length) return null;
+    return { fecha_plan: hoyIsoPlan, cd_origen: planOrigen, ce: r.ce, camion: cam, cab: { ...sg.cab, programado_por: 'PREVISTO · coordinado por ' + (co.coordinado_por || '') }, lineas: sg.lineas };
+  }
+  async function guardarPrevisto(r, cam) {
+    const pv = segPrevisto(r, cam);
+    if (!pv) return;
+    const { error } = await supabase.from('abast_seguimiento_previsto').upsert({ ...pv, actualizado_por: await getUserEmail(), actualizado_en: new Date().toISOString() }, { onConflict: 'fecha_plan,cd_origen,ce,camion' });
+    if (error) console.warn('Seguimiento: no se pudo guardar el camión previsto', error.message);
   }
   function segDirectos(r) {
     const out = [];
@@ -12579,6 +12624,19 @@ async function renderPlanCargaCore(stage, opts = {}) {
       cs.forEach(c => { const pg = progMap.get(`${r.ce}|${c.cam}`); if (pg && Array.isArray(pg.lineas) && pg.lineas.length) return;   // foto ya tomada
         const kc = `${k}|${c.cam}`, sc = JSON.stringify(c); if (memo.get(kc) !== sc) cams.push({ k: kc, sig: sc, ce: r.ce, c }); });
     });
+    // (20-nov-2026, Jordan) Camiones coordinados sin programar: carga actual en Seguimiento como PREVISTO.
+    const prevs = [];
+    resultado.forEach(r => [1, 2, ...(r.camExtra || [])].forEach(cam => {
+      const pv = segPrevisto(r, cam); if (!pv) return;
+      const kp = `prev|${hoyIsoPlan}|${planOrigen}|${r.ce}|${cam}`, sp = JSON.stringify(pv);
+      if (memo.get(kp) !== sp) prevs.push({ k: kp, sig: sp, pv });
+    }));
+    if (prevs.length) {
+      const quienP = await getUserEmail();
+      const { error } = await supabase.from('abast_seguimiento_previsto').upsert(prevs.map(x => ({ ...x.pv, actualizado_por: quienP, actualizado_en: new Date().toISOString() })), { onConflict: 'fecha_plan,cd_origen,ce,camion' });
+      if (error) console.warn('Seguimiento: no se pudieron guardar los camiones previstos', error.message);
+      else prevs.forEach(x => memo.set(x.k, x.sig));
+    }
     if (!filas.length && !cams.length && !segs.length && !limp.length) return;
     const quien = await getUserEmail(), ahora = new Date().toISOString();
     if (filas.length) {
