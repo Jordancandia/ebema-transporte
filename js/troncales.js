@@ -1,6 +1,6 @@
-import { getDatabase, saveDatabase, getOrigenGroups } from './data.js?v=202611201602';
+import { getDatabase, saveDatabase, getOrigenGroups } from './data.js?v=202611202027';
 import { showAlert, escapeHtml } from './utils.js';
-import { confirmar } from './confirmar.js?v=202611201602';
+import { confirmar } from './confirmar.js?v=202611202027';
 
 const CAPACIDADES = ['5', '10', '15', '28'];
 

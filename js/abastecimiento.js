@@ -10,13 +10,13 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611201602';
-import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611201602';
-import { getDatabase } from './data.js?v=202611201602';
+import { supabase } from './supabase-client.js?v=202611202027';
+import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611202027';
+import { getDatabase } from './data.js?v=202611202027';
 import { COMUNAS_POR_REGION } from './chile-geo.js';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611201602';
-import { confirmar, pedirDato } from './confirmar.js?v=202611201602';
+import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611202027';
+import { confirmar, pedirDato } from './confirmar.js?v=202611202027';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -1109,7 +1109,7 @@ async function wireObraGeo(panel, row, st, comunaRuta, draw) {
   const l = obrasDe(row);
   const ids = [...new Set(l.map(o => String(o.id || '').trim()).filter(Boolean))];
   if (!ids.length) return;
-  const m = await import('./maestro-obras.js?v=202611201602');
+  const m = await import('./maestro-obras.js?v=202611202027');
   const faltan = ids.filter(id => !_obrasMaestro.has(id));
   if (faltan.length) { try { (await m.cargarObras(faltan)).forEach((o, k) => _obrasMaestro.set(k, o)); faltan.forEach(id => { if (!_obrasMaestro.has(id)) _obrasMaestro.set(id, null); }); } catch (_e) { /* sin maestro */ } }
   panel.querySelectorAll('[data-geo-obra]').forEach(sp => { sp.innerHTML = m.badgeGeo(_obrasMaestro.get(sp.dataset.geoObra)); });
@@ -7984,6 +7984,23 @@ async function descargarPickingCamion(filtros, nombreArchivo) {
   if (rSeg.error) { showAlert('No se pudo leer la carga del camión: ' + rSeg.error.message, 'error'); return; }
   const filas = (rSeg.data || []).filter(f => s(f.patente_camion));
   if (!filas.length) { showAlert('El camión todavía no tiene su carga registrada (programa el camión con su transporte y patente).', 'error'); return; }
+  // (20-nov-2026, Jordan) La foto del camión guarda la entrega que existía al programarlo: las entregas que Logística crea
+  // después (aviso 85% / reemplazos) se completan aquí con las vigentes de SAP (pedido de traslado + material).
+  {
+    const sinEnt = filas.filter(f => !s(f.n_entrega) && s(f.documento) && s(f.material));
+    const docsE = [...new Set(sinEnt.map(f => s(f.documento)))];
+    const mapE = new Map();
+    for (let i = 0; i < docsE.length; i += 150) {
+      const rE = await supabase.from('abast_entregas_dia').select('entrega,doc_modelo,material,cargado_en,descartada').in('doc_modelo', docsE.slice(i, i + 150)).limit(20000);
+      (rE.data || []).filter(x => !x.descartada).forEach(x => {
+        const k = `${s(x.doc_modelo)}|${s(x.material)}`, t = String(x.cargado_en || '');
+        const cur = mapE.get(k);
+        if (!cur || t > cur.t) mapE.set(k, { t, ents: new Set([s(x.entrega)]) });
+        else if (t === cur.t) cur.ents.add(s(x.entrega));
+      });
+    }
+    sinEnt.forEach(f => { const x = mapE.get(`${s(f.documento)}|${s(f.material)}`); if (x) f.n_entrega = [...x.ents].sort().join(','); });
+  }
   const fact = new Set((rPv.data || []).map(x => s(x.documento)));
   const prDoc = new Set(), prEnt = new Set();
   (rPr.data || []).forEach(p => (String(p.tipo || '').startsWith('ent_') ? prEnt : prDoc).add(`${s(p.documento)}|${s(p.material)}`));
@@ -8685,7 +8702,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611201602');
+    const m = await import('./ind-plan-carga.js?v=202611202027');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -11884,7 +11901,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
     else if (r.horizonte === 48) t.push(TAG('schedule', '48h', 'Horizonte 48h · ' + diaCorto(diaHabil2), 'h48'));
     // (el 2º camión se muestra como chip junto al estado de la fila; aquí sólo en el panel)
     if (r.segundoPropuesto && enPanel) t.push(segAcept.has(r.ce)
-      ? TAG('local_shipping', '2º camión programado', `2º camión aceptado (${t1(r.tonSegundo)} t): entra a la foto de las ${HHMM_CIERRE} y a los indicadores`, 'seg-ok')
+      ? TAG('local_shipping', progMap.get(`${r.ce}|2`) ? '2º camión programado' : coordMap.get(`${r.ce}|2`) ? '2º camión coordinado' : '2º camión aceptado', `2º camión aceptado (${t1(r.tonSegundo)} t): entra a la foto de las ${HHMM_CIERRE} y a los indicadores`, 'seg-ok')
       : TAG('warning', 'Carga 2º camión', `Lo que no cabe (${t1(r.excedente)} t) llega al 85% de un camión: se puede programar un 2º camión de ${t1(r.tonSegundo)} t`, 'extra'));
     if (r.tonClienteDiferido > 0) t.push(TAG('event_upcoming', 'CD-Cliente próximo', `CD-Cliente con fecha de entrega posterior: ${t1(r.tonClienteDiferido)} t`, 'h48'));
     // (15-oct-2026, Jordan) Pedidos/OC con PRIORIDAD de carga: alerta (roja si alguno queda fuera del camión CD).
