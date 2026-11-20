@@ -10,13 +10,13 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611200932';
-import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611200932';
-import { getDatabase } from './data.js?v=202611200932';
+import { supabase } from './supabase-client.js?v=202611201029';
+import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611201029';
+import { getDatabase } from './data.js?v=202611201029';
 import { COMUNAS_POR_REGION } from './chile-geo.js';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611200932';
-import { confirmar, pedirDato } from './confirmar.js?v=202611200932';
+import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611201029';
+import { confirmar, pedirDato } from './confirmar.js?v=202611201029';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -1109,7 +1109,7 @@ async function wireObraGeo(panel, row, st, comunaRuta, draw) {
   const l = obrasDe(row);
   const ids = [...new Set(l.map(o => String(o.id || '').trim()).filter(Boolean))];
   if (!ids.length) return;
-  const m = await import('./maestro-obras.js?v=202611200932');
+  const m = await import('./maestro-obras.js?v=202611201029');
   const faltan = ids.filter(id => !_obrasMaestro.has(id));
   if (faltan.length) { try { (await m.cargarObras(faltan)).forEach((o, k) => _obrasMaestro.set(k, o)); faltan.forEach(id => { if (!_obrasMaestro.has(id)) _obrasMaestro.set(id, null); }); } catch (_e) { /* sin maestro */ } }
   panel.querySelectorAll('[data-geo-obra]').forEach(sp => { sp.innerHTML = m.badgeGeo(_obrasMaestro.get(sp.dataset.geoObra)); });
@@ -3368,6 +3368,20 @@ function campoHoraPres(st, bad) {
 // (29-oct-2026) choque: { clave, docs } → bloquea si la patente ya tiene otra carga ese día de carga (validarPatenteDia).
 // (16-nov-2026 · fluidez) avisos: alertas de la carga (sobrecarga, bajo umbral) que se muestran en el panel y en la
 // confirmación final, en vez de un diálogo aparte antes de abrir el formulario.
+// (20-nov-2026, Jordan) Atajos de fecha de carga: próximos días desde mañana (sábado incluido, domingo no) hasta 2 días hábiles.
+function chipsFechaCarga(sel) {
+  const DS = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'], out = [];
+  const d = new Date(hoy00()); let habiles = 0;
+  for (let i = 0; i < 7 && habiles < 2; i++) {
+    d.setDate(d.getDate() + 1);
+    const dow = d.getDay();
+    if (dow === 0) continue;
+    if (dow !== 6) habiles++;
+    const iso = isoLocal(d), on = iso === String(sel || '').slice(0, 10);
+    out.push(`<button type="button" data-fc-chip="${iso}" style="font-size:11px;font-weight:700;padding:2px 8px;border-radius:999px;cursor:pointer;border:1px solid ${on ? '#b5000b' : '#c5c7c9'};background:${on ? '#b5000b' : '#fff'};color:${on ? '#fff' : '#1f2937'}">${DS[dow]} ${d.getDate()}</button>`);
+  }
+  return `<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:6px">${out.join('')}</div>`;
+}
 function showTransporteCamionModal({ titulo, sub, ini = {}, otros = [], fechaDef = '', modo = 'programar', presentacion = null, choque = null, avisos = [] }) {
   const RESV = modo === 'reservar';   // (16-nov-2026) reserva: transporte + día, sin carga amarrada
   const COORD = modo === 'coordinar' || RESV;
@@ -3506,6 +3520,7 @@ function showTransporteCamionModal({ titulo, sub, ini = {}, otros = [], fechaDef
           <div style="max-width:260px">${lbl('Fecha de carga', 'fechaCarga', true)}
             <label class="sv-inp" style="width:100%;box-sizing:border-box;${bad('fechaCarga') ? 'border-color:#b5000b' : ''}"><span class="material-symbols-outlined">event</span>
               <input type="date" data-k="fechaCarga" value="${escapeHtml(st.fechaCarga)}" style="width:100%;border:none;background:transparent;font:inherit;outline:none"></label>
+            ${chipsFechaCarga(st.fechaCarga)}
             ${fechaDef && st.fechaCarga && st.fechaCarga !== String(fechaDef).slice(0, 10) ? `<div class="sv-sub" style="margin:4px 0 0;color:#b45309">Distinto al día objetivo del plan (${escapeHtml(fmtFechaISO(fechaDef))}).</div>` : ''}</div>
           ${presHtml()}
           <div>
@@ -3540,6 +3555,8 @@ function showTransporteCamionModal({ titulo, sub, ini = {}, otros = [], fechaDef
       panel.querySelectorAll('[data-cx]').forEach(b => b.addEventListener('click', () => fin(null)));
       panel.querySelectorAll('[data-k]').forEach(i => i.addEventListener('input', () => { st[i.dataset.k] = i.value; }));
       panel.querySelector('[data-k="fechaCarga"]')?.addEventListener('change', async e => { st.fechaCarga = e.target.value; await cargarCupos(); draw(); });
+      // (20-nov-2026, Jordan) Atajos de día de carga (incluye sábado) para planificar fin de semana y lunes sin escribir la fecha.
+      panel.querySelectorAll('[data-fc-chip]').forEach(b => b.addEventListener('click', async () => { st.fechaCarga = b.dataset.fcChip; await cargarCupos(); draw(); }));
       panel.querySelectorAll('[data-bloque]').forEach(b => b.addEventListener('click', () => { if (b.disabled) return; st.bloque = Number(b.dataset.bloque); draw(); }));
       const wirePicks = () => panel.querySelectorAll('[data-tpick]').forEach(b => b.addEventListener('click', () => {
         const x = transDe(b.dataset.tpick);
@@ -8633,7 +8650,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611200932');
+    const m = await import('./ind-plan-carga.js?v=202611201029');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -11440,6 +11457,30 @@ async function renderPlanCargaCore(stage, opts = {}) {
     if (segAcept.has(ce)) await supabase.from('abast_plan_segundo_camion').update({ ton_propuesta: Math.round(r.tonSegundo * 10000) / 10000 }).eq('fecha', hoyIsoPlan).eq('cd_origen', planOrigen).eq('ce', ce);
     draw();
   }
+  // (20-nov-2026, Jordan) Mover un grupo completo de líneas (una sola operación). Sobrecarga: alerta, se permite.
+  async function moverLineas(ce, pares, cam) {
+    const r = resultado.find(x => x.ce === ce);
+    if (!r || bloqueadoPorCierre() || !(pares || []).length) return;
+    const f0 = refrescarFill(r), set = new Set(pares.map(([d, m]) => `${d}|${m}`));
+    const its = (f0.orden || []).filter(x => set.has(`${docLinea(x)}|${matLinea(x)}`));
+    const tonG = its.reduce((s, x) => s + (x.ton || 0), 0);
+    const nom = cam === 1 ? 'camión CD' : cam === 2 ? '2º camión' : 'No carga hoy';
+    let txt = `¿Mover ${pares.length} línea${pares.length > 1 ? 's' : ''} (${t1(tonG)} t) a ${nom}?`;
+    if (cam === 1 || cam === 2) {
+      const usado = cam === 1 ? (f0.cargado || 0) : (f0.tonSegundo || 0), libre = Math.max(0, r.cap - usado);
+      if (tonG > libre + 1e-6) txt += `\n\nATENCIÓN: quedan ${t1(libre)} t libres de ${fmtNum(r.cap, 0)} t; el ${nom} quedará sobre su capacidad (${t1(usado + tonG)} t).`;
+    }
+    if (!await confirmar(txt, { aceptar: 'Mover', icono: 'swap_horiz' })) return;
+    const quien = await getUserEmail(), ahora = new Date().toISOString();
+    const filas = pares.map(([d, m]) => ({ fecha: hoyIsoPlan, cd_origen: planOrigen, ce, documento: d, material: m, camion: Number(cam), origen: 'manual', updated_by: quien, updated_at: ahora }));
+    const { error } = await supabase.from('abast_plan_linea_camion').upsert(filas, { onConflict: 'fecha,cd_origen,ce,documento,material' });
+    if (error) { showAlert('No se pudieron mover las líneas: ' + error.message, 'error'); return; }
+    pares.forEach(([d, m]) => r.asig.set(`${d}|${m}`, Number(cam)));
+    refrescarFill(r);
+    if (segAcept.has(ce)) await supabase.from('abast_plan_segundo_camion').update({ ton_propuesta: Math.round(r.tonSegundo * 10000) / 10000 }).eq('fecha', hoyIsoPlan).eq('cd_origen', planOrigen).eq('ce', ce);
+    showAlert(`${pares.length} línea${pares.length > 1 ? 's' : ''} movida${pares.length > 1 ? 's' : ''} a ${nom}.`, 'success');
+    draw();
+  }
   // (12-oct-2026, Jordan) La línea no cabe: elegir qué bajar del camión CD (queda «No carga» hoy) para subirla.
   function bajarParaSubir(r, sube, f, libre, cam = 1) {
     return new Promise(resolve => {
@@ -11847,9 +11888,12 @@ async function renderPlanCargaCore(stage, opts = {}) {
         <td class="sv-mono">${escapeHtml(d.fecha || '')}</td><td class="r">${cant(d)}${d._ajustada ? `<div class="sv-sub" style="margin:0" title="Unidades editadas al coordinar">de ${fmtNum(d._pendSap, 0)}</div>` : ''}</td><td class="r"><b>${fmtNum(d.ton, 2)}</b></td>${accFn ? `<td class="r pc-acc" style="white-space:nowrap">${accFn(d)}</td>` : ''}</tr>`).join('')}</tbody></table></div>`;
   }
   const kv = pares => `<div class="pc-kv">${pares.filter(Boolean).map(([k, v]) => `<div><span>${escapeHtml(k)}</span><b>${v}</b></div>`).join('')}</div>`;
-  const grupoHtml = (color, titulo, items, tipo, accFn) => {
+  // (20-nov-2026, Jordan) bulk = { ce, opts: [[cam, etiqueta]] } → botones para mover todas las líneas del grupo de una vez.
+  const grupoHtml = (color, titulo, items, tipo, accFn, bulk) => {
     const ton = items.reduce((s, d) => s + (d.ton || 0), 0);
-    return `<div class="pc-grp"><div class="pc-grp-h"><i style="background:${color}"></i><b>${escapeHtml(titulo)}</b><small>${items.length} líneas · ${t1(ton)} t${(() => { const np = items.filter(esPrioCarga).length; return np ? ` · <span style="color:#15803d;font-weight:700">${np} prioritaria${np > 1 ? 's' : ''}</span>` : ''; })()}</small></div>${tablaItems(tipo, items, color, accFn)}</div>`;
+    const pares = bulk ? escapeHtml(JSON.stringify(items.map(d => [docLinea(d), matLinea(d)]))) : '';
+    const bb = bulk && accFn ? `<span style="margin-left:auto;display:inline-flex;gap:4px">${bulk.opts.map(([cam, lbl]) => `<button style="${MV_STYLE}" data-mover-grp="${escapeHtml(bulk.ce)}" data-cam="${cam}" data-lineas="${pares}" title="Mover las ${items.length} líneas de este grupo">${escapeHtml(lbl)}</button>`).join('')}</span>` : '';
+    return `<div class="pc-grp"><div class="pc-grp-h" style="display:flex;align-items:center;gap:6px"><i style="background:${color}"></i><b>${escapeHtml(titulo)}</b><small>${items.length} líneas · ${t1(ton)} t${(() => { const np = items.filter(esPrioCarga).length; return np ? ` · <span style="color:#15803d;font-weight:700">${np} prioritaria${np > 1 ? 's' : ''}</span>` : ''; })()}</small>${bb}</div>${tablaItems(tipo, items, color, accFn)}</div>`;
   };
   // (1-oct-2026) Botones para mover una línea entre camión CD, 2º camión y «no carga».
   const MV_STYLE = 'font-size:11px;font-weight:700;padding:1px 6px;margin-left:3px;border:1px solid #c5c7c9;border-radius:6px;background:#fff;cursor:pointer';
@@ -11896,7 +11940,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
       const noCabe = Math.max(0, fill.excede - r.tonSegundo);
       const accS = accMover(r, 'seg');
       // (16-nov-2026, Jordan) Las entregas del 2º camión se ven antes de aceptarlo (para decidir aceptar o no).
-      const grupos = CAT_V2.map((c, i) => { const it = (r.det[c.k] || []).filter(d => d._camion2); return it.length ? grupoHtml(c.color, CAT_LARGO[i], it, c.tipo, acept ? accS : null) : ''; }).join('');
+      const grupos = CAT_V2.map((c, i) => { const it = (r.det[c.k] || []).filter(d => d._camion2); return it.length ? grupoHtml(c.color, CAT_LARGO[i], it, c.tipo, acept ? accS : null, progMap.get(`${r.ce}|2`) ? null : { ce: r.ce, opts: [[1, 'Todo → CD'], [0, 'Sacar todo']] }) : ''; }).join('');
       const prog2 = !!progMap.get(`${r.ce}|2`);
       return kv([
           ['Carga', `${t1(r.tonSegundo)} t · ${pct2}%`], ['Capacidad', `${fmtNum(r.cap, 0)} t`],
@@ -11930,7 +11974,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
         + progHtml(r, 1)
         + segundoHtml(r, fill)
         // (4-oct-2026, Jordan) Sólo lo que va en el camión; lo que queda fuera se ve en el CSV.
-        + ((() => { const accC = accMover(r, 'cd'); return CAT_V2.map((c, i) => { const it = (r.det[c.k] || []).filter(d => d._enCamion); return it.length ? grupoHtml(c.color, CAT_LARGO[i], it, c.tipo, accC) : ''; }).join(''); })() || '<div class="sv-note-box">El camión CD no tiene carga para esta sucursal.</div>')
+        + ((() => { const accC = accMover(r, 'cd'); return CAT_V2.map((c, i) => { const it = (r.det[c.k] || []).filter(d => d._enCamion); return it.length ? grupoHtml(c.color, CAT_LARGO[i], it, c.tipo, accC, progMap.get(`${r.ce}|1`) ? null : { ce: r.ce, opts: [[2, 'Todo → 2º'], [0, 'Sacar todo']] }) : ''; }).join(''); })() || '<div class="sv-note-box">El camión CD no tiene carga para esta sucursal.</div>')
         // (15-oct-2026 21:51, Jordan) El detalle muestra SÓLO lo considerado que cumple la capacidad del camión;
         // lo que queda fuera no se muestra (sigue en el CSV descargable).
         ;
@@ -12526,6 +12570,11 @@ async function renderPlanCargaCore(stage, opts = {}) {
       showAlert(`2º camión no aceptado${r ? ' para ' + r.nombre : ''}: esas líneas quedan «No cabe» para el próximo plan.`, 'info');
     }));
     stage.querySelectorAll('[data-seg-directo]').forEach(b => b.addEventListener('click', async e => { e.stopPropagation(); b.disabled = true; try { await aceptarYProgramarSegundo(b.dataset.segDirecto); } finally { b.disabled = false; } }));
+    stage.querySelectorAll('[data-mover-grp]').forEach(b => b.addEventListener('click', async e => {
+      e.stopPropagation(); b.disabled = true;
+      let pares = []; try { pares = JSON.parse(b.dataset.lineas || '[]'); } catch (_) { /* nada */ }
+      try { await moverLineas(b.dataset.moverGrp, pares, Number(b.dataset.cam)); } finally { b.disabled = false; }
+    }));
     stage.querySelectorAll('[data-mover]').forEach(b => b.addEventListener('click', async e => {
       e.stopPropagation(); b.disabled = true;
       await moverLinea(b.dataset.mover, b.dataset.doc, b.dataset.mat, b.dataset.cam === 'auto' ? 'auto' : Number(b.dataset.cam));
