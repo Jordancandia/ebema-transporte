@@ -10,13 +10,13 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611191934';
-import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611191934';
-import { getDatabase } from './data.js?v=202611191934';
+import { supabase } from './supabase-client.js?v=202611200923';
+import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611200923';
+import { getDatabase } from './data.js?v=202611200923';
 import { COMUNAS_POR_REGION } from './chile-geo.js';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611191934';
-import { confirmar, pedirDato } from './confirmar.js?v=202611191934';
+import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611200923';
+import { confirmar, pedirDato } from './confirmar.js?v=202611200923';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -1109,7 +1109,7 @@ async function wireObraGeo(panel, row, st, comunaRuta, draw) {
   const l = obrasDe(row);
   const ids = [...new Set(l.map(o => String(o.id || '').trim()).filter(Boolean))];
   if (!ids.length) return;
-  const m = await import('./maestro-obras.js?v=202611191934');
+  const m = await import('./maestro-obras.js?v=202611200923');
   const faltan = ids.filter(id => !_obrasMaestro.has(id));
   if (faltan.length) { try { (await m.cargarObras(faltan)).forEach((o, k) => _obrasMaestro.set(k, o)); faltan.forEach(id => { if (!_obrasMaestro.has(id)) _obrasMaestro.set(id, null); }); } catch (_e) { /* sin maestro */ } }
   panel.querySelectorAll('[data-geo-obra]').forEach(sp => { sp.innerHTML = m.badgeGeo(_obrasMaestro.get(sp.dataset.geoObra)); });
@@ -8630,7 +8630,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611191934');
+    const m = await import('./ind-plan-carga.js?v=202611200923');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -9338,6 +9338,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
     // DESPUÉS de ese camión (porque no viajó, ej. NV 1058489) vuelve al plan.
     const tsCam = new Map((cams || []).map(c => [c.id, Math.max(Date.parse(c.programado_en) || 0, Date.parse(c.actualizado_en) || 0)]));
     const cargadosTs = new Map();
+    const cargadosSinEnt = new Map();   // «doc|material» cargado sin n° de entrega → ts del camión
     const lotesSeg = await lotesParalelo(ids, 10, async lote => {   // (17-nov-2026 · rendimiento) en paralelo
       const { data, error } = await supabase.from('abast_seguimiento_carga').select('camion_id,documento,material,n_entrega').in('camion_id', lote).limit(5000);
       if (error) throw error;
@@ -9350,6 +9351,9 @@ async function renderPlanCargaCore(stage, opts = {}) {
           cargadosTs.set(k, Math.max(cargadosTs.get(k) || 0, tsCam.get(l.camion_id) || 0));
         }
         if (tx(l.n_entrega)) cargadosEnt.add(tx(l.n_entrega));
+        // (20-nov-2026, Jordan) Línea cargada SIN n° de entrega (la entrega se creó/coordinó después de armar el camión,
+        // ej. NV 1070369 en camión SG-YB-63 a Temuco): se guarda el momento del camión para descontarla por doc+material.
+        else if (tx(l.documento)) { const k0 = `${tx(l.documento)}|${tx(l.material)}`; cargadosSinEnt.set(k0, Math.max(cargadosSinEnt.get(k0) || 0, tsCam.get(l.camion_id) || 0)); }
       });
     }
     pv4000Cargados = cargadosTs;
@@ -9370,7 +9374,12 @@ async function renderPlanCargaCore(stage, opts = {}) {
         // material: se descuenta sólo si ESA línea (doc|material) fue la que viajó. Si el material
         // nunca se cargó (ej. pos 20 de la 1058465, 2.946,8 kg), sigue pendiente en el plan.
         const fueCargado = cargados.has(`${d}|${m}`);
-        const ya = fueCargado && (!e || cargadosEnt.has(e));
+        // (20-nov-2026, Jordan) Si la línea viajó SIN n° de entrega, se da por cargada salvo que la NV se haya
+        // re-coordinado DESPUÉS de programar ese camión (entonces es una coordinación nueva y vuelve al plan).
+        const coL = coordRepV(coordVentas, d, f) || coordVentas.get(d);
+        const tsCo = coL ? (Date.parse(coL.updated_at) || 0) : 0;
+        const sinEnt = cargadosSinEnt.has(`${d}|${m}`) && tsCo <= cargadosSinEnt.get(`${d}|${m}`);
+        const ya = fueCargado && (!e || cargadosEnt.has(e) || sinEnt);
         if (!ya) continue;
         const pendVivo = !r2._coordLin && !r2._respaldo && parseNum(r2.ctd_confirmada) - parseNum(r2.cantidad_entrg) > 0;
         const multiRep = (nRepVivo.get(`${d}|${m}`) || new Set()).size > 1;
