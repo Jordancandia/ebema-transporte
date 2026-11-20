@@ -10,13 +10,13 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611201459';
-import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611201459';
-import { getDatabase } from './data.js?v=202611201459';
+import { supabase } from './supabase-client.js?v=202611201505';
+import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611201505';
+import { getDatabase } from './data.js?v=202611201505';
 import { COMUNAS_POR_REGION } from './chile-geo.js';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611201459';
-import { confirmar, pedirDato } from './confirmar.js?v=202611201459';
+import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611201505';
+import { confirmar, pedirDato } from './confirmar.js?v=202611201505';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -1109,7 +1109,7 @@ async function wireObraGeo(panel, row, st, comunaRuta, draw) {
   const l = obrasDe(row);
   const ids = [...new Set(l.map(o => String(o.id || '').trim()).filter(Boolean))];
   if (!ids.length) return;
-  const m = await import('./maestro-obras.js?v=202611201459');
+  const m = await import('./maestro-obras.js?v=202611201505');
   const faltan = ids.filter(id => !_obrasMaestro.has(id));
   if (faltan.length) { try { (await m.cargarObras(faltan)).forEach((o, k) => _obrasMaestro.set(k, o)); faltan.forEach(id => { if (!_obrasMaestro.has(id)) _obrasMaestro.set(id, null); }); } catch (_e) { /* sin maestro */ } }
   panel.querySelectorAll('[data-geo-obra]').forEach(sp => { sp.innerHTML = m.badgeGeo(_obrasMaestro.get(sp.dataset.geoObra)); });
@@ -8677,7 +8677,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611201459');
+    const m = await import('./ind-plan-carga.js?v=202611201505');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -9118,14 +9118,17 @@ function asignarCamionesCD(r) {
     tonExtras[k] = a;
   };
   [...fijos].sort((a, b) => a - b).forEach(llenarExtra);
-  // El 2º camión tiene que existir (propuesto, aceptado o programado) para que la regla habilite el 3º.
-  if (segundoPropuesto || lk2) {
-    for (let k = Math.max(2, ...fijos) + 1; k <= CAM_EXTRA_MAX; k++) {
+  // (20-nov-2026, Jordan) Igual que el 2º: el camión siguiente se PROPONE (por aceptar) sólo cuando el anterior está
+  // aceptado — el 3º con el 2º aceptado (o programado), el 4º con el 3º aceptado… Uno a la vez.
+  {
+    const k = Math.max(2, ...fijos) + 1;
+    const antAceptado = k === 3 ? !!(r._seg2Ok || lk2) : fijos.has(k - 1);
+    if (k <= CAM_EXTRA_MAX && antAceptado) {
       const saldo = orden.filter(d => d._manual === null && !d._enCamion && !d._camion2 && !d._camionN && !d._sinFondo).reduce((s, d) => s + (d.ton || 0), 0);
-      if (saldo < r.cap * UMBRAL_CAMION_EXTRA - 1e-9) break;
-      llenarExtra(k);
-      if (!(tonExtras[k] > 1e-9)) { delete tonExtras[k]; break; }   // línea más grande que el camión: no se propone vacío
-      extrasProp.push(k);
+      if (saldo >= r.cap * UMBRAL_CAMION_EXTRA - 1e-9) {
+        llenarExtra(k);
+        if (tonExtras[k] > 1e-9) extrasProp.push(k); else delete tonExtras[k];   // línea más grande que el camión: no se propone vacío
+      }
     }
   }
   const camExtra = Object.keys(tonExtras).map(Number).sort((a, b) => a - b);
@@ -9212,7 +9215,7 @@ async function estadoPlanTrasladosCalc() {
           const pt = String(d.pt ?? '').trim(); if (!pt) return;
           const ent = String(d.entrega_entrante || d.entrega || '').trim(), kl = _keyInc(pt, d.material);
           const est = d._sinFondo ? 'SIN_FONDO' : d._enCamion ? (cat === 'adelanto' ? 'ADELANTO' : 'EN_CAMION')
-            : d._camion2 ? (acept ? 'CAMION2' : 'CAMION2_PROP') : d._camionN ? 'EN_CAMION' : d._manual === 0 ? 'NO_CARGA' : 'NO_CABE';
+            : d._camion2 ? (acept ? 'CAMION2' : 'CAMION2_PROP') : d._camionN && !(r.extrasProp || []).includes(d._camionN) ? 'EN_CAMION' : d._manual === 0 ? 'NO_CARGA' : 'NO_CABE';
           // Por línea (doc|material) manda lo que va en el camión; por entrega, su estado exacto.
           const prev = lineas.get(`${kc}|${kl}`);
           if (!prev || est === 'EN_CAMION' || est === 'ADELANTO' || (est === 'CAMION2' && prev !== 'EN_CAMION')) lineas.set(`${kc}|${kl}`, est);
@@ -10687,6 +10690,8 @@ async function renderPlanCargaCore(stage, opts = {}) {
         .eq('fecha', isoLocal(hoy00())).eq('cd_origen', planOrigen);
       segAcept = new Set((data || []).map(x => String(x.ce ?? '').trim()));
     } catch (_e) { segAcept = new Set(); }
+    // (20-nov-2026) el 3º camión sólo se propone con el 2º aceptado
+    (resultado || []).forEach(r => { const ok = segAcept.has(r.ce); if (r._seg2Ok !== ok) { r._seg2Ok = ok; refrescarFill(r); } });
   }
   // (3-oct-2026) Camiones programados con datos de transporte (1 = camión CD, 2 = 2º camión).
   let progMap = new Map();
@@ -11815,9 +11820,10 @@ async function renderPlanCargaCore(stage, opts = {}) {
     const puedeSeg = PUEDE_AJUSTAR && (!cerrado || PUEDE_TRANSPORTE);
     const btn = !puedeSeg ? '' : acept
       ? `<button class="sv-btn" data-seg-accion="quitar" data-seg-ce="${escapeHtml(r.ce)}"><span class="material-symbols-outlined">remove_circle</span>Quitar 2º camión</button>`
-      : `<button class="sv-btn-p" ${PUEDE_TRANSPORTE ? `data-seg-directo="${escapeHtml(r.ce)}"` : `data-seg-accion="aceptar" data-seg-ce="${escapeHtml(r.ce)}"`} title="Acepta el 2º camión${PUEDE_TRANSPORTE ? ' y abre los datos del transporte' : ''}"><span class="material-symbols-outlined">task_alt</span>Aceptar 2º camión</button>
-         ${PUEDE_TRANSPORTE && PUEDE_COORD ? `<button class="sv-btn" data-seg-coord="${escapeHtml(r.ce)}" title="Acepta el 2º camión y guarda los datos del transporte sin programarlo: la carga sigue actualizándose"><span class="material-symbols-outlined">event_available</span>Aceptar y coordinar</button>` : ''}
-         <button class="sv-btn" data-seg-rechazar="${escapeHtml(r.ce)}" title="No se programa: las líneas quedan «No cabe» para el próximo plan"><span class="material-symbols-outlined">cancel</span>No aceptar</button>`;
+      // (20-nov-2026, Jordan) Por defecto el 2º camión se ACEPTA Y COORDINA (transporte guardado, carga viva); programar es aparte.
+      : (PUEDE_COORD ? `<button class="sv-btn-p" data-seg-coord="${escapeHtml(r.ce)}" title="Acepta el 2º camión y guarda los datos del transporte sin programarlo: la carga sigue actualizándose y el cierre de las ${HHMM_CIERRE} lo programa si está sobre el ${PCT_PROGRAMAR_CD}%"><span class="material-symbols-outlined">event_available</span>Aceptar y coordinar</button>` : '')
+        + `<button class="${PUEDE_COORD ? 'sv-btn' : 'sv-btn-p'}" ${PUEDE_TRANSPORTE ? `data-seg-directo="${escapeHtml(r.ce)}"` : `data-seg-accion="aceptar" data-seg-ce="${escapeHtml(r.ce)}"`} title="Acepta el 2º camión${PUEDE_TRANSPORTE ? ' y lo PROGRAMA ya (congela la carga, foto y Seguimiento)' : ''}"><span class="material-symbols-outlined">task_alt</span>${PUEDE_TRANSPORTE ? 'Aceptar y programar' : 'Aceptar 2º camión'}</button>`
+        + `<button class="sv-btn" data-seg-rechazar="${escapeHtml(r.ce)}" title="No se programa: las líneas quedan «No cabe» para el próximo plan"><span class="material-symbols-outlined">cancel</span>No aceptar</button>`;
     // (4-oct-2026, Jordan) El 2º camión sugerido es una opción: al aceptarlo se despliegan sus SKU
     // y el botón para agregar los datos del transporte.
     // (17-nov-2026, Jordan · UX) Aviso compacto: título con la carga, una línea de contexto y botones en su fila.
@@ -11941,8 +11947,8 @@ async function renderPlanCargaCore(stage, opts = {}) {
   // (20-nov-2026, Jordan) Aviso en la fila por cada camión adicional (3º, 4º…) habilitado o abierto.
   function extraChips(r) {
     return (r.camExtra || []).map(k => {
-      const ok = !!progMap.get(`${r.ce}|${k}`), ton = (r.tonExtras || {})[k] || 0, pct = r.cap > 0 ? Math.round(ton / r.cap * 100) : 0;
-      return `<button class="pc-segchip ${ok ? 'is-ok' : 'is-alert'}" data-ext-open="${escapeHtml(r.ce)}" data-ext-cam="${k}" title="${ok ? `${k}º camión programado` : `Queda carga para un ${k}º camión: ajusta y prográmalo con su día de carga`} · ${pct}% de ${fmtNum(r.cap, 0)} t"><span class="material-symbols-outlined">${ok ? 'local_shipping' : 'warning'}</span>${k}º camión · ${t1(ton)} t${ok ? ' ✓' : ''}</button>`;
+      const ok = !!progMap.get(`${r.ce}|${k}`), prop = (r.extrasProp || []).includes(k), ton = (r.tonExtras || {})[k] || 0, pct = r.cap > 0 ? Math.round(ton / r.cap * 100) : 0;
+      return `<button class="pc-segchip ${ok ? 'is-ok' : 'is-alert'}" data-ext-open="${escapeHtml(r.ce)}" data-ext-cam="${k}" title="${ok ? `${k}º camión programado` : prop ? `La sucursal tiene carga para un ${k}º camión: revisa las entregas y acepta o no` : `${k}º camión aceptado: coordina o programa el transporte`} · ${pct}% de ${fmtNum(r.cap, 0)} t"><span class="material-symbols-outlined">${ok ? 'local_shipping' : 'warning'}</span>${prop ? `Carga ${k}º camión` : `${k}º camión`} · ${t1(ton)} t${ok ? ' ✓' : ''}</button>`;
     }).join('');
   }
   function filaV2(r) {
@@ -12002,7 +12008,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
       const out = [];
       if (d._manual !== null && !d._ajusteSF && !d._reservaSF) out.push(`<span style="font-size:10px;color:#7c3aed;font-weight:700" title="Asignación manual/confirmada">${d._manual === 0 ? 'NO CARGA' : 'FIJO'}</span>`);
       // (20-nov-2026) Hacia los camiones adicionales abiertos sin programar (3º, 4º…).
-      const ext = (r.camExtra || []).filter(k => !progMap.get(`${r.ce}|${k}`) && d._camionN !== k).map(k => b(d, k, `→ ${k}º`, `Pasar al ${k}º camión`));
+      const ext = (r.camExtra || []).filter(k => !progMap.get(`${r.ce}|${k}`) && d._camionN !== k && !(r.extrasProp || []).includes(k)).map(k => b(d, k, `→ ${k}º`, `Pasar al ${k}º camión`));
       if (String(enTab).startsWith('ext')) { out.push(b(d, 1, '→ CD', 'Pasar al camión CD'), ...ext, b(d, 0, 'Sacar', 'No cargar hoy')); }
       else if (enTab === 'saldo') { out.push(...ext); }
       else if (enTab === 'seg') { out.push(b(d, 1, '→ CD', 'Pasar al camión CD'), ...ext, b(d, 0, 'Sacar', 'No cargar hoy')); }
@@ -12048,6 +12054,14 @@ async function renderPlanCargaCore(stage, opts = {}) {
     const fill = marcarCapacidadCD(r);
     const ton = (fill.tonExtras || {})[k] || 0, pct = r.cap > 0 ? Math.round(ton / r.cap * 100) : 0;
     const p = progMap.get(`${r.ce}|${k}`), ceA = escapeHtml(r.ce);
+    const porAceptar = (r.extrasProp || []).includes(k);
+    if (porAceptar) {   // (20-nov-2026) propuesto: se ven sus líneas y se acepta o no (como el 2º camión)
+      const gr = CAT_V2.map((c, i) => { const it = (r.det[c.k] || []).filter(d => d._camionN === k); return it.length ? grupoHtml(c.color, CAT_LARGO[i], it, c.tipo, null) : ''; }).join('');
+      return `<div class="pc-extra pc-seg2 is-alert"><span class="material-symbols-outlined">local_shipping</span><div class="pc-av-txt"><b>Carga para un ${k}º camión <span class="pc-av-chip">${t1(ton)} t · ${pct}%</span></b>
+        <span>Lo que no cabe en los camiones anteriores llega al ${Math.round(UMBRAL_CAMION_EXTRA * 100)}% de un camión. Revisa sus entregas y decide si aceptarlo.</span><small>Al aceptarlo podrás mover líneas, coordinar o programar el transporte con su día de carga; si no, las líneas quedan «No cabe».</small></div>
+        ${PUEDE_EXTRA ? `<div class="pc-av-btns"><button class="sv-btn-p" data-ext-ok="${ceA}" data-ext-cam="${k}"><span class="material-symbols-outlined">task_alt</span>Aceptar ${k}º camión</button></div>` : ''}</div>`
+        + (gr || '<div class="sv-note-box">Sin líneas.</div>');
+    }
     const acc = p ? null : accMover(r, 'ext:' + k);
     const grupos = CAT_V2.map((c, i) => { const it = (r.det[c.k] || []).filter(d => d._camionN === k); return it.length ? grupoHtml(c.color, CAT_LARGO[i], it, c.tipo, acc, p ? null : { ce: r.ce, opts: [[1, 'Todo → CD'], [0, 'Sacar todo']] }) : ''; }).join('');
     const accSal = p ? null : accMover(r, 'saldo');
@@ -12085,6 +12099,21 @@ async function renderPlanCargaCore(stage, opts = {}) {
     refrescarFill(r);
     st.tab = `ext:${k}`;
     showAlert(`${k}º camión agregado para ${r.nombre}: ${t1((r.tonExtras || {})[k] || 0)} t con el saldo. Ajusta la carga y prográmalo con su día.`, 'success');
+    draw();
+  }
+  // (20-nov-2026, Jordan) Aceptar el camión adicional propuesto: queda habilitado (se pueden mover líneas, coordinar o programar)
+  // y recién ahí se puede proponer el siguiente.
+  async function aceptarExtra(ce, k) {
+    const r = resultado.find(x => x.ce === ce);
+    if (!r || !PUEDE_EXTRA) return;
+    if (!await confirmar(`¿Aceptar el ${k}º camión para ${r.nombre}?\n\n${t1((r.tonExtras || {})[k] || 0)} t de ${fmtNum(r.cap, 0)} t. Queda habilitado para ajustar su carga y coordinar o programar el transporte con su día de carga.`,
+      { aceptar: `Aceptar ${k}º camión`, icono: 'task_alt' })) return;
+    const { error } = await supabase.from('abast_plan_camion_extra').upsert({ fecha: hoyIsoPlan, cd_origen: planOrigen, ce, camion: k, creado_por: await getUserEmail() }, { onConflict: 'fecha,cd_origen,ce,camion' });
+    if (error) { showAlert('No se pudo aceptar el camión: ' + error.message, 'error'); return; }
+    r.extras = [...new Set([...(r.extras || []), k])].sort((a, b) => a - b);
+    refrescarFill(r);
+    st.drawer = ce; st.tab = `ext:${k}`;
+    showAlert(`${k}º camión de ${r.nombre} aceptado: ajusta su carga y coordina el transporte.`, 'success');
     draw();
   }
   async function quitarExtra(ce, k) {
@@ -12230,7 +12259,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
   function drawerHtml(r) {
     const tabs = [{ k: 'cd', lbl: `Camión CD · ${Math.min(r.pct, 100)}%`, color: '#444749' }];
     if (r.segundoPropuesto) tabs.push({ k: 'seg', lbl: `2º camión · ${t1(r.tonSegundo)} t${segAcept.has(r.ce) ? '' : ' (por aceptar)'}`, color: '#15803d' });
-    (r.camExtra || []).forEach(k => tabs.push({ k: `ext:${k}`, lbl: `${k}º camión · ${t1((r.tonExtras || {})[k] || 0)} t${progMap.get(`${r.ce}|${k}`) ? '' : ' (sin programar)'}`, color: '#7c3aed' }));
+    (r.camExtra || []).forEach(k => tabs.push({ k: `ext:${k}`, lbl: `${k}º camión · ${t1((r.tonExtras || {})[k] || 0)} t${(r.extrasProp || []).includes(k) ? ' (por aceptar)' : progMap.get(`${r.ce}|${k}`) ? '' : ' (sin programar)'}`, color: '#7c3aed' }));
     DIR_V2.forEach(t => (r[t.lista] || []).forEach(c => tabs.push({ k: `${t.k}:${c.n}`, lbl: `${t.lbl}${(r[t.lista] || []).length > 1 ? ' ' + c.n : ''} · ${t1(c.ton)} t`, color: t.color })));
     if ((r.fabCandidatos || []).length || [...(r.camionesFabSuc || []), ...(r.camionesFabCli || [])].some(c => c.manualId))
       tabs.push({ k: 'dirman', lbl: `Unir directos${(r.fabCandidatos || []).length ? ' · ' + r.fabCandidatos.length + ' OC' : ''}`, color: '#b45309' });
@@ -12816,6 +12845,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
     stage.querySelectorAll('[data-seg-directo]').forEach(b => b.addEventListener('click', async e => { e.stopPropagation(); b.disabled = true; try { await aceptarYProgramarSegundo(b.dataset.segDirecto); } finally { b.disabled = false; } }));
     // (20-nov-2026) Camiones adicionales
     stage.querySelectorAll('[data-ext-add]').forEach(b => b.addEventListener('click', async e => { e.stopPropagation(); b.disabled = true; try { await agregarExtra(b.dataset.extAdd); } finally { b.disabled = false; } }));
+    stage.querySelectorAll('[data-ext-ok]').forEach(b => b.addEventListener('click', async e => { e.stopPropagation(); b.disabled = true; try { await aceptarExtra(b.dataset.extOk, Number(b.dataset.extCam)); } finally { b.disabled = false; } }));
     stage.querySelectorAll('[data-ext-del]').forEach(b => b.addEventListener('click', async e => { e.stopPropagation(); await quitarExtra(b.dataset.extDel, Number(b.dataset.extCam)); }));
     stage.querySelectorAll('[data-ext-prog]').forEach(b => b.addEventListener('click', async e => { e.stopPropagation(); b.disabled = true; try { await programarExtra(b.dataset.extProg, Number(b.dataset.extCam)); } finally { b.disabled = false; } }));
     stage.querySelectorAll('[data-mover-grp]').forEach(b => b.addEventListener('click', async e => {
