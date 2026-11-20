@@ -10,13 +10,13 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611201505';
-import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611201505';
-import { getDatabase } from './data.js?v=202611201505';
+import { supabase } from './supabase-client.js?v=202611201510';
+import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611201510';
+import { getDatabase } from './data.js?v=202611201510';
 import { COMUNAS_POR_REGION } from './chile-geo.js';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611201505';
-import { confirmar, pedirDato } from './confirmar.js?v=202611201505';
+import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611201510';
+import { confirmar, pedirDato } from './confirmar.js?v=202611201510';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -1109,7 +1109,7 @@ async function wireObraGeo(panel, row, st, comunaRuta, draw) {
   const l = obrasDe(row);
   const ids = [...new Set(l.map(o => String(o.id || '').trim()).filter(Boolean))];
   if (!ids.length) return;
-  const m = await import('./maestro-obras.js?v=202611201505');
+  const m = await import('./maestro-obras.js?v=202611201510');
   const faltan = ids.filter(id => !_obrasMaestro.has(id));
   if (faltan.length) { try { (await m.cargarObras(faltan)).forEach((o, k) => _obrasMaestro.set(k, o)); faltan.forEach(id => { if (!_obrasMaestro.has(id)) _obrasMaestro.set(id, null); }); } catch (_e) { /* sin maestro */ } }
   panel.querySelectorAll('[data-geo-obra]').forEach(sp => { sp.innerHTML = m.badgeGeo(_obrasMaestro.get(sp.dataset.geoObra)); });
@@ -8677,7 +8677,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611201505');
+    const m = await import('./ind-plan-carga.js?v=202611201510');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -10634,6 +10634,9 @@ async function renderPlanCargaCore(stage, opts = {}) {
     { k: 'cross',     lbl: 'Crossdocking',         color: '#c5c7c9', ton: r => Math.max(0, r.tonCross - ((r._noCargaCat || {}).cross || 0)),     tipo: 'X' },
     { k: 'quiebre',   lbl: 'Quiebre y priorizado', color: '#b5000b', ton: r => Math.max(0, r.tonQuiebre - ((r._noCargaCat || {}).quiebre || 0)),   tipo: 'T' },
     { k: 'stock',     lbl: 'Abastecimiento',       color: '#ffb4aa', ton: r => Math.max(0, r.tonStock - ((r._noCargaCat || {}).stock || 0)),     tipo: 'T' },
+    // (20-nov-2026, Jordan) 7º Adelanto: rellena el espacio libre del camión CD y cuenta en su %. Antes no estaba aquí, así que
+    // la barra, el detalle, la foto y Seguimiento no lo mostraban (Talca: 86% con «Libre 10,9 t»).
+    { k: 'adelanto',  lbl: 'Adelanto',             color: '#f3d3cf', ton: r => (r.det && r.det.adelanto || []).filter(d => d._enCamion).reduce((s2, d) => s2 + (d.ton || 0), 0), tipo: 'T' },
   ];
   // ── Plan de Carga v2.1 (30-sep-2026, handoff «Plan de Carga v2») ──────────
   // Camión dibujado a escala con segmentos por categoría y espacio libre
@@ -10645,8 +10648,8 @@ async function renderPlanCargaCore(stage, opts = {}) {
     { k: 'fabSuc',  lista: 'camionesFabSuc',  lbl: 'Fáb-Sucursal', csv: 'Fáb-Sucursal', grupo: 'Proveedor', tipo: 'R', color: '#1d4ed8', tip: 'Camión Fábrica-Sucursal (OC coordinadas, mismo proveedor)' },
     { k: 'fabCli',  lista: 'camionesFabCli',  lbl: 'Fáb-Cliente',  csv: 'Fáb-Cliente',  grupo: 'Cliente',   tipo: 'R', color: '#7e22ce', tip: 'Camión Fábrica-Cliente (OC coordinadas, mismo cliente)' },
   ];
-  const CAT_LARGO = ['1º Pedidos de Traslados REVEX', '2º Pedidos de Venta Directa', '3º Retiros de Proveedor (CD)', '4º Pedidos de Traslados Crossdocking', '5º Abast. Quiebre y Priorizado', '6º Abastecimiento'];
-  const CAT_FG = ['#fff', '#fff', '#fff', '#191c1d', '#fff', '#410001'];
+  const CAT_LARGO = ['1º Pedidos de Traslados REVEX', '2º Pedidos de Venta Directa', '3º Retiros de Proveedor (CD)', '4º Pedidos de Traslados Crossdocking', '5º Abast. Quiebre y Priorizado', '6º Abastecimiento', '7º Adelanto (fecha futura, relleno)'];
+  const CAT_FG = ['#fff', '#fff', '#fff', '#191c1d', '#fff', '#410001', '#410001'];
   const CAT_CORTO = ['REVEX', 'Venta', 'Retiro', 'Cross', 'Quiebre', 'Abast.'];
   const CIERRE_H = 17, CIERRE_M = 0;   // (16-nov-2026, Jordan) cierre oficial 17:00, sin cortes intermedios (14:30 eliminado): ajustes hasta las 17:00; el servidor programa los camiones con coordinación de transporte completa y carga ≥ 85% (bajo 85% lo programa el planner, con alerta)
   const HHMM_CIERRE = `${String(CIERRE_H).padStart(2, '0')}:${String(CIERRE_M).padStart(2, '0')}`;
@@ -12008,6 +12011,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
       const out = [];
       if (d._manual !== null && !d._ajusteSF && !d._reservaSF) out.push(`<span style="font-size:10px;color:#7c3aed;font-weight:700" title="Asignación manual/confirmada">${d._manual === 0 ? 'NO CARGA' : 'FIJO'}</span>`);
       // (20-nov-2026) Hacia los camiones adicionales abiertos sin programar (3º, 4º…).
+      if (d._adelanto) { if (d._enCamion) out.push(b(d, 0, 'Sacar', 'No cargar hoy')); if (d._manual !== null) out.push(b(d, 'auto', '↺', 'Volver a la regla automática')); return out.join(''); }   // (20-nov-2026) el adelanto sólo rellena el camión CD
       const ext = (r.camExtra || []).filter(k => !progMap.get(`${r.ce}|${k}`) && d._camionN !== k && !(r.extrasProp || []).includes(k)).map(k => b(d, k, `→ ${k}º`, `Pasar al ${k}º camión`));
       if (String(enTab).startsWith('ext')) { out.push(b(d, 1, '→ CD', 'Pasar al camión CD'), ...ext, b(d, 0, 'Sacar', 'No cargar hoy')); }
       else if (enTab === 'saldo') { out.push(...ext); }
@@ -12267,7 +12271,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
     if (sfPorCe.has(r.ce) || sfBloq.has(r.ce)) { const nSf = (sfPorCe.get(r.ce) || []).filter(x => x.estado === 'SIN FONDO' || x.estado === 'PARCIAL').length;   // (17-nov-2026) sin fondo
       tabs.push({ k: 'sum', lbl: `Suministro${nSf ? ' · ' + nSf + ' sin fondo' : ''}`, color: '#9a3412', icon: 'inventory' }); }
     if (!tabs.some(x => x.k === st.tab)) st.tab = 'cd';
-    const foot = st.tab === 'cd' ? 'Orden de llenado: REVEX → Venta → Retiro → Cross → Quiebre → Abastecimiento'
+    const foot = st.tab === 'cd' ? 'Orden de llenado: REVEX → Venta → Retiro → Cross → Quiebre → Abastecimiento → Adelanto (relleno)'
       : st.tab === 'seg' ? 'Lo que no cabe en el camión CD, en el mismo orden de llenado (se propone si llega al 85% de la capacidad o si se mueven líneas a mano)'
       : st.tab.startsWith('ext:') ? 'Camión adicional: lo subido a mano y el saldo de los camiones anteriores, en el mismo orden de llenado · su día de carga se elige al programarlo'
       : st.tab === 'dirman' ? 'Unión manual de retiros directos: vale sólo para el plan de hoy'
@@ -12302,7 +12306,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
   const CSV_V21 = ['Origen', 'Centro destino', 'Sucursal', 'Estado plan', 'Horizonte', 'Día objetivo', 'Camión', 'Categoría', 'Prioridad de carga', 'Documento', 'Material', 'Detalle', 'Fecha', 'Cantidad', 'Toneladas', 'En camión', '% carga camión', 'Estado sucursal',
     'Id Material', 'Pedido de Venta', 'Proveedor', 'N° Entrega', 'Ruta', 'Comuna', 'Tipo Expedición', 'Ton Bruto', 'Ton Vol', 'Usuario', 'Motivo Prioridad', 'Entra a indicador',
     'Patente camión', 'Patente carro', 'Transporte', 'Chofer', 'Horario presentación'];
-  const CAT_CSV = ['REVEX', 'Venta directa', 'Retiro proveedor', 'Crossdocking', 'Quiebre y priorizado', 'Abastecimiento'];
+  const CAT_CSV = ['REVEX', 'Venta directa', 'Retiro proveedor', 'Crossdocking', 'Quiebre y priorizado', 'Abastecimiento', 'Adelanto'];
   function filasCsvV21(r, cerrado) {
     marcarCapacidadCD(r);
     const orNom = `${planOrigen} ${CALENDARIOS[planOrigen]?.nombre || ''}`.trim();
@@ -12535,7 +12539,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
   }
   // (4-oct-2026, Jordan) Seguimiento de Carga: al programar un camión (consolidable o directo)
   // se guarda su foto (líneas + transportista) en abast_seguimiento_camion / _carga.
-  const TIPO_CARGA = { revex: 'REVEX', ventaCons: 'Pedidos de venta CD', retiro: 'Retiro Fábrica', cross: 'Crossdocking', quiebre: 'Quiebres', stock: 'Abastecimiento' };
+  const TIPO_CARGA = { revex: 'REVEX', ventaCons: 'Pedidos de venta CD', retiro: 'Retiro Fábrica', cross: 'Crossdocking', quiebre: 'Quiebres', stock: 'Abastecimiento', adelanto: 'Abastecimiento' };
   const isoDeFecha = f => { const d = parseDateSAP(f); return d ? isoLocal(d) : ''; };
   const orNomPlan = () => `${planOrigen} ${CALENDARIOS[planOrigen]?.nombre || ''}`.trim();
   const lineaSeg = (tipoCarga, tipo, d) => ({ tipo_carga: tipoCarga, documento: String((tipo === 'V' ? d.pv : tipo === 'R' ? d.oc : d.pt) ?? '').trim(),
