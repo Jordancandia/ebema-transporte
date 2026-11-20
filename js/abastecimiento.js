@@ -10,13 +10,13 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611202027';
-import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611202027';
-import { getDatabase } from './data.js?v=202611202027';
+import { supabase } from './supabase-client.js?v=202611202056';
+import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611202056';
+import { getDatabase } from './data.js?v=202611202056';
 import { COMUNAS_POR_REGION } from './chile-geo.js';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611202027';
-import { confirmar, pedirDato } from './confirmar.js?v=202611202027';
+import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611202056';
+import { confirmar, pedirDato } from './confirmar.js?v=202611202056';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -1109,7 +1109,7 @@ async function wireObraGeo(panel, row, st, comunaRuta, draw) {
   const l = obrasDe(row);
   const ids = [...new Set(l.map(o => String(o.id || '').trim()).filter(Boolean))];
   if (!ids.length) return;
-  const m = await import('./maestro-obras.js?v=202611202027');
+  const m = await import('./maestro-obras.js?v=202611202056');
   const faltan = ids.filter(id => !_obrasMaestro.has(id));
   if (faltan.length) { try { (await m.cargarObras(faltan)).forEach((o, k) => _obrasMaestro.set(k, o)); faltan.forEach(id => { if (!_obrasMaestro.has(id)) _obrasMaestro.set(id, null); }); } catch (_e) { /* sin maestro */ } }
   panel.querySelectorAll('[data-geo-obra]').forEach(sp => { sp.innerHTML = m.badgeGeo(_obrasMaestro.get(sp.dataset.geoObra)); });
@@ -7991,15 +7991,46 @@ async function descargarPickingCamion(filtros, nombreArchivo) {
     const docsE = [...new Set(sinEnt.map(f => s(f.documento)))];
     const mapE = new Map();
     for (let i = 0; i < docsE.length; i += 150) {
-      const rE = await supabase.from('abast_entregas_dia').select('entrega,doc_modelo,material,cargado_en,descartada').in('doc_modelo', docsE.slice(i, i + 150)).limit(20000);
+      const rE = await supabase.from('abast_entregas_dia').select('entrega,doc_modelo,material,cantidad,cargado_en,descartada').in('doc_modelo', docsE.slice(i, i + 150)).limit(20000);
       (rE.data || []).filter(x => !x.descartada).forEach(x => {
         const k = `${s(x.doc_modelo)}|${s(x.material)}`, t = String(x.cargado_en || '');
         const cur = mapE.get(k);
-        if (!cur || t > cur.t) mapE.set(k, { t, ents: new Set([s(x.entrega)]) });
-        else if (t === cur.t) cur.ents.add(s(x.entrega));
+        if (!cur || t > cur.t) mapE.set(k, { t, ents: new Set([s(x.entrega)]), cant: n(x.cantidad) });
+        else if (t === cur.t) { cur.ents.add(s(x.entrega)); cur.cant += n(x.cantidad); }
       });
     }
-    sinEnt.forEach(f => { const x = mapE.get(`${s(f.documento)}|${s(f.material)}`); if (x) f.n_entrega = [...x.ents].sort().join(','); });
+    // Sólo entregas recibidas desde el día anterior al plan del camión: una entrega antigua del mismo pedido es de otra
+    // carga o ya no existe en SAP (el archivo de entregas no informa las eliminaciones de entregas antiguas).
+    // (20-nov-2026, Jordan) Igual que el Plan de Carga: una entrega que ya tiene DT ya viajó en otro camión y no se usa.
+    { const todas = [...new Set([...mapE.values()].flatMap(x => [...x.ents]))], conDt = new Set();
+      for (let i = 0; i < todas.length; i += 150) {
+        const rD = await supabase.from('abast_dt_dia').select('entrega').in('entrega', todas.slice(i, i + 150)).limit(20000);
+        (rD.data || []).forEach(x => conDt.add(s(x.entrega)));
+      }
+      mapE.forEach((x, k) => { conDt.forEach(e => x.ents.delete(e)); if (!x.ents.size) mapE.delete(k); }); }
+    const desdeE = f => { const d = parseISODate(s(f.fecha_plan).slice(0, 10)); if (!d) return ''; d.setDate(d.getDate() - 1); return isoLocal(d); };
+    sinEnt.forEach(f => { const x = mapE.get(`${s(f.documento)}|${s(f.material)}`);
+      if (x && (!s(f.fecha_plan) || x.t.slice(0, 10) >= desdeE(f))) f.n_entrega = [...x.ents].sort().join(','); });
+  }
+  // (20-nov-2026, Jordan) SAP puede repartir una posición del pedido de traslado en 2+ entregas (p. ej. 48 + 12): en el
+  // picking va una fila por entrega con su cantidad, para que el picker arme cada entrega por separado.
+  {
+    const multi = filas.filter(f => s(f.n_entrega).includes(','));
+    if (multi.length) {
+      const docsM = [...new Set(multi.map(f => s(f.documento)))], cantE = new Map();
+      for (let i = 0; i < docsM.length; i += 150) {
+        const rM = await supabase.from('abast_entregas_dia').select('entrega,doc_modelo,material,cantidad,descartada').in('doc_modelo', docsM.slice(i, i + 150)).limit(20000);
+        (rM.data || []).filter(x => !x.descartada).forEach(x => { const k = `${s(x.doc_modelo)}|${s(x.material)}|${s(x.entrega)}`; cantE.set(k, (cantE.get(k) || 0) + n(x.cantidad)); });
+      }
+      multi.forEach(f => {
+        const ents = s(f.n_entrega).split(',').map(x => x.trim()).filter(Boolean);
+        const cs = ents.map(e => cantE.get(`${s(f.documento)}|${s(f.material)}|${e}`) || 0), tot = cs.reduce((a, b) => a + b, 0);
+        if (!(tot > 0)) return;
+        const base = n(f.cantidad) || tot, copias = ents.map((e, j) => ({ ...f, n_entrega: e, cantidad: cs[j],
+          ton: n(f.ton) * cs[j] / base, ton_bruta: f.ton_bruta == null ? f.ton_bruta : n(f.ton_bruta) * cs[j] / base })).filter(c => c.cantidad > 0);
+        filas.splice(filas.indexOf(f), 1, ...copias);
+      });
+    }
   }
   const fact = new Set((rPv.data || []).map(x => s(x.documento)));
   const prDoc = new Set(), prEnt = new Set();
@@ -8702,7 +8733,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611202027');
+    const m = await import('./ind-plan-carga.js?v=202611202056');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
