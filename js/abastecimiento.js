@@ -10,13 +10,13 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611201421';
-import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611201421';
-import { getDatabase } from './data.js?v=202611201421';
+import { supabase } from './supabase-client.js?v=202611201428';
+import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611201428';
+import { getDatabase } from './data.js?v=202611201428';
 import { COMUNAS_POR_REGION } from './chile-geo.js';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611201421';
-import { confirmar, pedirDato } from './confirmar.js?v=202611201421';
+import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611201428';
+import { confirmar, pedirDato } from './confirmar.js?v=202611201428';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -1109,7 +1109,7 @@ async function wireObraGeo(panel, row, st, comunaRuta, draw) {
   const l = obrasDe(row);
   const ids = [...new Set(l.map(o => String(o.id || '').trim()).filter(Boolean))];
   if (!ids.length) return;
-  const m = await import('./maestro-obras.js?v=202611201421');
+  const m = await import('./maestro-obras.js?v=202611201428');
   const faltan = ids.filter(id => !_obrasMaestro.has(id));
   if (faltan.length) { try { (await m.cargarObras(faltan)).forEach((o, k) => _obrasMaestro.set(k, o)); faltan.forEach(id => { if (!_obrasMaestro.has(id)) _obrasMaestro.set(id, null); }); } catch (_e) { /* sin maestro */ } }
   panel.querySelectorAll('[data-geo-obra]').forEach(sp => { sp.innerHTML = m.badgeGeo(_obrasMaestro.get(sp.dataset.geoObra)); });
@@ -8650,7 +8650,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611201421');
+    const m = await import('./ind-plan-carga.js?v=202611201428');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -8939,6 +8939,7 @@ const CAMION_MANO_DOC = '__ARMADO_MANUAL__', CAMION_MANO_KEY = CAMION_MANO_DOC +
 // orden de prioridad de siempre y se les puede subir a mano NV, retiros o líneas. Tabla abast_plan_camion_extra.
 // En Seguimiento de Carga van como «Camión CD» con clave CD3…CD6.
 const CAM_EXTRA_MAX = 6;
+const UMBRAL_CAMION_EXTRA = 0.85;   // (20-nov-2026, Jordan) saldo ≥ 85% de la capacidad → se habilita un nuevo camión (igual que el 2º)
 const CLAVES_EXTRA = [3, 4, 5, 6].map(k => 'CD' + k);
 const claveSegCam = cam => (cam === 2 ? '2' : cam >= 3 ? 'CD' + cam : 'CD');
 const tipoSegCam = cam => (cam === 2 ? '2º camión' : 'Camión CD');
@@ -9076,16 +9077,34 @@ function asignarCamionesCD(r) {
   if (segundoPropuesto && !manual2 && acc2 <= 1e-9) segundoPropuesto = false;
   // (20-nov-2026, Jordan) Camiones adicionales 3º…6º: primero lo subido a mano a cada uno; después se completan con el
   // saldo (lo que no va en el camión CD ni en el 2º) en el mismo orden de prioridad. Un camión programado no se rellena.
-  const tonExtras = {};
-  (r.extras || []).slice().sort((a, b) => a - b).forEach(k => {
+  // (20-nov-2026, Jordan) Regla 85%: si después de los camiones anteriores el saldo llega al 85% de la capacidad,
+  // se habilita SOLO un nuevo camión (3º, 4º… hasta el 6º), sin preguntar. Abiertos = guardados + con líneas a mano
+  // o con carga fija (programados) + los que habilita la regla.
+  const tonExtras = {}, extrasProp = [];
+  const fijos = new Set(r.extras || []);
+  orden.forEach(d => { if (d._manual >= 3) fijos.add(d._manual); });
+  if (r.lock) r.lock.forEach((v, k) => { if (k >= 3) fijos.add(k); });
+  const llenarExtra = k => {
     let a = 0;
     orden.forEach(d => { if (d._manual === k && !d._enCamion && !d._camion2) { d._camionN = k; d._sobreCap = a + (d.ton || 0) > r.cap + 1e-9; a += d.ton || 0; } });
     if (!(r.lock && r.lock.get(k))) a += llenarPorNivelesCD(orden.filter(d => d._manual === null && !d._enCamion && !d._camion2 && !d._camionN), Math.max(0, r.cap - a), d => { d._camionN = k; });
     tonExtras[k] = a;
-  });
+  };
+  [...fijos].sort((a, b) => a - b).forEach(llenarExtra);
+  // El 2º camión tiene que existir (propuesto, aceptado o programado) para que la regla habilite el 3º.
+  if (segundoPropuesto || lk2) {
+    for (let k = Math.max(2, ...fijos) + 1; k <= CAM_EXTRA_MAX; k++) {
+      const saldo = orden.filter(d => d._manual === null && !d._enCamion && !d._camion2 && !d._camionN && !d._sinFondo).reduce((s, d) => s + (d.ton || 0), 0);
+      if (saldo < r.cap * UMBRAL_CAMION_EXTRA - 1e-9) break;
+      llenarExtra(k);
+      if (!(tonExtras[k] > 1e-9)) { delete tonExtras[k]; break; }   // línea más grande que el camión: no se propone vacío
+      extrasProp.push(k);
+    }
+  }
+  const camExtra = Object.keys(tonExtras).map(Number).sort((a, b) => a - b);
   const tonNoCarga = orden.filter(d => d._manual === 0).reduce((s, d) => s + (d.ton || 0), 0);
   const tonSinFondo = [...orden, ...adel].filter(d => d._sinFondo).reduce((s, d) => s + (d.ton || 0), 0);
-  return { tonSinFondo, cargado: acc, excedente, segundoPropuesto, tonSegundo: acc2, manual2, tonNoCarga, nManual: orden.filter(d => d._manual !== null).length, orden, armadoMano, tonExtras };
+  return { tonSinFondo, cargado: acc, excedente, segundoPropuesto, tonSegundo: acc2, manual2, tonNoCarga, nManual: orden.filter(d => d._manual !== null).length, orden, armadoMano, tonExtras, camExtra, extrasProp };
 }
 
 // (9-oct-2026, Jordan) Las líneas sacadas a mano del camión («No carga», camion 0) se
@@ -9117,7 +9136,7 @@ function recalcCargaCD(r) {
   Object.entries(r.det || {}).forEach(([k, arr]) => { noCat[k] = (arr || []).filter(d => d._manual === 0).reduce((s, d) => s + (d.ton || 0), 0); });
   r._noCargaCat = noCat;
   Object.assign(r, { total: tot, cap, pct, sobrecarga: f.excedente || 0, faltan: Math.max(0, cap - cargado), status, statusCls, obs, tonNoCarga: f.tonNoCarga || 0,
-    cargadoCD: f.cargado, excedente: f.excedente, segundoPropuesto: f.segundoPropuesto, tonSegundo: f.tonSegundo, tonSinFondo: f.tonSinFondo || 0, tonExtras: f.tonExtras || {} });
+    cargadoCD: f.cargado, excedente: f.excedente, segundoPropuesto: f.segundoPropuesto, tonSegundo: f.tonSegundo, tonSinFondo: f.tonSinFondo || 0, tonExtras: f.tonExtras || {}, camExtra: f.camExtra || [], extrasProp: f.extrasProp || [] });
   return f;
 }
 
@@ -11885,6 +11904,13 @@ async function renderPlanCargaCore(stage, opts = {}) {
     const ok = segAcept.has(r.ce), pct2 = r.cap > 0 ? Math.round(r.tonSegundo / r.cap * 100) : 0;
     return `<button class="pc-segchip ${ok ? 'is-ok' : 'is-alert'}" data-seg-open="${escapeHtml(r.ce)}" title="${ok ? '2º camión aceptado' : 'La sucursal tiene carga para un 2º camión: revisa las entregas y acepta o no'} · ${pct2}% de ${fmtNum(r.cap, 0)} t"><span class="material-symbols-outlined">${ok ? 'local_shipping' : 'warning'}</span>${ok ? `2º camión · ${t1(r.tonSegundo)} t ✓` : `Carga 2º camión · ${t1(r.tonSegundo)} t`}<span class="material-symbols-outlined">chevron_right</span></button>`;
   }
+  // (20-nov-2026, Jordan) Aviso en la fila por cada camión adicional (3º, 4º…) habilitado o abierto.
+  function extraChips(r) {
+    return (r.camExtra || []).map(k => {
+      const ok = !!progMap.get(`${r.ce}|${k}`), ton = (r.tonExtras || {})[k] || 0, pct = r.cap > 0 ? Math.round(ton / r.cap * 100) : 0;
+      return `<button class="pc-segchip ${ok ? 'is-ok' : 'is-alert'}" data-ext-open="${escapeHtml(r.ce)}" data-ext-cam="${k}" title="${ok ? `${k}º camión programado` : `Queda carga para un ${k}º camión: ajusta y prográmalo con su día de carga`} · ${pct}% de ${fmtNum(r.cap, 0)} t"><span class="material-symbols-outlined">${ok ? 'local_shipping' : 'warning'}</span>${k}º camión · ${t1(ton)} t${ok ? ' ✓' : ''}</button>`;
+    }).join('');
+  }
   function filaV2(r) {
     const e = estadoV2(r);
     const pctC = r.pct >= PCT_PROGRAMAR_CD ? '#15803d' : r.pct >= 70 ? '#a16207' : '#b5000b';
@@ -11897,7 +11923,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
       <div class="pc-carga">${r.total > 0 ? camionHtml(r) : '<div class="pc-truckw"><span class="sv-muted">Sin carga para el camión CD</span></div>'}</div>
       <div class="pc-estado">
         <div class="pc-pct"><b style="color:${pctC}">${Math.min(r.pct, 100)}%</b><small>${t1(Math.min(r.cargadoCD || 0, r.cap))} / ${fmtNum(r.cap, 0)} t</small></div>
-        <div class="pc-est-r">${pillEstado(e)}${fs}${r.segundoPropuesto ? segChip(r) : ''}</div>
+        <div class="pc-est-r">${pillEstado(e)}${fs}${r.segundoPropuesto ? segChip(r) : ''}${extraChips(r)}</div>
       </div>
       <div class="pc-dirs"><span class="pc-lbl">Camiones directos</span>${directosV2(r)}</div>
     </div>`;
@@ -11942,7 +11968,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
       const out = [];
       if (d._manual !== null && !d._ajusteSF && !d._reservaSF) out.push(`<span style="font-size:10px;color:#7c3aed;font-weight:700" title="Asignación manual/confirmada">${d._manual === 0 ? 'NO CARGA' : 'FIJO'}</span>`);
       // (20-nov-2026) Hacia los camiones adicionales abiertos sin programar (3º, 4º…).
-      const ext = (r.extras || []).filter(k => !progMap.get(`${r.ce}|${k}`) && d._camionN !== k).map(k => b(d, k, `→ ${k}º`, `Pasar al ${k}º camión`));
+      const ext = (r.camExtra || []).filter(k => !progMap.get(`${r.ce}|${k}`) && d._camionN !== k).map(k => b(d, k, `→ ${k}º`, `Pasar al ${k}º camión`));
       if (String(enTab).startsWith('ext')) { out.push(b(d, 1, '→ CD', 'Pasar al camión CD'), ...ext, b(d, 0, 'Sacar', 'No cargar hoy')); }
       else if (enTab === 'saldo') { out.push(...ext); }
       else if (enTab === 'seg') { out.push(b(d, 1, '→ CD', 'Pasar al camión CD'), ...ext, b(d, 0, 'Sacar', 'No cargar hoy')); }
@@ -11976,13 +12002,12 @@ async function renderPlanCargaCore(stage, opts = {}) {
   }
   // ── (20-nov-2026, Jordan) CAMIONES ADICIONALES 3º…6º ─────────────────────────────────────────────
   const PUEDE_EXTRA = PUEDE_TRANSPORTE || PUEDE_COORD;
-  const sigExtra = r => { const usados = [2, ...(r.extras || [])]; const k = Math.max(...usados) + 1; return k <= CAM_EXTRA_MAX ? k : null; };
+  const sigExtra = r => { const usados = [2, ...(r.camExtra || [])]; const k = Math.max(...usados) + 1; return k <= CAM_EXTRA_MAX ? k : null; };
   function extraAgregarHtml(r) {
     const k = sigExtra(r);
     if (!PUEDE_EXTRA || !k) return '';
-    return `<div class="pc-extra pc-seg2" style="background:#f5f3ff;border-color:#c4b5fd"><span class="material-symbols-outlined" style="color:#7c3aed">add_road</span>
-      <div style="flex:1;min-width:0"><b>¿Queda carga para otro día?</b>Agrega un ${k}º camión para ${escapeHtml(r.nombre)}: se llena con el saldo en el orden de prioridad y le puedes subir NV, retiros o líneas a mano. Su día de carga se elige al programarlo.</div>
-      <button class="sv-btn-p" data-ext-add="${escapeHtml(r.ce)}"><span class="material-symbols-outlined">add</span>Agregar ${k}º camión</button></div>`;
+    // (20-nov-2026, Jordan) Con saldo ≥85% el camión se habilita solo (pestaña propia). Esto es sólo para armarlo a mano bajo esa regla.
+    return `<div style="display:flex;justify-content:flex-end;margin:8px 0"><button class="sv-btn" data-ext-add="${escapeHtml(r.ce)}" title="Saldo bajo el ${Math.round(UMBRAL_CAMION_EXTRA * 100)}%: abre un ${k}º camión vacío para armarlo a mano (NV, retiros o líneas)"><span class="material-symbols-outlined">add</span>Armar ${k}º camión a mano</button></div>`;
   }
   const saldoSinCamion = d => !d._enCamion && !d._camion2 && !d._camionN && d._manual !== 0 && !d._sinFondo;
   function extraBodyHtml(r, k) {
@@ -11995,7 +12020,8 @@ async function renderPlanCargaCore(stage, opts = {}) {
     const saldo = p ? '' : CAT_V2.map((c, i) => { const it = (r.det[c.k] || []).filter(saldoSinCamion); return it.length ? grupoHtml('#9ca3af', `Sin camión · ${CAT_LARGO[i]}`, it, c.tipo, accSal, { ce: r.ce, opts: [[k, `Todo → ${k}º`]] }) : ''; }).join('');
     const btns = [];
     if (!p && PUEDE_TRANSPORTE) btns.push(`<button class="sv-btn-p" data-ext-prog="${ceA}" data-ext-cam="${k}"${ton > 0.05 ? '' : ' disabled'}><span class="material-symbols-outlined">task_alt</span>Programar ${k}º camión</button>`);
-    if (!p && PUEDE_EXTRA) btns.push(`<button class="sv-btn" data-ext-del="${ceA}" data-ext-cam="${k}"><span class="material-symbols-outlined">delete</span>Quitar ${k}º camión</button>`);
+    const porRegla = (r.extrasProp || []).includes(k);
+    if (!p && PUEDE_EXTRA && !porRegla) btns.push(`<button class="sv-btn" data-ext-del="${ceA}" data-ext-cam="${k}"><span class="material-symbols-outlined">delete</span>Quitar ${k}º camión</button>`);
     const bajo = ton > 0.05 && pct < PCT_PROGRAMAR_CD;
     return kv([
         ['Carga', `${t1(ton)} t · ${pct}%${bajo ? ' ' + pill('bajo ' + PCT_PROGRAMAR_CD + '%', 'warn') : ''}`], ['Capacidad', `${fmtNum(r.cap, 0)} t`],
@@ -12003,7 +12029,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
           : '<span class="pc-st" style="background:#f5f3ff;color:#5b21b6"><i style="background:#7c3aed"></i>Abierto · sin programar</span>'],
         ton > r.cap + 0.05 ? ['Sobrecarga', `<span style="color:#b5000b;font-weight:700">⚠ ${t1(ton - r.cap)} t sobre la capacidad · se puede programar igual</span>`] : null,
       ])
-      + (p ? progHtml(r, k) : (btns.length ? `<div class="pc-extra pc-seg2" style="background:#f5f3ff;border-color:#c4b5fd"><span class="material-symbols-outlined" style="color:#7c3aed">local_shipping</span><div style="flex:1;min-width:0"><b>${k}º camión · sin programar</b>Ajusta la carga y prográmalo con su día de carga (Sáb, Lun, Mar…). No lo programa el cierre automático de las ${HHMM_CIERRE}.</div><div class="pc-av-btns">${btns.join('')}</div></div>` : ''))
+      + (p ? progHtml(r, k) : (btns.length ? `<div class="pc-extra pc-seg2" style="background:#f5f3ff;border-color:#c4b5fd"><span class="material-symbols-outlined" style="color:#7c3aed">local_shipping</span><div style="flex:1;min-width:0"><b>${k}º camión · ${porRegla ? `habilitado: el saldo supera el ${Math.round(UMBRAL_CAMION_EXTRA * 100)}% de un camión` : 'sin programar'}</b>Ajusta la carga y prográmalo con su día de carga (Sáb, Lun, Mar…). No lo programa el cierre automático de las ${HHMM_CIERRE}.</div><div class="pc-av-btns">${btns.join('')}</div></div>` : ''))
       + (grupos || '<div class="sv-note-box">Sin carga todavía: sube líneas desde «Sin camión», el camión CD o el 2º camión.</div>')
       + (saldo ? `<div class="sv-sub" style="margin:14px 0 6px;max-width:none;font-weight:700">Disponible sin camión (no cabe en los anteriores)</div>${saldo}` : '')
       + (p ? extraAgregarHtml(r) : '');
@@ -12045,7 +12071,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
     const avisos = [];
     if (ton > r.cap + 0.05) avisos.push(`El ${k}º camión SUPERA la capacidad: ${t1(ton)} t de ${fmtNum(r.cap, 0)} t (${Math.round(ton / r.cap * 100)}%).`);
     if (r.cap > 0 && ton < r.cap * PCT_PROGRAMAR_CD / 100 - 0.05) avisos.push(`La carga está BAJO el ${PCT_PROGRAMAR_CD}%: ${t1(ton)} t de ${fmtNum(r.cap, 0)} t (${Math.round(ton / r.cap * 100)}%). Puedes programarlo igual.`);
-    const usadas = [1, 2, ...(r.extras || [])].filter(c => c !== k).map(c => progMap.get(`${ce}|${c}`)).filter(Boolean).map(x => `${fmtFechaISO(x.fecha_carga)} ${x.patente_camion || ''}`.trim());
+    const usadas = [1, 2, ...(r.camExtra || [])].filter(c => c !== k).map(c => progMap.get(`${ce}|${c}`)).filter(Boolean).map(x => `${fmtFechaISO(x.fecha_carga)} ${x.patente_camion || ''}`.trim());
     const t = await showTransporteCamionModal({ titulo: `${k}º camión → ${r.nombre}`, sub: `${t1(ton)} t de ${fmtNum(r.cap, 0)} t${usadas.length ? ' · otros camiones: ' + usadas.join(', ') : ''}`,
       ini: {}, otros: otrosProgramados(ce, k), fechaDef: '', presentacion: presCam(ce, k), avisos, choque: { clave: `CAM|${planOrigen}|${ce}|${k}` } });
     if (!t) return;
@@ -12056,6 +12082,10 @@ async function renderPlanCargaCore(stage, opts = {}) {
       const { error: e1 } = await supabase.from('abast_plan_linea_camion').upsert([...filas.values()], { onConflict: 'fecha,cd_origen,ce,documento,material' });
       if (e1) { showAlert('No se pudo congelar la carga: ' + e1.message, 'error'); return; }
       filas.forEach((v, kk) => r.asig.set(kk, k));
+    }
+    if (!(r.extras || []).includes(k)) {   // habilitado por la regla 85%: queda guardado al programarlo
+      await supabase.from('abast_plan_camion_extra').upsert({ fecha: hoyIsoPlan, cd_origen: planOrigen, ce, camion: k, creado_por: quien }, { onConflict: 'fecha,cd_origen,ce,camion' });
+      r.extras = [...(r.extras || []), k].sort((a, b) => a - b);
     }
     if (!(await guardarProgramado(ce, k, t))) return;
     await leerProgramados();
@@ -12160,7 +12190,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
   function drawerHtml(r) {
     const tabs = [{ k: 'cd', lbl: `Camión CD · ${Math.min(r.pct, 100)}%`, color: '#444749' }];
     if (r.segundoPropuesto) tabs.push({ k: 'seg', lbl: `2º camión · ${t1(r.tonSegundo)} t${segAcept.has(r.ce) ? '' : ' (por aceptar)'}`, color: '#15803d' });
-    (r.extras || []).forEach(k => tabs.push({ k: `ext:${k}`, lbl: `${k}º camión · ${t1((r.tonExtras || {})[k] || 0)} t${progMap.get(`${r.ce}|${k}`) ? '' : ' (sin programar)'}`, color: '#7c3aed' }));
+    (r.camExtra || []).forEach(k => tabs.push({ k: `ext:${k}`, lbl: `${k}º camión · ${t1((r.tonExtras || {})[k] || 0)} t${progMap.get(`${r.ce}|${k}`) ? '' : ' (sin programar)'}`, color: '#7c3aed' }));
     DIR_V2.forEach(t => (r[t.lista] || []).forEach(c => tabs.push({ k: `${t.k}:${c.n}`, lbl: `${t.lbl}${(r[t.lista] || []).length > 1 ? ' ' + c.n : ''} · ${t1(c.ton)} t`, color: t.color })));
     if ((r.fabCandidatos || []).length || [...(r.camionesFabSuc || []), ...(r.camionesFabCli || [])].some(c => c.manualId))
       tabs.push({ k: 'dirman', lbl: `Unir directos${(r.fabCandidatos || []).length ? ' · ' + r.fabCandidatos.length + ' OC' : ''}`, color: '#b45309' });
@@ -12425,7 +12455,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
         ton_stock: r4(r.tonStock), ton_venta_cliente: r4(r.tonVentaCliente), ton_fab_cli: r4(r.tonFabCli), ton_fab_suc: r4(r.tonFabSuc) },
       segundo: r.segundoPropuesto ? { ton: r4(r.tonSegundo), pct: r.cap > 0 ? Math.round(r.tonSegundo / r.cap * 100) : 0, aceptado: segAcept.has(r.ce) } : null,
       directos };
-    const cams = [1, 2, ...(r.extras || [])].map(cam => {
+    const cams = [1, 2, ...(r.camExtra || [])].map(cam => {
       const p = progMap.get(`${r.ce}|${cam}`);
       if (!p) return null;
       const lineas = lineasDe(cam === 1 ? (d => d._enCamion) : cam === 2 ? (d => d._camion2) : (d => d._camionN === cam));
@@ -12524,7 +12554,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
     resultado.forEach(r => {
       const { fila, cams: cs } = estadoCorreoFila(r);
       // Seguimiento de Carga: camiones CD / 2º programados y directos con patente.
-      const sgs = [1, 2, ...(r.extras || [])].map(cam => segCamionCD(r, cam)).filter(Boolean).concat(segDirectos(r));
+      const sgs = [1, 2, ...(r.camExtra || [])].map(cam => segCamionCD(r, cam)).filter(Boolean).concat(segDirectos(r));
       // (7-oct-2026) Foto congelada: sólo se registra en Seguimiento lo que aún no tiene foto.
       sgs.forEach(sg => { const kf = `${r.ce}|${sg.cab.tipo_camion}|${sg.cab.clave}`; if (yaFoto.has(kf)) return;
         const ks = `seg|${hoyIsoPlan}|${planOrigen}|${r.ce}|${sg.cab.tipo_camion}|${sg.cab.clave}`, ss = JSON.stringify(sg); if (memo.get(ks) !== ss) segs.push({ k: ks, sig: ss, sg, kf }); });
@@ -12698,6 +12728,9 @@ async function renderPlanCargaCore(stage, opts = {}) {
     stage.querySelectorAll('[data-tab-plan]').forEach(b => b.addEventListener('click', () => { st.tab = b.dataset.tabPlan; draw(); }));
     stage.querySelectorAll('[data-seg-open]').forEach(b => b.addEventListener('click', e => {
       e.stopPropagation(); st.drawer = b.dataset.segOpen; st.tab = 'seg'; draw();
+    }));
+    stage.querySelectorAll('[data-ext-open]').forEach(b => b.addEventListener('click', e => {
+      e.stopPropagation(); st.drawer = b.dataset.extOpen; st.tab = 'ext:' + b.dataset.extCam; draw();
     }));
     stage.querySelectorAll('[data-seg-accion]').forEach(b => b.addEventListener('click', async e => {
       e.stopPropagation(); b.disabled = true;
