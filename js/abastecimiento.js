@@ -10,13 +10,13 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611201539';
-import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611201539';
-import { getDatabase } from './data.js?v=202611201539';
+import { supabase } from './supabase-client.js?v=202611201545';
+import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611201545';
+import { getDatabase } from './data.js?v=202611201545';
 import { COMUNAS_POR_REGION } from './chile-geo.js';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611201539';
-import { confirmar, pedirDato } from './confirmar.js?v=202611201539';
+import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611201545';
+import { confirmar, pedirDato } from './confirmar.js?v=202611201545';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -1109,7 +1109,7 @@ async function wireObraGeo(panel, row, st, comunaRuta, draw) {
   const l = obrasDe(row);
   const ids = [...new Set(l.map(o => String(o.id || '').trim()).filter(Boolean))];
   if (!ids.length) return;
-  const m = await import('./maestro-obras.js?v=202611201539');
+  const m = await import('./maestro-obras.js?v=202611201545');
   const faltan = ids.filter(id => !_obrasMaestro.has(id));
   if (faltan.length) { try { (await m.cargarObras(faltan)).forEach((o, k) => _obrasMaestro.set(k, o)); faltan.forEach(id => { if (!_obrasMaestro.has(id)) _obrasMaestro.set(id, null); }); } catch (_e) { /* sin maestro */ } }
   panel.querySelectorAll('[data-geo-obra]').forEach(sp => { sp.innerHTML = m.badgeGeo(_obrasMaestro.get(sp.dataset.geoObra)); });
@@ -8677,7 +8677,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611201539');
+    const m = await import('./ind-plan-carga.js?v=202611201545');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -12297,7 +12297,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
                 : `<button class="sv-btn" disabled style="opacity:.55;cursor:not-allowed" title="Se habilita cuando el ${k}º camión está aceptado y sobre el ${UMBRAL_PT_SIN_ENT}% (hoy ${pctK}%)"><span class="material-symbols-outlined">lock</span>PT sin entrega (Excel)</button>`)
               + (progMap.get(`${r.ce}|${k}`)
                 ? `<button class="sv-btn-p" data-picking="${escapeHtml(r.ce)}|${k}" title="Excel con lo que va en el ${k}º camión"><span class="material-symbols-outlined">assignment</span>Lista de picking (Excel)</button>`
-                : `<button class="sv-btn" disabled style="opacity:.55;cursor:not-allowed" title="Se habilita cuando el ${k}º camión está programado"><span class="material-symbols-outlined">lock</span>Lista de picking (Excel)</button>`; }
+                : `<button class="sv-btn" disabled style="opacity:.55;cursor:not-allowed" title="Se habilita cuando el ${k}º camión está programado"><span class="material-symbols-outlined">lock</span>Lista de picking (Excel)</button>`); }
             if (!camP) return '';
             // (16-nov-2026, Jordan) Reemplaza «Descargar sucursal (CSV)»: Lista de Picking del camión, sólo con el camión programado.
             // (17-nov-2026, Jordan) Sólo se habilita con el camión sobre el 85% de su capacidad.
