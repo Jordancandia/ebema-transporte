@@ -10,13 +10,13 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611200923';
-import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611200923';
-import { getDatabase } from './data.js?v=202611200923';
+import { supabase } from './supabase-client.js?v=202611200932';
+import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611200932';
+import { getDatabase } from './data.js?v=202611200932';
 import { COMUNAS_POR_REGION } from './chile-geo.js';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611200923';
-import { confirmar, pedirDato } from './confirmar.js?v=202611200923';
+import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611200932';
+import { confirmar, pedirDato } from './confirmar.js?v=202611200932';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -1109,7 +1109,7 @@ async function wireObraGeo(panel, row, st, comunaRuta, draw) {
   const l = obrasDe(row);
   const ids = [...new Set(l.map(o => String(o.id || '').trim()).filter(Boolean))];
   if (!ids.length) return;
-  const m = await import('./maestro-obras.js?v=202611200923');
+  const m = await import('./maestro-obras.js?v=202611200932');
   const faltan = ids.filter(id => !_obrasMaestro.has(id));
   if (faltan.length) { try { (await m.cargarObras(faltan)).forEach((o, k) => _obrasMaestro.set(k, o)); faltan.forEach(id => { if (!_obrasMaestro.has(id)) _obrasMaestro.set(id, null); }); } catch (_e) { /* sin maestro */ } }
   panel.querySelectorAll('[data-geo-obra]').forEach(sp => { sp.innerHTML = m.badgeGeo(_obrasMaestro.get(sp.dataset.geoObra)); });
@@ -5076,7 +5076,9 @@ async function togglePrioridad(tipo, doc, centro, on, material, etiqueta) {
     if (error) { showAlert('No se pudo marcar la prioridad: ' + error.message, 'error'); return false; }
     showAlert(directo ? `${lbl} marcado como PRIORIDAD de carga` : `Prioridad de ${lbl} enviada a Abastecimiento para aprobación`, 'success');
   } else {
-    if (!await confirmar(`¿Quitar la PRIORIDAD de carga de ${lbl}?`, { aceptar: 'Quitar prioridad', icono: 'remove_done' })) return false;
+    // (20-nov-2026) Marca antigua del pedido completo (sin material) vista desde una línea: se quita la del pedido entero.
+    const txtQ = m ? `¿Quitar la PRIORIDAD de carga de ${lbl}?` : `¿Quitar la PRIORIDAD de carga de ${lbl}?\n\nEsta marca es del pedido completo: se quita de todas sus líneas. Después puedes marcar sólo las líneas que necesites.`;
+    if (!await confirmar(txtQ, { aceptar: 'Quitar prioridad', icono: 'remove_done' })) return false;
     let q = supabase.from('abast_prioridad_carga').update({ activo: false, desmarcado_por: quien, desmarcado_en: new Date().toISOString() }).eq('tipo', tipo).eq('documento', d).eq('activo', true);
     q = m ? q.eq('material', m) : q.is('material', null);
     const { error } = await q;
@@ -6326,7 +6328,8 @@ const V2 = {
     titulo: 'Pedidos de Traslados',
     ocultar: ocultarCdQuilicura(false),
     drawerW: 'min(1180px, 96vw)',   // (10-nov-2026) detalle ancho para ver los productos
-    prioridad: { tipo: 'traslado', doc: r => r.doc_compr ?? r.oc ?? r.pt, centro: r => r.ce },   // (15-oct-2026) check PRIORIDAD
+    // (20-nov-2026, Jordan) Prioridad por LÍNEA (PT + material), no por PT completo. Las marcas antiguas del PT completo siguen valiendo.
+    prioridad: { tipo: 'traslado', doc: r => r.doc_compr ?? r.oc ?? r.pt, material: r => r.material, centro: r => r.ce },
     desc: 'Pedidos de traslados desde centros de distribución a sucursales',
     origen: { of: r => r.cesu, opciones: ORIGENES_CD },
     async preload() { const [estadoPlan, aj, cm] = await Promise.all([estadoPlanTraslados(), loadAjustesUnidades(), loadCargaManualTr()]); return { estadoPlan, ajU: mapaAjustesUnidades(aj), cmMap: mapaCargaManualTr(cm, 'TRASLADO') }; },
@@ -8630,7 +8633,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611200923');
+    const m = await import('./ind-plan-carga.js?v=202611200932');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.

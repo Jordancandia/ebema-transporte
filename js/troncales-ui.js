@@ -32,8 +32,8 @@ export function tonHtml(n) {
 }
 
 // Encabezado del shell: fecha y hora de la última actualización SAP de la vista
-import { confirmar } from './confirmar.js?v=202611200923';
-import { comentariosHabilitados, conteosComentarios, celdaComentarios, montarHilo, tomarFoco, abrirHiloSuelto } from './comentarios.js?v=202611200923';
+import { confirmar } from './confirmar.js?v=202611200932';
+import { comentariosHabilitados, conteosComentarios, celdaComentarios, montarHilo, tomarFoco, abrirHiloSuelto } from './comentarios.js?v=202611200932';
 export function setUltimaActualizacion(ts) {
   const el = document.getElementById('sv-upd');
   if (!el) return;
@@ -719,7 +719,9 @@ async function renderTablaV2Core(stage, cfg, deps, viewKey, recarga = false) {
       ch.addEventListener('change', async () => {
         const r = rowsAll.find(x => x.__rid === ch.dataset.prio); if (!r) return;
         ch.disabled = true;
-        const ok = await deps.togglePrioridad(prioCfg.tipo, prioDoc(r), prioCfg.centro ? String(prioCfg.centro(r) ?? '').trim() : null, ch.checked, prioMat(r), prioLbl(r));
+        // (20-nov-2026) Al quitar, se usa el material de la marca real (una marca antigua del pedido completo no tiene material)
+        const pr0 = prioDe(r), mat0 = ch.checked || !pr0 ? prioMat(r) : String(pr0.material ?? '').trim();
+        const ok = await deps.togglePrioridad(prioCfg.tipo, prioDoc(r), prioCfg.centro ? String(prioCfg.centro(r) ?? '').trim() : null, ch.checked, mat0, mat0 ? prioLbl(r) : prioDoc(r));
         if (ok) prios = await deps.loadPrioridades(prioCfg.tipo);
         draw();
       });
@@ -731,7 +733,8 @@ async function renderTablaV2Core(stage, cfg, deps, viewKey, recarga = false) {
         const r = rowsAll.find(x => x.__rid === b.dataset[k]); if (!r) return;
         b.disabled = true;
         try {
-          const ok = await deps.evaluarPrioridad(prioCfg.tipo, prioDoc(r), acepta, prioMat(r), prioLbl(r));
+          const pr0 = prioDe(r), mat0 = pr0 ? String(pr0.material ?? '').trim() : prioMat(r);
+          const ok = await deps.evaluarPrioridad(prioCfg.tipo, prioDoc(r), acepta, mat0, mat0 ? prioLbl(r) : prioDoc(r));
           if (ok) prios = await deps.loadPrioridades(prioCfg.tipo);
         } finally { draw(); }
       })));
