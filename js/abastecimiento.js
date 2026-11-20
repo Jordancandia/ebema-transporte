@@ -10,13 +10,13 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611201520';
-import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611201520';
-import { getDatabase } from './data.js?v=202611201520';
+import { supabase } from './supabase-client.js?v=202611201539';
+import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611201539';
+import { getDatabase } from './data.js?v=202611201539';
 import { COMUNAS_POR_REGION } from './chile-geo.js';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611201520';
-import { confirmar, pedirDato } from './confirmar.js?v=202611201520';
+import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611201539';
+import { confirmar, pedirDato } from './confirmar.js?v=202611201539';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -1109,7 +1109,7 @@ async function wireObraGeo(panel, row, st, comunaRuta, draw) {
   const l = obrasDe(row);
   const ids = [...new Set(l.map(o => String(o.id || '').trim()).filter(Boolean))];
   if (!ids.length) return;
-  const m = await import('./maestro-obras.js?v=202611201520');
+  const m = await import('./maestro-obras.js?v=202611201539');
   const faltan = ids.filter(id => !_obrasMaestro.has(id));
   if (faltan.length) { try { (await m.cargarObras(faltan)).forEach((o, k) => _obrasMaestro.set(k, o)); faltan.forEach(id => { if (!_obrasMaestro.has(id)) _obrasMaestro.set(id, null); }); } catch (_e) { /* sin maestro */ } }
   panel.querySelectorAll('[data-geo-obra]').forEach(sp => { sp.innerHTML = m.badgeGeo(_obrasMaestro.get(sp.dataset.geoObra)); });
@@ -8677,7 +8677,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611201520');
+    const m = await import('./ind-plan-carga.js?v=202611201539');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -12291,7 +12291,11 @@ async function renderPlanCargaCore(stage, opts = {}) {
           ${(() => { const camP = st.tab === 'cd' ? 1 : st.tab === 'seg' ? 2 : null;
             // (20-nov-2026, Jordan) Camión adicional (3º…): lista de picking cuando está programado
             if (!camP && String(st.tab).startsWith('ext:')) { const k = Number(st.tab.split(':')[1]);
-              return progMap.get(`${r.ce}|${k}`)
+              const pctK = pctCamionPt(r, k);
+              return (pctK >= UMBRAL_PT_SIN_ENT
+                ? `<button class="sv-btn" data-pt-sin-ent="${escapeHtml(r.ce)}|${k}" title="Pedidos de traslado del ${k}º camión que aún no tienen entrega (Excel: hoja PT y hoja PT REVEX)"><span class="material-symbols-outlined">playlist_add_check</span>PT sin entrega (Excel)</button>`
+                : `<button class="sv-btn" disabled style="opacity:.55;cursor:not-allowed" title="Se habilita cuando el ${k}º camión está aceptado y sobre el ${UMBRAL_PT_SIN_ENT}% (hoy ${pctK}%)"><span class="material-symbols-outlined">lock</span>PT sin entrega (Excel)</button>`)
+              + (progMap.get(`${r.ce}|${k}`)
                 ? `<button class="sv-btn-p" data-picking="${escapeHtml(r.ce)}|${k}" title="Excel con lo que va en el ${k}º camión"><span class="material-symbols-outlined">assignment</span>Lista de picking (Excel)</button>`
                 : `<button class="sv-btn" disabled style="opacity:.55;cursor:not-allowed" title="Se habilita cuando el ${k}º camión está programado"><span class="material-symbols-outlined">lock</span>Lista de picking (Excel)</button>`; }
             if (!camP) return '';
@@ -12352,6 +12356,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
   function pctCamionPt(r, cam) {
     marcarCapacidadCD(r);
     if (cam === 2) return segAcept.has(r.ce) && r.cap > 0 ? Math.round((r.tonSegundo || 0) / r.cap * 100) : 0;
+    if (cam >= 3) return !(r.extrasProp || []).includes(cam) && r.cap > 0 ? Math.round(((r.tonExtras || {})[cam] || 0) / r.cap * 100) : 0;   // (20-nov-2026) camión adicional aceptado
     return Math.min(Number(r.pct) || 0, 100);
   }
   function ptHabilitado(r, cam) { return pctCamionPt(r, cam) >= UMBRAL_PT_SIN_ENT; }
@@ -12367,7 +12372,8 @@ async function renderPlanCargaCore(stage, opts = {}) {
       const acept = segAcept.has(r.ce);
       const ok1 = ptHabilitado(r, 1), ok2 = ptHabilitado(r, 2);
       cats.forEach(k => (r.det[k] || []).forEach(d => {
-        const enPlan = cam === 1 ? (ok1 && !!d._enCamion) : cam === 2 ? (ok2 && acept && !!d._camion2) : ((ok1 && !!d._enCamion) || (ok2 && acept && !!d._camion2));
+        const enPlan = cam >= 3 ? (ptHabilitado(r, cam) && d._camionN === cam)   // (20-nov-2026) camión adicional
+          : cam === 1 ? (ok1 && !!d._enCamion) : cam === 2 ? (ok2 && acept && !!d._camion2) : ((ok1 && !!d._enCamion) || (ok2 && acept && !!d._camion2));
         if (!enPlan || tx(d.entrega_entrante || d.entrega) || !tx(d.pt)) return;
         const cant = k === 'cross' ? (Number(d.ctdPend) || 0) : (parseNum(d.ctd) || 0);
         const key = `${tx(d.pt)}|${tx(d.material)}`;
@@ -12959,7 +12965,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
       const [ce, cam] = String(btn.dataset.ptSinEnt).split('|');
       if (ce === '__todo__') { descargarPtSinEntrega(resultado, `PT_sin_entrega_${planOrigen}_${isoLocal(hoy00())}.xlsx`); return; }
       const r = resultado.find(x => x.ce === ce);
-      if (r) descargarPtSinEntrega([r], `PT_sin_entrega_${planOrigen}_${r.ce}${cam === '2' ? '_camion2' : ''}_${isoLocal(hoy00())}.xlsx`, Number(cam) || null);
+      if (r) descargarPtSinEntrega([r], `PT_sin_entrega_${planOrigen}_${r.ce}${Number(cam) >= 2 ? '_camion' + cam : ''}_${isoLocal(hoy00())}.xlsx`, Number(cam) || null);
     }));
     stage.querySelectorAll('[data-descarga]').forEach(btn => btn.addEventListener('click', (e) => {
       e.stopPropagation();
