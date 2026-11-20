@@ -10,13 +10,13 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611201428';
-import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611201428';
-import { getDatabase } from './data.js?v=202611201428';
+import { supabase } from './supabase-client.js?v=202611201443';
+import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611201443';
+import { getDatabase } from './data.js?v=202611201443';
 import { COMUNAS_POR_REGION } from './chile-geo.js';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611201428';
-import { confirmar, pedirDato } from './confirmar.js?v=202611201428';
+import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611201443';
+import { confirmar, pedirDato } from './confirmar.js?v=202611201443';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -1109,7 +1109,7 @@ async function wireObraGeo(panel, row, st, comunaRuta, draw) {
   const l = obrasDe(row);
   const ids = [...new Set(l.map(o => String(o.id || '').trim()).filter(Boolean))];
   if (!ids.length) return;
-  const m = await import('./maestro-obras.js?v=202611201428');
+  const m = await import('./maestro-obras.js?v=202611201443');
   const faltan = ids.filter(id => !_obrasMaestro.has(id));
   if (faltan.length) { try { (await m.cargarObras(faltan)).forEach((o, k) => _obrasMaestro.set(k, o)); faltan.forEach(id => { if (!_obrasMaestro.has(id)) _obrasMaestro.set(id, null); }); } catch (_e) { /* sin maestro */ } }
   panel.querySelectorAll('[data-geo-obra]').forEach(sp => { sp.innerHTML = m.badgeGeo(_obrasMaestro.get(sp.dataset.geoObra)); });
@@ -8650,7 +8650,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611201428');
+    const m = await import('./ind-plan-carga.js?v=202611201443');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -11236,13 +11236,17 @@ async function renderPlanCargaCore(stage, opts = {}) {
     const r = resultado.find(x => x.ce === ce);
     if (!r) return;
     if (!PUEDE_COORD) { showAlert('Tu perfil no puede coordinar transporte.', 'error'); return; }
-    const nom = cam === 2 ? '2º camión' : 'Camión CD';
-    const t = await showTransporteCamionModal({ titulo: `${nom} → ${r.nombre}`, sub: `Coordinar transporte (sin programar) · día objetivo ${diaCorto(diaObj(r))}`,
-      ini: coordMap.get(`${ce}|${cam}`) || {}, otros: otrosProgramados(ce, cam), fechaDef: isoLocal(diaObj(r)), modo: 'coordinar', presentacion: presCam(ce, cam), choque: { clave: `CAM|${planOrigen}|${ce}|${cam}` } });
+    const nom = cap1(nomCam(cam));
+    const t = await showTransporteCamionModal({ titulo: `${nom} → ${r.nombre}`, sub: `Coordinar transporte (sin programar)${cam >= 3 ? '' : ' · día objetivo ' + diaCorto(diaObj(r))}`,
+      ini: coordMap.get(`${ce}|${cam}`) || {}, otros: otrosProgramados(ce, cam), fechaDef: cam >= 3 ? '' : isoLocal(diaObj(r)), modo: 'coordinar', presentacion: presCam(ce, cam), choque: { clave: `CAM|${planOrigen}|${ce}|${cam}` } });
     if (!t) return;
     const { error } = await supabase.from('abast_plan_camion_coordinado').upsert({ fecha: hoyIsoPlanP(), cd_origen: planOrigen, ce, camion: cam, ...t,
       coordinado_por: await getUserEmail(), coordinado_en: new Date().toISOString() }, { onConflict: 'fecha,cd_origen,ce,camion' });
     if (error) { showAlert('No se pudo guardar la coordinación: ' + msgCupo(error), 'error'); return; }
+    if (cam >= 3 && !(r.extras || []).includes(cam)) {   // (20-nov-2026) camión adicional coordinado: queda abierto aunque baje el saldo
+      await supabase.from('abast_plan_camion_extra').upsert({ fecha: hoyIsoPlan, cd_origen: planOrigen, ce, camion: cam, creado_por: await getUserEmail() }, { onConflict: 'fecha,cd_origen,ce,camion' });
+      r.extras = [...(r.extras || []), cam].sort((a, b) => a - b);
+    }
     await leerCoordinados();
     showAlert(`Transporte del ${nom.toLowerCase()} de ${r.nombre} coordinado (${t.patente_camion}). Falta programarlo (Owner o Planner Distribución); la carga sigue actualizándose.`, 'success');
     draw();
@@ -11250,7 +11254,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
   async function quitarCoordinacionTransp(ce, cam) {
     const r = resultado.find(x => x.ce === ce);
     if (!r || !PUEDE_COORD) return;
-    if (!await confirmar(`¿Quitar el transporte coordinado del ${cam === 2 ? '2º camión' : 'camión CD'} de ${r.nombre}?`)) return;
+    if (!await confirmar(`¿Quitar el transporte coordinado del ${nomCam(cam)} de ${r.nombre}?`)) return;
     const { error } = await supabase.from('abast_plan_camion_coordinado').delete().eq('fecha', hoyIsoPlanP()).eq('cd_origen', planOrigen).eq('ce', ce).eq('camion', cam);
     if (error) { showAlert('No se pudo quitar la coordinación: ' + error.message, 'error'); return; }
     await leerCoordinados();
@@ -11783,6 +11787,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
     const btn = !puedeSeg ? '' : acept
       ? `<button class="sv-btn" data-seg-accion="quitar" data-seg-ce="${escapeHtml(r.ce)}"><span class="material-symbols-outlined">remove_circle</span>Quitar 2º camión</button>`
       : `<button class="sv-btn-p" ${PUEDE_TRANSPORTE ? `data-seg-directo="${escapeHtml(r.ce)}"` : `data-seg-accion="aceptar" data-seg-ce="${escapeHtml(r.ce)}"`} title="Acepta el 2º camión${PUEDE_TRANSPORTE ? ' y abre los datos del transporte' : ''}"><span class="material-symbols-outlined">task_alt</span>Aceptar 2º camión</button>
+         ${PUEDE_TRANSPORTE && PUEDE_COORD ? `<button class="sv-btn" data-seg-coord="${escapeHtml(r.ce)}" title="Acepta el 2º camión y guarda los datos del transporte sin programarlo: la carga sigue actualizándose"><span class="material-symbols-outlined">event_available</span>Aceptar y coordinar</button>` : ''}
          <button class="sv-btn" data-seg-rechazar="${escapeHtml(r.ce)}" title="No se programa: las líneas quedan «No cabe» para el próximo plan"><span class="material-symbols-outlined">cancel</span>No aceptar</button>`;
     // (4-oct-2026, Jordan) El 2º camión sugerido es una opción: al aceptarlo se despliegan sus SKU
     // y el botón para agregar los datos del transporte.
@@ -12018,8 +12023,12 @@ async function renderPlanCargaCore(stage, opts = {}) {
     const grupos = CAT_V2.map((c, i) => { const it = (r.det[c.k] || []).filter(d => d._camionN === k); return it.length ? grupoHtml(c.color, CAT_LARGO[i], it, c.tipo, acc, p ? null : { ce: r.ce, opts: [[1, 'Todo → CD'], [0, 'Sacar todo']] }) : ''; }).join('');
     const accSal = p ? null : accMover(r, 'saldo');
     const saldo = p ? '' : CAT_V2.map((c, i) => { const it = (r.det[c.k] || []).filter(saldoSinCamion); return it.length ? grupoHtml('#9ca3af', `Sin camión · ${CAT_LARGO[i]}`, it, c.tipo, accSal, { ce: r.ce, opts: [[k, `Todo → ${k}º`]] }) : ''; }).join('');
-    const btns = [];
-    if (!p && PUEDE_TRANSPORTE) btns.push(`<button class="sv-btn-p" data-ext-prog="${ceA}" data-ext-cam="${k}"${ton > 0.05 ? '' : ' disabled'}><span class="material-symbols-outlined">task_alt</span>Programar ${k}º camión</button>`);
+    const btns = [], co = coordMap.get(`${r.ce}|${k}`);
+    if (!p && PUEDE_TRANSPORTE) btns.push(`<button class="sv-btn-p" data-ext-prog="${ceA}" data-ext-cam="${k}"${ton > 0.05 ? '' : ' disabled'}><span class="material-symbols-outlined">task_alt</span>${co ? 'Programar con lo coordinado' : `Programar ${k}º camión`}</button>`);
+    // (20-nov-2026, Jordan) Coordinar sin programar: los datos del transporte quedan guardados y la carga sigue actualizándose.
+    if (!p && PUEDE_COORD) btns.push(co
+      ? `<button class="sv-btn" data-coord-tr="${ceA}" data-prog-cam="${k}"><span class="material-symbols-outlined">edit</span>Editar coordinación</button><button class="sv-btn" data-coord-quitar="${ceA}" data-prog-cam="${k}"><span class="material-symbols-outlined">remove_circle</span>Quitar coordinación</button>`
+      : `<button class="sv-btn${PUEDE_TRANSPORTE ? '' : '-p'}" data-coord-tr="${ceA}" data-prog-cam="${k}"><span class="material-symbols-outlined">event_available</span>Coordinar transporte</button>`);
     const porRegla = (r.extrasProp || []).includes(k);
     if (!p && PUEDE_EXTRA && !porRegla) btns.push(`<button class="sv-btn" data-ext-del="${ceA}" data-ext-cam="${k}"><span class="material-symbols-outlined">delete</span>Quitar ${k}º camión</button>`);
     const bajo = ton > 0.05 && pct < PCT_PROGRAMAR_CD;
@@ -12029,7 +12038,9 @@ async function renderPlanCargaCore(stage, opts = {}) {
           : '<span class="pc-st" style="background:#f5f3ff;color:#5b21b6"><i style="background:#7c3aed"></i>Abierto · sin programar</span>'],
         ton > r.cap + 0.05 ? ['Sobrecarga', `<span style="color:#b5000b;font-weight:700">⚠ ${t1(ton - r.cap)} t sobre la capacidad · se puede programar igual</span>`] : null,
       ])
-      + (p ? progHtml(r, k) : (btns.length ? `<div class="pc-extra pc-seg2" style="background:#f5f3ff;border-color:#c4b5fd"><span class="material-symbols-outlined" style="color:#7c3aed">local_shipping</span><div style="flex:1;min-width:0"><b>${k}º camión · ${porRegla ? `habilitado: el saldo supera el ${Math.round(UMBRAL_CAMION_EXTRA * 100)}% de un camión` : 'sin programar'}</b>Ajusta la carga y prográmalo con su día de carga (Sáb, Lun, Mar…). No lo programa el cierre automático de las ${HHMM_CIERRE}.</div><div class="pc-av-btns">${btns.join('')}</div></div>` : ''))
+      + (p ? progHtml(r, k) : (btns.length ? `<div class="pc-extra pc-seg2" style="background:#f5f3ff;border-color:#c4b5fd"><span class="material-symbols-outlined" style="color:#7c3aed">local_shipping</span><div style="flex:1;min-width:0"><b>${k}º camión · ${co ? 'transporte coordinado, sin programar' : porRegla ? `habilitado: el saldo supera el ${Math.round(UMBRAL_CAMION_EXTRA * 100)}% de un camión` : 'sin programar'}</b>${co
+        ? `Carga ${escapeHtml(cap1(diaCorto(parseISODate(co.fecha_carga) || diaObj(r))))}${presLinea(co)} · Patente ${escapeHtml(co.patente_camion || '')} · ${escapeHtml([co.id_transporte, co.transportista].filter(Boolean).join(' · '))}<br><small style="color:#5c5f61">La carga sigue actualizándose hasta que se programe. No lo programa el cierre automático de las ${HHMM_CIERRE}.</small>`
+        : `Ajusta la carga y coordina o programa el transporte con su día de carga (Sáb, Lun, Mar…). No lo programa el cierre automático de las ${HHMM_CIERRE}.`}</div><div class="pc-av-btns">${btns.join('')}</div></div>` : ''))
       + (grupos || '<div class="sv-note-box">Sin carga todavía: sube líneas desde «Sin camión», el camión CD o el 2º camión.</div>')
       + (saldo ? `<div class="sv-sub" style="margin:14px 0 6px;max-width:none;font-weight:700">Disponible sin camión (no cabe en los anteriores)</div>${saldo}` : '')
       + (p ? extraAgregarHtml(r) : '');
@@ -12073,7 +12084,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
     if (r.cap > 0 && ton < r.cap * PCT_PROGRAMAR_CD / 100 - 0.05) avisos.push(`La carga está BAJO el ${PCT_PROGRAMAR_CD}%: ${t1(ton)} t de ${fmtNum(r.cap, 0)} t (${Math.round(ton / r.cap * 100)}%). Puedes programarlo igual.`);
     const usadas = [1, 2, ...(r.camExtra || [])].filter(c => c !== k).map(c => progMap.get(`${ce}|${c}`)).filter(Boolean).map(x => `${fmtFechaISO(x.fecha_carga)} ${x.patente_camion || ''}`.trim());
     const t = await showTransporteCamionModal({ titulo: `${k}º camión → ${r.nombre}`, sub: `${t1(ton)} t de ${fmtNum(r.cap, 0)} t${usadas.length ? ' · otros camiones: ' + usadas.join(', ') : ''}`,
-      ini: {}, otros: otrosProgramados(ce, k), fechaDef: '', presentacion: presCam(ce, k), avisos, choque: { clave: `CAM|${planOrigen}|${ce}|${k}` } });
+      ini: coordMap.get(`${ce}|${k}`) || {}, otros: otrosProgramados(ce, k), fechaDef: '', presentacion: presCam(ce, k), avisos, choque: { clave: `CAM|${planOrigen}|${ce}|${k}` } });
     if (!t) return;
     const quien = await getUserEmail(), filas = new Map();
     f.orden.forEach(d => { if (d._camionN !== k) return; const kk = `${docLinea(d)}|${matLinea(d)}`;
@@ -12741,6 +12752,9 @@ async function renderPlanCargaCore(stage, opts = {}) {
       st.drawer = null; draw();
       showAlert(`2º camión no aceptado${r ? ' para ' + r.nombre : ''}: esas líneas quedan «No cabe» para el próximo plan.`, 'info');
     }));
+    // (20-nov-2026, Jordan) Aceptar el 2º camión y sólo coordinar su transporte (sin programar).
+    stage.querySelectorAll('[data-seg-coord]').forEach(b => b.addEventListener('click', async e => { e.stopPropagation(); b.disabled = true;
+      try { const ce = b.dataset.segCoord; if (!segAcept.has(ce) && !(await accionSegundo(ce, 'aceptar', true))) return; await coordinarTransporte(ce, 2); } finally { b.disabled = false; } }));
     stage.querySelectorAll('[data-seg-directo]').forEach(b => b.addEventListener('click', async e => { e.stopPropagation(); b.disabled = true; try { await aceptarYProgramarSegundo(b.dataset.segDirecto); } finally { b.disabled = false; } }));
     // (20-nov-2026) Camiones adicionales
     stage.querySelectorAll('[data-ext-add]').forEach(b => b.addEventListener('click', async e => { e.stopPropagation(); b.disabled = true; try { await agregarExtra(b.dataset.extAdd); } finally { b.disabled = false; } }));
