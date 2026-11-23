@@ -29,11 +29,11 @@
 //   · lista   Con entrega    todas las posiciones libres cubiertas por entregas
 //   Marcas: vencido (F. entrega < hoy), bloqueo parcial, unidades sin confirmar.
 // ============================================================================
-import { supabase } from './supabase-client.js?v=202611231652';
-import { getDatabase, loadRoutesData, HIST_ALIAS_PREFIJO } from './data.js?v=202611231652';
+import { supabase } from './supabase-client.js?v=202611231657';
+import { getDatabase, loadRoutesData, HIST_ALIAS_PREFIJO } from './data.js?v=202611231657';
 import { loadLeaflet } from './utils.js';
-import { filtrarPorCentro, can } from './permisos.js?v=202611231652';
-import { cargarObras, abrirEditorObra, tieneUbicacion, geoDe, badgeGeo } from './maestro-obras.js?v=202611231652';
+import { filtrarPorCentro, can } from './permisos.js?v=202611231657';
+import { cargarObras, abrirEditorObra, tieneUbicacion, geoDe, badgeGeo } from './maestro-obras.js?v=202611231657';
 
 const CFG = {
   tiles: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',

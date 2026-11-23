@@ -10,13 +10,13 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611231652';
-import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611231652';
-import { getDatabase } from './data.js?v=202611231652';
+import { supabase } from './supabase-client.js?v=202611231657';
+import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611231657';
+import { getDatabase } from './data.js?v=202611231657';
 import { COMUNAS_POR_REGION } from './chile-geo.js';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611231652';
-import { confirmar, pedirDato } from './confirmar.js?v=202611231652';
+import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611231657';
+import { confirmar, pedirDato } from './confirmar.js?v=202611231657';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -1109,7 +1109,7 @@ async function wireObraGeo(panel, row, st, comunaRuta, draw) {
   const l = obrasDe(row);
   const ids = [...new Set(l.map(o => String(o.id || '').trim()).filter(Boolean))];
   if (!ids.length) return;
-  const m = await import('./maestro-obras.js?v=202611231652');
+  const m = await import('./maestro-obras.js?v=202611231657');
   const faltan = ids.filter(id => !_obrasMaestro.has(id));
   if (faltan.length) { try { (await m.cargarObras(faltan)).forEach((o, k) => _obrasMaestro.set(k, o)); faltan.forEach(id => { if (!_obrasMaestro.has(id)) _obrasMaestro.set(id, null); }); } catch (_e) { /* sin maestro */ } }
   panel.querySelectorAll('[data-geo-obra]').forEach(sp => { sp.innerHTML = m.badgeGeo(_obrasMaestro.get(sp.dataset.geoObra)); });
@@ -8757,7 +8757,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611231652');
+    const m = await import('./ind-plan-carga.js?v=202611231657');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -9066,8 +9066,9 @@ async function loadLockProgramadosHoy(cd) {
   const out = new Map(), tx = v => String(v ?? '').trim();
   try {
     const { data: cams, error } = await supabase.from('abast_seguimiento_camion').select('id,ce,clave,patente_camion,fecha_carga')
-      .eq('fecha_plan', isoLocal(hoy00())).eq('cd_origen', cd).in('clave', ['CD', '2', ...CLAVES_EXTRA]);
+      .or(`fecha_plan.eq.${isoLocal(hoy00())},fecha_carga.eq.${isoLocal(hoy00())}`).eq('cd_origen', cd).in('clave', ['CD', '2', ...CLAVES_EXTRA]);
     if (error) throw error;
+    // (23-nov-2026) también los camiones de carga HOY que se reubicaron a su plan anterior (fn_abast_reubicar_camion_mismo_dia).
     // (23-nov-2026, Jordan) Un camión programado hoy que CARGA HOY (mismo día) es del plan anterior: no fija la carga del
     // camión CD de este plan (que carga el próximo día). Sus líneas salen del plan (ya van en ese camión) y el camión CD
     // del centro se vuelve a llenar con el espacio libre. Caso Talca 23-nov: 2,8 t fijas y «No caben 11,3 t» con 24,9 t libres.
@@ -10801,12 +10802,25 @@ async function renderPlanCargaCore(stage, opts = {}) {
   }
   // (3-oct-2026) Camiones programados con datos de transporte (1 = camión CD, 2 = 2º camión).
   let progMap = new Map();
+  // (23-nov-2026, Jordan) Camión programado hoy que CARGA HOY (o antes): es del plan anterior y no ocupa el cupo del
+  // camión de este plan. Se lista aparte (progPrevMap) y, al programar/coordinar ese cupo, se reubica a su plan anterior.
+  let progPrevMap = new Map();
   async function leerProgramados() {
     try {
+      const hoyI = isoLocal(hoy00());
       const { data } = await supabase.from('abast_plan_camion_programado').select('*')
-        .eq('fecha', isoLocal(hoy00())).eq('cd_origen', planOrigen);
-      progMap = new Map((data || []).map(x => [`${String(x.ce ?? '').trim()}|${x.camion}`, x]));
-    } catch (_e) { progMap = new Map(); }
+        .eq('fecha', hoyI).eq('cd_origen', planOrigen);
+      const esPrev = x => !!x.fecha_carga && String(x.fecha_carga).slice(0, 10) <= hoyI;
+      progMap = new Map((data || []).filter(x => !esPrev(x)).map(x => [`${String(x.ce ?? '').trim()}|${x.camion}`, x]));
+      progPrevMap = new Map((data || []).filter(esPrev).map(x => [`${String(x.ce ?? '').trim()}|${x.camion}`, x]));
+    } catch (_e) { progMap = new Map(); progPrevMap = new Map(); }
+  }
+  async function liberarCupoMismoDia(ce, cam) {
+    if (!progPrevMap.has(`${ce}|${cam}`)) return true;
+    const { error } = await supabase.rpc('fn_abast_reubicar_camion_mismo_dia', { p_cd: planOrigen, p_ce: ce, p_camion: cam });
+    if (error) { showAlert('No se pudo liberar el cupo del camión que carga hoy: ' + error.message, 'error'); return false; }
+    progPrevMap.delete(`${ce}|${cam}`);
+    return true;
   }
   // (12-oct-2026, Jordan) Transporte coordinado SIN programar (Planner Distribución): datos guardados,
   // la carga sigue actualizándose; el OWNER programa con estos datos (foto, correo, seguimiento).
@@ -11357,6 +11371,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
     .map(x => ({ lbl: `${nomCam(Number(x.camion))} ${getNombreCentro(x.ce)}`, patente_camion: x.patente_camion, chofer_rut: x.chofer_rut }));
   async function guardarProgramado(ce, cam, t, res = null) {
     // (16-nov-2026) Confirmación de una reserva: se libera primero (para no contar doble el cupo del bloque) y, si falla, se repone.
+    if (!(await liberarCupoMismoDia(ce, cam))) return false;   // (23-nov-2026) camión de carga hoy → a su plan anterior
     if (res) await borrarReservaCamion(res);
     const { error } = await supabase.from('abast_plan_camion_programado').upsert({ fecha: hoyIsoPlanP(), cd_origen: planOrigen, ce, camion: cam, ...t,
       programado_por: await getUserEmail(), programado_en: new Date().toISOString() }, { onConflict: 'fecha,cd_origen,ce,camion' });
@@ -11378,6 +11393,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
     const t = await showTransporteCamionModal({ titulo: `${nom} → ${r.nombre}`, sub: `Coordinar transporte (sin programar)${cam >= 3 ? '' : ' · día objetivo ' + diaCorto(diaObj(r))}`,
       ini: coordMap.get(`${ce}|${cam}`) || {}, otros: otrosProgramados(ce, cam), fechaDef: cam >= 3 ? '' : isoLocal(diaObj(r)), modo: 'coordinar', presentacion: presCam(ce, cam), choque: { clave: `CAM|${planOrigen}|${ce}|${cam}` } });
     if (!t) return;
+    if (!(await liberarCupoMismoDia(ce, cam))) return;   // (23-nov-2026) evita que el cierre 17:00 pise el camión de carga hoy
     const { error } = await supabase.from('abast_plan_camion_coordinado').upsert({ fecha: hoyIsoPlanP(), cd_origen: planOrigen, ce, camion: cam, ...t,
       coordinado_por: await getUserEmail(), coordinado_en: new Date().toISOString() }, { onConflict: 'fecha,cd_origen,ce,camion' });
     if (error) { showAlert('No se pudo guardar la coordinación: ' + msgCupo(error), 'error'); return; }
@@ -11960,6 +11976,8 @@ async function renderPlanCargaCore(stage, opts = {}) {
     const t = [];
     const pg = progMap.get(`${r.ce}|1`);
     if (pg) t.push(TAG('task_alt', 'Programado', `Camión CD programado · patente ${pg.patente_camion} · ${pg.transportista || pg.id_transporte}`, 'seg-ok'));
+    { const pp = progPrevMap.get(`${r.ce}|1`);   // (23-nov-2026) camión del plan anterior que carga hoy
+      if (pp) t.push(TAG('local_shipping', `Carga hoy ${fmtPatente(pp.patente_camion)}`, `Camión CD programado hoy con carga ${fmtFechaISO(pp.fecha_carga)} (plan anterior): no ocupa el camión de este plan; sus líneas ya no se planifican`, 'h48')); }
     // (23-oct-2026, Jordan) Camión CD con carga manual sin entrega SAP.
     if (Object.values(r.det || {}).some(a => (a || []).some(d => d._cargaManual && (d._enCamion || d._camion2))))
       t.push(TAG('inventory_2', 'Pend. recepción y entrega', MARCA_PEND_ENTREGA + ': lleva carga manual sin entrega SAP', 'baja'));
