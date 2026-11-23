@@ -10,13 +10,13 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611231829';
-import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611231829';
-import { getDatabase } from './data.js?v=202611231829';
+import { supabase } from './supabase-client.js?v=202611232043';
+import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611232043';
+import { getDatabase } from './data.js?v=202611232043';
 import { COMUNAS_POR_REGION } from './chile-geo.js';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611231829';
-import { confirmar, pedirDato } from './confirmar.js?v=202611231829';
+import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611232043';
+import { confirmar, pedirDato } from './confirmar.js?v=202611232043';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -1129,7 +1129,7 @@ async function wireObraGeo(panel, row, st, comunaRuta, draw) {
   const l = obrasDe(row);
   const ids = [...new Set(l.map(o => String(o.id || '').trim()).filter(Boolean))];
   if (!ids.length) return;
-  const m = await import('./maestro-obras.js?v=202611231829');
+  const m = await import('./maestro-obras.js?v=202611232043');
   const faltan = ids.filter(id => !_obrasMaestro.has(id));
   if (faltan.length) { try { (await m.cargarObras(faltan)).forEach((o, k) => _obrasMaestro.set(k, o)); faltan.forEach(id => { if (!_obrasMaestro.has(id)) _obrasMaestro.set(id, null); }); } catch (_e) { /* sin maestro */ } }
   panel.querySelectorAll('[data-geo-obra]').forEach(sp => { sp.innerHTML = m.badgeGeo(_obrasMaestro.get(sp.dataset.geoObra)); });
@@ -8798,7 +8798,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611231829');
+    const m = await import('./ind-plan-carga.js?v=202611232043');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -11265,6 +11265,22 @@ async function renderPlanCargaCore(stage, opts = {}) {
     </div>`;
   }
   // Pestaña «Suministro» del panel de la sucursal: sólo informa (el ajuste se hace en las vistas).
+  // (23-nov-2026, Jordan) Lo sin fondo se ve en el camión de cada sucursal (no en un aviso general del plan): cada
+  // posición lleva a su vista (Revex / Crossdocking / Pedidos de Traslados) filtrada por el pedido, donde Abastecimiento ajusta.
+  const SF_SUB = { revex: ['pedidos_traslados_revex', 'Revex'], cross: ['pedidos_traslados_4000', 'Crossdocking'], quiebre: ['pedidos_traslados', 'Pedidos de Traslados'], stock: ['pedidos_traslados', 'Pedidos de Traslados'], adelanto: ['pedidos_traslados', 'Pedidos de Traslados'] };
+  function sfFueraCamionHtml(r) {
+    const fuera = [...sfLineasPlan(r).values()].filter(l => l.items.some(d => d._sinFondo));
+    if (!fuera.length) return '';
+    const ton = fuera.reduce((s, l) => s + l.items.filter(d => d._sinFondo).reduce((a, d) => a + (d.ton || 0), 0), 0);
+    return `<div class="sv-dr-k" style="margin:14px 0 4px;color:#9a3412">Sin fondo · fuera del camión (${fuera.length} · ${escapeHtml(t1(ton))} t)</div>
+      <div class="sv-sub" style="margin:0 0 6px;max-width:none">Haz clic en una posición para ajustarla en su vista.</div>
+      <div class="sv-table-wrap"><table class="sv-table"><tbody>${fuera.map(l => { const [sb, lbl] = SF_SUB[l.cat] || SF_SUB.stock;
+        const t = l.items.filter(d => d._sinFondo).reduce((a, d) => a + (d.ton || 0), 0), rev = l.items.some(d => d._revexSinSum);
+        return `<tr data-sf-doc="${escapeHtml(sb)}|${escapeHtml(l.doc)}" style="cursor:pointer" title="Abrir ${escapeHtml(lbl)} filtrado por el pedido ${escapeHtml(l.doc)}">
+          <td><b class="sv-mono">${escapeHtml(l.doc)}</b> · <span class="sv-mono">${escapeHtml(l.mat)}</span><div class="sv-sub" style="margin:0">${escapeHtml(l.nombre)}</div></td>
+          <td>${pill(rev ? 'REVEX SIN SUMINISTRO' : 'SIN FONDO', 'bad')}</td><td class="r">${escapeHtml(t1(t))} t</td>
+          <td class="r" style="white-space:nowrap"><span class="sv-btn" style="padding:3px 10px;font-size:12px"><span class="material-symbols-outlined" style="font-size:16px">open_in_new</span>Ajustar en ${escapeHtml(lbl)}</span></td></tr>`; }).join('')}</tbody></table></div>`;
+  }
   function sinFondoHtml(r) {
     const dt = sfDatos(r);
     const plan = sfLineasPlan(r);
@@ -11273,7 +11289,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
     const estPill = est => est === 'SIN FONDO' ? pill('SIN FONDO', 'bad') : est === 'PARCIAL' ? pill('PARCIAL', 'warn') : est === 'SUMINISTRADO' ? pill('CON ENTREGA', 'ok') : pillSinEntrega();
     const tabla = (lst, conEst) => `<div class="sv-table-wrap"><table class="sv-table"><thead><tr><th>Pedido · material</th><th>Tipo</th>${conEst ? '<th>Estado</th><th>Días</th>' : '<th>Entrega</th>'}<th class="r">Ton</th></tr></thead><tbody>${lst.map(l => {
       const e = sfEstadoLinea(r.ce, l.doc, l.mat), ton = l.items.filter(d => conEst ? d._sinFondo : (d._enCamion || d._camion2)).reduce((s, d) => s + (d.ton || 0), 0);
-      return `<tr style="cursor:default"><td><b class="sv-mono">${escapeHtml(l.doc)}</b> · <span class="sv-mono">${escapeHtml(l.mat)}</span>${conEst ? '' : AJUSTE_BADGE}<div class="sv-sub" style="margin:0">${escapeHtml(l.nombre)}</div></td>
+      return `<tr ${conEst ? `data-sf-doc="${escapeHtml((SF_SUB[l.cat] || SF_SUB.stock)[0])}|${escapeHtml(l.doc)}" style="cursor:pointer" title="Abrir su vista filtrada por el pedido para ajustar"` : 'style="cursor:default"'}><td><b class="sv-mono">${escapeHtml(l.doc)}</b> · <span class="sv-mono">${escapeHtml(l.mat)}</span>${conEst ? '' : AJUSTE_BADGE}<div class="sv-sub" style="margin:0">${escapeHtml(l.nombre)}</div></td>
         <td>${escapeHtml(SF_LBL[l.cat] || l.cat)}</td>
         ${conEst ? `<td>${estPill(e ? e.estado : 'SIN FONDO')}</td><td>${e && e.dias >= 2 ? `<span class="pc-tag baja">${e.dias} días</span>` : '<span class="sv-sub" style="margin:0">1er día</span>'}</td>` : `<td>${l.entrega.length ? `<span class="sv-mono">${escapeHtml(l.entrega.join(', '))}</span>` : '<span class="sv-muted">sin entrega aún · próximo aviso a Logística</span>'}</td>`}
         <td class="r">${escapeHtml(t1(ton))} t</td></tr>`; }).join('')}</tbody></table></div>`;
@@ -12404,6 +12420,7 @@ async function renderPlanCargaCore(stage, opts = {}) {
         + segundoHtml(r, fill)
         + (progMap.get(`${r.ce}|1`) && !r.segundoPropuesto ? extraAgregarHtml(r) : '')
         // (4-oct-2026, Jordan) Sólo lo que va en el camión; lo que queda fuera se ve en el CSV.
+        + sfFueraCamionHtml(r)   // (23-nov-2026) sin fondo en el camión → ajuste en su vista
         + ((() => { const accC = accMover(r, 'cd'); return CAT_V2.map((c, i) => { const it = (r.det[c.k] || []).filter(d => d._enCamion); return it.length ? grupoHtml(c.color, CAT_LARGO[i], it, c.tipo, accC, progMap.get(`${r.ce}|1`) ? null : { ce: r.ce, opts: [[2, 'Todo → 2º'], [0, 'Sacar todo']] }) : ''; }).join(''); })() || '<div class="sv-note-box">El camión CD no tiene carga para esta sucursal.</div>')
         // (15-oct-2026 21:51, Jordan) El detalle muestra SÓLO lo considerado que cumple la capacidad del camión;
         // lo que queda fuera no se muestra (sigue en el CSV descargable).
@@ -12996,7 +13013,6 @@ async function renderPlanCargaCore(stage, opts = {}) {
       ${vencidosHtml()}
       ${acopioHtml()}
       ${diferenciaCubrirHtml()}
-      ${sinFondoBannerHtml()}
       ${reservasHtml()}
       <div class="pc-list">
         ${!resultado.length ? '<div class="sv-card pc-empty"><span class="material-symbols-outlined">inventory_2</span>Sin carga para este origen.</div>'
@@ -13111,7 +13127,8 @@ async function renderPlanCargaCore(stage, opts = {}) {
     // (17-nov-2026, Jordan) Sin fondo: abrir, marcar, aplicar, deshacer, volver a incluir
     stage.querySelectorAll('[data-cambiar]').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); cambiarLinea(b.dataset.cambiar, b.dataset.doc, b.dataset.mat); }));
     stage.querySelectorAll('[data-sf-open]').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); st.drawer = b.dataset.sfOpen; st.tab = 'sum'; draw(); }));
-    stage.querySelectorAll('[data-sf-ir]').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); irASub(b.dataset.sfIr); }));   // (18-nov-2026)
+    stage.querySelectorAll('[data-sf-ir]').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); irASub(b.dataset.sfIr); }));
+    stage.querySelectorAll('[data-sf-doc]').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); const [sb, doc] = b.dataset.sfDoc.split('|'); saltarASub(sb, filtroDocSub(sb, doc), { sub: 'plan_carga', lbl: 'Plan de Carga' }); }));   // (23-nov-2026)   // (18-nov-2026)
     stage.querySelectorAll('[data-sf-sacar]').forEach(b => b.addEventListener('change', () => { const s2 = st.sf && st.sf.sacar; if (!s2) return; if (b.checked) s2.add(b.dataset.sfSacar); else s2.delete(b.dataset.sfSacar); draw(); }));
     stage.querySelectorAll('[data-sf-subir]').forEach(b => b.addEventListener('change', () => { const s2 = st.sf && st.sf.subir; if (!s2) return; if (b.checked) s2.add(b.dataset.sfSubir); else s2.delete(b.dataset.sfSubir); draw(); }));
     stage.querySelectorAll('[data-sf-aplicar]').forEach(b => b.addEventListener('click', async e => { e.stopPropagation(); b.disabled = true; try { await aplicarSinFondo(b.dataset.sfAplicar); } finally { b.disabled = false; } }));

@@ -1,13 +1,13 @@
 // MÓDULO: Administrador de Tarifas Clientes — SIT EBEMA v2.1
 // Vistas: Histórico (6M) | Consolidación | Densidad Logística | Frecuencia y Especiales | Cluster | Resultados
-import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig, saveHistorico, loadHistorico, saveHistoricoGlobal, getOrigenGroups, loadHistoricoFlete360 } from './data.js?v=202611231829';
-import { CAP_LIST, truckTypesWithCap, calcularCostoRuta } from './tarifas-engine.js?v=202611231829';
-import { buildZcapMap } from './zcap.js?v=202611231829';
+import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig, saveHistorico, loadHistorico, saveHistoricoGlobal, getOrigenGroups, loadHistoricoFlete360 } from './data.js?v=202611232043';
+import { CAP_LIST, truckTypesWithCap, calcularCostoRuta } from './tarifas-engine.js?v=202611232043';
+import { buildZcapMap } from './zcap.js?v=202611232043';
 import { formatCLP, showAlert, toCSV, downloadFile, formatDateDDMMYYYY, escapeHtml } from './utils.js';
-import { supabase } from './supabase-client.js?v=202611231829';
-import { renderClientesV2 } from './tarifas-clientes-v2.js?v=202611231829';
-import { confirmar } from './confirmar.js?v=202611231829';
-import { asegurarVigente } from './tarifa-vigente.js?v=202611231829';
+import { supabase } from './supabase-client.js?v=202611232043';
+import { renderClientesV2 } from './tarifas-clientes-v2.js?v=202611232043';
+import { confirmar } from './confirmar.js?v=202611232043';
+import { asegurarVigente } from './tarifa-vigente.js?v=202611232043';
 
 // ─────────────────────────────────────────────────────────────
 // ESTADO DE MÓDULO
