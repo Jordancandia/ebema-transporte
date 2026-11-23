@@ -5,8 +5,8 @@
 //  Lee en vivo las vistas v_ind_* de Supabase (RLS: usuario @ebema.cl con rol).
 //  Paleta alineada a las presentaciones (PPT) del Comité de Transporte.
 // ============================================================================
-import { supabase } from './supabase-client.js?v=202611231256';
-import { centrosAlcance } from './permisos.js?v=202611231256';
+import { supabase } from './supabase-client.js?v=202611231303';
+import { centrosAlcance } from './permisos.js?v=202611231303';
 
 // --- Paleta PPT -------------------------------------------------------------
 const C = {
@@ -289,7 +289,7 @@ function generalHTML(d){
       heatmapHTML(d.tq,'tarifa_kg',heatTarRG,money1)+`</div></div>`)}
 
     ${card('3.3 · Impacto EbemaClick','Costo, despachos y toneladas',
-      tile('Despachos',nf0.format(sum(d.ebm.map(r=>r.entregas))),'entregas V Garrido · '+nf0.format(sum(d.ebm.map(r=>r.entregas_sobrecosto)))+' sobrecosto 400141')+
+      tile('Despachos',nf0.format(sum(d.ebm.map(r=>r.entregas))),'entregas E-Click · '+nf0.format(sum(d.ebm.map(r=>r.entregas_sobrecosto)))+' sobrecosto 400141')+
       tile('Toneladas despachadas',(function(){var t=sum(d.ebm.map(r=>r.toneladas));return t?nf1.format(t)+' t':'–';})(),'período')+
       tile('Documentos',nf0.format(sum(d.ebm.map(r=>r.docs))),'transporte · período')+
       tile('Costo pagado',mm(sum(d.ebm.map(r=>r.pagado))/1e6),'flete pagado · incl. 400141 '+mm(sum(d.ebm.map(r=>r.pagado_sobrecosto))/1e6),'text-[#C0000C]'),
@@ -1535,7 +1535,7 @@ function tarifaHTML(d,grupos,grupo){
       `<div class="grid grid-cols-1 md:grid-cols-2 gap-md">`+
       `<div>`+legend([{n:'5 más caras',c:R.red2}])+`<div id="t_caro"></div></div>`+
       `<div>`+legend([{n:'5 más baratas',c:R.grey}])+`<div id="t_barato"></div></div></div>`)}
-    ${showEbc?card('4 · Impacto EbemaClick — período (ene → a la fecha)','Financiamiento de la operación EbemaClick en todo el período (DT con entregas V Garrido T + sobrecosto 400141 del mismo DT)',
+    ${showEbc?card('4 · Impacto EbemaClick — período (ene → a la fecha)','Financiamiento de la operación EbemaClick en todo el período (DT con entregas E-Click + sobrecosto 400141 del mismo DT)',
       tile('Documentos',nf0.format(ebcTot.docs),'ene → hoy')+
       tile('Toneladas',nf1.format(ebcTot.ton)+' t','movidas')+
       tile('Flete pagado',mm(ebcTot.pag),'costo operación','text-[#EE1B22]')+
@@ -1543,7 +1543,7 @@ function tarifaHTML(d,grupos,grupo){
       `<div class="grid grid-cols-1 md:grid-cols-2 gap-md">`+
       `<div>`+legend([{n:'Flete pagado $MM',c:R.red2},{n:'Cobrado $MM',c:R.red}])+`<div id="t_ebc"></div></div>`+
       `<div>`+legend([{n:'Financiamiento neto $MM',c:R.grey}])+`<div id="t_ebc_neto"></div></div></div>`):''}
-    <div class="text-[13px] text-secondary mt-lg leading-relaxed">Solo última milla (entregas a cliente ZE01/ZE06/ZE20/ZE05/ZE04); se excluyen los traslados troncales de reposición (NL/EL). Comuna = comuna destino (routes.comuna); rutas de una misma comuna se agrupan. EbemaClick = documentos de transporte con al menos una entrega de V Garrido T; se imputa el flete de sus entregas más el de las líneas 400141 (sobrecosto flete) del mismo DT. El cuadro solo aparece en centros con operación EbemaClick.</div>
+    <div class="text-[13px] text-secondary mt-lg leading-relaxed">Solo última milla (entregas a cliente ZE01/ZE06/ZE20/ZE05/ZE04); se excluyen los traslados troncales de reposición (NL/EL). Comuna = comuna destino (routes.comuna); rutas de una misma comuna se agrupan. EbemaClick = documentos de transporte con al menos una entrega marcada E-Click en el reporte de flete (regla 23-nov-2026; antes vendedor V Garrido T); se imputa el flete de sus entregas más el de las líneas 400141 (sobrecosto flete) del mismo DT. El cuadro solo aparece en centros con operación EbemaClick.</div>
   </div>`;
 }
 function drawTarifa(d,grupo){
