@@ -5,8 +5,8 @@
 //  Lee en vivo las vistas v_ind_* de Supabase (RLS: usuario @ebema.cl con rol).
 //  Paleta alineada a las presentaciones (PPT) del Comité de Transporte.
 // ============================================================================
-import { supabase } from './supabase-client.js?v=202611231311';
-import { centrosAlcance } from './permisos.js?v=202611231311';
+import { supabase } from './supabase-client.js?v=202611231514';
+import { centrosAlcance } from './permisos.js?v=202611231514';
 
 // --- Paleta PPT -------------------------------------------------------------
 const C = {
@@ -1650,7 +1650,7 @@ async function finPaint(){
 }
 
 // ---------------------------- DETALLE POR DESPACHO ---------------------------
-let _desp={grupo:null, per:'3m', neg:'TODOS', perd:false, q:'', orden:'fecha', page:0}, _despRows={}, _despEnt={}, _despOpen=null;
+let _desp={grupo:null, per:'3m', neg:'TODOS', vend:'TODOS', perd:false, q:'', orden:'fecha', page:0}, _despRows={}, _despEnt={}, _despOpen=null;
 const DESP_PAGE=50;
 const fd=s=>s?String(s).slice(8,10)+'-'+String(s).slice(5,7)+'-'+String(s).slice(2,4):'–';
 const NEG_OPTS=[['TODOS','Todos'],['NORMAL','Normal'],['ECLICK','E-Click'],['ZV15','Flete especial ZV15'],['ZV20','Flete tercero ZV20'],['EXPRESS','Envío Express']];
@@ -1668,6 +1668,7 @@ function despFiltra(){
   let out=rows.filter(r=>r.mes_label>=a && r.mes_label<=b);
   if(_desp.neg==='EXPRESS') out=out.filter(r=>r.express);
   else if(_desp.neg!=='TODOS') out=out.filter(r=>String(r.negocios||'').indexOf(_desp.neg)>=0);
+  if(_desp.vend!=='TODOS') out=out.filter(r=>String(r.vendedores||'').split(',').map(x=>x.trim()).indexOf(_desp.vend)>=0);
   if(_desp.perd) out=out.filter(r=>(+r.cobrado||0)<(+r.pagado||0));
   if(q) out=out.filter(r=>[r.dt,r.entregas,r.vendedores,r.comunas,r.transportista,sucNom(r.suc_id)].join(' ').toLowerCase().indexOf(q)>=0);
   const res=r=>(+r.cobrado||0)-(+r.pagado||0), cob=r=>(+r.pagado?(+r.cobrado||0)/(+r.pagado):9e9);
@@ -1687,6 +1688,7 @@ function despShellHTML(grupos){
       <div class="flex flex-wrap items-center gap-md mb-md text-[14px]">
         <label class="text-secondary">Período:</label>${nsSel('desp_per',NS_PER,_desp.per)}
         <label class="text-secondary">Tipo:</label>${nsSel('desp_neg',NEG_OPTS,_desp.neg)}
+        <label class="text-secondary">Vendedor:</label><select id="desp_vend" class="border border-surface-variant rounded-lg px-sm py-[4px] bg-surface-container-lowest text-on-surface text-[14px]" style="max-width:220px"></select>
         <label class="text-secondary">Ordenar:</label>${nsSel('desp_ord',ORD_OPTS,_desp.orden)}
         <label class="inline-flex items-center gap-[6px]"><input id="desp_perd" type="checkbox" ${_desp.perd?'checked':''}> Solo con pérdida (cobrado &lt; pagado)</label>
         <input id="desp_q" type="search" value="${esc(_desp.q)}" placeholder="Buscar DT, entrega, vendedor, comuna, transportista…" class="border border-surface-variant rounded-lg px-sm py-[4px] bg-surface-container-lowest text-on-surface" style="min-width:300px">
@@ -1694,7 +1696,7 @@ function despShellHTML(grupos){
       </div>
       <div id="desp_body"></div>
     </section>
-    <div class="text-[13px] text-secondary leading-relaxed">Un despacho = documento de transporte (DT) por sucursal. Montos en $ CLP del reporte FLETE COBRADO: sugerido = tarifa del sistema, cobrado = facturado al cliente (+ Flete ZV20 en flete tercero), pagado = pago al transportista. Clic en una fila para abrir el detalle del despacho con sus entregas (NV, factura, vendedor, cliente y fechas de NV, factura y entrega).</div>
+    <div class="text-[13px] text-secondary leading-relaxed">Un despacho = documento de transporte (DT) por sucursal. Montos en $ CLP del reporte FLETE COBRADO: sugerido = tarifa del sistema, cobrado = facturado al cliente (+ Flete ZV20 en flete tercero), pagado = pago al transportista. Al filtrar por vendedor se muestran los despachos donde participó (solo o con otros vendedores), con los montos completos del despacho. Clic en una fila para abrir el detalle del despacho con sus entregas (NV, factura, vendedor, cliente y fechas de NV, factura y entrega).</div>
   </div>`;
 }
 function despBodyHTML(){
@@ -1784,6 +1786,12 @@ async function despPaint(){
     const g=_desp.grupo;
     if(!_despRows[g]){ el.innerHTML=loadingHTML();
       _despRows[g]=await nsFetchAll(()=>supabase.from('v_ind_despacho').select('*').eq('grupo',g).order('fecha_transporte',{ascending:false}).order('dt')); }
+    const vs=document.getElementById('desp_vend');
+    if(vs){ const [a,b]=nsRango(_desp.per), cnt={};
+      (_despRows[g]||[]).filter(r=>r.mes_label>=a&&r.mes_label<=b).forEach(r=>String(r.vendedores||'').split(',').map(x=>x.trim()).filter(Boolean).forEach(v=>cnt[v]=(cnt[v]||0)+1));
+      const vend=Object.keys(cnt).sort((x,y)=>x.localeCompare(y,'es'));
+      if(_desp.vend!=='TODOS' && vend.indexOf(_desp.vend)<0) vend.unshift(_desp.vend);
+      vs.innerHTML=[['TODOS','Todos ('+vend.length+')']].concat(vend.map(v=>[v,v+' ('+(cnt[v]||0)+')'])).map(o=>`<option value="${esc(o[0])}" ${o[0]===_desp.vend?'selected':''}>${esc(o[1])}</option>`).join(''); }
     el.innerHTML=despBodyHTML();
     el.querySelectorAll('tr[data-desp]').forEach(tr=>tr.onclick=()=>despModal(tr.getAttribute('data-desp')));
     const pv=document.getElementById('desp_prev'), nx=document.getElementById('desp_next');
@@ -1800,7 +1808,7 @@ function despCSV(){
   const q=v=>{ v=v==null?'':String(v); return /[;"\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v; };
   const txt='﻿'+cols.map(c=>c[0]).join(';')+'\n'+rows.map(r=>cols.map(c=>q(c[1](r))).join(';')).join('\n');
   const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([txt],{type:'text/csv;charset=utf-8'}));
-  a.download='Detalle_Despachos_'+_desp.grupo+'_'+new Date().toISOString().slice(0,10)+'.csv'; document.body.appendChild(a); a.click(); a.remove();
+  a.download='Detalle_Despachos_'+_desp.grupo+(_desp.vend!=='TODOS'?'_'+_desp.vend.replace(/\s+/g,'_'):'')+'_'+new Date().toISOString().slice(0,10)+'.csv'; document.body.appendChild(a); a.click(); a.remove();
 }
 async function renderDespachos(container){
   container.innerHTML=loadingHTML();
@@ -1810,8 +1818,8 @@ async function renderDespachos(container){
     if(!grupos.length){ container.innerHTML=`<div class="text-secondary p-lg">Sin datos de flete para tus centros.</div>`; return; }
     if(!_desp.grupo||grupos.indexOf(_desp.grupo)<0) _desp.grupo=(grupos.indexOf('CONCEPCION')>=0?'CONCEPCION':grupos[0]);
     container.innerHTML=despShellHTML(grupos);
-    const on=(id,k,ev)=>{ const s=document.getElementById(id); if(!s) return; s[ev||'onchange']=e=>{ _desp[k]=(e.target.type==='checkbox'?e.target.checked:e.target.value); _desp.page=0; _despOpen=null; despPaint(); }; };
-    on('desp_grp','grupo'); on('desp_per','per'); on('desp_neg','neg'); on('desp_ord','orden'); on('desp_perd','perd');
+    const on=(id,k,ev)=>{ const s=document.getElementById(id); if(!s) return; s[ev||'onchange']=e=>{ _desp[k]=(e.target.type==='checkbox'?e.target.checked:e.target.value); if(k==='grupo') _desp.vend='TODOS'; _desp.page=0; _despOpen=null; despPaint(); }; };
+    on('desp_grp','grupo'); on('desp_per','per'); on('desp_vend','vend'); on('desp_neg','neg'); on('desp_ord','orden'); on('desp_perd','perd');
     const qi=document.getElementById('desp_q'); let tq=null;
     if(qi) qi.oninput=e=>{ clearTimeout(tq); tq=setTimeout(()=>{ _desp.q=e.target.value; _desp.page=0; _despOpen=null; despPaint(); },250); };
     const b=document.getElementById('desp_csv'); if(b) b.onclick=despCSV;
