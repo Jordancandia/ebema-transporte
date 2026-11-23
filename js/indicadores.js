@@ -5,8 +5,8 @@
 //  Lee en vivo las vistas v_ind_* de Supabase (RLS: usuario @ebema.cl con rol).
 //  Paleta alineada a las presentaciones (PPT) del Comité de Transporte.
 // ============================================================================
-import { supabase } from './supabase-client.js?v=202611231303';
-import { centrosAlcance } from './permisos.js?v=202611231303';
+import { supabase } from './supabase-client.js?v=202611231311';
+import { centrosAlcance } from './permisos.js?v=202611231311';
 
 // --- Paleta PPT -------------------------------------------------------------
 const C = {
@@ -34,7 +34,7 @@ let _cenGen = 'TODOS';        // Consolidado: centro seleccionado ('TODOS' = red
 
 let _view = 'consolidado';    // consolidado | nivel | tarifa | margen
 export function setIndicadoresSubTab(sub){
-  if (['consolidado','nivel','tarifa','margen','despachos'].indexOf(sub) >= 0) _view = sub;
+  if (['consolidado','nivel','tarifa','margen','despachos','transportistas'].indexOf(sub) >= 0) _view = sub;
   else if (sub === 'centro' || sub === 'general') _mode = sub;
 }
 
@@ -59,6 +59,7 @@ export async function renderIndicadoresView(container){
   if (_view === 'tarifa') return renderTarifa(container);
   if (_view === 'margen') return renderMargen(container);
   if (_view === 'despachos') return renderDespachos(container);
+  if (_view === 'transportistas') return renderTransportistas(container);
   paintShell();
   await loadGeneral();
 }
@@ -1583,7 +1584,7 @@ function drawTarifa(d,grupo){
 //  Fuente: v_ind_fin_flete, v_ind_despacho, v_ind_despacho_entrega (ind_flete_cobrado).
 // ============================================================================
 let _finRows=null, _finOpt={per:'anio', seg:'TODOS'};
-const SUC_NOM={'1000':'Santiago','1001':'Corte y Doblado','1005':'San Bernardo','1020':'Antofagasta','1040':'Coquimbo','1050':'La Calera','1060':'Rancagua','1070':'Talca','1080':'Concepción','1090':'Temuco','1100':'Puerto Montt','1160':'Chillán'};
+const SUC_NOM={'1000':'Santiago','1001':'Corte y Doblado','1002':'Electrosoldado','1003':'CD RM','1004':'Flete tercero','1081':'CD Biobío','1082':'Zincalum','1005':'San Bernardo','1020':'Antofagasta','1040':'Coquimbo','1050':'La Calera','1060':'Rancagua','1070':'Talca','1080':'Concepción','1090':'Temuco','1100':'Puerto Montt','1160':'Chillán'};
 const sucNom=id=>SUC_NOM[id]||id||'(s/i)';
 const NEG_LBL={NORMAL:'Normal',ECLICK:'E-Click',ZV15:'Flete especial ZV15',ZV20:'Flete tercero ZV20'};
 const SEG_FIN=[['TODOS','Todos los despachos'],['ULTIMA_MILLA','Última milla'],['TRONCAL','Troncal'],['MIXTO','Mixto']];
@@ -1815,6 +1816,161 @@ async function renderDespachos(container){
     if(qi) qi.oninput=e=>{ clearTimeout(tq); tq=setTimeout(()=>{ _desp.q=e.target.value; _desp.page=0; _despOpen=null; despPaint(); },250); };
     const b=document.getElementById('desp_csv'); if(b) b.onclick=despCSV;
     await despPaint();
+  }catch(e){ container.innerHTML=errorHTML(e); }
+}
+// ============================================================================
+//  PAGADO TRANSPORTISTAS (23-nov-2026) — por agente de servicio: monto pagado,
+//  viajes (DT) y puntos de entrega por viaje. Fuente: v_ind_viaje_transp (FLETE 360).
+// ============================================================================
+let _tr={grupo:'TODOS', per:'anio', seg:'TODOS', cap:'TODAS', q:'', orden:'pag'}, _trRows={};
+const TR_ORD=[['pag','Pagado (mayor primero)'],['viajes','Viajes (más primero)'],['ppv','Puntos por viaje (más primero)'],['cpv','$ por viaje (mayor primero)'],['cpp','$ por punto (mayor primero)']];
+function trAgg(rows){
+  const o={viajes:rows.length,pag:0,ptos:0,ent:0,ton:0,uno:0,pat:new Set()};
+  rows.forEach(r=>{ o.pag+=+r.pagado||0; o.ptos+=+r.n_puntos||0; o.ent+=+r.n_entregas||0; o.ton+=+r.ton||0; if((+r.n_puntos||0)<=1) o.uno++;
+    String(r.patentes||'').split(',').map(s=>s.trim()).filter(Boolean).forEach(p=>o.pat.add(p)); });
+  o.ppv=o.viajes?o.ptos/o.viajes:null; o.epv=o.viajes?o.ent/o.viajes:null; o.cpv=o.viajes?o.pag/o.viajes:null;
+  o.cpp=o.ptos?o.pag/o.ptos:null; o.ckg=o.ton?o.pag/(o.ton*1000):null; return o;
+}
+function trBase(){
+  const rows=_trRows[_tr.grupo]||[], [a,b]=nsRango(_tr.per);
+  return rows.filter(r=>r.mes_label>=a && r.mes_label<=b && (_tr.seg==='TODOS'||r.segmento===_tr.seg) && (_tr.cap==='TODAS'||String(r.cap_camion)===_tr.cap));
+}
+function trPorTransp(rows){
+  const m=new Map();
+  rows.forEach(r=>{ const k=r.id_transportista||r.transportista||'(sin transportista)'; if(!m.has(k)) m.set(k,{id:k,nombre:r.transportista||k,rows:[]}); m.get(k).rows.push(r); });
+  const out=[...m.values()].map(t=>Object.assign(t,trAgg(t.rows),{caps:(()=>{const c={}; t.rows.forEach(r=>{const k=r.cap_camion||'–'; c[k]=(c[k]||0)+1;}); return Object.entries(c).sort((x,y)=>y[1]-x[1]).map(x=>x[0]+' t').slice(0,2).join(' / ');})()}));
+  const q=_tr.q.trim().toLowerCase();
+  const f=q?out.filter(t=>(t.nombre+' '+t.id).toLowerCase().indexOf(q)>=0):out;
+  const k={pag:'pag',viajes:'viajes',ppv:'ppv',cpv:'cpv',cpp:'cpp'}[_tr.orden];
+  return f.sort((x,y)=>(y[k]||0)-(x[k]||0));
+}
+function trDistHTML(rows){
+  const n=rows.length||1, b=[0,0,0,0]; rows.forEach(r=>{ const p=+r.n_puntos||0; b[p<=1?0:p===2?1:p===3?2:3]++; });
+  const col=['#A9ACAE','#E88A8F','#EE1B22','#C0000C'], lab=['1 punto','2 puntos','3 puntos','4 o más'];
+  return `<div class="mb-md"><div class="text-[13px] text-secondary mb-[4px]">Distribución de viajes por N° de puntos de entrega</div>
+    <div style="display:flex;height:22px;border-radius:6px;overflow:hidden">${b.map((v,i)=>v?`<div title="${lab[i]}: ${nf0.format(v)} viajes" style="width:${v/n*100}%;background:${col[i]};color:#fff;font-size:12px;display:flex;align-items:center;justify-content:center;white-space:nowrap;overflow:hidden">${v/n>=0.06?nf0.format(v/n*100)+'%':''}</div>`:'').join('')}</div>
+    <div class="flex flex-wrap gap-md text-[12px] text-secondary mt-[4px]">${b.map((v,i)=>`<span><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${col[i]}"></span> ${lab[i]}: ${nf0.format(v)} (${nf1.format(v/n*100)}%)</span>`).join('')}</div></div>`;
+}
+function trBodyHTML(){
+  const rows=trBase(), T=trAgg(rows), lista=trPorTransp(rows);
+  if(!rows.length) return `<div class="text-secondary text-[14px] py-sm">Sin viajes con esos filtros.</div>`;
+  const tiles=tile('Pagado a transportistas',mm(T.pag/1e6),nf0.format(lista.length)+' agentes de servicio')+
+    tile('Viajes',nf0.format(T.viajes),nf0.format(T.ent)+' entregas · '+nf0.format(T.ton)+' t')+
+    tile('Puntos por viaje',nf1.format(T.ppv||0),nf0.format(T.ptos)+' puntos · '+nf1.format(T.epv||0)+' entregas/viaje')+
+    tile('Costo por viaje',peso(T.cpv),'por punto '+peso(T.cpp)+' · $/kg '+(T.ckg!=null?nf1.format(T.ckg):'–'));
+  const th=(t,l)=>`<th class="${l?'text-left':'text-right'} px-[6px] font-medium whitespace-nowrap">${t}</th>`;
+  const body=lista.map((t,i)=>`<tr class="border-t border-surface-variant cursor-pointer hover:bg-surface-container-low" data-tr="${esc(t.id)}" title="Ver detalle del transportista">
+      <td class="px-[6px] py-[3px] text-secondary tabular-nums">${i+1}</td>
+      <td class="px-[6px] whitespace-nowrap">${esc(t.nombre)}</td>
+      <td class="px-[6px] text-right tabular-nums">${nf0.format(t.viajes)}</td>
+      <td class="px-[6px] text-right tabular-nums font-semibold">${peso(t.pag)}</td>
+      <td class="px-[6px] text-right tabular-nums">${pct(T.pag?t.pag/T.pag*100:null)}</td>
+      <td class="px-[6px] text-right tabular-nums">${peso(t.cpv)}</td>
+      <td class="px-[6px] text-right tabular-nums">${nf0.format(t.ptos)}</td>
+      <td class="px-[6px] text-right tabular-nums font-semibold">${nf1.format(t.ppv||0)}</td>
+      <td class="px-[6px] text-right tabular-nums">${pct(t.viajes?t.uno/t.viajes*100:null)}</td>
+      <td class="px-[6px] text-right tabular-nums">${nf1.format(t.epv||0)}</td>
+      <td class="px-[6px] text-right tabular-nums">${peso(t.cpp)}</td>
+      <td class="px-[6px] text-right tabular-nums">${nf0.format(t.ton)}</td>
+      <td class="px-[6px] text-right tabular-nums">${t.ckg!=null?'$'+nf1.format(t.ckg):'–'}</td>
+      <td class="px-[6px] text-right tabular-nums">${nf0.format(t.pat.size)}</td>
+      <td class="px-[6px] whitespace-nowrap">${esc(t.caps)}</td></tr>`).join('');
+  return `<div class="grid grid-cols-2 md:grid-cols-4 gap-sm mb-md">${tiles}</div>${trDistHTML(rows)}
+    <div class="overflow-x-auto"><table class="w-full text-[13px]"><thead><tr class="text-secondary">
+      ${th('#',1)}${th('Agente de servicio',1)}${th('Viajes')}${th('Pagado')}${th('% pagado')}${th('$ / viaje')}${th('Puntos')}${th('Puntos / viaje')}${th('% viajes 1 punto')}${th('Entregas / viaje')}${th('$ / punto')}${th('Ton')}${th('$ / kg')}${th('Patentes')}${th('Camión',1)}
+    </tr></thead><tbody>${body}</tbody>
+    <tfoot><tr class="border-t-2 border-surface-variant font-semibold"><td></td><td class="px-[6px]">Total</td>
+      <td class="px-[6px] text-right tabular-nums">${nf0.format(T.viajes)}</td><td class="px-[6px] text-right tabular-nums">${peso(T.pag)}</td><td class="px-[6px] text-right">100%</td>
+      <td class="px-[6px] text-right tabular-nums">${peso(T.cpv)}</td><td class="px-[6px] text-right tabular-nums">${nf0.format(T.ptos)}</td><td class="px-[6px] text-right tabular-nums">${nf1.format(T.ppv||0)}</td>
+      <td class="px-[6px] text-right tabular-nums">${pct(T.viajes?T.uno/T.viajes*100:null)}</td><td class="px-[6px] text-right tabular-nums">${nf1.format(T.epv||0)}</td>
+      <td class="px-[6px] text-right tabular-nums">${peso(T.cpp)}</td><td class="px-[6px] text-right tabular-nums">${nf0.format(T.ton)}</td>
+      <td class="px-[6px] text-right tabular-nums">${T.ckg!=null?'$'+nf1.format(T.ckg):'–'}</td><td class="px-[6px] text-right tabular-nums">${nf0.format(T.pat.size)}</td><td></td></tr></tfoot></table></div>`;
+}
+function trModal(id){
+  const t=trPorTransp(trBase()).find(x=>x.id===id); if(!t) return;
+  const meses=[...new Set(t.rows.map(r=>r.mes_label))].sort();
+  const mesRows=meses.map(m=>{ const a=trAgg(t.rows.filter(r=>r.mes_label===m));
+    return `<tr class="border-t border-surface-variant"><td class="px-[6px] py-[2px]">${mesCorto(m)} ${m.slice(0,4)}</td><td class="px-[6px] text-right tabular-nums">${nf0.format(a.viajes)}</td><td class="px-[6px] text-right tabular-nums">${peso(a.pag)}</td><td class="px-[6px] text-right tabular-nums">${peso(a.cpv)}</td><td class="px-[6px] text-right tabular-nums">${nf1.format(a.ppv||0)}</td><td class="px-[6px] text-right tabular-nums">${nf0.format(a.ton)}</td></tr>`; }).join('');
+  const viajes=t.rows.slice().sort((x,y)=>String(y.fecha_transporte).localeCompare(String(x.fecha_transporte)));
+  const LIM=300, th=(x,l)=>`<th class="${l?'text-left':'text-right'} px-[6px] font-medium whitespace-nowrap">${x}</th>`;
+  const vRows=viajes.slice(0,LIM).map(r=>`<tr class="border-t border-surface-variant">
+      <td class="px-[6px] py-[2px] whitespace-nowrap">${fd(r.fecha_transporte)}</td><td class="px-[6px] tabular-nums">${esc(r.dt)}</td>
+      <td class="px-[6px] whitespace-nowrap">${esc(sucNom(r.suc_id))}</td><td class="px-[6px] whitespace-nowrap">${esc(nice(String(r.segmento||'').replace('_',' ')))}</td>
+      <td class="px-[6px] whitespace-nowrap">${esc(r.patentes||'–')}</td><td class="px-[6px]" style="max-width:160px">${esc(r.choferes||'–')}</td>
+      <td class="px-[6px] text-right tabular-nums">${esc(r.cap_camion||'–')}</td><td class="px-[6px]" style="max-width:220px">${esc(r.comunas||'–')}</td>
+      <td class="px-[6px] text-right tabular-nums font-semibold">${nf0.format(r.n_puntos||0)}</td><td class="px-[6px] text-right tabular-nums">${nf0.format(r.n_entregas||0)}</td>
+      <td class="px-[6px] text-right tabular-nums">${nf1.format(+r.ton||0)}</td><td class="px-[6px] text-right tabular-nums">${peso(+r.pagado)}</td></tr>`).join('');
+  const per=(NS_PER.find(p=>p[0]===_tr.per)||[])[1]||'';
+  openModal(`<div class="flex items-baseline gap-md flex-wrap mb-sm pr-lg"><div class="text-headline-sm font-bold">${esc(t.nombre)}</div>
+      <div class="text-secondary">Agente de servicio ${esc(t.id)} · ${esc(_tr.grupo==='TODOS'?'Todos los centros':nice(_tr.grupo))} · ${esc(per)}</div></div>
+    <div class="grid grid-cols-2 md:grid-cols-5 gap-sm mb-md">
+      ${tile('Pagado',peso(t.pag),'$/kg '+(t.ckg!=null?nf1.format(t.ckg):'–'))}${tile('Viajes',nf0.format(t.viajes),peso(t.cpv)+' por viaje')}
+      ${tile('Puntos por viaje',nf1.format(t.ppv||0),nf0.format(t.ptos)+' puntos · '+pct(t.viajes?t.uno/t.viajes*100:null)+' de 1 punto')}
+      ${tile('Entregas',nf0.format(t.ent),nf1.format(t.epv||0)+' por viaje')}${tile('Patentes',nf0.format(t.pat.size),esc([...t.pat].slice(0,4).join(', ')))}</div>
+    ${trDistHTML(t.rows)}
+    <div class="text-label-caps text-secondary uppercase mb-1">Evolución mensual</div>
+    <div class="overflow-x-auto mb-md"><table class="text-[13px]"><thead><tr class="text-secondary">${th('Mes',1)}${th('Viajes')}${th('Pagado')}${th('$ / viaje')}${th('Puntos / viaje')}${th('Ton')}</tr></thead><tbody>${mesRows}</tbody></table></div>
+    <div class="text-label-caps text-secondary uppercase mb-1">Viajes (${nf0.format(viajes.length)}${viajes.length>LIM?' · se muestran los '+LIM+' más recientes':''})</div>
+    <div class="overflow-x-auto"><table class="w-full text-[12px]"><thead><tr class="text-secondary">${th('Fecha',1)}${th('DT',1)}${th('Centro',1)}${th('Tipo',1)}${th('Patente',1)}${th('Chofer',1)}${th('Cap. t')}${th('Comunas',1)}${th('Puntos')}${th('Entregas')}${th('Ton')}${th('Pagado')}</tr></thead><tbody>${vRows}</tbody></table></div>`);
+  const box=_modal && _modal.firstElementChild; if(box) box.style.maxWidth='1500px';
+}
+function trCSV(){
+  const rows=trBase(), lista=trPorTransp(rows);
+  const cols=[['ID agente',t=>t.id],['Agente de servicio',t=>t.nombre],['Viajes',t=>t.viajes],['Pagado',t=>Math.round(t.pag)],['$ por viaje',t=>Math.round(t.cpv||0)],
+    ['Puntos',t=>t.ptos],['Puntos por viaje',t=>nf1.format(t.ppv||0)],['% viajes 1 punto',t=>nf1.format(t.viajes?t.uno/t.viajes*100:0)],['Entregas',t=>t.ent],
+    ['$ por punto',t=>Math.round(t.cpp||0)],['Ton',t=>nf1.format(t.ton)],['$ por kg',t=>t.ckg!=null?nf1.format(t.ckg):''],['Patentes',t=>[...t.pat].join(' ')],['Camion',t=>t.caps]];
+  const q=v=>{ v=v==null?'':String(v); return /[;"\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v; };
+  const txt='﻿'+cols.map(c=>c[0]).join(';')+'\n'+lista.map(t=>cols.map(c=>q(c[1](t))).join(';')).join('\n');
+  const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([txt],{type:'text/csv;charset=utf-8'}));
+  a.download='Pagado_Transportistas_'+_tr.grupo+'_'+new Date().toISOString().slice(0,10)+'.csv'; document.body.appendChild(a); a.click(); a.remove();
+}
+async function trPaint(){
+  const el=document.getElementById('tr_body'); if(!el) return;
+  try{
+    const g=_tr.grupo;
+    if(!_trRows[g]){ el.innerHTML=loadingHTML();
+      _trRows[g]=await nsFetchAll(()=>{ let q=supabase.from('v_ind_viaje_transp').select('*'); if(g!=='TODOS') q=q.eq('grupo',g); return q.order('dt'); }); }
+    const caps=[...new Set((_trRows[g]||[]).map(r=>r.cap_camion).filter(Boolean))].sort((a,b)=>(+a)-(+b));
+    const cs=document.getElementById('tr_cap');
+    if(cs){ if(caps.indexOf(_tr.cap)<0) _tr.cap='TODAS'; cs.innerHTML=[['TODAS','Todas']].concat(caps.map(c=>[c,c+' t'])).map(o=>`<option value="${o[0]}" ${o[0]===_tr.cap?'selected':''}>${o[1]}</option>`).join(''); }
+    el.innerHTML=trBodyHTML();
+    el.querySelectorAll('tr[data-tr]').forEach(tr=>tr.onclick=()=>trModal(tr.getAttribute('data-tr')));
+  }catch(e){ el.innerHTML=errorHTML(e); }
+}
+async function renderTransportistas(container){
+  container.innerHTML=loadingHTML();
+  try{
+    const {data,error}=await supabase.from('v_ind_viaje_transp').select('grupo,fecha_transporte').order('fecha_transporte',{ascending:false}).limit(1);
+    if(error) throw error;
+    const ult=(data&&data[0])?data[0].fecha_transporte:null;
+    if(!_finRows) _finRows=await nsFetchAll(()=>supabase.from('v_ind_fin_flete').select('*'));
+    const grupos=[...new Set(_finRows.map(r=>r.grupo))].filter(g=>g&&g!=='OTROS').sort();
+    if(_tr.grupo!=='TODOS' && grupos.indexOf(_tr.grupo)<0) _tr.grupo='TODOS';
+    const opG=[['TODOS','Todos los centros']].concat(grupos.map(g=>[g,nice(g)]));
+    container.innerHTML=`<div class="w-full mx-auto" style="max-width:1760px">
+      <div class="flex items-center gap-md mb-md flex-wrap">
+        <div class="text-headline-sm font-bold">Pagado Transportistas — por agente de servicio</div>
+        <label class="text-secondary text-body-md ml-auto">Centro:</label>${nsSel('tr_grp',opG,_tr.grupo)}
+      </div>
+      <section class="bg-surface-container-lowest border border-surface-variant rounded-xl p-md md:p-lg mb-lg">
+        <div class="flex flex-wrap items-center gap-md mb-md text-[14px]">
+          <label class="text-secondary">Período:</label>${nsSel('tr_per',NS_PER,_tr.per)}
+          <label class="text-secondary">Despachos:</label>${nsSel('tr_seg',SEG_FIN,_tr.seg)}
+          <label class="text-secondary">Camión:</label><select id="tr_cap" class="border border-surface-variant rounded-lg px-sm py-[4px] bg-surface-container-lowest text-on-surface text-[14px]"></select>
+          <label class="text-secondary">Ordenar:</label>${nsSel('tr_ord',TR_ORD,_tr.orden)}
+          <input id="tr_q" type="search" value="${esc(_tr.q)}" placeholder="Buscar transportista…" class="border border-surface-variant rounded-lg px-sm py-[4px] bg-surface-container-lowest text-on-surface" style="min-width:220px">
+          <button id="tr_csv" class="ml-auto border border-surface-variant rounded-lg px-md py-[4px] hover:bg-surface-container-low">⬇ Descargar CSV</button>
+        </div>
+        <div id="tr_body"></div>
+      </section>
+      <div class="text-[13px] text-secondary leading-relaxed">Fuente: reporte FLETE 360 (flete pagado al transportista)${ult?' · último viaje cargado: <b>'+fd(ult)+'</b>':''}. Un viaje = documento de transporte (DT). Punto de entrega = obra distinta dentro del viaje (si falta, dirección, cliente o centro destino). Incluye última milla y troncales; filtra con "Despachos". Clic en un transportista para ver su detalle mensual y sus viajes.</div>
+    </div>`;
+    const on=(id,k)=>{ const s=document.getElementById(id); if(s) s.onchange=e=>{ _tr[k]=e.target.value; trPaint(); }; };
+    on('tr_grp','grupo'); on('tr_per','per'); on('tr_seg','seg'); on('tr_cap','cap'); on('tr_ord','orden');
+    const qi=document.getElementById('tr_q'); let tq=null;
+    if(qi) qi.oninput=e=>{ clearTimeout(tq); tq=setTimeout(()=>{ _tr.q=e.target.value; trPaint(); },250); };
+    const b=document.getElementById('tr_csv'); if(b) b.onclick=trCSV;
+    await trPaint();
   }catch(e){ container.innerHTML=errorHTML(e); }
 }
 let _cacheMar2=null, _grupoM=null, _segM='ULTIMA_MILLA';
