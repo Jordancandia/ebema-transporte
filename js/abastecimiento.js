@@ -10,13 +10,13 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611202056';
-import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611202056';
-import { getDatabase } from './data.js?v=202611202056';
+import { supabase } from './supabase-client.js?v=202611231201';
+import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611231201';
+import { getDatabase } from './data.js?v=202611231201';
 import { COMUNAS_POR_REGION } from './chile-geo.js';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611202056';
-import { confirmar, pedirDato } from './confirmar.js?v=202611202056';
+import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611231201';
+import { confirmar, pedirDato } from './confirmar.js?v=202611231201';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -1109,7 +1109,7 @@ async function wireObraGeo(panel, row, st, comunaRuta, draw) {
   const l = obrasDe(row);
   const ids = [...new Set(l.map(o => String(o.id || '').trim()).filter(Boolean))];
   if (!ids.length) return;
-  const m = await import('./maestro-obras.js?v=202611202056');
+  const m = await import('./maestro-obras.js?v=202611231201');
   const faltan = ids.filter(id => !_obrasMaestro.has(id));
   if (faltan.length) { try { (await m.cargarObras(faltan)).forEach((o, k) => _obrasMaestro.set(k, o)); faltan.forEach(id => { if (!_obrasMaestro.has(id)) _obrasMaestro.set(id, null); }); } catch (_e) { /* sin maestro */ } }
   panel.querySelectorAll('[data-geo-obra]').forEach(sp => { sp.innerHTML = m.badgeGeo(_obrasMaestro.get(sp.dataset.geoObra)); });
@@ -6895,6 +6895,24 @@ async function anularProgramacionSeguimiento(r, c) {
   showAlert(`Programación del ${c.tipo} de ${r.ce} anulada.`, 'success');
   return { recargar: true };
 }
+// (23-nov-2026, Jordan) Anular un camión PREVISTO desde Seguimiento de Carga: borra su coordinación de transporte
+// y el registro previsto; la carga queda disponible en el Plan de Carga para completarla y volver a programar.
+async function anularPrevistoSeguimiento(r, c) {
+  const x = c.lineas[0] || {};
+  const cd = String(x.cd_origen || r.cd_origen || '').trim();
+  const cl = String(c.clave || '').trim();
+  const cam = cl === '2' ? 2 : /^CD\d+$/.test(cl) ? Number(cl.slice(2)) : 1;
+  if (!await confirmar(`¿Anular la coordinación del ${c.tipo} PREVISTO a ${r.ce} ${nombreCentro(r.ce) || ''}?\n\nPlan ${fmtFechaISO(r.fecha_plan)} · patente ${c.patente_camion || '—'} · ${c.transportista || ''}.\nSe borran los datos de transporte coordinados; la carga vuelve al Plan de Carga para completarla y programar de nuevo.`,
+    { aceptar: 'Anular coordinación', tono: 'peligro', icono: 'event_busy' })) return null;
+  const { data, error } = await supabase.from('abast_plan_camion_coordinado').delete()
+    .eq('fecha', r.fecha_plan).eq('cd_origen', cd).eq('ce', r.ce).eq('camion', cam).select('ce');
+  if (error) { showAlert('No se pudo anular la coordinación: ' + error.message, 'error'); return null; }
+  // El trigger de BD borra el previsto; se borra también aquí por si la coordinación ya no existía.
+  await supabase.from('abast_seguimiento_previsto').delete().eq('fecha_plan', r.fecha_plan).eq('cd_origen', cd).eq('ce', r.ce).eq('camion', cam);
+  clearRawCache();
+  showAlert(`Coordinación del ${c.tipo} de ${r.ce} anulada${(data || []).length ? '' : ' (ya no tenía transporte coordinado)'}: su carga vuelve al Plan de Carga.`, 'success');
+  return { recargar: true };
+}
 async function anularCdClienteSeguimiento(r, c) {
   const docs = [...new Set((c.lineas || []).map(x => String(x.documento ?? '').trim() || String(x.pedido_venta ?? '').trim()).filter(Boolean))];
   if (!docs.length) { showAlert('El camión no tiene pedidos para anular', 'error'); return null; }
@@ -7117,7 +7135,13 @@ V2.seguimiento_carga = {
     r.camiones.forEach(c => { if (!c.coord && c.tipo === 'CD-Cliente' && (can('coordinar_venta') || can('ajustar_plan')))
       acc.push({ label: r.camiones.length > 1 ? `Anular coordinación · ${c.lbl}` : 'Anular coordinación CD-Cliente', icon: 'event_busy', tono: 'peligro',
         title: 'Anula la coordinación de los pedidos de este camión CD-Cliente', run: async row => anularCdClienteSeguimiento(row, c) }); });
-    r.camiones.forEach(c => { if (!c.coord && ['Camión CD', '2º camión'].includes(c.tipo) && can('programar_transporte'))
+    // (23-nov-2026, Jordan) Camión PREVISTO (coordinado, sin programar): «Anular» quita la coordinación de transporte
+    // (abast_plan_camion_coordinado + abast_seguimiento_previsto) y su carga vuelve al Plan de Carga. Antes se ofrecía
+    // «Anular programación», que no tenía nada que borrar y el camión seguía apareciendo (caso Talca 23-nov).
+    r.camiones.forEach(c => { if (c.previsto && ['Camión CD', '2º camión'].includes(c.tipo) && can('programar_transporte'))
+      acc.push({ label: r.camiones.length > 1 ? `Anular coordinación · ${c.lbl}` : 'Anular coordinación (previsto)', icon: 'event_busy', tono: 'peligro',
+        title: 'Quitar el transporte coordinado: la carga vuelve al Plan de Carga para completarla y programar de nuevo', run: async row => anularPrevistoSeguimiento(row, c) }); });
+    r.camiones.forEach(c => { if (!c.coord && !c.previsto && ['Camión CD', '2º camión'].includes(c.tipo) && can('programar_transporte'))
       acc.push({ label: r.camiones.length > 1 ? `Anular programación · ${c.lbl}` : 'Anular programación', icon: 'event_busy', tono: 'peligro',
         title: 'Quitar los datos de transporte: el camión deja de estar programado', run: async row => anularProgramacionSeguimiento(row, c) }); });
     return acc;
@@ -8733,7 +8757,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611202056');
+    const m = await import('./ind-plan-carga.js?v=202611231201');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.

@@ -5,8 +5,8 @@
 //  Lee en vivo las vistas v_ind_* de Supabase (RLS: usuario @ebema.cl con rol).
 //  Paleta alineada a las presentaciones (PPT) del Comité de Transporte.
 // ============================================================================
-import { supabase } from './supabase-client.js?v=202611202056';
-import { centrosAlcance } from './permisos.js?v=202611202056';
+import { supabase } from './supabase-client.js?v=202611231201';
+import { centrosAlcance } from './permisos.js?v=202611231201';
 
 // --- Paleta PPT -------------------------------------------------------------
 const C = {
@@ -1234,6 +1234,140 @@ function homeTips(el){
 // ============================================================================
 //  NIVEL DE SERVICIO — detalle (6 análisis)
 // ============================================================================
+// ============================================================================
+//  NIVEL DE SERVICIO · Comparativo por centro + Ranking de comunas (23-nov-2026)
+//  Replica el análisis Nivel_de_Servicio.xlsx: general, por centro (CD RM separado
+//  de Santiago), Regional/Interregional, Exclusivo, Spot/Planificado, Stock/Calzada
+//  y ranking completo de comunas con mínimo de líneas y brecha vs centro.
+//  Fuente: v_ind_ns_matriz y v_ind_ns_comuna_rank (sumas otif_n/fill_n → % exacto).
+// ============================================================================
+let _nsMx=null, _nsRank={}, _nsOpt={per:'anio', rech:'incluir', dim:'tipo_ruta', min:30, tr:'Regional'};
+const NS_DIMS={
+  tipo_ruta:{t:'Regional vs Interregional', cols:['Regional','Interregional','Sin clasificar']},
+  exclusivo:{t:'Exclusivo vs No exclusivo', cols:['Exclusivo','No exclusivo']},
+  spot:{t:'Spot vs Planificado', cols:['Spot','Planificado']},
+  tipo_venta:{t:'Stock vs Calzada', cols:['STOCK','CALZADA']}
+};
+const NS_PER=[['anio','Año en curso'],['3m','Últimos 3 meses'],['mcerr','Último mes cerrado'],['mes','Mes en curso'],['todo','Todo el histórico']];
+async function nsFetchAll(build){
+  const out=[];
+  for(let from=0;;from+=1000){
+    const {data,error}=await build().range(from,from+999);
+    if(error) throw error;
+    out.push(...(data||[]));
+    if(!data||data.length<1000) break;
+  }
+  return out;
+}
+function nsYm(d){ return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'); }
+function nsRango(per){
+  const d=new Date(), y=d.getFullYear(), m=d.getMonth();
+  if(per==='anio') return [y+'-01','9999-12'];
+  if(per==='3m')   return [nsYm(new Date(y,m-2,1)),'9999-12'];
+  if(per==='mcerr'){ const p=nsYm(new Date(y,m-1,1)); return [p,p]; }
+  if(per==='mes')  return [nsYm(d),'9999-12'];
+  return ['0000-00','9999-12'];
+}
+function nsFiltra(rows){
+  const [a,b]=nsRango(_nsOpt.per), ex=_nsOpt.rech==='excluir';
+  return rows.filter(r=>r.mes_label>=a && r.mes_label<=b && !(ex && r.rechazada));
+}
+function nsAgg(rows){
+  let n=0,o=0,f=0; rows.forEach(r=>{ n+=Number(r.lineas)||0; o+=Number(r.otif_n)||0; f+=Number(r.fill_n)||0; });
+  return {n, otif:n?o/n*100:null, fill:n?f/n*100:null};
+}
+function nsCell(a,bold){
+  if(!a||!a.n) return `<td class="text-right px-[6px] text-secondary">–</td><td class="text-center px-[6px] text-secondary">–</td><td class="text-right px-[6px] text-secondary">–</td>`;
+  return `<td class="text-right px-[6px] tabular-nums ${bold?'font-semibold':''}">${nf0.format(a.n)}</td>`+
+    `<td class="text-center px-[6px] tabular-nums ${bold?'font-semibold':''}" style="background:${heatOtif(a.otif)};color:#333">${nf1.format(a.otif)}</td>`+
+    `<td class="text-right px-[6px] tabular-nums ${bold?'font-semibold':''}">${nf1.format(a.fill)}</td>`;
+}
+function nsSel(id,opts,val){
+  return `<select id="${id}" class="border border-surface-variant rounded-lg px-sm py-[4px] bg-surface-container-lowest text-on-surface text-[14px]">`+
+    opts.map(o=>`<option value="${o[0]}" ${o[0]===val?'selected':''}>${o[1]}</option>`).join('')+`</select>`;
+}
+function nsToolbarHTML(){
+  return `<div class="flex flex-wrap items-center gap-md mb-md text-[14px]">
+    <label class="text-secondary">Período:</label>${nsSel('ns_per',NS_PER,_nsOpt.per)}
+    <label class="text-secondary">Posiciones con motivo de rechazo:</label>${nsSel('ns_rech',[['incluir','Incluir (criterio actual)'],['excluir','Excluir']],_nsOpt.rech)}
+    <label class="text-secondary">Apertura:</label>${nsSel('ns_dim',Object.keys(NS_DIMS).map(k=>[k,NS_DIMS[k].t]),_nsOpt.dim)}
+  </div>`;
+}
+function nsMatrizHTML(){
+  const rows=nsFiltra(_nsMx||[]);
+  if(!rows.length) return `<div class="text-secondary text-[14px] py-sm">Sin datos para el período.</div>`;
+  const dim=NS_DIMS[_nsOpt.dim], tot=nsAgg(rows);
+  const centros=[...new Set(rows.map(r=>r.centro))];
+  const byC={}; centros.forEach(c=>byC[c]=nsAgg(rows.filter(r=>r.centro===c)));
+  centros.sort((a,b)=>byC[b].n-byC[a].n);
+  const grupoDe={}; rows.forEach(r=>grupoDe[r.centro]=r.grupo);
+  // Calidad de dato y rechazos (independiente del toggle, sobre el período)
+  const [a,b]=nsRango(_nsOpt.per);
+  const perAll=(_nsMx||[]).filter(r=>r.mes_label>=a&&r.mes_label<=b);
+  const all=nsAgg(perAll), rech=nsAgg(perAll.filter(r=>r.rechazada)), sinR=nsAgg(perAll.filter(r=>!r.rechazada));
+  const tiles=tile('Líneas evaluadas',nf0.format(tot.n),'despachos del período')+
+    tileS('OTIF red',pct(tot.otif),'línea de pedido',semaforo(tot.otif,META.otif,5))+
+    tileS('Fill Rate red',pct(tot.fill),'línea de pedido',semaforo(tot.fill,META.fill,5))+
+    tile('Líneas con motivo de rechazo',nf0.format(rech.n)+' ('+pct(all.n?rech.n/all.n*100:null)+')','OTIF sin ellas: '+pct(sinR.otif)+' · Fill: '+pct(sinR.fill));
+  const head1=`<tr class="text-secondary"><th></th><th colspan="4" class="text-center font-medium pb-[2px]">Total</th>`+
+    dim.cols.map(c=>`<th colspan="3" class="text-center font-medium pb-[2px] border-l border-surface-variant">${esc(nice(c))}</th>`).join('')+`</tr>`;
+  const head2=`<tr class="text-secondary text-[13px]"><th class="text-left font-medium pr-sm">Centro</th><th class="text-right px-[6px] font-medium">Líneas</th><th class="text-right px-[6px] font-medium">% Líneas</th><th class="text-center px-[6px] font-medium">OTIF %</th><th class="text-right px-[6px] font-medium">Fill %</th>`+
+    dim.cols.map(()=>`<th class="text-right px-[6px] font-medium border-l border-surface-variant">Líneas</th><th class="text-center px-[6px] font-medium">OTIF %</th><th class="text-right px-[6px] font-medium">Fill %</th>`).join('')+`</tr>`;
+  const fila=(lbl,sub,agg,bold,hl)=>`<tr class="border-t border-surface-variant" style="${hl?'background:#FFF6F6':''}">
+      <td class="py-[3px] pr-sm whitespace-nowrap ${bold?'font-semibold':''}">${hl?'▸ ':''}${esc(lbl)}</td>
+      <td class="text-right px-[6px] tabular-nums ${bold?'font-semibold':''}">${nf0.format(agg.n)}</td>
+      <td class="text-right px-[6px] tabular-nums">${pct(tot.n?agg.n/tot.n*100:null)}</td>
+      <td class="text-center px-[6px] tabular-nums ${bold?'font-semibold':''}" style="background:${heatOtif(agg.otif)};color:#333">${nf1.format(agg.otif)}</td>
+      <td class="text-right px-[6px] tabular-nums ${bold?'font-semibold':''}">${nf1.format(agg.fill)}</td>`+
+      dim.cols.map(c=>nsCell(nsAgg(sub.filter(r=>r[_nsOpt.dim]===c)),bold).replace('<td class="text-right px-[6px]','<td class="text-right px-[6px] border-l border-surface-variant')).join('')+`</tr>`;
+  const body=centros.map(c=>fila(c,rows.filter(r=>r.centro===c),byC[c],false,grupoDe[c]===_grupoN)).join('')+fila('Total red',rows,tot,true,false);
+  // Alertas de maestro de rutas (líneas sin tipo de ruta)
+  const alertas=centros.map(c=>{ const t=byC[c].n, s=nsAgg(rows.filter(r=>r.centro===c&&r.tipo_ruta==='Sin clasificar')).n; return {c,t,s,p:t?s/t*100:0}; })
+    .filter(x=>x.p>=10).sort((x,y)=>y.p-x.p);
+  const alertHTML=alertas.length?`<div class="mt-sm text-[13px]" style="color:#B5730B">⚠ Rutas no encontradas en el maestro (tipo de ruta y comuna sin clasificar): `+
+    alertas.map(x=>`<b>${esc(x.c)}</b> ${nf0.format(x.s)} líneas (${nf1.format(x.p)}%)`).join(' · ')+`. Cargar esas rutas en Rutas para que entren al análisis regional y al ranking de comunas.</div>`:'';
+  return `<div class="grid grid-cols-2 md:grid-cols-4 gap-sm mb-md">${tiles}</div>
+    <div class="ind-heat overflow-x-auto"><table class="w-full text-[14px]"><thead>${head1}${head2}</thead><tbody>${body}</tbody></table></div>
+    <div class="text-[13px] text-secondary mt-sm">Medido a nivel de línea de pedido. CD RM se muestra separado de Santiago (en el resto de Indicadores se agrupa en Santiago); CD Concepción se suma a Concepción. ▸ = centro seleccionado. Color OTIF: verde ≥90 · rojo &lt;70.</div>${alertHTML}`;
+}
+async function nsRankHTML(){
+  const g=_grupoN;
+  if(!_nsRank[g]) _nsRank[g]=await nsFetchAll(()=>supabase.from('v_ind_ns_comuna_rank').select('*').eq('grupo',g));
+  const base=nsFiltra(_nsRank[g]).filter(r=>_nsOpt.tr==='Todas'||r.tipo_ruta===_nsOpt.tr);
+  const ref=nsAgg(base);
+  const comunas=[...new Set(base.map(r=>r.comuna))].map(c=>Object.assign({comuna:c},nsAgg(base.filter(r=>r.comuna===c))));
+  const eleg=comunas.filter(c=>c.n>=_nsOpt.min).sort((a,b)=>(b.otif-a.otif)||(b.fill-a.fill)||(b.n-a.n));
+  const fuera=comunas.length-eleg.length;
+  const ctrl=`<div class="flex flex-wrap items-center gap-md mb-md text-[14px]">
+    <label class="text-secondary">Tipo de ruta:</label>${nsSel('ns_tr',[['Regional','Regional'],['Interregional','Interregional'],['Todas','Todas']],_nsOpt.tr)}
+    <label class="text-secondary">Mín. líneas por comuna:</label><input id="ns_min" type="number" min="1" step="1" value="${_nsOpt.min}" class="border border-surface-variant rounded-lg px-sm py-[4px] w-[80px] bg-surface-container-lowest text-on-surface">
+    <span class="text-secondary">${esc(nice(g))} · ${nf0.format(ref.n)} líneas · OTIF ${pct(ref.otif)} · Fill ${pct(ref.fill)} · ${eleg.length} comunas${fuera?' ('+fuera+' bajo el mínimo)':''}</span></div>`;
+  if(!eleg.length) return ctrl+`<div class="text-secondary text-[14px] py-sm">Sin comunas que cumplan el mínimo de líneas en el período.</div>`;
+  const body=eleg.map((c,i)=>{ const br=c.otif-ref.otif;
+    return `<tr class="border-t border-surface-variant"><td class="py-[3px] pr-sm tabular-nums text-secondary">${i+1}</td><td class="pr-sm whitespace-nowrap">${esc(c.comuna)}</td>
+      <td class="text-right px-[6px] tabular-nums">${nf0.format(c.n)}</td>
+      <td class="text-center px-[6px] tabular-nums" style="background:${heatOtif(c.otif)};color:#333">${nf1.format(c.otif)}</td>
+      <td class="text-right px-[6px] tabular-nums">${nf1.format(c.fill)}</td>
+      <td class="text-right px-[6px] tabular-nums" style="color:${br>=0?'#1E8449':'#C0000C'}">${(br>0?'+':'')+nf1.format(br)} pp</td></tr>`; }).join('');
+  return ctrl+`<div class="ind-heat overflow-auto" style="max-height:520px"><table class="w-full text-[14px]"><thead class="sticky top-0 bg-surface-container-lowest"><tr class="text-secondary text-[13px]">
+    <th class="text-left font-medium">#</th><th class="text-left font-medium">Comuna</th><th class="text-right px-[6px] font-medium">Líneas</th><th class="text-center px-[6px] font-medium">OTIF %</th><th class="text-right px-[6px] font-medium">Fill %</th><th class="text-right px-[6px] font-medium">Brecha OTIF vs centro</th></tr></thead><tbody>${body}</tbody></table></div>
+    <div class="text-[13px] text-secondary mt-sm">Orden: OTIF, luego Fill Rate y luego líneas (mejor → peor). Comuna según maestro de rutas (ID ruta). Período y criterio de rechazos según el cuadro anterior.</div>`;
+}
+async function nsPaint(container){
+  const mx=document.getElementById('n_mx_wrap'), rk=document.getElementById('n_rank_wrap');
+  if(!mx||!rk) return;
+  try{
+    if(!_nsMx){ mx.innerHTML=loadingHTML(); _nsMx=await nsFetchAll(()=>supabase.from('v_ind_ns_matriz').select('*')); }
+    mx.innerHTML=nsToolbarHTML()+nsMatrizHTML();
+    rk.innerHTML=loadingHTML(); rk.innerHTML=await nsRankHTML();
+    nsBind(container); sweepHeat();
+  }catch(e){ mx.innerHTML=errorHTML(e); }
+}
+function nsBind(container){
+  const on=(id,k,num)=>{ const el=document.getElementById(id); if(!el) return;
+    el.onchange=ev=>{ let v=ev.target.value; if(num){ v=Math.max(1,parseInt(v,10)||1); } _nsOpt[k]=v; nsPaint(container); }; };
+  on('ns_per','per'); on('ns_rech','rech'); on('ns_dim','dim'); on('ns_tr','tr'); on('ns_min','min',true);
+}
 let _cacheNivel=null, _grupoN=null;
 async function renderNivel(container){
   container.innerHTML = loadingHTML();
@@ -1255,12 +1389,12 @@ async function renderNivel(container){
     const grupos=[...new Set(_cacheNivel.co.map(r=>r.grupo))].filter(g=>g&&g!=='OTROS').sort();
     if(!_grupoN||grupos.indexOf(_grupoN)<0) _grupoN=(grupos.indexOf('CONCEPCION')>=0?'CONCEPCION':grupos[0]);
     container.innerHTML=nivelHTML(_cacheNivel,grupos,_grupoN);
-    ensureTip(); drawNivel(_cacheNivel,_grupoN); bindSelN(container,grupos); sweepHeat();
+    ensureTip(); drawNivel(_cacheNivel,_grupoN); bindSelN(container,grupos); sweepHeat(); nsPaint(container);
   } catch(e){ container.innerHTML=errorHTML(e); }
 }
 function bindSelN(container,grupos){
   const el=document.getElementById('ind_seln'); if(!el) return;
-  el.onchange=ev=>{ _grupoN=ev.target.value; container.innerHTML=nivelHTML(_cacheNivel,grupos,_grupoN); ensureTip(); drawNivel(_cacheNivel,_grupoN); bindSelN(container,grupos); sweepHeat(); };
+  el.onchange=ev=>{ _grupoN=ev.target.value; container.innerHTML=nivelHTML(_cacheNivel,grupos,_grupoN); ensureTip(); drawNivel(_cacheNivel,_grupoN); bindSelN(container,grupos); sweepHeat(); nsPaint(container); };
 }
 function nivelHTML(d,grupos,grupo){
   const tp=d.tp.filter(r=>r.grupo===grupo);
@@ -1279,6 +1413,10 @@ function nivelHTML(d,grupos,grupo){
       `<div class="grid grid-cols-1 md:grid-cols-2 gap-md items-center">`+
       `<div>`+legend([{n:'OTIF %',c:R.red},{n:'Fill Rate %',c:R.grey}])+`<div id="n_sem"></div></div>`+
       `<div id="n_semtab"></div></div>`)}
+
+    ${card('Nivel de Servicio por Centro','Comparativo de la red: OTIF y Fill Rate por centro y apertura','',`<div id="n_mx_wrap"></div>`,'sec-ns-mx')}
+
+    ${card('Ranking de Comunas — '+nice(grupo),'Todas las comunas, mejor → peor, con brecha vs el centro','',`<div id="n_rank_wrap"></div>`,'sec-ns-rank')}
 
     ${card('Nivel de Servicio por Tipo de Venta Stock y Calzada','OTIF y Tiempo de Entrega',
       tileS('OTIF Stock',pct(stock.otif_pct),(stock.lineas||0)+' líneas · 4 sem',semaforo(stock.otif_pct,META.otif,5))+
