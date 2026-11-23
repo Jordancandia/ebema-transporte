@@ -15,9 +15,9 @@
 //   mapa con pin arrastrable, búsqueda de dirección y datos de contacto
 //   (nombre, teléfono y correo opcional).
 // ============================================================================
-import { supabase } from './supabase-client.js?v=202611231657';
+import { supabase } from './supabase-client.js?v=202611231820';
 import { loadLeaflet, escapeHtml as esc } from './utils.js';
-import { can } from './permisos.js?v=202611231657';
+import { can } from './permisos.js?v=202611231820';
 
 export const GEO = {
   PENDIENTE:  { txt: 'Pendiente',           largo: 'Pendiente de georreferenciar (automático en curso)', color: '#6b7280', bg: '#f3f4f6', ink: '#374151', icon: 'hourglass_top', falta: true },
