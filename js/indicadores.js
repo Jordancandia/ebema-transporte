@@ -5,8 +5,8 @@
 //  Lee en vivo las vistas v_ind_* de Supabase (RLS: usuario @ebema.cl con rol).
 //  Paleta alineada a las presentaciones (PPT) del Comité de Transporte.
 // ============================================================================
-import { supabase } from './supabase-client.js?v=202611231245';
-import { centrosAlcance } from './permisos.js?v=202611231245';
+import { supabase } from './supabase-client.js?v=202611231252';
+import { centrosAlcance } from './permisos.js?v=202611231252';
 
 // --- Paleta PPT -------------------------------------------------------------
 const C = {
@@ -1701,7 +1701,7 @@ function despShellHTML(grupos){
       </div>
       <div id="desp_body"></div>
     </section>
-    <div class="text-[13px] text-secondary leading-relaxed">Un despacho = documento de transporte (DT) por sucursal. Montos en $ CLP del reporte FLETE COBRADO: sugerido = tarifa del sistema, cobrado = facturado al cliente (+ Flete ZV20 en flete tercero), pagado = pago al transportista. Clic en una fila para ver sus entregas (NV, factura, vendedor, cliente y fechas de NV, factura y entrega).</div>
+    <div class="text-[13px] text-secondary leading-relaxed">Un despacho = documento de transporte (DT) por sucursal. Montos en $ CLP del reporte FLETE COBRADO: sugerido = tarifa del sistema, cobrado = facturado al cliente (+ Flete ZV20 en flete tercero), pagado = pago al transportista. Clic en una fila para abrir el detalle del despacho con sus entregas (NV, factura, vendedor, cliente y fechas de NV, factura y entrega).</div>
   </div>`;
 }
 function despBodyHTML(){
@@ -1716,9 +1716,9 @@ function despBodyHTML(){
   if(!n) return `<div class="grid grid-cols-2 md:grid-cols-4 gap-sm mb-md">${tiles}</div><div class="text-secondary text-[14px] py-sm">Sin despachos con esos filtros.</div>`;
   const pg=rows.slice(_desp.page*DESP_PAGE,(_desp.page+1)*DESP_PAGE);
   const th=(t,l)=>`<th class="${l?'text-left':'text-right'} px-[6px] font-medium whitespace-nowrap">${t}</th>`;
-  const body=pg.map(r=>{ const res=(+r.cobrado||0)-(+r.pagado||0), cb=+r.pagado?(+r.cobrado||0)/(+r.pagado)*100:null, key=r.suc_id+'|'+r.dt, open=_despOpen===key;
-    return `<tr class="border-t border-surface-variant cursor-pointer hover:bg-surface-container-low" data-desp="${esc(key)}" style="${open?'background:#FFF6F6':''}">
-      <td class="px-[6px] py-[3px] whitespace-nowrap">${open?'▾':'▸'} ${fd(r.fecha_transporte)}</td>
+  const body=pg.map(r=>{ const res=(+r.cobrado||0)-(+r.pagado||0), cb=+r.pagado?(+r.cobrado||0)/(+r.pagado)*100:null, key=r.suc_id+'|'+r.dt;
+    return `<tr class="border-t border-surface-variant cursor-pointer hover:bg-surface-container-low" data-desp="${esc(key)}" title="Ver detalle del despacho">
+      <td class="px-[6px] py-[3px] whitespace-nowrap">${fd(r.fecha_transporte)}</td>
       <td class="px-[6px] tabular-nums">${esc(r.dt)}</td>
       <td class="px-[6px] whitespace-nowrap">${esc(sucNom(r.suc_id))}</td>
       <td class="px-[6px]" style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(r.transportista)}">${esc(r.transportista||'–')}</td>
@@ -1732,8 +1732,7 @@ function despBodyHTML(){
       <td class="px-[6px] text-right tabular-nums">${peso(+r.pagado)}</td>
       <td class="px-[6px] text-right tabular-nums font-semibold">${pesoC(res)}</td>
       <td class="px-[6px] text-right tabular-nums">${cobC(cb)}</td>
-      <td class="px-[6px]">${despChips(r)}</td></tr>`+
-      (open?`<tr><td colspan="15" class="px-[6px] pb-sm" style="background:#FFFBFB"><div id="desp_det">${loadingHTML()}</div></td></tr>`:''); }).join('');
+      <td class="px-[6px]">${despChips(r)}</td></tr>`; }).join('');
   const pager=`<div class="flex items-center gap-sm mt-sm text-[14px] text-secondary">
     <button id="desp_prev" class="border border-surface-variant rounded px-sm" ${_desp.page<=0?'disabled':''}>‹</button>
     <span>Página ${_desp.page+1} de ${pages} · ${nf0.format(n)} despachos</span>
@@ -1761,6 +1760,31 @@ function despEntHTML(list){
     ${th('Entrega',1)}${th('NV',1)}${th('Clase doc.',1)}${th('Factura',1)}${th('Vendedor',1)}${th('Cliente',1)}${th('Obra',1)}${th('Comuna',1)}${th('Tipo',1)}${th('F. NV',1)}${th('F. factura',1)}${th('F. entrega',1)}${th('Kg')}${th('Sugerido')}${th('Cobrado')}${th('Pagado')}${th('Resultado')}
   </tr></thead><tbody>${rows}</tbody></table></div>`;
 }
+async function despModal(key){
+  const [suc,dt]=key.split('|');
+  const r=(_despRows[_desp.grupo]||[]).find(x=>x.suc_id===suc && x.dt===dt)||{suc_id:suc,dt:dt};
+  const res=(+r.cobrado||0)-(+r.pagado||0), cb=+r.pagado?(+r.cobrado||0)/(+r.pagado)*100:null;
+  const dato=(k,v)=>`<div><div class="text-[12px] text-secondary">${k}</div><div class="text-[14px] font-medium">${v}</div></div>`;
+  const head=`<div class="flex items-baseline gap-md flex-wrap mb-sm pr-lg">
+      <div class="text-headline-sm font-bold">Despacho DT ${esc(dt)}</div>
+      <div class="text-secondary">${esc(sucNom(suc))} · ${fd(r.fecha_transporte)}</div><div>${despChips(r)}</div></div>
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-md mb-md">
+      ${dato('Transportista',esc(r.transportista||'–'))}${dato('Capacidad camión',r.cap_camion?esc(r.cap_camion)+' t':'–')}
+      ${dato('Vendedor(es)',esc(r.vendedores||'–'))}${dato('Comunas',esc(r.comunas||'–'))}</div>
+    <div class="grid grid-cols-2 md:grid-cols-5 gap-sm mb-md">
+      ${tile('Entregas',nf0.format(r.n_entregas||0),nf0.format(r.kg||0)+' kg')}
+      ${tile('Sugerido',peso(+r.sugerido),'tarifa sistema')}
+      ${tile('Cobrado',peso(+r.cobrado),'cobrado / sugerido '+pct(+r.sugerido?(+r.cobrado||0)/(+r.sugerido)*100:null))}
+      ${tile('Pagado',peso(+r.pagado),'al transportista')}
+      ${tileS('Resultado',pesoC(res),'cobrado − pagado',res>=0?{c:'#1E8449',t:'Cobertura '+pct(cb)}:{c:'#C0000C',t:'Cobertura '+pct(cb)})}</div>
+    <div class="text-label-caps text-secondary uppercase mb-1">Entregas del despacho</div>`;
+  openModal(head+`<div id="desp_modal_ent">${loadingHTML()}</div>`);
+  const box=_modal && _modal.firstElementChild; if(box) box.style.maxWidth='1500px';
+  try{
+    if(!_despEnt[key]){ const {data,error}=await supabase.from('v_ind_despacho_entrega').select('*').eq('dt',dt).eq('suc_id',suc).order('entrega'); if(error) throw error; _despEnt[key]=data||[]; }
+    const el=document.getElementById('desp_modal_ent'); if(el) el.innerHTML=despEntHTML(_despEnt[key]);
+  }catch(e){ const el=document.getElementById('desp_modal_ent'); if(el) el.innerHTML=errorHTML(e); }
+}
 async function despPaint(){
   const el=document.getElementById('desp_body'); if(!el) return;
   try{
@@ -1768,16 +1792,10 @@ async function despPaint(){
     if(!_despRows[g]){ el.innerHTML=loadingHTML();
       _despRows[g]=await nsFetchAll(()=>supabase.from('v_ind_despacho').select('*').eq('grupo',g).order('fecha_transporte',{ascending:false}).order('dt')); }
     el.innerHTML=despBodyHTML();
-    el.querySelectorAll('tr[data-desp]').forEach(tr=>tr.onclick=()=>{ const k=tr.getAttribute('data-desp'); _despOpen=(_despOpen===k?null:k); despPaint(); });
+    el.querySelectorAll('tr[data-desp]').forEach(tr=>tr.onclick=()=>despModal(tr.getAttribute('data-desp')));
     const pv=document.getElementById('desp_prev'), nx=document.getElementById('desp_next');
     if(pv) pv.onclick=()=>{ _desp.page--; _despOpen=null; despPaint(); };
     if(nx) nx.onclick=()=>{ _desp.page++; _despOpen=null; despPaint(); };
-    const det=document.getElementById('desp_det');
-    if(det && _despOpen){
-      const [suc,dt]=_despOpen.split('|');
-      if(!_despEnt[_despOpen]){ const {data,error}=await supabase.from('v_ind_despacho_entrega').select('*').eq('dt',dt).eq('suc_id',suc).order('entrega'); if(error) throw error; _despEnt[_despOpen]=data||[]; }
-      det.innerHTML=despEntHTML(_despEnt[_despOpen]);
-    }
   }catch(e){ el.innerHTML=errorHTML(e); }
 }
 function despCSV(){
