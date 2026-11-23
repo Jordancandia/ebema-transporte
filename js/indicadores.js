@@ -5,8 +5,8 @@
 //  Lee en vivo las vistas v_ind_* de Supabase (RLS: usuario @ebema.cl con rol).
 //  Paleta alineada a las presentaciones (PPT) del Comité de Transporte.
 // ============================================================================
-import { supabase } from './supabase-client.js?v=202611231252';
-import { centrosAlcance } from './permisos.js?v=202611231252';
+import { supabase } from './supabase-client.js?v=202611231256';
+import { centrosAlcance } from './permisos.js?v=202611231256';
 
 // --- Paleta PPT -------------------------------------------------------------
 const C = {
@@ -1429,11 +1429,6 @@ function nivelHTML(d,grupos,grupo){
       `<div>`+legend([{n:'Días a entrega por tipo',c:R.grey}])+`<div id="n_tipo_dias"></div></div></div>`+
       (hayClase?'':`<div class="text-[13px] text-secondary mt-sm">Stock=ZV01/03/04 · Calzada=ZV08/09. Vacío = falta correr la carga con el Code.gs actualizado (nueva columna Clase Documento).</div>`))}
 
-    ${card('Nivel de Servicio por Comuna','Mejores y Peores Comunas','',
-      `<div class="grid grid-cols-1 md:grid-cols-2 gap-md">`+
-      `<div>`+legend([{n:'5 peores OTIF %',c:R.red2}])+`<div id="n_reg_peor"></div></div>`+
-      `<div>`+legend([{n:'5 mejores OTIF %',c:R.grey}])+`<div id="n_reg_mejor"></div></div></div>`)}
-
     ${card('Nivel de Servicio Spot y Planificado','Evolutivo Spot vs Planificado','',
       `<div class="grid grid-cols-1 md:grid-cols-2 gap-md">`+
       `<div>`+legend([{n:'OTIF % Planificado',c:R.red},{n:'OTIF % Spot',c:R.grey}])+`<div id="n_spot"></div></div>`+
@@ -1465,9 +1460,6 @@ function drawNivel(d,grupo){
   barChart('n_tipo_otif',order.map(t=>{const r=tp.find(x=>x.tipo===t)||{};return r.otif_pct||0;}),order.map(nice),0,100,R.red,'%',null,v=>Math.round(v));
   const dv=order.map(t=>{const r=tp.find(x=>x.tipo===t)||{};return r.dias_prom||0;});
   barChart('n_tipo_dias',dv,order.map(nice),0,niceMax(dv),R.grey,' d',null,v=>Math.round(v));
-  const reg=d.co.filter(r=>r.grupo===grupo && r.clasif_ruta==='Regional' && r.otif_pct!=null && (r.lineas||0)>=5);
-  hbarChart('n_reg_peor',reg.slice().sort((a,b)=>a.otif_pct-b.otif_pct).slice(0,5).map(r=>({label:r.comuna,value:r.otif_pct})),R.red2,'%','');
-  hbarChart('n_reg_mejor',reg.slice().sort((a,b)=>b.otif_pct-a.otif_pct).slice(0,5).map(r=>({label:r.comuna,value:r.otif_pct})),R.grey,'%','');
   const spg=(d.spw||[]).filter(r=>r.grupo===grupo), sems=last4Sem(spg);
   const spv=(sem,tipo,f)=>{var r=spg.find(x=>x.semana===sem&&x.tipo===tipo);return r?(r[f]||0):0;};
   lineChart('n_spot',[
