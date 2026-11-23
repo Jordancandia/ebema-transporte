@@ -5,8 +5,8 @@
 //  Lee en vivo las vistas v_ind_* de Supabase (RLS: usuario @ebema.cl con rol).
 //  Paleta alineada a las presentaciones (PPT) del Comité de Transporte.
 // ============================================================================
-import { supabase } from './supabase-client.js?v=202611231201';
-import { centrosAlcance } from './permisos.js?v=202611231201';
+import { supabase } from './supabase-client.js?v=202611231245';
+import { centrosAlcance } from './permisos.js?v=202611231245';
 
 // --- Paleta PPT -------------------------------------------------------------
 const C = {
@@ -34,7 +34,7 @@ let _cenGen = 'TODOS';        // Consolidado: centro seleccionado ('TODOS' = red
 
 let _view = 'consolidado';    // consolidado | nivel | tarifa | margen
 export function setIndicadoresSubTab(sub){
-  if (['consolidado','nivel','tarifa','margen'].indexOf(sub) >= 0) _view = sub;
+  if (['consolidado','nivel','tarifa','margen','despachos'].indexOf(sub) >= 0) _view = sub;
   else if (sub === 'centro' || sub === 'general') _mode = sub;
 }
 
@@ -58,6 +58,7 @@ export async function renderIndicadoresView(container){
   if (_view === 'nivel')  return renderNivel(container);
   if (_view === 'tarifa') return renderTarifa(container);
   if (_view === 'margen') return renderMargen(container);
+  if (_view === 'despachos') return renderDespachos(container);
   paintShell();
   await loadGeneral();
 }
@@ -1583,6 +1584,229 @@ function drawTarifa(d,grupo){
 // ============================================================================
 //  MARGEN — detalle
 // ============================================================================
+// ============================================================================
+//  MARGEN · Financiamiento por tipo de negocio + DETALLE POR DESPACHO (23-nov-2026)
+//  Replica margenes_de_flete.xlsx: Normal / E-Click / ZV15 (flete especial cobrado
+//  al cliente) / ZV20 (flete tercero, oficina 1004 → se asigna a la oficina de entrega).
+//  Fuente: v_ind_fin_flete, v_ind_despacho, v_ind_despacho_entrega (ind_flete_cobrado).
+// ============================================================================
+let _finRows=null, _finOpt={per:'anio', seg:'TODOS'};
+const SUC_NOM={'1000':'Santiago','1001':'Corte y Doblado','1005':'San Bernardo','1020':'Antofagasta','1040':'Coquimbo','1050':'La Calera','1060':'Rancagua','1070':'Talca','1080':'Concepción','1090':'Temuco','1100':'Puerto Montt','1160':'Chillán'};
+const sucNom=id=>SUC_NOM[id]||id||'(s/i)';
+const NEG_LBL={NORMAL:'Normal',ECLICK:'E-Click',ZV15:'Flete especial ZV15',ZV20:'Flete tercero ZV20'};
+const SEG_FIN=[['TODOS','Todos los despachos'],['ULTIMA_MILLA','Última milla'],['TRONCAL','Troncal'],['MIXTO','Mixto']];
+const peso=v=>(v==null||isNaN(v)?'–':(v<0?'-':'')+'$'+nf0.format(Math.abs(Math.round(v))));
+const pesoC=v=>`<span style="color:${v<0?'#C0000C':'#1E8449'}">${peso(v)}</span>`;
+const cobC=v=>v==null?'–':`<span style="color:${v>=100?'#1E8449':v>=90?'#B5730B':'#C0000C'}">${nf1.format(v)}%</span>`;
+function finAgg(rows){
+  const o={entregas:0,viajes:0,kg:0,sug:0,cob:0,pag:0,lineas:0};
+  rows.forEach(r=>{ o.lineas+=+r.lineas||0; o.entregas+=+r.entregas||0; o.viajes+=+r.viajes||0; o.kg+=+r.kg||0; o.sug+=+r.sugerido||0; o.cob+=+r.cobrado||0; o.pag+=+r.pagado||0; });
+  o.res=o.cob-o.pag; o.cobt=o.pag?o.cob/o.pag*100:null; return o;
+}
+function finFiltra(rows){
+  const [a,b]=nsRango(_finOpt.per);
+  return rows.filter(r=>r.mes_label>=a && r.mes_label<=b && (_finOpt.seg==='TODOS'||r.segmento===_finOpt.seg));
+}
+function finHTML(){
+  const rows=finFiltra(_finRows||[]);
+  const ctrl=`<div class="flex flex-wrap items-center gap-md mb-md text-[14px]">
+    <label class="text-secondary">Período:</label>${nsSel('fin_per',NS_PER,_finOpt.per)}
+    <label class="text-secondary">Despachos:</label>${nsSel('fin_seg',SEG_FIN,_finOpt.seg)}</div>`;
+  if(!rows.length) return ctrl+`<div class="text-secondary text-[14px] py-sm">Sin datos para el período.</div>`;
+  const T=finAgg(rows), by=n=>finAgg(rows.filter(r=>r.negocio===n));
+  const E=by('ECLICK'), Z15=by('ZV15'), Z20=by('ZV20'), N=by('NORMAL'), X=finAgg(rows.filter(r=>r.express));
+  const cobSinE=(T.pag-E.pag)?(T.cob-E.cob)/(T.pag-E.pag)*100:null;
+  const tiles=tileS('Resultado total',mm(T.res/1e6),'cobrado '+mm(T.cob/1e6)+' − pagado '+mm(T.pag/1e6),T.res>=0?{c:'#1E8449',t:'Cobertura '+pct(T.cobt)}:{c:'#C0000C',t:'Cobertura '+pct(T.cobt)})+
+    tileS('Resultado E-Click',mm(E.res/1e6),nf0.format(E.entregas)+' entregas · no cobra flete al cliente',{c:'#C0000C',t:'Cobertura sin E-Click '+pct(cobSinE)})+
+    tileS('Fletes especiales ZV15 + ZV20',mm((Z15.res+Z20.res)/1e6),'cobrado '+mm((Z15.cob+Z20.cob)/1e6)+' · pagado '+mm((Z15.pag+Z20.pag)/1e6),(Z15.res+Z20.res)>=0?{c:'#1E8449',t:'Aporte positivo'}:{c:'#C0000C',t:'Aporte negativo'})+
+    tileS('Despachos normales',pct(N.cobt),'cobertura · resultado '+mm(N.res/1e6),semaforo(N.cobt,META.cobertura,10));
+  const sucs=[...new Set(rows.map(r=>r.suc_id))];
+  const bySuc={}; sucs.forEach(s=>bySuc[s]=rows.filter(r=>r.suc_id===s));
+  sucs.sort((a,b)=>finAgg(bySuc[a]).res-finAgg(bySuc[b]).res);
+  const fila=(lbl,rs,bold,hl)=>{ const t=finAgg(rs), g=n=>finAgg(rs.filter(r=>r.negocio===n)), e=g('ECLICK');
+    const sinE=(t.pag-e.pag)?(t.cob-e.cob)/(t.pag-e.pag)*100:null;
+    const imp=(t.cobt!=null&&sinE!=null)?t.cobt-sinE:null;
+    const b=bold?'font-semibold':'';
+    return `<tr class="border-t border-surface-variant" style="${hl?'background:#FFF6F6':''}">
+      <td class="py-[3px] pr-sm whitespace-nowrap ${b}">${hl?'▸ ':''}${esc(lbl)}</td>
+      <td class="text-right px-[6px] tabular-nums ${b}">${peso(t.pag)}</td><td class="text-right px-[6px] tabular-nums ${b}">${peso(t.cob)}</td>
+      <td class="text-right px-[6px] tabular-nums ${b}">${pesoC(t.res)}</td><td class="text-right px-[6px] tabular-nums ${b}">${cobC(t.cobt)}</td>
+      <td class="text-right px-[6px] tabular-nums border-l border-surface-variant">${pesoC(g('NORMAL').res)}</td>
+      <td class="text-right px-[6px] tabular-nums">${e.pag||e.cob?pesoC(e.res):'–'}</td>
+      <td class="text-right px-[6px] tabular-nums">${(g('ZV15').pag||g('ZV15').cob)?pesoC(g('ZV15').res):'–'}</td>
+      <td class="text-right px-[6px] tabular-nums">${(g('ZV20').pag||g('ZV20').cob)?pesoC(g('ZV20').res):'–'}</td>
+      <td class="text-right px-[6px] tabular-nums border-l border-surface-variant">${cobC(sinE)}</td>
+      <td class="text-right px-[6px] tabular-nums">${imp==null||Math.abs(imp)<0.05?'–':`<span style="color:#C0000C">${nf1.format(imp)} pp</span>`}</td></tr>`; };
+  const body=sucs.map(s=>fila(sucNom(s),bySuc[s],false,(bySuc[s][0]||{}).grupo===_grupoM)).join('')+fila('Total',rows,true,false);
+  const th=(t,cls)=>`<th class="text-right px-[6px] font-medium ${cls||''}">${t}</th>`;
+  return ctrl+`<div class="grid grid-cols-2 md:grid-cols-4 gap-sm mb-md">${tiles}</div>
+    <div class="ind-heat overflow-x-auto"><table class="w-full text-[14px]"><thead>
+      <tr class="text-secondary text-[13px]"><th></th><th colspan="4" class="text-center font-medium">Total sucursal</th><th colspan="4" class="text-center font-medium border-l border-surface-variant">Resultado por tipo de negocio (cobrado − pagado)</th><th colspan="2" class="text-center font-medium border-l border-surface-variant">Efecto E-Click</th></tr>
+      <tr class="text-secondary text-[13px]"><th class="text-left font-medium">Sucursal</th>${th('Pagado')}${th('Cobrado')}${th('Resultado')}${th('Cobertura')}${th('Normal','border-l border-surface-variant')}${th('E-Click')}${th('ZV15')}${th('ZV20')}${th('Cobertura sin E-Click','border-l border-surface-variant')}${th('Impacto')}</tr>
+    </thead><tbody>${body}</tbody></table></div>
+    <div class="text-[13px] text-secondary mt-sm leading-relaxed">Orden: peor resultado primero. <b>E-Click</b> = columna E-Click del reporte (no cobra flete al cliente). <b>ZV15</b> = flete especial cobrado al cliente (Flete ZV15 = Si). <b>ZV20</b> = flete tercero (oficina 1004): cobro en columna Flete ZV20, asignado a la oficina de entrega. Normal = resto. Envío Express en el período: ${nf0.format(X.entregas)} entregas · cobrado ${mm(X.cob/1e6)} · pagado ${mm(X.pag/1e6)} · cobertura ${pct(X.cobt)}.</div>`;
+}
+async function finPaint(){
+  const el=document.getElementById('m_fin_wrap'); if(!el) return;
+  try{
+    if(!_finRows){ el.innerHTML=loadingHTML(); _finRows=await nsFetchAll(()=>supabase.from('v_ind_fin_flete').select('*')); }
+    el.innerHTML=finHTML(); sweepHeat();
+    const on=(id,k)=>{ const s=document.getElementById(id); if(s) s.onchange=ev=>{ _finOpt[k]=ev.target.value; finPaint(); }; };
+    on('fin_per','per'); on('fin_seg','seg');
+  }catch(e){ el.innerHTML=errorHTML(e); }
+}
+
+// ---------------------------- DETALLE POR DESPACHO ---------------------------
+let _desp={grupo:null, per:'3m', neg:'TODOS', perd:false, q:'', orden:'fecha', page:0}, _despRows={}, _despEnt={}, _despOpen=null;
+const DESP_PAGE=50;
+const fd=s=>s?String(s).slice(8,10)+'-'+String(s).slice(5,7)+'-'+String(s).slice(2,4):'–';
+const NEG_OPTS=[['TODOS','Todos'],['NORMAL','Normal'],['ECLICK','E-Click'],['ZV15','Flete especial ZV15'],['ZV20','Flete tercero ZV20'],['EXPRESS','Envío Express']];
+const ORD_OPTS=[['fecha','Fecha (reciente primero)'],['res','Resultado (peor primero)'],['pag','Pagado (mayor primero)'],['cob','Cobertura (peor primero)']];
+function despChips(r){
+  const c=[]; const n=String(r.negocios||'');
+  if(n.indexOf('ECLICK')>=0) c.push(['E-Click','#6B6E70']);
+  if(n.indexOf('ZV15')>=0) c.push(['ZV15','#1E8449']);
+  if(n.indexOf('ZV20')>=0) c.push(['ZV20','#2E75B6']);
+  if(r.express) c.push(['Express','#E97132']);
+  return c.map(x=>`<span style="background:${x[1]};color:#fff;border-radius:999px;padding:0 6px;font-size:11px;margin-right:2px;white-space:nowrap">${x[0]}</span>`).join('');
+}
+function despFiltra(){
+  const rows=_despRows[_desp.grupo]||[], [a,b]=nsRango(_desp.per), q=_desp.q.trim().toLowerCase();
+  let out=rows.filter(r=>r.mes_label>=a && r.mes_label<=b);
+  if(_desp.neg==='EXPRESS') out=out.filter(r=>r.express);
+  else if(_desp.neg!=='TODOS') out=out.filter(r=>String(r.negocios||'').indexOf(_desp.neg)>=0);
+  if(_desp.perd) out=out.filter(r=>(+r.cobrado||0)<(+r.pagado||0));
+  if(q) out=out.filter(r=>[r.dt,r.entregas,r.vendedores,r.comunas,r.transportista,sucNom(r.suc_id)].join(' ').toLowerCase().indexOf(q)>=0);
+  const res=r=>(+r.cobrado||0)-(+r.pagado||0), cob=r=>(+r.pagado?(+r.cobrado||0)/(+r.pagado):9e9);
+  const cmp={fecha:(x,y)=>String(y.fecha_transporte).localeCompare(String(x.fecha_transporte))||String(y.dt).localeCompare(String(x.dt)),
+    res:(x,y)=>res(x)-res(y), pag:(x,y)=>(+y.pagado||0)-(+x.pagado||0), cob:(x,y)=>cob(x)-cob(y)}[_desp.orden];
+  return out.sort(cmp);
+}
+function despShellHTML(grupos){
+  const opciones=grupos.map(g=>`<option value="${g}" ${g===_desp.grupo?'selected':''}>${nice(g)}</option>`).join('');
+  return `<div class="w-full mx-auto" style="max-width:1760px">
+    <div class="flex items-center gap-md mb-md flex-wrap">
+      <div class="text-headline-sm font-bold">Detalle por Despacho — flete sugerido, cobrado y pagado</div>
+      <label class="text-secondary text-body-md ml-auto">Centro:</label>
+      <select id="desp_grp" class="border border-surface-variant rounded-lg px-md py-sm bg-surface-container-lowest text-on-surface">${opciones}</select>
+    </div>
+    <section class="bg-surface-container-lowest border border-surface-variant rounded-xl p-md md:p-lg mb-lg">
+      <div class="flex flex-wrap items-center gap-md mb-md text-[14px]">
+        <label class="text-secondary">Período:</label>${nsSel('desp_per',NS_PER,_desp.per)}
+        <label class="text-secondary">Tipo:</label>${nsSel('desp_neg',NEG_OPTS,_desp.neg)}
+        <label class="text-secondary">Ordenar:</label>${nsSel('desp_ord',ORD_OPTS,_desp.orden)}
+        <label class="inline-flex items-center gap-[6px]"><input id="desp_perd" type="checkbox" ${_desp.perd?'checked':''}> Solo con pérdida (cobrado &lt; pagado)</label>
+        <input id="desp_q" type="search" value="${esc(_desp.q)}" placeholder="Buscar DT, entrega, vendedor, comuna, transportista…" class="border border-surface-variant rounded-lg px-sm py-[4px] bg-surface-container-lowest text-on-surface" style="min-width:300px">
+        <button id="desp_csv" class="ml-auto border border-surface-variant rounded-lg px-md py-[4px] hover:bg-surface-container-low">⬇ Descargar CSV</button>
+      </div>
+      <div id="desp_body"></div>
+    </section>
+    <div class="text-[13px] text-secondary leading-relaxed">Un despacho = documento de transporte (DT) por sucursal. Montos en $ CLP del reporte FLETE COBRADO: sugerido = tarifa del sistema, cobrado = facturado al cliente (+ Flete ZV20 en flete tercero), pagado = pago al transportista. Clic en una fila para ver sus entregas (NV, factura, vendedor, cliente y fechas de NV, factura y entrega).</div>
+  </div>`;
+}
+function despBodyHTML(){
+  const rows=despFiltra(), T=finAgg(rows), n=rows.length, pages=Math.max(1,Math.ceil(n/DESP_PAGE));
+  if(_desp.page>=pages) _desp.page=pages-1;
+  const perd=rows.filter(r=>(+r.cobrado||0)<(+r.pagado||0)).length;
+  const ent=rows.reduce((s,r)=>s+(+r.n_entregas||0),0);
+  const tiles=tile('Despachos',nf0.format(n),nf0.format(ent)+' entregas · '+nf0.format(T.kg/1000)+' t')+
+    tile('Sugerido',mm(T.sug/1e6),'tarifa sistema')+
+    tile('Cobrado',mm(T.cob/1e6),'cobrado / sugerido '+pct(T.sug?T.cob/T.sug*100:null))+
+    tileS('Resultado',mm(T.res/1e6),'pagado '+mm(T.pag/1e6)+' · '+nf0.format(perd)+' despachos con pérdida',T.res>=0?{c:'#1E8449',t:'Cobertura '+pct(T.cobt)}:{c:'#C0000C',t:'Cobertura '+pct(T.cobt)});
+  if(!n) return `<div class="grid grid-cols-2 md:grid-cols-4 gap-sm mb-md">${tiles}</div><div class="text-secondary text-[14px] py-sm">Sin despachos con esos filtros.</div>`;
+  const pg=rows.slice(_desp.page*DESP_PAGE,(_desp.page+1)*DESP_PAGE);
+  const th=(t,l)=>`<th class="${l?'text-left':'text-right'} px-[6px] font-medium whitespace-nowrap">${t}</th>`;
+  const body=pg.map(r=>{ const res=(+r.cobrado||0)-(+r.pagado||0), cb=+r.pagado?(+r.cobrado||0)/(+r.pagado)*100:null, key=r.suc_id+'|'+r.dt, open=_despOpen===key;
+    return `<tr class="border-t border-surface-variant cursor-pointer hover:bg-surface-container-low" data-desp="${esc(key)}" style="${open?'background:#FFF6F6':''}">
+      <td class="px-[6px] py-[3px] whitespace-nowrap">${open?'▾':'▸'} ${fd(r.fecha_transporte)}</td>
+      <td class="px-[6px] tabular-nums">${esc(r.dt)}</td>
+      <td class="px-[6px] whitespace-nowrap">${esc(sucNom(r.suc_id))}</td>
+      <td class="px-[6px]" style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(r.transportista)}">${esc(r.transportista||'–')}</td>
+      <td class="px-[6px] text-right tabular-nums">${esc(r.cap_camion||'–')}</td>
+      <td class="px-[6px]" style="max-width:200px" title="${esc(r.vendedores)}">${esc(r.vendedores||'–')}</td>
+      <td class="px-[6px]" style="max-width:200px" title="${esc(r.comunas)}">${esc(r.comunas||'–')}</td>
+      <td class="px-[6px] text-right tabular-nums">${nf0.format(r.n_entregas||0)}</td>
+      <td class="px-[6px] text-right tabular-nums">${nf0.format(r.kg||0)}</td>
+      <td class="px-[6px] text-right tabular-nums">${peso(+r.sugerido)}</td>
+      <td class="px-[6px] text-right tabular-nums">${peso(+r.cobrado)}</td>
+      <td class="px-[6px] text-right tabular-nums">${peso(+r.pagado)}</td>
+      <td class="px-[6px] text-right tabular-nums font-semibold">${pesoC(res)}</td>
+      <td class="px-[6px] text-right tabular-nums">${cobC(cb)}</td>
+      <td class="px-[6px]">${despChips(r)}</td></tr>`+
+      (open?`<tr><td colspan="15" class="px-[6px] pb-sm" style="background:#FFFBFB"><div id="desp_det">${loadingHTML()}</div></td></tr>`:''); }).join('');
+  const pager=`<div class="flex items-center gap-sm mt-sm text-[14px] text-secondary">
+    <button id="desp_prev" class="border border-surface-variant rounded px-sm" ${_desp.page<=0?'disabled':''}>‹</button>
+    <span>Página ${_desp.page+1} de ${pages} · ${nf0.format(n)} despachos</span>
+    <button id="desp_next" class="border border-surface-variant rounded px-sm" ${_desp.page>=pages-1?'disabled':''}>›</button></div>`;
+  return `<div class="grid grid-cols-2 md:grid-cols-4 gap-sm mb-md">${tiles}</div>
+    <div class="overflow-x-auto"><table class="w-full text-[13px]"><thead><tr class="text-secondary">
+      ${th('Fecha',1)}${th('DT',1)}${th('Sucursal',1)}${th('Transportista',1)}${th('Cap. t')}${th('Vendedor(es)',1)}${th('Comunas',1)}${th('Entregas')}${th('Kg')}${th('Sugerido')}${th('Cobrado')}${th('Pagado')}${th('Resultado')}${th('Cobertura')}${th('Tipo',1)}
+    </tr></thead><tbody>${body}</tbody></table></div>${pager}`;
+}
+function despEntHTML(list){
+  if(!list.length) return `<div class="text-secondary text-[13px] py-sm">Sin entregas.</div>`;
+  const th=(t,l)=>`<th class="${l?'text-left':'text-right'} px-[6px] font-medium whitespace-nowrap">${t}</th>`;
+  const rows=list.map(e=>{ const res=(+e.cobrado||0)-(+e.pagado||0);
+    return `<tr class="border-t border-surface-variant">
+      <td class="px-[6px] tabular-nums">${esc(e.entrega)}</td><td class="px-[6px] tabular-nums">${esc(e.nota_venta||'–')}</td>
+      <td class="px-[6px]">${esc(e.clase_doc_venta||'–')}</td><td class="px-[6px] tabular-nums">${esc(e.factura||'–')}</td>
+      <td class="px-[6px] whitespace-nowrap">${esc(e.vendedor||'–')}</td><td class="px-[6px] tabular-nums">${esc(e.id_cliente||'–')}</td>
+      <td class="px-[6px] tabular-nums">${esc(e.id_obra||'–')}</td><td class="px-[6px]">${esc(e.comuna||'–')}</td>
+      <td class="px-[6px] whitespace-nowrap">${esc(NEG_LBL[e.negocio]||e.negocio)}${e.express?' · Express':''}</td>
+      <td class="px-[6px] whitespace-nowrap">${fd(e.fecha_nv)}</td><td class="px-[6px] whitespace-nowrap">${fd(e.fecha_factura)}</td><td class="px-[6px] whitespace-nowrap">${fd(e.fecha_entrega)}</td>
+      <td class="px-[6px] text-right tabular-nums">${nf0.format(e.kg||0)}</td><td class="px-[6px] text-right tabular-nums">${peso(+e.sugerido)}</td>
+      <td class="px-[6px] text-right tabular-nums">${peso(+e.cobrado)}</td><td class="px-[6px] text-right tabular-nums">${peso(+e.pagado)}</td>
+      <td class="px-[6px] text-right tabular-nums">${pesoC(res)}</td></tr>`; }).join('');
+  return `<div class="overflow-x-auto"><table class="w-full text-[12px]"><thead><tr class="text-secondary">
+    ${th('Entrega',1)}${th('NV',1)}${th('Clase doc.',1)}${th('Factura',1)}${th('Vendedor',1)}${th('Cliente',1)}${th('Obra',1)}${th('Comuna',1)}${th('Tipo',1)}${th('F. NV',1)}${th('F. factura',1)}${th('F. entrega',1)}${th('Kg')}${th('Sugerido')}${th('Cobrado')}${th('Pagado')}${th('Resultado')}
+  </tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+async function despPaint(){
+  const el=document.getElementById('desp_body'); if(!el) return;
+  try{
+    const g=_desp.grupo;
+    if(!_despRows[g]){ el.innerHTML=loadingHTML();
+      _despRows[g]=await nsFetchAll(()=>supabase.from('v_ind_despacho').select('*').eq('grupo',g).order('fecha_transporte',{ascending:false}).order('dt')); }
+    el.innerHTML=despBodyHTML();
+    el.querySelectorAll('tr[data-desp]').forEach(tr=>tr.onclick=()=>{ const k=tr.getAttribute('data-desp'); _despOpen=(_despOpen===k?null:k); despPaint(); });
+    const pv=document.getElementById('desp_prev'), nx=document.getElementById('desp_next');
+    if(pv) pv.onclick=()=>{ _desp.page--; _despOpen=null; despPaint(); };
+    if(nx) nx.onclick=()=>{ _desp.page++; _despOpen=null; despPaint(); };
+    const det=document.getElementById('desp_det');
+    if(det && _despOpen){
+      const [suc,dt]=_despOpen.split('|');
+      if(!_despEnt[_despOpen]){ const {data,error}=await supabase.from('v_ind_despacho_entrega').select('*').eq('dt',dt).eq('suc_id',suc).order('entrega'); if(error) throw error; _despEnt[_despOpen]=data||[]; }
+      det.innerHTML=despEntHTML(_despEnt[_despOpen]);
+    }
+  }catch(e){ el.innerHTML=errorHTML(e); }
+}
+function despCSV(){
+  const rows=despFiltra();
+  const cols=[['Fecha transporte',r=>r.fecha_transporte],['DT',r=>r.dt],['Sucursal',r=>sucNom(r.suc_id)],['Transportista',r=>r.transportista],['Cap camion',r=>r.cap_camion],
+    ['Vendedores',r=>r.vendedores],['Comunas',r=>r.comunas],['N entregas',r=>r.n_entregas],['Entregas',r=>r.entregas],['Kg',r=>Math.round(+r.kg||0)],
+    ['Flete sugerido',r=>Math.round(+r.sugerido||0)],['Flete cobrado',r=>Math.round(+r.cobrado||0)],['Flete pagado',r=>Math.round(+r.pagado||0)],
+    ['Resultado',r=>Math.round((+r.cobrado||0)-(+r.pagado||0))],['Tipo negocio',r=>r.negocios],['Express',r=>r.express?'Si':'No'],['Segmento',r=>r.segmento]];
+  const q=v=>{ v=v==null?'':String(v); return /[;"\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v; };
+  const txt='﻿'+cols.map(c=>c[0]).join(';')+'\n'+rows.map(r=>cols.map(c=>q(c[1](r))).join(';')).join('\n');
+  const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([txt],{type:'text/csv;charset=utf-8'}));
+  a.download='Detalle_Despachos_'+_desp.grupo+'_'+new Date().toISOString().slice(0,10)+'.csv'; document.body.appendChild(a); a.click(); a.remove();
+}
+async function renderDespachos(container){
+  container.innerHTML=loadingHTML();
+  try{
+    if(!_finRows) _finRows=await nsFetchAll(()=>supabase.from('v_ind_fin_flete').select('*'));
+    const grupos=[...new Set(_finRows.map(r=>r.grupo))].filter(g=>g&&g!=='OTROS').sort();
+    if(!grupos.length){ container.innerHTML=`<div class="text-secondary p-lg">Sin datos de flete para tus centros.</div>`; return; }
+    if(!_desp.grupo||grupos.indexOf(_desp.grupo)<0) _desp.grupo=(grupos.indexOf('CONCEPCION')>=0?'CONCEPCION':grupos[0]);
+    container.innerHTML=despShellHTML(grupos);
+    const on=(id,k,ev)=>{ const s=document.getElementById(id); if(!s) return; s[ev||'onchange']=e=>{ _desp[k]=(e.target.type==='checkbox'?e.target.checked:e.target.value); _desp.page=0; _despOpen=null; despPaint(); }; };
+    on('desp_grp','grupo'); on('desp_per','per'); on('desp_neg','neg'); on('desp_ord','orden'); on('desp_perd','perd');
+    const qi=document.getElementById('desp_q'); let tq=null;
+    if(qi) qi.oninput=e=>{ clearTimeout(tq); tq=setTimeout(()=>{ _desp.q=e.target.value; _desp.page=0; _despOpen=null; despPaint(); },250); };
+    const b=document.getElementById('desp_csv'); if(b) b.onclick=despCSV;
+    await despPaint();
+  }catch(e){ container.innerHTML=errorHTML(e); }
+}
 let _cacheMar2=null, _grupoM=null, _segM='ULTIMA_MILLA';
 async function renderMargen(container){
   container.innerHTML=loadingHTML();
@@ -1604,7 +1828,7 @@ async function renderMargen(container){
 }
 function paintMargen(container,grupos){
   container.innerHTML=margenHTML(_cacheMar2,grupos,_grupoM);
-  ensureTip(); drawMargen(_cacheMar2,_grupoM); sweepHeat();
+  ensureTip(); drawMargen(_cacheMar2,_grupoM); sweepHeat(); finPaint();
   const sel=document.getElementById('ind_selm'); if(sel) sel.onchange=ev=>{_grupoM=ev.target.value; paintMargen(container,grupos);};
 }
 function margenHTML(d,grupos,grupo){
@@ -1639,6 +1863,7 @@ function margenHTML(d,grupos,grupo){
       legend([{n:'No cobrado $MM (sugerido)',c:R.red2}])+`<div id="m_scm"></div>`)}
     ${card('3 · Ranking Vendedor — Flete Cobrado','Brecha = pagado − cobrado (mayor brecha = más subcobra)','',
       vendMargenTablaHTML(d.vn,grupo))}
+    ${card('4 · Financiamiento del flete por sucursal','Normal, E-Click y fletes especiales (ZV15 / ZV20) — cobrado vs pagado','',`<div id="m_fin_wrap"></div>`,'sec-fin')}
     <div class="text-[13px] text-secondary mt-lg leading-relaxed">Flete no cobrado = entregas con flete cobrado = 0; monto = flete sugerido (lo que no se cobró). Ranking excluye EbemaClick.</div>
   </div>`;
 }
