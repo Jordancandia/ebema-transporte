@@ -5,8 +5,8 @@
 //  Lee en vivo las vistas v_ind_* de Supabase (RLS: usuario @ebema.cl con rol).
 //  Paleta alineada a las presentaciones (PPT) del Comité de Transporte.
 // ============================================================================
-import { supabase } from './supabase-client.js?v=202611231609';
-import { centrosAlcance } from './permisos.js?v=202611231609';
+import { supabase } from './supabase-client.js?v=202611231635';
+import { centrosAlcance } from './permisos.js?v=202611231635';
 
 // --- Paleta PPT -------------------------------------------------------------
 const C = {
@@ -15,7 +15,7 @@ const C = {
 };
 // Paleta Consolidado: solo tonos rojos y grises
 const R = {
-  red:'#C0000C', red2:'#EE1B22', redL:'#E88A8F',
+  red:'#B5000B', red2:'#E30613', redL:'#E88A8F',
   grey:'#6B6E70', greyL:'#A9ACAE', ink:'#333333', grid:'#D9D5CF'
 };
 // Semáforo rojo→gris para heatmaps del Consolidado
@@ -55,6 +55,7 @@ const nice = s => String(s||'').toLowerCase().split(' ').map(w=>w==='y'?w:w.char
 // ============================================================================
 export async function renderIndicadoresView(container){
   _container = container;
+  uxInit(container);
   if (_view === 'nivel')  return renderNivel(container);
   if (_view === 'tarifa') return renderTarifa(container);
   if (_view === 'margen') return renderMargen(container);
@@ -614,17 +615,13 @@ function drawCentro(d, grupo){
 //  UI helpers
 // ============================================================================
 function card(title,lead,tiles,chartsHTML,ancla){
-  return `<section data-card ${ancla?'id="'+ancla+'" style="scroll-margin-top:80px"':''} class="bg-surface-container-lowest border border-surface-variant rounded-xl p-md md:p-lg mb-lg">
-    <div class="text-label-caps text-secondary uppercase mb-1">${title}</div>
-    <div class="text-headline-sm font-bold mb-md">${lead}</div>
-    ${tiles?`<div class="grid grid-cols-2 md:grid-cols-4 gap-sm mb-md">${tiles}</div>`:''}
+  return `<section data-card ${ancla?'id="'+ancla+'"':''} style="scroll-margin-top:80px" class="ux-card">
+    <div class="ux-card-h"><div class="ux-card-k">${title}</div><div class="ux-card-t">${lead}</div></div>
+    ${tiles?`<div class="ux-tiles">${tiles}</div>`:''}
     ${chartsHTML}</section>`;
 }
 function tile(k,v,d,cls=''){
-  return `<div class="bg-surface-container-low border border-surface-variant rounded-lg px-md py-sm">
-    <div class="text-[13px] text-secondary">${k}</div>
-    <div class="text-2xl font-bold leading-tight ${cls}">${v}</div>
-    <div class="text-[13px] text-secondary mt-[2px]">${d||''}</div></div>`;
+  return `<div class="ux-tile"><div class="ux-tile-k">${k}</div><div class="ux-tile-v ${cls}">${v}</div><div class="ux-tile-d">${d||''}</div></div>`;
 }
 // --- Semáforo vs meta (27-sep-2026) -------------------------------------------
 // better='up' (más es mejor) | 'down' (menos es mejor). tol = margen "cerca de meta".
@@ -632,28 +629,25 @@ function semaforo(v,meta,tol,better){
   if(v==null||meta==null) return null;
   var ok = better==='down' ? v<=meta : v>=meta;
   var cerca = better==='down' ? v<=meta+tol : v>=meta-tol;
-  return ok ? {c:'#1E8449',t:'Sobre meta'} : cerca ? {c:'#B5730B',t:'Cerca de meta'} : {c:'#C0000C',t:'Bajo meta'};
+  return ok ? {c:'#1E8449',t:'Sobre meta'} : cerca ? {c:'#B5730B',t:'Cerca de meta'} : {c:'#B5000B',t:'Bajo meta'};
 }
-function stChip(st){ return st?`<div class="text-[13px] font-semibold mt-[2px]" style="color:${st.c}">● ${st.t}</div>`:''; }
+function stKind(st){ if(!st) return null; return (st.t==='Sobre meta'||st.t==='Positivo')?'ok':(st.t==='Cerca de meta'?'warn':'bad'); }
+function stChip(st){ const k=stKind(st); if(!k) return ''; return `<span class="ux-chip ux-${k}">${{ok:'✓',warn:'!',bad:'✕'}[k]} ${st.t}</span>`; }
 function tileS(k,v,d,st,cls=''){
-  return `<div class="bg-surface-container-low border border-surface-variant rounded-lg px-md py-sm" style="${st?'border-left:4px solid '+st.c:''}">
-    <div class="text-[13px] text-secondary">${k}</div>
-    <div class="text-2xl font-bold leading-tight ${cls}">${v}</div>${stChip(st)}
-    <div class="text-[13px] text-secondary mt-[2px]">${d||''}</div></div>`;
+  return `<div class="ux-tile"><div class="ux-tile-k">${k}</div><div class="ux-tile-v ${cls}">${v}</div>${stChip(st)}<div class="ux-tile-d">${d||''}</div></div>`;
 }
-// Tarjeta del resumen ejecutivo: valor + variación vs período anterior + semáforo
+// Tarjeta KPI (rediseño 23-nov-2026): valor + estado vs meta + variación vs período anterior
 function kpiExec(o){
-  var d=o.delta, dTxt='', dSty='color:#808285';
+  var d=o.delta, dTxt='', dSty='color:#5C5F61';
   if(d!=null){ var z=Math.abs(d)<1e-9 || /^[^1-9]*$/.test(o.dfmt(Math.abs(d)));
     var bueno=z?null:((o.better==='down')?d<0:d>0);
     dTxt=z?'= vs '+o.prevLbl:((d>0?'▲ +':'▼ ')+o.dfmt(d)+' vs '+o.prevLbl);
-    dSty=bueno==null?'color:#808285':(bueno?'color:#1E8449':'color:#C0000C'); }
-  return `<a href="#${o.ancla}" style="display:block;text-decoration:none;color:inherit;background:#fff;border:1px solid #e3e0dc;border-radius:12px;padding:12px 14px;${o.st?'border-top:4px solid '+o.st.c:'border-top:4px solid #A9ACAE'}">
-    <div style="font-size:13px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:#6B6E70">${o.k}</div>
-    <div style="font-size:28px;font-weight:800;line-height:1.15;color:#1c1b1a;font-variant-numeric:tabular-nums">${o.v}</div>
-    ${o.st?`<div style="font-size:14px;font-weight:700;color:${o.st.c}">● ${o.st.t}${o.meta!=null?' · meta '+o.meta:''}</div>`:`<div style="font-size:14px;color:#808285">${o.sub||'&nbsp;'}</div>`}
-    <div style="font-size:14px;margin-top:2px;${dSty}">${dTxt||'&nbsp;'}</div>
-    <div style="font-size:13px;color:#808285;margin-top:2px">${o.per||''}</div></a>`;
+    dSty=bueno==null?'color:#5C5F61':(bueno?'color:#1E7A46':'color:#B5000B'); }
+  return `<a href="#${o.ancla}" class="ux-kpi" data-uxgo="#${o.ancla}">
+    <div class="ux-kpi-top"><span class="ux-kpi-k">${o.k}</span>${stChip(o.st)}</div>
+    <div class="ux-kpi-v">${o.v}</div>
+    <div class="ux-kpi-s">${o.st&&o.meta!=null?'Meta '+o.meta:(o.sub||'&nbsp;')}${o.per?' · '+o.per:''}</div>
+    <div class="ux-kpi-d" style="${dSty}">${dTxt||'&nbsp;'}</div></a>`;
 }
 function legend(items){
   return `<div class="flex flex-wrap gap-md text-[14px] text-secondary mb-sm">`+
@@ -1435,6 +1429,8 @@ function nivelHTML(d,grupos,grupo){
       `<div>`+legend([{n:'OTIF % Planificado',c:R.red},{n:'OTIF % Spot',c:R.grey}])+`<div id="n_spot"></div></div>`+
       `<div>`+legend([{n:'Entregas Planificado',c:R.red},{n:'Entregas Spot',c:R.grey}])+`<div id="n_spot_ent"></div></div></div>`)}
 
+    ${card('Envío Express vs Planificado','Entregas, cobertura y $/kg del envío express · año en curso','',`<div id="n_expr"><div class="text-secondary text-[14px]">Cargando…</div></div>`)}
+
     <div class="text-[13px] text-secondary mt-lg leading-relaxed">Comuna = comuna destino (routes.comuna); todas las rutas que llegan a una misma comuna se agrupan juntas. Solo rutas de clasificación Regional. Días venta→entrega = fecha guía − fecha creación.</div>
   </div>`;
 }
@@ -1472,6 +1468,7 @@ function drawNivel(d,grupo){
     {n:'Planificado',v:sems.map(s=>spv(s,'Planificado','lineas')),c:R.red},
     {n:'Spot',v:sems.map(s=>spv(s,'Spot','lineas')),c:R.grey}
   ],sems.map(semLbl),0,niceMax(_ent),'');
+  nivelExpress(grupo);
 }
 
 // ============================================================================
@@ -2152,4 +2149,252 @@ function drawMargen(d,grupo){
   lineChart('m_cob',[{n:'Cobertura',v:s4.map(r=>r.cobertura_pct),c:R.red}],wL,0,120,'%',undefined,{v:META.cobertura,lbl:'Meta cobertura '+META.cobertura+'%'});
   const sc=d.sc.filter(r=>r.grupo===grupo && r.segmento===_segM).slice().sort((a,b)=>a.mes_label<b.mes_label?-1:1);
   barChart('m_scm',sc.map(r=>(r.monto_sugerido||0)/1e6),sc.map(r=>mesCorto(r.mes_label)),0,niceMax(sc.map(r=>(r.monto_sugerido||0)/1e6)),R.red2,' MM',sc.length-1,money1);
+}
+
+// ============================================================================
+//  REDISEÑO UX GERENCIAL (23-nov-2026) — diseño aprobado en Claude Design
+//  · Pestañas entre subvistas  · «Resumen · dónde actuar» calculado con datos
+//  · Índice «En esta vista»    · Secciones numeradas · paleta de la plataforma
+//  Se monta sobre el render existente (MutationObserver): no cambia cálculos.
+// ============================================================================
+const UX_TABS=[['consolidado','Consolidado'],['nivel','Nivel de Servicio'],['tarifa','Tarifa $/Kg'],['margen','Margen de Flete'],['despachos','Detalle por Despacho'],['transportistas','Pagado Transportistas']];
+let _uxObs=null, _uxT=null, _uxBusy=false, _uxSeq=0;
+function uxCSS(){
+  if(document.getElementById('ux-ind-css')) return;
+  const st=document.createElement('style'); st.id='ux-ind-css';
+  st.textContent=`
+.ind2{--ux-pr:#B5000B;--ux-ink:#191C1D;--ux-sec:#5C5F61;--ux-line:#E1E3E4;--ux-low:#F3F4F5;--ux-bg:#F8F9FA;color:var(--ux-ink)}
+.ind2 .ux-nav{display:flex;flex-wrap:wrap;gap:4px;background:#fff;border:1px solid var(--ux-line);border-radius:12px;padding:4px;margin-bottom:16px}
+.ind2 .ux-nav button{height:40px;padding:0 16px;border:0;border-radius:9px;background:transparent;font:inherit;font-size:14px;font-weight:500;color:var(--ux-ink);cursor:pointer}
+.ind2 .ux-nav button:hover{background:var(--ux-low)}
+.ind2 .ux-nav button[aria-current]{background:var(--ux-pr);color:#fff;font-weight:700}
+.ind2 .ux-res{background:#fff;border:1px solid var(--ux-line);border-top:4px solid var(--ux-pr);border-radius:16px;padding:18px 22px;margin:4px 0 16px;display:flex;flex-direction:column;gap:12px}
+.ind2 .ux-res-k{font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--ux-pr)}
+.ind2 .ux-res-t{font-size:19px;font-weight:700;line-height:1.3}
+.ind2 .ux-res-s{font-size:14px;color:var(--ux-sec)}
+.ind2 .ux-res-g{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}
+.ind2 .ux-act{display:flex;flex-direction:column;gap:6px;padding:14px 16px;border-radius:12px;background:var(--ux-bg);border:1px solid var(--ux-line);text-align:left;font:inherit;color:var(--ux-ink);cursor:pointer;transition:border-color .15s,box-shadow .15s}
+.ind2 .ux-act:hover{border-color:rgba(181,0,11,.45);box-shadow:0 2px 8px rgba(0,0,0,.06)}
+.ind2 .ux-act b{font-size:15px;line-height:1.3}
+.ind2 .ux-act .d{font-size:13px;color:var(--ux-sec);line-height:1.45}
+.ind2 .ux-act .cta{font-size:13px;font-weight:700;color:var(--ux-pr)}
+.ind2 .ux-idx{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:16px}
+.ind2 .ux-idx .l{font-size:12px;font-weight:700;color:var(--ux-sec);text-transform:uppercase;letter-spacing:.06em;margin-right:4px}
+.ind2 .ux-idx a{padding:7px 12px;border-radius:999px;border:1px solid var(--ux-line);background:#fff;color:var(--ux-ink);text-decoration:none;font-size:13px;font-weight:600}
+.ind2 .ux-idx a:hover{border-color:var(--ux-pr);color:var(--ux-pr)}
+.ind2 .ux-card{background:#fff;border:1px solid var(--ux-line);border-radius:16px;padding:22px 24px;margin-bottom:20px}
+.ind2 .ux-card-h{display:flex;flex-direction:column;gap:4px;margin-bottom:16px;padding-right:110px}
+.ind2 .ux-card-k{display:flex;align-items:center;gap:10px;font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--ux-sec)}
+.ind2 .ux-badge{min-width:28px;height:28px;padding:0 7px;box-sizing:border-box;border-radius:8px;background:#FFDAD5;color:var(--ux-pr);font-weight:800;font-size:13px;display:inline-flex;align-items:center;justify-content:center;letter-spacing:0}
+.ind2 .ux-card-t{font-size:19px;font-weight:700;color:var(--ux-ink);line-height:1.3}
+.ind2 .ux-tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px;margin-bottom:16px}
+.ind2 .ux-tile{background:var(--ux-bg);border:1px solid var(--ux-low);border-radius:12px;padding:12px 14px;display:flex;flex-direction:column;gap:3px;min-width:0}
+.ind2 .ux-tile-k{font-size:13px;font-weight:600;color:var(--ux-sec)}
+.ind2 .ux-tile-v{font-family:'JetBrains Mono',monospace;font-size:22px;font-weight:500;line-height:1.2;font-variant-numeric:tabular-nums}
+.ind2 .ux-tile-d{font-size:12.5px;color:var(--ux-sec)}
+.ind2 .ux-chip{display:inline-flex;align-self:flex-start;gap:4px;align-items:center;font-size:12px;font-weight:700;padding:3px 9px;border-radius:999px;white-space:nowrap}
+.ind2 .ux-ok{background:#E3F1E8;color:#1E7A46}.ind2 .ux-warn{background:#FCEBD5;color:#8A4A00}.ind2 .ux-bad{background:#FFDAD5;color:#B5000B}.ind2 .ux-info{background:var(--ux-low);color:var(--ux-sec)}
+.ind2 .ux-kpi{display:flex;flex-direction:column;gap:6px;background:#fff;border:1px solid var(--ux-line);border-radius:14px;padding:16px;text-decoration:none;color:var(--ux-ink);transition:border-color .15s,box-shadow .15s}
+.ind2 .ux-kpi:hover{border-color:rgba(181,0,11,.45);box-shadow:0 2px 8px rgba(0,0,0,.06)}
+.ind2 .ux-kpi-top{display:flex;justify-content:space-between;gap:6px;align-items:center;flex-wrap:wrap}
+.ind2 .ux-kpi-k{font-size:12.5px;font-weight:700;color:var(--ux-sec);text-transform:uppercase;letter-spacing:.04em}
+.ind2 .ux-kpi-v{font-family:'JetBrains Mono',monospace;font-size:28px;font-weight:500;line-height:1.1;font-variant-numeric:tabular-nums}
+.ind2 .ux-kpi-s{font-size:12.5px;color:var(--ux-sec)}
+.ind2 .ux-kpi-d{font-size:13px;font-weight:600;border-top:1px solid var(--ux-low);padding-top:8px}
+.ind2 table td.tabular-nums,.ind2 .tabular-nums{font-variant-numeric:tabular-nums}
+`;
+  document.head.appendChild(st);
+}
+function uxInit(container){
+  uxCSS(); container.classList.add('ind2');
+  if(_uxObs) _uxObs.disconnect();
+  _uxObs=new MutationObserver(()=>{ if(_uxBusy) return; clearTimeout(_uxT); _uxT=setTimeout(()=>uxDecorate(container),140); });
+  _uxObs.observe(container,{childList:true,subtree:true});
+  if(!container.__uxClick){ container.__uxClick=true;
+    container.addEventListener('click',ev=>{
+      const t=ev.target.closest('[data-uxtab]'); if(t){ const k=t.getAttribute('data-uxtab'); if(k!==_view) homeGo('indicadores',k); return; }
+      const g=ev.target.closest('[data-uxgo]'); if(g){ ev.preventDefault(); uxGo(g.getAttribute('data-uxgo')); }
+    });
+  }
+}
+function uxSecFind(txt){
+  const q=String(txt).toLowerCase();
+  return [..._container.querySelectorAll('section[data-card]')].find(s=>(s.querySelector('.ux-card-k')||s).textContent.toLowerCase().indexOf(q)>=0);
+}
+function uxGo(go){
+  if(!go) return;
+  if(go.indexOf('#')===0){ const el=document.getElementById(go.slice(1)); if(el) el.scrollIntoView({behavior:'smooth',block:'start'}); return; }
+  if(go.indexOf('sec:')===0){ const el=uxSecFind(go.slice(4)); if(el) el.scrollIntoView({behavior:'smooth',block:'start'}); return; }
+  const setSel=(id,v)=>{ const e=document.getElementById(id); if(e){ if(e.type==='checkbox') e.checked=v; else e.value=v; } };
+  if(go==='desp_perd'){ _desp.perd=true; _desp.page=0; setSel('desp_perd',true); despPaint(); }
+  else if(go==='desp_sincobro'){ _desp.orden='cob'; _desp.page=0; setSel('desp_ord','cob'); despPaint(); }
+  else if(go==='desp_express'){ _desp.neg='EXPRESS'; _desp.page=0; setSel('desp_neg','EXPRESS'); despPaint(); }
+  else if(go==='tr_cpv'){ _tr.orden='cpv'; setSel('tr_ord','cpv'); trPaint(); }
+  else if(go==='tr_ppv'){ _tr.orden='ppv'; setSel('tr_ord','ppv'); trPaint(); }
+  const tb=_container.querySelector('#desp_body,#tr_body'); if(tb && /^(desp|tr)_/.test(go)) setTimeout(()=>tb.scrollIntoView({behavior:'smooth',block:'start'}),60);
+}
+function uxDecorate(container){
+  if(!container.isConnected){ if(_uxObs) _uxObs.disconnect(); return; }
+  const wrap=container.firstElementChild;
+  if(!wrap || !wrap.classList.contains('w-full')) return;   // cargando / error
+  _uxBusy=true;
+  try{
+    let nav=wrap.querySelector(':scope > .ux-nav');
+    if(!nav){
+      nav=document.createElement('nav'); nav.className='ux-nav'; nav.setAttribute('aria-label','Subvistas de indicadores');
+      nav.innerHTML=UX_TABS.map(([k,t])=>`<button type="button" data-uxtab="${k}" ${k===_view?'aria-current="page"':''}>${t}</button>`).join('');
+      wrap.insertBefore(nav,wrap.firstElementChild);
+    }
+    const title=nav.nextElementSibling; if(!title) return;
+    // numerar secciones
+    const secs=[...wrap.querySelectorAll('section[data-card]')]; let n=0;
+    secs.forEach(sec=>{
+      if(!sec.id) sec.id='ux-sec-'+(++_uxSeq);
+      const k=sec.querySelector('.ux-card-k'); if(!k) return; n++;
+      if(k.querySelector('.ux-badge')) return;
+      const raw=k.textContent.trim(), m=/^([\d.]+)\s*·\s*(.*)$/.exec(raw);
+      k.innerHTML=`<span class="ux-badge">${m?m[1]:n}</span><span class="ux-sec-t">${esc(m?m[2]:raw)}</span>`;
+    });
+    const idx=secs.map(sec=>{ const t=sec.querySelector('.ux-sec-t'); return t?{id:sec.id,t:t.textContent.replace(/\s+—\s+.*$/,'').trim()}:null; }).filter(Boolean);
+    let R0={t:'',s:'',acc:[]}; try{ R0=uxAcciones()||R0; }catch(e){ console.warn('[ux] acciones',e); }
+    let top=wrap.querySelector(':scope > .ux-top');
+    if(!top){ top=document.createElement('div'); top.className='ux-top'; }
+    if(top.previousElementSibling!==title) title.after(top);
+    const sig=JSON.stringify([R0,idx]);
+    if(top.dataset.sig!==sig){
+      top.dataset.sig=sig;
+      top.innerHTML=uxResumenHTML(R0)+(idx.length>2?`<nav class="ux-idx" aria-label="En esta vista"><span class="l">En esta vista</span>${idx.map(i=>`<a href="#${i.id}" data-uxgo="#${i.id}">${esc(i.t)}</a>`).join('')}</nav>`:'');
+    }
+  } finally { setTimeout(()=>{ _uxBusy=false; },0); }
+}
+function uxResumenHTML(R0){
+  if(!R0 || (!R0.t && !(R0.acc||[]).length)) return '';
+  const lab={bad:'✕ Actuar ahora',warn:'! Vigilar',ok:'✓ Bien',info:'• Dato'};
+  const acc=(R0.acc||[]).slice().sort((a,b)=>({bad:0,warn:1,info:2,ok:3}[a.sev])-({bad:0,warn:1,info:2,ok:3}[b.sev])).slice(0,3);
+  return `<section class="ux-res" aria-label="Resumen y dónde actuar">
+    <div><div class="ux-res-k">Resumen · dónde actuar</div><div class="ux-res-t">${R0.t||''}</div>${R0.s?`<div class="ux-res-s">${R0.s}</div>`:''}</div>
+    ${acc.length?`<div class="ux-res-g">${acc.map(a=>`<button type="button" class="ux-act" data-uxgo="${esc(a.go||'')}"><span class="ux-chip ux-${a.sev}">${lab[a.sev]}</span><b>${a.t}</b><span class="d">${a.d||''}</span>${a.go?`<span class="cta">${a.cta||'Ver detalle'} →</span>`:''}</button>`).join('')}</div>`:''}
+  </section>`;
+}
+// --- utilidades para acciones ---
+function uxLastClosed(rows){ const cur=mesEnCurso(); const ms=[...new Set((rows||[]).map(r=>r.mes_label))].filter(m=>m&&m<cur).sort(); return ms[ms.length-1]||null; }
+function uxPrevMes(rows,M){ const ms=[...new Set((rows||[]).map(r=>r.mes_label))].filter(m=>m&&m<M).sort(); return ms[ms.length-1]||null; }
+function uxSevMeta(v,meta,tol){ return v>=meta?'ok':(v>=meta-tol?'warn':'bad'); }
+function uxAcciones(){
+  if(_view==='nivel') return uxAccNivel();
+  if(_view==='tarifa') return uxAccTarifa();
+  if(_view==='margen') return uxAccMargen();
+  if(_view==='despachos') return uxAccDesp();
+  if(_view==='transportistas') return uxAccTr();
+  return uxAccConsol();
+}
+function uxAccConsol(){
+  const G=_cacheGrp, D=_cacheGen; if(!G||!D) return null;
+  const gs=_cenGen==='TODOS'?gruposGen():[_cenGen];
+  const M=uxLastClosed(G.ns); if(!M) return null;
+  const at=(rows,f,g)=>{ const r=(rows||[]).find(x=>x.grupo===g&&x.mes_label===M); return r?r[f]:null; };
+  const acc=[];
+  const worst=(rows,f,asc)=>gs.map(g=>[g,at(rows,f,g)]).filter(x=>x[1]!=null).sort((a,b)=>asc?a[1]-b[1]:b[1]-a[1])[0];
+  const wo=worst(G.ns,'otif_pct',true); if(wo&&wo[1]<META.otif) acc.push({sev:uxSevMeta(wo[1],META.otif,5),t:'OTIF bajo meta en '+nice(wo[0]),d:pct(wo[1])+' en '+mesCorto(M)+' · meta '+META.otif+'%.',go:'sec:Nivel de Servicio',cta:'Ver nivel de servicio'});
+  const wm=worst(G.mar,'margen',true); if(wm&&wm[1]<0) acc.push({sev:'bad',t:'Margen negativo en '+nice(wm[0]),d:'Pagado supera a cobrado en '+mm(Math.abs(wm[1])/1e6)+' en '+mesCorto(M)+'.',go:'sec:Margen',cta:'Ver margen'});
+  const wc=worst(G.con,'consol_pct',true); if(wc&&wc[1]<META.consol) acc.push({sev:uxSevMeta(wc[1],META.consol,5),t:'Consolidación baja en '+nice(wc[0]),d:'Camiones al '+pct(wc[1])+' de capacidad en '+mesCorto(M)+' · meta '+META.consol+'%.',go:'sec:Operación',cta:'Ver operación'});
+  const sc=gs.map(g=>{ const r=(G.scm||[]).find(x=>x.grupo===g&&x.mes_label===M); return [g,r?(r.monto_sugerido!=null?r.monto_sugerido:r.monto):null]; }).filter(x=>x[1]>0).sort((a,b)=>b[1]-a[1])[0];
+  if(sc) acc.push({sev:'warn',t:'Flete no cobrado en '+nice(sc[0]),d:mm(sc[1]/1e6)+' sin cobrar al cliente en '+mesCorto(M)+'.',go:'sec:no cobrado',cta:'Ver no cobrado'});
+  const sh=D.shes||{}; if(_cenGen==='TODOS' && (sh.docs_sin_hes||0)>0) acc.push({sev:'warn',t:'Troncal: '+nf0.format(sh.docs_sin_hes)+' documentos sin HES',d:(sh.ton_sin_hes!=null?nf1.format(sh.ton_sin_hes)+' t ':'')+'sin costo final reconocido.',go:'sec:Troncal',cta:'Ver troncal'});
+  const ebc=sum((G.ebm||[]).filter(r=>gs.indexOf(r.grupo)>=0).map(r=>r.pagado));
+  if(ebc>0) acc.push({sev:'info',t:'EbemaClick: '+mm(ebc/1e6)+' de flete pagado',d:'Costo de la operación E-Click en el año (incluye sobrecosto 400141).',go:'sec:EbemaClick',cta:'Ver impacto'});
+  // resumen: indicadores con meta del último mes cerrado (red o filtro)
+  const n=(D.ns||[]).find(r=>r.mes_label===M)||{}, m=(D.mar||[]).find(r=>r.mes_label===M)||{}, k=(D.con||[]).find(r=>r.mes_label===M)||{};
+  const ch=[[n.otif_pct,META.otif],[n.fillrate_pct,META.fill],[m.cobertura_pct,META.cobertura],[k.consol_pct,META.consol]].filter(x=>x[0]!=null);
+  const ok=ch.filter(x=>x[0]>=x[1]).length;
+  const bajo=[['OTIF',n.otif_pct,META.otif],['Fill Rate',n.fillrate_pct,META.fill],['cobertura',m.cobertura_pct,META.cobertura],['consolidación',k.consol_pct,META.consol]].filter(x=>x[1]!=null&&x[1]<x[2]).map(x=>x[0]+' ('+pct(x[1])+')');
+  return {t:ok+' de '+ch.length+' indicadores con meta cumplidos en '+mesCorto(M)+(_cenGen!=='TODOS'?' · '+nice(_cenGen):''),
+    s:bajo.length?'Bajo meta: '+bajo.join(', ')+'.':'Todos los indicadores con meta están cumplidos.',acc};
+}
+function uxAccNivel(){
+  const d=_cacheNivel, g=_grupoN; if(!d||!g) return null;
+  const acc=[]; const s4=last4(d.sem,g), w=s4[s4.length-1]||{}, w0=s4[0]||{};
+  if(w.otif_pct!=null) acc.push({sev:uxSevMeta(w.otif_pct,META.otif,5),t:'OTIF semanal '+pct(w.otif_pct),d:semLbl(w.semana)+' · '+(w0.otif_pct!=null?((w.otif_pct-w0.otif_pct>=0?'▲ +':'▼ ')+nf1.format(w.otif_pct-w0.otif_pct)+' pp en 4 semanas'):'')+' · meta '+META.otif+'%.',go:'sec:Semana Móvil',cta:'Ver semana móvil'});
+  const co=(d.co4||[]).filter(r=>r.grupo===g && r.otif_pct!=null && (r.lineas==null||r.lineas>=20)).sort((a,b)=>a.otif_pct-b.otif_pct).slice(0,3);
+  if(co.length && co[0].otif_pct<META.otif) acc.push({sev:co[0].otif_pct<META.otif-10?'bad':'warn',t:'Comunas críticas: '+co.map(r=>nice(r.comuna)).join(', '),d:'OTIF '+co.map(r=>pct(r.otif_pct)).join(' · ')+' en las últimas 4 semanas.',go:'sec:Ranking de Comunas',cta:'Ver ranking'});
+  const spg=(d.spw||[]).filter(r=>r.grupo===g), sems=last4Sem(spg);
+  const wa=t=>{ const rr=spg.filter(r=>r.tipo===t&&sems.indexOf(r.semana)>=0); return wavg(rr.map(r=>[r.otif_pct,r.lineas])); };
+  const ps=wa('Planificado'), ss=wa('Spot');
+  if(ps!=null&&ss!=null&&ps-ss>3) acc.push({sev:ps-ss>8?'bad':'warn',t:'Spot rinde '+nf1.format(ps-ss)+' pp bajo Planificado',d:'Spot '+pct(ss)+' vs Planificado '+pct(ps)+' en 4 semanas.',go:'sec:Spot',cta:'Ver Spot y Planificado'});
+  const tp=(d.tp||[]).filter(r=>r.grupo===g), st=tp.find(r=>r.tipo==='STOCK')||{}, cz=tp.find(r=>r.tipo==='CALZADA')||{};
+  if(st.otif_pct!=null&&cz.otif_pct!=null&&st.otif_pct-cz.otif_pct>5) acc.push({sev:'warn',t:'Calzada '+nf1.format(st.otif_pct-cz.otif_pct)+' pp bajo Stock',d:'Calzada '+pct(cz.otif_pct)+' ('+(cz.dias_prom!=null?nf1.format(cz.dias_prom)+' d':'–')+') vs Stock '+pct(st.otif_pct)+'.',go:'sec:Stock',cta:'Ver tipo de venta'});
+  return {t:'Nivel de servicio · '+nice(g),s:w.otif_pct!=null?'Última semana cerrada: OTIF '+pct(w.otif_pct)+' · Fill Rate '+pct(w.fillrate_pct)+'.':'',acc};
+}
+function uxAccTarifa(){
+  const d=_cacheTar, g=_grupoT; if(!d||!g) return null;
+  const acc=[]; const seg=r=>(r.segmento==null||r.segmento===_segT);
+  const tm=(d.tm||[]).filter(r=>r.grupo===g&&seg(r)), M=uxLastClosed(tm), P=M?uxPrevMes(tm,M):null;
+  const t1=tm.find(r=>r.mes_label===M)||{}, t0=tm.find(r=>r.mes_label===P)||{};
+  if(t1.tarifa_kg!=null&&t0.tarifa_kg!=null){ const dd=t1.tarifa_kg-t0.tarifa_kg;
+    acc.push({sev:dd>0.5?'warn':'ok',t:'Tarifa '+money(t1.tarifa_kg)+'/kg en '+mesCorto(M),d:(dd>0?'▲ +':'▼ ')+money1(dd)+' vs '+mesCorto(P)+(t1.toneladas!=null?' · '+nf0.format(t1.toneladas)+' t':'')+'.',go:'sec:Evolutivo',cta:'Ver evolutivo'}); }
+  const cm=(d.consm||[]).filter(r=>r.grupo===g), Mc=uxLastClosed(cm), c1=cm.find(r=>r.mes_label===Mc)||{};
+  if(c1.consol_pct!=null&&c1.consol_pct<META.consol) acc.push({sev:uxSevMeta(c1.consol_pct,META.consol,5),t:'Consolidación '+pct(c1.consol_pct),d:'Camiones bajo la meta de '+META.consol+'% en '+mesCorto(Mc)+': el espacio libre encarece el $/kg.',go:'sec:Consolidación',cta:'Ver consolidación'});
+  const cc=(d.com||[]).filter(r=>r.grupo===g&&r.tarifa_kg!=null).sort((a,b)=>b.tarifa_kg-a.tarifa_kg).slice(0,2);
+  if(cc.length) acc.push({sev:'warn',t:'Comunas más caras: '+cc.map(r=>nice(r.comuna)).join(' y '),d:cc.map(r=>money(r.tarifa_kg)+'/kg').join(' · ')+(t1.tarifa_kg!=null?' vs '+money(t1.tarifa_kg)+' del centro.':'.'),go:'sec:Comunas',cta:'Ver comunas'});
+  const eb=(d.ebc||[]).filter(r=>r.grupo===g), ep=sum(eb.map(r=>r.pagado));
+  if(ep>0) acc.push({sev:'info',t:'EbemaClick: '+mm(ep/1e6)+' pagados',d:nf0.format(sum(eb.map(r=>r.docs)))+' documentos en el período.',go:'sec:EbemaClick',cta:'Ver impacto'});
+  return {t:'Pesos por kilo · '+nice(g),s:'Último mes cerrado: '+(M?mesCorto(M):'–')+'. Solo última milla, salvo troncal.',acc};
+}
+function uxAccMargen(){
+  const d=_cacheMar2, g=_grupoM; if(!d||!g) return null;
+  const acc=[]; const mg=(d.mg||[]).filter(r=>r.grupo===g&&r.segmento===_segM), M=uxLastClosed(mg), m1=mg.find(r=>r.mes_label===M)||{};
+  if(m1.margen!=null) acc.push({sev:m1.margen<0?'bad':'ok',t:'Margen '+mm(m1.margen/1e6)+' en '+mesCorto(M),d:m1.margen<0?'Pagado supera a cobrado: revisar tarifas cobradas.':'Cobrado sobre pagado.',go:'sec:Semana Móvil',cta:'Ver margen'});
+  if(m1.cobertura_pct!=null&&m1.cobertura_pct<META.cobertura) acc.push({sev:uxSevMeta(m1.cobertura_pct,META.cobertura,10),t:'Cobertura '+pct(m1.cobertura_pct),d:'Cobrado / pagado bajo la meta de '+META.cobertura+'% en '+mesCorto(M)+'.',go:'sec:Cobertura',cta:'Ver pagado vs cobrado'});
+  const sc=(d.sc||[]).filter(r=>r.grupo===g&&r.segmento===_segM), Ms=uxLastClosed(sc), s1=sc.find(r=>r.mes_label===Ms)||{};
+  if((s1.monto_sugerido||0)>0) acc.push({sev:'warn',t:'No cobrado '+mm(s1.monto_sugerido/1e6),d:nf0.format(s1.entregas||0)+' entregas con flete cobrado en $0 en '+mesCorto(Ms)+'.',go:'sec:no cobrado',cta:'Ver no cobrado'});
+  const vn=(d.vn||[]).filter(r=>r.grupo===g&&r.segmento===_segM).map(r=>({v:r.vendedor,b:(r.pagado||0)-(r.cobrado||0)})).sort((a,b)=>b.b-a.b)[0];
+  if(vn&&vn.b>0) acc.push({sev:'warn',t:'Mayor brecha: '+esc(vn.v||'—'),d:'Pagado supera a cobrado en '+mm(vn.b/1e6)+' (período).',go:'sec:Ranking Vendedor',cta:'Ver ranking'});
+  return {t:'Margen de flete · '+nice(g),s:'Último mes cerrado: '+(M?mesCorto(M):'–')+'. Excluye EbemaClick del ranking.',acc};
+}
+function uxAccDesp(){
+  if(!_desp.grupo||!_despRows[_desp.grupo]) return null;
+  const rows=despFiltra(); if(!rows.length) return {t:'Sin despachos con esos filtros',s:'',acc:[]};
+  const perd=rows.filter(r=>(+r.cobrado||0)<(+r.pagado||0)), sinc=rows.filter(r=>!(+r.cobrado)&&(+r.pagado||0)>0), ex=rows.filter(r=>r.express);
+  const T=finAgg(rows), acc=[];
+  if(perd.length) acc.push({sev:'bad',t:nf0.format(perd.length)+' despachos con pérdida',d:'Resultado '+peso(sum(perd.map(r=>(+r.cobrado||0)-(+r.pagado||0))))+' (cobrado < pagado).',go:'desp_perd',cta:'Filtrar con pérdida'});
+  if(sinc.length) acc.push({sev:'warn',t:nf0.format(sinc.length)+' despachos sin cobro',d:'Flete pagado '+peso(sum(sinc.map(r=>+r.pagado||0)))+' sin tarifa cobrada al cliente.',go:'desp_sincobro',cta:'Ordenar por cobertura'});
+  if(ex.length){ const E=finAgg(ex); acc.push({sev:(E.pag&&E.cob/E.pag<1)?'warn':'info',t:nf0.format(ex.length)+' despachos Express',d:'Cobertura '+pct(E.pag?E.cob/E.pag*100:null)+' · pagado '+mm(E.pag/1e6)+'.',go:'desp_express',cta:'Ver Express'}); }
+  return {t:nf0.format(rows.length)+' despachos · resultado '+mm((T.cob-T.pag)/1e6),s:'Cobertura '+pct(T.pag?T.cob/T.pag*100:null)+' · '+nice(_desp.grupo)+'. Usa las tarjetas para filtrar directo.',acc};
+}
+function uxAccTr(){
+  if(!_trRows[_tr.grupo]) return null;
+  const rows=trBase(); if(!rows.length) return {t:'Sin viajes con esos filtros',s:'',acc:[]};
+  const T=trAgg(rows), L=trPorTransp(rows).slice(), acc=[];
+  const top=L.filter(t=>t.viajes>=10).sort((a,b)=>(b.cpv||0)-(a.cpv||0))[0];
+  if(top) acc.push({sev:'warn',t:esc(top.nombre)+': '+peso(top.cpv)+' por viaje',d:'Mayor costo por viaje con '+nf1.format(top.ppv||0)+' puntos/viaje (promedio '+peso(T.cpv)+').',go:'tr_cpv',cta:'Ordenar por $/viaje'});
+  if(T.viajes) acc.push({sev:T.uno/T.viajes>0.4?'warn':'info',t:pct(T.uno/T.viajes*100)+' de los viajes con 1 punto',d:'Puntos por viaje promedio: '+nf1.format(T.ppv||0)+'.',go:'tr_ppv',cta:'Ordenar por puntos'});
+  const s3=L.slice().sort((a,b)=>b.pag-a.pag).slice(0,3), p3=T.pag?sum(s3.map(t=>t.pag))/T.pag*100:0;
+  if(s3.length) acc.push({sev:p3>70?'warn':'info',t:'3 agentes concentran el '+pct(p3)+' del pago',d:s3.map(t=>esc(t.nombre)).join(', ')+'.',go:'#tr_body',cta:'Ver detalle'});
+  return {t:mm(T.pag/1e6)+' pagados a '+nf0.format(L.length)+' agentes de servicio',s:nf0.format(T.viajes)+' viajes · '+peso(T.cpv)+' por viaje · $/kg '+(T.ckg!=null?nf1.format(T.ckg):'–')+'.',acc};
+}
+// --- Nivel: Envío Express vs Planificado (flete) ---
+async function nivelExpress(grupo){
+  const el=document.getElementById('n_expr'); if(!el) return;
+  try{
+    if(!_finRows) _finRows=await nsFetchAll(()=>supabase.from('v_ind_fin_flete').select('*'));
+    if(grupo!==_grupoN) return;
+    const y=String(new Date().getFullYear());
+    const rows=_finRows.filter(r=>r.grupo===grupo && String(r.mes_label||'').slice(0,4)===y);
+    const ex=rows.filter(r=>r.express), no=rows.filter(r=>!r.express);
+    const A=a=>({ent:sum(a.map(r=>r.entregas)),pag:sum(a.map(r=>r.pagado)),cob:sum(a.map(r=>r.cobrado)),kg:sum(a.map(r=>r.kg))});
+    const E=A(ex), N=A(no), tot=E.ent+N.ent;
+    const meses=[...new Set(rows.map(r=>r.mes_label))].sort();
+    if(!ex.length){ el.innerHTML=`<div class="text-secondary text-[14px]">Sin despachos Express en ${y} para ${nice(grupo)}.</div>`; return; }
+    el.innerHTML=`<div class="ux-tiles">`+
+      tile('Entregas Express',nf0.format(E.ent),(tot?nf1.format(E.ent/tot*100):'0')+'% del total · '+y)+
+      tile('Entregas planificadas',nf0.format(N.ent),'despacho normal')+
+      tileS('Cobertura Express',pct(E.pag?E.cob/E.pag*100:null),'normal '+pct(N.pag?N.cob/N.pag*100:null),semaforo(E.pag?E.cob/E.pag*100:null,META.cobertura,10))+
+      tile('$/kg Express',E.kg?money(E.pag/E.kg):'–','normal '+(N.kg?money(N.pag/N.kg):'–'))+`</div>`+
+      `<div class="grid grid-cols-1 md:grid-cols-2 gap-md"><div>`+legend([{n:'Entregas Express',c:R.red}])+`<div id="n_expr_ch"></div></div>`+
+      `<div>`+legend([{n:'Entregas planificadas',c:R.grey}])+`<div id="n_expr_ch2"></div></div></div>`+
+      `<div class="text-[13px] text-secondary mt-sm">Fuente: flete (columna Express del DT). El OTIF Express requiere la marca Express en el reporte OTIF.</div>`;
+    const ve=meses.map(m=>sum(ex.filter(r=>r.mes_label===m).map(r=>r.entregas))), vn=meses.map(m=>sum(no.filter(r=>r.mes_label===m).map(r=>r.entregas)));
+    barChart('n_expr_ch',ve,meses.map(mesCorto),0,niceMax(ve),R.red,'',meses.indexOf(mesEnCurso())>=0?meses.length-1:null,v=>Math.round(v));
+    barChart('n_expr_ch2',vn,meses.map(mesCorto),0,niceMax(vn),R.grey,'',meses.indexOf(mesEnCurso())>=0?meses.length-1:null,v=>Math.round(v));
+  }catch(e){ el.innerHTML=`<div class="text-secondary text-[14px]">No se pudo cargar el flete Express.</div>`; console.warn(e); }
 }
