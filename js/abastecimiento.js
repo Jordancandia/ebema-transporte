@@ -10,13 +10,13 @@
 // abast_calendario, abast_retiro_estado) + vistas v_trc_* sobre trc_live (JSONB).
 // ============================================================================
 
-import { supabase } from './supabase-client.js?v=202611231635';
-import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611231635';
-import { getDatabase } from './data.js?v=202611231635';
+import { supabase } from './supabase-client.js?v=202611231652';
+import { can, enAlcance, filtrarPorCentro, puedeVerMenu } from './permisos.js?v=202611231652';
+import { getDatabase } from './data.js?v=202611231652';
 import { COMUNAS_POR_REGION } from './chile-geo.js';
 import { showAlert, escapeHtml } from './utils.js';
-import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611231635';
-import { confirmar, pedirDato } from './confirmar.js?v=202611231635';
+import { renderTablaV2, calcularVistaV2, prepararSaltoV2, esqueletoV2, guardarScroll, restaurarScroll, setUltimaActualizacion, maxCargadoEn, pill, mono, txt, tonHtml, truckGauge, colorUmbral, esc as escV2 } from './troncales-ui.js?v=202611231652';
+import { confirmar, pedirDato } from './confirmar.js?v=202611231652';
 
 // ── Configuracion de calendarios por centro origen ──────────────────────────
 // (AJUSTE 3.0) Se eliminan los sobre-cupos del sábado.
@@ -1109,7 +1109,7 @@ async function wireObraGeo(panel, row, st, comunaRuta, draw) {
   const l = obrasDe(row);
   const ids = [...new Set(l.map(o => String(o.id || '').trim()).filter(Boolean))];
   if (!ids.length) return;
-  const m = await import('./maestro-obras.js?v=202611231635');
+  const m = await import('./maestro-obras.js?v=202611231652');
   const faltan = ids.filter(id => !_obrasMaestro.has(id));
   if (faltan.length) { try { (await m.cargarObras(faltan)).forEach((o, k) => _obrasMaestro.set(k, o)); faltan.forEach(id => { if (!_obrasMaestro.has(id)) _obrasMaestro.set(id, null); }); } catch (_e) { /* sin maestro */ } }
   panel.querySelectorAll('[data-geo-obra]').forEach(sp => { sp.innerHTML = m.badgeGeo(_obrasMaestro.get(sp.dataset.geoObra)); });
@@ -8757,7 +8757,7 @@ export async function renderAbastecimientoView(container) {
   if (currentSub === 'calendario')          await renderCalendario(stage);
   else if (currentSub === 'plan_carga')      await renderPlanCarga(stage);
   else if (currentSub === 'ind_plan_carga') {  // dashboard ejecutivo (27-sep-2026)
-    const m = await import('./ind-plan-carga.js?v=202611231635');
+    const m = await import('./ind-plan-carga.js?v=202611231652');
     await m.renderIndPlanCarga(stage, { renderDetalle: (el, idx) => renderVistaTabla(el, VISTAS_TRONCAL.ind_plan_carga, idx), detalleViaje: detalleViajeIndicador });
   }
   else if (currentSub === 'control_diferencias') {  // (24-oct-2026, Jordan) Control de Diferencias DESHABILITADA: no tiene uso.
@@ -9065,10 +9065,15 @@ async function loadExtrasHoy(cd) {
 async function loadLockProgramadosHoy(cd) {
   const out = new Map(), tx = v => String(v ?? '').trim();
   try {
-    const { data: cams, error } = await supabase.from('abast_seguimiento_camion').select('id,ce,clave,patente_camion')
+    const { data: cams, error } = await supabase.from('abast_seguimiento_camion').select('id,ce,clave,patente_camion,fecha_carga')
       .eq('fecha_plan', isoLocal(hoy00())).eq('cd_origen', cd).in('clave', ['CD', '2', ...CLAVES_EXTRA]);
     if (error) throw error;
+    // (23-nov-2026, Jordan) Un camión programado hoy que CARGA HOY (mismo día) es del plan anterior: no fija la carga del
+    // camión CD de este plan (que carga el próximo día). Sus líneas salen del plan (ya van en ese camión) y el camión CD
+    // del centro se vuelve a llenar con el espacio libre. Caso Talca 23-nov: 2,8 t fijas y «No caben 11,3 t» con 24,9 t libres.
+    const hoyIso = isoLocal(hoy00());
     const vivos = (cams || []).filter(c => tx(c.patente_camion));
+    const mismoDia = new Set(vivos.filter(c => c.fecha_carga && String(c.fecha_carga).slice(0, 10) <= hoyIso).map(c => c.id));
     if (!vivos.length) return out;
     const byId = new Map(vivos.map(c => [c.id, c]));
     const { data: lin, error: e2 } = await supabase.from('abast_seguimiento_carga').select('camion_id,documento,material').in('camion_id', [...byId.keys()]).limit(5000);
@@ -9076,6 +9081,12 @@ async function loadLockProgramadosHoy(cd) {
     (lin || []).forEach(l => {
       const c = byId.get(l.camion_id); if (!c || !tx(l.documento)) return;
       const ce = tx(c.ce), cam = camDeClaveSeg(c.clave);
+      if (mismoDia.has(c.id)) {   // (23-nov-2026) ya cargado hoy: fuera del plan, sin fijar camión
+        if (!out.yaCargado) out.yaCargado = new Map();
+        if (!out.yaCargado.has(ce)) out.yaCargado.set(ce, new Set());
+        out.yaCargado.get(ce).add(`${tx(l.documento)}|${tx(l.material)}`);
+        return;
+      }
       if (!out.has(ce)) out.set(ce, new Map());
       const m = out.get(ce); if (!m.has(cam)) m.set(cam, new Set());
       m.get(cam).add(`${tx(l.documento)}|${tx(l.material)}`);
@@ -10464,6 +10475,18 @@ async function renderPlanCargaCore(stage, opts = {}) {
       sf: sfPlan,   // (18-nov-2026) sin fondo fuera del camión + posiciones nuevas por ajuste
       retirosUnidos: retUnidosCe,   // (29-oct-2026) [{ item, e }] Fábrica-Sucursal que pasan por el CD
     };
+    // (23-nov-2026, Jordan) Líneas que van en un camión programado hoy con carga HOY: salen del plan (ya viajan).
+    const yaCe = lockProgHoy.yaCargado && lockProgHoy.yaCargado.get(ce);
+    if (yaCe && yaCe.size) {
+      const kDoc = d => `${String(d.pt ?? d.oc ?? d.pv ?? '').trim()}|${String(d.material ?? '').trim()}`;
+      const campo = { revex: 'tonRevex', ventaCons: 'tonVentaCons', retiro: 'tonRetiro', cross: 'tonCross', quiebre: 'tonQuiebre', stock: 'tonStock' };
+      Object.entries(campo).forEach(([k, f]) => {
+        const arr = det[k] || []; let quit = 0;
+        det[k] = arr.filter(d => { if (yaCe.has(kDoc(d))) { quit += d.ton || 0; return false; } return true; });
+        if (quit > 0) { out[f] = Math.max(0, (out[f] || 0) - quit); out.total = Math.max(0, out.total - quit); }
+      });
+      out.det = det;
+    }
     // (AJUSTE 30-sep-2026) Llenado del camión CD y propuesta de 2º camión (≥85% de la capacidad).
     // (9-oct-2026) recalcCargaCD descuenta las líneas «No carga» del total y del %.
     recalcCargaCD(out);
