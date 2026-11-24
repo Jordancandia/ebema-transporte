@@ -1,172 +1,4 @@
-// ============================================================================
-//  PORTERÍA · RELOJ CONTROL v2 (1-nov-2026, Jordan)
-//  Control puerta trabaja por PESTAÑA de tipo de visita:
-//    TRONCAL          troncales del Plan de Carga por bloque + ramplas CD-Cliente
-//                     (un troncal con retiro de fábrica = UNA línea, con sus guías)
-//    PROVEEDOR        agenda del día por bloque + los que llegan sin agenda
-//    RETIRO_CLIENTE   no se programa: el cliente llega y se presenta
-//    DESPACHO_EBEMA   salida a cliente (entregas + pesos) y retorno (peso y devoluciones)
-//  Reglas: la hora de cada hito la pone el servidor; TODO camión que ingresa se
-//  pesa en romana (fn_porteria_marcar lo exige); búsqueda única por patente /
-//  NV / OC / guía / entrega / chofer; monitor de alertas para Operaciones con
-//  umbrales configurables.
-//  SQL: supabase/sql/2026-10-18_porteria_reloj_control.sql
-//       supabase/sql/2026-11-01_porteria_v2_pestanas_alertas.sql
-// ============================================================================
-import { supabase } from './supabase-client.js?v=202611232043';
-import { escapeHtml as esc, showAlert, toCSV, downloadFile } from './utils.js';
-import { confirmar, pedirDato } from './confirmar.js?v=202611232043';
-import { getPerfil, PERFIL_UMBRALES } from './permisos.js?v=202611232043';
-
-const CENTRO = '1003';
-const TZ = 'America/Santiago';
-const TIPOS = {
-  TRONCAL:        { label: 'Troncal',        icon: 'local_shipping', pill: 'info',   hitos: ['presentacion', 'ingreso', 'salida'], contra: 'Sucursal destino' },
-  PROVEEDOR:      { label: 'Proveedor',      icon: 'factory',        pill: 'purple', hitos: ['presentacion', 'ingreso', 'salida'], contra: 'Proveedor' },
-  RETIRO_CLIENTE: { label: 'Cliente retira', icon: 'person',         pill: 'orange', hitos: ['presentacion', 'ingreso', 'salida'], contra: 'Cliente' },
-  DESPACHO_EBEMA: { label: 'Despacho Ebema', icon: 'outbound',       pill: 'mute',   hitos: ['salida', 'regreso'],                 contra: 'Cliente / obra' },
-};
-// Pestañas de control puerta (una por tipo de visita)
-const TABS = [
-  { k: 'TRONCAL',        icon: 'local_shipping', label: 'Troncales',          sub: 'Programados · por bloque' },
-  { k: 'PROVEEDOR',      icon: 'factory',        label: 'Proveedores',        sub: 'Agenda por bloque' },
-  { k: 'RETIRO_CLIENTE', icon: 'person',         label: 'Cliente retira',     sub: 'Sin agenda · llega y se presenta' },
-  { k: 'DESPACHO_EBEMA', icon: 'outbound',       label: 'Despacho a cliente', sub: 'Salida y retorno' },
-];
-const HITO_LBL = { presentacion: 'Llegada', ingreso: 'Ingreso', salida: 'Salida', regreso: 'Ingreso' };
-const HITO_BTN = { presentacion: 'Llegó', ingreso: 'Ingresa', salida: 'Sale', regreso: 'Registrar retorno' };
-const ESTADOS = {
-  PROGRAMADO: ['Programado', 'mute'], EN_COLA: ['En cola', 'warn'], EN_PATIO: ['En patio', 'info'], EN_RUTA: ['En ruta', 'purple'],
-  FINALIZADO: ['Finalizado', 'ok'], NO_SE_PRESENTA: ['No se presenta', 'bad'], NO_CARGA: ['No carga', 'orange'], ANULADO: ['Anulado', 'mute'],
-};
-const DOC_TIPOS = ['GUIA', 'OC', 'NV', 'ENTREGA', 'DT'];
-const MOTIVOS_DEV = ['Cliente rechazó la entrega', 'No había quien recibiera', 'Dirección o acceso con problema', 'Producto no conforme', 'Otro'];
-const COLS = 'id,fecha,centro,tipo,subtipo,estado,patente,patente_carro,chofer_nombre,chofer_rut,chofer_telefono,id_transporte,transportista,contraparte,ce,documentos,hora_agenda,t_presentacion,t_ingreso,t_salida,t_regreso,tara_kg,bruto_kg,peso_guias_kg,neto_kg,origen,clave_esperado,plan_ref,retiros,consolida_retiro,obs,created_by,updated_by,updated_at'
-  + ',pedido_venta,retira_nombre,retira_rut,retira_telefono,retira_es_chofer,fuera_agenda,guias_proveedor,bruto_ingreso_kg,entregas_devueltas,motivo_devolucion,anden,sin_romana_autorizado,sin_romana_por,patente_coordinada,chofer_coordinado,datos_confirmados_at,datos_confirmados_por';
-
-const S = {
-  fecha: hoy(), sub: 'registro', tab: 'TRONCAL', q: '', busq: null, visitas: [], esperados: [], metas: {}, cfg: {}, bloques: [], centros: null, proveedores: null,
-  desde: addDays(hoy(), -30), hasta: hoy(), ind: null, alertas: null,
-};
-let _stage = null;
-let _tick = null;
-let _poll = null;
-
-// ── Utilidades ──────────────────────────────────────────────────────────────
-function hoy() { return new Date().toLocaleDateString('en-CA', { timeZone: TZ }); }
-function addDays(iso, n) { const d = new Date(iso + 'T12:00:00'); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); }
-const hhmm = t => (t ? new Date(t).toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZone: TZ }) : '');
-const fechaCorta = iso => (iso ? new Date(iso + 'T12:00:00').toLocaleDateString('es-CL', { day: '2-digit', month: 'short' }) : '');
-const minEntre = (a, b) => (a && b ? (new Date(b) - new Date(a)) / 60000 : null);
-const nf = (v, d = 0) => (v == null || v === '' || isNaN(v) ? '' : Number(v).toLocaleString('es-CL', { maximumFractionDigits: d }));
-function fmtMin(m) {
-  if (m == null || isNaN(m)) return '—';
-  m = Math.max(0, Math.round(m));
-  if (m < 60) return `${m} min`;
-  return `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, '0')}`;
-}
-function num(v) {
-  if (v == null) return null;
-  let s = String(v).trim(); if (!s) return null;
-  s = s.replace(/\s/g, '');
-  if (s.includes(',')) s = s.replace(/\./g, '').replace(',', '.');
-  else if (/^\d{1,3}(\.\d{3})+$/.test(s)) s = s.replace(/\./g, '');
-  const n = parseFloat(s);
-  return isFinite(n) ? n : null;
-}
-function fmtPatente(p) {
-  const s = String(p || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
-  return /^[A-Z]{2}([A-Z]{2}|[0-9]{2})[0-9]{2}$/.test(s) ? `${s.slice(0, 2)}-${s.slice(2, 4)}-${s.slice(4)}` : String(p || '').trim().toUpperCase();
-}
-const patenteValida = p => /^[A-Z]{2}-[A-Z0-9]{2}-[0-9]{2}$/.test(fmtPatente(p));
-function toLocalInput(t) {
-  if (!t) return '';
-  const d = new Date(t);
-  const p = new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
-    .formatToParts(d).reduce((a, x) => (a[x.type] = x.value, a), {});
-  return `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}`;
-}
-function fromLocalInput(v) { return v ? new Date(v).toISOString() : null; }
-const pill = (txt, cls) => `<span class="sv-pill ${cls}"><i></i>${esc(txt)}</span>`;
-const tipoPill = t => pill(TIPOS[t]?.label || t, TIPOS[t]?.pill || 'mute');
-const estadoPill = e => pill((ESTADOS[e] || [e])[0], (ESTADOS[e] || [e, 'mute'])[1]);
-const docsTxt = docs => (Array.isArray(docs) ? docs : []).map(d => `${d.tipo} ${d.numero}`).join(' · ');
-const arr = x => (Array.isArray(x) ? x : []);
-
-// ── Horario de presentación solicitado (28-oct-2026) ────────────────────────
-const TOL_CITA_MIN = 15;
-const hmMin = t => { const m = /^(\d{1,2}):(\d{2})/.exec(String(t || '')); return m ? Number(m[1]) * 60 + Number(m[2]) : null; };
-const esCdCliente = x => x && x.subtipo === 'CD_CLIENTE';
-const esRampla = esCdCliente;
-function citaDe(x) {
-  const r = (x && x.plan_ref) || {};
-  const desde = x.hora_presentacion || r.hora_presentacion || (x.hora_agenda ? hhmm(x.hora_agenda) : '');
-  const hasta = x.hora_hasta || r.hora_hasta || '';
-  const bloque = x.bloque ?? r.bloque ?? null;
-  return desde ? { desde, hasta, bloque, txt: hasta ? `${desde}–${hasta}` : desde } : null;
-}
-const horaEn = (fechaIso, min) => new Date(`${fechaIso}T${String(Math.floor(min / 60)).padStart(2, '0')}:${String(min % 60).padStart(2, '0')}:00`);
-const limiteCita = (c, fechaIso) => horaEn(fechaIso, hmMin(c.hasta) ?? ((hmMin(c.desde) ?? 0) + TOL_CITA_MIN));
-const inicioCita = (c, fechaIso) => horaEn(fechaIso, hmMin(c.desde) ?? 0);
-function cumpleCita(v) {
-  const c = citaDe(v);
-  if (!c || !v.t_presentacion) return null;
-  const lleg = new Date(v.t_presentacion), ini = inicioCita(c, v.fecha), lim = limiteCita(c, v.fecha);
-  if (lleg < ini) return { txt: `Anticipado ${fmtMin((ini - lleg) / 60000)}`, cls: 'info' };
-  if (lleg <= lim) return { txt: 'En horario', cls: 'ok' };
-  return { txt: `Atrasado ${fmtMin((lleg - (c.hasta ? lim : ini)) / 60000)}`, cls: 'bad' };
-}
-function errMsg(e) {
-  const m = e?.message || String(e);
-  if (/ROMANA_INGRESO/.test(m)) return 'Todo camión que ingresa se pesa: registre el peso de entrada antes del ingreso.';
-  if (/ROMANA_REGRESO/.test(m)) return 'Registre el peso de ingreso del camión antes de cerrar el retorno.';
-  if (/chk_pv_ingreso/.test(m)) return 'El ingreso no puede ser anterior a la presentación.';
-  if (/chk_pv_salida/.test(m)) return 'La salida no puede ser anterior al ingreso.';
-  if (/chk_pv_regreso/.test(m)) return 'El regreso no puede ser anterior a la salida.';
-  if (/ux_porteria_esperado/.test(m)) return 'Ese camión esperado ya fue registrado hoy.';
-  return m;
-}
-
-function proximoHito(v) {
-  if (['FINALIZADO', 'NO_SE_PRESENTA', 'NO_CARGA', 'ANULADO'].includes(v.estado)) return null;
-  return (TIPOS[v.tipo]?.hitos || []).find(h => !v['t_' + h]) || null;
-}
-// Tiempo vigente (en curso) o final, y contra qué umbral se compara
-function tiempo(v, ahora = new Date()) {
-  const now = ahora.toISOString();
-  const meta = S.metas[v.tipo] || {};
-  if (v.tipo === 'DESPACHO_EBEMA') {
-    if (v.t_regreso) return { min: minEntre(v.t_salida, v.t_regreso), que: 'Ruta', vivo: false, umbral: meta.meta_min };
-    if (v.t_salida && v.estado === 'EN_RUTA') return { min: minEntre(v.t_salida, now), que: 'En ruta', vivo: true, umbral: meta.meta_min };
-    return { min: null, que: '' };
-  }
-  if (v.t_salida && v.t_ingreso) return { min: minEntre(v.t_ingreso, v.t_salida), que: 'Permanencia', vivo: false, umbral: meta.meta_min };
-  if (v.t_ingreso && v.estado === 'EN_PATIO') return { min: minEntre(v.t_ingreso, now), que: 'En patio', vivo: true, umbral: meta.meta_min };
-  if (v.t_presentacion && v.estado === 'EN_COLA') return { min: minEntre(v.t_presentacion, now), que: 'Sin atención', vivo: true, umbral: meta.meta_espera_min };
-  return { min: null, que: '' };
-}
-function semaforo(t) {
-  if (!t.umbral || t.min == null) return 'mute';
-  if (t.min > t.umbral) return 'bad';
-  if (t.min > t.umbral * 0.8) return 'warn';
-  return 'ok';
-}
-// Carga según romana de un despacho (bruto de salida − tara) y su diferencia con las guías
-function cargaRomana(v) {
-  if (v.tipo !== 'DESPACHO_EBEMA' || v.bruto_kg == null || v.tara_kg == null) return null;
-  const carga = v.bruto_kg - v.tara_kg;
-  const g = v.peso_guias_kg;
-  const pct = g > 0 ? (carga - g) / g * 100 : null;
-  return { carga, guias: g, pct, fuera: pct != null && Math.abs(pct) > Number(S.metas[v.tipo]?.tolerancia_peso_pct ?? 3) };
-}
-const vuelveKg = v => (v.bruto_ingreso_kg != null && v.tara_kg != null ? v.bruto_ingreso_kg - v.tara_kg : null);
-
-// ── Estilos propios (sobre el sistema visual v2) ────────────────────────────
-function css() {
-  if (document.getElementById('pt-css')) return;
-  const st = document.createElement('style');
-  st.id = 'pt-css';
-  st.textContent = `
+import{supabase as k}from"./supabase-client.js?v=fd17fd7d20";import{escapeHtml as d,showAlert as y,toCSV as Ve,downloadFile as Ge}from"./utils.js";import{confirmar as ne,pedirDato as ee}from"./confirmar.js?v=84d7f13f40";import{getPerfil as Fe,PERFIL_UMBRALES as Ze}from"./permisos.js?v=a8b193e9fb";const U="1003",ie="America/Santiago",R={TRONCAL:{label:"Troncal",icon:"local_shipping",pill:"info",hitos:["presentacion","ingreso","salida"],contra:"Sucursal destino"},PROVEEDOR:{label:"Proveedor",icon:"factory",pill:"purple",hitos:["presentacion","ingreso","salida"],contra:"Proveedor"},RETIRO_CLIENTE:{label:"Cliente retira",icon:"person",pill:"orange",hitos:["presentacion","ingreso","salida"],contra:"Cliente"},DESPACHO_EBEMA:{label:"Despacho Ebema",icon:"outbound",pill:"mute",hitos:["salida","regreso"],contra:"Cliente / obra"}},ke=[{k:"TRONCAL",icon:"local_shipping",label:"Troncales",sub:"Programados · por bloque"},{k:"PROVEEDOR",icon:"factory",label:"Proveedores",sub:"Agenda por bloque"},{k:"RETIRO_CLIENTE",icon:"person",label:"Cliente retira",sub:"Sin agenda · llega y se presenta"},{k:"DESPACHO_EBEMA",icon:"outbound",label:"Despacho a cliente",sub:"Salida y retorno"}],G={presentacion:"Llegada",ingreso:"Ingreso",salida:"Salida",regreso:"Ingreso"},Qe={presentacion:"Llegó",ingreso:"Ingresa",salida:"Sale",regreso:"Registrar retorno"},te={PROGRAMADO:["Programado","mute"],EN_COLA:["En cola","warn"],EN_PATIO:["En patio","info"],EN_RUTA:["En ruta","purple"],FINALIZADO:["Finalizado","ok"],NO_SE_PRESENTA:["No se presenta","bad"],NO_CARGA:["No carga","orange"],ANULADO:["Anulado","mute"]},Je=["GUIA","OC","NV","ENTREGA","DT"],Ke=["Cliente rechazó la entrega","No había quien recibiera","Dirección o acceso con problema","Producto no conforme","Otro"],F="id,fecha,centro,tipo,subtipo,estado,patente,patente_carro,chofer_nombre,chofer_rut,chofer_telefono,id_transporte,transportista,contraparte,ce,documentos,hora_agenda,t_presentacion,t_ingreso,t_salida,t_regreso,tara_kg,bruto_kg,peso_guias_kg,neto_kg,origen,clave_esperado,plan_ref,retiros,consolida_retiro,obs,created_by,updated_by,updated_at,pedido_venta,retira_nombre,retira_rut,retira_telefono,retira_es_chofer,fuera_agenda,guias_proveedor,bruto_ingreso_kg,entregas_devueltas,motivo_devolucion,anden,sin_romana_autorizado,sin_romana_por,patente_coordinada,chofer_coordinado,datos_confirmados_at,datos_confirmados_por",o={fecha:j(),sub:"registro",tab:"TRONCAL",q:"",busq:null,visitas:[],esperados:[],metas:{},cfg:{},bloques:[],centros:null,proveedores:null,desde:Se(j(),-30),hasta:j(),ind:null,alertas:null};let S=null,ve=null,le=null;function j(){return new Date().toLocaleDateString("en-CA",{timeZone:ie})}function Se(e,t){const s=new Date(e+"T12:00:00");return s.setDate(s.getDate()+t),s.toISOString().slice(0,10)}const M=e=>e?new Date(e).toLocaleTimeString("es-CL",{hour:"2-digit",minute:"2-digit",hourCycle:"h23",timeZone:ie}):"",J=e=>e?new Date(e+"T12:00:00").toLocaleDateString("es-CL",{day:"2-digit",month:"short"}):"",Z=(e,t)=>e&&t?(new Date(t)-new Date(e))/6e4:null,E=(e,t=0)=>e==null||e===""||isNaN(e)?"":Number(e).toLocaleString("es-CL",{maximumFractionDigits:t});function L(e){return e==null||isNaN(e)?"—":(e=Math.max(0,Math.round(e)),e<60?`${e} min`:`${Math.floor(e/60)} h ${String(e%60).padStart(2,"0")}`)}function T(e){if(e==null)return null;let t=String(e).trim();if(!t)return null;t=t.replace(/\s/g,""),t.includes(",")?t=t.replace(/\./g,"").replace(",","."):/^\d{1,3}(\.\d{3})+$/.test(t)&&(t=t.replace(/\./g,""));const s=parseFloat(t);return isFinite(s)?s:null}function H(e){const t=String(e||"").toUpperCase().replace(/[^A-Z0-9]/g,"");return/^[A-Z]{2}([A-Z]{2}|[0-9]{2})[0-9]{2}$/.test(t)?`${t.slice(0,2)}-${t.slice(2,4)}-${t.slice(4)}`:String(e||"").trim().toUpperCase()}const de=e=>/^[A-Z]{2}-[A-Z0-9]{2}-[0-9]{2}$/.test(H(e));function we(e){if(!e)return"";const t=new Date(e),s=new Intl.DateTimeFormat("en-CA",{timeZone:ie,year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",hourCycle:"h23"}).formatToParts(t).reduce((a,n)=>(a[n.type]=n.value,a),{});return`${s.year}-${s.month}-${s.day}T${s.hour}:${s.minute}`}function Oe(e){return e?new Date(e).toISOString():null}const me=(e,t)=>`<span class="sv-pill ${t}"><i></i>${d(e)}</span>`,K=e=>me(R[e]?.label||e,R[e]?.pill||"mute"),We=e=>me((te[e]||[e])[0],(te[e]||[e,"mute"])[1]),Xe=e=>(Array.isArray(e)?e:[]).map(t=>`${t.tipo} ${t.numero}`).join(" · "),w=e=>Array.isArray(e)?e:[],Ye=15,ae=e=>{const t=/^(\d{1,2}):(\d{2})/.exec(String(e||""));return t?Number(t[1])*60+Number(t[2]):null},se=e=>e&&e.subtipo==="CD_CLIENTE",W=se;function z(e){const t=e&&e.plan_ref||{},s=e.hora_presentacion||t.hora_presentacion||(e.hora_agenda?M(e.hora_agenda):""),a=e.hora_hasta||t.hora_hasta||"",n=e.bloque??t.bloque??null;return s?{desde:s,hasta:a,bloque:n,txt:a?`${s}–${a}`:s}:null}const qe=(e,t)=>new Date(`${e}T${String(Math.floor(t/60)).padStart(2,"0")}:${String(t%60).padStart(2,"0")}:00`),ge=(e,t)=>qe(t,ae(e.hasta)??(ae(e.desde)??0)+Ye),et=(e,t)=>qe(t,ae(e.desde)??0);function Ce(e){const t=z(e);if(!t||!e.t_presentacion)return null;const s=new Date(e.t_presentacion),a=et(t,e.fecha),n=ge(t,e.fecha);return s<a?{txt:`Anticipado ${L((a-s)/6e4)}`,cls:"info"}:s<=n?{txt:"En horario",cls:"ok"}:{txt:`Atrasado ${L((s-(t.hasta?n:a))/6e4)}`,cls:"bad"}}function D(e){const t=e?.message||String(e);return/ROMANA_INGRESO/.test(t)?"Todo camión que ingresa se pesa: registre el peso de entrada antes del ingreso.":/ROMANA_REGRESO/.test(t)?"Registre el peso de ingreso del camión antes de cerrar el retorno.":/chk_pv_ingreso/.test(t)?"El ingreso no puede ser anterior a la presentación.":/chk_pv_salida/.test(t)?"La salida no puede ser anterior al ingreso.":/chk_pv_regreso/.test(t)?"El regreso no puede ser anterior a la salida.":/ux_porteria_esperado/.test(t)?"Ese camión esperado ya fue registrado hoy.":t}function Re(e){return["FINALIZADO","NO_SE_PRESENTA","NO_CARGA","ANULADO"].includes(e.estado)?null:(R[e.tipo]?.hitos||[]).find(t=>!e["t_"+t])||null}function be(e,t=new Date){const s=t.toISOString(),a=o.metas[e.tipo]||{};return e.tipo==="DESPACHO_EBEMA"?e.t_regreso?{min:Z(e.t_salida,e.t_regreso),que:"Ruta",vivo:!1,umbral:a.meta_min}:e.t_salida&&e.estado==="EN_RUTA"?{min:Z(e.t_salida,s),que:"En ruta",vivo:!0,umbral:a.meta_min}:{min:null,que:""}:e.t_salida&&e.t_ingreso?{min:Z(e.t_ingreso,e.t_salida),que:"Permanencia",vivo:!1,umbral:a.meta_min}:e.t_ingreso&&e.estado==="EN_PATIO"?{min:Z(e.t_ingreso,s),que:"En patio",vivo:!0,umbral:a.meta_min}:e.t_presentacion&&e.estado==="EN_COLA"?{min:Z(e.t_presentacion,s),que:"Sin atención",vivo:!0,umbral:a.meta_espera_min}:{min:null,que:""}}function tt(e){return!e.umbral||e.min==null?"mute":e.min>e.umbral?"bad":e.min>e.umbral*.8?"warn":"ok"}function he(e){if(e.tipo!=="DESPACHO_EBEMA"||e.bruto_kg==null||e.tara_kg==null)return null;const t=e.bruto_kg-e.tara_kg,s=e.peso_guias_kg,a=s>0?(t-s)/s*100:null;return{carga:t,guias:s,pct:a,fuera:a!=null&&Math.abs(a)>Number(o.metas[e.tipo]?.tolerancia_peso_pct??3)}}const at=e=>e.bruto_ingreso_kg!=null&&e.tara_kg!=null?e.bruto_ingreso_kg-e.tara_kg:null;function st(){if(document.getElementById("pt-css"))return;const e=document.createElement("style");e.id="pt-css",e.textContent=`
   .pt .sv-card { overflow: hidden; }
   .pt-ch { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; padding:13px 16px; border-bottom:1px solid var(--sv-line); }
   .pt-ch h2 { margin:0; font-size:15px; font-weight:700; display:flex; align-items:center; gap:8px; }
@@ -285,278 +117,55 @@ function css() {
   @media (max-width: 1280px) { .pt-row { grid-template-columns:110px 170px minmax(0,1fr) 262px 104px 118px; gap:10px; } }
   @media (max-width: 1080px) { .pt-tabs { grid-template-columns:repeat(2,minmax(0,1fr)); } .pt-row { grid-template-columns:minmax(0,1fr); gap:9px; } .pt-act { flex-direction:row; } }
   @media (max-width: 640px) { .pt-grid { grid-template-columns: 1fr; } .pt-tabs { grid-template-columns:minmax(0,1fr); } }
-  `;
-  document.head.appendChild(st);
-}
-
-// ── Carga de datos ──────────────────────────────────────────────────────────
-async function cargarMetas() {
-  const [m, c] = await Promise.all([
-    supabase.from('porteria_metas').select('*'),
-    supabase.from('porteria_config').select('*'),
-  ]);
-  if (!m.error) S.metas = Object.fromEntries((m.data || []).map(x => [x.tipo, x]));
-  if (!c.error) S.cfg = Object.fromEntries((c.data || []).map(x => [x.clave, Number(x.valor)]));
-}
-async function cargarDia() {
-  const d = S.fecha;
-  const abiertos = `and(fecha.gte.${addDays(d, -3)},fecha.lt.${d},estado.in.(EN_COLA,EN_PATIO,EN_RUTA))`;
-  const [v, e] = await Promise.all([
-    supabase.from('porteria_visitas').select(COLS).eq('centro', CENTRO).or(`fecha.eq.${d},${abiertos}`).order('created_at', { ascending: true }),
-    supabase.rpc('fn_porteria_esperados', { p_fecha: d, p_centro: CENTRO }),
-  ]);
-  if (v.error) { showAlert('Error al leer portería: ' + v.error.message, 'error'); return false; }
-  if (e.error) showAlert('No se pudieron leer los esperados del día: ' + e.error.message, 'error');
-  S.visitas = v.data || [];
-  S.esperados = e.data || [];
-  return true;
-}
-async function catalogos() {
-  if (!S.bloques.length) {
-    const { data } = await supabase.from('abast_bloque_presentacion').select('bloque,desde,hasta,cupo').eq('activo', true).order('bloque');
-    S.bloques = (data || []).map(b => ({ ...b, desde: String(b.desde).slice(0, 5), hasta: String(b.hasta).slice(0, 5) }));
-  }
-  if (!S.centros) {
-    const { data } = await supabase.from('logistics_centres').select('id,nombre').order('nombre');
-    S.centros = (data || []).filter(c => c.id !== CENTRO);
-  }
-  if (!S.proveedores) {
-    const { data } = await supabase.from('abast_proveedores').select('nombre').eq('activo', true).order('nombre').limit(3000);
-    S.proveedores = (data || []).map(p => p.nombre).filter(Boolean);
-  }
-}
-
-function limpiarTimers() { clearInterval(_tick); clearInterval(_poll); _tick = _poll = null; }
-function montado() { return _stage && document.body.contains(_stage) && _stage.querySelector('.pt'); }
-
-// ── Vista principal ─────────────────────────────────────────────────────────
-export async function renderPorteria(stage, sub = 'registro') {
-  _stage = stage;
-  css();
-  limpiarTimers();
-  S.sub = sub;
-  stage.innerHTML = `<div class="sv-view pt"><div class="sv-desc">Cargando portería…</div></div>`;
-  await cargarMetas();
-  if (sub === 'indicadores') return renderIndicadores();
-  if (sub === 'alertas') return renderAlertas();
-  await catalogos();
-  await cargarDia();
-  renderRegistro();
-  _tick = setInterval(() => { if (!montado()) return limpiarTimers(); actualizarTiempos(); }, 30000);
-  _poll = setInterval(async () => {
-    if (!montado()) return limpiarTimers();
-    if (document.querySelector('.sv-dr') || document.querySelector('.sv-cf-bg') || S.busq) return;
-    if (await cargarDia()) renderRegistro();
-  }, 120000);
-}
-
-// ── Pestañas, KPIs y secciones ──────────────────────────────────────────────
-const pendientesTab = k => S.esperados.filter(e => e.tipo === k && !e.visita_id).length;
-const visitasTab = k => S.visitas.filter(v => v.tipo === k && v.estado !== 'ANULADO');
-
-function tabsHtml() {
-  return `<nav class="pt-tabs" aria-label="Tipo de visita">${TABS.map(t => {
-    const n = pendientesTab(t.k) + visitasTab(t.k).length;
-    return `<button type="button" class="pt-tab ${S.tab === t.k ? 'is-on' : ''}" data-tab="${t.k}" ${S.tab === t.k ? 'aria-current="page"' : ''}>
-      <i><span class="material-symbols-outlined" style="font-size:21px;color:inherit">${t.icon}</span></i>
-      <div style="min-width:0"><b>${esc(t.label)}</b><span>${esc(t.sub)}</span></div>
-      <em>${n}</em></button>`;
-  }).join('')}</nav>`;
-}
-
-function kpisTab() {
-  const v = visitasTab(S.tab);
-  const c = e => v.filter(x => x.estado === e).length;
-  const k = (lbl, n, color, sub) => `<div class="sv-kpi" style="cursor:default"><div class="sv-kpi-l"><i style="background:${color}"></i>${lbl}</div><div class="sv-kpi-v">${n}</div><div class="sv-kpi-s">${sub}</div></div>`;
-  if (S.tab === 'DESPACHO_EBEMA') {
-    const dif = v.filter(x => cargaRomana(x)?.fuera).length;
-    const dev = v.filter(x => arr(x.entregas_devueltas).length).length;
-    return `<div class="sv-kpis">
-      ${k('En ruta', c('EN_RUTA'), '#7e22ce', 'sin registrar retorno')}
-      ${k('Retornos', c('FINALIZADO'), '#15803d', 'cerrados hoy')}
-      ${k('Diferencia de peso', dif, '#b5000b', 'romana vs guías')}
-      ${k('Entregas devueltas', dev, '#b5000b', 'vuelven al CD')}
-      ${k('Sin salida', c('PROGRAMADO'), '#9a9c99', 'registrados sin partir')}
-    </div>`;
-  }
-  const pend = pendientesTab(S.tab);
-  const tarde = S.esperados.filter(e => e.tipo === S.tab && !e.visita_id && citaDe(e) && S.fecha === hoy() && new Date() > limiteCita(citaDe(e), S.fecha)).length;
-  const base = `${k('En cola', c('EN_COLA'), '#ca8a04', 'sin atención')}
-      ${k('En patio', c('EN_PATIO'), '#1d4ed8', 'dentro del CD')}
-      ${k('Finalizados', c('FINALIZADO'), '#15803d', 'ciclo completo')}`;
-  if (S.tab === 'RETIRO_CLIENTE') {
-    const fin = v.filter(x => x.estado === 'FINALIZADO').map(x => minEntre(x.t_ingreso, x.t_salida)).filter(x => x != null);
-    const prom = fin.length ? fin.reduce((a, b) => a + b, 0) / fin.length : null;
-    return `<div class="sv-kpis">${base}${k('Permanencia promedio', fmtMin(prom), '#9a9c99', 'ingreso → salida')}</div>`;
-  }
-  return `<div class="sv-kpis">${base}
-      ${k('Por llegar', pend, '#9a9c99', S.tab === 'TRONCAL' ? 'del Plan de Carga' : 'de la agenda del día')}
-      ${k('Fuera de horario', tarde, '#b5000b', 'no llegaron en su bloque')}
-    </div>`;
-}
-
-function grupos() {
-  const bl = S.bloques.map(b => ({ k: 'b' + b.bloque, t: `Bloque ${b.bloque} · ${b.desde}–${b.hasta}`, meta: `cupo ${b.cupo}` }));
-  if (S.tab === 'TRONCAL') return [...bl, { k: 'libre', t: 'Hora libre · ramplas a cliente', meta: 'sin tope de bloque' }, { k: 'sin', t: 'Sin horario solicitado' }];
-  if (S.tab === 'PROVEEDOR') return [...bl, { k: 'libre', t: 'Con hora de agenda' }, { k: 'sin', t: 'Sin agenda', off: true }];
-  if (S.tab === 'RETIRO_CLIENTE') return [{ k: 'all', t: 'Retiros de cliente de hoy', meta: 'presentación → ingreso → salida' }];
-  return [{ k: 'ruta', t: 'En ruta · pendientes de retorno' }, { k: 'retorno', t: 'Retornos registrados hoy' }, { k: 'otros', t: 'Registrados sin salida' }];
-}
-function grupoDe(x) {
-  if (S.tab === 'RETIRO_CLIENTE') return 'all';
-  if (S.tab === 'DESPACHO_EBEMA') return x.estado === 'EN_RUTA' ? 'ruta' : (x.t_regreso ? 'retorno' : 'otros');
-  if (esRampla(x)) return 'libre';
-  const c = citaDe(x);
-  if (c && c.bloque) return 'b' + c.bloque;
-  if (c) return 'libre';
-  return 'sin';
-}
-
-// ── Celdas ──────────────────────────────────────────────────────────────────
-function celdaCamion(x) {
-  return `<div><div class="pt-plate">${esc(x.patente || '— sin patente')}</div>
-    <div class="pt-sub">${x.patente_carro ? 'Carro ' + esc(x.patente_carro) + '<br>' : ''}${esc(x.chofer_nombre || '')}${x.transportista ? '<br>' + esc(x.transportista) : ''}</div></div>`;
-}
-function celdaContra(x) {
-  const tags = [];
-  if (esRampla(x)) tags.push('<span class="pt-tag" style="background:#e6f0e9;border-color:#c7e0d1;color:#14603a;font-family:inherit">RAMPLA</span>');
-  if (x.fuera_agenda) tags.push('<span class="pt-tag" style="background:#fdf6e6;border-color:#f0dcb0;color:#7a4f00;font-family:inherit">SIN AGENDA</span>');
-  if (x.pedido_venta) tags.push(`<span class="pt-tag">NV ${esc(x.pedido_venta)}</span>`);
-  arr(x.documentos).slice(0, 3).forEach(d => tags.push(`<span class="pt-tag">${esc(d.tipo)} ${esc(d.numero)}</span>`));
-  arr(x.retiros).forEach(r => tags.push(`<span class="pt-tag">OC ${esc(r.doc_compr)}</span>`));
-  const pr = x.plan_ref || {};
-  const det = S.tab === 'TRONCAL' && !esRampla(x) && pr.camion != null ? `Camión ${esc(pr.camion)} · ${nf(pr.ton, 1)} t · ${nf(pr.pct)}%`
-    : esRampla(x) ? `${nf(pr.ton, 1)} t · carga de material a cliente`
-    : S.tab === 'DESPACHO_EBEMA' ? `${arr(x.documentos).length} entrega(s)${x.subtipo === 'FIERRO' ? ' · Fierro' : ''}`
-    : pr.tipo ? esc(pr.tipo) : '';
-  const retira = x.retira_nombre ? `<div class="pt-sub">Retira <b>${esc(x.retira_nombre)}</b>${x.retira_rut ? ' · ' + esc(x.retira_rut) : ''}${x.retira_es_chofer ? ' · es el chofer' : ''}</div>` : '';
-  return `<div style="min-width:0"><div class="pt-dest">${esc(x.contraparte || '—')}</div>
-    ${det ? `<div class="pt-sub">${det}</div>` : ''}${retira}
-    ${tags.length ? `<div class="pt-tags">${tags.join('')}</div>` : ''}</div>`;
-}
-function celdaEstadoEsp(e) {
-  const c = citaDe(e);
-  const tarde = c && S.fecha === hoy() && new Date() > limiteCita(c, S.fecha);
-  return `<div><div class="pt-st" style="color:${tarde ? '#b5000b' : 'var(--sv-ink2)'}"><i style="background:${tarde ? '#b5000b' : '#9a9c99'}"></i>${tarde ? 'No llegó' : 'Programado'}</div>
-    <div class="pt-sub pt-mono">${c ? esc(c.txt) : 'sin horario'}</div></div>`;
-}
-function celdaEstadoVis(v) {
-  const col = { EN_COLA: '#ca8a04', EN_PATIO: '#1d4ed8', EN_RUTA: '#7e22ce', FINALIZADO: '#15803d', PROGRAMADO: '#9a9c99', NO_SE_PRESENTA: '#b5000b', NO_CARGA: '#c2410c', ANULADO: '#9a9c99' }[v.estado] || '#9a9c99';
-  const k = cumpleCita(v);
-  return `<div><div class="pt-st"><i style="background:${col}"></i>${(ESTADOS[v.estado] || [v.estado])[0]}</div>
-    ${k ? `<div class="pt-sub" style="color:${k.cls === 'bad' ? '#b5000b' : k.cls === 'ok' ? '#15803d' : 'inherit'}">${esc(k.txt)}</div>` : v.fuera_agenda ? '<div class="pt-sub">llegada sin cita</div>' : ''}</div>`;
-}
-function hitoBox(v, h, cls) {
-  const t = v['t_' + h];
-  const peso = h === 'ingreso' ? v.tara_kg : h === 'salida' ? (v.tipo === 'DESPACHO_EBEMA' ? v.bruto_kg : v.bruto_kg) : h === 'regreso' ? v.bruto_ingreso_kg : null;
-  const lbl = v.tipo === 'DESPACHO_EBEMA' && h === 'salida' ? 'Salida' : HITO_LBL[h];
-  return `<div class="pt-h ${cls}"><b>${lbl}</b><u class="${t ? '' : 'na'}">${t ? hhmm(t) : '—'}</u>
-    ${peso != null ? `<s>${nf(peso)} kg</s>` : cls === 'next' && (h === 'ingreso' || h === 'regreso') ? '<s>pesar</s>' : ''}</div>`;
-}
-function celdaStep(v) {
-  const hitos = TIPOS[v.tipo].hitos;
-  const nx = proximoHito(v);
-  return `<div class="pt-step ${hitos.length === 2 ? 'is-2' : ''}">${hitos.map(h => hitoBox(v, h, v['t_' + h] ? 'done' : h === nx ? 'next' : '')).join('')}</div>`;
-}
-function celdaStepEsp(e) {
-  const hitos = TIPOS[e.tipo].hitos;
-  return `<div class="pt-step ${hitos.length === 2 ? 'is-2' : ''}">${hitos.map((h, i) => `<div class="pt-h ${i === 0 ? 'next' : ''}"><b>${HITO_LBL[h]}</b><u class="na">—</u></div>`).join('')}</div>`;
-}
-function celdaTiempo(v) {
-  const t = tiempo(v);
-  if (t.min == null) return '<div><div class="pt-tm pt-na">—</div><div class="pt-tml">sin medición</div></div>';
-  const sem = semaforo(t);
-  const col = { ok: '#15803d', warn: '#8a5a00', bad: '#b5000b', mute: 'var(--sv-ink2)' }[sem];
-  const pct = t.umbral ? Math.min(100, Math.round(t.min / t.umbral * 100)) : 0;
-  return `<div data-timer="${v.id}"><div class="pt-tm ${t.vivo ? 'pt-live' : ''}" style="color:${col}">${fmtMin(t.min)}</div>
-    <div class="pt-tml">${esc(t.que)}${t.umbral ? ` · meta ${t.umbral}` : ''}</div>
-    ${t.umbral ? `<div class="pt-bar"><i style="width:${pct}%;background:${col}"></i></div>` : ''}</div>`;
-}
-function celdaPesosDesp(v) {
-  const c = cargaRomana(v);
-  const vk = vuelveKg(v);
-  const col = c?.fuera ? '#b5000b' : '#15803d';
-  return `<div class="pt-sub" style="margin:0">
-    ${v.tara_kg != null ? `Tara ${nf(v.tara_kg)} · ` : ''}${v.bruto_kg != null ? `Bruto ${nf(v.bruto_kg)}` : 'sin pesaje'}
-    ${c ? `<div>Carga romana <b>${nf(c.carga)} kg</b> · guías ${nf(c.guias)} kg</div>
-      <div style="color:${col};font-weight:700">${c.pct != null ? (c.pct > 0 ? '+' : '') + nf(c.carga - c.guias) + ' kg · ' + (c.pct > 0 ? '+' : '') + nf(c.pct, 1) + '%' : 'sin guías'}${c.fuera ? ' fuera de tolerancia' : ''}</div>` : ''}
-    ${vk != null ? `<div>Vuelve con <b>${nf(vk)} kg</b>${arr(v.entregas_devueltas).length ? ' · ' + arr(v.entregas_devueltas).map(d => 'ENT ' + esc(d.n_entrega)).join(', ') : ''}</div>` : ''}</div>`;
-}
-
-// ── Render de la pestaña ────────────────────────────────────────────────────
-function ctaTab() {
-  if (S.tab === 'RETIRO_CLIENTE') return `<div class="pt-cta">
+  `,document.head.appendChild(e)}async function _e(){const[e,t]=await Promise.all([k.from("porteria_metas").select("*"),k.from("porteria_config").select("*")]);e.error||(o.metas=Object.fromEntries((e.data||[]).map(s=>[s.tipo,s]))),t.error||(o.cfg=Object.fromEntries((t.data||[]).map(s=>[s.clave,Number(s.valor)])))}async function Q(){const e=o.fecha,t=`and(fecha.gte.${Se(e,-3)},fecha.lt.${e},estado.in.(EN_COLA,EN_PATIO,EN_RUTA))`,[s,a]=await Promise.all([k.from("porteria_visitas").select(F).eq("centro",U).or(`fecha.eq.${e},${t}`).order("created_at",{ascending:!0}),k.rpc("fn_porteria_esperados",{p_fecha:e,p_centro:U})]);return s.error?(y("Error al leer portería: "+s.error.message,"error"),!1):(a.error&&y("No se pudieron leer los esperados del día: "+a.error.message,"error"),o.visitas=s.data||[],o.esperados=a.data||[],!0)}async function ce(){if(!o.bloques.length){const{data:e}=await k.from("abast_bloque_presentacion").select("bloque,desde,hasta,cupo").eq("activo",!0).order("bloque");o.bloques=(e||[]).map(t=>({...t,desde:String(t.desde).slice(0,5),hasta:String(t.hasta).slice(0,5)}))}if(!o.centros){const{data:e}=await k.from("logistics_centres").select("id,nombre").order("nombre");o.centros=(e||[]).filter(t=>t.id!==U)}if(!o.proveedores){const{data:e}=await k.from("abast_proveedores").select("nombre").eq("activo",!0).order("nombre").limit(3e3);o.proveedores=(e||[]).map(t=>t.nombre).filter(Boolean)}}function re(){clearInterval(ve),clearInterval(le),ve=le=null}function $e(){return S&&document.body.contains(S)&&S.querySelector(".pt")}async function Nt(e,t="registro"){if(S=e,st(),re(),o.sub=t,e.innerHTML='<div class="sv-view pt"><div class="sv-desc">Cargando portería…</div></div>',await _e(),t==="indicadores")return ue();if(t==="alertas")return X();await ce(),await Q(),N(),ve=setInterval(()=>{if(!$e())return re();_t()},3e4),le=setInterval(async()=>{if(!$e())return re();document.querySelector(".sv-dr")||document.querySelector(".sv-cf-bg")||o.busq||await Q()&&N()},12e4)}const Le=e=>o.esperados.filter(t=>t.tipo===e&&!t.visita_id).length,ye=e=>o.visitas.filter(t=>t.tipo===e&&t.estado!=="ANULADO");function rt(){return`<nav class="pt-tabs" aria-label="Tipo de visita">${ke.map(e=>{const t=Le(e.k)+ye(e.k).length;return`<button type="button" class="pt-tab ${o.tab===e.k?"is-on":""}" data-tab="${e.k}" ${o.tab===e.k?'aria-current="page"':""}>
+      <i><span class="material-symbols-outlined" style="font-size:21px;color:inherit">${e.icon}</span></i>
+      <div style="min-width:0"><b>${d(e.label)}</b><span>${d(e.sub)}</span></div>
+      <em>${t}</em></button>`}).join("")}</nav>`}function ot(){const e=ye(o.tab),t=l=>e.filter(r=>r.estado===l).length,s=(l,r,v,u)=>`<div class="sv-kpi" style="cursor:default"><div class="sv-kpi-l"><i style="background:${v}"></i>${l}</div><div class="sv-kpi-v">${r}</div><div class="sv-kpi-s">${u}</div></div>`;if(o.tab==="DESPACHO_EBEMA"){const l=e.filter(v=>he(v)?.fuera).length,r=e.filter(v=>w(v.entregas_devueltas).length).length;return`<div class="sv-kpis">
+      ${s("En ruta",t("EN_RUTA"),"#7e22ce","sin registrar retorno")}
+      ${s("Retornos",t("FINALIZADO"),"#15803d","cerrados hoy")}
+      ${s("Diferencia de peso",l,"#b5000b","romana vs guías")}
+      ${s("Entregas devueltas",r,"#b5000b","vuelven al CD")}
+      ${s("Sin salida",t("PROGRAMADO"),"#9a9c99","registrados sin partir")}
+    </div>`}const a=Le(o.tab),n=o.esperados.filter(l=>l.tipo===o.tab&&!l.visita_id&&z(l)&&o.fecha===j()&&new Date>ge(z(l),o.fecha)).length,f=`${s("En cola",t("EN_COLA"),"#ca8a04","sin atención")}
+      ${s("En patio",t("EN_PATIO"),"#1d4ed8","dentro del CD")}
+      ${s("Finalizados",t("FINALIZADO"),"#15803d","ciclo completo")}`;if(o.tab==="RETIRO_CLIENTE"){const l=e.filter(v=>v.estado==="FINALIZADO").map(v=>Z(v.t_ingreso,v.t_salida)).filter(v=>v!=null),r=l.length?l.reduce((v,u)=>v+u,0)/l.length:null;return`<div class="sv-kpis">${f}${s("Permanencia promedio",L(r),"#9a9c99","ingreso → salida")}</div>`}return`<div class="sv-kpis">${f}
+      ${s("Por llegar",a,"#9a9c99",o.tab==="TRONCAL"?"del Plan de Carga":"de la agenda del día")}
+      ${s("Fuera de horario",n,"#b5000b","no llegaron en su bloque")}
+    </div>`}function nt(){const e=o.bloques.map(t=>({k:"b"+t.bloque,t:`Bloque ${t.bloque} · ${t.desde}–${t.hasta}`,meta:`cupo ${t.cupo}`}));return o.tab==="TRONCAL"?[...e,{k:"libre",t:"Hora libre · ramplas a cliente",meta:"sin tope de bloque"},{k:"sin",t:"Sin horario solicitado"}]:o.tab==="PROVEEDOR"?[...e,{k:"libre",t:"Con hora de agenda"},{k:"sin",t:"Sin agenda",off:!0}]:o.tab==="RETIRO_CLIENTE"?[{k:"all",t:"Retiros de cliente de hoy",meta:"presentación → ingreso → salida"}]:[{k:"ruta",t:"En ruta · pendientes de retorno"},{k:"retorno",t:"Retornos registrados hoy"},{k:"otros",t:"Registrados sin salida"}]}function it(e){if(o.tab==="RETIRO_CLIENTE")return"all";if(o.tab==="DESPACHO_EBEMA")return e.estado==="EN_RUTA"?"ruta":e.t_regreso?"retorno":"otros";if(W(e))return"libre";const t=z(e);return t&&t.bloque?"b"+t.bloque:t?"libre":"sin"}function Ne(e){return`<div><div class="pt-plate">${d(e.patente||"— sin patente")}</div>
+    <div class="pt-sub">${e.patente_carro?"Carro "+d(e.patente_carro)+"<br>":""}${d(e.chofer_nombre||"")}${e.transportista?"<br>"+d(e.transportista):""}</div></div>`}function Te(e){const t=[];W(e)&&t.push('<span class="pt-tag" style="background:#e6f0e9;border-color:#c7e0d1;color:#14603a;font-family:inherit">RAMPLA</span>'),e.fuera_agenda&&t.push('<span class="pt-tag" style="background:#fdf6e6;border-color:#f0dcb0;color:#7a4f00;font-family:inherit">SIN AGENDA</span>'),e.pedido_venta&&t.push(`<span class="pt-tag">NV ${d(e.pedido_venta)}</span>`),w(e.documentos).slice(0,3).forEach(f=>t.push(`<span class="pt-tag">${d(f.tipo)} ${d(f.numero)}</span>`)),w(e.retiros).forEach(f=>t.push(`<span class="pt-tag">OC ${d(f.doc_compr)}</span>`));const s=e.plan_ref||{},a=o.tab==="TRONCAL"&&!W(e)&&s.camion!=null?`Camión ${d(s.camion)} · ${E(s.ton,1)} t · ${E(s.pct)}%`:W(e)?`${E(s.ton,1)} t · carga de material a cliente`:o.tab==="DESPACHO_EBEMA"?`${w(e.documentos).length} entrega(s)${e.subtipo==="FIERRO"?" · Fierro":""}`:s.tipo?d(s.tipo):"",n=e.retira_nombre?`<div class="pt-sub">Retira <b>${d(e.retira_nombre)}</b>${e.retira_rut?" · "+d(e.retira_rut):""}${e.retira_es_chofer?" · es el chofer":""}</div>`:"";return`<div style="min-width:0"><div class="pt-dest">${d(e.contraparte||"—")}</div>
+    ${a?`<div class="pt-sub">${a}</div>`:""}${n}
+    ${t.length?`<div class="pt-tags">${t.join("")}</div>`:""}</div>`}function lt(e){const t=z(e),s=t&&o.fecha===j()&&new Date>ge(t,o.fecha);return`<div><div class="pt-st" style="color:${s?"#b5000b":"var(--sv-ink2)"}"><i style="background:${s?"#b5000b":"#9a9c99"}"></i>${s?"No llegó":"Programado"}</div>
+    <div class="pt-sub pt-mono">${t?d(t.txt):"sin horario"}</div></div>`}function dt(e){const t={EN_COLA:"#ca8a04",EN_PATIO:"#1d4ed8",EN_RUTA:"#7e22ce",FINALIZADO:"#15803d",PROGRAMADO:"#9a9c99",NO_SE_PRESENTA:"#b5000b",NO_CARGA:"#c2410c",ANULADO:"#9a9c99"}[e.estado]||"#9a9c99",s=Ce(e);return`<div><div class="pt-st"><i style="background:${t}"></i>${(te[e.estado]||[e.estado])[0]}</div>
+    ${s?`<div class="pt-sub" style="color:${s.cls==="bad"?"#b5000b":s.cls==="ok"?"#15803d":"inherit"}">${d(s.txt)}</div>`:e.fuera_agenda?'<div class="pt-sub">llegada sin cita</div>':""}</div>`}function ct(e,t,s){const a=e["t_"+t],n=t==="ingreso"?e.tara_kg:t==="salida"?(e.tipo==="DESPACHO_EBEMA",e.bruto_kg):t==="regreso"?e.bruto_ingreso_kg:null,f=e.tipo==="DESPACHO_EBEMA"&&t==="salida"?"Salida":G[t];return`<div class="pt-h ${s}"><b>${f}</b><u class="${a?"":"na"}">${a?M(a):"—"}</u>
+    ${n!=null?`<s>${E(n)} kg</s>`:s==="next"&&(t==="ingreso"||t==="regreso")?"<s>pesar</s>":""}</div>`}function pt(e){const t=R[e.tipo].hitos,s=Re(e);return`<div class="pt-step ${t.length===2?"is-2":""}">${t.map(a=>ct(e,a,e["t_"+a]?"done":a===s?"next":"")).join("")}</div>`}function ut(e){const t=R[e.tipo].hitos;return`<div class="pt-step ${t.length===2?"is-2":""}">${t.map((s,a)=>`<div class="pt-h ${a===0?"next":""}"><b>${G[s]}</b><u class="na">—</u></div>`).join("")}</div>`}function Pe(e){const t=be(e);if(t.min==null)return'<div><div class="pt-tm pt-na">—</div><div class="pt-tml">sin medición</div></div>';const s=tt(t),a={ok:"#15803d",warn:"#8a5a00",bad:"#b5000b",mute:"var(--sv-ink2)"}[s],n=t.umbral?Math.min(100,Math.round(t.min/t.umbral*100)):0;return`<div data-timer="${e.id}"><div class="pt-tm ${t.vivo?"pt-live":""}" style="color:${a}">${L(t.min)}</div>
+    <div class="pt-tml">${d(t.que)}${t.umbral?` · meta ${t.umbral}`:""}</div>
+    ${t.umbral?`<div class="pt-bar"><i style="width:${n}%;background:${a}"></i></div>`:""}</div>`}function ft(e){const t=he(e),s=at(e),a=t?.fuera?"#b5000b":"#15803d";return`<div class="pt-sub" style="margin:0">
+    ${e.tara_kg!=null?`Tara ${E(e.tara_kg)} · `:""}${e.bruto_kg!=null?`Bruto ${E(e.bruto_kg)}`:"sin pesaje"}
+    ${t?`<div>Carga romana <b>${E(t.carga)} kg</b> · guías ${E(t.guias)} kg</div>
+      <div style="color:${a};font-weight:700">${t.pct!=null?(t.pct>0?"+":"")+E(t.carga-t.guias)+" kg · "+(t.pct>0?"+":"")+E(t.pct,1)+"%":"sin guías"}${t.fuera?" fuera de tolerancia":""}</div>`:""}
+    ${s!=null?`<div>Vuelve con <b>${E(s)} kg</b>${w(e.entregas_devueltas).length?" · "+w(e.entregas_devueltas).map(n=>"ENT "+d(n.n_entrega)).join(", "):""}</div>`:""}</div>`}function vt(){return o.tab==="RETIRO_CLIENTE"?`<div class="pt-cta">
     <div><h2>Se presentó un cliente a retirar</h2>
       <p>Obligatorio: N° de pedido de ventas, nombre y RUT de quien retira, patente del vehículo y transportista. La patente del carro es opcional y, si quien retira es el mismo chofer, se copian nombre y RUT.</p></div>
-    <button class="sv-btn" id="pt-retiro" style="background:#fff;color:var(--sv-ink)"><span class="material-symbols-outlined">add</span>Registrar retiro de cliente</button></div>`;
-  if (S.tab === 'DESPACHO_EBEMA') return `<div class="pt-cta">
+    <button class="sv-btn" id="pt-retiro" style="background:#fff;color:var(--sv-ink)"><span class="material-symbols-outlined">add</span>Registrar retiro de cliente</button></div>`:o.tab==="DESPACHO_EBEMA"?`<div class="pt-cta">
     <div><h2>Salida de un despacho a cliente</h2>
       <p>Se registra patente, hora de salida, las entregas cargadas y los pesos (tara, bruto de salida y peso de las guías) para calcular la diferencia. Al volver se piden hora y peso de ingreso y qué entregas regresan.</p></div>
-    <button class="sv-btn" id="pt-salida" style="background:#fff;color:var(--sv-ink)"><span class="material-symbols-outlined">outbound</span>Registrar salida</button></div>`;
-  return '';
-}
-
-function bandRetiro(x) {
-  if (x.tipo !== 'TRONCAL' || !arr(x.retiros).length) return '';
-  const g = arr(x.guias_proveedor);
-  return `<div class="pt-band"><span class="material-symbols-outlined" style="font-size:18px">merge</span>
-    <b>Viene con retiro de fábrica</b> · ${arr(x.retiros).map(r => esc(r.proveedor || '') + ' · OC ' + esc(r.doc_compr)).join(' · ')} · misma patente y chofer, una sola línea
-    ${g.map(y => `<span class="pt-tag">GUÍA ${esc(y.numero)}</span>`).join('') || '<span class="pt-tag miss">Sin guías del proveedor</span>'}
-    ${x.id ? `<button class="sv-btn" data-guia="${x.id}" style="min-height:0;padding:4px 10px">Agregar guía</button>` : '<span class="pt-sub" style="margin:0">Las guías se piden al registrar la llegada.</span>'}</div>`;
-}
-
-function filaEsperado(e) {
-  const i = S.esperados.indexOf(e);
-  return `<div class="pt-row">
-    ${celdaEstadoEsp(e)}${celdaCamion(e)}${celdaContra(e)}${celdaStepEsp(e)}
+    <button class="sv-btn" id="pt-salida" style="background:#fff;color:var(--sv-ink)"><span class="material-symbols-outlined">outbound</span>Registrar salida</button></div>`:""}function De(e){if(e.tipo!=="TRONCAL"||!w(e.retiros).length)return"";const t=w(e.guias_proveedor);return`<div class="pt-band"><span class="material-symbols-outlined" style="font-size:18px">merge</span>
+    <b>Viene con retiro de fábrica</b> · ${w(e.retiros).map(s=>d(s.proveedor||"")+" · OC "+d(s.doc_compr)).join(" · ")} · misma patente y chofer, una sola línea
+    ${t.map(s=>`<span class="pt-tag">GUÍA ${d(s.numero)}</span>`).join("")||'<span class="pt-tag miss">Sin guías del proveedor</span>'}
+    ${e.id?`<button class="sv-btn" data-guia="${e.id}" style="min-height:0;padding:4px 10px">Agregar guía</button>`:'<span class="pt-sub" style="margin:0">Las guías se piden al registrar la llegada.</span>'}</div>`}function mt(e){const t=o.esperados.indexOf(e);return`<div class="pt-row">
+    ${lt(e)}${Ne(e)}${Te(e)}${ut(e)}
     <div><div class="pt-tm pt-na">—</div><div class="pt-tml">sin presentación</div></div>
-    <div class="pt-act"><button class="sv-btn-p" data-esp="${i}" ${S.fecha === hoy() ? '' : 'disabled title="Sólo se registra la llegada del día de hoy"'}>Llegó</button></div>
-  </div>${bandRetiro(e)}`;
-}
-
-function filaVisita(v) {
-  const nx = proximoHito(v);
-  const desp = v.tipo === 'DESPACHO_EBEMA';
-  const btn = nx === 'regreso' ? `<button class="sv-btn-p" data-ret="${v.id}">Registrar retorno</button>`
-    : nx ? `<button class="sv-btn-p" data-hito="${nx}" data-vid="${v.id}">${HITO_BTN[nx]}</button>` : '';
-  return `<div class="pt-row" data-id="${v.id}">
-    ${celdaEstadoVis(v)}${celdaCamion(v)}
-    <div style="min-width:0">${celdaContra(v)}${desp ? celdaPesosDesp(v) : ''}</div>
-    ${celdaStep(v)}${celdaTiempo(v)}
-    <div class="pt-act">${btn}<button class="sv-btn is-icon" data-edit="${v.id}" title="Editar / corregir"><span class="material-symbols-outlined">edit</span></button></div>
-  </div>${bandRetiro(v)}`;
-}
-
-function cuerpoTab() {
-  const T = TABS.find(t => t.k === S.tab);
-  const esps = S.esperados.filter(e => e.tipo === S.tab && !e.visita_id);
-  const vis = visitasTab(S.tab);
-  let html = `<div class="pt-ch"><h2><span class="material-symbols-outlined">${T.icon}</span>${esc(T.label)}
-      <small>${fechaCorta(S.fecha)} · ${esps.length} por llegar · ${vis.length} registrado(s)</small></h2>
+    <div class="pt-act"><button class="sv-btn-p" data-esp="${t}" ${o.fecha===j()?"":'disabled title="Sólo se registra la llegada del día de hoy"'}>Llegó</button></div>
+  </div>${De(e)}`}function gt(e){const t=Re(e),s=e.tipo==="DESPACHO_EBEMA",a=t==="regreso"?`<button class="sv-btn-p" data-ret="${e.id}">Registrar retorno</button>`:t?`<button class="sv-btn-p" data-hito="${t}" data-vid="${e.id}">${Qe[t]}</button>`:"";return`<div class="pt-row" data-id="${e.id}">
+    ${dt(e)}${Ne(e)}
+    <div style="min-width:0">${Te(e)}${s?ft(e):""}</div>
+    ${pt(e)}${Pe(e)}
+    <div class="pt-act">${a}<button class="sv-btn is-icon" data-edit="${e.id}" title="Editar / corregir"><span class="material-symbols-outlined">edit</span></button></div>
+  </div>${De(e)}`}function bt(){const e=ke.find(l=>l.k===o.tab),t=o.esperados.filter(l=>l.tipo===o.tab&&!l.visita_id),s=ye(o.tab);let a=`<div class="pt-ch"><h2><span class="material-symbols-outlined">${e.icon}</span>${d(e.label)}
+      <small>${J(o.fecha)} · ${t.length} por llegar · ${s.length} registrado(s)</small></h2>
     <div style="display:flex;gap:6px;flex-wrap:wrap">
-      ${S.tab === 'PROVEEDOR' ? '<button class="sv-btn" id="pt-agenda"><span class="material-symbols-outlined">event_available</span>Agregar cita de proveedor</button>' : ''}
-      <button class="sv-btn" id="pt-csv"><span class="material-symbols-outlined">download</span>CSV del día</button></div></div>`;
-  const items = [...esps.map(e => ({ e, cita: citaDe(e) })), ...vis.map(v => ({ v, cita: citaDe(v) }))];
-  let n = 0;
-  grupos().forEach(g => {
-    const rows = items.filter(it => grupoDe(it.e || it.v) === g.k)
-      .sort((a, b) => (hmMin(a.cita && a.cita.desde) ?? 9999) - (hmMin(b.cita && b.cita.desde) ?? 9999));
-    const fijo = /^b\d+$/.test(g.k) && ['TRONCAL', 'PROVEEDOR'].includes(S.tab);
-    if (!rows.length && !fijo) return;
-    n += rows.length;
-    html += `<div class="pt-sect ${g.off ? 'is-off' : ''}">${esc(g.t)}<span>${rows.length ? rows.length + ' camión(es)' : 'sin camiones'}${g.meta ? ' · ' + esc(g.meta) : ''}</span></div>`;
-    html += rows.map(it => (it.e ? filaEsperado(it.e) : filaVisita(it.v))).join('');
-  });
-  if (!n) html += `<div class="sv-empty" style="padding:28px 16px;text-align:center">Sin camiones de este tipo para ${fechaCorta(S.fecha)}.</div>`;
-  return html;
-}
-
-function renderRegistro() {
-  if (!_stage) return;
-  if (S.sub === 'alertas') return renderAlertas();
-  if (S.sub === 'indicadores') return renderIndicadores();
-  const esHoy = S.fecha === hoy();
-  _stage.innerHTML = `<div class="sv-view pt">
+      ${o.tab==="PROVEEDOR"?'<button class="sv-btn" id="pt-agenda"><span class="material-symbols-outlined">event_available</span>Agregar cita de proveedor</button>':""}
+      <button class="sv-btn" id="pt-csv"><span class="material-symbols-outlined">download</span>CSV del día</button></div></div>`;const n=[...t.map(l=>({e:l,cita:z(l)})),...s.map(l=>({v:l,cita:z(l)}))];let f=0;return nt().forEach(l=>{const r=n.filter(u=>it(u.e||u.v)===l.k).sort((u,h)=>(ae(u.cita&&u.cita.desde)??9999)-(ae(h.cita&&h.cita.desde)??9999)),v=/^b\d+$/.test(l.k)&&["TRONCAL","PROVEEDOR"].includes(o.tab);!r.length&&!v||(f+=r.length,a+=`<div class="pt-sect ${l.off?"is-off":""}">${d(l.t)}<span>${r.length?r.length+" camión(es)":"sin camiones"}${l.meta?" · "+d(l.meta):""}</span></div>`,a+=r.map(u=>u.e?mt(u.e):gt(u.v)).join(""))}),f||(a+=`<div class="sv-empty" style="padding:28px 16px;text-align:center">Sin camiones de este tipo para ${J(o.fecha)}.</div>`),a}function N(){if(!S)return;if(o.sub==="alertas")return X();if(o.sub==="indicadores")return ue();const e=o.fecha===j();S.innerHTML=`<div class="sv-view pt">
     <div class="sv-vhead">
       <div>
         <h1 class="sv-h1">Control puerta · CD Quilicura</h1>
@@ -564,247 +173,69 @@ function renderRegistro() {
       </div>
       <div class="sv-actions">
         <label class="pt-srch"><span class="material-symbols-outlined">search</span>
-          <input id="pt-q" value="${esc(S.q)}" placeholder="Patente, NV, OC o guía" autocomplete="off" aria-label="Buscar patente, pedido de venta, orden de compra o guía"></label>
-        <label class="sv-inp"><span class="material-symbols-outlined">event</span><input type="date" id="pt-fecha" value="${S.fecha}"></label>
-        ${esHoy ? '' : '<button class="sv-btn" id="pt-hoy">Hoy</button>'}
+          <input id="pt-q" value="${d(o.q)}" placeholder="Patente, NV, OC o guía" autocomplete="off" aria-label="Buscar patente, pedido de venta, orden de compra o guía"></label>
+        <label class="sv-inp"><span class="material-symbols-outlined">event</span><input type="date" id="pt-fecha" value="${o.fecha}"></label>
+        ${e?"":'<button class="sv-btn" id="pt-hoy">Hoy</button>'}
         <button class="sv-btn is-icon" id="pt-ref" title="Actualizar"><span class="material-symbols-outlined">refresh</span></button>
         <button class="sv-btn-p" id="pt-nuevo"><span class="material-symbols-outlined">add</span>Llegada sin agenda</button>
       </div>
     </div>
-    ${tabsHtml()}
-    <div id="pt-busq">${S.busq ? panelBusqueda() : ''}</div>
-    ${kpisTab()}
-    ${ctaTab()}
-    <div class="sv-card">${cuerpoTab()}</div>
-  </div>`;
-  bindRegistro();
-}
+    ${rt()}
+    <div id="pt-busq">${o.busq?ze():""}</div>
+    ${ot()}
+    ${vt()}
+    <div class="sv-card">${bt()}</div>
+  </div>`,ht()}function ht(){const e=a=>S.querySelector(a);e("#pt-fecha").addEventListener("change",async a=>{o.fecha=a.target.value||j(),await Q(),N()}),e("#pt-hoy")?.addEventListener("click",async()=>{o.fecha=j(),await Q(),N()}),e("#pt-ref").addEventListener("click",async()=>{await Q(),N()}),e("#pt-nuevo").addEventListener("click",()=>V(null)),e("#pt-retiro")?.addEventListener("click",()=>Me(null)),e("#pt-salida")?.addEventListener("click",()=>V(null,"DESPACHO_EBEMA")),e("#pt-agenda")?.addEventListener("click",()=>kt()),e("#pt-csv")?.addEventListener("click",yt),S.querySelectorAll("[data-tab]").forEach(a=>a.addEventListener("click",()=>{o.tab=a.dataset.tab,N()}));const t=e("#pt-q");let s;t.addEventListener("input",()=>{clearTimeout(s),s=setTimeout(()=>je(t.value),350)}),t.addEventListener("keydown",a=>{a.key==="Enter"&&(a.preventDefault(),clearTimeout(s),je(t.value))}),S.querySelectorAll("[data-esp]").forEach(a=>a.addEventListener("click",n=>{n.stopPropagation(),Ie(o.esperados[+a.dataset.esp])})),S.querySelectorAll("[data-hito]").forEach(a=>a.addEventListener("click",n=>{n.stopPropagation(),$t(+a.dataset.vid,a.dataset.hito)})),S.querySelectorAll("[data-ret]").forEach(a=>a.addEventListener("click",n=>{n.stopPropagation(),Et(o.visitas.find(f=>f.id===+a.dataset.ret))})),S.querySelectorAll("[data-guia]").forEach(a=>a.addEventListener("click",n=>{n.stopPropagation(),At(o.visitas.find(f=>f.id===+a.dataset.guia))})),S.querySelectorAll("[data-edit]").forEach(a=>a.addEventListener("click",n=>{n.stopPropagation(),V(o.visitas.find(f=>f.id===+a.dataset.edit))})),S.querySelectorAll("[data-ver]").forEach(a=>a.addEventListener("click",n=>{n.stopPropagation(),V(o.visitas.find(f=>f.id===+a.dataset.ver))})),S.querySelector("#pt-bcerrar")?.addEventListener("click",()=>{o.busq=null,o.q="",N()})}function _t(){S.querySelectorAll("[data-timer]").forEach(e=>{const t=o.visitas.find(s=>s.id===+e.dataset.timer);t&&be(t).vivo&&(e.outerHTML=Pe(t))})}function oe(e){const t=o.visitas.findIndex(s=>s.id===e.id);t>=0?o.visitas[t]=e:o.visitas.push(e)}async function $t(e,t){const s=o.visitas.find(r=>r.id===e);if(!s)return;const a=s.tipo==="DESPACHO_EBEMA",n={};if(t==="ingreso"&&!a&&s.tara_kg==null){const r=await ee(`Ingreso · ${s.patente||""}
 
-function bindRegistro() {
-  const $ = s => _stage.querySelector(s);
-  $('#pt-fecha').addEventListener('change', async e => { S.fecha = e.target.value || hoy(); await cargarDia(); renderRegistro(); });
-  $('#pt-hoy')?.addEventListener('click', async () => { S.fecha = hoy(); await cargarDia(); renderRegistro(); });
-  $('#pt-ref').addEventListener('click', async () => { await cargarDia(); renderRegistro(); });
-  $('#pt-nuevo').addEventListener('click', () => abrirForm(null));
-  $('#pt-retiro')?.addEventListener('click', () => formRetiroCliente(null));
-  $('#pt-salida')?.addEventListener('click', () => abrirForm(null, 'DESPACHO_EBEMA'));
-  $('#pt-agenda')?.addEventListener('click', () => formAgendaProveedor());
-  $('#pt-csv')?.addEventListener('click', csvDia);
-  _stage.querySelectorAll('[data-tab]').forEach(b => b.addEventListener('click', () => { S.tab = b.dataset.tab; renderRegistro(); }));
-  const q = $('#pt-q');
-  let tk;
-  q.addEventListener('input', () => { clearTimeout(tk); tk = setTimeout(() => buscar(q.value), 350); });
-  q.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); clearTimeout(tk); buscar(q.value); } });
-  _stage.querySelectorAll('[data-esp]').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); llegoEsperado(S.esperados[+b.dataset.esp]); }));
-  _stage.querySelectorAll('[data-hito]').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); marcarHito(+b.dataset.vid, b.dataset.hito); }));
-  _stage.querySelectorAll('[data-ret]').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); formRetorno(S.visitas.find(v => v.id === +b.dataset.ret)); }));
-  _stage.querySelectorAll('[data-guia]').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); agregarGuia(S.visitas.find(v => v.id === +b.dataset.guia)); }));
-  _stage.querySelectorAll('[data-edit]').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); abrirForm(S.visitas.find(v => v.id === +b.dataset.edit)); }));
-  _stage.querySelectorAll('[data-ver]').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); abrirForm(S.visitas.find(v => v.id === +b.dataset.ver)); }));
-  _stage.querySelector('#pt-bcerrar')?.addEventListener('click', () => { S.busq = null; S.q = ''; renderRegistro(); });
-}
+Peso de entrada en romana (kg). Todo camión que ingresa se pesa.`,{aceptar:"Registrar ingreso",placeholder:"Ej: 15.420",icono:"scale",patron:/^[\d.,\s]+$/,error:"Ingrese el peso en kg"});if(r===null)return;const v=T(r);if(v==null)return y("El ingreso necesita el peso de romana.","error");n.tara_kg=v}if(t==="salida"&&s.bruto_kg==null){const r=a?"Peso de salida con carga (bruto)":"Peso de salida (bruto)",v=await ee(`Salida · ${s.patente||""}
 
-function actualizarTiempos() {
-  _stage.querySelectorAll('[data-timer]').forEach(el => {
-    const v = S.visitas.find(x => x.id === +el.dataset.timer);
-    if (v && tiempo(v).vivo) el.outerHTML = celdaTiempo(v);
-  });
-}
+${r} en romana (kg).${a?"":" Puede quedar vacío y completarse después."}`,{aceptar:"Registrar salida",placeholder:"Ej: 27.980",opcional:!a,icono:"scale",patron:/^[\d.,\s]+$/,error:"Ingrese sólo números (kg)"});if(v===null)return;const u=T(v);if(u==null&&a)return y("La salida del despacho necesita el peso de romana.","error");u!=null&&(n.bruto_kg=u)}if(Object.keys(n).length){const{error:r}=await k.from("porteria_visitas").update(n).eq("id",e);if(r)return y(D(r),"error");Object.assign(s,n)}const{data:f,error:l}=await k.rpc("fn_porteria_marcar",{p_id:e,p_hito:t});if(l)return y(D(l),"error");oe({...s,...n,...f}),y(`${G[t]} registrada ${M(f["t_"+t])} · ${f.patente||""}`),N()}function xe(e){const t=[],s=new Set,a=(n,f)=>{const l=n+"|"+f;f&&!s.has(l)&&(s.add(l),t.push({tipo:n,numero:String(f)}))};return w(e.retiros).forEach(n=>{a("OC",n.doc_compr),a("ENTREGA",n.entrega_entrante)}),w(e.plan_ref&&e.plan_ref.docs).forEach(n=>{a("NV",n.pedido_venta),a("ENTREGA",n.n_entrega)}),{tipo:e.tipo,subtipo:e.subtipo||null,hora_agenda:e.hora_agenda||null,patente:e.patente,patente_carro:e.patente_carro,chofer_nombre:e.chofer_nombre,chofer_rut:e.chofer_rut,chofer_telefono:e.chofer_telefono,id_transporte:e.id_transporte,transportista:e.transportista,contraparte:e.contraparte,ce:e.ce,documentos:t,clave_esperado:e.clave,plan_ref:{...e.plan_ref||{},bloque:e.bloque??null,hora_presentacion:e.hora_presentacion||null,hora_hasta:e.hora_hasta||null},retiros:w(e.retiros),consolida_retiro:!!e.consolida_retiro,patente_coordinada:e.patente||null,chofer_coordinado:e.chofer_nombre||null,origen:e.tipo==="TRONCAL"?e.consolida_retiro?"PLAN_CARGA+RETIRO":"PLAN_CARGA":"RETIRO_FABRICA"}}async function Ie(e){if(!e)return;if(e.tipo==="TRONCAL")return xt(e);const t=xe(e);if(!t.patente){const n=await ee(`Llegada · ${e.contraparte||""}
 
-// ── Acciones ────────────────────────────────────────────────────────────────
-function reemplazar(v) {
-  const i = S.visitas.findIndex(x => x.id === v.id);
-  if (i >= 0) S.visitas[i] = v; else S.visitas.push(v);
-}
-
-// Pesaje obligatorio al ingresar; el peso de salida se pide (opcional) al salir.
-async function marcarHito(id, hito) {
-  const v = S.visitas.find(x => x.id === id); if (!v) return;
-  const desp = v.tipo === 'DESPACHO_EBEMA';
-  const patch = {};
-  if (hito === 'ingreso' && !desp && v.tara_kg == null) {
-    const r = await pedirDato(`Ingreso · ${v.patente || ''}\n\nPeso de entrada en romana (kg). Todo camión que ingresa se pesa.`,
-      { aceptar: 'Registrar ingreso', placeholder: 'Ej: 15.420', icono: 'scale', patron: /^[\d.,\s]+$/, error: 'Ingrese el peso en kg' });
-    if (r === null) return;
-    const n = num(r);
-    if (n == null) return showAlert('El ingreso necesita el peso de romana.', 'error');
-    patch.tara_kg = n;
-  }
-  if (hito === 'salida' && v.bruto_kg == null) {
-    const lbl = desp ? 'Peso de salida con carga (bruto)' : 'Peso de salida (bruto)';
-    const r = await pedirDato(`Salida · ${v.patente || ''}\n\n${lbl} en romana (kg).${desp ? '' : ' Puede quedar vacío y completarse después.'}`,
-      { aceptar: 'Registrar salida', placeholder: 'Ej: 27.980', opcional: !desp, icono: 'scale', patron: /^[\d.,\s]+$/, error: 'Ingrese sólo números (kg)' });
-    if (r === null) return;
-    const n = num(r);
-    if (n == null && desp) return showAlert('La salida del despacho necesita el peso de romana.', 'error');
-    if (n != null) patch.bruto_kg = n;
-  }
-  if (Object.keys(patch).length) {
-    const { error } = await supabase.from('porteria_visitas').update(patch).eq('id', id);
-    if (error) return showAlert(errMsg(error), 'error');
-    Object.assign(v, patch);
-  }
-  const { data, error } = await supabase.rpc('fn_porteria_marcar', { p_id: id, p_hito: hito });
-  if (error) return showAlert(errMsg(error), 'error');
-  reemplazar({ ...v, ...patch, ...data });
-  showAlert(`${HITO_LBL[hito]} registrada ${hhmm(data['t_' + hito])} · ${data.patente || ''}`);
-  renderRegistro();
-}
-
-function payloadDesdeEsperado(e) {
-  const docs = [];
-  const ya = new Set();
-  const addDoc = (tipo, n) => { const k = tipo + '|' + n; if (n && !ya.has(k)) { ya.add(k); docs.push({ tipo, numero: String(n) }); } };
-  arr(e.retiros).forEach(r => { addDoc('OC', r.doc_compr); addDoc('ENTREGA', r.entrega_entrante); });
-  arr(e.plan_ref && e.plan_ref.docs).forEach(d => { addDoc('NV', d.pedido_venta); addDoc('ENTREGA', d.n_entrega); });
-  return {
-    tipo: e.tipo, subtipo: e.subtipo || null, hora_agenda: e.hora_agenda || null,
-    patente: e.patente, patente_carro: e.patente_carro, chofer_nombre: e.chofer_nombre, chofer_rut: e.chofer_rut,
-    chofer_telefono: e.chofer_telefono, id_transporte: e.id_transporte, transportista: e.transportista,
-    contraparte: e.contraparte, ce: e.ce, documentos: docs, clave_esperado: e.clave,
-    plan_ref: { ...(e.plan_ref || {}), bloque: e.bloque ?? null, hora_presentacion: e.hora_presentacion || null, hora_hasta: e.hora_hasta || null },
-    retiros: arr(e.retiros), consolida_retiro: !!e.consolida_retiro,
-    patente_coordinada: e.patente || null, chofer_coordinado: e.chofer_nombre || null,
-    origen: e.tipo === 'TRONCAL' ? (e.consolida_retiro ? 'PLAN_CARGA+RETIRO' : 'PLAN_CARGA') : 'RETIRO_FABRICA',
-  };
-}
-
-// Troncales y ramplas: la llegada abre la confirmación de datos; el resto se registra directo.
-async function llegoEsperado(e) {
-  if (!e) return;
-  if (e.tipo === 'TRONCAL') return formLlegadaTroncal(e);
-  const p = payloadDesdeEsperado(e);
-  if (!p.patente) {
-    const pat = await pedirDato(`Llegada · ${e.contraparte || ''}\n\nNo hay patente coordinada. Ingrese la patente del camión que llegó.`,
-      { aceptar: 'Registrar llegada', placeholder: 'AA-BB-12', icono: 'local_shipping' });
-    if (pat === null) return;
-    p.patente = fmtPatente(pat);
-    p.patente_coordinada = null;
-  }
-  const { data, error } = await supabase.rpc('fn_porteria_registrar', { p, p_hito: 'presentacion' });
-  if (error) return showAlert(errMsg(error), 'error');
-  S.visitas.push(data);
-  e.visita_id = data.id;
-  showAlert(`Llegada registrada ${hhmm(data.t_presentacion)} · ${data.patente || ''}`);
-  renderRegistro();
-}
-
-async function csvDia() { const d = S.desde, h = S.hasta; S.desde = S.fecha; S.hasta = S.fecha; await descargarCSV(); S.desde = d; S.hasta = h; }
-
-// ── Panel lateral reutilizable ──────────────────────────────────────────────
-function drawer(aria) {
-  const wrap = document.createElement('div');
-  wrap.innerHTML = `<div class="sv-dr-bg" style="z-index:120"></div><aside class="sv-dr" style="z-index:121;width:min(600px,100vw)" role="dialog" aria-label="${esc(aria)}"></aside>`;
-  document.body.appendChild(wrap);
-  const dr = wrap.querySelector('.sv-dr');
-  const onKey = ev => { if (ev.key === 'Escape' && !document.querySelector('.sv-cf-bg')) { ev.preventDefault(); cerrar(); } };
-  const cerrar = () => { document.removeEventListener('keydown', onKey, true); wrap.remove(); };
-  document.addEventListener('keydown', onKey, true);
-  wrap.querySelector('.sv-dr-bg').addEventListener('click', cerrar);
-  return { dr, cerrar };
-}
-const campo = (lbl, id, val, extra = '', cls = '') => `<label class="pt-f ${cls}"><span>${lbl}</span><input id="${id}" value="${esc(val ?? '')}" ${extra}></label>`;
-
-// ── Llegada de troncal / rampla: confirmación de datos ──────────────────────
-async function formLlegadaTroncal(e) {
-  const { dr, cerrar } = drawer('Confirmar llegada de troncal');
-  const c = citaDe(e);
-  const g = [];
-  const tieneRetiro = arr(e.retiros).length > 0;
-  const draw = () => {
-    dr.innerHTML = `
+No hay patente coordinada. Ingrese la patente del camión que llegó.`,{aceptar:"Registrar llegada",placeholder:"AA-BB-12",icono:"local_shipping"});if(n===null)return;t.patente=H(n),t.patente_coordinada=null}const{data:s,error:a}=await k.rpc("fn_porteria_registrar",{p:t,p_hito:"presentacion"});if(a)return y(D(a),"error");o.visitas.push(s),e.visita_id=s.id,y(`Llegada registrada ${M(s.t_presentacion)} · ${s.patente||""}`),N()}async function yt(){const e=o.desde,t=o.hasta;o.desde=o.fecha,o.hasta=o.fecha,await Be(),o.desde=e,o.hasta=t}function pe(e){const t=document.createElement("div");t.innerHTML=`<div class="sv-dr-bg" style="z-index:120"></div><aside class="sv-dr" style="z-index:121;width:min(600px,100vw)" role="dialog" aria-label="${d(e)}"></aside>`,document.body.appendChild(t);const s=t.querySelector(".sv-dr"),a=f=>{f.key==="Escape"&&!document.querySelector(".sv-cf-bg")&&(f.preventDefault(),n())},n=()=>{document.removeEventListener("keydown",a,!0),t.remove()};return document.addEventListener("keydown",a,!0),t.querySelector(".sv-dr-bg").addEventListener("click",n),{dr:s,cerrar:n}}const C=(e,t,s,a="",n="")=>`<label class="pt-f ${n}"><span>${e}</span><input id="${t}" value="${d(s??"")}" ${a}></label>`;async function xt(e){const{dr:t,cerrar:s}=pe("Confirmar llegada de troncal"),a=z(e),n=[],f=w(e.retiros).length>0,l=()=>{t.innerHTML=`
       <div class="sv-dr-h"><div style="flex:1;min-width:0">
-        <div class="sv-dr-k">${esRampla(e) ? 'Rampla a cliente · confirmar datos' : 'Llegada de troncal · confirmar datos'}</div>
-        <div class="sv-dr-t">${esc(e.contraparte || '')}</div>
-        <div class="sv-dr-s">${c ? `Citación ${esc(c.txt)}${c.bloque ? ' · bloque ' + c.bloque : ''}` : 'Sin horario solicitado'}${e.plan_ref?.camion != null ? ` · camión ${esc(e.plan_ref.camion)} · ${nf(e.plan_ref.ton, 1)} t` : ''}</div></div>
+        <div class="sv-dr-k">${W(e)?"Rampla a cliente · confirmar datos":"Llegada de troncal · confirmar datos"}</div>
+        <div class="sv-dr-t">${d(e.contraparte||"")}</div>
+        <div class="sv-dr-s">${a?`Citación ${d(a.txt)}${a.bloque?" · bloque "+a.bloque:""}`:"Sin horario solicitado"}${e.plan_ref?.camion!=null?` · camión ${d(e.plan_ref.camion)} · ${E(e.plan_ref.ton,1)} t`:""}</div></div>
         <button class="sv-btn is-icon" data-x title="Cerrar"><span class="material-symbols-outlined">close</span></button></div>
       <div class="sv-dr-b">
         <div class="pt-match"><div><div class="pt-sub" style="margin:0">Patente coordinada</div>
-          <div style="font-family:var(--sv-mono);font-size:26px;font-weight:700">${esc(e.patente || '— sin patente —')}</div>
-          ${e.chofer_nombre ? `<div class="pt-sub">Chofer coordinado: ${esc(e.chofer_nombre)}</div>` : ''}</div>
+          <div style="font-family:var(--sv-mono);font-size:26px;font-weight:700">${d(e.patente||"— sin patente —")}</div>
+          ${e.chofer_nombre?`<div class="pt-sub">Chofer coordinado: ${d(e.chofer_nombre)}</div>`:""}</div>
           <button type="button" class="sv-btn" id="f-ok">Coincide todo</button></div>
-        ${tieneRetiro ? `<div class="pt-band" style="border:1px solid #f0dcb0;border-radius:8px;padding:10px 12px">
+        ${f?`<div class="pt-band" style="border:1px solid #f0dcb0;border-radius:8px;padding:10px 12px">
           <span class="material-symbols-outlined" style="font-size:18px">merge</span>
-          <div style="flex:1;min-width:0"><b>Viene con retiro de fábrica</b> · ${arr(e.retiros).map(r => esc(r.proveedor || '') + ' · OC ' + esc(r.doc_compr)).join(' · ')}
+          <div style="flex:1;min-width:0"><b>Viene con retiro de fábrica</b> · ${w(e.retiros).map(h=>d(h.proveedor||"")+" · OC "+d(h.doc_compr)).join(" · ")}
             <div class="pt-sub" style="color:#5a3b00">Mismo camión planificado para retirar y consolidar en el CD: queda como una sola línea. Registre las guías del proveedor.</div></div></div>
           <div>
             <div class="sv-dr-sect">Guías del proveedor</div>
-            <div class="pt-docs" id="f-gl">${g.length ? g.map((x, i) => `<span class="pt-doc"><b>GUÍA</b>${esc(x.numero)}<button type="button" data-delg="${i}"><span class="material-symbols-outlined">close</span></button></span>`).join('') : '<span class="pt-sub">Sin guías registradas aún.</span>'}</div>
+            <div class="pt-docs" id="f-gl">${n.length?n.map((h,b)=>`<span class="pt-doc"><b>GUÍA</b>${d(h.numero)}<button type="button" data-delg="${b}"><span class="material-symbols-outlined">close</span></button></span>`).join(""):'<span class="pt-sub">Sin guías registradas aún.</span>'}</div>
             <div class="pt-docadd" style="margin-top:8px"><input id="f-gnum" class="pt-mono" placeholder="N° de guía (varias separadas por coma)" autocomplete="off"><button type="button" class="sv-btn" id="f-gadd">Agregar</button></div>
-          </div>` : ''}
+          </div>`:""}
         <div>
           <div class="sv-dr-sect">Datos del camión que llegó</div>
           <div class="pt-grid">
-            ${campo('Patente camión *', 'f-pat', e.patente, 'class="is-mono" autocomplete="off" placeholder="AA-BB-12"')}
-            ${campo('Patente carro', 'f-car', e.patente_carro, 'class="is-mono" autocomplete="off"')}
-            ${campo('Nombre del chofer', 'f-cho', e.chofer_nombre, 'autocomplete="off"', 'full')}
-            ${campo('RUT chofer', 'f-rut', e.chofer_rut, 'autocomplete="off"')}
-            ${campo('Teléfono', 'f-tel', e.chofer_telefono, 'autocomplete="off"')}
-            ${campo('Transportista', 'f-tra', e.transportista, 'readonly', 'full')}
+            ${C("Patente camión *","f-pat",e.patente,'class="is-mono" autocomplete="off" placeholder="AA-BB-12"')}
+            ${C("Patente carro","f-car",e.patente_carro,'class="is-mono" autocomplete="off"')}
+            ${C("Nombre del chofer","f-cho",e.chofer_nombre,'autocomplete="off"',"full")}
+            ${C("RUT chofer","f-rut",e.chofer_rut,'autocomplete="off"')}
+            ${C("Teléfono","f-tel",e.chofer_telefono,'autocomplete="off"')}
+            ${C("Transportista","f-tra",e.transportista,"readonly","full")}
           </div>
         </div>
         <div>
           <div class="sv-dr-sect">Romana (opcional ahora)</div>
           <div class="pt-grid">
-            ${campo('Peso de entrada (kg)', 'f-tara', '', 'inputmode="decimal" class="pt-mono" placeholder="se exige al ingresar"')}
-            ${campo('Peso según guías (kg)', 'f-guias', '', 'inputmode="decimal" class="pt-mono"')}
+            ${C("Peso de entrada (kg)","f-tara","",'inputmode="decimal" class="pt-mono" placeholder="se exige al ingresar"')}
+            ${C("Peso según guías (kg)","f-guias","",'inputmode="decimal" class="pt-mono"')}
           </div>
           <div class="pt-sub" style="margin-top:6px">El peso de entrada es obligatorio para marcar el ingreso al patio; el de salida se pide al salir.</div>
         </div>
       </div>
       <div class="sv-dr-f"><div></div><div style="display:flex;gap:6px">
         <button class="sv-btn" data-x>Cancelar</button>
-        <button class="sv-btn-p" id="f-save"><span class="material-symbols-outlined">login</span>Registrar llegada</button></div></div>`;
-    dr.querySelectorAll('[data-x]').forEach(b => b.addEventListener('click', cerrar));
-    dr.querySelector('#f-ok')?.addEventListener('click', () => dr.querySelector('#f-save').click());
-    const addG = () => {
-      const nums = (dr.querySelector('#f-gnum')?.value || '').split(/[,;\s]+/).map(s => s.trim()).filter(Boolean);
-      if (!nums.length) return;
-      nums.forEach(n => { if (!g.some(x => x.numero === n)) g.push({ numero: n, proveedor: arr(e.retiros)[0]?.proveedor || null, doc_compr: arr(e.retiros)[0]?.doc_compr || null }); });
-      draw();
-      dr.querySelector('#f-gnum')?.focus();
-    };
-    dr.querySelector('#f-gadd')?.addEventListener('click', addG);
-    dr.querySelector('#f-gnum')?.addEventListener('keydown', ev => { if (ev.key === 'Enter') { ev.preventDefault(); addG(); } });
-    dr.querySelectorAll('[data-delg]').forEach(b => b.addEventListener('click', () => { g.splice(+b.dataset.delg, 1); draw(); }));
-    dr.querySelector('#f-save').addEventListener('click', guardar);
-  };
-  const v = id => dr.querySelector('#' + id)?.value?.trim() ?? '';
-  async function guardar() {
-    const pat = fmtPatente(v('f-pat'));
-    if (!pat) return showAlert('Ingrese la patente del camión que llegó', 'error');
-    if (!patenteValida(pat) && !(await confirmar(`¿Continuar con la patente ${pat}?\n\nNo tiene el formato AA-BB-12 / AA-12-34.`, { aceptar: 'Continuar' }))) return;
-    const btn = dr.querySelector('#f-save'); btn.disabled = true;
-    const p = payloadDesdeEsperado(e);
-    p.patente = pat;
-    p.patente_carro = v('f-car') ? fmtPatente(v('f-car')) : null;
-    p.chofer_nombre = v('f-cho') || null;
-    p.chofer_rut = v('f-rut') || null;
-    p.chofer_telefono = v('f-tel') || null;
-    p.guias_proveedor = g;
-    p.tara_kg = num(v('f-tara'));
-    p.peso_guias_kg = num(v('f-guias'));
-    p.datos_confirmados_at = new Date().toISOString();
-    const { data, error } = await supabase.rpc('fn_porteria_registrar', { p, p_hito: 'presentacion' });
-    btn.disabled = false;
-    if (error) return showAlert(errMsg(error), 'error');
-    S.visitas.push(data);
-    e.visita_id = data.id;
-    cerrar();
-    showAlert(`Llegada registrada ${hhmm(data.t_presentacion)} · ${data.patente}`);
-    renderRegistro();
-  }
-  draw();
-  dr.querySelector('#f-pat')?.focus();
-}
+        <button class="sv-btn-p" id="f-save"><span class="material-symbols-outlined">login</span>Registrar llegada</button></div></div>`,t.querySelectorAll("[data-x]").forEach(h=>h.addEventListener("click",s)),t.querySelector("#f-ok")?.addEventListener("click",()=>t.querySelector("#f-save").click());const u=()=>{const h=(t.querySelector("#f-gnum")?.value||"").split(/[,;\s]+/).map(b=>b.trim()).filter(Boolean);h.length&&(h.forEach(b=>{n.some($=>$.numero===b)||n.push({numero:b,proveedor:w(e.retiros)[0]?.proveedor||null,doc_compr:w(e.retiros)[0]?.doc_compr||null})}),l(),t.querySelector("#f-gnum")?.focus())};t.querySelector("#f-gadd")?.addEventListener("click",u),t.querySelector("#f-gnum")?.addEventListener("keydown",h=>{h.key==="Enter"&&(h.preventDefault(),u())}),t.querySelectorAll("[data-delg]").forEach(h=>h.addEventListener("click",()=>{n.splice(+h.dataset.delg,1),l()})),t.querySelector("#f-save").addEventListener("click",v)},r=u=>t.querySelector("#"+u)?.value?.trim()??"";async function v(){const u=H(r("f-pat"));if(!u)return y("Ingrese la patente del camión que llegó","error");if(!de(u)&&!await ne(`¿Continuar con la patente ${u}?
 
-// ── Cliente retira (no se programa) ─────────────────────────────────────────
-async function formRetiroCliente() {
-  await catalogos();
-  const { dr, cerrar } = drawer('Registrar cliente que retira');
-  let mismo = true;
-  const draw = () => {
-    dr.innerHTML = `
+No tiene el formato AA-BB-12 / AA-12-34.`,{aceptar:"Continuar"}))return;const h=t.querySelector("#f-save");h.disabled=!0;const b=xe(e);b.patente=u,b.patente_carro=r("f-car")?H(r("f-car")):null,b.chofer_nombre=r("f-cho")||null,b.chofer_rut=r("f-rut")||null,b.chofer_telefono=r("f-tel")||null,b.guias_proveedor=n,b.tara_kg=T(r("f-tara")),b.peso_guias_kg=T(r("f-guias")),b.datos_confirmados_at=new Date().toISOString();const{data:$,error:O}=await k.rpc("fn_porteria_registrar",{p:b,p_hito:"presentacion"});if(h.disabled=!1,O)return y(D(O),"error");o.visitas.push($),e.visita_id=$.id,s(),y(`Llegada registrada ${M($.t_presentacion)} · ${$.patente}`),N()}l(),t.querySelector("#f-pat")?.focus()}async function Me(){await ce();const{dr:e,cerrar:t}=pe("Registrar cliente que retira");let s=!0;const a=()=>{e.innerHTML=`
       <div class="sv-dr-h"><div style="flex:1;min-width:0">
         <div class="sv-dr-k">Cliente retira · sin agenda</div>
         <div class="sv-dr-t">Registrar quien viene a retirar</div>
@@ -814,842 +245,295 @@ async function formRetiroCliente() {
         <div>
           <div class="sv-dr-sect">Pedido</div>
           <div class="pt-grid">
-            ${campo('N° pedido de ventas *', 'f-nv', '', 'inputmode="numeric" class="pt-mono" autocomplete="off"')}
-            ${campo('Cliente *', 'f-cli', '', 'autocomplete="off"')}
+            ${C("N° pedido de ventas *","f-nv","",'inputmode="numeric" class="pt-mono" autocomplete="off"')}
+            ${C("Cliente *","f-cli","",'autocomplete="off"')}
           </div>
         </div>
         <div>
           <div class="sv-dr-sect">Quien retira</div>
           <div class="pt-grid">
-            ${campo('Nombre completo *', 'f-rnom', '', 'autocomplete="off"', 'full')}
-            ${campo('RUT *', 'f-rrut', '', 'autocomplete="off" class="pt-mono"')}
-            ${campo('Teléfono', 'f-rtel', '', 'autocomplete="off" class="pt-mono"')}
+            ${C("Nombre completo *","f-rnom","",'autocomplete="off"',"full")}
+            ${C("RUT *","f-rrut","",'autocomplete="off" class="pt-mono"')}
+            ${C("Teléfono","f-rtel","",'autocomplete="off" class="pt-mono"')}
           </div>
         </div>
         <div>
           <div class="sv-dr-sect">Vehículo</div>
           <div class="pt-grid">
-            ${campo('Patente vehículo *', 'f-pat', '', 'class="is-mono" autocomplete="off" placeholder="AA-BB-12"')}
-            ${campo('Patente carro', 'f-car', '', 'class="is-mono" autocomplete="off" placeholder="opcional"')}
+            ${C("Patente vehículo *","f-pat","",'class="is-mono" autocomplete="off" placeholder="AA-BB-12"')}
+            ${C("Patente carro","f-car","",'class="is-mono" autocomplete="off" placeholder="opcional"')}
           </div>
         </div>
         <div>
           <div class="sv-dr-sect">Transportista y chofer</div>
           <label class="pt-f"><span>Transportista *</span>
             <input id="f-tra" list="pt-tra" value="Particular del cliente" autocomplete="off">
-            <datalist id="pt-tra"><option value="Particular del cliente"></option>${(S.proveedores || []).slice(0, 0).map(x => '').join('')}</datalist></label>
+            <datalist id="pt-tra"><option value="Particular del cliente"></option>${(o.proveedores||[]).slice(0,0).map(r=>"").join("")}</datalist></label>
           <label class="pt-chk" for="f-mismo" style="margin-top:10px">
-            <input type="checkbox" id="f-mismo" ${mismo ? 'checked' : ''}>
+            <input type="checkbox" id="f-mismo" ${s?"checked":""}>
             <span><b>Quien retira es el mismo chofer</b><span>Copia el nombre y el RUT de arriba a los datos del chofer; si lo desmarcas, se piden por separado.</span></span></label>
           <div class="pt-grid" style="margin-top:10px">
-            ${campo('Nombre del chofer', 'f-cho', '', mismo ? 'readonly' : 'autocomplete="off"', 'full')}
-            ${campo('RUT del chofer', 'f-crut', '', mismo ? 'readonly' : 'autocomplete="off" class="pt-mono"')}
-            ${campo('Guía de despacho', 'f-guia', '', 'class="pt-mono" autocomplete="off" placeholder="se agrega a la salida"')}
+            ${C("Nombre del chofer","f-cho","",s?"readonly":'autocomplete="off"',"full")}
+            ${C("RUT del chofer","f-crut","",s?"readonly":'autocomplete="off" class="pt-mono"')}
+            ${C("Guía de despacho","f-guia","",'class="pt-mono" autocomplete="off" placeholder="se agrega a la salida"')}
           </div>
         </div>
       </div>
       <div class="sv-dr-f"><div class="pt-sub">La hora de presentación la pone el servidor al confirmar.</div>
         <div style="display:flex;gap:6px"><button class="sv-btn" data-x>Cancelar</button>
-        <button class="sv-btn-p" id="f-save"><span class="material-symbols-outlined">login</span>Registrar presentación</button></div></div>`;
-    dr.querySelectorAll('[data-x]').forEach(b => b.addEventListener('click', cerrar));
-    dr.querySelector('#f-mismo').addEventListener('change', ev => {
-      mismo = ev.target.checked;
-      const nom = dr.querySelector('#f-rnom').value, rut = dr.querySelector('#f-rrut').value;
-      const cho = dr.querySelector('#f-cho'), crut = dr.querySelector('#f-crut');
-      cho.readOnly = crut.readOnly = mismo;
-      if (mismo) { cho.value = nom; crut.value = rut; }
-    });
-    const sync = () => { if (!mismo) return; dr.querySelector('#f-cho').value = dr.querySelector('#f-rnom').value; dr.querySelector('#f-crut').value = dr.querySelector('#f-rrut').value; };
-    dr.querySelector('#f-rnom').addEventListener('input', sync);
-    dr.querySelector('#f-rrut').addEventListener('input', sync);
-    dr.querySelector('#f-save').addEventListener('click', guardar);
-  };
-  const v = id => dr.querySelector('#' + id)?.value?.trim() ?? '';
-  async function guardar() {
-    const falta = [];
-    if (!v('f-nv')) falta.push('N° de pedido de ventas');
-    if (!v('f-cli')) falta.push('cliente');
-    if (!v('f-rnom')) falta.push('nombre de quien retira');
-    if (!v('f-rrut')) falta.push('RUT de quien retira');
-    if (!v('f-pat')) falta.push('patente del vehículo');
-    if (!v('f-tra')) falta.push('transportista');
-    if (falta.length) return showAlert('Falta ' + falta.join(', ') + '.', 'error');
-    const pat = fmtPatente(v('f-pat'));
-    if (!patenteValida(pat) && !(await confirmar(`¿Continuar con la patente ${pat}?`, { aceptar: 'Continuar' }))) return;
-    const btn = dr.querySelector('#f-save'); btn.disabled = true;
-    const docs = [{ tipo: 'NV', numero: v('f-nv') }];
-    if (v('f-guia')) docs.push({ tipo: 'GUIA', numero: v('f-guia') });
-    const p = {
-      tipo: 'RETIRO_CLIENTE', fecha: S.fecha, patente: pat, patente_carro: v('f-car') ? fmtPatente(v('f-car')) : null,
-      chofer_nombre: (mismo ? v('f-rnom') : v('f-cho')) || null, chofer_rut: (mismo ? v('f-rrut') : v('f-crut')) || null,
-      transportista: v('f-tra'), contraparte: v('f-cli'), documentos: docs, pedido_venta: v('f-nv'),
-      retira_nombre: v('f-rnom'), retira_rut: v('f-rrut'), retira_telefono: v('f-rtel') || null, retira_es_chofer: mismo,
-      fuera_agenda: true, origen: 'MANUAL',
-    };
-    const { data, error } = await supabase.rpc('fn_porteria_registrar', { p, p_hito: 'presentacion' });
-    btn.disabled = false;
-    if (error) return showAlert(errMsg(error), 'error');
-    S.visitas.push(data);
-    cerrar();
-    showAlert(`Retiro registrado ${hhmm(data.t_presentacion)} · ${data.patente}`);
-    S.tab = 'RETIRO_CLIENTE';
-    renderRegistro();
-  }
-  draw();
-  dr.querySelector('#f-nv')?.focus();
-}
-
-// ── Retorno de un despacho: peso de ingreso y entregas que vuelven ──────────
-async function formRetorno(v0) {
-  if (!v0) return;
-  const { dr, cerrar } = drawer('Registrar retorno de despacho');
-  const ents = arr(v0.documentos).filter(d => d.tipo === 'ENTREGA');
-  const sel = new Set();
-  let conCarga = true;
-  const draw = () => {
-    const bi = num(dr.querySelector('#f-bi')?.value) ?? null;
-    const carga = cargaRomana(v0);
-    const vuelve = bi != null && v0.tara_kg != null ? bi - v0.tara_kg : null;
-    const kgSel = [...sel].reduce((a, k) => a + (num(dr.querySelector(`#f-kg-${k}`)?.value) ?? 0), 0);
-    dr.innerHTML = `
+        <button class="sv-btn-p" id="f-save"><span class="material-symbols-outlined">login</span>Registrar presentación</button></div></div>`,e.querySelectorAll("[data-x]").forEach(r=>r.addEventListener("click",t)),e.querySelector("#f-mismo").addEventListener("change",r=>{s=r.target.checked;const v=e.querySelector("#f-rnom").value,u=e.querySelector("#f-rrut").value,h=e.querySelector("#f-cho"),b=e.querySelector("#f-crut");h.readOnly=b.readOnly=s,s&&(h.value=v,b.value=u)});const l=()=>{s&&(e.querySelector("#f-cho").value=e.querySelector("#f-rnom").value,e.querySelector("#f-crut").value=e.querySelector("#f-rrut").value)};e.querySelector("#f-rnom").addEventListener("input",l),e.querySelector("#f-rrut").addEventListener("input",l),e.querySelector("#f-save").addEventListener("click",f)},n=l=>e.querySelector("#"+l)?.value?.trim()??"";async function f(){const l=[];if(n("f-nv")||l.push("N° de pedido de ventas"),n("f-cli")||l.push("cliente"),n("f-rnom")||l.push("nombre de quien retira"),n("f-rrut")||l.push("RUT de quien retira"),n("f-pat")||l.push("patente del vehículo"),n("f-tra")||l.push("transportista"),l.length)return y("Falta "+l.join(", ")+".","error");const r=H(n("f-pat"));if(!de(r)&&!await ne(`¿Continuar con la patente ${r}?`,{aceptar:"Continuar"}))return;const v=e.querySelector("#f-save");v.disabled=!0;const u=[{tipo:"NV",numero:n("f-nv")}];n("f-guia")&&u.push({tipo:"GUIA",numero:n("f-guia")});const h={tipo:"RETIRO_CLIENTE",fecha:o.fecha,patente:r,patente_carro:n("f-car")?H(n("f-car")):null,chofer_nombre:n(s?"f-rnom":"f-cho")||null,chofer_rut:n(s?"f-rrut":"f-crut")||null,transportista:n("f-tra"),contraparte:n("f-cli"),documentos:u,pedido_venta:n("f-nv"),retira_nombre:n("f-rnom"),retira_rut:n("f-rrut"),retira_telefono:n("f-rtel")||null,retira_es_chofer:s,fuera_agenda:!0,origen:"MANUAL"},{data:b,error:$}=await k.rpc("fn_porteria_registrar",{p:h,p_hito:"presentacion"});if(v.disabled=!1,$)return y(D($),"error");o.visitas.push(b),t(),y(`Retiro registrado ${M(b.t_presentacion)} · ${b.patente}`),o.tab="RETIRO_CLIENTE",N()}a(),e.querySelector("#f-nv")?.focus()}async function Et(e){if(!e)return;const{dr:t,cerrar:s}=pe("Registrar retorno de despacho"),a=w(e.documentos).filter(v=>v.tipo==="ENTREGA"),n=new Set;let f=!0;const l=()=>{const v=T(t.querySelector("#f-bi")?.value)??null,u=he(e),h=v!=null&&e.tara_kg!=null?v-e.tara_kg:null,b=[...n].reduce(($,O)=>$+(T(t.querySelector(`#f-kg-${O}`)?.value)??0),0);t.innerHTML=`
       <div class="sv-dr-h"><div style="flex:1;min-width:0">
         <div class="sv-dr-k">Despacho a cliente · retorno</div>
-        <div class="sv-dr-t" style="font-family:var(--sv-mono)">${esc(v0.patente || '')}</div>
-        <div class="sv-dr-s">${esc(v0.chofer_nombre || '')} · salió ${hhmm(v0.t_salida)} con ${ents.length} entrega(s)</div></div>
+        <div class="sv-dr-t" style="font-family:var(--sv-mono)">${d(e.patente||"")}</div>
+        <div class="sv-dr-s">${d(e.chofer_nombre||"")} · salió ${M(e.t_salida)} con ${a.length} entrega(s)</div></div>
         <button class="sv-btn is-icon" data-x title="Cerrar"><span class="material-symbols-outlined">close</span></button></div>
       <div class="sv-dr-b">
         <div>
           <div class="sv-dr-sect">Ingreso y romana</div>
           <div class="pt-grid">
-            ${campo('Peso de ingreso, bruto (kg) *', 'f-bi', bi ?? '', 'inputmode="decimal" class="pt-mono"')}
+            ${C("Peso de ingreso, bruto (kg) *","f-bi",v??"",'inputmode="decimal" class="pt-mono"')}
             <div class="pt-f"><span>Cálculo</span><div class="pt-calc" style="padding:8px 0">
-              ${v0.tara_kg != null ? `Tara <b>${nf(v0.tara_kg)} kg</b><br>` : 'Sin tara registrada<br>'}
-              ${carga ? `Carga que salió <b>${nf(carga.carga)} kg</b> · guías ${nf(carga.guias)} kg<br>` : ''}
-              ${vuelve != null ? `Vuelve con <b style="color:${vuelve > 50 ? '#b5000b' : '#15803d'}">${nf(vuelve)} kg</b>` : 'Ingrese el peso de ingreso'}</div></div>
+              ${e.tara_kg!=null?`Tara <b>${E(e.tara_kg)} kg</b><br>`:"Sin tara registrada<br>"}
+              ${u?`Carga que salió <b>${E(u.carga)} kg</b> · guías ${E(u.guias)} kg<br>`:""}
+              ${h!=null?`Vuelve con <b style="color:${h>50?"#b5000b":"#15803d"}">${E(h)} kg</b>`:"Ingrese el peso de ingreso"}</div></div>
           </div>
         </div>
         <div>
           <div class="sv-dr-sect">¿Vuelve con alguna entrega?</div>
           <div class="sv-seg" style="display:inline-flex">
-            <button type="button" data-cc="0" class="${conCarga ? '' : 'is-on'}">No, volvió vacío</button>
-            <button type="button" data-cc="1" class="${conCarga ? 'is-on' : ''}">Sí, trae carga</button></div>
+            <button type="button" data-cc="0" class="${f?"":"is-on"}">No, volvió vacío</button>
+            <button type="button" data-cc="1" class="${f?"is-on":""}">Sí, trae carga</button></div>
         </div>
-        ${conCarga ? `<div>
+        ${f?`<div>
           <div class="sv-dr-sect">Marca las entregas que vuelven al CD</div>
-          ${ents.length ? ents.map((d, i) => `<label class="pt-ent ${sel.has(i) ? 'is-on' : ''}" for="f-e-${i}">
-              <input type="checkbox" id="f-e-${i}" data-ent="${i}" ${sel.has(i) ? 'checked' : ''}>
-              <span style="min-width:0"><b>${esc(d.numero)}</b></span>
-              <em><input id="f-kg-${i}" class="pt-mono" placeholder="kg" value="${esc(d.kg ?? '')}" inputmode="decimal" style="width:88px;text-align:right;border:1px solid var(--sv-line);border-radius:4px;padding:5px 7px" ${sel.has(i) ? '' : 'disabled'}></em></label>`).join('')
-            : '<div class="pt-sub">Este camión no tiene entregas registradas: agréguelas con el lápiz de la fila.</div>'}
-          ${sel.size ? `<div class="pt-calc" style="margin-top:8px">Marcado <b>${nf(kgSel)} kg</b>${vuelve != null ? ` · el camión trae <b>${nf(vuelve)} kg</b>${Math.abs(kgSel - vuelve) > 100 ? ' <span style="color:#b5000b">— no cuadra</span>' : ' <span style="color:#15803d">— cuadra</span>'}` : ''}</div>` : ''}
+          ${a.length?a.map(($,O)=>`<label class="pt-ent ${n.has(O)?"is-on":""}" for="f-e-${O}">
+              <input type="checkbox" id="f-e-${O}" data-ent="${O}" ${n.has(O)?"checked":""}>
+              <span style="min-width:0"><b>${d($.numero)}</b></span>
+              <em><input id="f-kg-${O}" class="pt-mono" placeholder="kg" value="${d($.kg??"")}" inputmode="decimal" style="width:88px;text-align:right;border:1px solid var(--sv-line);border-radius:4px;padding:5px 7px" ${n.has(O)?"":"disabled"}></em></label>`).join(""):'<div class="pt-sub">Este camión no tiene entregas registradas: agréguelas con el lápiz de la fila.</div>'}
+          ${n.size?`<div class="pt-calc" style="margin-top:8px">Marcado <b>${E(b)} kg</b>${h!=null?` · el camión trae <b>${E(h)} kg</b>${Math.abs(b-h)>100?' <span style="color:#b5000b">— no cuadra</span>':' <span style="color:#15803d">— cuadra</span>'}`:""}</div>`:""}
           <label class="pt-f" style="margin-top:12px"><span>Motivo de la devolución</span>
-            <select id="f-mot">${MOTIVOS_DEV.map(m => `<option>${esc(m)}</option>`).join('')}</select></label>
-        </div>` : ''}
-        <label class="pt-f"><span>Observación</span><textarea id="f-obs" rows="2">${esc(v0.obs || '')}</textarea></label>
+            <select id="f-mot">${Ke.map($=>`<option>${d($)}</option>`).join("")}</select></label>
+        </div>`:""}
+        <label class="pt-f"><span>Observación</span><textarea id="f-obs" rows="2">${d(e.obs||"")}</textarea></label>
       </div>
       <div class="sv-dr-f"><div class="pt-sub">La hora de ingreso la pone el servidor.</div>
         <div style="display:flex;gap:6px"><button class="sv-btn" data-x>Cancelar</button>
-        <button class="sv-btn-p" id="f-save"><span class="material-symbols-outlined">login</span>Registrar retorno</button></div></div>`;
-    dr.querySelectorAll('[data-x]').forEach(b => b.addEventListener('click', cerrar));
-    dr.querySelectorAll('[data-cc]').forEach(b => b.addEventListener('click', () => { conCarga = b.dataset.cc === '1'; if (!conCarga) sel.clear(); draw(); }));
-    dr.querySelectorAll('[data-ent]').forEach(b => b.addEventListener('change', () => { const i = +b.dataset.ent; if (b.checked) sel.add(i); else sel.delete(i); draw(); }));
-    dr.querySelector('#f-bi')?.addEventListener('change', draw);
-    dr.querySelector('#f-save').addEventListener('click', guardar);
-  };
-  async function guardar() {
-    const bi = num(dr.querySelector('#f-bi').value);
-    if (bi == null) return showAlert('Registre el peso de ingreso del camión.', 'error');
-    if (conCarga && !sel.size) return showAlert('Marque qué entrega vuelve al CD, o indique que volvió vacío.', 'error');
-    const btn = dr.querySelector('#f-save'); btn.disabled = true;
-    const dev = [...sel].map(i => ({ n_entrega: ents[i].numero, kg: num(dr.querySelector(`#f-kg-${i}`)?.value) }));
-    const upd = {
-      bruto_ingreso_kg: bi, entregas_devueltas: dev,
-      motivo_devolucion: dev.length ? (dr.querySelector('#f-mot')?.value || null) : null,
-      obs: dr.querySelector('#f-obs').value.trim() || null,
-    };
-    const { error } = await supabase.from('porteria_visitas').update(upd).eq('id', v0.id);
-    if (error) { btn.disabled = false; return showAlert(errMsg(error), 'error'); }
-    const { data, error: e2 } = await supabase.rpc('fn_porteria_marcar', { p_id: v0.id, p_hito: 'regreso' });
-    btn.disabled = false;
-    if (e2) return showAlert(errMsg(e2), 'error');
-    reemplazar({ ...v0, ...upd, ...data });
-    cerrar();
-    showAlert(`Retorno registrado ${hhmm(data.t_regreso)} · ${data.patente}${dev.length ? ' · ' + dev.length + ' entrega(s) de vuelta' : ''}`);
-    renderRegistro();
-  }
-  draw();
-  dr.querySelector('#f-bi')?.focus();
-}
+        <button class="sv-btn-p" id="f-save"><span class="material-symbols-outlined">login</span>Registrar retorno</button></div></div>`,t.querySelectorAll("[data-x]").forEach($=>$.addEventListener("click",s)),t.querySelectorAll("[data-cc]").forEach($=>$.addEventListener("click",()=>{f=$.dataset.cc==="1",f||n.clear(),l()})),t.querySelectorAll("[data-ent]").forEach($=>$.addEventListener("change",()=>{const O=+$.dataset.ent;$.checked?n.add(O):n.delete(O),l()})),t.querySelector("#f-bi")?.addEventListener("change",l),t.querySelector("#f-save").addEventListener("click",r)};async function r(){const v=T(t.querySelector("#f-bi").value);if(v==null)return y("Registre el peso de ingreso del camión.","error");if(f&&!n.size)return y("Marque qué entrega vuelve al CD, o indique que volvió vacío.","error");const u=t.querySelector("#f-save");u.disabled=!0;const h=[...n].map(i=>({n_entrega:a[i].numero,kg:T(t.querySelector(`#f-kg-${i}`)?.value)})),b={bruto_ingreso_kg:v,entregas_devueltas:h,motivo_devolucion:h.length&&t.querySelector("#f-mot")?.value||null,obs:t.querySelector("#f-obs").value.trim()||null},{error:$}=await k.from("porteria_visitas").update(b).eq("id",e.id);if($)return u.disabled=!1,y(D($),"error");const{data:O,error:_}=await k.rpc("fn_porteria_marcar",{p_id:e.id,p_hito:"regreso"});if(u.disabled=!1,_)return y(D(_),"error");oe({...e,...b,...O}),s(),y(`Retorno registrado ${M(O.t_regreso)} · ${O.patente}${h.length?" · "+h.length+" entrega(s) de vuelta":""}`),N()}l(),t.querySelector("#f-bi")?.focus()}async function At(e){if(!e)return;const t=await ee(`Guías del proveedor · ${e.patente||""}
 
-// ── Guías del proveedor de un troncal con retiro de fábrica ─────────────────
-async function agregarGuia(v) {
-  if (!v) return;
-  const r = await pedirDato(`Guías del proveedor · ${v.patente || ''}\n\n${arr(v.retiros).map(x => 'OC ' + x.doc_compr).join(' · ')}\n\nN° de guía (varias separadas por coma).`,
-    { aceptar: 'Agregar', placeholder: 'Ej: 884120, 884121', icono: 'receipt_long' });
-  if (r === null) return;
-  const nums = String(r).split(/[,;\s]+/).map(s => s.trim()).filter(Boolean);
-  if (!nums.length) return;
-  const g = arr(v.guias_proveedor).slice();
-  nums.forEach(n => { if (!g.some(x => x.numero === n)) g.push({ numero: n, proveedor: arr(v.retiros)[0]?.proveedor || null, doc_compr: arr(v.retiros)[0]?.doc_compr || null }); });
-  const { data, error } = await supabase.from('porteria_visitas').update({ guias_proveedor: g }).eq('id', v.id).select(COLS).single();
-  if (error) return showAlert(errMsg(error), 'error');
-  reemplazar(data);
-  showAlert(`${nums.length} guía(s) registrada(s)`);
-  renderRegistro();
-}
+${w(e.retiros).map(l=>"OC "+l.doc_compr).join(" · ")}
 
-// ── Agenda de proveedores del día ───────────────────────────────────────────
-async function formAgendaProveedor() {
-  await catalogos();
-  const { dr, cerrar } = drawer('Agregar cita de proveedor');
-  dr.innerHTML = `
+N° de guía (varias separadas por coma).`,{aceptar:"Agregar",placeholder:"Ej: 884120, 884121",icono:"receipt_long"});if(t===null)return;const s=String(t).split(/[,;\s]+/).map(l=>l.trim()).filter(Boolean);if(!s.length)return;const a=w(e.guias_proveedor).slice();s.forEach(l=>{a.some(r=>r.numero===l)||a.push({numero:l,proveedor:w(e.retiros)[0]?.proveedor||null,doc_compr:w(e.retiros)[0]?.doc_compr||null})});const{data:n,error:f}=await k.from("porteria_visitas").update({guias_proveedor:a}).eq("id",e.id).select(F).single();if(f)return y(D(f),"error");oe(n),y(`${s.length} guía(s) registrada(s)`),N()}async function kt(){await ce();const{dr:e,cerrar:t}=pe("Agregar cita de proveedor");e.innerHTML=`
     <div class="sv-dr-h"><div style="flex:1;min-width:0">
-      <div class="sv-dr-k">Agenda de proveedores · ${fechaCorta(S.fecha)}</div>
+      <div class="sv-dr-k">Agenda de proveedores · ${J(o.fecha)}</div>
       <div class="sv-dr-t">Agregar cita</div>
       <div class="sv-dr-s">Queda en la pestaña Proveedores, en su bloque de horario.</div></div>
       <button class="sv-btn is-icon" data-x title="Cerrar"><span class="material-symbols-outlined">close</span></button></div>
     <div class="sv-dr-b">
       <div class="pt-grid">
-        <label class="pt-f full"><span>Proveedor *</span><input id="a-prov" list="a-dl" autocomplete="off"><datalist id="a-dl">${(S.proveedores || []).map(x => `<option value="${esc(x)}">`).join('')}</datalist></label>
-        <label class="pt-f"><span>Bloque de horario</span><select id="a-blo"><option value="">— Sin bloque —</option>${S.bloques.map(b => `<option value="${b.bloque}">Bloque ${b.bloque} · ${b.desde}–${b.hasta}</option>`).join('')}</select></label>
-        ${campo('Hora (si no usa bloque)', 'a-hora', '', 'type="time"')}
-        ${campo('Orden de compra', 'a-oc', '', 'class="pt-mono" autocomplete="off"')}
-        ${campo('Patente', 'a-pat', '', 'class="is-mono" autocomplete="off"')}
-        ${campo('Transportista', 'a-tra', '', 'autocomplete="off"', 'full')}
+        <label class="pt-f full"><span>Proveedor *</span><input id="a-prov" list="a-dl" autocomplete="off"><datalist id="a-dl">${(o.proveedores||[]).map(a=>`<option value="${d(a)}">`).join("")}</datalist></label>
+        <label class="pt-f"><span>Bloque de horario</span><select id="a-blo"><option value="">— Sin bloque —</option>${o.bloques.map(a=>`<option value="${a.bloque}">Bloque ${a.bloque} · ${a.desde}–${a.hasta}</option>`).join("")}</select></label>
+        ${C("Hora (si no usa bloque)","a-hora","",'type="time"')}
+        ${C("Orden de compra","a-oc","",'class="pt-mono" autocomplete="off"')}
+        ${C("Patente","a-pat","",'class="is-mono" autocomplete="off"')}
+        ${C("Transportista","a-tra","",'autocomplete="off"',"full")}
         <label class="pt-f full"><span>Observación</span><textarea id="a-obs" rows="2"></textarea></label>
       </div>
     </div>
     <div class="sv-dr-f"><div></div><div style="display:flex;gap:6px">
-      <button class="sv-btn" data-x>Cancelar</button><button class="sv-btn-p" id="a-save">Agregar a la agenda</button></div></div>`;
-  dr.querySelectorAll('[data-x]').forEach(b => b.addEventListener('click', cerrar));
-  const v = id => dr.querySelector('#' + id)?.value?.trim() ?? '';
-  dr.querySelector('#a-save').addEventListener('click', async () => {
-    if (!v('a-prov')) return showAlert('Indique el proveedor', 'error');
-    const row = {
-      fecha: S.fecha, centro: CENTRO, proveedor: v('a-prov'), doc_compr: v('a-oc') || null,
-      bloque: v('a-blo') ? Number(v('a-blo')) : null, hora_presentacion: v('a-blo') ? null : (v('a-hora') || null),
-      patente: v('a-pat') ? fmtPatente(v('a-pat')) : null, transportista: v('a-tra') || null, obs: v('a-obs') || null,
-    };
-    const { error } = await supabase.from('porteria_agenda_proveedor').insert(row);
-    if (error) return showAlert(errMsg(error), 'error');
-    cerrar();
-    showAlert('Cita agregada a la agenda del día');
-    await cargarDia();
-    S.tab = 'PROVEEDOR';
-    renderRegistro();
-  });
-  dr.querySelector('#a-prov')?.focus();
-}
-
-// ── Búsqueda única por patente / NV / OC / guía / entrega / chofer ──────────
-async function buscar(q) {
-  S.q = q || '';
-  if (S.q.replace(/[^A-Za-z0-9]/g, '').length < 2) { S.busq = null; pintarBusqueda(); return; }
-  const { data, error } = await supabase.rpc('fn_porteria_buscar', { p_q: S.q, p_centro: CENTRO });
-  if (error) { showAlert('Error en la búsqueda: ' + error.message, 'error'); return; }
-  S.busq = data || null;
-  pintarBusqueda();
-}
-function pintarBusqueda() {
-  const box = _stage?.querySelector('#pt-busq'); if (!box) return;
-  box.innerHTML = S.busq ? panelBusqueda() : '';
-  box.querySelectorAll('[data-irv]').forEach(b => b.addEventListener('click', () => irAVisita(+b.dataset.irv)));
-  box.querySelectorAll('[data-ire]').forEach(b => b.addEventListener('click', () => irAEsperado(b.dataset.ire)));
-  box.querySelector('#pt-bcerrar')?.addEventListener('click', () => { S.busq = null; S.q = ''; const i = _stage.querySelector('#pt-q'); if (i) i.value = ''; pintarBusqueda(); });
-  box.querySelectorAll('[data-nuevo]').forEach(b => b.addEventListener('click', () => {
-    S.tab = b.dataset.nuevo; S.busq = null;
-    renderRegistro();
-    if (b.dataset.nuevo === 'RETIRO_CLIENTE') formRetiroCliente(); else abrirForm(null, b.dataset.nuevo);
-  }));
-}
-function panelBusqueda() {
-  const B = S.busq;
-  const esps = arr(B.esperados), vis = arr(B.visitas), hist = arr(B.historial);
-  const hay = esps.length || vis.length;
-  const row = (h, sub, tags, btn) => `<div style="display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap;padding:12px 16px;border-bottom:1px solid var(--sv-line)">
-    <div style="min-width:0"><div style="font-size:15px;font-weight:700">${h}</div><div class="pt-sub">${sub}</div>
-      ${tags ? `<div class="pt-tags">${tags}</div>` : ''}</div>${btn}</div>`;
-  let html = `<div class="sv-card" style="margin-bottom:16px">
-    <div class="pt-ch"><h2><span class="material-symbols-outlined">search</span>${esc(B.q || '')}
-      <small>${hay ? `${esps.length} programado(s) · ${vis.length} registrado(s)` : 'sin coincidencias de hoy'}</small></h2>
-      <button class="sv-btn is-icon" id="pt-bcerrar" title="Cerrar búsqueda"><span class="material-symbols-outlined">close</span></button></div>`;
-  esps.forEach(e => {
-    const c = citaDe(e);
-    html += row(`${esc(e.patente || '— sin patente')} <span style="font-weight:600;font-size:13px">${esc(e.contraparte || '')}</span>`,
-      `${TIPOS[e.tipo]?.label || e.tipo}${esRampla(e) ? ' · rampla a cliente' : ''} · ${c ? 'citación ' + esc(c.txt) : 'sin horario'}${e.chofer_nombre ? ' · ' + esc(e.chofer_nombre) : ''}`,
-      `${e.consolida_retiro ? '<span class="pt-tag miss">Viene con retiro de fábrica</span>' : ''}${arr(e.retiros).map(r => `<span class="pt-tag">OC ${esc(r.doc_compr)}</span>`).join('')}`,
-      e.visita_id ? `<button class="sv-btn" data-irv="${e.visita_id}">Ver registro</button>` : `<button class="sv-btn-p" data-ire="${esc(e.clave)}">Registrar llegada</button>`);
-  });
-  vis.forEach(v => {
-    const t = tiempo(v);
-    html += row(`${esc(v.patente || '')} <span style="font-weight:600;font-size:13px">${esc(v.contraparte || '')}</span>`,
-      `${TIPOS[v.tipo]?.label || v.tipo} · ${(ESTADOS[v.estado] || [v.estado])[0]} · ${fechaCorta(v.fecha)} · llegada ${hhmm(v.t_presentacion) || '—'} · ingreso ${hhmm(v.t_ingreso) || '—'} · salida ${hhmm(v.t_salida) || '—'}${t.min != null ? ` · ${esc(t.que)} ${fmtMin(t.min)}` : ''}`,
-      `${v.pedido_venta ? `<span class="pt-tag">NV ${esc(v.pedido_venta)}</span>` : ''}${arr(v.documentos).slice(0, 4).map(d => `<span class="pt-tag">${esc(d.tipo)} ${esc(d.numero)}</span>`).join('')}`,
-      `<button class="sv-btn" data-irv="${v.id}">Abrir</button>`);
-  });
-  if (!hay) {
-    html += `<div style="padding:16px">
-      <div style="font-size:15px;font-weight:700">No hay nada programado hoy para «${esc(B.q || '')}»</div>
+      <button class="sv-btn" data-x>Cancelar</button><button class="sv-btn-p" id="a-save">Agregar a la agenda</button></div></div>`,e.querySelectorAll("[data-x]").forEach(a=>a.addEventListener("click",t));const s=a=>e.querySelector("#"+a)?.value?.trim()??"";e.querySelector("#a-save").addEventListener("click",async()=>{if(!s("a-prov"))return y("Indique el proveedor","error");const a={fecha:o.fecha,centro:U,proveedor:s("a-prov"),doc_compr:s("a-oc")||null,bloque:s("a-blo")?Number(s("a-blo")):null,hora_presentacion:s("a-blo")?null:s("a-hora")||null,patente:s("a-pat")?H(s("a-pat")):null,transportista:s("a-tra")||null,obs:s("a-obs")||null},{error:n}=await k.from("porteria_agenda_proveedor").insert(a);if(n)return y(D(n),"error");t(),y("Cita agregada a la agenda del día"),await Q(),o.tab="PROVEEDOR",N()}),e.querySelector("#a-prov")?.focus()}async function je(e){if(o.q=e||"",o.q.replace(/[^A-Za-z0-9]/g,"").length<2){o.busq=null,Ee();return}const{data:t,error:s}=await k.rpc("fn_porteria_buscar",{p_q:o.q,p_centro:U});if(s){y("Error en la búsqueda: "+s.message,"error");return}o.busq=t||null,Ee()}function Ee(){const e=S?.querySelector("#pt-busq");e&&(e.innerHTML=o.busq?ze():"",e.querySelectorAll("[data-irv]").forEach(t=>t.addEventListener("click",()=>wt(+t.dataset.irv))),e.querySelectorAll("[data-ire]").forEach(t=>t.addEventListener("click",()=>St(t.dataset.ire))),e.querySelector("#pt-bcerrar")?.addEventListener("click",()=>{o.busq=null,o.q="";const t=S.querySelector("#pt-q");t&&(t.value=""),Ee()}),e.querySelectorAll("[data-nuevo]").forEach(t=>t.addEventListener("click",()=>{o.tab=t.dataset.nuevo,o.busq=null,N(),t.dataset.nuevo==="RETIRO_CLIENTE"?Me():V(null,t.dataset.nuevo)})))}function ze(){const e=o.busq,t=w(e.esperados),s=w(e.visitas),a=w(e.historial),n=t.length||s.length,f=(r,v,u,h)=>`<div style="display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap;padding:12px 16px;border-bottom:1px solid var(--sv-line)">
+    <div style="min-width:0"><div style="font-size:15px;font-weight:700">${r}</div><div class="pt-sub">${v}</div>
+      ${u?`<div class="pt-tags">${u}</div>`:""}</div>${h}</div>`;let l=`<div class="sv-card" style="margin-bottom:16px">
+    <div class="pt-ch"><h2><span class="material-symbols-outlined">search</span>${d(e.q||"")}
+      <small>${n?`${t.length} programado(s) · ${s.length} registrado(s)`:"sin coincidencias de hoy"}</small></h2>
+      <button class="sv-btn is-icon" id="pt-bcerrar" title="Cerrar búsqueda"><span class="material-symbols-outlined">close</span></button></div>`;return t.forEach(r=>{const v=z(r);l+=f(`${d(r.patente||"— sin patente")} <span style="font-weight:600;font-size:13px">${d(r.contraparte||"")}</span>`,`${R[r.tipo]?.label||r.tipo}${W(r)?" · rampla a cliente":""} · ${v?"citación "+d(v.txt):"sin horario"}${r.chofer_nombre?" · "+d(r.chofer_nombre):""}`,`${r.consolida_retiro?'<span class="pt-tag miss">Viene con retiro de fábrica</span>':""}${w(r.retiros).map(u=>`<span class="pt-tag">OC ${d(u.doc_compr)}</span>`).join("")}`,r.visita_id?`<button class="sv-btn" data-irv="${r.visita_id}">Ver registro</button>`:`<button class="sv-btn-p" data-ire="${d(r.clave)}">Registrar llegada</button>`)}),s.forEach(r=>{const v=be(r);l+=f(`${d(r.patente||"")} <span style="font-weight:600;font-size:13px">${d(r.contraparte||"")}</span>`,`${R[r.tipo]?.label||r.tipo} · ${(te[r.estado]||[r.estado])[0]} · ${J(r.fecha)} · llegada ${M(r.t_presentacion)||"—"} · ingreso ${M(r.t_ingreso)||"—"} · salida ${M(r.t_salida)||"—"}${v.min!=null?` · ${d(v.que)} ${L(v.min)}`:""}`,`${r.pedido_venta?`<span class="pt-tag">NV ${d(r.pedido_venta)}</span>`:""}${w(r.documentos).slice(0,4).map(u=>`<span class="pt-tag">${d(u.tipo)} ${d(u.numero)}</span>`).join("")}`,`<button class="sv-btn" data-irv="${r.id}">Abrir</button>`)}),n||(l+=`<div style="padding:16px">
+      <div style="font-size:15px;font-weight:700">No hay nada programado hoy para «${d(e.q||"")}»</div>
       <div class="pt-sub">No aparece en el plan de carga, ni en la agenda de proveedores, ni en retiros de fábrica. Regístralo según lo que venga a hacer: queda marcado fuera de agenda y avisa al monitor de Operaciones.</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
         <button class="sv-btn" data-nuevo="PROVEEDOR">Proveedor sin agenda</button>
         <button class="sv-btn" data-nuevo="RETIRO_CLIENTE">Cliente retira</button>
         <button class="sv-btn" data-nuevo="TRONCAL">Troncal sin plan</button>
-        <button class="sv-btn" data-nuevo="DESPACHO_EBEMA">Despacho a cliente</button></div></div>`;
-  }
-  if (hist.length) {
-    html += `<div class="pt-sect">Historial de esta patente<span>últimas ${hist.length} visitas</span></div>
+        <button class="sv-btn" data-nuevo="DESPACHO_EBEMA">Despacho a cliente</button></div></div>`),a.length&&(l+=`<div class="pt-sect">Historial de esta patente<span>últimas ${a.length} visitas</span></div>
       <div class="sv-tablewrap"><table class="sv-table"><thead><tr><th>Fecha</th><th>Tipo</th><th>Contraparte</th><th class="r">Espera</th><th class="r">Permanencia</th><th class="r">Neto romana</th></tr></thead><tbody>
-      ${hist.map(h => `<tr style="cursor:default"><td class="pt-mono">${fechaCorta(h.fecha)}</td><td>${tipoPill(h.tipo)}</td><td>${esc(h.contraparte || '')}</td>
-        <td class="r pt-mono">${fmtMin(h.espera)}</td><td class="r pt-mono">${fmtMin(h.tipo === 'DESPACHO_EBEMA' ? h.ruta : h.permanencia)}</td>
-        <td class="r pt-mono">${h.neto_kg != null ? nf(h.neto_kg) + ' kg' : '—'}</td></tr>`).join('')}</tbody></table></div>`;
-  }
-  return html + '</div>';
-}
-async function irAEsperado(clave) {
-  if (S.fecha !== hoy()) { S.fecha = hoy(); await cargarDia(); }
-  const e = S.esperados.find(x => x.clave === clave);
-  if (!e) return showAlert('Ese camión ya no está en los esperados de hoy.', 'error');
-  S.tab = e.tipo; S.busq = null; S.q = '';
-  renderRegistro();
-  if (!e.visita_id) llegoEsperado(e);
-}
-async function irAVisita(id) {
-  const v = S.visitas.find(x => x.id === id);
-  if (v) { S.tab = v.tipo; S.busq = null; S.q = ''; renderRegistro(); return abrirForm(v); }
-  const { data, error } = await supabase.from('porteria_visitas').select(COLS).eq('id', id).single();
-  if (error) return showAlert(errMsg(error), 'error');
-  abrirForm(data);
-}
-async function abrirForm(v, tipoPreset) {
-  await catalogos();
-  const nuevo = !v;
-  const f = v ? JSON.parse(JSON.stringify(v))
-    : { tipo: tipoPreset || S.tab || 'TRONCAL', subtipo: (tipoPreset || S.tab) === 'DESPACHO_EBEMA' ? 'GENERAL' : null, documentos: [], retiros: [] };
-  let vinculo = null; // esperado vinculado al patente (sólo alta)
-  const wrap = document.createElement('div');
-  wrap.innerHTML = `<div class="sv-dr-bg" style="z-index:120"></div><aside class="sv-dr" style="z-index:121;width:min(600px,100vw)" role="dialog" aria-label="Registro portería"></aside>`;
-  document.body.appendChild(wrap);
-  const dr = wrap.querySelector('.sv-dr');
-  const cerrar = () => { document.removeEventListener('keydown', onKey, true); wrap.remove(); };
-  const onKey = ev => { if (ev.key === 'Escape' && !document.querySelector('.sv-cf-bg')) { ev.preventDefault(); cerrar(); } };
-  document.addEventListener('keydown', onKey, true);
-  wrap.querySelector('.sv-dr-bg').addEventListener('click', cerrar);
-
-  const fld = (lbl, id, val, extra = '', cls = '') => `<label class="pt-f ${cls}"><span>${lbl}</span><input id="${id}" value="${esc(val ?? '')}" ${extra}></label>`;
-
-  const draw = () => {
-    const T = TIPOS[f.tipo];
-    const desp = f.tipo === 'DESPACHO_EBEMA';
-    const listaContra = f.tipo === 'TRONCAL' ? (S.centros || []).map(c => c.nombre) : f.tipo === 'PROVEEDOR' ? (S.proveedores || []) : [];
-    dr.innerHTML = `
+      ${a.map(r=>`<tr style="cursor:default"><td class="pt-mono">${J(r.fecha)}</td><td>${K(r.tipo)}</td><td>${d(r.contraparte||"")}</td>
+        <td class="r pt-mono">${L(r.espera)}</td><td class="r pt-mono">${L(r.tipo==="DESPACHO_EBEMA"?r.ruta:r.permanencia)}</td>
+        <td class="r pt-mono">${r.neto_kg!=null?E(r.neto_kg)+" kg":"—"}</td></tr>`).join("")}</tbody></table></div>`),l+"</div>"}async function St(e){o.fecha!==j()&&(o.fecha=j(),await Q());const t=o.esperados.find(s=>s.clave===e);if(!t)return y("Ese camión ya no está en los esperados de hoy.","error");o.tab=t.tipo,o.busq=null,o.q="",N(),t.visita_id||Ie(t)}async function wt(e){const t=o.visitas.find(n=>n.id===e);if(t)return o.tab=t.tipo,o.busq=null,o.q="",N(),V(t);const{data:s,error:a}=await k.from("porteria_visitas").select(F).eq("id",e).single();if(a)return y(D(a),"error");V(s)}async function V(e,t){await ce();const s=!e,a=e?JSON.parse(JSON.stringify(e)):{tipo:t||o.tab||"TRONCAL",subtipo:(t||o.tab)==="DESPACHO_EBEMA"?"GENERAL":null,documentos:[],retiros:[]};let n=null;const f=document.createElement("div");f.innerHTML='<div class="sv-dr-bg" style="z-index:120"></div><aside class="sv-dr" style="z-index:121;width:min(600px,100vw)" role="dialog" aria-label="Registro portería"></aside>',document.body.appendChild(f);const l=f.querySelector(".sv-dr"),r=()=>{document.removeEventListener("keydown",v,!0),f.remove()},v=p=>{p.key==="Escape"&&!document.querySelector(".sv-cf-bg")&&(p.preventDefault(),r())};document.addEventListener("keydown",v,!0),f.querySelector(".sv-dr-bg").addEventListener("click",r);const u=(p,c,q,g="",A="")=>`<label class="pt-f ${A}"><span>${p}</span><input id="${c}" value="${d(q??"")}" ${g}></label>`,h=()=>{const p=R[a.tipo],c=a.tipo==="DESPACHO_EBEMA",q=a.tipo==="TRONCAL"?(o.centros||[]).map(g=>g.nombre):a.tipo==="PROVEEDOR"?o.proveedores||[]:[];l.innerHTML=`
       <div class="sv-dr-h"><div style="flex:1;min-width:0">
-          <div class="sv-dr-k">${nuevo ? 'Registrar camión' : `Visita #${f.id} · ${fechaCorta(f.fecha)}`}</div>
-          <div class="sv-dr-t">${esc(f.patente || 'Nuevo registro')}</div>
-          <div class="sv-dr-s">${nuevo ? 'CD Quilicura (1003)' : `${estadoPill(f.estado)} · ${esc(f.origen || 'MANUAL')}${f.updated_by ? ` · editado por ${esc(f.updated_by)}` : ''}`}</div></div>
+          <div class="sv-dr-k">${s?"Registrar camión":`Visita #${a.id} · ${J(a.fecha)}`}</div>
+          <div class="sv-dr-t">${d(a.patente||"Nuevo registro")}</div>
+          <div class="sv-dr-s">${s?"CD Quilicura (1003)":`${We(a.estado)} · ${d(a.origen||"MANUAL")}${a.updated_by?` · editado por ${d(a.updated_by)}`:""}`}</div></div>
         <button class="sv-btn is-icon" data-x title="Cerrar"><span class="material-symbols-outlined">close</span></button></div>
       <div class="sv-dr-b">
         <div>
           <div class="sv-dr-sect">Tipo de movimiento</div>
-          <div class="sv-seg" style="flex-wrap:wrap">${Object.entries(TIPOS).map(([k, t]) => `<button type="button" data-tipo="${k}" class="${f.tipo === k ? 'is-on' : ''}"><span class="material-symbols-outlined">${t.icon}</span>${t.label}</button>`).join('')}</div>
-          ${desp ? `<div class="sv-seg" style="margin-top:8px;display:inline-flex">${['GENERAL', 'FIERRO'].map(s => `<button type="button" data-sub="${s}" class="${(f.subtipo || 'GENERAL') === s ? 'is-on' : ''}">${s === 'GENERAL' ? 'Despacho general' : 'Fierro'}</button>`).join('')}</div>` : ''}
-          <div class="pt-sub" style="margin-top:6px">Hitos: ${T.hitos.map(h => HITO_LBL[h]).join(' → ')}</div>
+          <div class="sv-seg" style="flex-wrap:wrap">${Object.entries(R).map(([g,A])=>`<button type="button" data-tipo="${g}" class="${a.tipo===g?"is-on":""}"><span class="material-symbols-outlined">${A.icon}</span>${A.label}</button>`).join("")}</div>
+          ${c?`<div class="sv-seg" style="margin-top:8px;display:inline-flex">${["GENERAL","FIERRO"].map(g=>`<button type="button" data-sub="${g}" class="${(a.subtipo||"GENERAL")===g?"is-on":""}">${g==="GENERAL"?"Despacho general":"Fierro"}</button>`).join("")}</div>`:""}
+          <div class="pt-sub" style="margin-top:6px">Hitos: ${p.hitos.map(g=>G[g]).join(" → ")}</div>
         </div>
         <div id="pt-match"></div>
         <div>
           <div class="sv-dr-sect">Camión y chofer</div>
           <div class="pt-grid">
-            ${fld('Patente camión *', 'f-patente', f.patente, 'class="is-mono" autocomplete="off" placeholder="AA-BB-12"')}
-            ${fld('Patente carro', 'f-carro', f.patente_carro, 'class="is-mono" autocomplete="off"')}
-            ${fld('Nombre chofer', 'f-chofer', f.chofer_nombre, 'autocomplete="off"')}
-            ${fld('RUT chofer', 'f-rut', f.chofer_rut, 'autocomplete="off"')}
-            ${fld('Teléfono', 'f-tel', f.chofer_telefono, 'autocomplete="off"')}
-            ${fld('Transportista', 'f-transp', f.transportista, 'autocomplete="off"')}
+            ${u("Patente camión *","f-patente",a.patente,'class="is-mono" autocomplete="off" placeholder="AA-BB-12"')}
+            ${u("Patente carro","f-carro",a.patente_carro,'class="is-mono" autocomplete="off"')}
+            ${u("Nombre chofer","f-chofer",a.chofer_nombre,'autocomplete="off"')}
+            ${u("RUT chofer","f-rut",a.chofer_rut,'autocomplete="off"')}
+            ${u("Teléfono","f-tel",a.chofer_telefono,'autocomplete="off"')}
+            ${u("Transportista","f-transp",a.transportista,'autocomplete="off"')}
           </div>
         </div>
         <div>
-          <div class="sv-dr-sect">${T.contra} y documentos</div>
+          <div class="sv-dr-sect">${p.contra} y documentos</div>
           <div class="pt-grid">
-            ${f.tipo === 'TRONCAL'
-              ? `<label class="pt-f full"><span>${T.contra}</span><select id="f-ce"><option value="">— Seleccionar —</option>${(S.centros || []).map(c => `<option value="${esc(c.id)}" ${f.ce === c.id ? 'selected' : ''}>${esc(c.nombre)} (${esc(c.id)})</option>`).join('')}</select></label>`
-              : `${fld(T.contra, 'f-contra', f.contraparte, `list="pt-dl" autocomplete="off"`, f.tipo === 'PROVEEDOR' ? '' : 'full')}<datalist id="pt-dl">${listaContra.map(x => `<option value="${esc(x)}">`).join('')}</datalist>`}
-            ${['PROVEEDOR', 'TRONCAL'].includes(f.tipo) ? fld(f.tipo === 'TRONCAL' ? 'Hora citación (presentación)' : 'Hora agenda', 'f-agenda', f.hora_agenda ? toLocalInput(f.hora_agenda).slice(11) : '', 'type="time"') : ''}
-            ${f.tipo === 'TRONCAL' && citaDe(f)?.hasta ? `<div class="pt-f"><span>Bloque solicitado</span><div class="pt-calc" style="padding:8px 0"><b>${esc(citaDe(f).txt)}</b></div></div>` : ''}
+            ${a.tipo==="TRONCAL"?`<label class="pt-f full"><span>${p.contra}</span><select id="f-ce"><option value="">— Seleccionar —</option>${(o.centros||[]).map(g=>`<option value="${d(g.id)}" ${a.ce===g.id?"selected":""}>${d(g.nombre)} (${d(g.id)})</option>`).join("")}</select></label>`:`${u(p.contra,"f-contra",a.contraparte,'list="pt-dl" autocomplete="off"',a.tipo==="PROVEEDOR"?"":"full")}<datalist id="pt-dl">${q.map(g=>`<option value="${d(g)}">`).join("")}</datalist>`}
+            ${["PROVEEDOR","TRONCAL"].includes(a.tipo)?u(a.tipo==="TRONCAL"?"Hora citación (presentación)":"Hora agenda","f-agenda",a.hora_agenda?we(a.hora_agenda).slice(11):"",'type="time"'):""}
+            ${a.tipo==="TRONCAL"&&z(a)?.hasta?`<div class="pt-f"><span>Bloque solicitado</span><div class="pt-calc" style="padding:8px 0"><b>${d(z(a).txt)}</b></div></div>`:""}
             <div class="pt-f full"><span>Guías / OC / NV / Entregas / DT</span>
-              <div class="pt-docs" id="f-docs">${(f.documentos || []).map((d, i) => `<span class="pt-doc"><b>${esc(d.tipo)}</b>${esc(d.numero)}<button type="button" data-deldoc="${i}" title="Quitar"><span class="material-symbols-outlined">close</span></button></span>`).join('') || '<span class="pt-sub">Sin documentos.</span>'}</div>
-              <div class="pt-docadd"><select id="f-doctipo">${DOC_TIPOS.map(t => `<option ${t === (desp ? 'GUIA' : f.tipo === 'PROVEEDOR' ? 'OC' : f.tipo === 'RETIRO_CLIENTE' ? 'NV' : 'GUIA') ? 'selected' : ''}>${t}</option>`).join('')}</select>
+              <div class="pt-docs" id="f-docs">${(a.documentos||[]).map((g,A)=>`<span class="pt-doc"><b>${d(g.tipo)}</b>${d(g.numero)}<button type="button" data-deldoc="${A}" title="Quitar"><span class="material-symbols-outlined">close</span></button></span>`).join("")||'<span class="pt-sub">Sin documentos.</span>'}</div>
+              <div class="pt-docadd"><select id="f-doctipo">${Je.map(g=>`<option ${g===(c?"GUIA":a.tipo==="PROVEEDOR"?"OC":a.tipo==="RETIRO_CLIENTE"?"NV":"GUIA")?"selected":""}>${g}</option>`).join("")}</select>
                 <input id="f-docnum" class="pt-mono" placeholder="N° (varios separados por coma)" autocomplete="off"><button type="button" class="sv-btn" id="f-docadd">Agregar</button></div>
             </div>
-            ${(f.retiros || []).length ? `<div class="pt-f full"><span>Retiros de Fábrica vinculados</span><div class="sv-tags" style="margin:0">${f.retiros.map(r => `<span class="sv-tag mute">OC ${esc(r.doc_compr)} · ${esc(r.proveedor || '')}</span>`).join('')}</div></div>` : ''}
+            ${(a.retiros||[]).length?`<div class="pt-f full"><span>Retiros de Fábrica vinculados</span><div class="sv-tags" style="margin:0">${a.retiros.map(g=>`<span class="sv-tag mute">OC ${d(g.doc_compr)} · ${d(g.proveedor||"")}</span>`).join("")}</div></div>`:""}
           </div>
         </div>
         <div>
           <div class="sv-dr-sect">Romana (kg, digitado)</div>
           <div class="pt-grid">
-            ${fld(desp ? 'Peso salida (cargado)' : 'Peso entrada', desp ? 'f-bruto' : 'f-tara', desp ? f.bruto_kg : f.tara_kg, 'inputmode="decimal" class="pt-mono"')}
-            ${fld(desp ? 'Peso regreso' : 'Peso salida', desp ? 'f-tara' : 'f-bruto', desp ? f.tara_kg : f.bruto_kg, 'inputmode="decimal" class="pt-mono"')}
-            ${fld('Peso según guías', 'f-guias', f.peso_guias_kg, 'inputmode="decimal" class="pt-mono"')}
+            ${u(c?"Peso salida (cargado)":"Peso entrada",c?"f-bruto":"f-tara",c?a.bruto_kg:a.tara_kg,'inputmode="decimal" class="pt-mono"')}
+            ${u(c?"Peso regreso":"Peso salida",c?"f-tara":"f-bruto",c?a.tara_kg:a.bruto_kg,'inputmode="decimal" class="pt-mono"')}
+            ${u("Peso según guías","f-guias",a.peso_guias_kg,'inputmode="decimal" class="pt-mono"')}
             <div class="pt-f"><span>Neto / diferencia</span><div class="pt-calc" id="f-calc" style="padding:8px 0"></div></div>
           </div>
         </div>
-        ${nuevo ? '' : `<div>
+        ${s?"":`<div>
           <div class="sv-dr-sect">Hitos (corrección manual)</div>
-          <div class="pt-grid">${T.hitos.map(h => fld(HITO_LBL[h], 'f-h-' + h, toLocalInput(f['t_' + h]), 'type="datetime-local"')).join('')}</div>
+          <div class="pt-grid">${p.hitos.map(g=>u(G[g],"f-h-"+g,we(a["t_"+g]),'type="datetime-local"')).join("")}</div>
           <div class="pt-sub" style="margin-top:6px">Sólo para corregir errores: los hitos se registran con los botones del Reloj Control.</div>
         </div>`}
-        <label class="pt-f"><span>Observaciones</span><textarea id="f-obs" rows="2">${esc(f.obs || '')}</textarea></label>
+        <label class="pt-f"><span>Observaciones</span><textarea id="f-obs" rows="2">${d(a.obs||"")}</textarea></label>
       </div>
       <div class="sv-dr-f">
-        <div style="display:flex;gap:6px;flex-wrap:wrap">${nuevo ? '' : `
-          ${desp ? '' : '<button class="sv-btn" data-est="NO_SE_PRESENTA">No se presenta</button><button class="sv-btn" data-est="NO_CARGA">No carga</button>'}
-          ${['NO_SE_PRESENTA', 'NO_CARGA', 'ANULADO'].includes(f.estado) ? '<button class="sv-btn" data-est="REABRIR">Reabrir</button>' : '<button class="sv-btn" data-est="ANULADO">Anular</button>'}`}</div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">${s?"":`
+          ${c?"":'<button class="sv-btn" data-est="NO_SE_PRESENTA">No se presenta</button><button class="sv-btn" data-est="NO_CARGA">No carga</button>'}
+          ${["NO_SE_PRESENTA","NO_CARGA","ANULADO"].includes(a.estado)?'<button class="sv-btn" data-est="REABRIR">Reabrir</button>':'<button class="sv-btn" data-est="ANULADO">Anular</button>'}`}</div>
         <div style="display:flex;gap:6px;flex-wrap:wrap">
           <button class="sv-btn" data-x>Cancelar</button>
-          ${nuevo ? `<button class="sv-btn" data-save="">Guardar sin hito</button>
-            <button class="sv-btn-p" data-save="${desp ? 'salida' : 'presentacion'}"><span class="material-symbols-outlined">${desp ? 'logout' : 'login'}</span>Guardar y marcar ${desp ? 'salida' : 'llegada'}</button>`
-            : '<button class="sv-btn-p" data-save="edit">Guardar cambios</button>'}
+          ${s?`<button class="sv-btn" data-save="">Guardar sin hito</button>
+            <button class="sv-btn-p" data-save="${c?"salida":"presentacion"}"><span class="material-symbols-outlined">${c?"logout":"login"}</span>Guardar y marcar ${c?"salida":"llegada"}</button>`:'<button class="sv-btn-p" data-save="edit">Guardar cambios</button>'}
         </div>
-      </div>`;
-    bind();
-    calc();
-    if (nuevo && f.patente) buscarPatente(false);
-  };
+      </div>`,i(),O(),s&&a.patente&&_(!1)},b=p=>l.querySelector("#"+p)?.value?.trim()??"",$=()=>{if(a.patente=b("f-patente")?H(b("f-patente")):null,a.patente_carro=b("f-carro")?H(b("f-carro")):null,a.chofer_nombre=b("f-chofer")||null,a.chofer_rut=b("f-rut")||null,a.chofer_telefono=b("f-tel")||null,a.transportista=b("f-transp")||null,a.tipo==="TRONCAL"){const p=b("f-ce");a.ce=p||null,a.contraparte=se(a)?a.contraparte||null:p?o.centros.find(c=>c.id===p)?.nombre||p:a.contraparte||null}else l.querySelector("#f-contra")&&(a.contraparte=b("f-contra")||null);if(l.querySelector("#f-agenda")){const p=b("f-agenda");a.hora_agenda=p?Oe(`${a.fecha||o.fecha}T${p}`):null}a.tara_kg=T(b("f-tara")),a.bruto_kg=T(b("f-bruto")),a.peso_guias_kg=T(b("f-guias")),a.obs=b("f-obs")||null,s||R[a.tipo].hitos.forEach(p=>{const c=l.querySelector("#f-h-"+p);c&&(a["t_"+p]=Oe(c.value))})},O=()=>{const p=T(b("f-tara")),c=T(b("f-bruto")),q=T(b("f-guias")),g=l.querySelector("#f-calc");if(!g)return;if(p==null||c==null){g.innerHTML="Faltan pesajes";return}const A=Math.abs(c-p);let B=`Neto <b>${E(A)} kg</b>`;if(q>0){const I=(A-q)/q*100,P=Number(o.metas[a.tipo]?.tolerancia_peso_pct??3);B+=` · <b style="color:${Math.abs(I)>P?"#b5000b":"#15803d"}">${I>0?"+":""}${E(I,1)}%</b> vs guías (tol. ${E(P,1)}%)`}g.innerHTML=B},_=async(p=!0)=>{const c=H(b("f-patente")),q=l.querySelector("#f-patente");if(!c)return;if(q.value=c,q.classList.toggle("is-err",!de(c)),p&&!b("f-chofer")){const{data:I}=await k.from("abast_base_choferes").select("chofer_nombre,chofer_rut,chofer_telefono,transportista,id_transporte,patente_carro").eq("patente",c).order("ultimo_uso",{ascending:!1}).limit(1),P=I?.[0];if(P){const Y=(Ue,Ae)=>{const fe=l.querySelector("#"+Ue);fe&&!fe.value&&Ae&&(fe.value=Ae)};Y("f-chofer",P.chofer_nombre),Y("f-rut",P.chofer_rut),Y("f-tel",P.chofer_telefono),Y("f-transp",P.transportista),Y("f-carro",P.patente_carro),a.id_transporte=a.id_transporte||P.id_transporte||null}}if(!s)return;const g=l.querySelector("#pt-match"),A=o.esperados.find(I=>!I.visita_id&&I.patente===c),B=A&&o.fecha===j()?A.clave+(n===A?"|v":""):"";if(g.dataset.k!==B){if(g.dataset.k=B,!B){g.innerHTML="";return}g.innerHTML=`<div class="pt-match"><div><b>${c}</b> está esperado hoy: ${d(R[A.tipo].label)} ${A.tipo==="TRONCAL"?"a ":""}${d(A.contraparte||"")}
+        ${A.consolida_retiro?`<div class="pt-sub">Consolida retiro de fábrica: ${(A.retiros||[]).map(I=>"OC "+d(I.doc_compr)).join(", ")}</div>`:""}</div>
+      <button type="button" class="sv-btn" id="pt-vinc">${n===A?"Vinculado ✓":"Vincular"}</button></div>`,g.querySelector("#pt-vinc").addEventListener("click",()=>{$(),n=A;const I=xe(A);Object.keys(I).forEach(P=>{I[P]!=null&&(P!=="documentos"||!(a.documentos||[]).length)&&(a[P]=I[P])}),h()})}},i=()=>{l.querySelectorAll("[data-x]").forEach(c=>c.addEventListener("click",r)),l.querySelectorAll("[data-tipo]").forEach(c=>c.addEventListener("click",()=>{$(),a.tipo=c.dataset.tipo,a.tipo!=="DESPACHO_EBEMA"&&!(a.tipo==="TRONCAL"&&se(a))&&(a.subtipo=null),h()})),l.querySelectorAll("[data-sub]").forEach(c=>c.addEventListener("click",()=>{$(),a.subtipo=c.dataset.sub,h()})),l.querySelector("#f-patente").addEventListener("change",()=>_(!0)),["f-tara","f-bruto","f-guias"].forEach(c=>l.querySelector("#"+c)?.addEventListener("input",O));const p=()=>{const c=b("f-doctipo"),q=b("f-docnum").split(/[,;\s]+/).map(g=>g.trim()).filter(Boolean);q.length&&($(),a.documentos=a.documentos||[],q.forEach(g=>{a.documentos.some(A=>A.tipo===c&&A.numero===g)||a.documentos.push({tipo:c,numero:g})}),h(),l.querySelector("#f-docnum")?.focus())};l.querySelector("#f-docadd").addEventListener("click",p),l.querySelector("#f-docnum").addEventListener("keydown",c=>{c.key==="Enter"&&(c.preventDefault(),p())}),l.querySelectorAll("[data-deldoc]").forEach(c=>c.addEventListener("click",()=>{$(),a.documentos.splice(+c.dataset.deldoc,1),h()})),l.querySelectorAll("[data-save]").forEach(c=>c.addEventListener("click",()=>m(c.dataset.save,c))),l.querySelectorAll("[data-est]").forEach(c=>c.addEventListener("click",()=>x(c.dataset.est)))},m=async(p,c)=>{if($(),!a.patente){y("Ingrese la patente del camión","error"),l.querySelector("#f-patente").focus();return}if(!(!de(a.patente)&&!await ne(`¿Continuar con la patente ${a.patente}?
 
-  const val = id => dr.querySelector('#' + id)?.value?.trim() ?? '';
-  const leer = () => {
-    f.patente = val('f-patente') ? fmtPatente(val('f-patente')) : null;
-    f.patente_carro = val('f-carro') ? fmtPatente(val('f-carro')) : null;
-    f.chofer_nombre = val('f-chofer') || null;
-    f.chofer_rut = val('f-rut') || null;
-    f.chofer_telefono = val('f-tel') || null;
-    f.transportista = val('f-transp') || null;
-    if (f.tipo === 'TRONCAL') {
-      const ce = val('f-ce');
-      f.ce = ce || null;
-      // (28-oct-2026) CD-Cliente: la contraparte es el cliente, no la sucursal
-      f.contraparte = esCdCliente(f) ? (f.contraparte || null) : ce ? (S.centros.find(c => c.id === ce)?.nombre || ce) : (f.contraparte || null);
-    } else if (dr.querySelector('#f-contra')) { f.contraparte = val('f-contra') || null; }
-    if (dr.querySelector('#f-agenda')) {
-      const h = val('f-agenda');
-      f.hora_agenda = h ? fromLocalInput(`${f.fecha || S.fecha}T${h}`) : null;
-    }
-    f.tara_kg = num(val('f-tara'));
-    f.bruto_kg = num(val('f-bruto'));
-    f.peso_guias_kg = num(val('f-guias'));
-    f.obs = val('f-obs') || null;
-    if (!nuevo) TIPOS[f.tipo].hitos.forEach(h => { const el = dr.querySelector('#f-h-' + h); if (el) f['t_' + h] = fromLocalInput(el.value); });
-  };
-  const calc = () => {
-    const a = num(val('f-tara')), b = num(val('f-bruto')), g = num(val('f-guias'));
-    const el = dr.querySelector('#f-calc'); if (!el) return;
-    if (a == null || b == null) { el.innerHTML = 'Faltan pesajes'; return; }
-    const neto = Math.abs(b - a);
-    let txt = `Neto <b>${nf(neto)} kg</b>`;
-    if (g > 0) {
-      const p = (neto - g) / g * 100;
-      const tol = Number(S.metas[f.tipo]?.tolerancia_peso_pct ?? 3);
-      txt += ` · <b style="color:${Math.abs(p) > tol ? '#b5000b' : '#15803d'}">${p > 0 ? '+' : ''}${nf(p, 1)}%</b> vs guías (tol. ${nf(tol, 1)}%)`;
-    }
-    el.innerHTML = txt;
-  };
-  // Al ingresar la patente: proponer chofer desde la base de choferes y detectar si es un camión esperado hoy
-  const buscarPatente = async (rellenar = true) => {
-    const pat = fmtPatente(val('f-patente'));
-    const inp = dr.querySelector('#f-patente');
-    if (!pat) return;
-    inp.value = pat;
-    inp.classList.toggle('is-err', !patenteValida(pat));
-    if (rellenar && !val('f-chofer')) {
-      const { data } = await supabase.from('abast_base_choferes').select('chofer_nombre,chofer_rut,chofer_telefono,transportista,id_transporte,patente_carro')
-        .eq('patente', pat).order('ultimo_uso', { ascending: false }).limit(1);
-      const b = data?.[0];
-      if (b) {
-        const set = (id, v) => { const el = dr.querySelector('#' + id); if (el && !el.value && v) el.value = v; };
-        set('f-chofer', b.chofer_nombre); set('f-rut', b.chofer_rut); set('f-tel', b.chofer_telefono); set('f-transp', b.transportista); set('f-carro', b.patente_carro);
-        f.id_transporte = f.id_transporte || b.id_transporte || null;
-      }
-    }
-    if (!nuevo) return;
-    const box = dr.querySelector('#pt-match');
-    const e = S.esperados.find(x => !x.visita_id && x.patente === pat);
-    // No repintar si no cambió: al salir del campo patente (blur → change) el botón Vincular no debe reemplazarse bajo el clic
-    const k = e && S.fecha === hoy() ? e.clave + (vinculo === e ? '|v' : '') : '';
-    if (box.dataset.k === k) return;
-    box.dataset.k = k;
-    if (!k) { box.innerHTML = ''; return; }
-    box.innerHTML = `<div class="pt-match"><div><b>${pat}</b> está esperado hoy: ${esc(TIPOS[e.tipo].label)} ${e.tipo === 'TRONCAL' ? 'a ' : ''}${esc(e.contraparte || '')}
-        ${e.consolida_retiro ? `<div class="pt-sub">Consolida retiro de fábrica: ${(e.retiros || []).map(r => 'OC ' + esc(r.doc_compr)).join(', ')}</div>` : ''}</div>
-      <button type="button" class="sv-btn" id="pt-vinc">${vinculo === e ? 'Vinculado ✓' : 'Vincular'}</button></div>`;
-    box.querySelector('#pt-vinc').addEventListener('click', () => {
-      leer();
-      vinculo = e;
-      const p = payloadDesdeEsperado(e);
-      Object.keys(p).forEach(k => { if (p[k] != null && (k !== 'documentos' || !(f.documentos || []).length)) f[k] = p[k]; });
-      draw();
-    });
-  };
+No tiene el formato AA-BB-12 / AA-12-34.`,{aceptar:"Continuar"}))){if(a.tipo==="TRONCAL"&&!a.contraparte){y("Seleccione la sucursal destino del troncal","error");return}if(c.disabled=!0,s){const q={tipo:a.tipo,subtipo:a.tipo==="DESPACHO_EBEMA"?a.subtipo||"GENERAL":a.tipo==="TRONCAL"&&se(a)?"CD_CLIENTE":null,fecha:o.fecha,patente:a.patente,patente_carro:a.patente_carro,chofer_nombre:a.chofer_nombre,chofer_rut:a.chofer_rut,chofer_telefono:a.chofer_telefono,id_transporte:a.id_transporte||null,transportista:a.transportista,contraparte:a.contraparte,ce:a.ce||null,documentos:a.documentos||[],hora_agenda:a.hora_agenda,tara_kg:a.tara_kg,bruto_kg:a.bruto_kg,peso_guias_kg:a.peso_guias_kg,obs:a.obs,clave_esperado:n?a.clave_esperado:null,plan_ref:n?a.plan_ref:null,retiros:n?a.retiros:[],consolida_retiro:n?!!a.consolida_retiro:!1,origen:n?a.origen:"MANUAL",fuera_agenda:!n,pedido_venta:a.pedido_venta||null,estado:p?"EN_COLA":"PROGRAMADO"},{data:g,error:A}=await k.rpc("fn_porteria_registrar",{p:q,p_hito:p||null});if(c.disabled=!1,A)return y(D(A),"error");o.visitas.push(g),n&&(n.visita_id=g.id),y(p?`${G[p]} registrada ${M(g["t_"+p])} · ${g.patente}`:"Camión registrado")}else{const q={tipo:a.tipo,subtipo:a.tipo==="DESPACHO_EBEMA"?a.subtipo||"GENERAL":a.tipo==="TRONCAL"&&se(a)?"CD_CLIENTE":null,patente:a.patente,patente_carro:a.patente_carro,chofer_nombre:a.chofer_nombre,chofer_rut:a.chofer_rut,chofer_telefono:a.chofer_telefono,transportista:a.transportista,contraparte:a.contraparte,ce:a.ce||null,documentos:a.documentos||[],hora_agenda:a.hora_agenda,tara_kg:a.tara_kg,bruto_kg:a.bruto_kg,peso_guias_kg:a.peso_guias_kg,obs:a.obs,t_presentacion:a.t_presentacion??null,t_ingreso:a.t_ingreso??null,t_salida:a.t_salida??null,t_regreso:a.t_regreso??null};Object.keys(G).forEach(B=>{R[a.tipo].hitos.includes(B)||(q["t_"+B]=null)});const{data:g,error:A}=await k.from("porteria_visitas").update(q).eq("id",a.id).select(F).single();if(c.disabled=!1,A)return y(D(A),"error");oe(g),y("Cambios guardados")}r(),N()}},x=async p=>{const c={NO_SE_PRESENTA:'Marcar "No se presenta"',NO_CARGA:'Marcar "No carga"',ANULADO:"Anular el registro",REABRIR:"Reabrir el registro"}[p];if(!await ne(`¿${c} de ${a.patente||"este camión"}?
 
-  const bind = () => {
-    dr.querySelectorAll('[data-x]').forEach(b => b.addEventListener('click', cerrar));
-    dr.querySelectorAll('[data-tipo]').forEach(b => b.addEventListener('click', () => { leer(); f.tipo = b.dataset.tipo; if (f.tipo !== 'DESPACHO_EBEMA' && !(f.tipo === 'TRONCAL' && esCdCliente(f))) f.subtipo = null; draw(); }));
-    dr.querySelectorAll('[data-sub]').forEach(b => b.addEventListener('click', () => { leer(); f.subtipo = b.dataset.sub; draw(); }));
-    dr.querySelector('#f-patente').addEventListener('change', () => buscarPatente(true));
-    ['f-tara', 'f-bruto', 'f-guias'].forEach(id => dr.querySelector('#' + id)?.addEventListener('input', calc));
-    const addDoc = () => {
-      const tipo = val('f-doctipo');
-      const nums = val('f-docnum').split(/[,;\s]+/).map(s => s.trim()).filter(Boolean);
-      if (!nums.length) return;
-      leer();
-      f.documentos = f.documentos || [];
-      nums.forEach(n => { if (!f.documentos.some(d => d.tipo === tipo && d.numero === n)) f.documentos.push({ tipo, numero: n }); });
-      draw();
-      dr.querySelector('#f-docnum')?.focus();
-    };
-    dr.querySelector('#f-docadd').addEventListener('click', addDoc);
-    dr.querySelector('#f-docnum').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); addDoc(); } });
-    dr.querySelectorAll('[data-deldoc]').forEach(b => b.addEventListener('click', () => { leer(); f.documentos.splice(+b.dataset.deldoc, 1); draw(); }));
-    dr.querySelectorAll('[data-save]').forEach(b => b.addEventListener('click', () => guardar(b.dataset.save, b)));
-    dr.querySelectorAll('[data-est]').forEach(b => b.addEventListener('click', () => cambiarEstado(b.dataset.est)));
-  };
-
-  const guardar = async (modo, btn) => {
-    leer();
-    if (!f.patente) { showAlert('Ingrese la patente del camión', 'error'); dr.querySelector('#f-patente').focus(); return; }
-    if (!patenteValida(f.patente) && !(await confirmar(`¿Continuar con la patente ${f.patente}?\n\nNo tiene el formato AA-BB-12 / AA-12-34.`, { aceptar: 'Continuar' }))) return;
-    if (f.tipo === 'TRONCAL' && !f.contraparte) { showAlert('Seleccione la sucursal destino del troncal', 'error'); return; }
-    btn.disabled = true;
-    if (nuevo) {
-      const p = {
-        tipo: f.tipo, subtipo: f.tipo === 'DESPACHO_EBEMA' ? (f.subtipo || 'GENERAL') : (f.tipo === 'TRONCAL' && esCdCliente(f) ? 'CD_CLIENTE' : null), fecha: S.fecha,
-        patente: f.patente, patente_carro: f.patente_carro, chofer_nombre: f.chofer_nombre, chofer_rut: f.chofer_rut, chofer_telefono: f.chofer_telefono,
-        id_transporte: f.id_transporte || null, transportista: f.transportista, contraparte: f.contraparte, ce: f.ce || null,
-        documentos: f.documentos || [], hora_agenda: f.hora_agenda, tara_kg: f.tara_kg, bruto_kg: f.bruto_kg, peso_guias_kg: f.peso_guias_kg, obs: f.obs,
-        clave_esperado: vinculo ? f.clave_esperado : null, plan_ref: vinculo ? f.plan_ref : null, retiros: vinculo ? f.retiros : [],
-        consolida_retiro: vinculo ? !!f.consolida_retiro : false, origen: vinculo ? f.origen : 'MANUAL',
-        fuera_agenda: !vinculo, pedido_venta: f.pedido_venta || null,
-        estado: modo ? 'EN_COLA' : 'PROGRAMADO',
-      };
-      const { data, error } = await supabase.rpc('fn_porteria_registrar', { p, p_hito: modo || null });
-      btn.disabled = false;
-      if (error) return showAlert(errMsg(error), 'error');
-      S.visitas.push(data);
-      if (vinculo) vinculo.visita_id = data.id;
-      showAlert(modo ? `${HITO_LBL[modo]} registrada ${hhmm(data['t_' + modo])} · ${data.patente}` : 'Camión registrado');
-    } else {
-      const upd = {
-        tipo: f.tipo, subtipo: f.tipo === 'DESPACHO_EBEMA' ? (f.subtipo || 'GENERAL') : (f.tipo === 'TRONCAL' && esCdCliente(f) ? 'CD_CLIENTE' : null),
-        patente: f.patente, patente_carro: f.patente_carro, chofer_nombre: f.chofer_nombre, chofer_rut: f.chofer_rut, chofer_telefono: f.chofer_telefono,
-        transportista: f.transportista, contraparte: f.contraparte, ce: f.ce || null, documentos: f.documentos || [], hora_agenda: f.hora_agenda,
-        tara_kg: f.tara_kg, bruto_kg: f.bruto_kg, peso_guias_kg: f.peso_guias_kg, obs: f.obs,
-        t_presentacion: f.t_presentacion ?? null, t_ingreso: f.t_ingreso ?? null, t_salida: f.t_salida ?? null, t_regreso: f.t_regreso ?? null,
-      };
-      // Al cambiar de tipo, los hitos que no aplican se limpian
-      Object.keys(HITO_LBL).forEach(h => { if (!TIPOS[f.tipo].hitos.includes(h)) upd['t_' + h] = null; });
-      const { data, error } = await supabase.from('porteria_visitas').update(upd).eq('id', f.id).select(COLS).single();
-      btn.disabled = false;
-      if (error) return showAlert(errMsg(error), 'error');
-      reemplazar(data);
-      showAlert('Cambios guardados');
-    }
-    cerrar();
-    renderRegistro();
-  };
-
-  const cambiarEstado = async est => {
-    const txt = { NO_SE_PRESENTA: 'Marcar "No se presenta"', NO_CARGA: 'Marcar "No carga"', ANULADO: 'Anular el registro', REABRIR: 'Reabrir el registro' }[est];
-    if (!(await confirmar(`¿${txt} de ${f.patente || 'este camión'}?\n\n${est === 'ANULADO' ? 'No cuenta en los indicadores.' : est === 'REABRIR' ? 'El estado vuelve a calcularse desde los hitos.' : 'Queda registrado para el indicador de cumplimiento.'}`,
-      { aceptar: est === 'REABRIR' ? 'Reabrir' : 'Confirmar', tono: est === 'ANULADO' ? 'peligro' : 'normal' }))) return;
-    const { data, error } = await supabase.from('porteria_visitas').update({ estado: est === 'REABRIR' ? 'EN_COLA' : est }).eq('id', f.id).select(COLS).single();
-    if (error) return showAlert(errMsg(error), 'error');
-    reemplazar(data);
-    const e = S.esperados.find(x => x.visita_id === f.id);
-    if (e && est === 'ANULADO') e.visita_id = null;
-    cerrar();
-    renderRegistro();
-  };
-
-  draw();
-  dr.querySelector('#f-patente')?.focus();
-}
-
-// ── Indicadores ─────────────────────────────────────────────────────────────
-async function renderIndicadores() {
-  _stage.innerHTML = `<div class="sv-view pt"><div class="sv-desc">Calculando indicadores…</div></div>`;
-  const { data, error } = await supabase.rpc('fn_porteria_indicadores', { p_desde: S.desde, p_hasta: S.hasta, p_centro: CENTRO });
-  if (error) { _stage.innerHTML = `<div class="sv-view pt"><div class="sv-note-box">Error: ${esc(error.message)}</div></div>`; return; }
-  S.ind = data || {};
-  const I = S.ind;
-  const porTipo = Object.fromEntries((I.por_tipo || []).map(t => [t.tipo, t]));
-  const pct = (a, b) => (b ? Math.round(a / b * 100) : null);
-
-  const tile = (k) => {
-    const T = TIPOS[k], t = porTipo[k] || { n: 0 };
-    const desp = k === 'DESPACHO_EBEMA';
-    const p50 = desp ? t.ruta_p50 : t.perm_p50, p90 = desp ? t.ruta_p90 : t.perm_p90;
-    const meta = S.metas[k]?.meta_min;
-    const sobre = pct(t.sobre_meta || 0, t.con_metrica || 0);
-    const color = meta == null || p50 == null ? '#9ca3af' : p50 > meta ? '#b5000b' : p50 > meta * 0.8 ? '#ca8a04' : '#15803d';
-    return `<div class="pt-tile">
-      <div class="pt-tile-h">${tipoPill(k)}<span class="pt-sub">${nf(t.n)} visitas</span></div>
-      <div><div class="pt-sub">${desp ? 'Tiempo en ruta' : 'Permanencia en CD'} · mediana</div>
-        <div class="pt-big" style="color:${color}">${fmtMin(p50)}<small>${meta ? `meta ${meta} min` : 'sin meta'}</small></div></div>
-      ${meta && t.con_metrica ? `<div><div class="pt-bar"><i style="width:${100 - sobre}%;background:#15803d"></i></div><div class="pt-sub">${100 - sobre}% dentro de meta · ${sobre}% sobre meta</div></div>` : ''}
+${p==="ANULADO"?"No cuenta en los indicadores.":p==="REABRIR"?"El estado vuelve a calcularse desde los hitos.":"Queda registrado para el indicador de cumplimiento."}`,{aceptar:p==="REABRIR"?"Reabrir":"Confirmar",tono:p==="ANULADO"?"peligro":"normal"}))return;const{data:q,error:g}=await k.from("porteria_visitas").update({estado:p==="REABRIR"?"EN_COLA":p}).eq("id",a.id).select(F).single();if(g)return y(D(g),"error");oe(q);const A=o.esperados.find(B=>B.visita_id===a.id);A&&p==="ANULADO"&&(A.visita_id=null),r(),N()};h(),l.querySelector("#f-patente")?.focus()}async function ue(){S.innerHTML='<div class="sv-view pt"><div class="sv-desc">Calculando indicadores…</div></div>';const{data:e,error:t}=await k.rpc("fn_porteria_indicadores",{p_desde:o.desde,p_hasta:o.hasta,p_centro:U});if(t){S.innerHTML=`<div class="sv-view pt"><div class="sv-note-box">Error: ${d(t.message)}</div></div>`;return}o.ind=e||{};const s=o.ind,a=Object.fromEntries((s.por_tipo||[]).map(_=>[_.tipo,_])),n=(_,i)=>i?Math.round(_/i*100):null,f=_=>{const i=R[_],m=a[_]||{n:0},x=_==="DESPACHO_EBEMA",p=x?m.ruta_p50:m.perm_p50,c=x?m.ruta_p90:m.perm_p90,q=o.metas[_]?.meta_min,g=n(m.sobre_meta||0,m.con_metrica||0),A=q==null||p==null?"#9ca3af":p>q?"#b5000b":p>q*.8?"#ca8a04":"#15803d";return`<div class="pt-tile">
+      <div class="pt-tile-h">${K(_)}<span class="pt-sub">${E(m.n)} visitas</span></div>
+      <div><div class="pt-sub">${x?"Tiempo en ruta":"Permanencia en CD"} · mediana</div>
+        <div class="pt-big" style="color:${A}">${L(p)}<small>${q?`meta ${q} min`:"sin meta"}</small></div></div>
+      ${q&&m.con_metrica?`<div><div class="pt-bar"><i style="width:${100-g}%;background:#15803d"></i></div><div class="pt-sub">${100-g}% dentro de meta · ${g}% sobre meta</div></div>`:""}
       <div class="pt-kv">
-        <span>P90 ${desp ? 'ruta' : 'permanencia'}</span><span>${fmtMin(p90)}</span>
-        ${desp ? '' : `<span>Espera en portería (p50 / p90)</span><span>${fmtMin(t.espera_p50)} / ${fmtMin(t.espera_p90)}</span>
-        <span>Tiempo total (p50)</span><span>${fmtMin(t.total_p50)}</span>`}
-        <span>Finalizados / en curso</span><span>${nf(t.finalizados || 0)} / ${nf(t.en_curso || 0)}</span>
-        ${desp ? '' : `<span>No se presenta / No carga</span><span>${nf(t.no_se_presenta || 0)} / ${nf(t.no_carga || 0)}</span>`}
-        ${k === 'TRONCAL' ? `<span>Consolidan retiro de fábrica</span><span>${nf(t.consolida || 0)}</span>` : ''}
-        <span>Pesos fuera de tolerancia</span><span>${nf(t.fuera_tol || 0)} de ${nf(t.con_peso || 0)}</span>
-      </div></div>`;
-  };
-
-  // Llegadas por hora (presentación; salida para despachos)
-  const horas = Array.from({ length: 16 }, (_, i) => i + 6);
-  const ph = I.por_hora || [];
-  const maxH = Math.max(1, ...ph.map(x => x.n));
-  const heat = `<table class="pt-heat"><thead><tr><th></th>${horas.map(h => `<th>${h}</th>`).join('')}</tr></thead><tbody>
-    ${Object.keys(TIPOS).map(k => `<tr><th>${TIPOS[k].label}</th>${horas.map(h => {
-      const n = ph.find(x => x.tipo === k && x.hora === h)?.n || 0;
-      const a = n ? 0.12 + 0.78 * n / maxH : 0;
-      return `<td style="background:${n ? `rgba(181,0,11,${a.toFixed(2)})` : 'var(--sv-s1)'};color:${a > 0.5 ? '#fff' : 'var(--sv-ink)'}" title="${TIPOS[k].label} · ${h}:00 · ${n}">${n || ''}</td>`;
-    }).join('')}</tr>`).join('')}</tbody></table>`;
-
-  const pc = (I.por_contraparte || []).slice().sort((a, b) => b.n - a.n);
-  const tablaPc = `<table class="sv-table"><thead><tr><th>Tipo</th><th>Contraparte</th><th class="r">Visitas</th><th class="r">Espera p50</th><th class="r">Permanencia / ruta p50</th><th class="r">% sobre meta</th></tr></thead><tbody>
-    ${pc.length ? pc.map(r => {
-      const s = pct(r.sobre_meta || 0, r.con_metrica || 0);
-      return `<tr style="cursor:default"><td>${tipoPill(r.tipo)}</td><td>${esc(r.contraparte)}</td><td class="r">${nf(r.n)}</td>
-        <td class="r pt-mono">${r.tipo === 'DESPACHO_EBEMA' ? '<span class="pt-na">·</span>' : fmtMin(r.espera_p50)}</td><td class="r pt-mono">${fmtMin(r.metrica_p50)}</td>
-        <td class="r">${s == null || S.metas[r.tipo]?.meta_min == null ? '<span class="pt-na">—</span>' : pill(s + '%', s > 50 ? 'bad' : s > 20 ? 'warn' : 'ok')}</td></tr>`;
-    }).join('') : '<tr class="sv-empty"><td colspan="6">Sin visitas en el período.</td></tr>'}</tbody></table>`;
-
-  _stage.innerHTML = `<div class="sv-view pt">
+        <span>P90 ${x?"ruta":"permanencia"}</span><span>${L(c)}</span>
+        ${x?"":`<span>Espera en portería (p50 / p90)</span><span>${L(m.espera_p50)} / ${L(m.espera_p90)}</span>
+        <span>Tiempo total (p50)</span><span>${L(m.total_p50)}</span>`}
+        <span>Finalizados / en curso</span><span>${E(m.finalizados||0)} / ${E(m.en_curso||0)}</span>
+        ${x?"":`<span>No se presenta / No carga</span><span>${E(m.no_se_presenta||0)} / ${E(m.no_carga||0)}</span>`}
+        ${_==="TRONCAL"?`<span>Consolidan retiro de fábrica</span><span>${E(m.consolida||0)}</span>`:""}
+        <span>Pesos fuera de tolerancia</span><span>${E(m.fuera_tol||0)} de ${E(m.con_peso||0)}</span>
+      </div></div>`},l=Array.from({length:16},(_,i)=>i+6),r=s.por_hora||[],v=Math.max(1,...r.map(_=>_.n)),u=`<table class="pt-heat"><thead><tr><th></th>${l.map(_=>`<th>${_}</th>`).join("")}</tr></thead><tbody>
+    ${Object.keys(R).map(_=>`<tr><th>${R[_].label}</th>${l.map(i=>{const m=r.find(p=>p.tipo===_&&p.hora===i)?.n||0,x=m?.12+.78*m/v:0;return`<td style="background:${m?`rgba(181,0,11,${x.toFixed(2)})`:"var(--sv-s1)"};color:${x>.5?"#fff":"var(--sv-ink)"}" title="${R[_].label} · ${i}:00 · ${m}">${m||""}</td>`}).join("")}</tr>`).join("")}</tbody></table>`,h=(s.por_contraparte||[]).slice().sort((_,i)=>i.n-_.n),b=`<table class="sv-table"><thead><tr><th>Tipo</th><th>Contraparte</th><th class="r">Visitas</th><th class="r">Espera p50</th><th class="r">Permanencia / ruta p50</th><th class="r">% sobre meta</th></tr></thead><tbody>
+    ${h.length?h.map(_=>{const i=n(_.sobre_meta||0,_.con_metrica||0);return`<tr style="cursor:default"><td>${K(_.tipo)}</td><td>${d(_.contraparte)}</td><td class="r">${E(_.n)}</td>
+        <td class="r pt-mono">${_.tipo==="DESPACHO_EBEMA"?'<span class="pt-na">·</span>':L(_.espera_p50)}</td><td class="r pt-mono">${L(_.metrica_p50)}</td>
+        <td class="r">${i==null||o.metas[_.tipo]?.meta_min==null?'<span class="pt-na">—</span>':me(i+"%",i>50?"bad":i>20?"warn":"ok")}</td></tr>`}).join(""):'<tr class="sv-empty"><td colspan="6">Sin visitas en el período.</td></tr>'}</tbody></table>`;S.innerHTML=`<div class="sv-view pt">
     <div class="sv-vhead">
       <div><h1 class="sv-h1">Indicadores de Portería</h1>
         <div class="sv-desc">Tiempos de permanencia de camiones en CD Quilicura (1003): espera en portería (presentación → ingreso), permanencia (ingreso → salida) y ruta de despachos Ebema (salida → regreso). Medianas (p50) y percentil 90.</div></div>
       <div class="sv-actions">
-        <label class="sv-inp"><span class="material-symbols-outlined">date_range</span><input type="date" id="pi-desde" value="${S.desde}"><span class="sv-sep">→</span><input type="date" id="pi-hasta" value="${S.hasta}"></label>
+        <label class="sv-inp"><span class="material-symbols-outlined">date_range</span><input type="date" id="pi-desde" value="${o.desde}"><span class="sv-sep">→</span><input type="date" id="pi-hasta" value="${o.hasta}"></label>
         <button class="sv-btn" id="pi-csv"><span class="material-symbols-outlined">download</span>Detalle CSV</button>
       </div>
     </div>
-    <div class="pt-tiles">${Object.keys(TIPOS).map(tile).join('')}</div>
+    <div class="pt-tiles">${Object.keys(R).map(f).join("")}</div>
     <div class="sv-card"><div class="pt-ch"><h2><span class="material-symbols-outlined">schedule</span>Llegadas por hora <small>presentación en portería · salida en despachos</small></h2></div>
-      <div style="padding:12px 16px;overflow-x:auto">${heat}</div></div>
+      <div style="padding:12px 16px;overflow-x:auto">${u}</div></div>
     <div class="sv-card"><div class="pt-ch"><h2><span class="material-symbols-outlined">leaderboard</span>Por sucursal, proveedor o cliente</h2></div>
-      <div class="sv-tablewrap" style="max-height:480px">${tablaPc}</div></div>
+      <div class="sv-tablewrap" style="max-height:480px">${b}</div></div>
     <div class="sv-card"><div class="pt-ch"><h2><span class="material-symbols-outlined">flag</span>Metas</h2><button class="sv-btn-p" id="pi-metas">Guardar metas</button></div>
       <div class="sv-tablewrap"><table class="sv-table"><thead><tr><th>Tipo</th><th>Métrica</th><th class="r">Meta (min)</th><th class="r">Tolerancia peso (%)</th></tr></thead><tbody>
-      ${Object.keys(TIPOS).map(k => `<tr style="cursor:default"><td>${tipoPill(k)}</td><td>${k === 'DESPACHO_EBEMA' ? 'Salida → regreso' : 'Ingreso → salida'}</td>
-        <td class="r"><input data-meta="${k}" value="${S.metas[k]?.meta_min ?? ''}" inputmode="numeric" class="pt-mono" style="width:90px;text-align:right;border:1px solid var(--sv-line);border-radius:4px;padding:5px 8px"></td>
-        <td class="r"><input data-tol="${k}" value="${S.metas[k]?.tolerancia_peso_pct ?? 3}" inputmode="decimal" class="pt-mono" style="width:90px;text-align:right;border:1px solid var(--sv-line);border-radius:4px;padding:5px 8px"></td></tr>`).join('')}
+      ${Object.keys(R).map(_=>`<tr style="cursor:default"><td>${K(_)}</td><td>${_==="DESPACHO_EBEMA"?"Salida → regreso":"Ingreso → salida"}</td>
+        <td class="r"><input data-meta="${_}" value="${o.metas[_]?.meta_min??""}" inputmode="numeric" class="pt-mono" style="width:90px;text-align:right;border:1px solid var(--sv-line);border-radius:4px;padding:5px 8px"></td>
+        <td class="r"><input data-tol="${_}" value="${o.metas[_]?.tolerancia_peso_pct??3}" inputmode="decimal" class="pt-mono" style="width:90px;text-align:right;border:1px solid var(--sv-line);border-radius:4px;padding:5px 8px"></td></tr>`).join("")}
       </tbody></table></div></div>
-  </div>`;
-
-  const $ = s => _stage.querySelector(s);
-  const recargar = () => { S.desde = $('#pi-desde').value || S.desde; S.hasta = $('#pi-hasta').value || S.hasta; if (S.desde > S.hasta) [S.desde, S.hasta] = [S.hasta, S.desde]; renderIndicadores(); };
-  $('#pi-desde').addEventListener('change', recargar);
-  $('#pi-hasta').addEventListener('change', recargar);
-  $('#pi-csv').addEventListener('click', descargarCSV);
-  $('#pi-metas').addEventListener('click', async () => {
-    const rows = Object.keys(TIPOS).map(k => ({
-      tipo: k, meta_min: num(_stage.querySelector(`[data-meta="${k}"]`).value), tolerancia_peso_pct: num(_stage.querySelector(`[data-tol="${k}"]`).value) ?? 3,
-      updated_at: new Date().toISOString(),
-    }));
-    const { error } = await supabase.from('porteria_metas').upsert(rows, { onConflict: 'tipo' });
-    if (error) return showAlert('No se pudieron guardar las metas: ' + error.message, 'error');
-    await cargarMetas();
-    showAlert('Metas guardadas');
-    renderIndicadores();
-  });
-}
-
-async function descargarCSV() {
-  const { data, error } = await supabase.from('porteria_visitas').select(COLS).eq('centro', CENTRO)
-    .gte('fecha', S.desde).lte('fecha', S.hasta).order('fecha').order('created_at').limit(20000);
-  if (error) return showAlert('Error al descargar: ' + error.message, 'error');
-  const f = t => (t ? new Date(t).toLocaleString('es-CL', { timeZone: TZ }) : '');
-  const m = (a, b) => { const x = minEntre(a, b); return x == null ? '' : Math.round(x); };
-  const kg = v => (v == null ? '' : String(v).replace('.', ','));
-  const rows = (data || []).map(v => [
-    v.fecha, TIPOS[v.tipo]?.label || v.tipo, v.subtipo || '', (ESTADOS[v.estado] || [v.estado])[0], v.patente || '', v.patente_carro || '',
-    v.chofer_nombre || '', v.chofer_rut || '', v.transportista || '', v.contraparte || '', docsTxt(v.documentos),
-    (v.retiros || []).map(r => r.doc_compr).join(' '), v.consolida_retiro ? 'SI' : '',
-    f(v.hora_agenda), citaDe(v)?.txt || '', cumpleCita(v)?.txt || '', f(v.t_presentacion), f(v.t_ingreso), f(v.t_salida), f(v.t_regreso),
-    m(v.t_presentacion, v.t_ingreso), m(v.t_ingreso, v.t_salida), m(v.t_presentacion, v.t_salida), m(v.t_salida, v.t_regreso),
-    kg(v.tara_kg), kg(v.bruto_kg), kg(v.neto_kg), kg(v.peso_guias_kg),
-    v.pedido_venta || '', v.retira_nombre || '', v.retira_rut || '', v.retira_es_chofer ? 'SI' : '', v.fuera_agenda ? 'SI' : '',
-    (Array.isArray(v.guias_proveedor) ? v.guias_proveedor : []).map(g => g.numero).join(' '),
-    kg(v.bruto_ingreso_kg), kg(v.bruto_ingreso_kg != null && v.tara_kg != null ? v.bruto_ingreso_kg - v.tara_kg : null),
-    (Array.isArray(v.entregas_devueltas) ? v.entregas_devueltas : []).map(d => d.n_entrega).join(' '), v.motivo_devolucion || '',
-    v.anden || '', v.sin_romana_autorizado ? 'SI' : '', v.origen || '', v.obs || '',
-  ]);
-  const head = ['Fecha', 'Tipo', 'Subtipo', 'Estado', 'Patente', 'Patente carro', 'Chofer', 'RUT chofer', 'Transportista', 'Contraparte', 'Documentos',
-    'OC retiro', 'Consolida retiro', 'Hora agenda', 'Horario solicitado', 'Cumplimiento citación', 'Presentación', 'Ingreso', 'Salida', 'Regreso',
-    'Espera (min)', 'Permanencia (min)', 'Total (min)', 'Ruta (min)', 'Peso entrada (kg)', 'Peso salida (kg)', 'Neto (kg)', 'Peso guías (kg)',
-    'Pedido de venta', 'Quien retira', 'RUT quien retira', 'Retira es chofer', 'Fuera de agenda', 'Guías proveedor',
-    'Bruto ingreso (kg)', 'Vuelve con (kg)', 'Entregas devueltas', 'Motivo devolución', 'Andén', 'Sin romana', 'Origen', 'Observaciones'];
-  downloadFile(`reloj_control_${S.desde}_${S.hasta}.csv`, toCSV(head, rows));
-}
-
-// ── Monitor de Operaciones: alertas, bloques, tiempos y umbrales ────────────
-const SEV = {
-  CRITICA: { k: 'Críticas', bg: '#fbe7e8', fg: '#8e0009', dot: '#b5000b', icon: 'error' },
-  ALTA:    { k: 'Altas',    bg: '#fbf0dc', fg: '#7a4f00', dot: '#ca8a04', icon: 'schedule' },
-  MEDIA:   { k: 'Medias',   bg: '#e7eaef', fg: '#3c4049', dot: '#5b6070', icon: 'info' },
-};
-const AL_ICON = {
-  SIN_ATENCION: 'hourglass_top', PERMANENCIA: 'timer', RUTA: 'local_shipping', DEVOLUCION: 'keyboard_return',
-  SIN_ROMANA: 'scale', NO_SE_PRESENTO: 'event_busy', SOBRECUPO: 'groups', FUERA_AGENDA: 'factory',
-  DATOS_DISTINTOS: 'compare_arrows', PESAJE_INCOMPLETO: 'scale', PESO_FUERA_TOL: 'balance',
-  ABIERTO_ANTIGUO: 'history',
-};
-
-async function renderAlertas() {
-  _stage.innerHTML = `<div class="sv-view pt"><div class="sv-desc">Leyendo alertas de portería…</div></div>`;
-  const { data, error } = await supabase.rpc('fn_porteria_alertas', { p_centro: CENTRO });
-  if (error) { _stage.innerHTML = `<div class="sv-view pt"><div class="sv-note-box">Error: ${esc(error.message)}</div></div>`; return; }
-  S.alertas = data || {};
-  const A = S.alertas;
-  const als = arr(A.alertas), R = A.resumen || {}, T = A.tiempos || {}, metas = arr(A.metas);
-  const peor = als.filter(a => a.tipo === 'SIN_ATENCION').reduce((m, a) => Math.max(m, a.minutos || 0), 0);
-  const tile = (lbl, val, sub, cls) => `<div class="pt-tile" ${cls === 'crit' ? 'style="background:#b5000b;border-color:#b5000b;color:#fff"' : ''}>
-    <div class="sv-kpi-l" style="${cls === 'crit' ? 'color:#ffd9db' : ''}"><i style="background:${cls === 'crit' ? '#fff' : '#9a9c99'}"></i>${lbl}</div>
-    <div class="pt-big">${val}</div><div class="pt-sub" style="${cls === 'crit' ? 'color:#ffd9db' : ''};margin:0">${sub}</div></div>`;
-
-  const alHtml = als.length ? als.map(a => {
-    const s = SEV[a.severidad] || SEV.MEDIA;
-    const valor = a.tipo === 'DEVOLUCION' ? `${nf(a.kg)} kg` : a.tipo === 'PESO_FUERA_TOL' ? `${a.pct > 0 ? '+' : ''}${nf(a.pct, 1)}%`
-      : a.minutos != null ? fmtMin(a.minutos) : '';
-    const acc = [];
-    if (a.tipo === 'SIN_ATENCION' && a.visita_id) acc.push(`<button class="sv-btn-p" data-anden="${a.visita_id}">Asignar andén</button>`);
-    if (a.visita_id) acc.push(`<button class="sv-btn ${acc.length ? '' : 'sv-btn-p'}" data-al="${a.visita_id}">${a.tipo === 'DEVOLUCION' ? 'Ver retorno' : 'Abrir camión'}</button>`);
-    return `<div class="pt-al ${a.severidad === 'CRITICA' ? 'is-crit' : ''}">
-      <div class="pt-al-i" style="background:${s.bg};color:${s.fg}"><span class="material-symbols-outlined">${AL_ICON[a.tipo] || s.icon}</span></div>
+  </div>`;const $=_=>S.querySelector(_),O=()=>{o.desde=$("#pi-desde").value||o.desde,o.hasta=$("#pi-hasta").value||o.hasta,o.desde>o.hasta&&([o.desde,o.hasta]=[o.hasta,o.desde]),ue()};$("#pi-desde").addEventListener("change",O),$("#pi-hasta").addEventListener("change",O),$("#pi-csv").addEventListener("click",Be),$("#pi-metas").addEventListener("click",async()=>{const _=Object.keys(R).map(m=>({tipo:m,meta_min:T(S.querySelector(`[data-meta="${m}"]`).value),tolerancia_peso_pct:T(S.querySelector(`[data-tol="${m}"]`).value)??3,updated_at:new Date().toISOString()})),{error:i}=await k.from("porteria_metas").upsert(_,{onConflict:"tipo"});if(i)return y("No se pudieron guardar las metas: "+i.message,"error");await _e(),y("Metas guardadas"),ue()})}async function Be(){const{data:e,error:t}=await k.from("porteria_visitas").select(F).eq("centro",U).gte("fecha",o.desde).lte("fecha",o.hasta).order("fecha").order("created_at").limit(2e4);if(t)return y("Error al descargar: "+t.message,"error");const s=r=>r?new Date(r).toLocaleString("es-CL",{timeZone:ie}):"",a=(r,v)=>{const u=Z(r,v);return u==null?"":Math.round(u)},n=r=>r==null?"":String(r).replace(".",","),f=(e||[]).map(r=>[r.fecha,R[r.tipo]?.label||r.tipo,r.subtipo||"",(te[r.estado]||[r.estado])[0],r.patente||"",r.patente_carro||"",r.chofer_nombre||"",r.chofer_rut||"",r.transportista||"",r.contraparte||"",Xe(r.documentos),(r.retiros||[]).map(v=>v.doc_compr).join(" "),r.consolida_retiro?"SI":"",s(r.hora_agenda),z(r)?.txt||"",Ce(r)?.txt||"",s(r.t_presentacion),s(r.t_ingreso),s(r.t_salida),s(r.t_regreso),a(r.t_presentacion,r.t_ingreso),a(r.t_ingreso,r.t_salida),a(r.t_presentacion,r.t_salida),a(r.t_salida,r.t_regreso),n(r.tara_kg),n(r.bruto_kg),n(r.neto_kg),n(r.peso_guias_kg),r.pedido_venta||"",r.retira_nombre||"",r.retira_rut||"",r.retira_es_chofer?"SI":"",r.fuera_agenda?"SI":"",(Array.isArray(r.guias_proveedor)?r.guias_proveedor:[]).map(v=>v.numero).join(" "),n(r.bruto_ingreso_kg),n(r.bruto_ingreso_kg!=null&&r.tara_kg!=null?r.bruto_ingreso_kg-r.tara_kg:null),(Array.isArray(r.entregas_devueltas)?r.entregas_devueltas:[]).map(v=>v.n_entrega).join(" "),r.motivo_devolucion||"",r.anden||"",r.sin_romana_autorizado?"SI":"",r.origen||"",r.obs||""]),l=["Fecha","Tipo","Subtipo","Estado","Patente","Patente carro","Chofer","RUT chofer","Transportista","Contraparte","Documentos","OC retiro","Consolida retiro","Hora agenda","Horario solicitado","Cumplimiento citación","Presentación","Ingreso","Salida","Regreso","Espera (min)","Permanencia (min)","Total (min)","Ruta (min)","Peso entrada (kg)","Peso salida (kg)","Neto (kg)","Peso guías (kg)","Pedido de venta","Quien retira","RUT quien retira","Retira es chofer","Fuera de agenda","Guías proveedor","Bruto ingreso (kg)","Vuelve con (kg)","Entregas devueltas","Motivo devolución","Andén","Sin romana","Origen","Observaciones"];Ge(`reloj_control_${o.desde}_${o.hasta}.csv`,Ve(l,f))}const He={CRITICA:{k:"Críticas",bg:"#fbe7e8",fg:"#8e0009",dot:"#b5000b",icon:"error"},ALTA:{k:"Altas",bg:"#fbf0dc",fg:"#7a4f00",dot:"#ca8a04",icon:"schedule"},MEDIA:{k:"Medias",bg:"#e7eaef",fg:"#3c4049",dot:"#5b6070",icon:"info"}},Ot={SIN_ATENCION:"hourglass_top",PERMANENCIA:"timer",RUTA:"local_shipping",DEVOLUCION:"keyboard_return",SIN_ROMANA:"scale",NO_SE_PRESENTO:"event_busy",SOBRECUPO:"groups",FUERA_AGENDA:"factory",DATOS_DISTINTOS:"compare_arrows",PESAJE_INCOMPLETO:"scale",PESO_FUERA_TOL:"balance",ABIERTO_ANTIGUO:"history"};async function X(){S.innerHTML='<div class="sv-view pt"><div class="sv-desc">Leyendo alertas de portería…</div></div>';const{data:e,error:t}=await k.rpc("fn_porteria_alertas",{p_centro:U});if(t){S.innerHTML=`<div class="sv-view pt"><div class="sv-note-box">Error: ${d(t.message)}</div></div>`;return}o.alertas=e||{};const s=o.alertas,a=w(s.alertas),n=s.resumen||{},f=s.tiempos||{},l=w(s.metas),r=a.filter(i=>i.tipo==="SIN_ATENCION").reduce((i,m)=>Math.max(i,m.minutos||0),0),v=(i,m,x,p)=>`<div class="pt-tile" ${p==="crit"?'style="background:#b5000b;border-color:#b5000b;color:#fff"':""}>
+    <div class="sv-kpi-l" style="${p==="crit"?"color:#ffd9db":""}"><i style="background:${p==="crit"?"#fff":"#9a9c99"}"></i>${i}</div>
+    <div class="pt-big">${m}</div><div class="pt-sub" style="${p==="crit"?"color:#ffd9db":""};margin:0">${x}</div></div>`,u=a.length?a.map(i=>{const m=He[i.severidad]||He.MEDIA,x=i.tipo==="DEVOLUCION"?`${E(i.kg)} kg`:i.tipo==="PESO_FUERA_TOL"?`${i.pct>0?"+":""}${E(i.pct,1)}%`:i.minutos!=null?L(i.minutos):"",p=[];return i.tipo==="SIN_ATENCION"&&i.visita_id&&p.push(`<button class="sv-btn-p" data-anden="${i.visita_id}">Asignar andén</button>`),i.visita_id&&p.push(`<button class="sv-btn ${p.length?"":"sv-btn-p"}" data-al="${i.visita_id}">${i.tipo==="DEVOLUCION"?"Ver retorno":"Abrir camión"}</button>`),`<div class="pt-al ${i.severidad==="CRITICA"?"is-crit":""}">
+      <div class="pt-al-i" style="background:${m.bg};color:${m.fg}"><span class="material-symbols-outlined">${Ot[i.tipo]||m.icon}</span></div>
       <div class="pt-al-b">
         <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap">
-          <span class="pt-al-k" style="color:${s.fg}">${esc(a.titulo || a.tipo)}</span>
-          ${a.escalado ? '<span class="pt-tag miss">Escalado al Jefe de Operaciones</span>' : ''}
-          ${a.desde ? `<span class="pt-sub pt-mono" style="margin:0">desde ${hhmm(a.desde)}</span>` : ''}</div>
-        <p class="pt-al-h">${a.patente ? `<b>${esc(a.patente)}</b>` : ''}${a.tipo_visita ? tipoPill(a.tipo_visita) : ''}${esc(a.contraparte || '')}</p>
-        <div class="pt-al-d">${esc(a.detalle || '')}${a.umbral ? ` <span class="pt-sub" style="margin:0">(umbral ${a.umbral}${a.tipo === 'PESO_FUERA_TOL' ? '%' : a.tipo === 'SOBRECUPO' ? ' camiones' : ' min'})</span>` : ''}</div>
-        <div class="pt-tags">${a.chofer ? `<span class="pt-sub" style="margin:0">Chofer ${esc(a.chofer)}</span>` : ''}
-          ${a.transportista ? `<span class="pt-sub" style="margin:0">· ${esc(a.transportista)}</span>` : ''}
-          ${a.anden ? `<span class="pt-tag">Andén ${esc(a.anden)}</span>` : a.tipo === 'SIN_ATENCION' ? '<span class="pt-tag miss">Andén sin asignar</span>' : ''}
-          ${arr(a.entregas).map(d => `<span class="pt-tag miss">ENT ${esc(d.n_entrega)}${d.kg ? ' · ' + nf(d.kg) + ' kg' : ''}</span>`).join('')}</div>
+          <span class="pt-al-k" style="color:${m.fg}">${d(i.titulo||i.tipo)}</span>
+          ${i.escalado?'<span class="pt-tag miss">Escalado al Jefe de Operaciones</span>':""}
+          ${i.desde?`<span class="pt-sub pt-mono" style="margin:0">desde ${M(i.desde)}</span>`:""}</div>
+        <p class="pt-al-h">${i.patente?`<b>${d(i.patente)}</b>`:""}${i.tipo_visita?K(i.tipo_visita):""}${d(i.contraparte||"")}</p>
+        <div class="pt-al-d">${d(i.detalle||"")}${i.umbral?` <span class="pt-sub" style="margin:0">(umbral ${i.umbral}${i.tipo==="PESO_FUERA_TOL"?"%":i.tipo==="SOBRECUPO"?" camiones":" min"})</span>`:""}</div>
+        <div class="pt-tags">${i.chofer?`<span class="pt-sub" style="margin:0">Chofer ${d(i.chofer)}</span>`:""}
+          ${i.transportista?`<span class="pt-sub" style="margin:0">· ${d(i.transportista)}</span>`:""}
+          ${i.anden?`<span class="pt-tag">Andén ${d(i.anden)}</span>`:i.tipo==="SIN_ATENCION"?'<span class="pt-tag miss">Andén sin asignar</span>':""}
+          ${w(i.entregas).map(c=>`<span class="pt-tag miss">ENT ${d(c.n_entrega)}${c.kg?" · "+E(c.kg)+" kg":""}</span>`).join("")}</div>
       </div>
-      <div class="pt-al-a">${valor ? `<div class="pt-big" style="color:${s.dot}">${valor}</div>` : ''}${acc.join('')}</div>
-    </div>`;
-  }).join('') : '<div class="sv-empty" style="padding:28px 16px;text-align:center">Sin alertas abiertas. Todos los camiones del día están dentro de los umbrales.</div>';
-
-  const editaUmbrales = PERFIL_UMBRALES.includes(getPerfil());
-  const inp = (id, v, w = 62) => (editaUmbrales
-    ? `<input id="${id}" value="${v ?? ''}" inputmode="numeric" class="pt-mono" style="width:${w}px;text-align:right;border:1px solid var(--sv-line);border-radius:4px;padding:5px 7px">`
-    : `<span class="pt-mono" style="font-weight:700">${v ?? '—'}</span>`);
-  const bloques = arr(A.bloques).map(b => `<div style="padding:12px 16px;border-bottom:1px solid var(--sv-line)">
-    <div style="display:flex;justify-content:space-between;align-items:baseline;font-size:13px;font-weight:700">Bloque ${b.bloque}<span class="pt-sub pt-mono" style="margin:0">${esc(b.desde)}–${esc(b.hasta)}</span></div>
-    <div style="display:flex;gap:4px;margin-top:8px">${Array.from({ length: Math.max(b.cupo, b.usados) }, (_, i) =>
-      `<i style="flex:1;height:8px;border-radius:4px;background:${i < b.usados ? (i < b.cupo ? '#15161a' : '#b5000b') : 'var(--sv-s2)'}"></i>`).join('')}</div>
-    <div class="pt-sub">${b.usados} de ${b.cupo} cupos${b.usados > b.cupo ? ' · <span style="color:#b5000b;font-weight:700">sobrecupo</span>' : b.usados === b.cupo ? ' · completo' : ' · queda ' + (b.cupo - b.usados)}</div></div>`).join('');
-
-  const barra = (lbl, val, meta, fmt = fmtMin) => {
-    if (val == null) return `<div style="padding:12px 16px;border-bottom:1px solid var(--sv-line)"><div style="display:flex;justify-content:space-between;font-size:13px"><span>${lbl}</span><b class="pt-mono">—</b></div><div class="pt-sub">sin datos del día</div></div>`;
-    const col = meta ? (val > meta ? '#b5000b' : val > meta * 0.8 ? '#ca8a04' : '#15803d') : '#5b6070';
-    const w = meta ? Math.min(100, Math.round(val / (meta * 1.25) * 100)) : 50;
-    return `<div style="padding:12px 16px;border-bottom:1px solid var(--sv-line)">
-      <div style="display:flex;justify-content:space-between;align-items:baseline;font-size:13px"><span>${lbl}</span><b class="pt-mono" style="color:${col};font-size:15px">${fmt(val)}</b></div>
-      <div class="pt-bar" style="height:8px;position:relative;margin-top:8px"><i style="width:${w}%;background:${col}"></i>${meta ? `<u style="position:absolute;top:-3px;bottom:-3px;left:80%;width:2px;background:var(--sv-ink);text-decoration:none"></u>` : ''}</div>
-      <div class="pt-sub" style="display:flex;justify-content:space-between"><span>${meta ? 'meta ' + meta + ' min' : 'sin meta'}</span><span></span></div></div>`;
-  };
-
-  _stage.innerHTML = `<div class="sv-view pt">
+      <div class="pt-al-a">${x?`<div class="pt-big" style="color:${m.dot}">${x}</div>`:""}${p.join("")}</div>
+    </div>`}).join(""):'<div class="sv-empty" style="padding:28px 16px;text-align:center">Sin alertas abiertas. Todos los camiones del día están dentro de los umbrales.</div>',h=Ze.includes(Fe()),b=(i,m,x=62)=>h?`<input id="${i}" value="${m??""}" inputmode="numeric" class="pt-mono" style="width:${x}px;text-align:right;border:1px solid var(--sv-line);border-radius:4px;padding:5px 7px">`:`<span class="pt-mono" style="font-weight:700">${m??"—"}</span>`,$=w(s.bloques).map(i=>`<div style="padding:12px 16px;border-bottom:1px solid var(--sv-line)">
+    <div style="display:flex;justify-content:space-between;align-items:baseline;font-size:13px;font-weight:700">Bloque ${i.bloque}<span class="pt-sub pt-mono" style="margin:0">${d(i.desde)}–${d(i.hasta)}</span></div>
+    <div style="display:flex;gap:4px;margin-top:8px">${Array.from({length:Math.max(i.cupo,i.usados)},(m,x)=>`<i style="flex:1;height:8px;border-radius:4px;background:${x<i.usados?x<i.cupo?"#15161a":"#b5000b":"var(--sv-s2)"}"></i>`).join("")}</div>
+    <div class="pt-sub">${i.usados} de ${i.cupo} cupos${i.usados>i.cupo?' · <span style="color:#b5000b;font-weight:700">sobrecupo</span>':i.usados===i.cupo?" · completo":" · queda "+(i.cupo-i.usados)}</div></div>`).join(""),O=(i,m,x,p=L)=>{if(m==null)return`<div style="padding:12px 16px;border-bottom:1px solid var(--sv-line)"><div style="display:flex;justify-content:space-between;font-size:13px"><span>${i}</span><b class="pt-mono">—</b></div><div class="pt-sub">sin datos del día</div></div>`;const c=x?m>x?"#b5000b":m>x*.8?"#ca8a04":"#15803d":"#5b6070",q=x?Math.min(100,Math.round(m/(x*1.25)*100)):50;return`<div style="padding:12px 16px;border-bottom:1px solid var(--sv-line)">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;font-size:13px"><span>${i}</span><b class="pt-mono" style="color:${c};font-size:15px">${p(m)}</b></div>
+      <div class="pt-bar" style="height:8px;position:relative;margin-top:8px"><i style="width:${q}%;background:${c}"></i>${x?'<u style="position:absolute;top:-3px;bottom:-3px;left:80%;width:2px;background:var(--sv-ink);text-decoration:none"></u>':""}</div>
+      <div class="pt-sub" style="display:flex;justify-content:space-between"><span>${x?"meta "+x+" min":"sin meta"}</span><span></span></div></div>`};S.innerHTML=`<div class="sv-view pt">
     <div class="sv-vhead">
       <div><h1 class="sv-h1">Alertas de portería · Operaciones</h1>
-        <div class="sv-desc">Qué camión está detenido, desde cuándo y quién debe actuar. El reloj corre contra el umbral de cada tipo; a los ${A.escalamiento_min || 30} minutos sobre el umbral la alerta escala al Jefe de Operaciones.</div></div>
+        <div class="sv-desc">Qué camión está detenido, desde cuándo y quién debe actuar. El reloj corre contra el umbral de cada tipo; a los ${s.escalamiento_min||30} minutos sobre el umbral la alerta escala al Jefe de Operaciones.</div></div>
       <div class="sv-actions">
-        <div class="pt-mono" style="padding:9px 12px;border:1px solid var(--sv-line);border-radius:6px;background:#fff">CD Quilicura · ${hhmm(A.ahora)}</div>
+        <div class="pt-mono" style="padding:9px 12px;border:1px solid var(--sv-line);border-radius:6px;background:#fff">CD Quilicura · ${M(s.ahora)}</div>
         <button class="sv-btn is-icon" id="al-ref" title="Actualizar"><span class="material-symbols-outlined">refresh</span></button>
       </div>
     </div>
     <div class="pt-tiles" style="margin-bottom:16px">
-      ${tile('Críticas', R.criticas || 0, 'detenidos sobre umbral o con devolución', (R.criticas || 0) > 0 ? 'crit' : '')}
-      ${tile('Altas', R.altas || 0, 'no se presentaron, sobrecupo, sin romana')}
-      ${tile('Medias', R.medias || 0, 'fuera de agenda, datos y pesaje')}
-      ${tile('Peor tiempo sin atención', peor ? fmtMin(peor) : '—', 'camión esperando ingreso')}
+      ${v("Críticas",n.criticas||0,"detenidos sobre umbral o con devolución",(n.criticas||0)>0?"crit":"")}
+      ${v("Altas",n.altas||0,"no se presentaron, sobrecupo, sin romana")}
+      ${v("Medias",n.medias||0,"fuera de agenda, datos y pesaje")}
+      ${v("Peor tiempo sin atención",r?L(r):"—","camión esperando ingreso")}
     </div>
     <div style="display:grid;grid-template-columns:minmax(0,1.95fr) minmax(0,1fr);gap:16px;align-items:start" id="al-cols">
       <div class="sv-card">
-        <div class="pt-ch"><h2><span class="material-symbols-outlined">notifications_active</span>Alertas abiertas <small>${als.length} · ordenadas por severidad y tiempo sobre el umbral</small></h2></div>
-        ${alHtml}
+        <div class="pt-ch"><h2><span class="material-symbols-outlined">notifications_active</span>Alertas abiertas <small>${a.length} · ordenadas por severidad y tiempo sobre el umbral</small></h2></div>
+        ${u}
       </div>
       <div>
         <div class="sv-card" style="margin-bottom:16px">
           <div class="pt-ch"><h2><span class="material-symbols-outlined">event_seat</span>Ocupación de bloques</h2></div>
-          ${bloques || '<div class="pt-sub" style="padding:14px 16px">Sin bloques configurados.</div>'}
+          ${$||'<div class="pt-sub" style="padding:14px 16px">Sin bloques configurados.</div>'}
         </div>
         <div class="sv-card" style="margin-bottom:16px">
-          <div class="pt-ch"><h2><span class="material-symbols-outlined">speed</span>Tiempos de hoy <small>mediana de ${T.n || 0} camión(es)</small></h2></div>
-          ${barra('Espera en portería', T.espera_p50, S.metas.TRONCAL?.meta_espera_min)}
-          ${barra('Permanencia en patio', T.perm_p50, S.metas.TRONCAL?.meta_min)}
-          ${barra('Ruta de despachos', T.ruta_p50, S.metas.DESPACHO_EBEMA?.meta_min)}
-          <div style="padding:12px 16px"><div class="pt-kv"><span>P90 espera</span><span>${fmtMin(T.espera_p90)}</span>
-            <span>P90 permanencia</span><span>${fmtMin(T.perm_p90)}</span>
-            <span>Finalizados hoy</span><span>${nf(T.finalizados || 0)} de ${nf(T.n || 0)}</span></div></div>
+          <div class="pt-ch"><h2><span class="material-symbols-outlined">speed</span>Tiempos de hoy <small>mediana de ${f.n||0} camión(es)</small></h2></div>
+          ${O("Espera en portería",f.espera_p50,o.metas.TRONCAL?.meta_espera_min)}
+          ${O("Permanencia en patio",f.perm_p50,o.metas.TRONCAL?.meta_min)}
+          ${O("Ruta de despachos",f.ruta_p50,o.metas.DESPACHO_EBEMA?.meta_min)}
+          <div style="padding:12px 16px"><div class="pt-kv"><span>P90 espera</span><span>${L(f.espera_p90)}</span>
+            <span>P90 permanencia</span><span>${L(f.perm_p90)}</span>
+            <span>Finalizados hoy</span><span>${E(f.finalizados||0)} de ${E(f.n||0)}</span></div></div>
         </div>
         <div class="sv-card">
-          <div class="pt-ch"><h2><span class="material-symbols-outlined">tune</span>Umbrales de alerta</h2>${editaUmbrales ? '<button class="sv-btn-p" id="al-save">Guardar</button>' : '<span class="pt-sub" style="margin:0">Los edita el Jefe de Operaciones</span>'}</div>
+          <div class="pt-ch"><h2><span class="material-symbols-outlined">tune</span>Umbrales de alerta</h2>${h?'<button class="sv-btn-p" id="al-save">Guardar</button>':'<span class="pt-sub" style="margin:0">Los edita el Jefe de Operaciones</span>'}</div>
           <div class="sv-tablewrap"><table class="sv-table">
             <thead><tr><th>Tipo de visita</th><th class="r">Sin atención</th><th class="r">Permanencia / ruta</th><th class="r">Tol. peso</th></tr></thead>
-            <tbody>${Object.keys(TIPOS).map(k => {
-              const m = metas.find(x => x.tipo === k) || {};
-              return `<tr style="cursor:default"><td>${tipoPill(k)}</td>
-                <td class="r">${k === 'DESPACHO_EBEMA' ? '<span class="pt-na">·</span>' : inp('u-e-' + k, m.meta_espera_min) + ' min'}</td>
-                <td class="r">${inp('u-m-' + k, m.meta_min) + ' min'}</td>
-                <td class="r">${inp('u-t-' + k, m.tolerancia_peso_pct, 52) + ' %'}</td></tr>`;
-            }).join('')}
-            <tr style="cursor:default"><td colspan="3">Escalamiento al Jefe de Operaciones</td><td class="r">${inp('u-esc', A.escalamiento_min)} min</td></tr>
+            <tbody>${Object.keys(R).map(i=>{const m=l.find(x=>x.tipo===i)||{};return`<tr style="cursor:default"><td>${K(i)}</td>
+                <td class="r">${i==="DESPACHO_EBEMA"?'<span class="pt-na">·</span>':b("u-e-"+i,m.meta_espera_min)+" min"}</td>
+                <td class="r">${b("u-m-"+i,m.meta_min)+" min"}</td>
+                <td class="r">${b("u-t-"+i,m.tolerancia_peso_pct,52)+" %"}</td></tr>`}).join("")}
+            <tr style="cursor:default"><td colspan="3">Escalamiento al Jefe de Operaciones</td><td class="r">${b("u-esc",s.escalamiento_min)} min</td></tr>
             </tbody></table></div>
           <div class="pt-sub" style="padding:12px 16px">No se presentó, devolución de entrega e ingreso autorizado sin romana alertan de inmediato. La rampla a cliente usa los umbrales de Troncal.</div>
         </div>
       </div>
     </div>
-  </div>`;
+  </div>`;const _=i=>S.querySelector(i);_("#al-ref").addEventListener("click",X),S.querySelectorAll("[data-al]").forEach(i=>i.addEventListener("click",async()=>{const{data:m,error:x}=await k.from("porteria_visitas").select(F).eq("id",+i.dataset.al).single();if(x)return y(D(x),"error");V(m)})),S.querySelectorAll("[data-anden]").forEach(i=>i.addEventListener("click",async()=>{const m=await ee(`Asignar andén
 
-  const $ = s => _stage.querySelector(s);
-  $('#al-ref').addEventListener('click', renderAlertas);
-  _stage.querySelectorAll('[data-al]').forEach(b => b.addEventListener('click', async () => {
-    const { data: v, error: e } = await supabase.from('porteria_visitas').select(COLS).eq('id', +b.dataset.al).single();
-    if (e) return showAlert(errMsg(e), 'error');
-    abrirForm(v);
-  }));
-  _stage.querySelectorAll('[data-anden]').forEach(b => b.addEventListener('click', async () => {
-    const r = await pedirDato('Asignar andén\n\n¿En qué andén se atiende este camión?', { aceptar: 'Asignar', placeholder: 'Ej: 4', icono: 'warehouse' });
-    if (r === null) return;
-    const { error } = await supabase.from('porteria_visitas').update({ anden: r.trim() || null }).eq('id', +b.dataset.anden);
-    if (error) return showAlert(errMsg(error), 'error');
-    showAlert('Andén asignado');
-    renderAlertas();
-  }));
-  $('#al-save')?.addEventListener('click', async () => {
-    const val = id => num($('#' + id)?.value);
-    const rows = Object.keys(TIPOS).map(k => ({
-      tipo: k, meta_min: val('u-m-' + k), meta_espera_min: k === 'DESPACHO_EBEMA' ? null : val('u-e-' + k),
-      tolerancia_peso_pct: val('u-t-' + k) ?? 3, updated_at: new Date().toISOString(),
-    }));
-    const [a, b2] = await Promise.all([
-      supabase.from('porteria_metas').upsert(rows, { onConflict: 'tipo' }),
-      supabase.from('porteria_config').upsert({ clave: 'escalamiento_min', valor: val('u-esc') ?? 30, updated_at: new Date().toISOString() }, { onConflict: 'clave' }),
-    ]);
-    if (a.error || b2.error) return showAlert('No se pudieron guardar los umbrales: ' + (a.error || b2.error).message, 'error');
-    await cargarMetas();
-    showAlert('Umbrales guardados');
-    renderAlertas();
-  });
-  limpiarTimers();
-  _poll = setInterval(() => {
-    if (!montado()) return limpiarTimers();
-    if (document.querySelector('.sv-dr') || document.querySelector('.sv-cf-bg')) return;
-    renderAlertas();
-  }, 60000);
-}
+¿En qué andén se atiende este camión?`,{aceptar:"Asignar",placeholder:"Ej: 4",icono:"warehouse"});if(m===null)return;const{error:x}=await k.from("porteria_visitas").update({anden:m.trim()||null}).eq("id",+i.dataset.anden);if(x)return y(D(x),"error");y("Andén asignado"),X()})),_("#al-save")?.addEventListener("click",async()=>{const i=c=>T(_("#"+c)?.value),m=Object.keys(R).map(c=>({tipo:c,meta_min:i("u-m-"+c),meta_espera_min:c==="DESPACHO_EBEMA"?null:i("u-e-"+c),tolerancia_peso_pct:i("u-t-"+c)??3,updated_at:new Date().toISOString()})),[x,p]=await Promise.all([k.from("porteria_metas").upsert(m,{onConflict:"tipo"}),k.from("porteria_config").upsert({clave:"escalamiento_min",valor:i("u-esc")??30,updated_at:new Date().toISOString()},{onConflict:"clave"})]);if(x.error||p.error)return y("No se pudieron guardar los umbrales: "+(x.error||p.error).message,"error");await _e(),y("Umbrales guardados"),X()}),re(),le=setInterval(()=>{if(!$e())return re();document.querySelector(".sv-dr")||document.querySelector(".sv-cf-bg")||X()},6e4)}export{Nt as renderPorteria};

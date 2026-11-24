@@ -1,52 +1,4 @@
-import { getDatabase, saveDatabase, calcEjes, getOrigenGroups } from './data.js?v=202611232043';
-import { formatRut, validateRut, generateSapCode, parseCSV, showAlert, escapeHtml } from './utils.js';
-import { renderFichaTransporte } from './ficha-transporte.js?v=202611232043';
-import { abrirModalTroncal } from './troncales.js?v=202611232043';
-import { supabase } from './supabase-client.js?v=202611232043';
-
-let editingTransportId = null;
-let filtroTipo = ''; // '' | 'ultima_milla' | 'troncal'
-
-// (4-oct-2026, Jordan) Maestro de transportistas (nómina SAP): el tipo (Última milla / Troncal)
-// se define al editar; RUT, teléfono y correo son obligatorios — si falta alguno, BLOQUEADO.
-const tipoTransp = t => t.tipo_servicio === 'TRONCAL' ? 'troncal' : 'ultima_milla';
-export function faltantesTransportista(t) {
-  const f = [];
-  if (!String(t.rut ?? '').trim()) f.push('RUT');
-  if (!String(t.telefono ?? '').trim()) f.push('teléfono');
-  if (!String(t.email ?? '').trim()) f.push('correo');
-  return f;
-}
-
-function computeFleetCapacity(list, centroId) {
-  return list
-    .filter(t => t.activo !== false && (!centroId || (t.centrosServicio || []).includes(centroId)))
-    .reduce((acc, t) => acc + (t.camiones || []).reduce((a, c) => a + Number(c.capacidad || 0), 0), 0);
-}
-
-export function renderTransportsView(container) {
-  const db = getDatabase();
-  const ultimaMilla = (db.transports || []).map(t => ({ ...t, _tipo: tipoTransp(t), _src: 'transports' }));
-  const troncales   = (db.troncales   || []).map(t => ({ ...t, _tipo: 'troncal', _src: 'troncales' }));
-  const allProviders = [...ultimaMilla, ...troncales];
-
-  const esUMp = t => t._tipo === 'ultima_milla';
-  const totalUM  = allProviders.filter(esUMp).length;
-  const totalTR  = allProviders.filter(t => !esUMp(t)).length;
-  const activoUM = allProviders.filter(t => esUMp(t) && t.activo !== false).length;
-  const activoTR = allProviders.filter(t => !esUMp(t) && t.activo !== false).length;
-  const capacidadTotal = allProviders.reduce((s, t) => s + (t.camiones || []).reduce((a, c) => a + Number(c.capacidad || 0), 0), 0);
-  const cds = db.logisticsCentres || [];
-
-  const tipoBtnClass = (tipo) => `prov-tipo-btn px-sm py-xs text-xs font-bold rounded border transition-colors flex items-center gap-xs cursor-pointer ${
-    filtroTipo === tipo
-      ? tipo === 'ultima_milla' ? 'bg-blue-600 text-white border-blue-600'
-        : tipo === 'troncal'   ? 'bg-amber-500 text-white border-amber-500'
-        : 'bg-primary text-white border-primary'
-      : 'border-outline-variant text-secondary hover:bg-surface-container-high'
-  }`;
-
-  container.innerHTML = `
+import{getDatabase as _,saveDatabase as F,getOrigenGroups as re}from"./data.js?v=6ce8cb5f60";import{formatRut as U,validateRut as J,generateSapCode as ee,parseCSV as se,showAlert as p,escapeHtml as C}from"./utils.js";import{renderFichaTransporte as le}from"./ficha-transporte.js?v=0f35781af9";import{abrirModalTroncal as ne}from"./troncales.js?v=079d20e40c";import{supabase as de}from"./supabase-client.js?v=fd17fd7d20";let P=null,V="";const te=e=>e.tipo_servicio==="TRONCAL"?"troncal":"ultima_milla";function ae(e){const d=[];return String(e.rut??"").trim()||d.push("RUT"),String(e.telefono??"").trim()||d.push("teléfono"),String(e.email??"").trim()||d.push("correo"),d}function xe(e,d){return e.filter(L=>L.activo!==!1&&(!d||(L.centrosServicio||[]).includes(d))).reduce((L,g)=>L+(g.camiones||[]).reduce((T,D)=>T+Number(D.capacidad||0),0),0)}function N(e){const d=_(),L=(d.transports||[]).map(t=>({...t,_tipo:te(t),_src:"transports"})),g=(d.troncales||[]).map(t=>({...t,_tipo:"troncal",_src:"troncales"})),T=[...L,...g],D=t=>t._tipo==="ultima_milla",A=T.filter(D).length,a=T.filter(t=>!D(t)).length,s=T.filter(t=>D(t)&&t.activo!==!1).length,h=T.filter(t=>!D(t)&&t.activo!==!1).length,w=T.reduce((t,r)=>t+(r.camiones||[]).reduce((n,S)=>n+Number(S.capacidad||0),0),0),u=d.logisticsCentres||[],o=t=>`prov-tipo-btn px-sm py-xs text-xs font-bold rounded border transition-colors flex items-center gap-xs cursor-pointer ${V===t?t==="ultima_milla"?"bg-blue-600 text-white border-blue-600":t==="troncal"?"bg-amber-500 text-white border-amber-500":"bg-primary text-white border-primary":"border-outline-variant text-secondary hover:bg-surface-container-high"}`;e.innerHTML=`
     <div class="mb-xl">
       <h1 class="font-headline-lg text-headline-lg text-on-surface">Proveedores de Transporte</h1>
       <p class="font-body-lg text-body-lg text-secondary">Gestione los proveedores de <b>Última Milla</b> (despacho directo a clientes) y <b>Troncales</b> (traslado entre sucursales para abastecimiento de stock).</p>
@@ -57,28 +9,28 @@ export function renderTransportsView(container) {
       <div class="bg-surface border border-outline-variant p-md shadow-sm rounded flex items-center justify-between">
         <div>
           <h4 class="font-label-caps text-label-caps text-secondary uppercase">Total Proveedores</h4>
-          <div class="font-headline-md text-headline-md font-bold text-on-surface mt-1">${totalUM + totalTR}</div>
+          <div class="font-headline-md text-headline-md font-bold text-on-surface mt-1">${A+a}</div>
         </div>
         <span class="material-symbols-outlined text-[32px] text-secondary">groups</span>
       </div>
       <div class="bg-surface border border-outline-variant border-l-4 border-l-blue-500 p-md shadow-sm rounded flex items-center justify-between">
         <div>
           <h4 class="font-label-caps text-label-caps text-secondary uppercase">Última Milla</h4>
-          <div class="font-headline-md text-headline-md font-bold text-blue-600 mt-1">${activoUM}<span class="text-secondary text-sm font-normal ml-1">/ ${totalUM}</span></div>
+          <div class="font-headline-md text-headline-md font-bold text-blue-600 mt-1">${s}<span class="text-secondary text-sm font-normal ml-1">/ ${A}</span></div>
         </div>
         <span class="material-symbols-outlined text-[32px] text-blue-400">local_shipping</span>
       </div>
       <div class="bg-surface border border-outline-variant border-l-4 border-l-amber-500 p-md shadow-sm rounded flex items-center justify-between">
         <div>
           <h4 class="font-label-caps text-label-caps text-secondary uppercase">Troncal</h4>
-          <div class="font-headline-md text-headline-md font-bold text-amber-600 mt-1">${activoTR}<span class="text-secondary text-sm font-normal ml-1">/ ${totalTR}</span></div>
+          <div class="font-headline-md text-headline-md font-bold text-amber-600 mt-1">${h}<span class="text-secondary text-sm font-normal ml-1">/ ${a}</span></div>
         </div>
         <span class="material-symbols-outlined text-[32px] text-amber-400">sync_alt</span>
       </div>
       <div class="bg-surface border border-outline-variant border-l-4 border-l-primary p-md shadow-sm rounded flex items-center justify-between">
         <div>
           <h4 class="font-label-caps text-label-caps text-secondary uppercase">Capacidad Flota</h4>
-          <div class="font-headline-md text-headline-md font-bold text-primary mt-1">${capacidadTotal} Ton</div>
+          <div class="font-headline-md text-headline-md font-bold text-primary mt-1">${w} Ton</div>
         </div>
         <span class="material-symbols-outlined text-[32px] text-primary">analytics</span>
       </div>
@@ -93,9 +45,9 @@ export function renderTransportsView(container) {
             <input type="text" id="transport-search" class="w-full bg-surface-container-low border-none pl-10 pr-md py-xs font-body-md text-body-md focus:outline-none" placeholder="Buscar por Razón Social, RUT…">
           </div>
           <div class="flex gap-xs flex-wrap">
-            <button class="${tipoBtnClass('')}" data-tipo=""><span class="material-symbols-outlined text-[14px]">filter_list</span> Todos</button>
-            <button class="${tipoBtnClass('ultima_milla')}" data-tipo="ultima_milla"><span class="material-symbols-outlined text-[14px]">local_shipping</span> Última Milla</button>
-            <button class="${tipoBtnClass('troncal')}" data-tipo="troncal"><span class="material-symbols-outlined text-[14px]">sync_alt</span> Troncal</button>
+            <button class="${o("")}" data-tipo=""><span class="material-symbols-outlined text-[14px]">filter_list</span> Todos</button>
+            <button class="${o("ultima_milla")}" data-tipo="ultima_milla"><span class="material-symbols-outlined text-[14px]">local_shipping</span> Última Milla</button>
+            <button class="${o("troncal")}" data-tipo="troncal"><span class="material-symbols-outlined text-[14px]">sync_alt</span> Troncal</button>
           </div>
         </div>
         <div class="flex gap-sm w-full md:w-auto">
@@ -313,399 +265,21 @@ export function renderTransportsView(container) {
         </div>
       </div>
     </div>
-  `;
-
-  // ── Renderizar tabla inicial ──────────────────────────────────────────────
-  renderProveedoresTable(db, filtroTipo, '');
-
-  // ── Estado del modal nuevo proveedor ─────────────────────────────────────
-  let nuevoTipo = 'ultima_milla';
-
-  function actualizarSelectorTipo(tipo) {
-    nuevoTipo = tipo;
-    container.querySelectorAll('.tipo-selector').forEach(btn => {
-      const t = btn.dataset.tipo;
-      if (t === 'ultima_milla') {
-        btn.className = `tipo-selector flex flex-col items-center gap-sm p-md border-2 rounded-lg transition-all cursor-pointer ${tipo === 'ultima_milla' ? 'border-blue-500 bg-blue-50' : 'border-outline-variant text-secondary hover:border-blue-300 hover:bg-blue-50/50'}`;
-      } else {
-        btn.className = `tipo-selector flex flex-col items-center gap-sm p-md border-2 rounded-lg transition-all cursor-pointer ${tipo === 'troncal' ? 'border-amber-500 bg-amber-50' : 'border-outline-variant text-secondary hover:border-amber-300 hover:bg-amber-50/50'}`;
-      }
-    });
-  }
-
-  // ── Filtros de tipo ───────────────────────────────────────────────────────
-  container.querySelectorAll('.prov-tipo-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      filtroTipo = btn.dataset.tipo;
-      renderTransportsView(container);
-    });
-  });
-
-  // ── Filtro búsqueda ───────────────────────────────────────────────────────
-  container.querySelector('#transport-search').addEventListener('input', (e) => {
-    renderProveedoresTable(db, filtroTipo, e.target.value);
-  });
-
-  // ── Modal NUEVO PROVEEDOR ─────────────────────────────────────────────────
-  const nuevoModal  = container.querySelector('#nuevo-proveedor-modal');
-  const openNuevo   = () => { nuevoModal.classList.remove('pointer-events-none','opacity-0'); nuevoModal.querySelector('.modal-window').classList.remove('scale-95'); };
-  const closeNuevo  = () => { nuevoModal.classList.add('pointer-events-none','opacity-0');    nuevoModal.querySelector('.modal-window').classList.add('scale-95'); };
-
-  container.querySelector('#btn-create-transport').addEventListener('click', () => {
-    container.querySelector('#np-razonsocial').value = '';
-    container.querySelector('#np-rut').value = '';
-    container.querySelector('#np-email').value = '';
-    container.querySelector('#np-telefono').value = '';
-    container.querySelector('#np-direccion').value = '';
-    const activeDb = getDatabase();
-    container.querySelector('#np-codigosap').value = generateSapCode('TRSP', activeDb.transports, 'codigoSap');
-    actualizarSelectorTipo('ultima_milla');
-    openNuevo();
-  });
-  container.querySelector('#btn-close-nuevo-proveedor').addEventListener('click', closeNuevo);
-  container.querySelector('#btn-cancel-nuevo-proveedor').addEventListener('click', closeNuevo);
-
-  container.querySelectorAll('.tipo-selector').forEach(btn => {
-    btn.addEventListener('click', () => actualizarSelectorTipo(btn.dataset.tipo));
-  });
-
-  container.querySelector('#np-rut').addEventListener('blur', e => { e.target.value = formatRut(e.target.value); });
-
-  container.querySelector('#btn-save-nuevo-proveedor').addEventListener('click', () => {
-    const db2       = getDatabase();
-    const razonSocial = (container.querySelector('#np-razonsocial').value || '').replace(/\s+/g, ' ').trim().toUpperCase();
-    const rut         = container.querySelector('#np-rut').value.trim();
-    const codigoSap   = (container.querySelector('#np-codigosap').value || '').toUpperCase().trim();
-    const direccion   = container.querySelector('#np-direccion').value.trim();
-    const telefono    = container.querySelector('#np-telefono').value.trim();
-    const email       = container.querySelector('#np-email').value.trim().toLowerCase();
-
-    if (!razonSocial) { showAlert('La Razón Social es requerida.', 'error'); return; }
-    if (!validateRut(rut)) { showAlert('El RUT ingresado no es válido.', 'error'); return; }
-
-    const rutEnUltimaMilla = (db2.transports || []).some(t => t.rut === rut);
-    // (14-oct-2026) db.troncales es sólo local (nunca llegó a Supabase): no bloquea el alta.
-    if (rutEnUltimaMilla) { showAlert('RUT ya registrado en proveedores.', 'error'); return; }
-
-    // (14-oct-2026, Jordan) Todo proveedor nuevo (Última Milla o Troncal) va al maestro `transports`
-    // (el que lee Plan de Carga). Antes los Troncales quedaban sólo en db.troncales (localStorage) y
-    // nunca llegaban a Supabase. El id es el Código SAP cuando se informa (igual que la nómina SAP).
-    const esTroncal = nuevoTipo !== 'ultima_milla';
-    const id = codigoSap || ('t' + Date.now());
-    if ((db2.transports || []).some(t => String(t.id).trim().toUpperCase() === id)) { showAlert(`El código ${id} ya existe en el maestro de transportistas.`, 'error'); return; }
-    db2.transports = db2.transports || [];
-    db2.transports.push({
-      id, razonSocial, rut, codigoSap, direccion, telefono, email,
-      ownerEmail: email,
-      activo: true,
-      tipo_servicio: esTroncal ? 'TRONCAL' : 'ULTIMA MILLA',
-      camiones: [],
-      choferes: [],
-      documentos: {},
-      centrosServicio: []
-    });
-    saveDatabase(db2, { syncOnly: ['transports', 'transportsCamiones', 'transportsChoferes'] });
-    showAlert(`Proveedor ${esTroncal ? 'Troncal' : 'Última Milla'} "${razonSocial}" creado. Agrega patentes y choferes desde Editar.`);
-
-    closeNuevo();
-    renderTransportsView(container);
-  });
-
-  // ── Modal EDITAR ÚLTIMA MILLA ─────────────────────────────────────────────
-  const editModal  = container.querySelector('#transport-modal');
-  const closeEdit  = () => { editModal.classList.add('pointer-events-none','opacity-0'); editModal.querySelector('.modal-window').classList.add('scale-95'); };
-  container.querySelector('#btn-close-transport-modal').addEventListener('click', closeEdit);
-  container.querySelector('#btn-cancel-transport-modal').addEventListener('click', closeEdit);
-  container.querySelector('#t-rut').addEventListener('blur', e => { e.target.value = formatRut(e.target.value); });
-
-  // (2-nov-2026, Jordan) Maestro editable: RUT, Código SAP, razón social y contacto.
-  // El Código SAP pasa por la RPC fn_transportista_recodificar, que valida unicidad y
-  // re-asigna el ID interno sólo si el transportista aún no tiene historial operativo.
-  container.querySelector('#transport-form').addEventListener('submit', async e => {
-    e.preventDefault();
-    const btnSave = container.querySelector('#transport-form button[type="submit"]');
-    const db2 = getDatabase();
-    const idx = db2.transports.findIndex(t => t.id === editingTransportId);
-    if (idx === -1) return;
-    const actual = db2.transports[idx];
-
-    const rutIn = formatRut(container.querySelector('#t-rut').value.trim());
-    if (rutIn && !validateRut(rutIn)) { showAlert('El RUT ingresado no es válido.', 'error'); return; }
-    if (rutIn && (db2.transports || []).some(t => t.id !== editingTransportId && formatRut(String(t.rut || '')) === rutIn)) {
-      const dup = (db2.transports || []).find(t => t.id !== editingTransportId && formatRut(String(t.rut || '')) === rutIn);
-      showAlert(`El RUT ${rutIn} ya está registrado en ${dup.razonSocial || dup.id}.`, 'error'); return;
-    }
-    const emailIn = container.querySelector('#t-email').value.trim();
-    if (emailIn && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(emailIn)) { showAlert('El correo ingresado no es válido.', 'error'); return; }
-
-    const sapIn   = (container.querySelector('#t-codigosap').value || '').trim().toUpperCase();
-    const sapPrev = String(actual.codigoSap || actual.id || '').trim().toUpperCase();
-    if (sapPrev && !sapIn) { showAlert('El Código SAP es obligatorio.', 'error'); return; }
-    if (sapIn && (db2.transports || []).some(t => t.id !== editingTransportId &&
-        (String(t.codigoSap || '').trim().toUpperCase() === sapIn || String(t.id || '').trim().toUpperCase() === sapIn))) {
-      showAlert(`El Código SAP ${sapIn} ya está usado por otro transportista.`, 'error'); return;
-    }
-
-    // Recodificación en BD (sólo si cambió el código)
-    let nuevoId = actual.id, msgSap = '';
-    if (sapIn && sapIn !== sapPrev) {
-      if (btnSave) btnSave.disabled = true;
-      const { data, error } = await supabase.rpc('fn_transportista_recodificar', { p_id: actual.id, p_codigo: sapIn });
-      if (btnSave) btnSave.disabled = false;
-      if (error) { showAlert('No se pudo cambiar el Código SAP: ' + error.message, 'error'); return; }
-      const r = data || {};
-      if (r.rekey) { nuevoId = r.id; msgSap = ` Código SAP e ID interno re-asignados a ${r.id}.`; }
-      else { msgSap = ` Código SAP actualizado a ${sapIn}; el ID interno sigue siendo ${actual.id} porque ya tiene historial${(r.detalle || []).length ? ' (' + r.detalle.join(', ') + ')' : ''}.`; }
-    }
-
-    db2.transports[idx] = {
-      ...actual,
-      // (4-oct-2026) Nombres en MAYÚSCULA; teléfono y correo se completan sobre la nómina SAP.
-      id:          nuevoId,
-      codigoSap:   sapIn || actual.codigoSap || null,
-      razonSocial: container.querySelector('#t-razonsocial').value.replace(/\s+/g, ' ').trim().toUpperCase(),
-      direccion:   container.querySelector('#t-direccion').value.trim(),
-      telefono:    container.querySelector('#t-telefono').value.trim(),
-      email:       container.querySelector('#t-email').value.trim().toLowerCase(),
-      ownerEmail:  container.querySelector('#t-email').value.trim().toLowerCase(),
-      rut:         rutIn || null,
-      tipo_servicio: container.querySelector('#t-tipo').value,
-    };
-    editingTransportId = nuevoId;
-    const faltan = faltantesTransportista(db2.transports[idx]);
-    saveDatabase(db2, { syncOnly: ['transports', 'transportsCamiones', 'transportsChoferes'] });
-    showAlert((faltan.length ? `Guardado. Queda BLOQUEADO hasta completar: ${faltan.join(', ')}.` : 'Transportista actualizado y activo.') + msgSap, faltan.length ? 'error' : 'success');
-    closeEdit();
-    renderTransportsView(container);
-  });
-
-  // ── Modal CARGA MASIVA CSV ────────────────────────────────────────────────
-  const bulkModal = container.querySelector('#bulk-upload-modal');
-  const closeBulk = () => { bulkModal.classList.add('pointer-events-none','opacity-0'); bulkModal.querySelector('.modal-window').classList.add('scale-95'); };
-  container.querySelector('#btn-bulk-upload-transports').addEventListener('click', () => {
-    bulkModal.classList.remove('pointer-events-none','opacity-0'); bulkModal.querySelector('.modal-window').classList.remove('scale-95');
-  });
-  container.querySelector('#btn-close-bulk-modal').addEventListener('click', closeBulk);
-  container.querySelector('#btn-cancel-bulk').addEventListener('click', closeBulk);
-
-  let parsedTransports = [];
-  const csvDropzone  = container.querySelector('#csv-dropzone');
-  const csvFileInput = container.querySelector('#csv-file-input');
-  const btnConfirmBulk = container.querySelector('#btn-confirm-bulk');
-
-  function handleCsvFile(file) {
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      const text = ev.target.result;
-      const rows = parseCSV(text);
-      if (rows.length === 0) { showAlert('CSV vacío o formato incorrecto.', 'error'); return; }
-      const db2 = getDatabase();
-      parsedTransports = [];
-      const previewBody = container.querySelector('#csv-preview-body');
-      previewBody.innerHTML = '';
-      rows.forEach(row => {
-        const razonSocial = row.razonSocial || '';
-        let rut = formatRut(row.rut || '');
-        const direccion = row.direccion || '';
-        const telefono  = row.telefono  || '';
-        const email     = row.email     || '';
-        const patente   = (row.patente || '').toUpperCase().replace(/\s+/g,'');
-        const capacidad = Number(row.capacidad || 10);
-        let error = '';
-        if (!razonSocial) error = 'Falta Razón Social';
-        else if (!validateRut(rut)) error = 'RUT inválido';
-        else if (!patente || patente.length < 5) error = 'Patente incorrecta';
-        else if ((db2.transports||[]).some(t => t.rut === rut)) error = 'RUT Duplicado';
-        else if ((db2.transports||[]).some(t => t.patente === patente)) error = 'Patente Duplicada';
-        const tr = document.createElement('tr');
-        tr.className = 'border-b border-outline-variant';
-        tr.innerHTML = `<td class="p-sm">${escapeHtml(razonSocial)}</td><td class="p-sm font-data-mono">${escapeHtml(rut)}</td><td class="p-sm font-data-mono">${escapeHtml(patente)}</td><td class="p-sm">${capacidad} Ton</td><td class="p-sm"><span class="px-2 py-0.5 rounded text-[10px] font-bold ${error ? 'bg-red-100 text-red-800' : 'bg-green-100 text-green-800'}">${error || 'Listo'}</span></td>`;
-        previewBody.appendChild(tr);
-        if (!error) parsedTransports.push({ razonSocial, rut, direccion, telefono, email, patente, capacidad, activo: true });
-      });
-      container.querySelector('#csv-count').innerText = rows.length;
-      container.querySelector('#csv-preview-container').classList.remove('hidden');
-      btnConfirmBulk.disabled = parsedTransports.length === 0;
-    };
-    reader.readAsText(file);
-  }
-
-  csvDropzone.addEventListener('click', () => csvFileInput.click());
-  csvDropzone.addEventListener('dragover', e => { e.preventDefault(); csvDropzone.classList.add('border-primary'); });
-  csvDropzone.addEventListener('dragleave',  () => csvDropzone.classList.remove('border-primary'));
-  csvDropzone.addEventListener('drop', e => { e.preventDefault(); csvDropzone.classList.remove('border-primary'); if (e.dataTransfer.files[0]) handleCsvFile(e.dataTransfer.files[0]); });
-  csvFileInput.addEventListener('change', e => { if (e.target.files[0]) handleCsvFile(e.target.files[0]); });
-
-  btnConfirmBulk.addEventListener('click', () => {
-    const db2 = getDatabase();
-    parsedTransports.forEach(t => {
-      t.id = 't' + Date.now() + Math.random().toString(36).substr(2,5);
-      t.codigoSap = generateSapCode('TRSP', db2.transports, 'codigoSap');
-      db2.transports.push(t);
-    });
-    saveDatabase(db2, { syncOnly: ['transports', 'transportsCamiones', 'transportsChoferes'] });
-    showAlert(`${parsedTransports.length} proveedores importados.`);
-    closeBulk();
-    renderTransportsView(container);
-  });
-}
-
-// ── Tabla unificada de Proveedores ────────────────────────────────────────────
-function renderProveedoresTable(db, tipoFiltro, textoBusqueda) {
-  const tbody = document.getElementById('transports-table-body');
-  if (!tbody) return;
-
-  const ultimaMilla = (db.transports || []).map(t => ({ ...t, _tipo: tipoTransp(t), _src: 'transports' }));
-  const troncales   = (db.troncales   || []).map(t => ({ ...t, _tipo: 'troncal', _src: 'troncales' }));
-  let all = [...ultimaMilla, ...troncales];
-
-  if (tipoFiltro) all = all.filter(p => p._tipo === tipoFiltro);
-  if (textoBusqueda) {
-    const q = textoBusqueda.toLowerCase();
-    all = all.filter(p =>
-      (p.razonSocial || '').toLowerCase().includes(q) ||
-      (p.rut || '').toLowerCase().includes(q) ||
-      (p.patente || '').toLowerCase().includes(q) ||
-      (p.codigoSap || '').toLowerCase().includes(q)
-    );
-  }
-
-  if (all.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="8" class="p-xl text-center text-secondary">No se encontraron proveedores.</td></tr>`;
-    return;
-  }
-
-  tbody.innerHTML = '';
-  all.forEach(p => {
-    const esUM = p._tipo === 'ultima_milla';
-    const tipoBadge = esUM
-      ? `<span class="inline-flex items-center gap-xs px-2 py-0.5 rounded text-[10px] font-bold bg-blue-100 text-blue-800"><span class="material-symbols-outlined text-[11px]">local_shipping</span> ÚLTIMA MILLA</span>`
-      : `<span class="inline-flex items-center gap-xs px-2 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-800"><span class="material-symbols-outlined text-[11px]">sync_alt</span> TRONCAL</span>`;
-    const falt = p._src === 'transports' ? faltantesTransportista(p) : [];
-    const statusBadge = p.activo === false
-      ? `<span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-red-100 text-red-800">DE BAJA</span>`
-      : falt.length
-        ? `<span class="inline-flex items-center gap-xs px-2 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-900" title="Falta: ${escapeHtml(falt.join(', '))}"><span class="material-symbols-outlined text-[11px]">lock</span>BLOQUEADO</span><div class="text-[10px] text-secondary mt-[2px]">Falta: ${escapeHtml(falt.join(', '))}</div>`
-        : `<span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-green-100 text-green-800">ACTIVO</span>`;
-    const flotaInfo = esUM
-      ? `<span class="bg-surface-container-high px-sm py-1 border border-outline-variant rounded font-data-mono text-xs">${(p.camiones||[]).length} camión${(p.camiones||[]).length===1?'':'es'}</span>`
-      : `<span class="bg-surface-container-high px-sm py-1 border border-outline-variant rounded font-data-mono text-xs">${(p.camiones||[]).length} cam. · ${(p.rutasCobertura||[]).length} ruta${(p.rutasCobertura||[]).length===1?'':'s'}</span>`;
-    const contacto = (esUM || p._src === 'transports')
-      ? `<div class="text-xs font-bold leading-tight">${escapeHtml(p.email||'—')}</div><div class="text-[10px] text-secondary">${escapeHtml(p.telefono||'')}</div>`
-      : `<div class="text-xs text-secondary">—</div>`;
-
-    const tr = document.createElement('tr');
-    tr.className = 'border-b border-outline-variant hover:bg-surface-container-low transition-colors';
-    tr.innerHTML = `
-      <td class="p-md">${tipoBadge}</td>
-      <td class="p-md font-data-mono text-sm">${escapeHtml(p.codigoSap || p.id || '')}${p.codigoSap && String(p.codigoSap).trim() !== String(p.id).trim() ? `<div class="text-[10px] text-secondary font-normal" title="ID interno con el que quedó registrado el historial">ID ${escapeHtml(p.id || '')}</div>` : ''}</td>
-      <td class="p-md font-bold">${escapeHtml(p.razonSocial||'')}</td>
-      <td class="p-md font-data-mono text-sm">${escapeHtml(p.rut||'')}</td>
-      <td class="p-md">${flotaInfo}</td>
-      <td class="p-md">${contacto}</td>
-      <td class="p-md">${statusBadge}</td>
+  `,oe(d,V,"");let i="ultima_milla";function m(t){i=t,e.querySelectorAll(".tipo-selector").forEach(r=>{r.dataset.tipo==="ultima_milla"?r.className=`tipo-selector flex flex-col items-center gap-sm p-md border-2 rounded-lg transition-all cursor-pointer ${t==="ultima_milla"?"border-blue-500 bg-blue-50":"border-outline-variant text-secondary hover:border-blue-300 hover:bg-blue-50/50"}`:r.className=`tipo-selector flex flex-col items-center gap-sm p-md border-2 rounded-lg transition-all cursor-pointer ${t==="troncal"?"border-amber-500 bg-amber-50":"border-outline-variant text-secondary hover:border-amber-300 hover:bg-amber-50/50"}`})}e.querySelectorAll(".prov-tipo-btn").forEach(t=>{t.addEventListener("click",()=>{V=t.dataset.tipo,N(e)})}),e.querySelector("#transport-search").addEventListener("input",t=>{oe(d,V,t.target.value)});const M=e.querySelector("#nuevo-proveedor-modal"),b=()=>{M.classList.remove("pointer-events-none","opacity-0"),M.querySelector(".modal-window").classList.remove("scale-95")},x=()=>{M.classList.add("pointer-events-none","opacity-0"),M.querySelector(".modal-window").classList.add("scale-95")};e.querySelector("#btn-create-transport").addEventListener("click",()=>{e.querySelector("#np-razonsocial").value="",e.querySelector("#np-rut").value="",e.querySelector("#np-email").value="",e.querySelector("#np-telefono").value="",e.querySelector("#np-direccion").value="";const t=_();e.querySelector("#np-codigosap").value=ee("TRSP",t.transports,"codigoSap"),m("ultima_milla"),b()}),e.querySelector("#btn-close-nuevo-proveedor").addEventListener("click",x),e.querySelector("#btn-cancel-nuevo-proveedor").addEventListener("click",x),e.querySelectorAll(".tipo-selector").forEach(t=>{t.addEventListener("click",()=>m(t.dataset.tipo))}),e.querySelector("#np-rut").addEventListener("blur",t=>{t.target.value=U(t.target.value)}),e.querySelector("#btn-save-nuevo-proveedor").addEventListener("click",()=>{const t=_(),r=(e.querySelector("#np-razonsocial").value||"").replace(/\s+/g," ").trim().toUpperCase(),n=e.querySelector("#np-rut").value.trim(),S=(e.querySelector("#np-codigosap").value||"").toUpperCase().trim(),v=e.querySelector("#np-direccion").value.trim(),f=e.querySelector("#np-telefono").value.trim(),I=e.querySelector("#np-email").value.trim().toLowerCase();if(!r){p("La Razón Social es requerida.","error");return}if(!J(n)){p("El RUT ingresado no es válido.","error");return}if((t.transports||[]).some(q=>q.rut===n)){p("RUT ya registrado en proveedores.","error");return}const k=i!=="ultima_milla",y=S||"t"+Date.now();if((t.transports||[]).some(q=>String(q.id).trim().toUpperCase()===y)){p(`El código ${y} ya existe en el maestro de transportistas.`,"error");return}t.transports=t.transports||[],t.transports.push({id:y,razonSocial:r,rut:n,codigoSap:S,direccion:v,telefono:f,email:I,ownerEmail:I,activo:!0,tipo_servicio:k?"TRONCAL":"ULTIMA MILLA",camiones:[],choferes:[],documentos:{},centrosServicio:[]}),F(t,{syncOnly:["transports","transportsCamiones","transportsChoferes"]}),p(`Proveedor ${k?"Troncal":"Última Milla"} "${r}" creado. Agrega patentes y choferes desde Editar.`),x(),N(e)});const K=e.querySelector("#transport-modal"),H=()=>{K.classList.add("pointer-events-none","opacity-0"),K.querySelector(".modal-window").classList.add("scale-95")};e.querySelector("#btn-close-transport-modal").addEventListener("click",H),e.querySelector("#btn-cancel-transport-modal").addEventListener("click",H),e.querySelector("#t-rut").addEventListener("blur",t=>{t.target.value=U(t.target.value)}),e.querySelector("#transport-form").addEventListener("submit",async t=>{t.preventDefault();const r=e.querySelector('#transport-form button[type="submit"]'),n=_(),S=n.transports.findIndex(c=>c.id===P);if(S===-1)return;const v=n.transports[S],f=U(e.querySelector("#t-rut").value.trim());if(f&&!J(f)){p("El RUT ingresado no es válido.","error");return}if(f&&(n.transports||[]).some(c=>c.id!==P&&U(String(c.rut||""))===f)){const c=(n.transports||[]).find(E=>E.id!==P&&U(String(E.rut||""))===f);p(`El RUT ${f} ya está registrado en ${c.razonSocial||c.id}.`,"error");return}const I=e.querySelector("#t-email").value.trim();if(I&&!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(I)){p("El correo ingresado no es válido.","error");return}const l=(e.querySelector("#t-codigosap").value||"").trim().toUpperCase(),k=String(v.codigoSap||v.id||"").trim().toUpperCase();if(k&&!l){p("El Código SAP es obligatorio.","error");return}if(l&&(n.transports||[]).some(c=>c.id!==P&&(String(c.codigoSap||"").trim().toUpperCase()===l||String(c.id||"").trim().toUpperCase()===l))){p(`El Código SAP ${l} ya está usado por otro transportista.`,"error");return}let y=v.id,q="";if(l&&l!==k){r&&(r.disabled=!0);const{data:c,error:E}=await de.rpc("fn_transportista_recodificar",{p_id:v.id,p_codigo:l});if(r&&(r.disabled=!1),E){p("No se pudo cambiar el Código SAP: "+E.message,"error");return}const $=c||{};$.rekey?(y=$.id,q=` Código SAP e ID interno re-asignados a ${$.id}.`):q=` Código SAP actualizado a ${l}; el ID interno sigue siendo ${v.id} porque ya tiene historial${($.detalle||[]).length?" ("+$.detalle.join(", ")+")":""}.`}n.transports[S]={...v,id:y,codigoSap:l||v.codigoSap||null,razonSocial:e.querySelector("#t-razonsocial").value.replace(/\s+/g," ").trim().toUpperCase(),direccion:e.querySelector("#t-direccion").value.trim(),telefono:e.querySelector("#t-telefono").value.trim(),email:e.querySelector("#t-email").value.trim().toLowerCase(),ownerEmail:e.querySelector("#t-email").value.trim().toLowerCase(),rut:f||null,tipo_servicio:e.querySelector("#t-tipo").value},P=y;const B=ae(n.transports[S]);F(n,{syncOnly:["transports","transportsCamiones","transportsChoferes"]}),p((B.length?`Guardado. Queda BLOQUEADO hasta completar: ${B.join(", ")}.`:"Transportista actualizado y activo.")+q,B.length?"error":"success"),H(),N(e)});const j=e.querySelector("#bulk-upload-modal"),G=()=>{j.classList.add("pointer-events-none","opacity-0"),j.querySelector(".modal-window").classList.add("scale-95")};e.querySelector("#btn-bulk-upload-transports").addEventListener("click",()=>{j.classList.remove("pointer-events-none","opacity-0"),j.querySelector(".modal-window").classList.remove("scale-95")}),e.querySelector("#btn-close-bulk-modal").addEventListener("click",G),e.querySelector("#btn-cancel-bulk").addEventListener("click",G);let z=[];const O=e.querySelector("#csv-dropzone"),W=e.querySelector("#csv-file-input"),X=e.querySelector("#btn-confirm-bulk");function Y(t){const r=new FileReader;r.onload=n=>{const S=n.target.result,v=se(S);if(v.length===0){p("CSV vacío o formato incorrecto.","error");return}const f=_();z=[];const I=e.querySelector("#csv-preview-body");I.innerHTML="",v.forEach(l=>{const k=l.razonSocial||"";let y=U(l.rut||"");const q=l.direccion||"",B=l.telefono||"",c=l.email||"",E=(l.patente||"").toUpperCase().replace(/\s+/g,""),$=Number(l.capacidad||10);let R="";k?J(y)?!E||E.length<5?R="Patente incorrecta":(f.transports||[]).some(Z=>Z.rut===y)?R="RUT Duplicado":(f.transports||[]).some(Z=>Z.patente===E)&&(R="Patente Duplicada"):R="RUT inválido":R="Falta Razón Social";const Q=document.createElement("tr");Q.className="border-b border-outline-variant",Q.innerHTML=`<td class="p-sm">${C(k)}</td><td class="p-sm font-data-mono">${C(y)}</td><td class="p-sm font-data-mono">${C(E)}</td><td class="p-sm">${$} Ton</td><td class="p-sm"><span class="px-2 py-0.5 rounded text-[10px] font-bold ${R?"bg-red-100 text-red-800":"bg-green-100 text-green-800"}">${R||"Listo"}</span></td>`,I.appendChild(Q),R||z.push({razonSocial:k,rut:y,direccion:q,telefono:B,email:c,patente:E,capacidad:$,activo:!0})}),e.querySelector("#csv-count").innerText=v.length,e.querySelector("#csv-preview-container").classList.remove("hidden"),X.disabled=z.length===0},r.readAsText(t)}O.addEventListener("click",()=>W.click()),O.addEventListener("dragover",t=>{t.preventDefault(),O.classList.add("border-primary")}),O.addEventListener("dragleave",()=>O.classList.remove("border-primary")),O.addEventListener("drop",t=>{t.preventDefault(),O.classList.remove("border-primary"),t.dataTransfer.files[0]&&Y(t.dataTransfer.files[0])}),W.addEventListener("change",t=>{t.target.files[0]&&Y(t.target.files[0])}),X.addEventListener("click",()=>{const t=_();z.forEach(r=>{r.id="t"+Date.now()+Math.random().toString(36).substr(2,5),r.codigoSap=ee("TRSP",t.transports,"codigoSap"),t.transports.push(r)}),F(t,{syncOnly:["transports","transportsCamiones","transportsChoferes"]}),p(`${z.length} proveedores importados.`),G(),N(e)})}function oe(e,d,L){const g=document.getElementById("transports-table-body");if(!g)return;const T=(e.transports||[]).map(a=>({...a,_tipo:te(a),_src:"transports"})),D=(e.troncales||[]).map(a=>({...a,_tipo:"troncal",_src:"troncales"}));let A=[...T,...D];if(d&&(A=A.filter(a=>a._tipo===d)),L){const a=L.toLowerCase();A=A.filter(s=>(s.razonSocial||"").toLowerCase().includes(a)||(s.rut||"").toLowerCase().includes(a)||(s.patente||"").toLowerCase().includes(a)||(s.codigoSap||"").toLowerCase().includes(a))}if(A.length===0){g.innerHTML='<tr><td colspan="8" class="p-xl text-center text-secondary">No se encontraron proveedores.</td></tr>';return}g.innerHTML="",A.forEach(a=>{const s=a._tipo==="ultima_milla",h=s?'<span class="inline-flex items-center gap-xs px-2 py-0.5 rounded text-[10px] font-bold bg-blue-100 text-blue-800"><span class="material-symbols-outlined text-[11px]">local_shipping</span> ÚLTIMA MILLA</span>':'<span class="inline-flex items-center gap-xs px-2 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-800"><span class="material-symbols-outlined text-[11px]">sync_alt</span> TRONCAL</span>',w=a._src==="transports"?ae(a):[],u=a.activo===!1?'<span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-red-100 text-red-800">DE BAJA</span>':w.length?`<span class="inline-flex items-center gap-xs px-2 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-900" title="Falta: ${C(w.join(", "))}"><span class="material-symbols-outlined text-[11px]">lock</span>BLOQUEADO</span><div class="text-[10px] text-secondary mt-[2px]">Falta: ${C(w.join(", "))}</div>`:'<span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-green-100 text-green-800">ACTIVO</span>',o=s?`<span class="bg-surface-container-high px-sm py-1 border border-outline-variant rounded font-data-mono text-xs">${(a.camiones||[]).length} camión${(a.camiones||[]).length===1?"":"es"}</span>`:`<span class="bg-surface-container-high px-sm py-1 border border-outline-variant rounded font-data-mono text-xs">${(a.camiones||[]).length} cam. · ${(a.rutasCobertura||[]).length} ruta${(a.rutasCobertura||[]).length===1?"":"s"}</span>`,i=s||a._src==="transports"?`<div class="text-xs font-bold leading-tight">${C(a.email||"—")}</div><div class="text-[10px] text-secondary">${C(a.telefono||"")}</div>`:'<div class="text-xs text-secondary">—</div>',m=document.createElement("tr");m.className="border-b border-outline-variant hover:bg-surface-container-low transition-colors",m.innerHTML=`
+      <td class="p-md">${h}</td>
+      <td class="p-md font-data-mono text-sm">${C(a.codigoSap||a.id||"")}${a.codigoSap&&String(a.codigoSap).trim()!==String(a.id).trim()?`<div class="text-[10px] text-secondary font-normal" title="ID interno con el que quedó registrado el historial">ID ${C(a.id||"")}</div>`:""}</td>
+      <td class="p-md font-bold">${C(a.razonSocial||"")}</td>
+      <td class="p-md font-data-mono text-sm">${C(a.rut||"")}</td>
+      <td class="p-md">${o}</td>
+      <td class="p-md">${i}</td>
+      <td class="p-md">${u}</td>
       <td class="p-md text-center">
         <div class="flex items-center justify-center gap-xs">
-          ${esUM ? `<button class="btn-ficha text-secondary hover:text-primary p-xs cursor-pointer" data-id="${p.id}" title="Ficha de transporte"><span class="material-symbols-outlined text-[20px]">folder_open</span></button>` : ''}
-          <button class="btn-edit text-secondary hover:text-primary p-xs cursor-pointer" data-id="${p.id}" data-tipo="${p._tipo}" data-src="${p._src}" title="Editar"><span class="material-symbols-outlined text-[20px]">edit</span></button>
-          <button class="btn-toggle text-secondary hover:text-primary p-xs cursor-pointer" data-id="${p.id}" data-tipo="${p._tipo}" data-src="${p._src}" title="${p.activo!==false?'Dar de baja':'Activar'}">
-            <span class="material-symbols-outlined text-[20px] ${p.activo!==false?'text-red-500':'text-green-600'}">${p.activo!==false?'block':'check_circle'}</span>
+          ${s?`<button class="btn-ficha text-secondary hover:text-primary p-xs cursor-pointer" data-id="${a.id}" title="Ficha de transporte"><span class="material-symbols-outlined text-[20px]">folder_open</span></button>`:""}
+          <button class="btn-edit text-secondary hover:text-primary p-xs cursor-pointer" data-id="${a.id}" data-tipo="${a._tipo}" data-src="${a._src}" title="Editar"><span class="material-symbols-outlined text-[20px]">edit</span></button>
+          <button class="btn-toggle text-secondary hover:text-primary p-xs cursor-pointer" data-id="${a.id}" data-tipo="${a._tipo}" data-src="${a._src}" title="${a.activo!==!1?"Dar de baja":"Activar"}">
+            <span class="material-symbols-outlined text-[20px] ${a.activo!==!1?"text-red-500":"text-green-600"}">${a.activo!==!1?"block":"check_circle"}</span>
           </button>
         </div>
       </td>
-    `;
-    tbody.appendChild(tr);
-  });
-
-  // Ficha (solo Última Milla)
-  tbody.querySelectorAll('.btn-ficha').forEach(btn => {
-    btn.addEventListener('click', e => {
-      const id = e.currentTarget.dataset.id;
-      const stage = document.getElementById('stage-area');
-      const pageTitle = document.getElementById('current-page-title');
-      if (pageTitle) pageTitle.textContent = 'Ficha de Transporte';
-      renderFichaTransporte(stage, id);
-    });
-  });
-
-  // Editar
-  tbody.querySelectorAll('.btn-edit').forEach(btn => {
-    btn.addEventListener('click', e => {
-      const id   = e.currentTarget.dataset.id;
-      const src  = e.currentTarget.dataset.src;
-      const db2  = getDatabase();
-
-      if (src === 'transports') {
-        const t = (db2.transports||[]).find(x => x.id === id);
-        if (!t) return;
-        editingTransportId = id;
-        const editModal = document.getElementById('transport-modal');
-        document.getElementById('t-razonsocial').value = t.razonSocial || '';
-        document.getElementById('t-rut').value         = t.rut         || '';
-        document.getElementById('t-patente').value     = t.patente     || '';
-        document.getElementById('t-codigosap').value   = t.codigoSap   || '';
-        document.getElementById('t-direccion').value   = t.direccion   || '';
-        document.getElementById('t-telefono').value    = t.telefono    || '';
-        document.getElementById('t-email').value       = t.email       || '';
-        // (2-nov-2026) tipo_servicio se guardó con y sin guion bajo ('ULTIMA MILLA' / 'ULTIMA_MILLA').
-        document.getElementById('t-tipo').value        = String(t.tipo_servicio || '').toUpperCase().includes('TRONCAL') ? 'TRONCAL' : 'ULTIMA_MILLA';
-        document.getElementById('transport-modal-title').textContent = 'Editar Transportista';
-        // (2-nov-2026, Jordan) El maestro es editable: RUT, Código SAP, razón social y datos de
-        // contacto se corrigen desde aquí. Sólo la patente queda bloqueada (se gestiona en la
-        // Ficha de Transporte, que es la dueña de los camiones).
-        ['t-rut', 't-codigosap'].forEach(fid => {
-          const el = document.getElementById(fid);
-          el.disabled = false;
-          el.className = 'w-full border border-[#CED4DA] p-sm font-body-md text-body-md focus:border-primary rounded bg-white';
-        });
-        ['t-rut-lock-msg'].forEach(fid => document.getElementById(fid)?.classList.add('hidden'));
-        ['t-patente'].forEach(fid => {
-          const el = document.getElementById(fid);
-          el.disabled = true;
-          el.className = 'w-full border border-outline-variant p-sm font-body-md text-body-md rounded bg-[#E9ECEF] text-secondary cursor-not-allowed';
-        });
-        ['t-patente-lock-msg'].forEach(fid => {
-          const el = document.getElementById(fid);
-          if (el) { el.classList.remove('hidden'); el.classList.add('flex'); }
-        });
-        // ID interno: se muestra sólo cuando ya no coincide con el Código SAP (transportista con historial).
-        const idNote = document.getElementById('t-id-interno');
-        const idVal  = document.getElementById('t-id-interno-val');
-        if (idNote && idVal) {
-          const distinto = t.codigoSap && String(t.codigoSap).trim() !== String(t.id).trim();
-          idVal.textContent = `ID interno: ${t.id}`;
-          idNote.classList.toggle('hidden', !distinto);
-          idNote.classList.toggle('flex', !!distinto);
-        }
-        editModal.classList.remove('pointer-events-none','opacity-0');
-        editModal.querySelector('.modal-window').classList.remove('scale-95');
-      } else {
-        // Troncal → modal de troncales
-        const t = (db2.troncales||[]).find(x => x.id === id);
-        if (!t) return;
-        const grupos = getOrigenGroups(db2);
-        abrirModalTroncal(t, grupos, db2, () => renderTransportsView(document.getElementById('stage-area')));
-      }
-    });
-  });
-
-  // Toggle activo/baja
-  tbody.querySelectorAll('.btn-toggle').forEach(btn => {
-    btn.addEventListener('click', e => {
-      const id   = e.currentTarget.dataset.id;
-      const src  = e.currentTarget.dataset.src;
-      const db2  = getDatabase();
-      const arr  = src === 'transports' ? db2.transports : db2.troncales;
-      const item = (arr||[]).find(x => x.id === id);
-      if (!item) return;
-      item.activo = item.activo === false ? true : false;
-      saveDatabase(db2, { syncOnly: ['transports', 'transportsCamiones', 'transportsChoferes'] });
-      showAlert(`${item.razonSocial} ${item.activo ? 'activado' : 'dado de baja'}.`);
-      renderTransportsView(document.getElementById('stage-area'));
-    });
-  });
-}
-
-function setLockFields(isEdit) {
-  // Kept for compatibility — handled inline in renderProveedoresTable
-}
+    `,g.appendChild(m)}),g.querySelectorAll(".btn-ficha").forEach(a=>{a.addEventListener("click",s=>{const h=s.currentTarget.dataset.id,w=document.getElementById("stage-area"),u=document.getElementById("current-page-title");u&&(u.textContent="Ficha de Transporte"),le(w,h)})}),g.querySelectorAll(".btn-edit").forEach(a=>{a.addEventListener("click",s=>{const h=s.currentTarget.dataset.id,w=s.currentTarget.dataset.src,u=_();if(w==="transports"){const o=(u.transports||[]).find(b=>b.id===h);if(!o)return;P=h;const i=document.getElementById("transport-modal");document.getElementById("t-razonsocial").value=o.razonSocial||"",document.getElementById("t-rut").value=o.rut||"",document.getElementById("t-patente").value=o.patente||"",document.getElementById("t-codigosap").value=o.codigoSap||"",document.getElementById("t-direccion").value=o.direccion||"",document.getElementById("t-telefono").value=o.telefono||"",document.getElementById("t-email").value=o.email||"",document.getElementById("t-tipo").value=String(o.tipo_servicio||"").toUpperCase().includes("TRONCAL")?"TRONCAL":"ULTIMA_MILLA",document.getElementById("transport-modal-title").textContent="Editar Transportista",["t-rut","t-codigosap"].forEach(b=>{const x=document.getElementById(b);x.disabled=!1,x.className="w-full border border-[#CED4DA] p-sm font-body-md text-body-md focus:border-primary rounded bg-white"}),["t-rut-lock-msg"].forEach(b=>document.getElementById(b)?.classList.add("hidden")),["t-patente"].forEach(b=>{const x=document.getElementById(b);x.disabled=!0,x.className="w-full border border-outline-variant p-sm font-body-md text-body-md rounded bg-[#E9ECEF] text-secondary cursor-not-allowed"}),["t-patente-lock-msg"].forEach(b=>{const x=document.getElementById(b);x&&(x.classList.remove("hidden"),x.classList.add("flex"))});const m=document.getElementById("t-id-interno"),M=document.getElementById("t-id-interno-val");if(m&&M){const b=o.codigoSap&&String(o.codigoSap).trim()!==String(o.id).trim();M.textContent=`ID interno: ${o.id}`,m.classList.toggle("hidden",!b),m.classList.toggle("flex",!!b)}i.classList.remove("pointer-events-none","opacity-0"),i.querySelector(".modal-window").classList.remove("scale-95")}else{const o=(u.troncales||[]).find(m=>m.id===h);if(!o)return;const i=re(u);ne(o,i,u,()=>N(document.getElementById("stage-area")))}})}),g.querySelectorAll(".btn-toggle").forEach(a=>{a.addEventListener("click",s=>{const h=s.currentTarget.dataset.id,w=s.currentTarget.dataset.src,u=_(),i=((w==="transports"?u.transports:u.troncales)||[]).find(m=>m.id===h);i&&(i.activo=i.activo===!1,F(u,{syncOnly:["transports","transportsCamiones","transportsChoferes"]}),p(`${i.razonSocial} ${i.activo?"activado":"dado de baja"}.`),N(document.getElementById("stage-area")))})})}function ve(e){}export{ae as faltantesTransportista,N as renderTransportsView};

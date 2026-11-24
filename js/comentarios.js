@@ -1,45 +1,4 @@
-// ============================================================================
-// COMENTARIOS Y NOTIFICACIONES (12-oct-2026, Jordan)
-// Orden de Carga de Gestión Troncales (Revex, Ventas CD, Retiros de Fábrica,
-// Crossdocking, Pedidos de Traslados): comentarios por fila con @menciones,
-// respuestas (un nivel) y me gusta. Campana en el encabezado con las
-// notificaciones del usuario; al elegir una se abre la vista y el comentario.
-// BD: trc_comentarios, trc_comentario_likes, notificaciones (los triggers
-// generan las notificaciones), fn_usuarios_mencionables().
-// Permisos: ver = perfiles internos; comentar / responder / me gusta =
-// privilegio COMENTAR (can('comentar')); ocultar comentario = OWNER.
-// ============================================================================
-import { supabase } from './supabase-client.js?v=202611232043';
-import { can, esOwner, perfilVeMenu } from './permisos.js?v=202611232043';
-import { showAlert } from './utils.js';
-
-export const VISTAS_COMENTARIOS = {
-  pedidos_traslados_revex: 'Revex',
-  pedidos_venta: 'Ventas CD (1003)',
-  retiros: 'Retiros de Fábrica',
-  pedidos_traslados_4000: 'Crossdocking',
-  pedidos_traslados: 'Pedidos de Traslados',
-};
-export const comentariosHabilitados = vista => Object.prototype.hasOwnProperty.call(VISTAS_COMENTARIOS, vista);
-
-const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
-const iniciales = n => String(n || '?').split(/[\s._@-]+/).filter(Boolean).slice(0, 2).map(p => p[0].toUpperCase()).join('') || '?';
-export function hace(ts) {
-  const d = new Date(ts); if (isNaN(d)) return '';
-  const s = Math.max(0, (Date.now() - d.getTime()) / 1000);
-  if (s < 60) return 'ahora';
-  if (s < 3600) return `hace ${Math.floor(s / 60)} min`;
-  if (s < 86400) return `hace ${Math.floor(s / 3600)} h`;
-  if (s < 7 * 86400) return `hace ${Math.floor(s / 86400)} d`;
-  return d.toLocaleDateString('es-CL', { day: '2-digit', month: '2-digit', year: '2-digit' });
-}
-const fechaLarga = ts => { const d = new Date(ts); return isNaN(d) ? '' : d.toLocaleString('es-CL', { timeZone: 'America/Santiago', dateStyle: 'medium', timeStyle: 'short' }); };
-
-// ── Estilos (una vez) ─────────────────────────────────────────────────────
-function css() {
-  if (document.getElementById('cm-css')) return;
-  const st = document.createElement('style'); st.id = 'cm-css';
-  st.textContent = `
+import{supabase as w}from"./supabase-client.js?v=fd17fd7d20";import{can as F,esOwner as V,perfilVeMenu as B}from"./permisos.js?v=a8b193e9fb";import{showAlert as S}from"./utils.js";const D={pedidos_traslados_revex:"Revex",pedidos_venta:"Ventas CD (1003)",retiros:"Retiros de Fábrica",pedidos_traslados_4000:"Crossdocking",pedidos_traslados:"Pedidos de Traslados"},Y=e=>Object.prototype.hasOwnProperty.call(D,e),b=e=>String(e??"").replace(/[&<>"']/g,a=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[a]),N=e=>String(e||"?").split(/[\s._@-]+/).filter(Boolean).slice(0,2).map(a=>a[0].toUpperCase()).join("")||"?";function j(e){const a=new Date(e);if(isNaN(a))return"";const r=Math.max(0,(Date.now()-a.getTime())/1e3);return r<60?"ahora":r<3600?`hace ${Math.floor(r/60)} min`:r<86400?`hace ${Math.floor(r/3600)} h`:r<7*86400?`hace ${Math.floor(r/86400)} d`:a.toLocaleDateString("es-CL",{day:"2-digit",month:"2-digit",year:"2-digit"})}const U=e=>{const a=new Date(e);return isNaN(a)?"":a.toLocaleString("es-CL",{timeZone:"America/Santiago",dateStyle:"medium",timeStyle:"short"})};function I(){if(document.getElementById("cm-css"))return;const e=document.createElement("style");e.id="cm-css",e.textContent=`
   .cm-wrap{display:flex;flex-direction:column;gap:10px}
   .cm-h{display:flex;align-items:center;gap:6px;font-size:13px;font-weight:700}
   .cm-h .material-symbols-outlined{font-size:18px;color:var(--sv-primary,#b5000b)}
@@ -104,326 +63,38 @@ function css() {
   .nt-empty{padding:28px 14px;text-align:center;font-size:13px;color:var(--sv-ink2,#5c5f61)}
   .nt-empty .material-symbols-outlined{display:block;font-size:30px;opacity:.4;margin-bottom:6px}
   .cm-solo-bg{position:fixed;inset:0;background:rgba(0,0,0,.25);z-index:90}
-  `;
-  document.head.appendChild(st);
-}
-
-// ── Sesión ────────────────────────────────────────────────────────────────
-let _email = null;
-async function miEmail() {
-  if (_email) return _email;
-  try { const { data } = await supabase.auth.getUser(); _email = (data?.user?.email || '').toLowerCase() || null; } catch (_e) { /* sin sesión */ }
-  return _email;
-}
-
-// ── Usuarios etiquetables ───────────────────────────────────────────────────
-let _usuarios = null, _usuariosTs = 0;
-async function usuarios() {
-  if (_usuarios && Date.now() - _usuariosTs < 600000) return _usuarios;
-  const { data, error } = await supabase.rpc('fn_usuarios_mencionables');
-  if (error) { console.warn('menciones:', error.message); return _usuarios || []; }
-  _usuarios = data || []; _usuariosTs = Date.now();
-  return _usuarios;
-}
-// Sólo se puede etiquetar a quien ve la vista (perfil base o vista extra asignada por Owner)
-function veVista(u, vista) {
-  const k = `abastecimiento:${vista}`;
-  return perfilVeMenu(u.perfil, k) || (u.vistas_extra || []).includes(k);
-}
-
-// ── Conteo por fila (columna de la tabla) ───────────────────────────────────
-export async function conteosComentarios(vista) {
-  const m = new Map();
-  for (let p = 0; p < 10; p++) {
-    const { data, error } = await supabase.from('trc_comentarios').select('clave').eq('vista', vista).eq('borrado', false).range(p * 1000, p * 1000 + 999);
-    if (error) { console.warn('comentarios:', error.message); break; }
-    (data || []).forEach(r => m.set(r.clave, (m.get(r.clave) || 0) + 1));
-    if (!data || data.length < 1000) break;
-  }
-  return m;
-}
-export function celdaComentarios(n, rid) {
-  return `<button class="cm-cnt ${n ? 'has' : ''}" data-cmt="${esc(rid)}" data-ro-ok title="${n ? `${n} comentario${n > 1 ? 's' : ''}` : 'Comentar'}">
-    <span class="material-symbols-outlined">${n ? 'forum' : 'add_comment'}</span>${n ? n : ''}</button>`;
-}
-
-// ── Foco pendiente (desde una notificación) ─────────────────────────────────
-let _foco = null;
-export function setFoco(f) { _foco = f; }
-export function tomarFoco(vista) { if (_foco && _foco.vista === vista) { const f = _foco; _foco = null; return f; } return null; }
-
-// ── Editor con @menciones ───────────────────────────────────────────────────
-function editor(host, { vista, placeholder, prefill = '', prefillMenc = [], onEnviar, onCancelar, autofocus }) {
-  host.innerHTML = `<div class="cm-comp">
-    <textarea maxlength="2000" placeholder="${esc(placeholder)}">${esc(prefill)}</textarea>
+  `,document.head.appendChild(e)}let C=null;async function A(){if(C)return C;try{const{data:e}=await w.auth.getUser();C=(e?.user?.email||"").toLowerCase()||null}catch{}return C}let E=null,H=0;async function R(){if(E&&Date.now()-H<6e5)return E;const{data:e,error:a}=await w.rpc("fn_usuarios_mencionables");return a?(console.warn("menciones:",a.message),E||[]):(E=e||[],H=Date.now(),E)}function K(e,a){const r=`abastecimiento:${a}`;return B(e.perfil,r)||(e.vistas_extra||[]).includes(r)}async function ee(e){const a=new Map;for(let r=0;r<10;r++){const{data:p,error:d}=await w.from("trc_comentarios").select("clave").eq("vista",e).eq("borrado",!1).range(r*1e3,r*1e3+999);if(d){console.warn("comentarios:",d.message);break}if((p||[]).forEach(x=>a.set(x.clave,(a.get(x.clave)||0)+1)),!p||p.length<1e3)break}return a}function te(e,a){return`<button class="cm-cnt ${e?"has":""}" data-cmt="${b(a)}" data-ro-ok title="${e?`${e} comentario${e>1?"s":""}`:"Comentar"}">
+    <span class="material-symbols-outlined">${e?"forum":"add_comment"}</span>${e||""}</button>`}let q=null;function W(e){q=e}function ae(e){if(q&&q.vista===e){const a=q;return q=null,a}return null}function O(e,{vista:a,placeholder:r,prefill:p="",prefillMenc:d=[],onEnviar:x,onCancelar:l,autofocus:h}){e.innerHTML=`<div class="cm-comp">
+    <textarea maxlength="2000" placeholder="${b(r)}">${b(p)}</textarea>
     <div class="cm-comp-f"><span class="cm-hint">Escribe @ para etiquetar a alguien</span>
-      <span style="display:flex;gap:8px;align-items:center">${onCancelar ? '<button type="button" class="cm-cancel" data-ro-ok>Cancelar</button>' : ''}
-      <button type="button" class="cm-send" data-ro-ok disabled><span class="material-symbols-outlined">send</span>Comentar</button></span></div></div>`;
-  const ta = host.querySelector('textarea'), send = host.querySelector('.cm-send'), comp = host.querySelector('.cm-comp');
-  const menc = new Map(prefillMenc.map(u => [u.email, u.nombre]));
-  let dd = null, opts = [], sel = 0, inicio = -1;
-  const cerrar = () => { dd?.remove(); dd = null; inicio = -1; };
-  const upd = () => { send.disabled = !ta.value.trim(); };
-  const elegir = u => {
-    if (!u || inicio < 0) return;
-    const ini = ta.value.slice(0, inicio), fin = ta.value.slice(ta.selectionStart);
-    const ins = `@${u.nombre} `;
-    ta.value = ini + ins + fin;
-    const pos = (ini + ins).length; ta.setSelectionRange(pos, pos);
-    menc.set(u.email, u.nombre);
-    cerrar(); upd(); ta.focus();
-  };
-  const pintar = () => {
-    if (!opts.length) { cerrar(); return; }
-    if (!dd) { dd = document.createElement('div'); dd.className = 'cm-dd'; comp.appendChild(dd); }
-    dd.innerHTML = opts.map((u, i) => `<button type="button" data-ro-ok data-i="${i}" class="${i === sel ? 'is-on' : ''}">
-      <span class="cm-av" style="width:24px;height:24px;font-size:10px">${esc(iniciales(u.nombre))}</span>${esc(u.nombre)}<small>${esc(u.email)}</small></button>`).join('');
-    dd.querySelectorAll('[data-i]').forEach(b => b.addEventListener('mousedown', e => { e.preventDefault(); elegir(opts[+b.dataset.i]); }));
-  };
-  ta.addEventListener('input', async () => {
-    upd();
-    const antes = ta.value.slice(0, ta.selectionStart);
-    const m = antes.match(/(^|\s)@([^\s@]{0,25}(?:\s[^\s@]{0,25})?)$/);
-    if (!m) { cerrar(); return; }
-    inicio = antes.length - m[2].length - 1;
-    const q = m[2].toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
-    const yo = await miEmail();
-    const lista = (await usuarios()).filter(u => u.email !== yo && veVista(u, vista));
-    opts = lista.filter(u => (u.nombre + ' ' + u.email).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').includes(q)).slice(0, 8);
-    sel = 0; pintar();
-  });
-  ta.addEventListener('keydown', e => {
-    if (dd && opts.length) {
-      if (e.key === 'ArrowDown') { e.preventDefault(); sel = (sel + 1) % opts.length; pintar(); return; }
-      if (e.key === 'ArrowUp') { e.preventDefault(); sel = (sel - 1 + opts.length) % opts.length; pintar(); return; }
-      if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); elegir(opts[sel]); return; }
-      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); cerrar(); return; }
-    }
-    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !send.disabled) { e.preventDefault(); send.click(); }
-  });
-  ta.addEventListener('blur', () => setTimeout(cerrar, 150));
-  host.querySelector('.cm-cancel')?.addEventListener('click', () => onCancelar && onCancelar());
-  send.addEventListener('click', async () => {
-    const texto = ta.value.trim(); if (!texto) return;
-    const menciones = [...menc.entries()].filter(([, n]) => texto.includes('@' + n)).map(([e]) => e);
-    send.disabled = true;
-    const ok = await onEnviar(texto, menciones);
-    if (ok) { ta.value = ''; menc.clear(); } else send.disabled = false;
-    upd();
-  });
-  upd();
-  if (autofocus) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }
-}
-
-// Texto con las menciones resaltadas
-function textoHtml(c, nombres) {
-  let h = esc(c.texto);
-  (c.menciones || []).map(e => nombres.get(e)).filter(Boolean).sort((a, b) => b.length - a.length)
-    .forEach(n => { const t = esc('@' + n); h = h.split(t).join(`<span class="cm-at">${t}</span>`); });
-  return h;
-}
-
-// ── Hilo de comentarios de una fila ─────────────────────────────────────────
-// opts: { vista, clave, documento, centro, focoId, onCount(n) }
-export async function montarHilo(el, opts) {
-  css();
-  const { vista, clave } = opts;
-  const yo = await miEmail();
-  const puede = can('comentar');
-  el.innerHTML = '<div class="cm-wrap"><div class="cm-h"><span class="material-symbols-outlined">forum</span>Comentarios</div><div class="cm-empty">Cargando comentarios…</div></div>';
-  let lista = [], likes = new Map(), respondiendo = null;
-
-  async function cargar() {
-    const { data, error } = await supabase.from('trc_comentarios').select('*').eq('vista', vista).eq('clave', clave).eq('borrado', false).order('created_at');
-    if (error) { el.querySelector('.cm-empty').textContent = 'No se pudieron cargar los comentarios: ' + error.message; return false; }
-    lista = data || [];
-    likes = new Map();
-    if (lista.length) {
-      const { data: lk } = await supabase.from('trc_comentario_likes').select('comentario_id,email').in('comentario_id', lista.map(c => c.id));
-      (lk || []).forEach(l => { if (!likes.has(l.comentario_id)) likes.set(l.comentario_id, []); likes.get(l.comentario_id).push(l.email); });
-    }
-    opts.onCount && opts.onCount(lista.length);
-    return true;
-  }
-  const nombres = () => {
-    const m = new Map((_usuarios || []).map(u => [u.email, u.nombre]));
-    lista.forEach(c => m.set(c.autor_email, c.autor_nombre));
-    return m;
-  };
-  function cHtml(c, esResp) {
-    const lk = likes.get(c.id) || [], mio = lk.includes(yo);
-    const nm = nombres();
-    const quien = lk.map(e => nm.get(e) || e.split('@')[0]).join(', ');
-    return `<div class="cm-c" id="cm-${c.id}" data-cid="${c.id}">
-      <div class="cm-av" title="${esc(c.autor_email)}">${esc(iniciales(c.autor_nombre))}</div>
+      <span style="display:flex;gap:8px;align-items:center">${l?'<button type="button" class="cm-cancel" data-ro-ok>Cancelar</button>':""}
+      <button type="button" class="cm-send" data-ro-ok disabled><span class="material-symbols-outlined">send</span>Comentar</button></span></div></div>`;const s=e.querySelector("textarea"),y=e.querySelector(".cm-send"),_=e.querySelector(".cm-comp"),m=new Map(d.map(o=>[o.email,o.nombre]));let i=null,f=[],v=0,t=-1;const n=()=>{i?.remove(),i=null,t=-1},c=()=>{y.disabled=!s.value.trim()},g=o=>{if(!o||t<0)return;const u=s.value.slice(0,t),z=s.value.slice(s.selectionStart),$=`@${o.nombre} `;s.value=u+$+z;const M=(u+$).length;s.setSelectionRange(M,M),m.set(o.email,o.nombre),n(),c(),s.focus()},k=()=>{if(!f.length){n();return}i||(i=document.createElement("div"),i.className="cm-dd",_.appendChild(i)),i.innerHTML=f.map((o,u)=>`<button type="button" data-ro-ok data-i="${u}" class="${u===v?"is-on":""}">
+      <span class="cm-av" style="width:24px;height:24px;font-size:10px">${b(N(o.nombre))}</span>${b(o.nombre)}<small>${b(o.email)}</small></button>`).join(""),i.querySelectorAll("[data-i]").forEach(o=>o.addEventListener("mousedown",u=>{u.preventDefault(),g(f[+o.dataset.i])}))};s.addEventListener("input",async()=>{c();const o=s.value.slice(0,s.selectionStart),u=o.match(/(^|\s)@([^\s@]{0,25}(?:\s[^\s@]{0,25})?)$/);if(!u){n();return}t=o.length-u[2].length-1;const z=u[2].toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g,""),$=await A();f=(await R()).filter(L=>L.email!==$&&K(L,a)).filter(L=>(L.nombre+" "+L.email).toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g,"").includes(z)).slice(0,8),v=0,k()}),s.addEventListener("keydown",o=>{if(i&&f.length){if(o.key==="ArrowDown"){o.preventDefault(),v=(v+1)%f.length,k();return}if(o.key==="ArrowUp"){o.preventDefault(),v=(v-1+f.length)%f.length,k();return}if(o.key==="Enter"||o.key==="Tab"){o.preventDefault(),g(f[v]);return}if(o.key==="Escape"){o.preventDefault(),o.stopPropagation(),n();return}}o.key==="Enter"&&(o.ctrlKey||o.metaKey)&&!y.disabled&&(o.preventDefault(),y.click())}),s.addEventListener("blur",()=>setTimeout(n,150)),e.querySelector(".cm-cancel")?.addEventListener("click",()=>l&&l()),y.addEventListener("click",async()=>{const o=s.value.trim();if(!o)return;const u=[...m.entries()].filter(([,$])=>o.includes("@"+$)).map(([$])=>$);y.disabled=!0,await x(o,u)?(s.value="",m.clear()):y.disabled=!1,c()}),c(),h&&(s.focus(),s.setSelectionRange(s.value.length,s.value.length))}function Z(e,a){let r=b(e.texto);return(e.menciones||[]).map(p=>a.get(p)).filter(Boolean).sort((p,d)=>d.length-p.length).forEach(p=>{const d=b("@"+p);r=r.split(d).join(`<span class="cm-at">${d}</span>`)}),r}async function G(e,a){I();const{vista:r,clave:p}=a,d=await A(),x=F("comentar");e.innerHTML='<div class="cm-wrap"><div class="cm-h"><span class="material-symbols-outlined">forum</span>Comentarios</div><div class="cm-empty">Cargando comentarios…</div></div>';let l=[],h=new Map,s=null;async function y(){const{data:t,error:n}=await w.from("trc_comentarios").select("*").eq("vista",r).eq("clave",p).eq("borrado",!1).order("created_at");if(n)return e.querySelector(".cm-empty").textContent="No se pudieron cargar los comentarios: "+n.message,!1;if(l=t||[],h=new Map,l.length){const{data:c}=await w.from("trc_comentario_likes").select("comentario_id,email").in("comentario_id",l.map(g=>g.id));(c||[]).forEach(g=>{h.has(g.comentario_id)||h.set(g.comentario_id,[]),h.get(g.comentario_id).push(g.email)})}return a.onCount&&a.onCount(l.length),!0}const _=()=>{const t=new Map((E||[]).map(n=>[n.email,n.nombre]));return l.forEach(n=>t.set(n.autor_email,n.autor_nombre)),t};function m(t,n){const c=h.get(t.id)||[],g=c.includes(d),k=_(),o=c.map(u=>k.get(u)||u.split("@")[0]).join(", ");return`<div class="cm-c" id="cm-${t.id}" data-cid="${t.id}">
+      <div class="cm-av" title="${b(t.autor_email)}">${b(N(t.autor_nombre))}</div>
       <div class="cm-b">
-        <div class="cm-meta"><span class="cm-n">${esc(c.autor_nombre || c.autor_email)}</span><span class="cm-t" title="${esc(fechaLarga(c.created_at))}">${esc(hace(c.created_at))}</span></div>
-        <div class="cm-x">${textoHtml(c, nm)}</div>
+        <div class="cm-meta"><span class="cm-n">${b(t.autor_nombre||t.autor_email)}</span><span class="cm-t" title="${b(U(t.created_at))}">${b(j(t.created_at))}</span></div>
+        <div class="cm-x">${Z(t,k)}</div>
         <div class="cm-acts">
-          <button class="cm-a ${mio ? 'is-on' : ''}" data-like="${c.id}" data-ro-ok ${puede ? '' : 'disabled'} title="${esc(quien || (puede ? 'Me gusta' : ''))}"><span class="material-symbols-outlined">thumb_up</span>${lk.length ? lk.length : ''} Me gusta</button>
-          ${puede ? `<button class="cm-a" data-resp="${c.id}" data-ro-ok><span class="material-symbols-outlined">reply</span>Responder</button>` : ''}
-          ${esOwner() ? `<button class="cm-a" data-ocultar="${c.id}" data-ro-ok title="Ocultar comentario"><span class="material-symbols-outlined">visibility_off</span>Ocultar</button>` : ''}
+          <button class="cm-a ${g?"is-on":""}" data-like="${t.id}" data-ro-ok ${x?"":"disabled"} title="${b(o||(x?"Me gusta":""))}"><span class="material-symbols-outlined">thumb_up</span>${c.length?c.length:""} Me gusta</button>
+          ${x?`<button class="cm-a" data-resp="${t.id}" data-ro-ok><span class="material-symbols-outlined">reply</span>Responder</button>`:""}
+          ${V()?`<button class="cm-a" data-ocultar="${t.id}" data-ro-ok title="Ocultar comentario"><span class="material-symbols-outlined">visibility_off</span>Ocultar</button>`:""}
         </div>
-        ${!esResp ? `<div class="cm-replies" data-replies="${c.id}" ${lista.some(r => r.parent_id === c.id) || respondiendo?.root === c.id ? '' : 'style="display:none"'}>
-          ${lista.filter(r => r.parent_id === c.id).map(r => cHtml(r, true)).join('')}
-          <div data-rbox="${c.id}"></div></div>` : ''}
-      </div></div>`;
-  }
-  function pintar() {
-    const raices = lista.filter(c => !c.parent_id);
-    el.innerHTML = `<div class="cm-wrap">
-      <div class="cm-h"><span class="material-symbols-outlined">forum</span>Comentarios <small>${lista.length ? `(${lista.length})` : ''}</small></div>
-      <div class="cm-list">${raices.length ? raices.map(c => cHtml(c, false)).join('') : '<div class="cm-empty">Aún no hay comentarios en este registro.</div>'}</div>
-      ${puede ? '<div data-nuevo></div>' : '<div class="cm-ro">Tu perfil puede ver los comentarios, pero no comentar.</div>'}
-    </div>`;
-    if (puede) editor(el.querySelector('[data-nuevo]'), { vista, placeholder: 'Agrega un comentario…', onEnviar: (t, m) => publicar(t, m, null) });
-    if (respondiendo) {
-      const box = el.querySelector(`[data-rbox="${respondiendo.root}"]`);
-      if (box) editor(box, { vista, placeholder: 'Escribe una respuesta…', prefill: respondiendo.prefill, prefillMenc: respondiendo.menc, autofocus: true,
-        onEnviar: (t, m) => publicar(t, m, respondiendo.root), onCancelar: () => { respondiendo = null; pintar(); } });
-    }
-    el.querySelectorAll('[data-like]').forEach(b => b.addEventListener('click', () => toggleLike(+b.dataset.like)));
-    el.querySelectorAll('[data-resp]').forEach(b => b.addEventListener('click', () => {
-      const c = lista.find(x => x.id === +b.dataset.resp); if (!c) return;
-      const root = c.parent_id || c.id;
-      const otro = c.autor_email !== yo;
-      respondiendo = { root, prefill: otro ? `@${c.autor_nombre} ` : '', menc: otro ? [{ email: c.autor_email, nombre: c.autor_nombre }] : [] };
-      pintar();
-    }));
-    el.querySelectorAll('[data-ocultar]').forEach(b => b.addEventListener('click', async () => {
-      const { error } = await supabase.from('trc_comentarios').update({ borrado: true }).eq('id', +b.dataset.ocultar);
-      if (error) { showAlert('No se pudo ocultar: ' + error.message, 'error'); return; }
-      await cargar(); pintar();
-    }));
-  }
-  async function publicar(texto, menciones, parent) {
-    const fila = { vista, clave, documento: opts.documento || null, centro: opts.centro || null, texto, menciones, parent_id: parent, autor_email: yo };
-    const { error } = await supabase.from('trc_comentarios').insert(fila);
-    if (error) { showAlert('No se pudo publicar el comentario: ' + error.message, 'error'); return false; }
-    if (parent) respondiendo = null;
-    await cargar(); pintar();
-    const ult = lista[lista.length - 1];
-    if (ult) el.querySelector(`#cm-${ult.id}`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-    return true;
-  }
-  async function toggleLike(id) {
-    if (!puede || !yo) return;
-    const mio = (likes.get(id) || []).includes(yo);
-    const q = mio ? supabase.from('trc_comentario_likes').delete().eq('comentario_id', id).eq('email', yo)
-      : supabase.from('trc_comentario_likes').insert({ comentario_id: id, email: yo });
-    const { error } = await q;
-    if (error) { showAlert('No se pudo registrar el me gusta: ' + error.message, 'error'); return; }
-    await cargar(); pintar();
-  }
-
-  usuarios(); // precarga para menciones
-  if (!(await cargar())) return;
-  pintar();
-  if (opts.focoId) {
-    const c = el.querySelector(`#cm-${opts.focoId}`);
-    if (c) {
-      c.classList.add('is-foco');
-      setTimeout(() => c.scrollIntoView({ block: 'center', behavior: 'smooth' }), 80);
-      setTimeout(() => c.classList.remove('is-foco'), 4000);
-    } else showAlert('Ese comentario ya no está disponible.', 'error');
-  }
-}
-
-// Hilo suelto cuando el registro ya no está en la vista (p. ej. el pedido salió del SQVI)
-export function abrirHiloSuelto(f) {
-  css();
-  document.getElementById('cm-solo')?.remove();
-  const wrap = document.createElement('div'); wrap.id = 'cm-solo';
-  wrap.innerHTML = `<div class="cm-solo-bg" data-x></div><aside class="sv-dr" role="dialog" aria-label="Comentarios">
-    <div class="sv-dr-h"><div style="flex:1;min-width:0"><div class="sv-dr-k">${esc(VISTAS_COMENTARIOS[f.vista] || f.vista)}</div>
-      <div class="sv-dr-t">${esc(f.documento || f.clave)}</div><div class="sv-dr-s">El registro ya no aparece en la vista con los datos actuales.</div></div>
+        ${n?"":`<div class="cm-replies" data-replies="${t.id}" ${l.some(u=>u.parent_id===t.id)||s?.root===t.id?"":'style="display:none"'}>
+          ${l.filter(u=>u.parent_id===t.id).map(u=>m(u,!0)).join("")}
+          <div data-rbox="${t.id}"></div></div>`}
+      </div></div>`}function i(){const t=l.filter(n=>!n.parent_id);if(e.innerHTML=`<div class="cm-wrap">
+      <div class="cm-h"><span class="material-symbols-outlined">forum</span>Comentarios <small>${l.length?`(${l.length})`:""}</small></div>
+      <div class="cm-list">${t.length?t.map(n=>m(n,!1)).join(""):'<div class="cm-empty">Aún no hay comentarios en este registro.</div>'}</div>
+      ${x?"<div data-nuevo></div>":'<div class="cm-ro">Tu perfil puede ver los comentarios, pero no comentar.</div>'}
+    </div>`,x&&O(e.querySelector("[data-nuevo]"),{vista:r,placeholder:"Agrega un comentario…",onEnviar:(n,c)=>f(n,c,null)}),s){const n=e.querySelector(`[data-rbox="${s.root}"]`);n&&O(n,{vista:r,placeholder:"Escribe una respuesta…",prefill:s.prefill,prefillMenc:s.menc,autofocus:!0,onEnviar:(c,g)=>f(c,g,s.root),onCancelar:()=>{s=null,i()}})}e.querySelectorAll("[data-like]").forEach(n=>n.addEventListener("click",()=>v(+n.dataset.like))),e.querySelectorAll("[data-resp]").forEach(n=>n.addEventListener("click",()=>{const c=l.find(o=>o.id===+n.dataset.resp);if(!c)return;const g=c.parent_id||c.id,k=c.autor_email!==d;s={root:g,prefill:k?`@${c.autor_nombre} `:"",menc:k?[{email:c.autor_email,nombre:c.autor_nombre}]:[]},i()})),e.querySelectorAll("[data-ocultar]").forEach(n=>n.addEventListener("click",async()=>{const{error:c}=await w.from("trc_comentarios").update({borrado:!0}).eq("id",+n.dataset.ocultar);if(c){S("No se pudo ocultar: "+c.message,"error");return}await y(),i()}))}async function f(t,n,c){const g={vista:r,clave:p,documento:a.documento||null,centro:a.centro||null,texto:t,menciones:n,parent_id:c,autor_email:d},{error:k}=await w.from("trc_comentarios").insert(g);if(k)return S("No se pudo publicar el comentario: "+k.message,"error"),!1;c&&(s=null),await y(),i();const o=l[l.length-1];return o&&e.querySelector(`#cm-${o.id}`)?.scrollIntoView({block:"nearest",behavior:"smooth"}),!0}async function v(t){if(!x||!d)return;const c=(h.get(t)||[]).includes(d)?w.from("trc_comentario_likes").delete().eq("comentario_id",t).eq("email",d):w.from("trc_comentario_likes").insert({comentario_id:t,email:d}),{error:g}=await c;if(g){S("No se pudo registrar el me gusta: "+g.message,"error");return}await y(),i()}if(R(),!!await y()&&(i(),a.focoId)){const t=e.querySelector(`#cm-${a.focoId}`);t?(t.classList.add("is-foco"),setTimeout(()=>t.scrollIntoView({block:"center",behavior:"smooth"}),80),setTimeout(()=>t.classList.remove("is-foco"),4e3)):S("Ese comentario ya no está disponible.","error")}}function oe(e){I(),document.getElementById("cm-solo")?.remove();const a=document.createElement("div");a.id="cm-solo",a.innerHTML=`<div class="cm-solo-bg" data-x></div><aside class="sv-dr" role="dialog" aria-label="Comentarios">
+    <div class="sv-dr-h"><div style="flex:1;min-width:0"><div class="sv-dr-k">${b(D[e.vista]||e.vista)}</div>
+      <div class="sv-dr-t">${b(e.documento||e.clave)}</div><div class="sv-dr-s">El registro ya no aparece en la vista con los datos actuales.</div></div>
       <button class="sv-iconbtn" data-x title="Cerrar"><span class="material-symbols-outlined">close</span></button></div>
-    <div class="sv-dr-b"><div data-hilo></div></div></aside>`;
-  document.body.appendChild(wrap);
-  const cerrar = () => { wrap.remove(); document.removeEventListener('keydown', esc_); };
-  const esc_ = e => { if (e.key === 'Escape') cerrar(); };
-  wrap.querySelectorAll('[data-x]').forEach(b => b.addEventListener('click', cerrar));
-  document.addEventListener('keydown', esc_);
-  montarHilo(wrap.querySelector('[data-hilo]'), { vista: f.vista, clave: f.clave, documento: f.documento, focoId: f.comentarioId });
-}
-
-// ── Campana de notificaciones ───────────────────────────────────────────────
-const TIPO = {
-  mencion:   { icon: 'alternate_email', bg: '#e8f0fe', fg: '#1d4ed8', txt: 'te etiquetó en' },
-  respuesta: { icon: 'reply',           bg: '#e6f4ea', fg: '#137333', txt: 'respondió en' },
-  like:      { icon: 'thumb_up',        bg: '#fff5f3', fg: '#b5000b', txt: 'dio me gusta a tu comentario en' },
-  // (15-oct-2026, Jordan) Flujo de aprobación de PRIORIDAD de carga (Operaciones → Abastecimiento)
-  prioridad_solicitud: { icon: 'priority_high', bg: '#fff4e5', fg: '#c2410c', txt: 'solicita evaluar PRIORIDAD de carga en' },
-  prioridad_aceptada:  { icon: 'check_circle',  bg: '#e6f4ea', fg: '#137333', txt: 'aceptó tu PRIORIDAD de carga en' },
-  prioridad_rechazada: { icon: 'block',         bg: '#fde8e8', fg: '#b91c1c', txt: 'rechazó tu PRIORIDAD de carga en' },
-  // (3-nov-2026, Jordan) Control automático: coordinación cuya entrega ya viajó y la NV sigue con saldo
-  // pendiente. Ese saldo NO está coordinado y no debe entrar a camiones futuros.
-  coord_viajada: { icon: 'warning', bg: '#fff4e5', fg: '#c2410c', txt: 'detectó una coordinación ya viajada con saldo pendiente en' },
-};
-let _timer = null;
-export async function initCampana(slot, { navegar }) {
-  css();
-  if (!slot) return;
-  const yo = await miEmail();
-  if (!yo) return;
-  slot.innerHTML = `<div class="nt-wrap"><button class="sv-iconbtn nt-btn" data-ro-ok id="nt-btn" title="Notificaciones" aria-haspopup="true" aria-expanded="false">
-      <span class="material-symbols-outlined">notifications</span><span class="nt-badge" hidden></span></button><div data-pop></div></div>`;
-  const btn = slot.querySelector('#nt-btn'), badge = slot.querySelector('.nt-badge'), popSlot = slot.querySelector('[data-pop]');
-  let abierto = false, items = [];
-
-  async function contar() {
-    if (document.hidden) return;
-    const { count, error } = await supabase.from('notificaciones').select('id', { count: 'exact', head: true }).eq('destinatario', yo).eq('leida', false);
-    if (error) return;
-    badge.hidden = !count; badge.textContent = count > 99 ? '99+' : String(count || '');
-    btn.title = count ? `Notificaciones (${count} sin leer)` : 'Notificaciones';
-  }
-  async function cargar() {
-    const { data } = await supabase.from('notificaciones').select('*').eq('destinatario', yo).order('created_at', { ascending: false }).limit(40);
-    items = data || [];
-  }
-  function pintar() {
-    if (!abierto) { popSlot.innerHTML = ''; btn.setAttribute('aria-expanded', 'false'); return; }
-    btn.setAttribute('aria-expanded', 'true');
-    const nuevas = items.filter(n => !n.leida).length;
-    popSlot.innerHTML = `<div class="nt-pop" role="dialog" aria-label="Notificaciones">
-      <div class="nt-h"><b>Notificaciones</b>${nuevas ? '<button class="nt-all" data-ro-ok data-todas>Marcar todo como leído</button>' : ''}</div>
-      <div class="nt-list">${items.length ? items.map(n => {
-        const t = TIPO[n.tipo] || TIPO.mencion;
-        return `<button class="nt-i ${n.leida ? '' : 'is-new'}" data-ro-ok data-n="${n.id}">
-          <span class="nt-ic" style="background:${t.bg};color:${t.fg}"><span class="material-symbols-outlined">${t.icon}</span></span>
-          <span class="nt-tx"><b>${esc(n.actor_nombre || n.actor_email)}</b> ${t.txt} <b>${esc(VISTAS_COMENTARIOS[n.vista] || n.vista || '')}</b>${n.documento ? ` · ${esc(n.documento)}` : ''}
-            ${n.extracto ? `<div class="nt-ex">“${esc(n.extracto)}”</div>` : ''}<div class="nt-tm">${esc(hace(n.created_at))}</div></span>
-          ${n.leida ? '' : '<span class="nt-dot"></span>'}</button>`;
-      }).join('') : '<div class="nt-empty"><span class="material-symbols-outlined">notifications_off</span>No tienes notificaciones.</div>'}</div></div>`;
-    popSlot.querySelector('[data-todas]')?.addEventListener('click', async e => {
-      e.stopPropagation();
-      await supabase.from('notificaciones').update({ leida: true }).eq('destinatario', yo).eq('leida', false);
-      items.forEach(n => { n.leida = true; }); pintar(); contar();
-    });
-    popSlot.querySelectorAll('[data-n]').forEach(b => b.addEventListener('click', async e => {
-      e.stopPropagation();
-      const n = items.find(x => x.id === +b.dataset.n); if (!n) return;
-      if (!n.leida) { await supabase.from('notificaciones').update({ leida: true }).eq('id', n.id); n.leida = true; }
-      abierto = false; pintar(); contar();
-      // (1-nov-2026, Jordan) La clave de una prioridad es `tipo|documento[|material]`: el material
-      // permite abrir la línea exacta cuando la prioridad se marcó sobre la entrega + material.
-      const _esPrio = String(n.tipo || '').startsWith('prioridad');
-      const _mat = _esPrio ? (String(n.clave || '').split('|')[2] || '') : '';
-      setFoco({ vista: n.vista, clave: n.clave, documento: n.documento, material: _mat, comentarioId: n.comentario_id, prio: _esPrio });
-      navegar(n.vista);
-    }));
-  }
-  btn.addEventListener('click', async e => {
-    e.stopPropagation();
-    abierto = !abierto;
-    if (abierto) { await cargar(); }
-    pintar();
-  });
-  document.addEventListener('click', e => { if (abierto && !slot.contains(e.target)) { abierto = false; pintar(); } });
-  document.addEventListener('keydown', e => { if (abierto && e.key === 'Escape') { abierto = false; pintar(); } });
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) contar(); });
-  if (_timer) clearInterval(_timer);
-  _timer = setInterval(contar, 60000);
-  contar();
-}
+    <div class="sv-dr-b"><div data-hilo></div></div></aside>`,document.body.appendChild(a);const r=()=>{a.remove(),document.removeEventListener("keydown",p)},p=d=>{d.key==="Escape"&&r()};a.querySelectorAll("[data-x]").forEach(d=>d.addEventListener("click",r)),document.addEventListener("keydown",p),G(a.querySelector("[data-hilo]"),{vista:e.vista,clave:e.clave,documento:e.documento,focoId:e.comentarioId})}const P={mencion:{icon:"alternate_email",bg:"#e8f0fe",fg:"#1d4ed8",txt:"te etiquetó en"},respuesta:{icon:"reply",bg:"#e6f4ea",fg:"#137333",txt:"respondió en"},like:{icon:"thumb_up",bg:"#fff5f3",fg:"#b5000b",txt:"dio me gusta a tu comentario en"},prioridad_solicitud:{icon:"priority_high",bg:"#fff4e5",fg:"#c2410c",txt:"solicita evaluar PRIORIDAD de carga en"},prioridad_aceptada:{icon:"check_circle",bg:"#e6f4ea",fg:"#137333",txt:"aceptó tu PRIORIDAD de carga en"},prioridad_rechazada:{icon:"block",bg:"#fde8e8",fg:"#b91c1c",txt:"rechazó tu PRIORIDAD de carga en"},coord_viajada:{icon:"warning",bg:"#fff4e5",fg:"#c2410c",txt:"detectó una coordinación ya viajada con saldo pendiente en"}};let T=null;async function ie(e,{navegar:a}){if(I(),!e)return;const r=await A();if(!r)return;e.innerHTML=`<div class="nt-wrap"><button class="sv-iconbtn nt-btn" data-ro-ok id="nt-btn" title="Notificaciones" aria-haspopup="true" aria-expanded="false">
+      <span class="material-symbols-outlined">notifications</span><span class="nt-badge" hidden></span></button><div data-pop></div></div>`;const p=e.querySelector("#nt-btn"),d=e.querySelector(".nt-badge"),x=e.querySelector("[data-pop]");let l=!1,h=[];async function s(){if(document.hidden)return;const{count:m,error:i}=await w.from("notificaciones").select("id",{count:"exact",head:!0}).eq("destinatario",r).eq("leida",!1);i||(d.hidden=!m,d.textContent=m>99?"99+":String(m||""),p.title=m?`Notificaciones (${m} sin leer)`:"Notificaciones")}async function y(){const{data:m}=await w.from("notificaciones").select("*").eq("destinatario",r).order("created_at",{ascending:!1}).limit(40);h=m||[]}function _(){if(!l){x.innerHTML="",p.setAttribute("aria-expanded","false");return}p.setAttribute("aria-expanded","true");const m=h.filter(i=>!i.leida).length;x.innerHTML=`<div class="nt-pop" role="dialog" aria-label="Notificaciones">
+      <div class="nt-h"><b>Notificaciones</b>${m?'<button class="nt-all" data-ro-ok data-todas>Marcar todo como leído</button>':""}</div>
+      <div class="nt-list">${h.length?h.map(i=>{const f=P[i.tipo]||P.mencion;return`<button class="nt-i ${i.leida?"":"is-new"}" data-ro-ok data-n="${i.id}">
+          <span class="nt-ic" style="background:${f.bg};color:${f.fg}"><span class="material-symbols-outlined">${f.icon}</span></span>
+          <span class="nt-tx"><b>${b(i.actor_nombre||i.actor_email)}</b> ${f.txt} <b>${b(D[i.vista]||i.vista||"")}</b>${i.documento?` · ${b(i.documento)}`:""}
+            ${i.extracto?`<div class="nt-ex">“${b(i.extracto)}”</div>`:""}<div class="nt-tm">${b(j(i.created_at))}</div></span>
+          ${i.leida?"":'<span class="nt-dot"></span>'}</button>`}).join(""):'<div class="nt-empty"><span class="material-symbols-outlined">notifications_off</span>No tienes notificaciones.</div>'}</div></div>`,x.querySelector("[data-todas]")?.addEventListener("click",async i=>{i.stopPropagation(),await w.from("notificaciones").update({leida:!0}).eq("destinatario",r).eq("leida",!1),h.forEach(f=>{f.leida=!0}),_(),s()}),x.querySelectorAll("[data-n]").forEach(i=>i.addEventListener("click",async f=>{f.stopPropagation();const v=h.find(c=>c.id===+i.dataset.n);if(!v)return;v.leida||(await w.from("notificaciones").update({leida:!0}).eq("id",v.id),v.leida=!0),l=!1,_(),s();const t=String(v.tipo||"").startsWith("prioridad"),n=t&&String(v.clave||"").split("|")[2]||"";W({vista:v.vista,clave:v.clave,documento:v.documento,material:n,comentarioId:v.comentario_id,prio:t}),a(v.vista)}))}p.addEventListener("click",async m=>{m.stopPropagation(),l=!l,l&&await y(),_()}),document.addEventListener("click",m=>{l&&!e.contains(m.target)&&(l=!1,_())}),document.addEventListener("keydown",m=>{l&&m.key==="Escape"&&(l=!1,_())}),document.addEventListener("visibilitychange",()=>{document.hidden||s()}),T&&clearInterval(T),T=setInterval(s,6e4),s()}export{D as VISTAS_COMENTARIOS,oe as abrirHiloSuelto,te as celdaComentarios,Y as comentariosHabilitados,ee as conteosComentarios,j as hace,ie as initCampana,G as montarHilo,W as setFoco,ae as tomarFoco};

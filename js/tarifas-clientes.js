@@ -1,423 +1,25 @@
-// MÓDULO: Administrador de Tarifas Clientes — SIT EBEMA v2.1
-// Vistas: Histórico (6M) | Consolidación | Densidad Logística | Frecuencia y Especiales | Cluster | Resultados
-import { getDatabase, saveDatabase, getTariffConfig, getClientTariffConfig, saveHistorico, loadHistorico, saveHistoricoGlobal, getOrigenGroups, loadHistoricoFlete360 } from './data.js?v=202611232043';
-import { CAP_LIST, truckTypesWithCap, calcularCostoRuta } from './tarifas-engine.js?v=202611232043';
-import { buildZcapMap } from './zcap.js?v=202611232043';
-import { formatCLP, showAlert, toCSV, downloadFile, formatDateDDMMYYYY, escapeHtml } from './utils.js';
-import { supabase } from './supabase-client.js?v=202611232043';
-import { renderClientesV2 } from './tarifas-clientes-v2.js?v=202611232043';
-import { confirmar } from './confirmar.js?v=202611232043';
-import { asegurarVigente } from './tarifa-vigente.js?v=202611232043';
-
-// ─────────────────────────────────────────────────────────────
-// ESTADO DE MÓDULO
-// ─────────────────────────────────────────────────────────────
-let histData          = [];   // filas parseadas del CSV
-let histPage          = 0;
-let histFilterGrupo   = 'all';
-let histFilterEstado  = 'all';
-let clusterFiltGrupo  = 'all';
-let clusterFiltTipo   = 'all';
-let clusterFiltClasif = 'all';
-let zfmpFiltClasif  = 'todas';
-let zfmpFiltCentro  = 'all';
-let zfmpFiltCamion  = '';
-let zfmpBuscar      = '';
-let zfmpPagina      = 0;
-let zfmiFiltClasif  = 'todas';
-let zfmiFiltCentro  = 'all';
-let zfmiFiltCamion  = '';
-let zfmiBuscar      = '';
-let zfmiPagina      = 0;
-let activeSubC        = 'historico';
-
-// Permite fijar el subtab activo desde el menu lateral (app.js) antes de renderizar
-export function setActiveSubC(sub) { activeSubC = sub; }
-// Mapa Oficina Entrega (SAP) → origen_grupo (nombre de ciudad/grupo)
-// Calculado al cargar CSV cruzando con db.routes.origen_grupo
-let oficinaToGrupo    = {};
-
-// ─────────────────────────────────────────────────────────────
-// CONSTANTES
-// ─────────────────────────────────────────────────────────────
-const CAP_BUCKETS = [5, 10, 15, 28];
-const CAP_LABELS  = { 5: '≤5T', 10: '10T', 15: '15T', 28: '28T' };
-const PAGE_SIZE   = 200;
-const VALIDEZ_A   = '31-12-2026';
-
-// Defaults para clusters iniciales
-const DEFAULT_CLUSTERS = [
-  { key: '1',    nombre: 'Cluster 1 — Alta densidad',   color: '#b5000b', nv: 98, frecuencia: 'Diario',          tipo0000: 0, tipo0000Habilitado: true,  pedidosPromedio: 1 },
-  { key: '2',    nombre: 'Cluster 2 — Media densidad',  color: '#d97706', nv: 96, frecuencia: 'Bi-semanal',      tipo0000: 0, tipo0000Habilitado: true,  pedidosPromedio: 1 },
-  { key: '3',    nombre: 'Cluster 3 — Baja densidad',   color: '#16a34a', nv: 95, frecuencia: 'Semanal',         tipo0000: 0, tipo0000Habilitado: false, pedidosPromedio: 1 },
-  { key: 'spot', nombre: 'SPOT / Interregional',        color: '#6b7280', nv: 90, frecuencia: 'Según demanda',   tipo0000: 0, tipo0000Habilitado: false, pedidosPromedio: 1 }
-];
-const NEXT_CAP = { 5000: 10000, 10000: 15000, 15000: 28000, 28000: 28000 };
-
-// ─────────────────────────────────────────────────────────────
-// HELPERS GRUPOS
-// ─────────────────────────────────────────────────────────────
-function getCentroGroup(oficina) {
-  return oficinaToGrupo[String(oficina)] || `Centro ${oficina}`;
-}
-
-function allGroups() {
-  if (!histData.length) return [];
-  const s = new Set(histData.map(r => getCentroGroup(r.oficina)));
-  return [...s].sort();
-}
-
-// Calcula la relación Oficina SAP → origen_grupo a partir de las rutas del CSV
-function computeOficinaGrupos(db, rows) {
-  const counts = {}; // { oficina: { grupo: count } }
-  // FLETE 360: la oficina es el ID Expedición (código de centro) → grupo directo del centro.
-  const cdGrupo = new Map((db.logisticsCentres || []).map(c => [String(c.id), c.origen_grupo || String(c.id)]));
-  rows.forEach(r => {
-    if (cdGrupo.has(String(r.oficina))) return;
-    const route = findRoute(db, r.idRuta);
-    const grupo  = route?.origen_grupo;
-    if (!grupo) return;
-    if (!counts[r.oficina]) counts[r.oficina] = {};
-    counts[r.oficina][grupo] = (counts[r.oficina][grupo] || 0) + 1;
-  });
-  const result = {};
-  Object.entries(counts).forEach(([oficina, grupoCounts]) => {
-    result[oficina] = Object.entries(grupoCounts).sort((a, b) => b[1] - a[1])[0][0];
-  });
-  rows.forEach(r => { const g = cdGrupo.get(String(r.oficina)); if (g) result[r.oficina] = g; });
-  // Fallback para oficinas sin rutas en db
-  rows.forEach(r => {
-    if (!result[r.oficina]) result[r.oficina] = `Centro ${r.oficina}`;
-  });
-  return result;
-}
-
-// ─────────────────────────────────────────────────────────────
-// HELPERS RUTAS / ZONAS
-// ─────────────────────────────────────────────────────────────
-function findRoute(db, idRuta) {
-  return (db.routes || []).find(r =>
-    r.codigo && r.codigo.toLowerCase() === String(idRuta).toLowerCase()
-  );
-}
-
-function getZone(db, zonaId) {
-  return (db.transportZones || []).find(z => z.zona === String(zonaId));
-}
-
-// Para una ruta Sector: devuelve la comuna padre (via transport_zones)
-function getSectorComunaPadre(db, route) {
-  if (route?.tipo !== 'Sector') return null;
-  const zoneId = route.id_zona_transporte || route.idZonaTrans;
-  if (!zoneId) return null;
-  const zone = getZone(db, zoneId);
-  return zone?.comuna || null;
-}
-
-// ─────────────────────────────────────────────────────────────
-// HELPERS CLUSTERS (trabaja con ccfg.clusters[])
-// ─────────────────────────────────────────────────────────────
-function clusterKeys(ccfg)         { return ccfg.clusters.map(c => c.key); }
-function clusterByKey(ccfg, key)   { return ccfg.clusters.find(c => c.key === key); }
-function clusterColor(ccfg, key)   { return clusterByKey(ccfg, key)?.color || '#6b7280'; }
-function clusterNombre(ccfg, key)  { return clusterByKey(ccfg, key)?.nombre || key; }
-
-function nextClusterKey(ccfg) {
-  const nums = ccfg.clusters.map(c => parseInt(c.key, 10)).filter(n => !isNaN(n));
-  return String((nums.length ? Math.max(...nums) : 0) + 1);
-}
-
-// ─────────────────────────────────────────────────────────────
-// PARSER CSV (punto y coma, windows-1252/latin-1)
-// ─────────────────────────────────────────────────────────────
-function parseHistCSV(text) {
-  const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
-  if (lines.length < 2) return [];
-  const headers = lines[0].split(';').map(h => h.trim());
-  const col = (parts, h) => (parts[headers.indexOf(h)] || '').trim();
-  const rows = [];
-  for (let i = 1; i < lines.length; i++) {
-    const line = lines[i].trim();
-    if (!line) continue;
-    const p = line.split(';');
-    rows.push({
-      fecha:           col(p, 'Fecha Transporte'),
-      oficina:         col(p, 'Oficina Entrega'),
-      documento:       col(p, 'Documento Transporte'),
-      gasto:           Number(col(p, 'Gasto Transporte')) || 0,
-      hes:             col(p, 'HES'),
-      idCliente:       col(p, 'ID Cliente'),
-      idObra:          col(p, 'ID Obra'),
-      transportista:   col(p, 'Transportista'),
-      capTons:         Number(col(p, 'Cap. Camión')) || 0,
-      entrega:         col(p, 'Entrega'),
-      idRuta:          col(p, 'ID Ruta'),
-      idTransportista: col(p, 'ID Transportista'),
-      ton:             parseFloat((col(p, 'Ton') || '0').replace(',', '.')) || 0
-    });
-  }
-  return rows.filter(r => r.documento && r.idRuta && r.idRuta !== '(en blanco)');
-}
-
-function getCapBucket(capTons) {
-  const n = Number(capTons);
-  if (n <= 5)  return 5;
-  if (n <= 10) return 10;
-  if (n <= 15) return 15;
-  return 28;
-}
-
-// ─────────────────────────────────────────────────────────────
-// HELPERS UI
-// ─────────────────────────────────────────────────────────────
-function setPath(obj, path, value) {
-  const parts = path.split('.');
-  let cur = obj;
-  for (let i = 0; i < parts.length - 1; i++) {
-    if (typeof cur[parts[i]] !== 'object' || cur[parts[i]] === null) cur[parts[i]] = {};
-    cur = cur[parts[i]];
-  }
-  cur[parts[parts.length - 1]] = value;
-}
-function getPath(obj, path, fallback) {
-  return path.split('.').reduce((c, p) => (c == null ? fallback : c[p]), obj) ?? fallback;
-}
-
-const inputCls  = 'w-full border border-[#CED4DA] p-xs font-data-mono text-data-mono text-right focus:border-primary focus:ring-0 bg-white rounded';
-const selectCls = 'border border-[#CED4DA] px-sm py-xs font-body-md text-body-md focus:border-primary focus:ring-0 bg-white rounded';
-
-function numInput(path, val, extra = '')  { return `<input type="number" step="any" class="${inputCls}" data-path="${path}" value="${val ?? 0}" ${extra}>`; }
-function textInput(path, val, extra = '') { return `<input type="text" class="${inputCls} text-left" data-path="${path}" value="${val || ''}" ${extra}>`; }
-
-function subTabButton(key, icon, label) {
-  return `<button class="ct-subtab flex items-center gap-xs px-md py-sm rounded-lg font-bold text-[12px] uppercase tracking-wide bg-surface-container-high text-secondary cursor-pointer whitespace-nowrap" data-sub="${key}">
-    <span class="material-symbols-outlined text-[16px]">${icon}</span> ${label}
-  </button>`;
-}
-
-function ensureCcfg(ccfg) {
-  // Migrar estructura vieja de dicts a nuevo array ccfg.clusters
-  if (!ccfg.clusters || !Array.isArray(ccfg.clusters) || !ccfg.clusters.length) {
-    const oN = ccfg.clusterNames       || {};
-    const oC = ccfg.clusterColors      || {};
-    const oV = ccfg.clusterNV          || {};
-    const oF = ccfg.clusterFrecuencia  || {};
-    const o0 = ccfg.especiales?.tipo0000 || {};
-    ccfg.clusters = DEFAULT_CLUSTERS.map(def => ({
-      key:       def.key,
-      nombre:    oN[def.key]  || def.nombre,
-      color:     oC[def.key]  || def.color,
-      nv:        oV[def.key]  ?? def.nv,
-      frecuencia:oF[def.key]  || def.frecuencia,
-      tipo0000:  o0[def.key]  ?? def.tipo0000
-    }));
-  }
-  // Asegurar campos tipo0000 y tipo0000Habilitado en cada cluster
-  ccfg.clusters.forEach(c => {
-    if (c.tipo0000 === undefined) c.tipo0000 = 0;
-    if (c.tipo0000Habilitado === undefined) c.tipo0000Habilitado = c.tipo0000 > 0;
-  });
-  if (!ccfg.comunaCluster)     ccfg.comunaCluster     = {};
-  if (!ccfg.especiales)        ccfg.especiales        = { recargoExclusividad: {} };
-  if (!ccfg.especiales.recargoExclusividad) ccfg.especiales.recargoExclusividad = {};
-  if (!ccfg.consolidacionObjetivo)          ccfg.consolidacionObjetivo          = {};
-  // (5-oct-2026) Consolidación separada: SANTIAGO y SAN_BERNARDO heredan el objetivo
-  // que tenían fusionado (SANTIAGO_+_SAN_BERNARDO) hasta que se editen por separado.
-  const _objMerged = ccfg.consolidacionObjetivo['SANTIAGO_+_SAN_BERNARDO'];
-  if (_objMerged && typeof _objMerged === 'object') {
-    ['SANTIAGO', 'SAN_BERNARDO'].forEach(k => {
-      const own = ccfg.consolidacionObjetivo[k] = ccfg.consolidacionObjetivo[k] || {};
-      Object.entries(_objMerged).forEach(([b, v]) => { if (own[b] === undefined || own[b] === null || own[b] === '') own[b] = v; });
-    });
-  }
-  if (!ccfg.histMeta) ccfg.histMeta = { uploadDate: null, rowCount: 0, fileName: '' };
-  if (!ccfg.consolidacion) ccfg.consolidacion = {};
-}
-
-function noDataBanner(msg = 'Cargue un CSV en la pestaña Histórico para habilitar esta vista.') {
-  return `<div class="flex flex-col items-center justify-center py-xl text-secondary gap-sm">
+import{getDatabase as Zt,saveDatabase as B,getTariffConfig as _t,getClientTariffConfig as qt,saveHistorico as kt,loadHistorico as fe,saveHistoricoGlobal as Pt,getOrigenGroups as yt,loadHistoricoFlete360 as Ut}from"./data.js?v=6ce8cb5f60";import"./tarifas-engine.js?v=be2617cfd2";import{buildZcapMap as Vt}from"./zcap.js?v=95bd902f96";import{formatCLP as lt,showAlert as k,toCSV as Xt,downloadFile as Jt,formatDateDDMMYYYY as Yt,escapeHtml as E}from"./utils.js";import{supabase as xe}from"./supabase-client.js?v=fd17fd7d20";import{renderClientesV2 as Wt}from"./tarifas-clientes-v2.js?v=5a531f4990";import{confirmar as Ct}from"./confirmar.js?v=84d7f13f40";import{asegurarVigente as be}from"./tarifa-vigente.js?v=5a531f4990";let T=[],N=0,et="all",X="all",Pe="all",je="all",Ne="all",at="todas",ct="all",st="",wt="",I=0,ot="todas",dt="all",nt="",Et="",O=0,St="historico";function Be(e){St=e}let H={};const rt=[5,10,15,28],jt={5:"≤5T",10:"10T",15:"15T",28:"28T"},Nt=200,Ke="31-12-2026",ge=[{key:"1",nombre:"Cluster 1 — Alta densidad",color:"#b5000b",nv:98,frecuencia:"Diario",tipo0000:0,tipo0000Habilitado:!0,pedidosPromedio:1},{key:"2",nombre:"Cluster 2 — Media densidad",color:"#d97706",nv:96,frecuencia:"Bi-semanal",tipo0000:0,tipo0000Habilitado:!0,pedidosPromedio:1},{key:"3",nombre:"Cluster 3 — Baja densidad",color:"#16a34a",nv:95,frecuencia:"Semanal",tipo0000:0,tipo0000Habilitado:!1,pedidosPromedio:1},{key:"spot",nombre:"SPOT / Interregional",color:"#6b7280",nv:90,frecuencia:"Según demanda",tipo0000:0,tipo0000Habilitado:!1,pedidosPromedio:1}],He={5e3:1e4,1e4:15e3,15e3:28e3,28e3:28e3};function W(e){return H[String(e)]||`Centro ${e}`}function Qt(){return T.length?[...new Set(T.map(s=>W(s.oficina)))].sort():[]}function Q(e,s){const t={},n=new Map((e.logisticsCentres||[]).map(i=>[String(i.id),i.origen_grupo||String(i.id)]));s.forEach(i=>{if(n.has(String(i.oficina)))return;const l=te(e,i.idRuta)?.origen_grupo;l&&(t[i.oficina]||(t[i.oficina]={}),t[i.oficina][l]=(t[i.oficina][l]||0)+1)});const c={};return Object.entries(t).forEach(([i,m])=>{c[i]=Object.entries(m).sort((l,v)=>v[1]-l[1])[0][0]}),s.forEach(i=>{const m=n.get(String(i.oficina));m&&(c[i.oficina]=m)}),s.forEach(i=>{c[i.oficina]||(c[i.oficina]=`Centro ${i.oficina}`)}),c}function te(e,s){return(e.routes||[]).find(t=>t.codigo&&t.codigo.toLowerCase()===String(s).toLowerCase())}function he(e,s){return(e.transportZones||[]).find(t=>t.zona===String(s))}function ve(e,s){if(s?.tipo!=="Sector")return null;const t=s.id_zona_transporte||s.idZonaTrans;return t&&he(e,t)?.comuna||null}function Ge(e){return e.clusters.map(s=>s.key)}function ee(e,s){return e.clusters.find(t=>t.key===s)}function Bt(e,s){return ee(e,s)?.color||"#6b7280"}function Ze(e,s){return ee(e,s)?.nombre||s}function ye(e){const s=e.clusters.map(t=>parseInt(t.key,10)).filter(t=>!isNaN(t));return String((s.length?Math.max(...s):0)+1)}function ae(e){const s=e.replace(/\r\n/g,`
+`).replace(/\r/g,`
+`).split(`
+`);if(s.length<2)return[];const t=s[0].split(";").map(i=>i.trim()),n=(i,m)=>(i[t.indexOf(m)]||"").trim(),c=[];for(let i=1;i<s.length;i++){const m=s[i].trim();if(!m)continue;const l=m.split(";");c.push({fecha:n(l,"Fecha Transporte"),oficina:n(l,"Oficina Entrega"),documento:n(l,"Documento Transporte"),gasto:Number(n(l,"Gasto Transporte"))||0,hes:n(l,"HES"),idCliente:n(l,"ID Cliente"),idObra:n(l,"ID Obra"),transportista:n(l,"Transportista"),capTons:Number(n(l,"Cap. Camión"))||0,entrega:n(l,"Entrega"),idRuta:n(l,"ID Ruta"),idTransportista:n(l,"ID Transportista"),ton:parseFloat((n(l,"Ton")||"0").replace(",","."))||0})}return c.filter(i=>i.documento&&i.idRuta&&i.idRuta!=="(en blanco)")}function pt(e){const s=Number(e);return s<=5?5:s<=10?10:s<=15?15:28}function se(e,s,t){const n=s.split(".");let c=e;for(let i=0;i<n.length-1;i++)(typeof c[n[i]]!="object"||c[n[i]]===null)&&(c[n[i]]={}),c=c[n[i]];c[n[n.length-1]]=t}function Ce(e,s,t){return s.split(".").reduce((n,c)=>n==null?t:n[c],e)??t}const oe="w-full border border-[#CED4DA] p-xs font-data-mono text-data-mono text-right focus:border-primary focus:ring-0 bg-white rounded",ne="border border-[#CED4DA] px-sm py-xs font-body-md text-body-md focus:border-primary focus:ring-0 bg-white rounded";function re(e,s,t=""){return`<input type="number" step="any" class="${oe}" data-path="${e}" value="${s??0}" ${t}>`}function qe(e,s,t=""){return`<input type="text" class="${oe} text-left" data-path="${e}" value="${s||""}" ${t}>`}function Ue(e,s,t){return`<button class="ct-subtab flex items-center gap-xs px-md py-sm rounded-lg font-bold text-[12px] uppercase tracking-wide bg-surface-container-high text-secondary cursor-pointer whitespace-nowrap" data-sub="${e}">
+    <span class="material-symbols-outlined text-[16px]">${s}</span> ${t}
+  </button>`}function Kt(e){if(!e.clusters||!Array.isArray(e.clusters)||!e.clusters.length){const t=e.clusterNames||{},n=e.clusterColors||{},c=e.clusterNV||{},i=e.clusterFrecuencia||{},m=e.especiales?.tipo0000||{};e.clusters=ge.map(l=>({key:l.key,nombre:t[l.key]||l.nombre,color:n[l.key]||l.color,nv:c[l.key]??l.nv,frecuencia:i[l.key]||l.frecuencia,tipo0000:m[l.key]??l.tipo0000}))}e.clusters.forEach(t=>{t.tipo0000===void 0&&(t.tipo0000=0),t.tipo0000Habilitado===void 0&&(t.tipo0000Habilitado=t.tipo0000>0)}),e.comunaCluster||(e.comunaCluster={}),e.especiales||(e.especiales={recargoExclusividad:{}}),e.especiales.recargoExclusividad||(e.especiales.recargoExclusividad={}),e.consolidacionObjetivo||(e.consolidacionObjetivo={});const s=e.consolidacionObjetivo["SANTIAGO_+_SAN_BERNARDO"];s&&typeof s=="object"&&["SANTIAGO","SAN_BERNARDO"].forEach(t=>{const n=e.consolidacionObjetivo[t]=e.consolidacionObjetivo[t]||{};Object.entries(s).forEach(([c,i])=>{(n[c]===void 0||n[c]===null||n[c]==="")&&(n[c]=i)})}),e.histMeta||(e.histMeta={uploadDate:null,rowCount:0,fileName:""}),e.consolidacion||(e.consolidacion={})}function J(e="Cargue un CSV en la pestaña Histórico para habilitar esta vista."){return`<div class="flex flex-col items-center justify-center py-xl text-secondary gap-sm">
     <span class="material-symbols-outlined text-[40px] text-outline-variant">upload_file</span>
-    <p class="font-body-md">${msg}</p>
-  </div>`;
-}
-
-function statCard(label, value, icon, valueClass = 'text-primary') {
-  return `<div class="bg-surface border border-outline-variant rounded p-sm flex items-center gap-sm">
-    <span class="material-symbols-outlined text-[24px] text-outline-variant">${icon}</span>
+    <p class="font-body-md">${e}</p>
+  </div>`}function ut(e,s,t,n="text-primary"){return`<div class="bg-surface border border-outline-variant rounded p-sm flex items-center gap-sm">
+    <span class="material-symbols-outlined text-[24px] text-outline-variant">${t}</span>
     <div>
-      <div class="font-label-caps text-label-caps text-secondary uppercase">${label}</div>
-      <div class="font-bold font-data-mono text-data-mono ${valueClass}">${value}</div>
+      <div class="font-label-caps text-label-caps text-secondary uppercase">${e}</div>
+      <div class="font-bold font-data-mono text-data-mono ${n}">${s}</div>
     </div>
-  </div>`;
-}
-
-// ─────────────────────────────────────────────────────────────
-// VISTA PRINCIPAL
-// ─────────────────────────────────────────────────────────────
-// (25-oct-2026, Jordan) Contexto de cálculo de Tarifas Clientes sin dibujar la vista
-// (lo usa Variación Tarifa para calcular $/Kg, Min/Max y Express de dos escenarios).
-export function contextoTarifasClientes() {
-  const db   = getDatabase();
-  const cfg  = getTariffConfig(db);
-  const ccfg = getClientTariffConfig(db);
-  ensureCcfg(ccfg);
-  if (ccfg.historico && ccfg.historico.length && histData !== ccfg.historico) {
-    histData = ccfg.historico;
-    oficinaToGrupo = computeOficinaGrupos(db, histData);
-  }
-  return {
-    db, cfg, ccfg, ensureCcfg,
-    hist: () => histData,
-    grupoDe: getCentroGroup, getCapBucket, computeConsolidacionStats, objetivoConsol, computeOpClusterMap,
-    clusterOpDe, anchorsOpFor, persistClusterOpDB, asignarClustersCentro, clOpAzimut, ejeOpDe, EJES_OP, EJES_OP_DEFAULT,
-  };
-}
-
-export function renderClientTariffView(container) {
-  const db   = getDatabase();
-  const cfg  = getTariffConfig(db);
-  const ccfg = getClientTariffConfig(db);
-  ensureCcfg(ccfg);
-  // (25-oct-2026) Variación Tarifa: registra la tarifa vigente antes del primer ajuste
-  asegurarVigente(db).catch(e => console.warn('Tarifa vigente:', e.message || e));
-
-  // Restaurar datos históricos desde IndexedDB si no vienen de Supabase
-  if (ccfg.historico && ccfg.historico.length) {
-    histData = ccfg.historico;
-    oficinaToGrupo = computeOficinaGrupos(db, histData);
-  } else {
-    // Intento asíncrono desde IndexedDB (sin bloquear el render)
-    loadHistorico().then(rows => {
-      if (rows && rows.length > 0 && !histData.length) {
-        histData = rows;
-        ccfg.historico = rows;
-        oficinaToGrupo = computeOficinaGrupos(db, rows);
-        // Re-renderizar la subvista activa si ya está montada
-        const ctContent = document.getElementById('ct-content');
-        if (ctContent) renderClientesV2(ctContent, activeSubC, ctx);
-      }
-    });
-  }
-
-  container.innerHTML = `<div id="ct-content"></div>`;
-
-  // Rediseño v2 (30-sep-2026): todas las subvistas usan tarifas-clientes-v2.js
-  const ctx = {
-    db, cfg, ccfg,
-    hist: () => histData,
-    grupoDe: getCentroGroup, getCapBucket, computeConsolidacionStats, objetivoConsol, computeOpClusterMap,
-    clusterOpDe, anchorsOpFor, persistClusterOpDB, asignarClustersCentro, clOpAzimut, ejeOpDe, EJES_OP, EJES_OP_DEFAULT,
-    async recargarFlete360() {
-      const rows = await loadHistoricoFlete360(true);
-      if (!rows.length) { showAlert('No se pudo leer FLETE 360 (sin datos o sin permisos).', 'error'); return false; }
-      histData = rows;
-      oficinaToGrupo = computeOficinaGrupos(db, rows);
-      saveDatabase(db, { syncOnly: ['clientTariffConfig'] }); // persiste histMeta (el detalle no va en la config)
-      showAlert(`${rows.length.toLocaleString('es-CL')} filas leídas desde FLETE 360 (6 meses móviles).`);
-      return true;
-    },
-    cargarCsvManual(file, done) {
-      const reader = new FileReader();
-      reader.onload = async (ev) => {
-        const parsed = parseHistCSV(ev.target.result);
-        if (!parsed.length) { showAlert('No se encontraron filas válidas en el CSV.', 'error'); return; }
-        histData = parsed;
-        oficinaToGrupo = computeOficinaGrupos(db, parsed);
-        ccfg.histMeta = { uploadDate: formatDateDDMMYYYY(new Date()), rowCount: parsed.length, fileName: file.name };
-        ccfg.historico = parsed;
-        saveDatabase(db, { syncOnly: ['clientTariffConfig'] });
-        saveHistorico(parsed);
-        done();
-        const okSync = await saveHistoricoGlobal(parsed, { fileName: file.name });
-        showAlert(okSync ? 'Histórico cargado y sincronizado — visible para todos los usuarios.' : 'El histórico se guardó localmente, pero falló la sincronización con la base de datos.', okSync ? 'success' : 'error');
-      };
-      reader.readAsText(file, 'windows-1252');
-    },
-  };
-  const renderV2 = () => renderClientesV2(document.getElementById('ct-content'), activeSubC, ctx);
-  renderV2();
-  return;
-
-  // eslint-disable-next-line no-unreachable
-  function renderSub() {
-    const content = document.getElementById('ct-content');
-    switch (activeSubC) {
-      case 'historico':     renderHistorico(content, db, ccfg);      break;
-      case 'consolidacion': renderConsolidacion(content, db, ccfg);  break;
-      case 'densidad':      renderDensidad(content, db, ccfg);       break;
-      case 'especiales':    renderEspeciales(content, db, ccfg);     break;
-      case 'cluster':       renderCluster(content, db, ccfg);        break;
-      case 'resultados':    renderResultados(content, db, cfg, ccfg);break;
-      case 'zfmi':          renderZfmi(content, db, cfg, ccfg);break;
-    }
-    content.addEventListener('change', (e) => {
-      const path = e.target.dataset.path;
-      if (!path) return;
-      let val;
-      if (e.target.type === 'checkbox') val = e.target.checked;
-      else if (e.target.type === 'number') val = e.target.value === '' ? 0 : Number(e.target.value);
-      else val = e.target.value;
-      setPath(ccfg, path, val);
-      saveDatabase(db);
-      if (e.target.dataset.refresh === 'true') renderSub();
-    });
-  }
-}
-
-// ═══════════════════════════════════════════════════════════════
-// VISTA 1: HISTÓRICO
-// ═══════════════════════════════════════════════════════════════
-function renderHistorico(content, db, ccfg) {
-  const hasData = histData.length > 0;
-  let summary = null;
-  if (hasData) {
-    const docsMap = new Map();
-    histData.forEach(r => {
-      if (!docsMap.has(r.documento)) docsMap.set(r.documento, { gasto: r.gasto, pagado: r.hes !== '' });
-    });
-    summary = {
-      totalDocs:   docsMap.size,
-      totalGasto:  [...docsMap.values()].reduce((s, d) => s + d.gasto, 0),
-      pendDocs:    [...docsMap.values()].filter(d => !d.pagado).length,
-      totalTon:    histData.reduce((s, r) => s + r.ton, 0),
-      totalEntreg: histData.length
-    };
-  }
-
-  const grupos = allGroups();
-  // Resumen por Centro de Expedición: documentos, entregas, toneladas, gasto, transportistas, rutas
-  const porCentro = new Map();
-  histData.forEach(r => {
-    const k = r.oficina || '—';
-    if (!porCentro.has(k)) porCentro.set(k, { docs: new Map(), entregas: new Set(), ton: 0, transp: new Set(), rutas: new Set(), caps: new Map() });
-    const e = porCentro.get(k);
-    if (!e.docs.has(r.documento)) { e.docs.set(r.documento, r.gasto); const cb = getCapBucket(r.capTons); e.caps.set(cb, (e.caps.get(cb) || 0) + 1); }
-    if (r.entrega) e.entregas.add(r.entrega);
-    e.ton += r.ton; if (r.transportista) e.transp.add(r.transportista); if (r.idRuta) e.rutas.add(r.idRuta);
-  });
-  const resumenCentro = [...porCentro.entries()].sort((a, b) => b[1].docs.size - a[1].docs.size).map(([c, e]) => {
-    const gasto = [...e.docs.values()].reduce((s, g) => s + g, 0);
-    return { centro: c, grupo: getCentroGroup(c), docs: e.docs.size, entregas: e.entregas.size, ton: e.ton, gasto,
-      entPorDoc: e.docs.size ? e.entregas.size / e.docs.size : 0, tonPorDoc: e.docs.size ? e.ton / e.docs.size : 0,
-      clp_kg: e.ton > 0 ? gasto / (e.ton * 1000) : 0, transp: e.transp.size, rutas: e.rutas.size,
-      caps: [5, 10, 15, 28].map(b => `${b}T:${e.caps.get(b) || 0}`).join(' · ') };
-  });
-  let rows = histData;
-  if (histFilterGrupo  !== 'all') rows = rows.filter(r => getCentroGroup(r.oficina) === histFilterGrupo);
-  if (histFilterEstado === 'pagado')    rows = rows.filter(r => r.hes !== '');
-  if (histFilterEstado === 'pendiente') rows = rows.filter(r => r.hes === '');
-  const totalPages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
-  histPage = Math.min(histPage, totalPages - 1);
-  const pageRows = rows.slice(histPage * PAGE_SIZE, (histPage + 1) * PAGE_SIZE);
-
-  content.innerHTML = `
+  </div>`}function Ve(){const e=Zt(),s=_t(e),t=qt(e);return Kt(t),t.historico&&t.historico.length&&T!==t.historico&&(T=t.historico,H=Q(e,T)),{db:e,cfg:s,ccfg:t,ensureCcfg:Kt,hist:()=>T,grupoDe:W,getCapBucket:pt,computeConsolidacionStats:Tt,objetivoConsol:gt,computeOpClusterMap:It,clusterOpDe:it,anchorsOpFor:ft,persistClusterOpDB:At,asignarClustersCentro:$t,clOpAzimut:Rt,ejeOpDe:zt,EJES_OP:Mt,EJES_OP_DEFAULT:mt}}function Xe(e){const s=Zt(),t=_t(s),n=qt(s);Kt(n),be(s).catch(l=>console.warn("Tarifa vigente:",l.message||l)),n.historico&&n.historico.length?(T=n.historico,H=Q(s,T)):fe().then(l=>{if(l&&l.length>0&&!T.length){T=l,n.historico=l,H=Q(s,l);const v=document.getElementById("ct-content");v&&Wt(v,St,c)}}),e.innerHTML='<div id="ct-content"></div>';const c={db:s,cfg:t,ccfg:n,hist:()=>T,grupoDe:W,getCapBucket:pt,computeConsolidacionStats:Tt,objetivoConsol:gt,computeOpClusterMap:It,clusterOpDe:it,anchorsOpFor:ft,persistClusterOpDB:At,asignarClustersCentro:$t,clOpAzimut:Rt,ejeOpDe:zt,EJES_OP:Mt,EJES_OP_DEFAULT:mt,async recargarFlete360(){const l=await Ut(!0);return l.length?(T=l,H=Q(s,l),B(s,{syncOnly:["clientTariffConfig"]}),k(`${l.length.toLocaleString("es-CL")} filas leídas desde FLETE 360 (6 meses móviles).`),!0):(k("No se pudo leer FLETE 360 (sin datos o sin permisos).","error"),!1)},cargarCsvManual(l,v){const r=new FileReader;r.onload=async C=>{const a=ae(C.target.result);if(!a.length){k("No se encontraron filas válidas en el CSV.","error");return}T=a,H=Q(s,a),n.histMeta={uploadDate:Yt(new Date),rowCount:a.length,fileName:l.name},n.historico=a,B(s,{syncOnly:["clientTariffConfig"]}),kt(a),v();const d=await Pt(a,{fileName:l.name});k(d?"Histórico cargado y sincronizado — visible para todos los usuarios.":"El histórico se guardó localmente, pero falló la sincronización con la base de datos.",d?"success":"error")},r.readAsText(l,"windows-1252")}};Wt(document.getElementById("ct-content"),St,c);return;function m(){const l=document.getElementById("ct-content");switch(St){case"historico":G(l,s,n);break;case"consolidacion":ie(l,s,n);break;case"densidad":we(l,s,n);break;case"especiales":Lt(l,s,n);break;case"cluster":ce(l,s,n);break;case"resultados":Z(l,s,t,n);break;case"zfmi":q(l,s,t,n);break}l.addEventListener("change",v=>{const r=v.target.dataset.path;if(!r)return;let C;v.target.type==="checkbox"?C=v.target.checked:v.target.type==="number"?C=v.target.value===""?0:Number(v.target.value):C=v.target.value,se(n,r,C),B(s),v.target.dataset.refresh==="true"&&m()})}}function G(e,s,t){const n=T.length>0;let c=null;if(n){const a=new Map;T.forEach(d=>{a.has(d.documento)||a.set(d.documento,{gasto:d.gasto,pagado:d.hes!==""})}),c={totalDocs:a.size,totalGasto:[...a.values()].reduce((d,g)=>d+g.gasto,0),pendDocs:[...a.values()].filter(d=>!d.pagado).length,totalTon:T.reduce((d,g)=>d+g.ton,0),totalEntreg:T.length}}const i=Qt(),m=new Map;T.forEach(a=>{const d=a.oficina||"—";m.has(d)||m.set(d,{docs:new Map,entregas:new Set,ton:0,transp:new Set,rutas:new Set,caps:new Map});const g=m.get(d);if(!g.docs.has(a.documento)){g.docs.set(a.documento,a.gasto);const h=pt(a.capTons);g.caps.set(h,(g.caps.get(h)||0)+1)}a.entrega&&g.entregas.add(a.entrega),g.ton+=a.ton,a.transportista&&g.transp.add(a.transportista),a.idRuta&&g.rutas.add(a.idRuta)});const l=[...m.entries()].sort((a,d)=>d[1].docs.size-a[1].docs.size).map(([a,d])=>{const g=[...d.docs.values()].reduce((h,x)=>h+x,0);return{centro:a,grupo:W(a),docs:d.docs.size,entregas:d.entregas.size,ton:d.ton,gasto:g,entPorDoc:d.docs.size?d.entregas.size/d.docs.size:0,tonPorDoc:d.docs.size?d.ton/d.docs.size:0,clp_kg:d.ton>0?g/(d.ton*1e3):0,transp:d.transp.size,rutas:d.rutas.size,caps:[5,10,15,28].map(h=>`${h}T:${d.caps.get(h)||0}`).join(" · ")}});let v=T;et!=="all"&&(v=v.filter(a=>W(a.oficina)===et)),X==="pagado"&&(v=v.filter(a=>a.hes!=="")),X==="pendiente"&&(v=v.filter(a=>a.hes===""));const r=Math.max(1,Math.ceil(v.length/Nt));N=Math.min(N,r-1);const C=v.slice(N*Nt,(N+1)*Nt);e.innerHTML=`
     <div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm mb-lg">
       <div class="flex items-center justify-between mb-md border-b border-outline-variant pb-sm flex-wrap gap-sm">
         <div class="flex items-center gap-sm">
           <span class="material-symbols-outlined text-primary">history</span>
           <h2 class="font-headline-sm text-headline-sm font-bold text-on-surface">Histórico Operacional — 6 Meses</h2>
         </div>
-        ${hasData ? `<button id="hist-clear" class="border border-red-200 hover:bg-red-50 text-red-700 px-md py-sm rounded text-xs font-bold uppercase flex items-center gap-xs"><span class="material-symbols-outlined text-[16px]">delete</span> Vaciar</button>` : ''}
+        ${n?'<button id="hist-clear" class="border border-red-200 hover:bg-red-50 text-red-700 px-md py-sm rounded text-xs font-bold uppercase flex items-center gap-xs"><span class="material-symbols-outlined text-[16px]">delete</span> Vaciar</button>':""}
       </div>
 
       <div class="flex items-center gap-md bg-surface-container-low border border-outline-variant p-md rounded mb-md flex-wrap">
@@ -425,19 +27,19 @@ function renderHistorico(content, db, ccfg) {
         <div class="flex-1 min-w-[260px]">
           <p class="font-body-md font-bold text-on-surface">Fuente: FLETE 360 (ind_flete_pagado) — ventana móvil de 6 meses</p>
           <p class="text-[11px] text-secondary">Se actualiza automáticamente con la carga diaria de Indicadores (08:00). Grano: documento de transporte × entrega × ruta; centro = ID Expedición; toneladas = Σ Peso (Kg).</p>
-          ${ccfg.histMeta.uploadDate ? `<p class="text-[11px] text-primary mt-xs"><b>${escapeHtml(ccfg.histMeta.fileName || '')}</b> — ${Number(ccfg.histMeta.rowCount || 0).toLocaleString()} filas${ccfg.histMeta.desde ? ` · ${ccfg.histMeta.desde} a ${ccfg.histMeta.hasta}` : ''} · leído ${ccfg.histMeta.uploadDate}</p>` : ''}
+          ${t.histMeta.uploadDate?`<p class="text-[11px] text-primary mt-xs"><b>${E(t.histMeta.fileName||"")}</b> — ${Number(t.histMeta.rowCount||0).toLocaleString()} filas${t.histMeta.desde?` · ${t.histMeta.desde} a ${t.histMeta.hasta}`:""} · leído ${t.histMeta.uploadDate}</p>`:""}
         </div>
         <button id="hist-f360" class="bg-primary hover:bg-[#930007] text-white font-bold px-md py-sm rounded text-[11px] uppercase flex items-center gap-xs"><span class="material-symbols-outlined text-[16px]">refresh</span> Actualizar desde FLETE 360</button>
         <label class="text-[11px] text-secondary cursor-pointer underline" title="Respaldo manual: solo si FLETE 360 no está disponible">CSV manual<input type="file" id="hist-csv" accept=".csv" class="hidden"></label>
       </div>
 
-      ${hasData && summary ? `
+      ${n&&c?`
       <div class="grid grid-cols-2 md:grid-cols-5 gap-sm mb-md">
-        ${statCard('Despachos',    summary.totalDocs.toLocaleString(),          'local_shipping')}
-        ${statCard('Entregas',     summary.totalEntreg.toLocaleString(),         'package_2')}
-        ${statCard('Toneladas',    summary.totalTon.toFixed(1) + ' T',           'scale')}
-        ${statCard('Gasto Total',  formatCLP(summary.totalGasto),                'payments')}
-        ${statCard('HES Pendiente',summary.pendDocs.toLocaleString() + ' desp.', 'pending', summary.pendDocs > 0 ? 'text-amber-600' : 'text-green-600')}
+        ${ut("Despachos",c.totalDocs.toLocaleString(),"local_shipping")}
+        ${ut("Entregas",c.totalEntreg.toLocaleString(),"package_2")}
+        ${ut("Toneladas",c.totalTon.toFixed(1)+" T","scale")}
+        ${ut("Gasto Total",lt(c.totalGasto),"payments")}
+        ${ut("HES Pendiente",c.pendDocs.toLocaleString()+" desp.","pending",c.pendDocs>0?"text-amber-600":"text-green-600")}
       </div>
 
       <div class="bg-surface border border-outline-variant rounded overflow-x-auto mb-md">
@@ -457,38 +59,38 @@ function renderHistorico(content, db, ccfg) {
             <th class="p-sm font-label-caps text-secondary uppercase">Docs por camión</th>
           </tr></thead>
           <tbody class="divide-y divide-outline-variant">
-            ${resumenCentro.map(c => `<tr>
-              <td class="p-sm font-data-mono font-bold">${escapeHtml(c.centro)}</td>
-              <td class="p-sm text-[11px]">${escapeHtml(c.grupo)}</td>
-              <td class="p-sm text-right font-data-mono">${c.docs.toLocaleString('es-CL')}</td>
-              <td class="p-sm text-right font-data-mono">${c.entregas.toLocaleString('es-CL')}</td>
-              <td class="p-sm text-right font-data-mono">${c.entPorDoc.toFixed(1)}</td>
-              <td class="p-sm text-right font-data-mono">${c.ton.toLocaleString('es-CL', { maximumFractionDigits: 0 })}</td>
-              <td class="p-sm text-right font-data-mono">${c.tonPorDoc.toFixed(1)}</td>
-              <td class="p-sm text-right font-data-mono">${formatCLP(c.gasto)}</td>
-              <td class="p-sm text-right font-data-mono">${c.clp_kg.toFixed(1)}</td>
-              <td class="p-sm text-right font-data-mono">${c.transp}</td>
-              <td class="p-sm text-right font-data-mono">${c.rutas}</td>
-              <td class="p-sm text-[10px] text-secondary font-data-mono whitespace-nowrap">${c.caps}</td>
-            </tr>`).join('')}
+            ${l.map(a=>`<tr>
+              <td class="p-sm font-data-mono font-bold">${E(a.centro)}</td>
+              <td class="p-sm text-[11px]">${E(a.grupo)}</td>
+              <td class="p-sm text-right font-data-mono">${a.docs.toLocaleString("es-CL")}</td>
+              <td class="p-sm text-right font-data-mono">${a.entregas.toLocaleString("es-CL")}</td>
+              <td class="p-sm text-right font-data-mono">${a.entPorDoc.toFixed(1)}</td>
+              <td class="p-sm text-right font-data-mono">${a.ton.toLocaleString("es-CL",{maximumFractionDigits:0})}</td>
+              <td class="p-sm text-right font-data-mono">${a.tonPorDoc.toFixed(1)}</td>
+              <td class="p-sm text-right font-data-mono">${lt(a.gasto)}</td>
+              <td class="p-sm text-right font-data-mono">${a.clp_kg.toFixed(1)}</td>
+              <td class="p-sm text-right font-data-mono">${a.transp}</td>
+              <td class="p-sm text-right font-data-mono">${a.rutas}</td>
+              <td class="p-sm text-[10px] text-secondary font-data-mono whitespace-nowrap">${a.caps}</td>
+            </tr>`).join("")}
           </tbody>
         </table>
       </div>
 
       <div class="flex items-center gap-sm flex-wrap mb-md">
         <span class="font-label-caps text-label-caps text-secondary uppercase text-[11px]">Filtros:</span>
-        <select id="hist-fg" class="${selectCls}">
+        <select id="hist-fg" class="${ne}">
           <option value="all">Todos los centros</option>
-          ${grupos.map(g => `<option value="${g}" ${histFilterGrupo === g ? 'selected' : ''}>${g}</option>`).join('')}
+          ${i.map(a=>`<option value="${a}" ${et===a?"selected":""}>${a}</option>`).join("")}
         </select>
-        <select id="hist-fe" class="${selectCls}">
-          <option value="all"       ${histFilterEstado === 'all'       ? 'selected' : ''}>HES: Todos</option>
-          <option value="pagado"    ${histFilterEstado === 'pagado'    ? 'selected' : ''}>Pagados</option>
-          <option value="pendiente" ${histFilterEstado === 'pendiente' ? 'selected' : ''}>Pendientes</option>
+        <select id="hist-fe" class="${ne}">
+          <option value="all"       ${X==="all"?"selected":""}>HES: Todos</option>
+          <option value="pagado"    ${X==="pagado"?"selected":""}>Pagados</option>
+          <option value="pendiente" ${X==="pendiente"?"selected":""}>Pendientes</option>
         </select>
-        <span class="text-secondary text-[12px]">${rows.length.toLocaleString()} filas · Pág ${histPage + 1}/${totalPages}</span>
-        ${histPage > 0           ? `<button id="hist-prev" class="border border-outline-variant px-sm py-xs rounded text-[12px] font-bold">‹ Ant.</button>` : ''}
-        ${histPage < totalPages-1 ? `<button id="hist-next" class="border border-outline-variant px-sm py-xs rounded text-[12px] font-bold">Sig. ›</button>` : ''}
+        <span class="text-secondary text-[12px]">${v.length.toLocaleString()} filas · Pág ${N+1}/${r}</span>
+        ${N>0?'<button id="hist-prev" class="border border-outline-variant px-sm py-xs rounded text-[12px] font-bold">‹ Ant.</button>':""}
+        ${N<r-1?'<button id="hist-next" class="border border-outline-variant px-sm py-xs rounded text-[12px] font-bold">Sig. ›</button>':""}
       </div>
 
       <div class="bg-surface border border-outline-variant rounded overflow-x-auto max-h-[480px] overflow-y-auto">
@@ -508,155 +110,25 @@ function renderHistorico(content, db, ccfg) {
             </tr>
           </thead>
           <tbody class="divide-y divide-outline-variant">
-            ${pageRows.map(r => `
+            ${C.map(a=>`
               <tr class="hover:bg-surface-container-low">
-                <td class="p-sm font-data-mono text-[11px]">${r.fecha}</td>
-                <td class="p-sm font-bold text-[11px]">${getCentroGroup(r.oficina)}</td>
-                <td class="p-sm font-data-mono text-[11px]">${escapeHtml(r.documento)}</td>
-                <td class="p-sm font-data-mono text-[11px]">${escapeHtml(r.entrega || '')}</td>
-                <td class="p-sm font-bold">${r.idRuta}</td>
-                <td class="p-sm text-secondary truncate max-w-[150px]" title="${r.transportista}">${r.transportista.split(' ').slice(0, 2).join(' ')}</td>
-                <td class="p-sm text-right font-data-mono">${CAP_LABELS[getCapBucket(r.capTons)] || r.capTons + 'T'}</td>
-                <td class="p-sm text-right font-data-mono">${r.ton.toFixed(2)}</td>
-                <td class="p-sm text-right font-data-mono">${formatCLP(r.gasto)}</td>
-                <td class="p-sm text-center">${r.hes
-                  ? `<span class="text-[10px] bg-green-100 text-green-700 px-xs py-px rounded font-bold">OK</span>`
-                  : `<span class="text-[10px] bg-amber-100 text-amber-700 px-xs py-px rounded font-bold">PEND</span>`}</td>
-              </tr>`).join('')}
+                <td class="p-sm font-data-mono text-[11px]">${a.fecha}</td>
+                <td class="p-sm font-bold text-[11px]">${W(a.oficina)}</td>
+                <td class="p-sm font-data-mono text-[11px]">${E(a.documento)}</td>
+                <td class="p-sm font-data-mono text-[11px]">${E(a.entrega||"")}</td>
+                <td class="p-sm font-bold">${a.idRuta}</td>
+                <td class="p-sm text-secondary truncate max-w-[150px]" title="${a.transportista}">${a.transportista.split(" ").slice(0,2).join(" ")}</td>
+                <td class="p-sm text-right font-data-mono">${jt[pt(a.capTons)]||a.capTons+"T"}</td>
+                <td class="p-sm text-right font-data-mono">${a.ton.toFixed(2)}</td>
+                <td class="p-sm text-right font-data-mono">${lt(a.gasto)}</td>
+                <td class="p-sm text-center">${a.hes?'<span class="text-[10px] bg-green-100 text-green-700 px-xs py-px rounded font-bold">OK</span>':'<span class="text-[10px] bg-amber-100 text-amber-700 px-xs py-px rounded font-bold">PEND</span>'}</td>
+              </tr>`).join("")}
           </tbody>
         </table>
       </div>
-      ` : noDataBanner()}
+      `:J()}
     </div>
-  `;
-
-  document.getElementById('hist-csv')?.addEventListener('change', (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = async (ev) => {
-      const parsed = parseHistCSV(ev.target.result);
-      if (!parsed.length) { showAlert('No se encontraron filas válidas en el CSV.', 'error'); return; }
-      histData = parsed;
-      histPage = 0; histFilterGrupo = 'all'; histFilterEstado = 'all';
-      // Calcular mapa oficina → nombre de grupo (via db.routes.origen_grupo)
-      oficinaToGrupo = computeOficinaGrupos(db, parsed);
-      ccfg.histMeta = { uploadDate: formatDateDDMMYYYY(new Date()), rowCount: parsed.length, fileName: file.name };
-      ccfg.historico = parsed;
-      saveDatabase(db);
-      saveHistorico(parsed); // respaldo local rápido en IndexedDB
-      const msg = `${parsed.length.toLocaleString()} filas cargadas y guardadas.`;
-      if (parsed.length > 5000) showAlert(`${msg} (Más de 5000 registros — puede afectar el rendimiento al guardar.)`, 'warning');
-      else showAlert(msg);
-      renderHistorico(content, db, ccfg);
-      // Subir comprimido (gzip) a Supabase para que cualquier usuario con acceso lo
-      // vea al iniciar sesión, sin depender de este navegador.
-      const okSync = await saveHistoricoGlobal(parsed, { fileName: file.name });
-      showAlert(okSync
-        ? 'Histórico sincronizado con la base de datos — visible para todos los usuarios.'
-        : 'El histórico se guardó localmente, pero falló la sincronización con la base de datos.',
-        okSync ? 'success' : 'error');
-    };
-    reader.readAsText(file, 'windows-1252');
-  });
-
-  document.getElementById('hist-clear')?.addEventListener('click', async () => {
-    if (!await confirmar('¿Vaciar datos en memoria?')) return;
-    histData = []; histPage = 0; oficinaToGrupo = {};
-    ccfg.histMeta = { uploadDate: null, rowCount: 0, fileName: '' };
-    ccfg.historico = [];
-    saveDatabase(db);
-    saveHistorico([]); // limpiar IndexedDB
-    saveHistoricoGlobal([], {}); // limpiar también la copia compartida en Supabase
-    renderHistorico(content, db, ccfg);
-  });
-  document.getElementById('hist-f360')?.addEventListener('click', async (ev) => {
-    const btn = ev.currentTarget; btn.disabled = true; btn.textContent = 'Actualizando…';
-    const rows = await loadHistoricoFlete360(true);
-    if (!rows.length) { showAlert('No se pudo leer FLETE 360 (sin datos o sin permisos).', 'error'); renderHistorico(content, db, ccfg); return; }
-    histData = rows; histPage = 0; histFilterGrupo = 'all'; histFilterEstado = 'all';
-    oficinaToGrupo = computeOficinaGrupos(db, rows);
-    saveDatabase(db); // persiste histMeta (el detalle no se guarda en la config)
-    showAlert(`${rows.length.toLocaleString('es-CL')} filas leídas desde FLETE 360 (6 meses móviles).`);
-    renderHistorico(content, db, ccfg);
-  });
-  document.getElementById('hist-fg')?.addEventListener('change', (e) => { histFilterGrupo  = e.target.value; histPage = 0; renderHistorico(content, db, ccfg); });
-  document.getElementById('hist-fe')?.addEventListener('change', (e) => { histFilterEstado = e.target.value; histPage = 0; renderHistorico(content, db, ccfg); });
-  document.getElementById('hist-prev')?.addEventListener('click', () => { histPage--; renderHistorico(content, db, ccfg); });
-  document.getElementById('hist-next')?.addEventListener('click', () => { histPage++; renderHistorico(content, db, ccfg); });
-}
-
-// ═══════════════════════════════════════════════════════════════
-// VISTA 2: CONSOLIDACIÓN
-// ═══════════════════════════════════════════════════════════════
-// Consolidación de flota por centro y tipo de camión (Santiago+San Bernardo fusionados).
-// Reutilizado por renderConsolidacion y por la columna TARIFA CENTRO de Tarifas $/Kg,
-// para que ambas vistas usen exactamente la misma participación% por centro/camión.
-function computeConsolidacionStats() {
-  const grupoReal = allGroups();
-
-  // Santiago + San Bernardo se fusionan en un solo centro consolidado: se suman
-  // sus toneladas por tipo de camión y la participación% se calcula sobre el
-  // total combinado (en vez de dos tablas separadas con 100% cada una).
-  const STGO_SB_MERGE = ['SANTIAGO', 'SAN BERNARDO'];
-  const MERGE_LABEL    = 'SANTIAGO + SAN BERNARDO';
-  // (5-oct-2026, Jordan) SAN BERNARDO (1005) se separa de SANTIAGO: una tabla por
-  // cada centro, con su propia participación% por tipo de camión.
-  const hayStgoSb = false;
-  const grupos = grupoReal.flatMap(g => {
-    if (hayStgoSb && g === 'SAN BERNARDO') return [];               // se fusiona con SANTIAGO
-    if (hayStgoSb && g === 'SANTIAGO')     return [MERGE_LABEL];    // reemplaza a SANTIAGO
-    return [g];
-  });
-  // Para el grupo fusionado, matchea filas de cualquiera de los 2 centros reales.
-  function grupoMatch(g, oficina) {
-    const real = getCentroGroup(oficina);
-    if (g === MERGE_LABEL) return STGO_SB_MERGE.includes(real);
-    return real === g;
-  }
-  // Resuelve el origen_grupo real de una ruta (SANTIAGO/SAN BERNARDO) a la key de stats
-  // (fusionada si corresponde), para poder buscar su participación%.
-  function resolveGrupoKey(realGrupo) {
-    if (hayStgoSb && STGO_SB_MERGE.includes(realGrupo)) return MERGE_LABEL;
-    return realGrupo;
-  }
-
-  const stats = {};
-  grupos.forEach(g => {
-    stats[g] = {};
-    CAP_BUCKETS.forEach(bkt => {
-      const rows = histData.filter(r => grupoMatch(g, r.oficina) && getCapBucket(r.capTons) === bkt);
-      if (!rows.length) { stats[g][bkt] = null; return; }
-      const docMap = new Map();
-      rows.forEach(r => {
-        if (!docMap.has(r.documento)) docMap.set(r.documento, { tons: 0, gasto: r.gasto });
-        docMap.get(r.documento).tons += r.ton;
-      });
-      const fills    = [...docMap.values()].map(d => Math.min(d.tons / bkt, 1));
-      const avgFill  = fills.reduce((s, f) => s + f, 0) / fills.length;
-      stats[g][bkt]  = { docs: docMap.size, avgFill, totalTon: rows.reduce((s,r) => s + r.ton, 0), totalGasto: [...docMap.values()].reduce((s,d) => s + d.gasto, 0) };
-    });
-  });
-
-  // Participación% de cada bucket dentro de su propio grupo (igual fórmula que la tabla).
-  const partPct = {};
-  grupos.forEach(g => {
-    const totGrupo = CAP_BUCKETS.reduce((s, b) => s + (stats[g][b]?.totalTon || 0), 0);
-    partPct[g] = {};
-    CAP_BUCKETS.forEach(bkt => {
-      const tt = stats[g][bkt]?.totalTon || 0;
-      partPct[g][bkt] = totGrupo > 0 ? (tt / totGrupo * 100) : 0;
-    });
-  });
-
-  return { grupos, stats, partPct, resolveGrupoKey };
-}
-
-function renderConsolidacion(content, db, ccfg) {
-  if (!histData.length) { content.innerHTML = `<div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm">${noDataBanner()}</div>`; return; }
-  const { grupos, stats } = computeConsolidacionStats();
-
-  content.innerHTML = `
+  `,document.getElementById("hist-csv")?.addEventListener("change",a=>{const d=a.target.files[0];if(!d)return;const g=new FileReader;g.onload=async h=>{const x=ae(h.target.result);if(!x.length){k("No se encontraron filas válidas en el CSV.","error");return}T=x,N=0,et="all",X="all",H=Q(s,x),t.histMeta={uploadDate:Yt(new Date),rowCount:x.length,fileName:d.name},t.historico=x,B(s),kt(x);const w=`${x.length.toLocaleString()} filas cargadas y guardadas.`;x.length>5e3?k(`${w} (Más de 5000 registros — puede afectar el rendimiento al guardar.)`,"warning"):k(w),G(e,s,t);const f=await Pt(x,{fileName:d.name});k(f?"Histórico sincronizado con la base de datos — visible para todos los usuarios.":"El histórico se guardó localmente, pero falló la sincronización con la base de datos.",f?"success":"error")},g.readAsText(d,"windows-1252")}),document.getElementById("hist-clear")?.addEventListener("click",async()=>{await Ct("¿Vaciar datos en memoria?")&&(T=[],N=0,H={},t.histMeta={uploadDate:null,rowCount:0,fileName:""},t.historico=[],B(s),kt([]),Pt([],{}),G(e,s,t))}),document.getElementById("hist-f360")?.addEventListener("click",async a=>{const d=a.currentTarget;d.disabled=!0,d.textContent="Actualizando…";const g=await Ut(!0);if(!g.length){k("No se pudo leer FLETE 360 (sin datos o sin permisos).","error"),G(e,s,t);return}T=g,N=0,et="all",X="all",H=Q(s,g),B(s),k(`${g.length.toLocaleString("es-CL")} filas leídas desde FLETE 360 (6 meses móviles).`),G(e,s,t)}),document.getElementById("hist-fg")?.addEventListener("change",a=>{et=a.target.value,N=0,G(e,s,t)}),document.getElementById("hist-fe")?.addEventListener("change",a=>{X=a.target.value,N=0,G(e,s,t)}),document.getElementById("hist-prev")?.addEventListener("click",()=>{N--,G(e,s,t)}),document.getElementById("hist-next")?.addEventListener("click",()=>{N++,G(e,s,t)})}function Tt(){const e=Qt(),s=["SANTIAGO","SAN BERNARDO"],t="SANTIAGO + SAN BERNARDO",n=!1,c=e.flatMap(r=>n&&r==="SAN BERNARDO"?[]:n&&r==="SANTIAGO"?[t]:[r]);function i(r,C){const a=W(C);return r===t?s.includes(a):a===r}function m(r){return n&&s.includes(r)?t:r}const l={};c.forEach(r=>{l[r]={},rt.forEach(C=>{const a=T.filter(x=>i(r,x.oficina)&&pt(x.capTons)===C);if(!a.length){l[r][C]=null;return}const d=new Map;a.forEach(x=>{d.has(x.documento)||d.set(x.documento,{tons:0,gasto:x.gasto}),d.get(x.documento).tons+=x.ton});const g=[...d.values()].map(x=>Math.min(x.tons/C,1)),h=g.reduce((x,w)=>x+w,0)/g.length;l[r][C]={docs:d.size,avgFill:h,totalTon:a.reduce((x,w)=>x+w.ton,0),totalGasto:[...d.values()].reduce((x,w)=>x+w.gasto,0)}})});const v={};return c.forEach(r=>{const C=rt.reduce((a,d)=>a+(l[r][d]?.totalTon||0),0);v[r]={},rt.forEach(a=>{const d=l[r][a]?.totalTon||0;v[r][a]=C>0?d/C*100:0})}),{grupos:c,stats:l,partPct:v,resolveGrupoKey:m}}function ie(e,s,t){if(!T.length){e.innerHTML=`<div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm">${J()}</div>`;return}const{grupos:n,stats:c}=Tt();e.innerHTML=`
     <div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm">
       <div class="flex items-center justify-between mb-md border-b border-outline-variant pb-sm">
         <div class="flex items-center gap-sm">
@@ -668,9 +140,9 @@ function renderConsolidacion(content, db, ccfg) {
         </button>
       </div>
       <p class="text-[12px] text-secondary mb-md">Consolidación = promedio del factor de carga por despacho (Ton_cargadas / Cap_camión, máx 100%). Campo <b>Objetivo (%)</b> editable.</p>
-      ${grupos.map(g => `
+      ${n.map(i=>`
         <div class="mb-lg">
-          <h3 class="font-headline-sm font-bold text-on-surface mb-sm">${g}</h3>
+          <h3 class="font-headline-sm font-bold text-on-surface mb-sm">${i}</h3>
           <div class="bg-surface border border-outline-variant rounded overflow-x-auto">
             <table class="w-full border-collapse text-[13px]">
               <thead><tr class="bg-surface-container-high border-b border-outline-variant text-left">
@@ -683,232 +155,44 @@ function renderConsolidacion(content, db, ccfg) {
                 <th class="p-md font-label-caps text-secondary uppercase text-right">Participación Ton</th>
               </tr></thead>
               <tbody class="divide-y divide-outline-variant">
-                ${(() => {
-                  const totGrupo = CAP_BUCKETS.reduce((s, b) => s + (stats[g][b]?.totalTon || 0), 0);
-                  return CAP_BUCKETS.map(bkt => {
-                    const s = stats[g][bkt];
-                    const objKey  = `consolidacionObjetivo.${g.replace(/\s/g,'_')}.${bkt}`;
-                    const objetivo = getPath(ccfg, objKey, 80);
-                    if (!s) return `<tr class="hover:bg-surface-container-low">
-                      <td class="p-md font-bold">${CAP_LABELS[bkt]}</td>
+                ${(()=>{const m=rt.reduce((l,v)=>l+(c[i][v]?.totalTon||0),0);return rt.map(l=>{const v=c[i][l],r=`consolidacionObjetivo.${i.replace(/\s/g,"_")}.${l}`,C=Ce(t,r,80);if(!v)return`<tr class="hover:bg-surface-container-low">
+                      <td class="p-md font-bold">${jt[l]}</td>
                       <td class="p-md text-secondary text-[11px]" colspan="3">Sin registros</td>
-                      <td class="p-md w-28">${numInput(objKey, objetivo)}</td>
+                      <td class="p-md w-28">${re(r,C)}</td>
                       <td colspan="2"></td>
-                    </tr>`;
-                    const pct      = (s.avgFill * 100).toFixed(1);
-                    const barColor = s.avgFill >= 0.85 ? '#16a34a' : s.avgFill >= 0.65 ? '#d97706' : '#b5000b';
-                    const partPct  = totGrupo > 0 ? (s.totalTon / totGrupo * 100) : 0;
-                    const partColor = partPct >= 40 ? '#b5000b' : partPct >= 20 ? '#d97706' : '#6b7280';
-                    return `<tr class="hover:bg-surface-container-low">
-                      <td class="p-md font-bold">${CAP_LABELS[bkt]}</td>
-                      <td class="p-md text-right font-data-mono">${s.docs.toLocaleString()}</td>
-                      <td class="p-md text-right font-data-mono font-bold" style="color:${barColor}">${pct}%</td>
-                      <td class="p-md w-40"><div class="h-2 bg-surface-container-high rounded overflow-hidden"><div class="h-2 rounded" style="width:${Math.min(s.avgFill*100,100)}%;background:${barColor}"></div></div></td>
-                      <td class="p-md w-28">${numInput(objKey, objetivo)}</td>
-                      <td class="p-md text-right font-data-mono">${s.totalTon.toFixed(1)} T</td>
-                      <td class="p-md text-right font-data-mono font-bold" style="color:${partColor}">${partPct.toFixed(1)}%
-                        <div class="w-16 h-1.5 bg-surface-container-high rounded-full overflow-hidden inline-block ml-xs align-middle"><div class="h-full rounded-full" style="width:${partPct.toFixed(1)}%;background:${partColor}"></div></div>
+                    </tr>`;const a=(v.avgFill*100).toFixed(1),d=v.avgFill>=.85?"#16a34a":v.avgFill>=.65?"#d97706":"#b5000b",g=m>0?v.totalTon/m*100:0,h=g>=40?"#b5000b":g>=20?"#d97706":"#6b7280";return`<tr class="hover:bg-surface-container-low">
+                      <td class="p-md font-bold">${jt[l]}</td>
+                      <td class="p-md text-right font-data-mono">${v.docs.toLocaleString()}</td>
+                      <td class="p-md text-right font-data-mono font-bold" style="color:${d}">${a}%</td>
+                      <td class="p-md w-40"><div class="h-2 bg-surface-container-high rounded overflow-hidden"><div class="h-2 rounded" style="width:${Math.min(v.avgFill*100,100)}%;background:${d}"></div></div></td>
+                      <td class="p-md w-28">${re(r,C)}</td>
+                      <td class="p-md text-right font-data-mono">${v.totalTon.toFixed(1)} T</td>
+                      <td class="p-md text-right font-data-mono font-bold" style="color:${h}">${g.toFixed(1)}%
+                        <div class="w-16 h-1.5 bg-surface-container-high rounded-full overflow-hidden inline-block ml-xs align-middle"><div class="h-full rounded-full" style="width:${g.toFixed(1)}%;background:${h}"></div></div>
                       </td>
-                    </tr>`;
-                  }).join('');
-                })()}
+                    </tr>`}).join("")})()}
               </tbody>
             </table>
           </div>
-        </div>`).join('')}
-    </div>`;
-
-  document.getElementById('btn-refresh-consolidacion')?.addEventListener('click', () => {
-    renderConsolidacion(content, db, ccfg);
-  });
-}
-
-// ═══════════════════════════════════════════════════════════════
-// VISTA 3: DENSIDAD LOGÍSTICA (con rollup sector → comuna)
-// ═══════════════════════════════════════════════════════════════
-function buildDensidadData(db, rowsGrupo) {
-  // 1. Acumular stats por ID Ruta
-  const rawStats = new Map(); // idRuta → { clientes, obras, ton, dbRoute }
-  rowsGrupo.forEach(r => {
-    const dbRoute = findRoute(db, r.idRuta);
-    if (!rawStats.has(r.idRuta)) rawStats.set(r.idRuta, { clientes: new Set(), obras: new Set(), ton: 0, dbRoute });
-    const e = rawStats.get(r.idRuta);
-    if (r.idCliente && r.idCliente !== '-') e.clientes.add(r.idCliente);
-    if (r.idObra    && r.idObra    !== '-') e.obras.add(r.idObra);
-    e.ton += r.ton;
-  });
-
-  // 2. Mapa comunaName.toLowerCase() → codigo de ruta COMUNA
-  const comunaToRoute = new Map();
-  rawStats.forEach((stats, codigo) => {
-    if (stats.dbRoute?.tipo === 'Comuna') {
-      const c = (stats.dbRoute.comuna || stats.dbRoute.destino || '').toLowerCase();
-      if (c) comunaToRoute.set(c, codigo);
-    }
-  });
-
-  // 3. Rollup sectores → su comuna padre (via transport_zones)
-  rawStats.forEach((stats, codigo) => {
-    if (stats.dbRoute?.tipo !== 'Sector') return;
-    const comunaPadre = getSectorComunaPadre(db, stats.dbRoute);
-    if (!comunaPadre) return;
-    const parentCodigo = comunaToRoute.get(comunaPadre.toLowerCase());
-    if (!parentCodigo || parentCodigo === codigo) return;
-    const parent = rawStats.get(parentCodigo);
-    if (!parent) return;
-    stats.clientes.forEach(c => parent.clientes.add(c));
-    stats.obras.forEach(o => parent.obras.add(o));
-    parent.ton += stats.ton;
-    stats._rolledUp = true; // marcar como ya consolidado
-  });
-
-  // 4. Solo rutas COMUNA (sectores ya consolidados); o rutas sin tipo conocido
-  const result = [];
-  rawStats.forEach((stats, idRuta) => {
-    if (stats._rolledUp) return;                       // sector absorbido
-    if (stats.dbRoute?.tipo === 'Sector') return;      // sector sin padre conocido — omitir
-    result.push({ idRuta, destino: stats.dbRoute?.destino || idRuta, tipo: stats.dbRoute?.tipo || '?', clientes: stats.clientes.size, obras: stats.obras.size, ton: stats.ton });
-  });
-  return result;
-}
-
-function renderDensidad(content, db, ccfg) {
-  if (!histData.length) {
-    content.innerHTML = `<div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm">${noDataBanner()}</div>`;
-    return;
-  }
-
-  const cfg    = getTariffConfig(db);           // necesario para guardar participacionRutas
-  const grupos = getOrigenGroups(db);
-
-  // Lookup ruta por código/id
-  const routeByCode = new Map();
-  (db.routes || []).filter(r => r.activo).forEach(r => {
-    if (r.codigo) routeByCode.set(String(r.codigo).toUpperCase(), r);
-    if (r.id)     routeByCode.set(String(r.id).toUpperCase(), r);
-  });
-
-  // ── Construir datos por centro ──────────────────────────────────────────
-  function buildCentroData(grupoObj) {
-    const { grupo, centroIds } = grupoObj;
-    const centroIdSet = new Set((centroIds || []).map(String));
-
-    // Rutas candidatas: tipo=Comuna Y clasificRuta=Regional para este centro
-    const centroRoutes = (db.routes || []).filter(r => {
-      if (!r.activo) return false;
-      if ((r.tipo || '').toLowerCase() !== 'comuna') return false;
-      if (r.clasificRuta !== 'Regional') return false;
-      if (r.origen_grupo) return r.origen_grupo === grupo;
-      return centroIdSet.has(String(r.origenId));
-    });
-    if (!centroRoutes.length) return null;
-
-    const validCodes = new Set();
-    centroRoutes.forEach(r => {
-      if (r.codigo) validCodes.add(String(r.codigo).toUpperCase());
-      if (r.id)     validCodes.add(String(r.id).toUpperCase());
-    });
-
-    // Acumular stats desde histData
-    const routeStats = new Map(); // codigo → { route, clientes, obras, ton }
-    const totClientes = new Set();
-    const totObras    = new Set();
-
-    histData.forEach(h => {
-      if (!validCodes.has(String(h.idRuta).toUpperCase())) return;
-      const route = routeByCode.get(String(h.idRuta).toUpperCase());
-      if (!route) return;
-      const key = route.codigo || String(h.idRuta);
-      if (!routeStats.has(key)) routeStats.set(key, { route, clientes: new Set(), obras: new Set(), ton: 0 });
-      const s = routeStats.get(key);
-      if (h.idCliente && h.idCliente !== '-') { s.clientes.add(h.idCliente); totClientes.add(h.idCliente); }
-      if (h.idObra    && h.idObra    !== '-') { s.obras.add(h.idObra);       totObras.add(h.idObra); }
-      s.ton += h.ton;
-    });
-
-    // Incluir rutas sin histórico (ton=0)
-    centroRoutes.forEach(r => {
-      const key = r.codigo || String(r.id);
-      if (!routeStats.has(key)) routeStats.set(key, { route: r, clientes: new Set(), obras: new Set(), ton: 0 });
-    });
-
-    // Pools de toneladas por característica (ISLA y EXTREMA calculan su peso% sobre su propio pool)
-    let totTonNormal = 0, totTonIsla = 0, totTonExtrema = 0;
-    routeStats.forEach(s => {
-      const c = (s.route.caracteristica || '').toUpperCase();
-      if      (c === 'ISLA')    totTonIsla    += s.ton;
-      else if (c === 'EXTREMA') totTonExtrema += s.ton;
-      else                      totTonNormal  += s.ton;
-    });
-    const totTon  = totTonNormal + totTonIsla + totTonExtrema;
-    const baseCli = totClientes.size || 1;
-    const baseObr = totObras.size    || 1;
-    const baseTon = totTon           || 1;
-
-    const rows = [...routeStats.values()].map(s => {
-      const caract   = (s.route.caracteristica || '').toUpperCase();
-      const isIsla   = caract === 'ISLA';
-      const isExt    = caract === 'EXTREMA';
-      const pool     = isIsla ? totTonIsla : isExt ? totTonExtrema : totTonNormal;
-      const peso     = pool > 0 ? (s.ton / pool) * 100 : 0;
-      const pctCli   = (s.clientes.size / baseCli) * 100;
-      const pctObra  = (s.obras.size    / baseObr) * 100;
-      const pctTon   = (s.ton           / baseTon) * 100;
-      const densidad = (pctCli + pctObra + pctTon) / 3;
-      return {
-        rutaId:     s.route.id     || '',
-        rutaCodigo: s.route.codigo || '',
-        destino:    s.route.destino || '',
-        zona:       s.route.id_zona_transporte || '',
-        caracteristica: caract,
-        clientes:   s.clientes.size,
-        obras:      s.obras.size,
-        ton:        s.ton,
-        pctCli, pctObra, pctTon, peso, densidad
-      };
-    }).sort((a, b) => b.densidad - a.densidad);
-
-    return { grupo, rows,
-      totalClientes: totClientes.size, totalObras: totObras.size,
-      totTon, totTonNormal, totTonIsla, totTonExtrema };
-  }
-
-  const centrosData = grupos.map(buildCentroData).filter(Boolean);
-
-  if (!centrosData.length) {
-    content.innerHTML = `<div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm">${noDataBanner('No se encontraron rutas tipo=Comuna + clasificación=Regional.')}</div>`;
-    return;
-  }
-
-  // ── HTML tarjeta por centro ─────────────────────────────────────────────
-  function tablaHtml(cd) {
-    const maxDen  = cd.rows[0]?.densidad || 1;
-    const conHist = cd.rows.filter(r => r.ton > 0).length;
-    const uid     = cd.grupo.replace(/[^a-z0-9]/gi, '_');
-    const poolInfo = [
-      `<b>${cd.totTonNormal.toFixed(1)} T</b> normal`,
-      cd.totTonIsla    > 0 ? `<b>${cd.totTonIsla.toFixed(1)} T</b> isla`    : '',
-      cd.totTonExtrema > 0 ? `<b>${cd.totTonExtrema.toFixed(1)} T</b> extrema` : ''
-    ].filter(Boolean).join(' · ');
-
-    return `
-    <div class="border-2 border-outline-variant shadow-sm mb-xl rounded overflow-hidden" id="den-tabla-${uid}">
+        </div>`).join("")}
+    </div>`,document.getElementById("btn-refresh-consolidacion")?.addEventListener("click",()=>{ie(e,s,t)})}function Je(e,s){const t=new Map;s.forEach(i=>{const m=te(e,i.idRuta);t.has(i.idRuta)||t.set(i.idRuta,{clientes:new Set,obras:new Set,ton:0,dbRoute:m});const l=t.get(i.idRuta);i.idCliente&&i.idCliente!=="-"&&l.clientes.add(i.idCliente),i.idObra&&i.idObra!=="-"&&l.obras.add(i.idObra),l.ton+=i.ton});const n=new Map;t.forEach((i,m)=>{if(i.dbRoute?.tipo==="Comuna"){const l=(i.dbRoute.comuna||i.dbRoute.destino||"").toLowerCase();l&&n.set(l,m)}}),t.forEach((i,m)=>{if(i.dbRoute?.tipo!=="Sector")return;const l=ve(e,i.dbRoute);if(!l)return;const v=n.get(l.toLowerCase());if(!v||v===m)return;const r=t.get(v);r&&(i.clientes.forEach(C=>r.clientes.add(C)),i.obras.forEach(C=>r.obras.add(C)),r.ton+=i.ton,i._rolledUp=!0)});const c=[];return t.forEach((i,m)=>{i._rolledUp||i.dbRoute?.tipo!=="Sector"&&c.push({idRuta:m,destino:i.dbRoute?.destino||m,tipo:i.dbRoute?.tipo||"?",clientes:i.clientes.size,obras:i.obras.size,ton:i.ton})}),c}function we(e,s,t){if(!T.length){e.innerHTML=`<div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm">${J()}</div>`;return}const n=_t(s),c=yt(s),i=new Map;(s.routes||[]).filter(r=>r.activo).forEach(r=>{r.codigo&&i.set(String(r.codigo).toUpperCase(),r),r.id&&i.set(String(r.id).toUpperCase(),r)});function m(r){const{grupo:C,centroIds:a}=r,d=new Set((a||[]).map(String)),g=(s.routes||[]).filter(p=>!p.activo||(p.tipo||"").toLowerCase()!=="comuna"||p.clasificRuta!=="Regional"?!1:p.origen_grupo?p.origen_grupo===C:d.has(String(p.origenId)));if(!g.length)return null;const h=new Set;g.forEach(p=>{p.codigo&&h.add(String(p.codigo).toUpperCase()),p.id&&h.add(String(p.id).toUpperCase())});const x=new Map,w=new Set,f=new Set;T.forEach(p=>{if(!h.has(String(p.idRuta).toUpperCase()))return;const u=i.get(String(p.idRuta).toUpperCase());if(!u)return;const A=u.codigo||String(p.idRuta);x.has(A)||x.set(A,{route:u,clientes:new Set,obras:new Set,ton:0});const j=x.get(A);p.idCliente&&p.idCliente!=="-"&&(j.clientes.add(p.idCliente),w.add(p.idCliente)),p.idObra&&p.idObra!=="-"&&(j.obras.add(p.idObra),f.add(p.idObra)),j.ton+=p.ton}),g.forEach(p=>{const u=p.codigo||String(p.id);x.has(u)||x.set(u,{route:p,clientes:new Set,obras:new Set,ton:0})});let b=0,S=0,$=0;x.forEach(p=>{const u=(p.route.caracteristica||"").toUpperCase();u==="ISLA"?S+=p.ton:u==="EXTREMA"?$+=p.ton:b+=p.ton});const D=b+S+$,F=w.size||1,M=f.size||1,P=D||1,o=[...x.values()].map(p=>{const u=(p.route.caracteristica||"").toUpperCase(),_=u==="ISLA"?S:u==="EXTREMA"?$:b,y=_>0?p.ton/_*100:0,L=p.clientes.size/F*100,R=p.obras.size/M*100,z=p.ton/P*100,K=(L+R+z)/3;return{rutaId:p.route.id||"",rutaCodigo:p.route.codigo||"",destino:p.route.destino||"",zona:p.route.id_zona_transporte||"",caracteristica:u,clientes:p.clientes.size,obras:p.obras.size,ton:p.ton,pctCli:L,pctObra:R,pctTon:z,peso:y,densidad:K}}).sort((p,u)=>u.densidad-p.densidad);return{grupo:C,rows:o,totalClientes:w.size,totalObras:f.size,totTon:D,totTonNormal:b,totTonIsla:S,totTonExtrema:$}}const l=c.map(m).filter(Boolean);if(!l.length){e.innerHTML=`<div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm">${J("No se encontraron rutas tipo=Comuna + clasificación=Regional.")}</div>`;return}function v(r){const C=r.rows[0]?.densidad||1,a=r.rows.filter(h=>h.ton>0).length,d=r.grupo.replace(/[^a-z0-9]/gi,"_"),g=[`<b>${r.totTonNormal.toFixed(1)} T</b> normal`,r.totTonIsla>0?`<b>${r.totTonIsla.toFixed(1)} T</b> isla`:"",r.totTonExtrema>0?`<b>${r.totTonExtrema.toFixed(1)} T</b> extrema`:""].filter(Boolean).join(" · ");return`
+    <div class="border-2 border-outline-variant shadow-sm mb-xl rounded overflow-hidden" id="den-tabla-${d}">
       <div class="flex items-center justify-between px-lg pt-md pb-sm border-b-2 border-primary bg-surface-container-high flex-wrap gap-sm">
         <div class="flex items-center gap-sm">
           <span class="material-symbols-outlined text-primary text-[20px]">location_on</span>
-          <h3 class="font-headline-sm font-bold text-on-surface">${escapeHtml(cd.grupo)}</h3>
+          <h3 class="font-headline-sm font-bold text-on-surface">${E(r.grupo)}</h3>
         </div>
         <div class="flex items-center gap-md">
-          <span class="font-data-mono text-[11px] text-secondary">${conHist} rutas con histórico · ${cd.totTon.toLocaleString('es-CL',{maximumFractionDigits:1})} ton · ${cd.rows.length} total</span>
-          <button class="den-guardar-centro border border-primary text-primary hover:bg-primary hover:text-white font-bold px-md py-xs rounded flex items-center gap-xs text-[11px] uppercase transition-colors" data-grupo="${escapeHtml(cd.grupo)}">
+          <span class="font-data-mono text-[11px] text-secondary">${a} rutas con histórico · ${r.totTon.toLocaleString("es-CL",{maximumFractionDigits:1})} ton · ${r.rows.length} total</span>
+          <button class="den-guardar-centro border border-primary text-primary hover:bg-primary hover:text-white font-bold px-md py-xs rounded flex items-center gap-xs text-[11px] uppercase transition-colors" data-grupo="${E(r.grupo)}">
             <span class="material-symbols-outlined text-[14px]">save</span> Guardar
           </button>
         </div>
       </div>
       <div class="px-md py-sm flex gap-lg border-b border-outline-variant bg-surface-container-lowest text-[12px] text-secondary flex-wrap">
-        <span><b>${cd.totalClientes}</b> clientes únicos</span>
-        <span><b>${cd.totalObras}</b> obras únicas</span>
-        <span>${poolInfo}</span>
+        <span><b>${r.totalClientes}</b> clientes únicos</span>
+        <span><b>${r.totalObras}</b> obras únicas</span>
+        <span>${g}</span>
         <span class="text-[10px] italic ml-auto">Peso% = ton/pool · Densidad = avg(%cli+%obras+%ton)</span>
       </div>
       <div class="overflow-x-auto">
@@ -928,104 +212,57 @@ function renderDensidad(content, db, ccfg) {
             </tr>
           </thead>
           <tbody class="divide-y divide-outline-variant">
-            ${cd.rows.map((r, i) => {
-              const bc       = r.densidad >= 15 ? '#b5000b' : r.densidad >= 5 ? '#d97706' : '#6b7280';
-              const bw       = maxDen > 0 ? Math.min(r.densidad / maxDen * 100, 100) : 0;
-              const isEspec  = ['ISLA','EXTREMA'].includes(r.caracteristica);
-              const specCls  = r.caracteristica === 'ISLA' ? 'bg-blue-100 text-blue-700' : 'bg-orange-100 text-orange-700';
-              const specBadge = isEspec ? `<span class="ml-xs inline-flex px-1 py-0.5 rounded text-[9px] font-bold ${specCls}">${r.caracteristica}</span>` : '';
-              return `<tr class="border-b border-outline-variant hover:bg-surface-container-low">
-                <td class="p-sm text-right text-secondary font-data-mono text-[11px]">${i+1}</td>
-                <td class="p-sm font-data-mono text-[11px] text-primary font-bold">${escapeHtml(r.rutaCodigo)}</td>
-                <td class="p-sm">${escapeHtml(r.destino)}${specBadge}</td>
-                <td class="p-sm text-secondary text-[11px]">${escapeHtml(r.zona)}</td>
-                <td class="p-sm text-right font-data-mono text-[11px]">${r.clientes} <span class="text-secondary">(${r.pctCli.toFixed(1)}%)</span></td>
-                <td class="p-sm text-right font-data-mono text-[11px]">${r.obras} <span class="text-secondary">(${r.pctObra.toFixed(1)}%)</span></td>
-                <td class="p-sm text-right font-data-mono text-[11px]">${r.ton.toFixed(1)} <span class="text-secondary">(${r.pctTon.toFixed(1)}%)</span></td>
-                <td class="p-sm text-right font-bold font-data-mono text-[11px]">${r.peso.toFixed(2)}%</td>
-                <td class="p-sm text-right font-bold font-data-mono text-[11px]" style="color:${bc}">${r.densidad.toFixed(2)}%</td>
-                <td class="p-sm"><div class="w-20 h-2 bg-surface-container-high rounded-full overflow-hidden"><div class="h-full rounded-full" style="width:${bw}%;background:${bc}"></div></div></td>
-              </tr>`;
-            }).join('')}
+            ${r.rows.map((h,x)=>{const w=h.densidad>=15?"#b5000b":h.densidad>=5?"#d97706":"#6b7280",f=C>0?Math.min(h.densidad/C*100,100):0,b=["ISLA","EXTREMA"].includes(h.caracteristica),S=h.caracteristica==="ISLA"?"bg-blue-100 text-blue-700":"bg-orange-100 text-orange-700",$=b?`<span class="ml-xs inline-flex px-1 py-0.5 rounded text-[9px] font-bold ${S}">${h.caracteristica}</span>`:"";return`<tr class="border-b border-outline-variant hover:bg-surface-container-low">
+                <td class="p-sm text-right text-secondary font-data-mono text-[11px]">${x+1}</td>
+                <td class="p-sm font-data-mono text-[11px] text-primary font-bold">${E(h.rutaCodigo)}</td>
+                <td class="p-sm">${E(h.destino)}${$}</td>
+                <td class="p-sm text-secondary text-[11px]">${E(h.zona)}</td>
+                <td class="p-sm text-right font-data-mono text-[11px]">${h.clientes} <span class="text-secondary">(${h.pctCli.toFixed(1)}%)</span></td>
+                <td class="p-sm text-right font-data-mono text-[11px]">${h.obras} <span class="text-secondary">(${h.pctObra.toFixed(1)}%)</span></td>
+                <td class="p-sm text-right font-data-mono text-[11px]">${h.ton.toFixed(1)} <span class="text-secondary">(${h.pctTon.toFixed(1)}%)</span></td>
+                <td class="p-sm text-right font-bold font-data-mono text-[11px]">${h.peso.toFixed(2)}%</td>
+                <td class="p-sm text-right font-bold font-data-mono text-[11px]" style="color:${w}">${h.densidad.toFixed(2)}%</td>
+                <td class="p-sm"><div class="w-20 h-2 bg-surface-container-high rounded-full overflow-hidden"><div class="h-full rounded-full" style="width:${f}%;background:${w}"></div></div></td>
+              </tr>`}).join("")}
           </tbody>
           <tfoot>
             <tr class="bg-surface-container-high border-t-2 border-outline-variant font-bold">
               <td colspan="4" class="p-sm text-right">Total</td>
-              <td class="p-sm text-right font-data-mono text-[11px]">${cd.totalClientes}</td>
-              <td class="p-sm text-right font-data-mono text-[11px]">${cd.totalObras}</td>
-              <td class="p-sm text-right font-data-mono text-[11px]">${cd.totTon.toFixed(1)} T</td>
+              <td class="p-sm text-right font-data-mono text-[11px]">${r.totalClientes}</td>
+              <td class="p-sm text-right font-data-mono text-[11px]">${r.totalObras}</td>
+              <td class="p-sm text-right font-data-mono text-[11px]">${r.totTon.toFixed(1)} T</td>
               <td colspan="3"></td>
             </tr>
           </tfoot>
         </table>
       </div>
-    </div>`;
-  }
-
-  content.innerHTML = `
+    </div>`}e.innerHTML=`
     <div>
       <div class="flex items-center gap-sm mb-lg flex-wrap">
         <span class="material-symbols-outlined text-primary">location_on</span>
         <h2 class="font-headline-sm font-bold text-on-surface">Densidad Logística y Participación de Rutas</h2>
         <span class="text-[11px] text-secondary ml-auto">Solo rutas tipo=Comuna + Regional · Ordena por Densidad desc</span>
       </div>
-      ${centrosData.map(cd => tablaHtml(cd)).join('')}
+      ${l.map(r=>v(r)).join("")}
     </div>
-  `;
-
-  // ── Guardar participación al hacer click ────────────────────────────────
-  content.querySelectorAll('.den-guardar-centro').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const grupo = btn.dataset.grupo;
-      const cd    = centrosData.find(c => c.grupo === grupo);
-      if (!cd) return;
-      if (!cfg.participacionRutas) cfg.participacionRutas = {};
-      cd.rows.forEach(r => {
-        const entry = { peso: r.peso / 100, toneladas: r.ton, clientes: r.clientes, obras: r.obras };
-        if (r.rutaId)     cfg.participacionRutas[String(r.rutaId)]     = entry;
-        if (r.rutaCodigo) cfg.participacionRutas[String(r.rutaCodigo)] = entry;
-      });
-      saveDatabase(db);
-      btn.innerHTML = '<span class="material-symbols-outlined text-[14px]">check_circle</span> Guardado';
-      btn.classList.add('bg-primary','text-white');
-      setTimeout(() => {
-        btn.innerHTML = '<span class="material-symbols-outlined text-[14px]">save</span> Guardar';
-        btn.classList.remove('bg-primary','text-white');
-      }, 2000);
-    });
-  });
-}
-
-
-// ═══════════════════════════════════════════════════════════════
-// VISTA 4: FRECUENCIA Y ESPECIALES (clusters dinámicos)
-// ═══════════════════════════════════════════════════════════════
-function clusterRow(c, idx) {
-  const iCls = 'border border-[#CED4DA] p-xs font-data-mono text-data-mono focus:border-primary focus:ring-0 bg-white rounded';
-  const habilitado = c.tipo0000Habilitado !== false;
-  return `<tr class="hover:bg-surface-container-low border-b border-outline-variant">
-    <td class="p-md"><input type="text" class="${iCls} w-full" data-path="clusters.${idx}.nombre" value="${c.nombre.replace(/"/g,'&quot;')}"></td>
-    <td class="p-md text-center"><input type="color" class="w-10 h-8 border border-outline-variant rounded cursor-pointer" data-path="clusters.${idx}.color" value="${c.color}"></td>
-    <td class="p-md"><input type="number" step="0.01" min="0" max="100" class="${iCls} w-20 text-right" data-path="clusters.${idx}.nv" value="${c.nv}"></td>
-    <td class="p-md"><input type="text" class="${iCls} w-full" data-path="clusters.${idx}.frecuencia" value="${(c.frecuencia||'').replace(/"/g,'&quot;')}"></td>
+  `,e.querySelectorAll(".den-guardar-centro").forEach(r=>{r.addEventListener("click",()=>{const C=r.dataset.grupo,a=l.find(d=>d.grupo===C);a&&(n.participacionRutas||(n.participacionRutas={}),a.rows.forEach(d=>{const g={peso:d.peso/100,toneladas:d.ton,clientes:d.clientes,obras:d.obras};d.rutaId&&(n.participacionRutas[String(d.rutaId)]=g),d.rutaCodigo&&(n.participacionRutas[String(d.rutaCodigo)]=g)}),B(s),r.innerHTML='<span class="material-symbols-outlined text-[14px]">check_circle</span> Guardado',r.classList.add("bg-primary","text-white"),setTimeout(()=>{r.innerHTML='<span class="material-symbols-outlined text-[14px]">save</span> Guardar',r.classList.remove("bg-primary","text-white")},2e3))})})}function Ee(e,s){const t="border border-[#CED4DA] p-xs font-data-mono text-data-mono focus:border-primary focus:ring-0 bg-white rounded",n=e.tipo0000Habilitado!==!1;return`<tr class="hover:bg-surface-container-low border-b border-outline-variant">
+    <td class="p-md"><input type="text" class="${t} w-full" data-path="clusters.${s}.nombre" value="${e.nombre.replace(/"/g,"&quot;")}"></td>
+    <td class="p-md text-center"><input type="color" class="w-10 h-8 border border-outline-variant rounded cursor-pointer" data-path="clusters.${s}.color" value="${e.color}"></td>
+    <td class="p-md"><input type="number" step="0.01" min="0" max="100" class="${t} w-20 text-right" data-path="clusters.${s}.nv" value="${e.nv}"></td>
+    <td class="p-md"><input type="text" class="${t} w-full" data-path="clusters.${s}.frecuencia" value="${(e.frecuencia||"").replace(/"/g,"&quot;")}"></td>
     <td class="p-md text-center">
       <label class="flex items-center justify-center gap-xs cursor-pointer">
-        <input type="checkbox" data-path="clusters.${idx}.tipo0000Habilitado" ${habilitado ? 'checked' : ''} class="w-4 h-4 text-primary border-[#CED4DA] rounded">
-        <span class="text-[10px] text-secondary">${habilitado ? 'ON' : 'OFF'}</span>
+        <input type="checkbox" data-path="clusters.${s}.tipo0000Habilitado" ${n?"checked":""} class="w-4 h-4 text-primary border-[#CED4DA] rounded">
+        <span class="text-[10px] text-secondary">${n?"ON":"OFF"}</span>
       </label>
     </td>
-    <td class="p-md">${habilitado ? `<input type="number" step="1" min="0" class="${iCls} w-24 text-right" data-path="clusters.${idx}.tipo0000" value="${c.tipo0000 || 0}">` : '<span class="text-secondary text-[11px]">—</span>'}</td>
+    <td class="p-md">${n?`<input type="number" step="1" min="0" class="${t} w-24 text-right" data-path="clusters.${s}.tipo0000" value="${e.tipo0000||0}">`:'<span class="text-secondary text-[11px]">—</span>'}</td>
     <td class="p-md text-center">
-      <button class="del-cluster border border-red-200 hover:bg-red-50 text-red-700 px-sm py-xs rounded text-[11px] font-bold flex items-center gap-xs mx-auto" data-idx="${idx}">
+      <button class="del-cluster border border-red-200 hover:bg-red-50 text-red-700 px-sm py-xs rounded text-[11px] font-bold flex items-center gap-xs mx-auto" data-idx="${s}">
         <span class="material-symbols-outlined text-[14px]">delete</span>
       </button>
     </td>
-  </tr>`;
-}
-
-function renderEspeciales(content, db, ccfg) {
-  const selectCls2 = 'border border-[#CED4DA] px-sm py-xs font-body-md text-body-md focus:border-primary focus:ring-0 bg-white rounded';
-  content.innerHTML = `
+  </tr>`}function Lt(e,s,t){const n="border border-[#CED4DA] px-sm py-xs font-body-md text-body-md focus:border-primary focus:ring-0 bg-white rounded";e.innerHTML=`
     <div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm">
       <div class="flex items-center justify-between mb-md border-b border-outline-variant pb-sm flex-wrap gap-sm">
         <div class="flex items-center gap-sm">
@@ -1053,7 +290,7 @@ function renderEspeciales(content, db, ccfg) {
             <th class="p-md font-label-caps text-secondary uppercase text-center">Eliminar</th>
           </tr></thead>
           <tbody id="clusters-tbody">
-            ${ccfg.clusters.map((c, i) => clusterRow(c, i)).join('')}
+            ${t.clusters.map((c,i)=>Ee(c,i)).join("")}
           </tbody>
         </table>
       </div>
@@ -1062,1288 +299,26 @@ function renderEspeciales(content, db, ccfg) {
         <h3 class="font-bold text-[13px] text-on-surface mb-xs">Recargo por Exclusividad — por Centro</h3>
         <p class="text-[11px] text-secondary mb-sm">% aplicado sobre ZCAP para calcular Tarifa Express en vista Tarifa Min/Max.</p>
         <div class="grid grid-cols-2 md:grid-cols-4 gap-sm">
-          ${getOrigenGroups(db).map(g => {
-            const gk = g.grupo.replace(/\s/g, '_');
-            const _rv = ccfg.especiales?.recargoExclusividad?.[gk] ?? ccfg.especiales?.recargoExclusividad?.[g.grupo];
-            const val = (_rv && typeof _rv === 'object') ? (_rv.activo === false ? 0 : (Number(_rv.pct) || 0)) : (Number(_rv) || 0);
-            return `
+          ${yt(s).map(c=>{const i=c.grupo.replace(/\s/g,"_"),m=t.especiales?.recargoExclusividad?.[i]??t.especiales?.recargoExclusividad?.[c.grupo],l=m&&typeof m=="object"?m.activo===!1?0:Number(m.pct)||0:Number(m)||0;return`
             <div class="flex flex-col gap-xs">
-              <label class="font-label-caps text-label-caps text-secondary uppercase text-[10px]">${g.nombre || g.grupo}</label>
+              <label class="font-label-caps text-label-caps text-secondary uppercase text-[10px]">${c.nombre||c.grupo}</label>
               <div class="flex items-center gap-xs">
                 <input type="number" step="any" min="0" max="999"
                   class="border border-[#CED4DA] p-xs font-data-mono text-data-mono text-right focus:border-primary focus:ring-0 bg-white rounded w-full"
-                  data-path="especiales.recargoExclusividad.${gk}"
-                  value="${val}">
+                  data-path="especiales.recargoExclusividad.${i}"
+                  value="${l}">
                 <span class="text-[12px] text-secondary font-bold">%</span>
               </div>
-            </div>`;
-          }).join('')}
+            </div>`}).join("")}
         </div>
       </div>
     </div>
-  `;
+  `,e.querySelectorAll('[data-path^="clusters."]').forEach(c=>{c.addEventListener("change",()=>{const i=c.dataset.path.split("."),m=parseInt(i[1]),l=i[2];t.clusters[m]&&(c.type==="checkbox"?t.clusters[m][l]=c.checked:c.type==="number"?t.clusters[m][l]=c.value===""?0:Number(c.value):t.clusters[m][l]=c.value,B(s),l==="tipo0000Habilitado"&&Lt(e,s,t))})}),e.querySelectorAll('[data-path^="especiales."]').forEach(c=>{c.addEventListener("change",()=>{se(t,c.dataset.path,c.value===""?0:Number(c.value)),B(s)})}),document.getElementById("add-cluster")?.addEventListener("click",()=>{const c=ye(t);t.clusters.push({key:c,nombre:"Cluster "+c,color:"#6b7280",nv:90,frecuencia:"Semanal",tipo0000:0,tipo0000Habilitado:!1}),B(s),Lt(e,s,t)}),e.querySelectorAll(".del-cluster").forEach(c=>{c.addEventListener("click",async()=>{const i=parseInt(c.dataset.idx),m=t.clusters[i]?.key,l=t.clusters[i]?.nombre||"";await Ct('Eliminar cluster "'+l+`"?
+Las rutas asignadas quedarán sin cluster.`)&&(t.clusters.splice(i,1),m&&Object.keys(t.comunaCluster).forEach(v=>{t.comunaCluster[v]===m&&delete t.comunaCluster[v]}),B(s),Lt(e,s,t))})})}function le(e,s,t,n){const i=(t-e)*Math.PI/180,m=(n-s)*Math.PI/180,l=Math.sin(i/2)**2+Math.cos(e*Math.PI/180)*Math.cos(t*Math.PI/180)*Math.sin(m/2)**2;return 6371*2*Math.atan2(Math.sqrt(l),Math.sqrt(1-l))}function $t(e,s){const t=s.clusters.filter(r=>r.key!=="spot"&&!isNaN(parseInt(r.key))).sort((r,C)=>parseInt(r.key)-parseInt(C.key)).map(r=>r.key);if(!t.length||!e.length)return;const n=e.length,c=Math.min(t.length,n),i=[];for(let r=0;r<c;r++){const C=Math.floor((r+.5)*n/c);i.push({lat:e[C].lat||-38,lon:e[C].lon||-72,densidad:e[C].densidad})}const m=new Array(n).fill(0);for(let r=0;r<15;r++){let C=0;for(let a=0;a<n;a++){const d=e[a];let g=0,h=1/0;for(let x=0;x<c;x++){const w=d.lat&&d.lon&&i[x].lat&&i[x].lon?le(d.lat,d.lon,i[x].lat,i[x].lon):500,f=Math.abs(d.densidad-i[x].densidad)*8,b=w*.6+f*.4;b<h&&(h=b,g=x)}m[a]!==g&&(m[a]=g,C++)}if(C===0)break;for(let a=0;a<c;a++){let d=0,g=0,h=0,x=0,w=0;for(let f=0;f<n;f++)m[f]===a&&(e[f].lat&&e[f].lon&&(d+=e[f].lat,g+=e[f].lon,x++),h+=e[f].densidad,w++);x>0&&(i[a].lat=d/x,i[a].lon=g/x),w>0&&(i[a].densidad=h/w)}}const l=i.map((r,C)=>({j:C,den:r.densidad}));l.sort((r,C)=>C.den-r.den);const v={};l.forEach((r,C)=>{v[r.j]=t[C]||t[t.length-1]});for(let r=0;r<n;r++){const C=v[m[r]];e[r].cluster=C,e[r].rutaId&&(s.comunaCluster[String(e[r].rutaId)]=C),e[r].rutaCodigo&&(s.comunaCluster[String(e[r].rutaCodigo)]=C)}}const mt={NORTE:{alias:"Norte",rangos:[[315,360],[0,45]]},ESTE:{alias:"Este",rangos:[[45,135]]},SUR:{alias:"Sur",rangos:[[135,225]]},OESTE:{alias:"Oeste",rangos:[[225,315]]}},Mt={1100:{NORTE:{alias:"Norte (Ruta 5 Norte)",rangos:[[310,360],[0,50]]},ESTE:{alias:"Austral-Costa",rangos:[[50,160]]},SUR:{alias:"Sur-Isla",rangos:[[160,310]]}}},Se=60,Ht={C1:{frecuencia:"Diaria (Fija)",flota:"Flota Propia"},C2:{frecuencia:"L-Mi-V (Frecuencial)",flota:"Flota Propia"},C3:{frecuencia:"Ma-Ju (Arrastre)",flota:"Flota Propia (Hub)"},C4:{frecuencia:"A Demanda",flota:"Servicio Extra"},SPOT_LOCAL:{frecuencia:"A Demanda (SLA 48h)",flota:"Servicio Extra (FTL)"}};function Rt(e,s,t,n){const c=Math.PI/180,i=e*c,m=t*c,l=(n-s)*c,v=Math.sin(l)*Math.cos(m),r=Math.cos(i)*Math.sin(m)-Math.sin(i)*Math.cos(m)*Math.cos(l);return(Math.atan2(v,r)/c+360)%360}function zt(e,s){if(e==null)return{eje:"—",alias:"Sin geo"};for(const[t,n]of Object.entries(s||mt))for(const[c,i]of n.rangos)if(e>=c&&e<i)return{eje:t,alias:n.alias};return{eje:"—",alias:"Sin eje"}}function Dt(e){if(!e)return null;if(e==="spot"||e==="SPOT"||e==="SPOT_LOCAL")return"SPOT_LOCAL";const s=parseInt(e,10);return isNaN(s)?null:"C"+s}function it(e,s,t){const n=Dt(s),c=e&&e!=="—"?e:"";t=t||{};const i=t.anchors||[],m=()=>{const r=Ht.SPOT_LOCAL;return{cluster:"SPOT_LOCAL",frecuencia:r.frecuencia,flota:r.flota}};if(!n)return c?{cluster:c+"-SD",frecuencia:"—",flota:"—"}:m();if(n==="SPOT_LOCAL")return m();if(n==="C1"||n==="C2"){const r=Ht[n];return{cluster:c?c+"-"+n:n,frecuencia:r.frecuencia,flota:r.flota}}if(!i.some(r=>r.eje===e&&t.lat&&t.lon&&r.lat&&r.lon&&le(t.lat,t.lon,r.lat,r.lon)<=Se))return m();const v=Ht[n]||{frecuencia:"—",flota:"—"};return{cluster:c?c+"-"+n:n,frecuencia:v.frecuencia,flota:v.flota}}function ft(e){return e.rows.filter(s=>{const t=Dt(s.cluster);return(t==="C1"||t==="C2")&&s.lat&&s.lon}).map(s=>({lat:s.lat,lon:s.lon,eje:s.eje}))}function Te(e){const s=ft(e);return e.rows.map(t=>{const n=it(t.eje,t.cluster,{lat:t.lat,lon:t.lon,anchors:s}),c=String(t.rutaCodigo||"").match(/^[A-Za-z]+/);return{centro:e.repId||"",codigo_origen:c?c[0]:"",destino:t.destino||"",tipo_destino:"Comuna",comuna_padre:t.comunaPadre||t.destino||"",clasificacion:"Regional",region_destino:t.region||null,densidad:Dt(t.cluster),eje_vial:t.eje||"—",descripcion_eje:t.ejeAlias||null,cluster:n.cluster,frecuencia:n.frecuencia,tipo_flota:n.flota}})}async function At(e){const s=Te(e);if(!s.length)return;const{error:t}=await xe.rpc("fn_upsert_cluster",{p_rows:s});if(t)throw t}function It(e,s){const t=new Map;return yt(e).forEach(c=>{const{grupo:i,centroIds:m,centros:l,repId:v}=c,r=new Set((m||[]).map(String)),C=(l||[]).find(b=>String(b.id)===String(v))||(l||[])[0]||{},a=parseFloat(C.lat),d=parseFloat(C.lon),g=Mt[String(v)]||mt,h=(e.routes||[]).filter(b=>!b.activo||(b.tipo||"").toLowerCase()!=="comuna"?!1:b.origen_grupo?b.origen_grupo===i:r.has(String(b.origenId)));h.filter(b=>b.clasificRuta!=="Regional").forEach(b=>{b.id&&t.set(String(b.id),"SPOT_INTERREGIONAL"),b.codigo&&t.set(String(b.codigo),"SPOT_INTERREGIONAL")});const w=h.filter(b=>b.clasificRuta==="Regional").map(b=>{const S=parseFloat(b.lat),$=parseFloat(b.lon),D=!isNaN(a)&&!isNaN(S)?Rt(a,d,S,$):null,F=zt(D,g),M=s.comunaCluster[String(b.id||"")]||s.comunaCluster[String(b.codigo||"")]||"";return{r:b,eje:F.eje,lat:parseFloat(b.lat)||null,lon:parseFloat(b.lon)||null,clusterKey:M}}),f=w.filter(b=>{const S=Dt(b.clusterKey);return(S==="C1"||S==="C2")&&b.lat&&b.lon}).map(b=>({lat:b.lat,lon:b.lon,eje:b.eje}));w.forEach(b=>{const S=it(b.eje,b.clusterKey,{lat:b.lat,lon:b.lon,anchors:f});b.r.id&&t.set(String(b.r.id),S.cluster),b.r.codigo&&t.set(String(b.r.codigo),S.cluster)})}),t}function ce(e,s,t){if(!T.length){e.innerHTML='<div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm">'+J()+"</div>";return}const n=yt(s),c=new Map;(s.routes||[]).filter(a=>a.activo).forEach(a=>{a.codigo&&c.set(String(a.codigo).toUpperCase(),a),a.id&&c.set(String(a.id).toUpperCase(),a)});function i(a){const{grupo:d,centroIds:g,centros:h,repId:x}=a,w=new Set((g||[]).map(String)),f=(h||[]).find(y=>String(y.id)===String(x))||(h||[])[0]||{},b=parseFloat(f.lat),S=parseFloat(f.lon),$=Mt[String(x)]||mt,D=(s.routes||[]).filter(y=>!y.activo||(y.tipo||"").toLowerCase()!=="comuna"||y.clasificRuta!=="Regional"?!1:y.origen_grupo?y.origen_grupo===d:w.has(String(y.origenId)));if(!D.length)return null;const F=new Set;D.forEach(y=>{y.codigo&&F.add(String(y.codigo).toUpperCase()),y.id&&F.add(String(y.id).toUpperCase())});const M=new Map,P=new Set,o=new Set;T.forEach(y=>{if(!F.has(String(y.idRuta).toUpperCase()))return;const L=c.get(String(y.idRuta).toUpperCase());if(!L)return;const R=L.codigo||String(y.idRuta);M.has(R)||M.set(R,{route:L,clientes:new Set,obras:new Set,ton:0});const z=M.get(R);y.idCliente&&y.idCliente!=="-"&&(z.clientes.add(y.idCliente),P.add(y.idCliente)),y.idObra&&y.idObra!=="-"&&(z.obras.add(y.idObra),o.add(y.idObra)),z.ton+=y.ton}),D.forEach(y=>{const L=y.codigo||String(y.id);M.has(L)||M.set(L,{route:y,clientes:new Set,obras:new Set,ton:0})});let p=0;M.forEach(y=>{p+=y.ton});const u=P.size||1,A=o.size||1,j=p||1,_=[...M.values()].map(y=>{const L=y.clientes.size/u*100,R=y.obras.size/A*100,z=y.ton/j*100,K=(L+R+z)/3,Y=(y.route.caracteristica||"").toUpperCase(),U=parseFloat(y.route.lat),tt=parseFloat(y.route.lon),ht=!isNaN(b)&&!isNaN(U)?Rt(b,S,U,tt):null,V=zt(ht,$);return{rutaId:String(y.route.id||""),rutaCodigo:String(y.route.codigo||""),destino:y.route.destino||"",comunaPadre:y.route.comuna||y.route.destino||"",region:y.route.region||"",zona:y.route.id_zona_transporte||"",caracteristica:Y,ton:y.ton,densidad:K,lat:parseFloat(y.route.lat)||null,lon:parseFloat(y.route.lon)||null,cluster:t.comunaCluster[String(y.route.id||"")]||t.comunaCluster[String(y.route.codigo||"")]||"",eje:V.eje,ejeAlias:V.alias}}).sort((y,L)=>{const R=Y=>{if(!Y)return 999;if(Y==="spot")return 500;const U=parseInt(Y,10);return isNaN(U)?400:U},z=R(y.cluster),K=R(L.cluster);return z!==K?z-K:L.densidad-y.densidad});return{grupo:d,rows:_,totTon:p,repId:String(x)}}const m=n.map(i).filter(Boolean);if(!m.length){e.innerHTML='<div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm">'+J("No se encontraron rutas tipo=Comuna + Regional.")+"</div>";return}const l=t.clusters.map(a=>'<span class="flex items-center gap-xs text-[11px]"><span class="inline-block w-3 h-3 rounded-full flex-shrink-0" style="background:'+a.color+'"></span>'+E(a.nombre)+"</span>").join("")+'<span class="flex items-center gap-xs text-[11px]"><span class="inline-block w-3 h-3 rounded-full bg-gray-300 flex-shrink-0"></span>Sin cluster</span>';function v(a){const d=a.grupo.replace(/[^a-z0-9]/gi,"_"),g=a.rows.filter(f=>f.cluster).length,h=a.rows[0]?.densidad||1,x=ft(a),w=a.rows.map((f,b)=>{const S=f.densidad>=15?"#b5000b":f.densidad>=5?"#d97706":"#6b7280",$=h>0?Math.min(f.densidad/h*100,100):0,F='<span class="inline-block w-2 h-2 rounded-full flex-shrink-0 cl-dot" style="background:'+(f.cluster?Bt(t,f.cluster)||"#9ca3af":"#d1d5db")+'"></span>',P=["ISLA","EXTREMA"].includes(f.caracteristica)?'<span class="ml-xs inline-flex px-1 py-0.5 rounded text-[9px] font-bold '+(f.caracteristica==="ISLA"?"bg-blue-100 text-blue-700":"bg-orange-100 text-orange-700")+'">'+f.caracteristica+"</span>":"",o='<option value="">— Sin cluster —</option>'+t.clusters.map(u=>'<option value="'+u.key+'"'+(f.cluster===u.key?" selected":"")+">"+E(u.nombre)+"</option>").join(""),p=it(f.eje,f.cluster,{lat:f.lat,lon:f.lon,anchors:x});return'<tr class="hover:bg-surface-container-low border-b border-outline-variant"><td class="p-sm text-right text-secondary font-data-mono text-[11px] w-8">'+(b+1)+'</td><td class="p-sm font-data-mono text-[11px] text-primary font-bold">'+E(f.rutaCodigo)+'</td><td class="p-sm text-[12px]">'+E(f.destino)+P+'</td><td class="p-sm text-secondary text-[11px]">'+E(f.zona)+'</td><td class="p-sm text-right w-28"><div class="flex items-center gap-xs justify-end"><span class="font-bold font-data-mono text-[11px]" style="color:'+S+'">'+f.densidad.toFixed(2)+'%</span><div class="w-12 h-1.5 bg-surface-container-high rounded-full overflow-hidden"><div class="h-full rounded-full" style="width:'+$+"%;background:"+S+'"></div></div></div></td><td class="p-sm"><div class="flex items-center gap-xs">'+F+'<select class="cl-assign border border-[#CED4DA] px-xs py-px text-[11px] bg-white rounded w-full" data-ruta-id="'+E(f.rutaId)+'" data-ruta-cod="'+E(f.rutaCodigo)+'" data-eje="'+E(f.eje||"")+'" data-grupo="'+E(a.grupo)+'">'+o+'</select></div></td><td class="p-sm text-[11px] cl-op-eje" title="'+E(f.ejeAlias||"")+'">'+E(f.eje||"—")+'</td><td class="p-sm text-[11px] font-bold cl-op-cluster">'+E(p.cluster)+'</td><td class="p-sm text-[11px] cl-op-frec">'+E(p.frecuencia)+'</td><td class="p-sm text-[11px] cl-op-flota">'+E(p.flota)+"</td></tr>"}).join("");return'<div class="border-2 border-outline-variant shadow-sm mb-xl rounded overflow-hidden" id="cl-card-'+d+'"><div class="flex items-center justify-between px-lg pt-md pb-sm border-b-2 border-primary bg-surface-container-high flex-wrap gap-sm"><div class="flex items-center gap-sm"><span class="material-symbols-outlined text-primary text-[20px]">hub</span><h3 class="font-headline-sm font-bold text-on-surface">'+E(a.grupo)+'</h3></div><div class="flex items-center gap-sm flex-wrap"><span class="font-data-mono text-[11px] text-secondary">'+g+"/"+a.rows.length+" asignadas · "+a.totTon.toFixed(1)+' ton</span><button class="cl-auto-centro border border-secondary text-secondary hover:bg-secondary/10 font-bold px-md py-xs rounded flex items-center gap-xs text-[11px] uppercase transition-colors" data-grupo="'+E(a.grupo)+'"><span class="material-symbols-outlined text-[14px]">auto_awesome</span> Auto</button><button class="cl-guardar-centro border border-primary text-primary hover:bg-primary hover:text-white font-bold px-md py-xs rounded flex items-center gap-xs text-[11px] uppercase transition-colors" data-grupo="'+E(a.grupo)+'"><span class="material-symbols-outlined text-[14px]">save</span> Guardar</button></div></div><div class="overflow-x-auto"><table class="w-full border-collapse text-[12px]"><thead><tr class="bg-surface-container-high text-left border-b border-outline-variant"><th class="p-sm font-label-caps text-secondary uppercase text-right w-8">#</th><th class="p-sm font-label-caps text-secondary uppercase">Cód. Ruta</th><th class="p-sm font-label-caps text-secondary uppercase">Destino</th><th class="p-sm font-label-caps text-secondary uppercase">Zona</th><th class="p-sm font-label-caps text-secondary uppercase text-right">Densidad %</th><th class="p-sm font-label-caps text-secondary uppercase">Cluster</th><th class="p-sm font-label-caps text-secondary uppercase">Eje Vial</th><th class="p-sm font-label-caps text-secondary uppercase">Cluster Op.</th><th class="p-sm font-label-caps text-secondary uppercase">Frecuencia</th><th class="p-sm font-label-caps text-secondary uppercase">Flota</th></tr></thead><tbody class="divide-y divide-outline-variant">'+w+"</tbody></table></div></div>"}e.innerHTML='<div><div class="flex items-center gap-sm mb-md flex-wrap"><span class="material-symbols-outlined text-primary">hub</span><h2 class="font-headline-sm font-bold text-on-surface">Asignación de Cluster por Ruta</h2><span class="text-[11px] text-secondary ml-xs">Solo rutas tipo=Comuna + Regional · Agrupado por centro</span><button id="btn-auto-todos" class="ml-auto flex items-center gap-xs border border-primary text-primary hover:bg-primary/[0.06] font-bold px-md py-sm rounded text-[11px] uppercase tracking-wider"><span class="material-symbols-outlined text-[16px]">auto_awesome</span> Asignar todos automáticamente</button></div><div class="flex flex-wrap gap-md mb-lg">'+l+"</div>"+m.map(a=>v(a)).join("")+"</div>";function r(a){const d=m.find(w=>w.grupo===a);if(!d)return;const g=ft(d),h=a.replace(/[^a-z0-9]/gi,"_"),x=document.getElementById("cl-card-"+h);x&&x.querySelectorAll(".cl-assign").forEach(w=>{const f=d.rows.find(D=>String(D.rutaId)===w.dataset.rutaId||String(D.rutaCodigo)===w.dataset.rutaCod);if(!f)return;const b=it(f.eje,f.cluster,{lat:f.lat,lon:f.lon,anchors:g}),S=w.closest("tr");if(!S)return;const $=(D,F)=>{const M=S.querySelector(D);M&&(M.textContent=F)};$(".cl-op-cluster",b.cluster),$(".cl-op-frec",b.frecuencia),$(".cl-op-flota",b.flota)})}e.querySelectorAll(".cl-assign").forEach(a=>{a.addEventListener("change",()=>{const d=a.dataset.rutaId,g=a.dataset.rutaCod;a.value?(d&&(t.comunaCluster[d]=a.value),g&&(t.comunaCluster[g]=a.value)):(d&&delete t.comunaCluster[d],g&&delete t.comunaCluster[g]);const h=a.closest("td")?.querySelector(".cl-dot");h&&(h.style.background=a.value?Bt(t,a.value)||"#9ca3af":"#d1d5db");const x=a.dataset.grupo,w=m.find(b=>b.grupo===x),f=w&&w.rows.find(b=>String(b.rutaId)===a.dataset.rutaId||String(b.rutaCodigo)===a.dataset.rutaCod);f&&(f.cluster=a.value),r(x)})}),e.querySelectorAll(".cl-auto-centro").forEach(a=>{a.addEventListener("click",async()=>{const d=a.dataset.grupo,g=m.find(w=>w.grupo===d);if(!g||!await Ct('¿Asignar clusters automáticamente para "'+d+`"?
 
-  // Inputs de clusters
-  content.querySelectorAll('[data-path^="clusters."]').forEach(el => {
-    el.addEventListener('change', () => {
-      const parts = el.dataset.path.split('.');
-      const idx = parseInt(parts[1]);
-      const field = parts[2];
-      if (!ccfg.clusters[idx]) return;
-      if (el.type === 'checkbox') ccfg.clusters[idx][field] = el.checked;
-      else if (el.type === 'number') ccfg.clusters[idx][field] = el.value === '' ? 0 : Number(el.value);
-      else ccfg.clusters[idx][field] = el.value;
-      saveDatabase(db);
-      // Si cambia tipo0000Habilitado, re-renderizar para ocultar/mostrar el input de recargo
-      if (field === 'tipo0000Habilitado') renderEspeciales(content, db, ccfg);
-    });
-  });
+Algoritmo: densidad logística + cercanía geográfica de comunas
+(Cluster 1 = mayor densidad, rutas cercanas heredan el mismo cluster)`))return;$t(g.rows,t);const h=d.replace(/[^a-z0-9]/gi,"_"),x=document.getElementById("cl-card-"+h);if(x){const w=document.createElement("div");w.innerHTML=v(g),x.replaceWith(w.firstElementChild),document.getElementById("cl-card-"+h)?.querySelectorAll(".cl-assign").forEach(f=>{f.addEventListener("change",()=>{const b=f.dataset.rutaId,S=f.dataset.rutaCod;f.value?(b&&(t.comunaCluster[b]=f.value),S&&(t.comunaCluster[S]=f.value)):(b&&delete t.comunaCluster[b],S&&delete t.comunaCluster[S]);const $=f.closest("td")?.querySelector(".cl-dot");$&&($.style.background=f.value?Bt(t,f.value)||"#9ca3af":"#d1d5db");const D=f.dataset.grupo,F=m.find(P=>P.grupo===D),M=F&&F.rows.find(P=>String(P.rutaId)===f.dataset.rutaId||String(P.rutaCodigo)===f.dataset.rutaCod);M&&(M.cluster=f.value),r(D)})}),document.getElementById("cl-card-"+h)?.querySelectorAll(".cl-guardar-centro").forEach(f=>{f.addEventListener("click",()=>C(f))}),document.getElementById("cl-card-"+h)?.querySelectorAll(".cl-auto-centro").forEach(f=>{f.click})}k("Clusters asignados para "+d+".")})});async function C(a){B(s);const d=a.innerHTML,g=a.dataset.grupo,h=m.find(x=>x.grupo===g);a.disabled=!0,a.innerHTML='<span class="material-symbols-outlined text-[14px]">sync</span> Guardando…';try{h&&await At(h),a.innerHTML='<span class="material-symbols-outlined text-[14px]">check_circle</span> Guardado',a.classList.add("bg-primary","text-white")}catch(x){console.error("Error al sincronizar cluster_rutas:",x),a.innerHTML='<span class="material-symbols-outlined text-[14px]">error</span> Error BD',a.classList.add("bg-red-600","text-white"),k("Se guardó localmente, pero falló la sincronización con la base de datos: "+(x.message||x),"error")}setTimeout(()=>{a.innerHTML=d,a.classList.remove("bg-primary","text-white","bg-red-600"),a.disabled=!1},2500)}e.querySelectorAll(".cl-guardar-centro").forEach(a=>{a.addEventListener("click",()=>C(a))}),document.getElementById("btn-auto-todos")?.addEventListener("click",async()=>{if(await Ct(`¿Asignar clusters automáticamente para TODOS los centros?
 
-  // Recargos exclusividad
-  content.querySelectorAll('[data-path^="especiales."]').forEach(el => {
-    el.addEventListener('change', () => {
-      setPath(ccfg, el.dataset.path, el.value === '' ? 0 : Number(el.value));
-      saveDatabase(db);
-    });
-  });
+Algoritmo: densidad logística + cercanía geográfica de comunas
 
-  // Agregar cluster
-  document.getElementById('add-cluster')?.addEventListener('click', () => {
-    const newKey = nextClusterKey(ccfg);
-    ccfg.clusters.push({ key: newKey, nombre: 'Cluster ' + newKey, color: '#6b7280', nv: 90, frecuencia: 'Semanal', tipo0000: 0, tipo0000Habilitado: false });
-    saveDatabase(db);
-    renderEspeciales(content, db, ccfg);
-  });
-
-  // Eliminar cluster
-  content.querySelectorAll('.del-cluster').forEach(btn => {
-    btn.addEventListener('click', async () => {
-      const idx = parseInt(btn.dataset.idx);
-      const clKey = ccfg.clusters[idx]?.key;
-      const nombre = ccfg.clusters[idx]?.nombre || '';
-      if (!await confirmar('Eliminar cluster "' + nombre + '"?\nLas rutas asignadas quedarán sin cluster.')) return;
-      ccfg.clusters.splice(idx, 1);
-      if (clKey) {
-        Object.keys(ccfg.comunaCluster).forEach(ruta => {
-          if (ccfg.comunaCluster[ruta] === clKey) delete ccfg.comunaCluster[ruta];
-        });
-      }
-      saveDatabase(db);
-      renderEspeciales(content, db, ccfg);
-    });
-  });
-}
-
-// ─────────────────────────────────────────────────────────────
-// ASIGNACIÓN AUTOMÁTICA DE CLUSTERS (por centro)
-// ─────────────────────────────────────────────────────────────
-function haversineKm(lat1, lon1, lat2, lon2) {
-  const R = 6371;
-  const dLat = (lat2 - lat1) * Math.PI / 180;
-  const dLon = (lon2 - lon1) * Math.PI / 180;
-  const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon / 2) ** 2;
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-}
-
-// Asigna clusters a las filas de un centro (rows con .densidad, .lat, .lon, .rutaId, .rutaCodigo)
-// Algoritmo: K-means simplificado con distancia mixta (0.6×geo + 0.4×densidad)
-function asignarClustersCentro(rows, ccfg) {
-  const clKeys = ccfg.clusters
-    .filter(c => c.key !== 'spot' && !isNaN(parseInt(c.key)))
-    .sort((a, b) => parseInt(a.key) - parseInt(b.key))
-    .map(c => c.key);
-  if (!clKeys.length || !rows.length) return;
-
-  const n = rows.length;
-  const k = Math.min(clKeys.length, n);
-
-  // Inicializar centros de cluster repartidos por densidad (rows ya ordenadas desc)
-  const centros = [];
-  for (let i = 0; i < k; i++) {
-    const idx = Math.floor((i + 0.5) * n / k);
-    centros.push({
-      lat: rows[idx].lat || -38,
-      lon: rows[idx].lon || -72,
-      densidad: rows[idx].densidad
-    });
-  }
-
-  const asignacion = new Array(n).fill(0);
-
-  for (let iter = 0; iter < 15; iter++) {
-    let cambios = 0;
-    for (let i = 0; i < n; i++) {
-      const r = rows[i];
-      let mejorJ = 0, mejorDist = Infinity;
-      for (let j = 0; j < k; j++) {
-        const distGeo = (r.lat && r.lon && centros[j].lat && centros[j].lon)
-          ? haversineKm(r.lat, r.lon, centros[j].lat, centros[j].lon)
-          : 500;
-        // Normalizar densidad diff (escala ~0-33) para que sea comparable con distancia km
-        const distDen = Math.abs(r.densidad - centros[j].densidad) * 8;
-        const distTotal = distGeo * 0.6 + distDen * 0.4;
-        if (distTotal < mejorDist) { mejorDist = distTotal; mejorJ = j; }
-      }
-      if (asignacion[i] !== mejorJ) { asignacion[i] = mejorJ; cambios++; }
-    }
-    if (cambios === 0) break;
-
-    // Recalcular centroides
-    for (let j = 0; j < k; j++) {
-      let sumLat = 0, sumLon = 0, sumDen = 0, cntGeo = 0, cntDen = 0;
-      for (let i = 0; i < n; i++) {
-        if (asignacion[i] !== j) continue;
-        if (rows[i].lat && rows[i].lon) { sumLat += rows[i].lat; sumLon += rows[i].lon; cntGeo++; }
-        sumDen += rows[i].densidad; cntDen++;
-      }
-      if (cntGeo  > 0) { centros[j].lat = sumLat / cntGeo; centros[j].lon = sumLon / cntGeo; }
-      if (cntDen  > 0)   centros[j].densidad = sumDen / cntDen;
-    }
-  }
-
-  // El cluster con mayor densidad promedio → key más bajo (cluster 1 = más importante)
-  const centrosDen = centros.map((c, j) => ({ j, den: c.densidad }));
-  centrosDen.sort((a, b) => b.den - a.den); // mayor densidad primero
-  const jToKey = {};
-  centrosDen.forEach((cd, rank) => { jToKey[cd.j] = clKeys[rank] || clKeys[clKeys.length - 1]; });
-
-  // Aplicar asignación a las filas y a ccfg.comunaCluster
-  for (let i = 0; i < n; i++) {
-    const cl = jToKey[asignacion[i]];
-    rows[i].cluster = cl;
-    if (rows[i].rutaId)     ccfg.comunaCluster[String(rows[i].rutaId)]     = cl;
-    if (rows[i].rutaCodigo) ccfg.comunaCluster[String(rows[i].rutaCodigo)] = cl;
-  }
-}
-
-// ═══════════════════════════════════════════════════════════════
-// VISTA 5: CLUSTER — por centro, solo Regional+Comuna
-// ═══════════════════════════════════════════════════════════════
-// ── Motor Cluster Operativo (complemento homologable) ──────────────────────
-const EJES_OP_DEFAULT = {
-  NORTE: { alias:'Norte',  rangos:[[315,360],[0,45]] },
-  ESTE:  { alias:'Este',   rangos:[[45,135]] },
-  SUR:   { alias:'Sur',    rangos:[[135,225]] },
-  OESTE: { alias:'Oeste',  rangos:[[225,315]] },
-};
-const EJES_OP = {
-  '1100': {
-    NORTE:{ alias:'Norte (Ruta 5 Norte)', rangos:[[310,360],[0,50]] },
-    ESTE: { alias:'Austral-Costa',        rangos:[[50,160]] },
-    SUR:  { alias:'Sur-Isla',             rangos:[[160,310]] },
-  },
-};
-const ABSORB_KM = 60; // km max para que una comuna C1/C2 absorba a una C3/C4 en su mismo eje
-const FREC_OP = {
-  C1:{frecuencia:'Diaria (Fija)',       flota:'Flota Propia'},
-  C2:{frecuencia:'L-Mi-V (Frecuencial)',flota:'Flota Propia'},
-  C3:{frecuencia:'Ma-Ju (Arrastre)',    flota:'Flota Propia (Hub)'},
-  C4:{frecuencia:'A Demanda',           flota:'Servicio Extra'},
-  SPOT_LOCAL:{frecuencia:'A Demanda (SLA 48h)', flota:'Servicio Extra (FTL)'},
-};
-function clOpAzimut(latO,lonO,latD,lonD){
-  const r=Math.PI/180,l1=latO*r,l2=latD*r,dl=(lonD-lonO)*r;
-  const x=Math.sin(dl)*Math.cos(l2), y=Math.cos(l1)*Math.sin(l2)-Math.sin(l1)*Math.cos(l2)*Math.cos(dl);
-  return (Math.atan2(x,y)/r+360)%360;
-}
-function ejeOpDe(az,carta){
-  if(az==null) return {eje:'—',alias:'Sin geo'};
-  for(const [cod,cfg] of Object.entries(carta||EJES_OP_DEFAULT))
-    for(const [lo,hi] of cfg.rangos) if(az>=lo&&az<hi) return {eje:cod,alias:cfg.alias};
-  return {eje:'—',alias:'Sin eje'};
-}
-function densKeyToCx(key){
-  if(!key) return null;
-  if(key==='spot'||key==='SPOT'||key==='SPOT_LOCAL') return 'SPOT_LOCAL';
-  const n=parseInt(key,10); return isNaN(n)?null:('C'+n);
-}
-function clusterOpDe(eje,key,ctx){
-  const cx=densKeyToCx(key);
-  const e=(eje&&eje!=='—')?eje:'';
-  ctx = ctx || {}; const anchors = ctx.anchors || [];
-  const spot = () => { const f=FREC_OP.SPOT_LOCAL; return {cluster:'SPOT_LOCAL',frecuencia:f.frecuencia,flota:f.flota}; };
-  if(!cx){
-    // Sin densidad Y sin eje (descolgada total) -> SPOT ; con eje pero sin densidad -> pendiente
-    if(!e) return spot();
-    return {cluster:e+'-SD',frecuencia:'—',flota:'—'};
-  }
-  if(cx==='SPOT_LOCAL') return spot();
-  if(cx==='C1' || cx==='C2'){ const f=FREC_OP[cx]; return {cluster:e?(e+'-'+cx):cx,frecuencia:f.frecuencia,flota:f.flota}; }
-  // C3/C4: requieren un ancla C1/C2 en su MISMO eje dentro de ABSORB_KM; si no, descolgada -> SPOT
-  const absorbible = anchors.some(a => a.eje===eje && ctx.lat && ctx.lon && a.lat && a.lon
-                        && haversineKm(ctx.lat, ctx.lon, a.lat, a.lon) <= ABSORB_KM);
-  if(!absorbible) return spot();
-  const f=FREC_OP[cx]||{frecuencia:'—',flota:'—'};
-  return {cluster:e?(e+'-'+cx):cx,frecuencia:f.frecuencia,flota:f.flota};
-}
-
-// ── Helpers de persistencia Cluster Operativo -> BD (cluster_rutas) ──────
-function anchorsOpFor(cd) {
-  return cd.rows
-    .filter(r => { const cx = densKeyToCx(r.cluster); return (cx === 'C1' || cx === 'C2') && r.lat && r.lon; })
-    .map(r => ({ lat: r.lat, lon: r.lon, eje: r.eje }));
-}
-function buildClusterOpRows(cd) {
-  const anchorsOp = anchorsOpFor(cd);
-  return cd.rows.map(r => {
-    const op = clusterOpDe(r.eje, r.cluster, { lat: r.lat, lon: r.lon, anchors: anchorsOp });
-    const m  = String(r.rutaCodigo || '').match(/^[A-Za-z]+/);
-    return {
-      centro:          cd.repId || '',
-      codigo_origen:   m ? m[0] : '',
-      destino:         r.destino || '',
-      tipo_destino:    'Comuna',
-      comuna_padre:    r.comunaPadre || r.destino || '',
-      clasificacion:   'Regional',
-      region_destino:  r.region || null,
-      densidad:        densKeyToCx(r.cluster),
-      eje_vial:        r.eje || '—',
-      descripcion_eje: r.ejeAlias || null,
-      cluster:         op.cluster,
-      frecuencia:      op.frecuencia,
-      tipo_flota:      op.flota,
-    };
-  });
-}
-async function persistClusterOpDB(cd) {
-  const rows = buildClusterOpRows(cd);
-  if (!rows.length) return;
-  const { error } = await supabase.rpc('fn_upsert_cluster', { p_rows: rows });
-  if (error) throw error;
-}
-
-// ── Cluster Operativo homologable, disponible fuera de la vista Cluster ──
-// Reutilizado por Tarifas $/Kg y Tarifa Min/Max para mostrar el MISMO cluster
-// operativo (Eje-Cx / SPOT_LOCAL / SPOT_INTERREGIONAL) que calcula la vista
-// Cluster, en vez del cluster de densidad crudo (1/2/3/spot).
-function computeOpClusterMap(db, ccfg) {
-  const map = new Map();
-  const grupos = getOrigenGroups(db);
-  grupos.forEach(grupoObj => {
-    const { grupo, centroIds, centros, repId } = grupoObj;
-    const centroIdSet = new Set((centroIds || []).map(String));
-    const _repCd   = (centros || []).find(cd => String(cd.id) === String(repId)) || (centros || [])[0] || {};
-    const _origLat = parseFloat(_repCd.lat), _origLon = parseFloat(_repCd.lon);
-    const _carta   = EJES_OP[String(repId)] || EJES_OP_DEFAULT;
-
-    const centroRoutes = (db.routes || []).filter(r => {
-      if (!r.activo) return false;
-      if ((r.tipo || '').toLowerCase() !== 'comuna') return false;
-      if (r.origen_grupo) return r.origen_grupo === grupo;
-      return centroIdSet.has(String(r.origenId));
-    });
-
-    // Interregionales de este centro → SPOT_INTERREGIONAL directo (igual que vista Cluster)
-    centroRoutes.filter(r => r.clasificRuta !== 'Regional').forEach(r => {
-      if (r.id)     map.set(String(r.id), 'SPOT_INTERREGIONAL');
-      if (r.codigo) map.set(String(r.codigo), 'SPOT_INTERREGIONAL');
-    });
-
-    const regionales = centroRoutes.filter(r => r.clasificRuta === 'Regional');
-    const conEje = regionales.map(r => {
-      const _dLat = parseFloat(r.lat), _dLon = parseFloat(r.lon);
-      const _az = (!isNaN(_origLat) && !isNaN(_dLat)) ? clOpAzimut(_origLat, _origLon, _dLat, _dLon) : null;
-      const _ejeInfo = ejeOpDe(_az, _carta);
-      const clusterKey = ccfg.comunaCluster[String(r.id || '')] || ccfg.comunaCluster[String(r.codigo || '')] || '';
-      return { r, eje: _ejeInfo.eje, lat: parseFloat(r.lat) || null, lon: parseFloat(r.lon) || null, clusterKey };
-    });
-    const anchors = conEje
-      .filter(x => { const cx = densKeyToCx(x.clusterKey); return (cx === 'C1' || cx === 'C2') && x.lat && x.lon; })
-      .map(x => ({ lat: x.lat, lon: x.lon, eje: x.eje }));
-
-    conEje.forEach(x => {
-      const op = clusterOpDe(x.eje, x.clusterKey, { lat: x.lat, lon: x.lon, anchors });
-      if (x.r.id)     map.set(String(x.r.id), op.cluster);
-      if (x.r.codigo) map.set(String(x.r.codigo), op.cluster);
-    });
-  });
-  return map;
-}
-
-function renderCluster(content, db, ccfg) {
-  if (!histData.length) {
-    content.innerHTML = '<div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm">' + noDataBanner() + '</div>';
-    return;
-  }
-
-  const grupos = getOrigenGroups(db);
-
-  // ── Lookup ruta por código / id ──────────────────────────────────────────
-  const routeByCode = new Map();
-  (db.routes || []).filter(r => r.activo).forEach(r => {
-    if (r.codigo) routeByCode.set(String(r.codigo).toUpperCase(), r);
-    if (r.id)     routeByCode.set(String(r.id).toUpperCase(),     r);
-  });
-
-  // ── Construir datos de densidad por centro (igual que renderDensidad) ────
-  function buildCentroData(grupoObj) {
-    const { grupo, centroIds, centros, repId } = grupoObj;
-    const centroIdSet = new Set((centroIds || []).map(String));
-    const _repCd  = (centros||[]).find(cd => String(cd.id)===String(repId)) || (centros||[])[0] || {};
-    const _origLat = parseFloat(_repCd.lat); const _origLon = parseFloat(_repCd.lon);
-    const _carta  = EJES_OP[String(repId)] || EJES_OP_DEFAULT;
-
-    const centroRoutes = (db.routes || []).filter(r => {
-      if (!r.activo) return false;
-      if ((r.tipo || '').toLowerCase() !== 'comuna') return false;
-      if (r.clasificRuta !== 'Regional') return false;
-      if (r.origen_grupo) return r.origen_grupo === grupo;
-      return centroIdSet.has(String(r.origenId));
-    });
-    if (!centroRoutes.length) return null;
-
-    const validCodes = new Set();
-    centroRoutes.forEach(r => {
-      if (r.codigo) validCodes.add(String(r.codigo).toUpperCase());
-      if (r.id)     validCodes.add(String(r.id).toUpperCase());
-    });
-
-    const routeStats = new Map();
-    const totClientes = new Set();
-    const totObras    = new Set();
-
-    histData.forEach(h => {
-      if (!validCodes.has(String(h.idRuta).toUpperCase())) return;
-      const route = routeByCode.get(String(h.idRuta).toUpperCase());
-      if (!route) return;
-      const key = route.codigo || String(h.idRuta);
-      if (!routeStats.has(key)) routeStats.set(key, { route, clientes: new Set(), obras: new Set(), ton: 0 });
-      const s = routeStats.get(key);
-      if (h.idCliente && h.idCliente !== '-') { s.clientes.add(h.idCliente); totClientes.add(h.idCliente); }
-      if (h.idObra    && h.idObra    !== '-') { s.obras.add(h.idObra);       totObras.add(h.idObra); }
-      s.ton += h.ton;
-    });
-
-    // Incluir rutas sin histórico
-    centroRoutes.forEach(r => {
-      const key = r.codigo || String(r.id);
-      if (!routeStats.has(key)) routeStats.set(key, { route: r, clientes: new Set(), obras: new Set(), ton: 0 });
-    });
-
-    let totTon = 0;
-    routeStats.forEach(s => { totTon += s.ton; });
-    const baseCli = totClientes.size || 1;
-    const baseObr = totObras.size    || 1;
-    const baseTon = totTon           || 1;
-
-    const rows = [...routeStats.values()].map(s => {
-      const pctCli   = (s.clientes.size / baseCli) * 100;
-      const pctObra  = (s.obras.size    / baseObr) * 100;
-      const pctTon   = (s.ton           / baseTon) * 100;
-      const densidad = (pctCli + pctObra + pctTon) / 3;
-      const caract   = (s.route.caracteristica || '').toUpperCase();
-      const _dLat = parseFloat(s.route.lat), _dLon = parseFloat(s.route.lon);
-      const _az = (!isNaN(_origLat) && !isNaN(_dLat)) ? clOpAzimut(_origLat,_origLon,_dLat,_dLon) : null;
-      const _ejeInfo = ejeOpDe(_az, _carta);
-      return {
-        rutaId:     String(s.route.id     || ''),
-        rutaCodigo: String(s.route.codigo || ''),
-        destino:    s.route.destino || '',
-        comunaPadre: s.route.comuna || s.route.destino || '',
-        region:     s.route.region || '',
-        zona:       s.route.id_zona_transporte || '',
-        caracteristica: caract,
-        ton:        s.ton,
-        densidad,
-        lat:  parseFloat(s.route.lat)  || null,
-        lon:  parseFloat(s.route.lon)  || null,
-        cluster: ccfg.comunaCluster[String(s.route.id || '')] ||
-                 ccfg.comunaCluster[String(s.route.codigo || '')] || '',
-        eje: _ejeInfo.eje, ejeAlias: _ejeInfo.alias
-      };
-    }).sort((a, b) => {
-      // 1) Por cluster: numérico asc (1, 2, 3), luego 'spot', luego sin asignar
-      const clOrd = cl => {
-        if (!cl) return 999;
-        if (cl === 'spot') return 500;
-        const n = parseInt(cl, 10);
-        return isNaN(n) ? 400 : n;
-      };
-      const ca = clOrd(a.cluster), cb = clOrd(b.cluster);
-      if (ca !== cb) return ca - cb;
-      // 2) Dentro del mismo cluster: densidad desc
-      return b.densidad - a.densidad;
-    });
-
-    return { grupo, rows, totTon, repId: String(repId) };
-  }
-
-  const centrosData = grupos.map(buildCentroData).filter(Boolean);
-
-  if (!centrosData.length) {
-    content.innerHTML = '<div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm">' +
-      noDataBanner('No se encontraron rutas tipo=Comuna + Regional.') + '</div>';
-    return;
-  }
-
-  // ── HTML: leyenda de clusters ────────────────────────────────────────────
-  const leyenda = ccfg.clusters.map(c =>
-    '<span class="flex items-center gap-xs text-[11px]">' +
-    '<span class="inline-block w-3 h-3 rounded-full flex-shrink-0" style="background:' + c.color + '"></span>' +
-    escapeHtml(c.nombre) + '</span>'
-  ).join('') +
-  '<span class="flex items-center gap-xs text-[11px]">' +
-  '<span class="inline-block w-3 h-3 rounded-full bg-gray-300 flex-shrink-0"></span>Sin cluster</span>';
-
-  // ── HTML: tarjeta por centro ─────────────────────────────────────────────
-  function cardHtml(cd) {
-    const uid      = cd.grupo.replace(/[^a-z0-9]/gi, '_');
-    const asig     = cd.rows.filter(r => r.cluster).length;
-    const maxDen   = cd.rows[0]?.densidad || 1;
-    const anchorsOp = anchorsOpFor(cd);
-
-    const rowsHtml = cd.rows.map((r, i) => {
-      const bc      = r.densidad >= 15 ? '#b5000b' : r.densidad >= 5 ? '#d97706' : '#6b7280';
-      const bw      = maxDen > 0 ? Math.min(r.densidad / maxDen * 100, 100) : 0;
-      const clColor = r.cluster ? (clusterColor(ccfg, r.cluster) || '#9ca3af') : '#d1d5db';
-      const dot     = '<span class="inline-block w-2 h-2 rounded-full flex-shrink-0 cl-dot" style="background:' + clColor + '"></span>';
-      const isEspec   = ['ISLA','EXTREMA'].includes(r.caracteristica);
-      const specBadge = isEspec
-        ? '<span class="ml-xs inline-flex px-1 py-0.5 rounded text-[9px] font-bold ' +
-          (r.caracteristica === 'ISLA' ? 'bg-blue-100 text-blue-700' : 'bg-orange-100 text-orange-700') +
-          '">' + r.caracteristica + '</span>'
-        : '';
-      const opts = '<option value="">— Sin cluster —</option>' +
-        ccfg.clusters.map(c =>
-          '<option value="' + c.key + '"' + (r.cluster === c.key ? ' selected' : '') + '>' + escapeHtml(c.nombre) + '</option>'
-        ).join('');
-      const op = clusterOpDe(r.eje, r.cluster, {lat:r.lat, lon:r.lon, anchors:anchorsOp});
-      return '<tr class="hover:bg-surface-container-low border-b border-outline-variant">' +
-        '<td class="p-sm text-right text-secondary font-data-mono text-[11px] w-8">' + (i + 1) + '</td>' +
-        '<td class="p-sm font-data-mono text-[11px] text-primary font-bold">' + escapeHtml(r.rutaCodigo) + '</td>' +
-        '<td class="p-sm text-[12px]">' + escapeHtml(r.destino) + specBadge + '</td>' +
-        '<td class="p-sm text-secondary text-[11px]">' + escapeHtml(r.zona) + '</td>' +
-        '<td class="p-sm text-right w-28">' +
-          '<div class="flex items-center gap-xs justify-end">' +
-            '<span class="font-bold font-data-mono text-[11px]" style="color:' + bc + '">' + r.densidad.toFixed(2) + '%</span>' +
-            '<div class="w-12 h-1.5 bg-surface-container-high rounded-full overflow-hidden"><div class="h-full rounded-full" style="width:' + bw + '%;background:' + bc + '"></div></div>' +
-          '</div>' +
-        '</td>' +
-        '<td class="p-sm">' +
-          '<div class="flex items-center gap-xs">' +
-            dot +
-            '<select class="cl-assign border border-[#CED4DA] px-xs py-px text-[11px] bg-white rounded w-full" ' +
-              'data-ruta-id="' + escapeHtml(r.rutaId) + '" ' +
-              'data-ruta-cod="' + escapeHtml(r.rutaCodigo) + '" ' +
-              'data-eje="' + escapeHtml(r.eje||'') + '" ' +
-              'data-grupo="' + escapeHtml(cd.grupo) + '">' +
-              opts +
-            '</select>' +
-          '</div>' +
-        '</td>' +
-        '<td class="p-sm text-[11px] cl-op-eje" title="' + escapeHtml(r.ejeAlias||'') + '">' + escapeHtml(r.eje||'—') + '</td>' +
-        '<td class="p-sm text-[11px] font-bold cl-op-cluster">' + escapeHtml(op.cluster) + '</td>' +
-        '<td class="p-sm text-[11px] cl-op-frec">' + escapeHtml(op.frecuencia) + '</td>' +
-        '<td class="p-sm text-[11px] cl-op-flota">' + escapeHtml(op.flota) + '</td>' +
-      '</tr>';
-    }).join('');
-
-    return '<div class="border-2 border-outline-variant shadow-sm mb-xl rounded overflow-hidden" id="cl-card-' + uid + '">' +
-      '<div class="flex items-center justify-between px-lg pt-md pb-sm border-b-2 border-primary bg-surface-container-high flex-wrap gap-sm">' +
-        '<div class="flex items-center gap-sm">' +
-          '<span class="material-symbols-outlined text-primary text-[20px]">hub</span>' +
-          '<h3 class="font-headline-sm font-bold text-on-surface">' + escapeHtml(cd.grupo) + '</h3>' +
-        '</div>' +
-        '<div class="flex items-center gap-sm flex-wrap">' +
-          '<span class="font-data-mono text-[11px] text-secondary">' + asig + '/' + cd.rows.length + ' asignadas · ' + cd.totTon.toFixed(1) + ' ton</span>' +
-          '<button class="cl-auto-centro border border-secondary text-secondary hover:bg-secondary/10 font-bold px-md py-xs rounded flex items-center gap-xs text-[11px] uppercase transition-colors" data-grupo="' + escapeHtml(cd.grupo) + '">' +
-            '<span class="material-symbols-outlined text-[14px]">auto_awesome</span> Auto' +
-          '</button>' +
-          '<button class="cl-guardar-centro border border-primary text-primary hover:bg-primary hover:text-white font-bold px-md py-xs rounded flex items-center gap-xs text-[11px] uppercase transition-colors" data-grupo="' + escapeHtml(cd.grupo) + '">' +
-            '<span class="material-symbols-outlined text-[14px]">save</span> Guardar' +
-          '</button>' +
-        '</div>' +
-      '</div>' +
-      '<div class="overflow-x-auto">' +
-        '<table class="w-full border-collapse text-[12px]">' +
-          '<thead>' +
-            '<tr class="bg-surface-container-high text-left border-b border-outline-variant">' +
-              '<th class="p-sm font-label-caps text-secondary uppercase text-right w-8">#</th>' +
-              '<th class="p-sm font-label-caps text-secondary uppercase">Cód. Ruta</th>' +
-              '<th class="p-sm font-label-caps text-secondary uppercase">Destino</th>' +
-              '<th class="p-sm font-label-caps text-secondary uppercase">Zona</th>' +
-              '<th class="p-sm font-label-caps text-secondary uppercase text-right">Densidad %</th>' +
-              '<th class="p-sm font-label-caps text-secondary uppercase">Cluster</th>' +
-              '<th class="p-sm font-label-caps text-secondary uppercase">Eje Vial</th>' +
-              '<th class="p-sm font-label-caps text-secondary uppercase">Cluster Op.</th>' +
-              '<th class="p-sm font-label-caps text-secondary uppercase">Frecuencia</th>' +
-              '<th class="p-sm font-label-caps text-secondary uppercase">Flota</th>' +
-            '</tr>' +
-          '</thead>' +
-          '<tbody class="divide-y divide-outline-variant">' +
-            rowsHtml +
-          '</tbody>' +
-        '</table>' +
-      '</div>' +
-    '</div>';
-  }
-
-  // ── Render HTML ──────────────────────────────────────────────────────────
-  content.innerHTML =
-    '<div>' +
-      '<div class="flex items-center gap-sm mb-md flex-wrap">' +
-        '<span class="material-symbols-outlined text-primary">hub</span>' +
-        '<h2 class="font-headline-sm font-bold text-on-surface">Asignación de Cluster por Ruta</h2>' +
-        '<span class="text-[11px] text-secondary ml-xs">Solo rutas tipo=Comuna + Regional · Agrupado por centro</span>' +
-        '<button id="btn-auto-todos" class="ml-auto flex items-center gap-xs border border-primary text-primary hover:bg-primary/[0.06] font-bold px-md py-sm rounded text-[11px] uppercase tracking-wider">' +
-          '<span class="material-symbols-outlined text-[16px]">auto_awesome</span> Asignar todos automáticamente' +
-        '</button>' +
-      '</div>' +
-      '<div class="flex flex-wrap gap-md mb-lg">' + leyenda + '</div>' +
-      centrosData.map(cd => cardHtml(cd)).join('') +
-    '</div>';
-
-  // ── Evento: cambio de cluster individual ────────────────────────────────
-  function refreshCardOp(grupo) {
-    const cd = centrosData.find(c => c.grupo === grupo); if (!cd) return;
-    const anchorsOp = anchorsOpFor(cd);
-    const uid = grupo.replace(/[^a-z0-9]/gi, '_');
-    const card = document.getElementById('cl-card-' + uid); if (!card) return;
-    card.querySelectorAll('.cl-assign').forEach(sel => {
-      const r = cd.rows.find(x => String(x.rutaId)===sel.dataset.rutaId || String(x.rutaCodigo)===sel.dataset.rutaCod);
-      if (!r) return;
-      const op = clusterOpDe(r.eje, r.cluster, {lat:r.lat, lon:r.lon, anchors:anchorsOp});
-      const tr = sel.closest('tr'); if (!tr) return;
-      const set = (cls,val) => { const el = tr.querySelector(cls); if (el) el.textContent = val; };
-      set('.cl-op-cluster', op.cluster); set('.cl-op-frec', op.frecuencia); set('.cl-op-flota', op.flota);
-    });
-  }
-  content.querySelectorAll('.cl-assign').forEach(sel => {
-    sel.addEventListener('change', () => {
-      const rutaId  = sel.dataset.rutaId;
-      const rutaCod = sel.dataset.rutaCod;
-      if (sel.value) {
-        if (rutaId)  ccfg.comunaCluster[rutaId]  = sel.value;
-        if (rutaCod) ccfg.comunaCluster[rutaCod] = sel.value;
-      } else {
-        if (rutaId)  delete ccfg.comunaCluster[rutaId];
-        if (rutaCod) delete ccfg.comunaCluster[rutaCod];
-      }
-      // Actualizar dot de color en la misma fila sin re-render
-      const dot = sel.closest('td')?.querySelector('.cl-dot');
-      if (dot) dot.style.background = sel.value ? (clusterColor(ccfg, sel.value) || '#9ca3af') : '#d1d5db';
-      const grupo = sel.dataset.grupo;
-      const cd = centrosData.find(c => c.grupo === grupo);
-      const rr = cd && cd.rows.find(x => String(x.rutaId)===sel.dataset.rutaId || String(x.rutaCodigo)===sel.dataset.rutaCod);
-      if (rr) rr.cluster = sel.value;
-      refreshCardOp(grupo);
-    });
-  });
-
-  // ── Evento: auto-asignar por centro ─────────────────────────────────────
-  content.querySelectorAll('.cl-auto-centro').forEach(btn => {
-    btn.addEventListener('click', async () => {
-      const grupo = btn.dataset.grupo;
-      const cd    = centrosData.find(c => c.grupo === grupo);
-      if (!cd) return;
-      if (!await confirmar('¿Asignar clusters automáticamente para "' + grupo + '"?\n\nAlgoritmo: densidad logística + cercanía geográfica de comunas\n(Cluster 1 = mayor densidad, rutas cercanas heredan el mismo cluster)')) return;
-      asignarClustersCentro(cd.rows, ccfg);
-      // Re-render solo esa tarjeta
-      const uid  = grupo.replace(/[^a-z0-9]/gi, '_');
-      const card = document.getElementById('cl-card-' + uid);
-      if (card) {
-        const tmp = document.createElement('div');
-        tmp.innerHTML = cardHtml(cd);
-        card.replaceWith(tmp.firstElementChild);
-        // Re-bind eventos en la nueva tarjeta
-        document.getElementById('cl-card-' + uid)?.querySelectorAll('.cl-assign').forEach(s => {
-          s.addEventListener('change', () => {
-            const rid = s.dataset.rutaId; const rcd = s.dataset.rutaCod;
-            if (s.value) { if (rid) ccfg.comunaCluster[rid]=s.value; if (rcd) ccfg.comunaCluster[rcd]=s.value; }
-            else          { if (rid) delete ccfg.comunaCluster[rid];  if (rcd) delete ccfg.comunaCluster[rcd]; }
-            const dot = s.closest('td')?.querySelector('.cl-dot');
-            if (dot) dot.style.background = s.value ? (clusterColor(ccfg, s.value) || '#9ca3af') : '#d1d5db';
-            const g2 = s.dataset.grupo;
-            const cd2 = centrosData.find(c => c.grupo === g2);
-            const rr2 = cd2 && cd2.rows.find(x => String(x.rutaId)===s.dataset.rutaId || String(x.rutaCodigo)===s.dataset.rutaCod);
-            if (rr2) rr2.cluster = s.value;
-            refreshCardOp(g2);
-          });
-        });
-        document.getElementById('cl-card-' + uid)?.querySelectorAll('.cl-guardar-centro').forEach(b => {
-          b.addEventListener('click', () => flashGuardar(b));
-        });
-        document.getElementById('cl-card-' + uid)?.querySelectorAll('.cl-auto-centro').forEach(b => {
-          b.click; // rebind handled by renderCluster re-call fallback
-        });
-      }
-      showAlert('Clusters asignados para ' + grupo + '.');
-    });
-  });
-
-  // ── Evento: guardar por centro ───────────────────────────────────────────
-  async function flashGuardar(btn) {
-    saveDatabase(db);
-    const orig = btn.innerHTML;
-    const grupo = btn.dataset.grupo;
-    const cd = centrosData.find(c => c.grupo === grupo);
-    btn.disabled = true;
-    btn.innerHTML = '<span class="material-symbols-outlined text-[14px]">sync</span> Guardando…';
-    try {
-      if (cd) await persistClusterOpDB(cd);
-      btn.innerHTML = '<span class="material-symbols-outlined text-[14px]">check_circle</span> Guardado';
-      btn.classList.add('bg-primary', 'text-white');
-    } catch (e) {
-      console.error('Error al sincronizar cluster_rutas:', e);
-      btn.innerHTML = '<span class="material-symbols-outlined text-[14px]">error</span> Error BD';
-      btn.classList.add('bg-red-600', 'text-white');
-      showAlert('Se guardó localmente, pero falló la sincronización con la base de datos: ' + (e.message || e), 'error');
-    }
-    setTimeout(() => {
-      btn.innerHTML = orig;
-      btn.classList.remove('bg-primary', 'text-white', 'bg-red-600');
-      btn.disabled = false;
-    }, 2500);
-  }
-
-  content.querySelectorAll('.cl-guardar-centro').forEach(btn => {
-    btn.addEventListener('click', () => flashGuardar(btn));
-  });
-
-  // ── Evento: auto-asignar TODOS los centros ───────────────────────────────
-  document.getElementById('btn-auto-todos')?.addEventListener('click', async () => {
-    if (!await confirmar('¿Asignar clusters automáticamente para TODOS los centros?\n\nAlgoritmo: densidad logística + cercanía geográfica de comunas\n\nEsto reemplazará todas las asignaciones existentes.')) return;
-    centrosData.forEach(cd => asignarClustersCentro(cd.rows, ccfg));
-    saveDatabase(db);
-    try {
-      for (const cd of centrosData) await persistClusterOpDB(cd);
-      showAlert('Clusters asignados automáticamente para todos los centros.');
-    } catch (e) {
-      console.error('Error al sincronizar cluster_rutas:', e);
-      showAlert('Clusters asignados localmente, pero falló la sincronización con la base de datos: ' + (e.message || e), 'error');
-    }
-    renderCluster(content, db, ccfg);
-  });
-}
-
-// ═══════════════════════════════════════════════════════════════
-// VISTA 6: TARIFAS $/KG  (ZFMP por ruta × tipo de camión)
-// ═══════════════════════════════════════════════════════════════
-const ZFMP_PAGE = 50;
-
-function renderResultados(content, db, cfg, ccfg) {
-  // ── Construir combinaciones ruta × tipo camión usando el mismo mapa que vista ZCAP ──
-  const zcapMap  = buildZcapMap(db, cfg);   // "rutaCodigo||truckType" → { zcap, truck, ruta }
-  const opClusterMap = computeOpClusterMap(db, ccfg); // mismo cluster operativo que la vista Cluster
-  const allRows  = [];
-
-  zcapMap.forEach(({ zcap, truck, ruta }) => {
-    const grupo    = ruta.origen_grupo || '';
-    const grupoKey = grupo.replace(/\s/g, '_');
-    const cluster  = opClusterMap.get(String(ruta.id || '')) ||
-                     opClusterMap.get(String(ruta.codigo || '')) || '';
-    const capKg    = truck.capKg != null ? truck.capKg
-                   : (Number(String(truck.type).match(/(\d+)/)?.[1] || 0) * 1000);
-    const bkt      = capKg / 1000;
-    const factorPct       = objetivoConsol(ccfg, grupoKey, bkt);
-    const kilosConsolidar = capKg * (factorPct / 100);
-    const zfmp            = (zcap > 0 && kilosConsolidar > 0) ? zcap / kilosConsolidar : null;
-
-    allRows.push({
-      centroOrigen:  grupo,
-      idRuta:        ruta.codigo || String(ruta.id || ''),
-      destino:       ruta.destino || '',
-      tipo:          ruta.tipo || '',
-      clasificacion: ruta.clasificRuta || '',
-      km:            Number(ruta.km) || 0,
-      cluster, capKg, factorPct, kilosConsolidar, zcap, zfmp,
-      tipoCamion: truck.type || (bkt + 'T')
-    });
-  });
-
-  // ── TARIFA CENTRO = Σ ZFMP(ruta,camión) × %Participación(centro,camión) de Consolidado ──
-  // Mismo valor para los 4 tipos de camión de una misma ruta (se prorratea la ruta completa,
-  // no cada fila individual). Usa la misma fusión Santiago+San Bernardo de Consolidado.
-  const { partPct: consolidPartPct, resolveGrupoKey } = computeConsolidacionStats();
-  const zfmpPorRuta = new Map(); // idRuta → { [bktTon]: zfmp }
-  allRows.forEach(r => {
-    if (!zfmpPorRuta.has(r.idRuta)) zfmpPorRuta.set(r.idRuta, { centro: r.centroOrigen, byBkt: {} });
-    zfmpPorRuta.get(r.idRuta).byBkt[r.capKg / 1000] = r.zfmp;
-  });
-  const tarifaCentroPorRuta = new Map();
-  zfmpPorRuta.forEach(({ centro, byBkt }, idRuta) => {
-    const grupoKey  = resolveGrupoKey(centro || '');
-    const pctByBkt  = consolidPartPct[grupoKey] || {};
-    const total = CAP_BUCKETS.reduce((s, bkt) => {
-      const zfmpVal = byBkt[bkt];
-      const pct     = pctByBkt[bkt] || 0;
-      return s + (zfmpVal != null ? zfmpVal * (pct / 100) : 0);
-    }, 0);
-    tarifaCentroPorRuta.set(idRuta, total > 0 ? total : null);
-  });
-  allRows.forEach(r => { r.tarifaCentro = tarifaCentroPorRuta.get(r.idRuta) ?? null; });
-
-  if (!allRows.length) {
-    content.innerHTML = '<div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm">' +
-      noDataBanner('No hay rutas activas con tipos de camión configurados.') + '</div>';
-    return;
-  }
-
-  // ── Centros únicos (para tabs) ────────────────────────────────────────────
-  const centros = [...new Set(allRows.map(r => r.centroOrigen))].filter(Boolean).sort();
-
-  // ── Filtrado ──────────────────────────────────────────────────────────────
-  const buscarNorm = zfmpBuscar.trim().toLowerCase();
-  const filtered = allRows.filter(r => {
-    if (zfmpFiltClasif !== 'todas') {
-      const cl = (r.clasificacion || '').toLowerCase();
-      if (zfmpFiltClasif === 'regional'      && cl !== 'regional')      return false;
-      if (zfmpFiltClasif === 'interregional' && cl !== 'interregional') return false;
-    }
-    if (zfmpFiltCentro !== 'all' && r.centroOrigen !== zfmpFiltCentro) return false;
-    if (zfmpFiltCamion && String(r.capKg) !== zfmpFiltCamion)          return false;
-    if (buscarNorm && !r.idRuta.toLowerCase().includes(buscarNorm) &&
-        !r.destino.toLowerCase().includes(buscarNorm))                  return false;
-    return true;
-  });
-
-  const totalPags  = Math.max(1, Math.ceil(filtered.length / ZFMP_PAGE));
-  if (zfmpPagina >= totalPags) zfmpPagina = 0;
-  const pageRows   = filtered.slice(zfmpPagina * ZFMP_PAGE, (zfmpPagina + 1) * ZFMP_PAGE);
-
-  // ── Helpers UI ────────────────────────────────────────────────────────────
-  const selCls  = 'border border-[#CED4DA] px-sm py-[7px] text-[12px] bg-white rounded focus:border-primary focus:ring-0';
-  const tabCls  = (active) => 'px-md py-xs border rounded text-[12px] font-bold uppercase transition-colors ' +
-    (active ? 'bg-primary text-white border-primary' : 'bg-white border-outline-variant text-on-surface hover:bg-surface-container-high');
-  const centroCls = (v) => 'zfmp-ctab px-sm py-xs border rounded text-[11px] font-bold uppercase transition-colors ' +
-    (zfmpFiltCentro === v ? 'bg-primary text-white border-primary' : 'bg-white border-outline-variant text-on-surface hover:bg-surface-container-high');
-
-  // Filas de tabla
-  const rowsHtml = pageRows.length === 0
-    ? '<tr><td colspan="13" class="p-md text-center text-secondary">Sin resultados.</td></tr>'
-    : pageRows.map(r => {
-        const clNombre = r.cluster ? escapeHtml(r.cluster) : '—';
-        return '<tr class="hover:bg-surface-container-low border-b border-outline-variant text-[12px]">' +
-          '<td class="p-sm text-[11px] text-secondary whitespace-nowrap">' + escapeHtml(r.centroOrigen) + '</td>' +
-          '<td class="p-sm font-data-mono font-bold text-primary text-[11px]">' + escapeHtml(r.idRuta) + '</td>' +
-          '<td class="p-sm whitespace-nowrap">' + escapeHtml(r.destino) + '</td>' +
-          '<td class="p-sm text-[11px]"><span class="border border-outline-variant px-xs py-px rounded">' + escapeHtml(r.tipo) + '</span></td>' +
-          '<td class="p-sm text-[11px] text-secondary">' + escapeHtml(r.clasificacion) + '</td>' +
-          '<td class="p-sm text-right font-data-mono text-[11px]">' + r.km.toLocaleString('es-CL') + '</td>' +
-          '<td class="p-sm text-[11px] font-bold font-data-mono">' + clNombre + '</td>' +
-          '<td class="p-sm text-[11px]"><span class="border border-outline-variant px-xs py-px rounded font-data-mono">' + escapeHtml(r.tipoCamion) + '</span></td>' +
-          '<td class="p-sm text-right font-data-mono text-[11px]">' + (r.zcap !== null ? formatCLP(r.zcap) : '<span class="text-secondary">—</span>') + '</td>' +
-          '<td class="p-sm text-right font-data-mono text-[11px]">' + r.factorPct.toFixed(1) + '%</td>' +
-          '<td class="p-sm text-right font-data-mono text-[11px]">' + r.kilosConsolidar.toLocaleString('es-CL', { maximumFractionDigits: 0 }) + ' kg</td>' +
-          '<td class="p-sm text-right font-bold font-data-mono text-[11px] text-primary">' +
-            (r.zfmp !== null
-              ? '$' + r.zfmp.toLocaleString('es-CL', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-              : '<span class="text-secondary font-normal">—</span>') +
-          '</td>' +
-          '<td class="p-sm text-right font-bold font-data-mono text-[11px]" style="color:#0d47a1">' +
-            (r.tarifaCentro !== null
-              ? '$' + r.tarifaCentro.toLocaleString('es-CL', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-              : '<span class="text-secondary font-normal">—</span>') +
-          '</td>' +
-        '</tr>';
-      }).join('');
-
-  // Paginador
-  const desde   = zfmpPagina * ZFMP_PAGE + 1;
-  const hasta   = Math.min((zfmpPagina + 1) * ZFMP_PAGE, filtered.length);
-  const prevDis = zfmpPagina === 0 ? 'disabled opacity-40 cursor-default' : 'hover:bg-surface-container-high cursor-pointer';
-  const nextDis = zfmpPagina >= totalPags - 1 ? 'disabled opacity-40 cursor-default' : 'hover:bg-surface-container-high cursor-pointer';
-  const pager   =
-    '<div class="flex items-center justify-between mt-sm flex-wrap gap-sm">' +
-      '<span class="text-[12px] text-secondary">Mostrando ' + desde + '–' + hasta + ' de ' + filtered.length + '</span>' +
-      '<div class="flex items-center gap-xs">' +
-        '<button id="zfmp-pag-prev" class="px-sm py-xs border border-outline-variant rounded text-[12px] ' + prevDis + '"' + (zfmpPagina === 0 ? ' disabled' : '') + '>‹ Ant.</button>' +
-        '<span class="px-sm text-[12px]">Pág. ' + (zfmpPagina + 1) + ' / ' + totalPags + '</span>' +
-        '<button id="zfmp-pag-next" class="px-sm py-xs border border-outline-variant rounded text-[12px] ' + nextDis + '"' + (zfmpPagina >= totalPags - 1 ? ' disabled' : '') + '>Sig. ›</button>' +
-      '</div>' +
-    '</div>';
-
-  content.innerHTML =
-    '<div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm">' +
-
-      // ── Header ─────────────────────────────────────────────────────────────
-      '<div class="flex items-center justify-between mb-md border-b border-outline-variant pb-sm flex-wrap gap-sm">' +
-        '<div class="flex items-center gap-sm">' +
-          '<span class="material-symbols-outlined text-primary">price_change</span>' +
-          '<h2 class="font-headline-sm text-headline-sm font-bold text-on-surface">Tarifas $/Kg</h2>' +
-        '</div>' +
-        '<div class="flex items-center gap-sm">' +
-          '<button id="btn-zfmp-refresh" class="flex items-center gap-xs border border-secondary text-secondary hover:bg-surface-container-high font-bold px-md py-sm rounded text-[11px] uppercase tracking-wider" title="Recalcular ZCAP/ZFMP tras modificar Tarifa Rutas (ZCAP) u otros parámetros">' +
-            '<span class="material-symbols-outlined text-[16px]">refresh</span> Refrescar' +
-          '</button>' +
-          '<button id="btn-zfmp-download" class="bg-primary hover:bg-[#930007] text-white font-bold px-md py-sm rounded flex items-center gap-xs text-[12px] uppercase">' +
-            '<span class="material-symbols-outlined text-[18px]">download</span> Descargar CSV' +
-          '</button>' +
-        '</div>' +
-      '</div>' +
-
-      // ── Tabs clasificación ──────────────────────────────────────────────────
-      '<div class="flex items-center gap-xs mb-sm flex-wrap">' +
-        '<span class="text-[11px] text-secondary font-bold uppercase mr-xs">Tipo:</span>' +
-        [['todas','Todas'],['regional','Regional'],['interregional','Interregional']].map(([v,l]) =>
-          '<button class="zfmp-ctipo ' + tabCls(zfmpFiltClasif === v) + '" data-v="' + v + '">' + l + '</button>'
-        ).join('') +
-      '</div>' +
-
-      // ── Tabs centros ───────────────────────────────────────────────────────
-      '<div class="flex items-center gap-xs mb-md flex-wrap">' +
-        '<button class="' + centroCls('all') + '" data-c="all">Todos</button>' +
-        centros.map(c =>
-          '<button class="' + centroCls(c) + '" data-c="' + escapeHtml(c) + '">' + escapeHtml(c) + '</button>'
-        ).join('') +
-      '</div>' +
-
-      // ── Filtros fila ────────────────────────────────────────────────────────
-      '<div class="flex flex-wrap items-end gap-md mb-md">' +
-        '<div>' +
-          '<label class="font-label-caps text-label-caps text-secondary block mb-xs text-[10px] uppercase">Tipo Camión</label>' +
-          '<select id="zfmp-f-camion" class="' + selCls + ' w-40">' +
-            '<option value=""' + (!zfmpFiltCamion ? ' selected' : '') + '>Todos</option>' +
-            [5000,10000,15000,28000].map(kg =>
-              '<option value="' + kg + '"' + (zfmpFiltCamion === String(kg) ? ' selected' : '') + '>' + (kg/1000).toLocaleString('es-CL') + '.000 Kg</option>'
-            ).join('') +
-          '</select>' +
-        '</div>' +
-        '<div>' +
-          '<label class="font-label-caps text-label-caps text-secondary block mb-xs text-[10px] uppercase">Buscar Ruta / Destino</label>' +
-          '<input id="zfmp-f-buscar" type="text" placeholder="Código o destino..." value="' + escapeHtml(zfmpBuscar) + '" ' +
-            'class="' + selCls + ' w-52">' +
-        '</div>' +
-        '<button id="zfmp-reset" class="border border-outline-variant px-md py-[7px] text-[12px] text-secondary hover:bg-surface-container-high rounded flex items-center gap-xs">' +
-          '<span class="material-symbols-outlined text-[16px]">filter_alt_off</span> Limpiar' +
-        '</button>' +
-        '<span class="ml-auto text-[12px] text-secondary">' + filtered.length + ' fila(s)</span>' +
-      '</div>' +
-
-      // ── Tabla ───────────────────────────────────────────────────────────────
-      '<div class="bg-surface border border-outline-variant rounded overflow-x-auto">' +
-        '<table class="w-full border-collapse">' +
-          '<thead>' +
-            '<tr class="bg-surface-container-high border-b border-outline-variant text-left">' +
-              ['Centro Origen','ID Ruta','Destino','Tipo','Clasificación','Dist. KM',
-               'Cluster','Tipo Camión','ZCAP','Factor Cons.','Kilos Consol.','ZFMP $/kg','Tarifa Centro'].map((h, i) =>
-                '<th class="p-sm font-label-caps text-secondary uppercase text-[10px]' + (i >= 5 ? ' text-right' : '') + '">' + h + '</th>'
-              ).join('') +
-            '</tr>' +
-          '</thead>' +
-          '<tbody class="divide-y divide-outline-variant">' + rowsHtml + '</tbody>' +
-        '</table>' +
-      '</div>' +
-      pager +
-
-      // Fórmula info
-      '<div class="text-[11px] text-secondary mt-sm flex flex-wrap gap-lg">' +
-        '<span><b>Kilos Consol.</b> = Cap. Camión × Factor Consolidación</span>' +
-        '<span><b>ZFMP $/kg</b> = ZCAP ÷ Kilos Consol.</span>' +
-        '<span><b>Tarifa Centro</b> = Σ (ZFMP camión × %Participación centro/camión de Consolidado) — igual para los 4 camiones de la ruta</span>' +
-      '</div>' +
-    '</div>';
-
-  // ── Eventos ──────────────────────────────────────────────────────────────
-
-  // Tabs clasificación
-  content.querySelectorAll('.zfmp-ctipo').forEach(btn => {
-    btn.addEventListener('click', () => { zfmpFiltClasif = btn.dataset.v; zfmpPagina = 0; renderResultados(content, db, cfg, ccfg); });
-  });
-
-  // Tabs centros
-  content.querySelectorAll('.zfmp-ctab').forEach(btn => {
-    btn.addEventListener('click', () => { zfmpFiltCentro = btn.dataset.c; zfmpPagina = 0; renderResultados(content, db, cfg, ccfg); });
-  });
-
-  // Tipo camión
-  document.getElementById('zfmp-f-camion')?.addEventListener('change', e => {
-    zfmpFiltCamion = e.target.value; zfmpPagina = 0; renderResultados(content, db, cfg, ccfg);
-  });
-
-  // Buscar (preserva cursor)
-  document.getElementById('zfmp-f-buscar')?.addEventListener('input', e => {
-    const pos = e.target.selectionStart;
-    zfmpBuscar = e.target.value; zfmpPagina = 0;
-    renderResultados(content, db, cfg, ccfg);
-    const el = document.getElementById('zfmp-f-buscar');
-    if (el) { el.focus(); el.setSelectionRange(pos, pos); }
-  });
-
-  // Limpiar
-  document.getElementById('zfmp-reset')?.addEventListener('click', () => {
-    zfmpFiltClasif = 'todas'; zfmpFiltCentro = 'all'; zfmpFiltCamion = ''; zfmpBuscar = ''; zfmpPagina = 0;
-    renderResultados(content, db, cfg, ccfg);
-  });
-
-  // Paginación
-  document.getElementById('zfmp-pag-prev')?.addEventListener('click', () => {
-    zfmpPagina = Math.max(0, zfmpPagina - 1); renderResultados(content, db, cfg, ccfg);
-  });
-  document.getElementById('zfmp-pag-next')?.addEventListener('click', () => {
-    zfmpPagina = Math.min(totalPags - 1, zfmpPagina + 1); renderResultados(content, db, cfg, ccfg);
-  });
-
-  // Refrescar (recalcula ZCAP/ZFMP/Tarifa Centro con el estado actual de Tarifa Rutas y Consolidado)
-  document.getElementById('btn-zfmp-refresh')?.addEventListener('click', () => {
-    renderResultados(content, db, cfg, ccfg);
-    showAlert('Tarifas $/Kg recalculadas desde Tarifa Rutas (ZCAP).');
-  });
-
-  // Descargar CSV
-  document.getElementById('btn-zfmp-download')?.addEventListener('click', () => {
-    const headers = ['Centro Origen','ID Ruta','Destino','Tipo','Clasificacion','Dist KM',
-                     'Cluster','Tipo Camion','ZCAP','Factor Consolidacion %','Kilos a Consolidar','ZFMP $/kg','Tarifa Centro'];
-    const data = filtered.map(r => [
-      r.centroOrigen, r.idRuta, r.destino, r.tipo, r.clasificacion, r.km,
-      r.cluster || '',
-      r.tipoCamion,
-      r.zcap    !== null ? r.zcap.toFixed(2)    : '',
-      r.factorPct.toFixed(1),
-      r.kilosConsolidar.toFixed(0),
-      r.zfmp         !== null ? r.zfmp.toFixed(4)         : '',
-      r.tarifaCentro !== null ? r.tarifaCentro.toFixed(4) : ''
-    ]);
-    downloadFile('tarifas_kg_' + Date.now() + '.csv', toCSV(headers, data));
-  });
-}
-
-
-// ═══════════════════════════════════════════════════════════════
-// VISTA 7: TARIFA MIN/MAX  (ZFMI/ZFMX por ruta × tipo de camión)
-// ═══════════════════════════════════════════════════════════════
-const ZFMI_PAGE = 50;
-
-// Objetivo de consolidación (%) por centro y camión. La vista Consolidación guarda
-// Santiago y San Bernardo fusionados bajo "SANTIAGO_+_SAN_BERNARDO"; las rutas llegan con
-// su grupo real, así que se busca primero la clave propia y luego la fusionada.
-function objetivoConsol(ccfg, grupoKey, bkt) {
-  const t = ccfg.consolidacionObjetivo || {};
-  const k = String(grupoKey || '');
-  const merged = (k === 'SANTIAGO' || k === 'SAN_BERNARDO') ? t['SANTIAGO_+_SAN_BERNARDO'] : null;
-  const v = t[k]?.[bkt] ?? merged?.[bkt];
-  return (v === undefined || v === null || v === '') ? 80 : Number(v);
-}
-
-function renderZfmi(content, db, cfg, ccfg) {
-  const zcapMap = buildZcapMap(db, cfg); // "rutaCodigo||truckType" → { zcap, truck, ruta }
-  const opClusterMap = computeOpClusterMap(db, ccfg); // mismo cluster operativo que la vista Cluster
-
-  // ── Paso 1: Camión mínimo (menor capKg) por grupo ────────────────────────
-  const minCapKgByGrupo = new Map();
-  zcapMap.forEach(({ truck, ruta }) => {
-    const grupo = ruta.origen_grupo || '';
-    const capKg = truck.capKg != null ? truck.capKg
-                : (Number(String(truck.type).match(/(\d+)/)?.[1] || 0) * 1000);
-    if (!minCapKgByGrupo.has(grupo) || capKg < minCapKgByGrupo.get(grupo)) {
-      minCapKgByGrupo.set(grupo, capKg);
-    }
-  });
-
-  // ── Paso 2: ZFMI por ruta (usando el camión mínimo del grupo) ────────────
-  // Una sola entrada por rutaCodigo — la del truck con menor capKg
-  const zfmiByRuta = new Map();
-  zcapMap.forEach(({ zcap, truck, ruta }) => {
-    const grupo    = ruta.origen_grupo || '';
-    const grupoKey = grupo.replace(/\s/g, '_');
-    const capKg    = truck.capKg != null ? truck.capKg
-                   : (Number(String(truck.type).match(/(\d+)/)?.[1] || 0) * 1000);
-    if (capKg !== minCapKgByGrupo.get(grupo)) return;
-    const rutaCodigo = ruta.codigo || String(ruta.id || '');
-    if (zfmiByRuta.has(rutaCodigo)) return; // ya guardado
-    const bkt       = capKg / 1000;
-    const factorPct = objetivoConsol(ccfg, grupoKey, bkt);
-    const kilosMin  = capKg * (factorPct / 100);
-    zfmiByRuta.set(rutaCodigo, {
-      minTruckType: truck.type || (capKg / 1000 + 'T'),
-      zfmiZcap:     zcap,
-      zfmiKilos:    kilosMin,
-      zfmi:         zcap > 0 ? zcap : null
-    });
-  });
-
-  // ── Paso 3: Construir todas las filas ─────────────────────────────────────
-  const allRows = [];
-  zcapMap.forEach(({ zcap, truck, ruta }) => {
-    const grupo    = ruta.origen_grupo || '';
-    const grupoKey = grupo.replace(/\s/g, '_');
-    // cluster = clave de densidad (1/2/3/spot) — se usa para el factor pedidosPromedio del ZFMI.
-    // clusterOp = cluster operativo homologable (SUR-C1, SPOT_LOCAL, etc.) de la vista Cluster — solo para mostrar.
-    const cluster  = ccfg.comunaCluster[String(ruta.id || '')] ||
-                     ccfg.comunaCluster[String(ruta.codigo || '')] || '';
-    const clusterOp = opClusterMap.get(String(ruta.id || '')) ||
-                      opClusterMap.get(String(ruta.codigo || '')) || '';
-    const capKg    = truck.capKg != null ? truck.capKg
-                   : (Number(String(truck.type).match(/(\d+)/)?.[1] || 0) * 1000);
-    const bkt             = capKg / 1000;
-    const factorPct       = objetivoConsol(ccfg, grupoKey, bkt);
-    const kilosConsolidar = capKg * (factorPct / 100);
-    const zfmx            = zcap > 0 ? zcap : null;
-    const rutaCodigo      = ruta.codigo || String(ruta.id || '');
-    const zfmiData        = zfmiByRuta.get(rutaCodigo);
-    // Tarifa Express = ZCAP × (1 + recargo%) — recargo por centro configurado en Frecuencia
-    const _rTab          = ccfg.especiales?.recargoExclusividad || {};
-    const _rVal          = _rTab[grupoKey] ?? _rTab[grupo];
-    const recargoPct     = (_rVal && typeof _rVal === 'object') ? (_rVal.activo === false ? 0 : (Number(_rVal.pct) || 0)) : (Number(_rVal) || 0);
-    const tarifaExpress   = zcap > 0 ? zcap * (1 + recargoPct / 100) : null;
-    // ZFMI: igual para todos los tipos de camión de la misma ruta
-    //   kilosTarifaMin (col) = kilosMin(camión mín) / pedidosPromedio     → ej. 4000/3.5 = 1143 kg
-    //   ZFMP_min             = ZCAP(camión mín) / kilosMin(camión mín)    → $/kg camión mínimo
-    //   ZFMI                 = kilosTarifaMin(col) × ZFMP_min
-    //                        = (zfmiKilos/pedidosProm) × (zfmiZcap/zfmiKilos)
-    //                        = zfmiZcap / pedidosPromedio
-    const clusterObj      = ccfg.clusters?.find(c => c.key === cluster);
-    const pedidosPromedio = clusterObj?.nv || 1;
-    const zfmiKilosBase   = zfmiData?.zfmiKilos ?? null;          // 4000 kg (cap_min × factor)
-    const kilosTarifaMin  = (zfmiKilosBase != null && pedidosPromedio > 0)
-                            ? zfmiKilosBase / pedidosPromedio      // 1143 kg → columna "Kilos Tarif.Min"
-                            : null;
-    const zfmpMinTruck    = (zfmiData?.zfmiZcap > 0 && zfmiKilosBase > 0)
-                            ? zfmiData.zfmiZcap / zfmiKilosBase    // $/kg del camión mínimo
-                            : null;
-    const zfmi            = (kilosTarifaMin != null && zfmpMinTruck != null)
-                            ? kilosTarifaMin * zfmpMinTruck         // = zfmiZcap / pedidosProm
-                            : null;
-
-    allRows.push({
-      centroOrigen:   grupo,
-      idRuta:         rutaCodigo,
-      destino:        ruta.destino || '',
-      tipo:           ruta.tipo || '',
-      clasificacion:  ruta.clasificRuta || '',
-      km:             Number(ruta.km) || 0,
-      cluster,
-      clusterOp,
-      tipoCamion:     truck.type || (bkt + 'T'),
-      capKg,
-      camionMinimo:   zfmiData?.minTruckType || '—',
-      zcap,
-      zfmi,
-      zfmx,
-      tarifaExpress,
-      factorPct,
-      kilosConsolidar,
-      kilosTarifaMin,
-      pedidosPromedio
-    });
-  });
-
-  if (!allRows.length) {
-    content.innerHTML = '<div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm">' +
-      noDataBanner('No hay rutas activas con tipos de camión configurados.') + '</div>';
-    return;
-  }
-
-  // ── Centros únicos (tabs) ─────────────────────────────────────────────────
-  const centros = [...new Set(allRows.map(r => r.centroOrigen))].filter(Boolean).sort();
-
-  // ── Filtrado ──────────────────────────────────────────────────────────────
-  const buscarNorm = zfmiBuscar.trim().toLowerCase();
-  const filtered = allRows.filter(r => {
-    if (zfmiFiltClasif !== 'todas') {
-      const cl = (r.clasificacion || '').toLowerCase();
-      if (zfmiFiltClasif === 'regional'      && cl !== 'regional')      return false;
-      if (zfmiFiltClasif === 'interregional' && cl !== 'interregional') return false;
-    }
-    if (zfmiFiltCentro !== 'all' && r.centroOrigen !== zfmiFiltCentro)  return false;
-    if (zfmiFiltCamion && String(r.capKg) !== zfmiFiltCamion)           return false;
-    if (buscarNorm && !r.idRuta.toLowerCase().includes(buscarNorm) &&
-        !r.destino.toLowerCase().includes(buscarNorm))                   return false;
-    return true;
-  });
-
-  const totalPags = Math.max(1, Math.ceil(filtered.length / ZFMI_PAGE));
-  if (zfmiPagina >= totalPags) zfmiPagina = 0;
-  const pageRows  = filtered.slice(zfmiPagina * ZFMI_PAGE, (zfmiPagina + 1) * ZFMI_PAGE);
-
-  // ── Helpers UI ────────────────────────────────────────────────────────────
-  const selCls    = 'border border-[#CED4DA] px-sm py-[7px] text-[12px] bg-white rounded focus:border-primary focus:ring-0';
-  const tabCls    = (active) => 'px-md py-xs border rounded text-[12px] font-bold uppercase transition-colors ' +
-    (active ? 'bg-primary text-white border-primary' : 'bg-white border-outline-variant text-on-surface hover:bg-surface-container-high');
-  const centroCls = (v) => 'zfmi-ctab px-sm py-xs border rounded text-[11px] font-bold uppercase transition-colors ' +
-    (zfmiFiltCentro === v ? 'bg-primary text-white border-primary' : 'bg-white border-outline-variant text-on-surface hover:bg-surface-container-high');
-
-  const fmtKg = (n) => n != null ? n.toLocaleString('es-CL', { maximumFractionDigits: 0 }) + ' kg' : '—';
-  const fmtPct = (n) => n != null ? '$' + Math.round(n).toLocaleString('es-CL') : '<span class="text-secondary">—</span>';
-
-  // ── Filas tabla ───────────────────────────────────────────────────────────
-  const rowsHtml = pageRows.length === 0
-    ? '<tr><td colspan="15" class="p-md text-center text-secondary">Sin resultados.</td></tr>'
-    : pageRows.map(r => {
-        const clNombre = r.clusterOp ? escapeHtml(r.clusterOp) : '—';
-        return '<tr class="hover:bg-surface-container-low border-b border-outline-variant text-[12px]">' +
-          '<td class="p-sm text-[11px] text-secondary whitespace-nowrap">'    + escapeHtml(r.centroOrigen) + '</td>' +
-          '<td class="p-sm font-data-mono font-bold text-primary text-[11px]">' + escapeHtml(r.idRuta) + '</td>' +
-          '<td class="p-sm whitespace-nowrap">'                               + escapeHtml(r.destino) + '</td>' +
-          '<td class="p-sm text-[11px]"><span class="border border-outline-variant px-xs py-px rounded">' + escapeHtml(r.tipo) + '</span></td>' +
-          '<td class="p-sm text-[11px] text-secondary">'                      + escapeHtml(r.clasificacion) + '</td>' +
-          '<td class="p-sm text-right font-data-mono text-[11px]">'           + r.km.toLocaleString('es-CL') + '</td>' +
-          '<td class="p-sm text-[11px] font-bold font-data-mono">'            + clNombre + '</td>' +
-          '<td class="p-sm text-[11px]"><span class="border border-outline-variant px-xs py-px rounded font-data-mono">' + escapeHtml(r.tipoCamion) + '</span></td>' +
-          '<td class="p-sm text-[11px]"><span class="border border-[#e2c56a] bg-[#fef9ec] text-[#92640a] px-xs py-px rounded font-data-mono">' + escapeHtml(r.camionMinimo) + '</span></td>' +
-          '<td class="p-sm text-right font-data-mono text-[11px]">'           + (r.zcap !== null ? formatCLP(r.zcap) : '<span class="text-secondary">—</span>') + '</td>' +
-          '<td class="p-sm text-right font-bold font-data-mono text-[11px] text-green-700">' + fmtPct(r.zfmi) + '</td>' +
-          '<td class="p-sm text-right font-bold font-data-mono text-[11px] text-primary">'   + fmtPct(r.zfmx) + '</td>' +
-          '<td class="p-sm text-right font-bold font-data-mono text-[11px] text-orange-600">' + fmtPct(r.tarifaExpress) + '</td>' +
-          '<td class="p-sm text-right font-data-mono text-[11px]">'           + r.factorPct.toFixed(1) + '%</td>' +
-          '<td class="p-sm text-right font-data-mono text-[11px]">'           + fmtKg(r.kilosConsolidar) + '</td>' +
-          '<td class="p-sm text-right font-data-mono text-[11px] text-secondary">' + fmtKg(r.kilosTarifaMin) + '</td>' +
-        '</tr>';
-      }).join('');
-
-  // ── Paginador ─────────────────────────────────────────────────────────────
-  const desde   = zfmiPagina * ZFMI_PAGE + 1;
-  const hasta   = Math.min((zfmiPagina + 1) * ZFMI_PAGE, filtered.length);
-  const prevDis = zfmiPagina === 0 ? 'disabled opacity-40 cursor-default' : 'hover:bg-surface-container-high cursor-pointer';
-  const nextDis = zfmiPagina >= totalPags - 1 ? 'disabled opacity-40 cursor-default' : 'hover:bg-surface-container-high cursor-pointer';
-  const pager   =
-    '<div class="flex items-center justify-between mt-sm flex-wrap gap-sm">' +
-      '<span class="text-[12px] text-secondary">Mostrando ' + desde + '–' + hasta + ' de ' + filtered.length + '</span>' +
-      '<div class="flex items-center gap-xs">' +
-        '<button id="zfmi-pag-prev" class="px-sm py-xs border border-outline-variant rounded text-[12px] ' + prevDis + '"' + (zfmiPagina === 0 ? ' disabled' : '') + '>‹ Ant.</button>' +
-        '<span class="px-sm text-[12px]">Pág. ' + (zfmiPagina + 1) + ' / ' + totalPags + '</span>' +
-        '<button id="zfmi-pag-next" class="px-sm py-xs border border-outline-variant rounded text-[12px] ' + nextDis + '"' + (zfmiPagina >= totalPags - 1 ? ' disabled' : '') + '>Sig. ›</button>' +
-      '</div>' +
-    '</div>';
-
-  content.innerHTML =
-    '<div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm">' +
-
-      // ── Header ─────────────────────────────────────────────────────────────
-      '<div class="flex items-center justify-between mb-md border-b border-outline-variant pb-sm flex-wrap gap-sm">' +
-        '<div class="flex items-center gap-sm">' +
-          '<span class="material-symbols-outlined text-primary">request_quote</span>' +
-          '<h2 class="font-headline-sm text-headline-sm font-bold text-on-surface">Tarifa Min / Max</h2>' +
-        '</div>' +
-        '<div class="flex items-center gap-sm">' +
-          '<button id="btn-zfmi-refresh" class="flex items-center gap-xs border border-secondary text-secondary hover:bg-surface-container-high font-bold px-md py-sm rounded text-[11px] uppercase tracking-wider" title="Recalcular ZCAP/ZFMI/ZFMX tras modificar Tarifa Rutas (ZCAP) u otros parámetros">' +
-            '<span class="material-symbols-outlined text-[16px]">refresh</span> Refrescar' +
-          '</button>' +
-          '<button id="btn-zfmi-download" class="bg-primary hover:bg-[#930007] text-white font-bold px-md py-sm rounded flex items-center gap-xs text-[12px] uppercase">' +
-            '<span class="material-symbols-outlined text-[18px]">download</span> Descargar CSV' +
-          '</button>' +
-        '</div>' +
-      '</div>' +
-
-      // ── Tabs clasificación ──────────────────────────────────────────────────
-      '<div class="flex items-center gap-xs mb-sm flex-wrap">' +
-        '<span class="text-[11px] text-secondary font-bold uppercase mr-xs">Tipo:</span>' +
-        [['todas','Todas'],['regional','Regional'],['interregional','Interregional']].map(([v,l]) =>
-          '<button class="zfmi-ctipo ' + tabCls(zfmiFiltClasif === v) + '" data-v="' + v + '">' + l + '</button>'
-        ).join('') +
-      '</div>' +
-
-      // ── Tabs centros ───────────────────────────────────────────────────────
-      '<div class="flex items-center gap-xs mb-md flex-wrap">' +
-        '<button class="' + centroCls('all') + '" data-c="all">Todos</button>' +
-        centros.map(c =>
-          '<button class="' + centroCls(c) + '" data-c="' + escapeHtml(c) + '">' + escapeHtml(c) + '</button>'
-        ).join('') +
-      '</div>' +
-
-      // ── Filtros fila ────────────────────────────────────────────────────────
-      '<div class="flex flex-wrap items-end gap-md mb-md">' +
-        '<div>' +
-          '<label class="font-label-caps text-label-caps text-secondary block mb-xs text-[10px] uppercase">Tipo Camión</label>' +
-          '<select id="zfmi-f-camion" class="' + selCls + ' w-40">' +
-            '<option value=""' + (!zfmiFiltCamion ? ' selected' : '') + '>Todos</option>' +
-            [5000,10000,15000,28000].map(kg =>
-              '<option value="' + kg + '"' + (zfmiFiltCamion === String(kg) ? ' selected' : '') + '>' + (kg/1000).toLocaleString('es-CL') + '.000 Kg</option>'
-            ).join('') +
-          '</select>' +
-        '</div>' +
-        '<div>' +
-          '<label class="font-label-caps text-label-caps text-secondary block mb-xs text-[10px] uppercase">Buscar Ruta / Destino</label>' +
-          '<input id="zfmi-f-buscar" type="text" placeholder="Código o destino..." value="' + escapeHtml(zfmiBuscar) + '" ' +
-            'class="' + selCls + ' w-52">' +
-        '</div>' +
-        '<button id="zfmi-reset" class="border border-outline-variant px-md py-[7px] text-[12px] text-secondary hover:bg-surface-container-high rounded flex items-center gap-xs">' +
-          '<span class="material-symbols-outlined text-[16px]">filter_alt_off</span> Limpiar' +
-        '</button>' +
-        '<span class="ml-auto text-[12px] text-secondary">' + filtered.length + ' fila(s)</span>' +
-      '</div>' +
-
-      // ── Tabla ───────────────────────────────────────────────────────────────
-      '<div class="bg-surface border border-outline-variant rounded overflow-x-auto">' +
-        '<table class="w-full border-collapse">' +
-          '<thead>' +
-            '<tr class="bg-surface-container-high border-b border-outline-variant text-left">' +
-              [
-                ['Centro Origen', false], ['ID Ruta', false], ['Destino', false],
-                ['Tipo', false], ['Clasificación', false], ['Dist. KM', true],
-                ['Cluster', false], ['Tipo Camión', false], ['Camión Mínimo', false],
-                ['ZCAP', true], ['ZFMI $ Min', true], ['ZFMX $ Max', true],
-                ['Express $', true], ['Factor Cons.', true],
-                ['Kilos Consol.', true], ['Kilos Tarif.Min', true]
-              ].map(([h, right]) =>
-                '<th class="p-sm font-label-caps text-secondary uppercase text-[10px]' + (right ? ' text-right' : '') + '">' + h + '</th>'
-              ).join('') +
-            '</tr>' +
-          '</thead>' +
-          '<tbody class="divide-y divide-outline-variant">' + rowsHtml + '</tbody>' +
-        '</table>' +
-      '</div>' +
-      pager +
-
-      // ── Leyenda fórmulas ────────────────────────────────────────────────────
-      '<div class="text-[11px] text-secondary mt-sm flex flex-wrap gap-lg">' +
-        '<span><b>Camión Mínimo</b> = truck de menor capacidad del centro</span>' +
-        '<span><b>ZFMI $</b> = (Kilos Tarif.Min ÷ Ped.Prom. cluster) × ZFMP $/kg</span>' +
-        '<span><b>ZFMX $</b> = ZCAP del camión (mismo que vista ZCAP)</span>' +
-        '<span><b>Tarifa Express</b> = ZCAP × (1 + Recargo Exclusividad %)</span>' +
-      '</div>' +
-    '</div>';
-
-  // ── Eventos ───────────────────────────────────────────────────────────────
-
-  content.querySelectorAll('.zfmi-ctipo').forEach(btn => {
-    btn.addEventListener('click', () => { zfmiFiltClasif = btn.dataset.v; zfmiPagina = 0; renderZfmi(content, db, cfg, ccfg); });
-  });
-
-  content.querySelectorAll('.zfmi-ctab').forEach(btn => {
-    btn.addEventListener('click', () => { zfmiFiltCentro = btn.dataset.c; zfmiPagina = 0; renderZfmi(content, db, cfg, ccfg); });
-  });
-
-    document.getElementById('zfmi-f-camion')?.addEventListener('change', e => {
-    zfmiFiltCamion = e.target.value; zfmiPagina = 0; renderZfmi(content, db, cfg, ccfg);
-  });
-
-  // Buscar (preserva cursor)
-  document.getElementById('zfmi-f-buscar')?.addEventListener('input', e => {
-    const pos = e.target.selectionStart;
-    zfmiBuscar = e.target.value; zfmiPagina = 0;
-    renderZfmi(content, db, cfg, ccfg);
-    const el = document.getElementById('zfmi-f-buscar');
-    if (el) { el.focus(); el.setSelectionRange(pos, pos); }
-  });
-
-  // Limpiar
-  document.getElementById('zfmi-reset')?.addEventListener('click', () => {
-    zfmiFiltClasif = 'todas'; zfmiFiltCentro = 'all'; zfmiFiltCamion = ''; zfmiBuscar = ''; zfmiPagina = 0;
-    renderZfmi(content, db, cfg, ccfg);
-  });
-
-  // Paginación
-  document.getElementById('zfmi-pag-prev')?.addEventListener('click', () => {
-    zfmiPagina = Math.max(0, zfmiPagina - 1); renderZfmi(content, db, cfg, ccfg);
-  });
-  document.getElementById('zfmi-pag-next')?.addEventListener('click', () => {
-    zfmiPagina = Math.min(totalPags - 1, zfmiPagina + 1); renderZfmi(content, db, cfg, ccfg);
-  });
-
-  // Refrescar (recalcula ZCAP/ZFMI/ZFMX con el estado actual de Tarifa Rutas y Consolidado)
-  document.getElementById('btn-zfmi-refresh')?.addEventListener('click', () => {
-    renderZfmi(content, db, cfg, ccfg);
-    showAlert('Tarifa Min/Max recalculada desde Tarifa Rutas (ZCAP).');
-  });
-
-  // Descargar CSV
-  document.getElementById('btn-zfmi-download')?.addEventListener('click', () => {
-    const headers = ['Centro Origen','ID Ruta','Destino','Tipo','Clasificacion','Dist KM',
-                     'Cluster','Tipo Camion','Camion Minimo','ZCAP','ZFMI Min','ZFMX Max',
-                     'Express','Factor Consolidacion %','Kilos a Consolidar','Kilos Tarif.Min'];
-    const data = filtered.map(r => [
-      r.centroOrigen, r.idRuta, r.destino, r.tipo, r.clasificacion, r.km,
-      r.clusterOp || '',
-      r.tipoCamion, r.camionMinimo,
-      r.zcap          !== null ? Math.round(r.zcap)          : '',
-      r.zfmi          !== null ? Math.round(r.zfmi)          : '',
-      r.zfmx          !== null ? Math.round(r.zfmx)          : '',
-      r.tarifaExpress !== null ? Math.round(r.tarifaExpress) : '',
-      r.factorPct.toFixed(1),
-      r.kilosConsolidar !== null ? r.kilosConsolidar.toFixed(0) : '',
-      r.kilosTarifaMin  !== null ? r.kilosTarifaMin.toFixed(0)  : ''
-    ]);
-    downloadFile('tarifa_minmax_' + Date.now() + '.csv', toCSV(headers, data));
-  });
-}
+Esto reemplazará todas las asignaciones existentes.`)){m.forEach(a=>$t(a.rows,t)),B(s);try{for(const a of m)await At(a);k("Clusters asignados automáticamente para todos los centros.")}catch(a){console.error("Error al sincronizar cluster_rutas:",a),k("Clusters asignados localmente, pero falló la sincronización con la base de datos: "+(a.message||a),"error")}ce(e,s,t)}})}const xt=50;function Z(e,s,t,n){const c=Vt(s,t),i=It(s,n),m=[];c.forEach(({zcap:o,truck:p,ruta:u})=>{const A=u.origen_grupo||"",j=A.replace(/\s/g,"_"),_=i.get(String(u.id||""))||i.get(String(u.codigo||""))||"",y=p.capKg!=null?p.capKg:Number(String(p.type).match(/(\d+)/)?.[1]||0)*1e3,L=y/1e3,R=gt(n,j,L),z=y*(R/100),K=o>0&&z>0?o/z:null;m.push({centroOrigen:A,idRuta:u.codigo||String(u.id||""),destino:u.destino||"",tipo:u.tipo||"",clasificacion:u.clasificRuta||"",km:Number(u.km)||0,cluster:_,capKg:y,factorPct:R,kilosConsolidar:z,zcap:o,zfmp:K,tipoCamion:p.type||L+"T"})});const{partPct:l,resolveGrupoKey:v}=Tt(),r=new Map;m.forEach(o=>{r.has(o.idRuta)||r.set(o.idRuta,{centro:o.centroOrigen,byBkt:{}}),r.get(o.idRuta).byBkt[o.capKg/1e3]=o.zfmp});const C=new Map;if(r.forEach(({centro:o,byBkt:p},u)=>{const A=v(o||""),j=l[A]||{},_=rt.reduce((y,L)=>{const R=p[L],z=j[L]||0;return y+(R!=null?R*(z/100):0)},0);C.set(u,_>0?_:null)}),m.forEach(o=>{o.tarifaCentro=C.get(o.idRuta)??null}),!m.length){e.innerHTML='<div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm">'+J("No hay rutas activas con tipos de camión configurados.")+"</div>";return}const a=[...new Set(m.map(o=>o.centroOrigen))].filter(Boolean).sort(),d=wt.trim().toLowerCase(),g=m.filter(o=>{if(at!=="todas"){const p=(o.clasificacion||"").toLowerCase();if(at==="regional"&&p!=="regional"||at==="interregional"&&p!=="interregional")return!1}return!(ct!=="all"&&o.centroOrigen!==ct||st&&String(o.capKg)!==st||d&&!o.idRuta.toLowerCase().includes(d)&&!o.destino.toLowerCase().includes(d))}),h=Math.max(1,Math.ceil(g.length/xt));I>=h&&(I=0);const x=g.slice(I*xt,(I+1)*xt),w="border border-[#CED4DA] px-sm py-[7px] text-[12px] bg-white rounded focus:border-primary focus:ring-0",f=o=>"px-md py-xs border rounded text-[12px] font-bold uppercase transition-colors "+(o?"bg-primary text-white border-primary":"bg-white border-outline-variant text-on-surface hover:bg-surface-container-high"),b=o=>"zfmp-ctab px-sm py-xs border rounded text-[11px] font-bold uppercase transition-colors "+(ct===o?"bg-primary text-white border-primary":"bg-white border-outline-variant text-on-surface hover:bg-surface-container-high"),S=x.length===0?'<tr><td colspan="13" class="p-md text-center text-secondary">Sin resultados.</td></tr>':x.map(o=>{const p=o.cluster?E(o.cluster):"—";return'<tr class="hover:bg-surface-container-low border-b border-outline-variant text-[12px]"><td class="p-sm text-[11px] text-secondary whitespace-nowrap">'+E(o.centroOrigen)+'</td><td class="p-sm font-data-mono font-bold text-primary text-[11px]">'+E(o.idRuta)+'</td><td class="p-sm whitespace-nowrap">'+E(o.destino)+'</td><td class="p-sm text-[11px]"><span class="border border-outline-variant px-xs py-px rounded">'+E(o.tipo)+'</span></td><td class="p-sm text-[11px] text-secondary">'+E(o.clasificacion)+'</td><td class="p-sm text-right font-data-mono text-[11px]">'+o.km.toLocaleString("es-CL")+'</td><td class="p-sm text-[11px] font-bold font-data-mono">'+p+'</td><td class="p-sm text-[11px]"><span class="border border-outline-variant px-xs py-px rounded font-data-mono">'+E(o.tipoCamion)+'</span></td><td class="p-sm text-right font-data-mono text-[11px]">'+(o.zcap!==null?lt(o.zcap):'<span class="text-secondary">—</span>')+'</td><td class="p-sm text-right font-data-mono text-[11px]">'+o.factorPct.toFixed(1)+'%</td><td class="p-sm text-right font-data-mono text-[11px]">'+o.kilosConsolidar.toLocaleString("es-CL",{maximumFractionDigits:0})+' kg</td><td class="p-sm text-right font-bold font-data-mono text-[11px] text-primary">'+(o.zfmp!==null?"$"+o.zfmp.toLocaleString("es-CL",{minimumFractionDigits:2,maximumFractionDigits:2}):'<span class="text-secondary font-normal">—</span>')+'</td><td class="p-sm text-right font-bold font-data-mono text-[11px]" style="color:#0d47a1">'+(o.tarifaCentro!==null?"$"+o.tarifaCentro.toLocaleString("es-CL",{minimumFractionDigits:2,maximumFractionDigits:2}):'<span class="text-secondary font-normal">—</span>')+"</td></tr>"}).join(""),$=I*xt+1,D=Math.min((I+1)*xt,g.length),F=I===0?"disabled opacity-40 cursor-default":"hover:bg-surface-container-high cursor-pointer",M=I>=h-1?"disabled opacity-40 cursor-default":"hover:bg-surface-container-high cursor-pointer",P='<div class="flex items-center justify-between mt-sm flex-wrap gap-sm"><span class="text-[12px] text-secondary">Mostrando '+$+"–"+D+" de "+g.length+'</span><div class="flex items-center gap-xs"><button id="zfmp-pag-prev" class="px-sm py-xs border border-outline-variant rounded text-[12px] '+F+'"'+(I===0?" disabled":"")+'>‹ Ant.</button><span class="px-sm text-[12px]">Pág. '+(I+1)+" / "+h+'</span><button id="zfmp-pag-next" class="px-sm py-xs border border-outline-variant rounded text-[12px] '+M+'"'+(I>=h-1?" disabled":"")+">Sig. ›</button></div></div>";e.innerHTML='<div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm"><div class="flex items-center justify-between mb-md border-b border-outline-variant pb-sm flex-wrap gap-sm"><div class="flex items-center gap-sm"><span class="material-symbols-outlined text-primary">price_change</span><h2 class="font-headline-sm text-headline-sm font-bold text-on-surface">Tarifas $/Kg</h2></div><div class="flex items-center gap-sm"><button id="btn-zfmp-refresh" class="flex items-center gap-xs border border-secondary text-secondary hover:bg-surface-container-high font-bold px-md py-sm rounded text-[11px] uppercase tracking-wider" title="Recalcular ZCAP/ZFMP tras modificar Tarifa Rutas (ZCAP) u otros parámetros"><span class="material-symbols-outlined text-[16px]">refresh</span> Refrescar</button><button id="btn-zfmp-download" class="bg-primary hover:bg-[#930007] text-white font-bold px-md py-sm rounded flex items-center gap-xs text-[12px] uppercase"><span class="material-symbols-outlined text-[18px]">download</span> Descargar CSV</button></div></div><div class="flex items-center gap-xs mb-sm flex-wrap"><span class="text-[11px] text-secondary font-bold uppercase mr-xs">Tipo:</span>'+[["todas","Todas"],["regional","Regional"],["interregional","Interregional"]].map(([o,p])=>'<button class="zfmp-ctipo '+f(at===o)+'" data-v="'+o+'">'+p+"</button>").join("")+'</div><div class="flex items-center gap-xs mb-md flex-wrap"><button class="'+b("all")+'" data-c="all">Todos</button>'+a.map(o=>'<button class="'+b(o)+'" data-c="'+E(o)+'">'+E(o)+"</button>").join("")+'</div><div class="flex flex-wrap items-end gap-md mb-md"><div><label class="font-label-caps text-label-caps text-secondary block mb-xs text-[10px] uppercase">Tipo Camión</label><select id="zfmp-f-camion" class="'+w+' w-40"><option value=""'+(st?"":" selected")+">Todos</option>"+[5e3,1e4,15e3,28e3].map(o=>'<option value="'+o+'"'+(st===String(o)?" selected":"")+">"+(o/1e3).toLocaleString("es-CL")+".000 Kg</option>").join("")+'</select></div><div><label class="font-label-caps text-label-caps text-secondary block mb-xs text-[10px] uppercase">Buscar Ruta / Destino</label><input id="zfmp-f-buscar" type="text" placeholder="Código o destino..." value="'+E(wt)+'" class="'+w+' w-52"></div><button id="zfmp-reset" class="border border-outline-variant px-md py-[7px] text-[12px] text-secondary hover:bg-surface-container-high rounded flex items-center gap-xs"><span class="material-symbols-outlined text-[16px]">filter_alt_off</span> Limpiar</button><span class="ml-auto text-[12px] text-secondary">'+g.length+' fila(s)</span></div><div class="bg-surface border border-outline-variant rounded overflow-x-auto"><table class="w-full border-collapse"><thead><tr class="bg-surface-container-high border-b border-outline-variant text-left">'+["Centro Origen","ID Ruta","Destino","Tipo","Clasificación","Dist. KM","Cluster","Tipo Camión","ZCAP","Factor Cons.","Kilos Consol.","ZFMP $/kg","Tarifa Centro"].map((o,p)=>'<th class="p-sm font-label-caps text-secondary uppercase text-[10px]'+(p>=5?" text-right":"")+'">'+o+"</th>").join("")+'</tr></thead><tbody class="divide-y divide-outline-variant">'+S+"</tbody></table></div>"+P+'<div class="text-[11px] text-secondary mt-sm flex flex-wrap gap-lg"><span><b>Kilos Consol.</b> = Cap. Camión × Factor Consolidación</span><span><b>ZFMP $/kg</b> = ZCAP ÷ Kilos Consol.</span><span><b>Tarifa Centro</b> = Σ (ZFMP camión × %Participación centro/camión de Consolidado) — igual para los 4 camiones de la ruta</span></div></div>',e.querySelectorAll(".zfmp-ctipo").forEach(o=>{o.addEventListener("click",()=>{at=o.dataset.v,I=0,Z(e,s,t,n)})}),e.querySelectorAll(".zfmp-ctab").forEach(o=>{o.addEventListener("click",()=>{ct=o.dataset.c,I=0,Z(e,s,t,n)})}),document.getElementById("zfmp-f-camion")?.addEventListener("change",o=>{st=o.target.value,I=0,Z(e,s,t,n)}),document.getElementById("zfmp-f-buscar")?.addEventListener("input",o=>{const p=o.target.selectionStart;wt=o.target.value,I=0,Z(e,s,t,n);const u=document.getElementById("zfmp-f-buscar");u&&(u.focus(),u.setSelectionRange(p,p))}),document.getElementById("zfmp-reset")?.addEventListener("click",()=>{at="todas",ct="all",st="",wt="",I=0,Z(e,s,t,n)}),document.getElementById("zfmp-pag-prev")?.addEventListener("click",()=>{I=Math.max(0,I-1),Z(e,s,t,n)}),document.getElementById("zfmp-pag-next")?.addEventListener("click",()=>{I=Math.min(h-1,I+1),Z(e,s,t,n)}),document.getElementById("btn-zfmp-refresh")?.addEventListener("click",()=>{Z(e,s,t,n),k("Tarifas $/Kg recalculadas desde Tarifa Rutas (ZCAP).")}),document.getElementById("btn-zfmp-download")?.addEventListener("click",()=>{const o=["Centro Origen","ID Ruta","Destino","Tipo","Clasificacion","Dist KM","Cluster","Tipo Camion","ZCAP","Factor Consolidacion %","Kilos a Consolidar","ZFMP $/kg","Tarifa Centro"],p=g.map(u=>[u.centroOrigen,u.idRuta,u.destino,u.tipo,u.clasificacion,u.km,u.cluster||"",u.tipoCamion,u.zcap!==null?u.zcap.toFixed(2):"",u.factorPct.toFixed(1),u.kilosConsolidar.toFixed(0),u.zfmp!==null?u.zfmp.toFixed(4):"",u.tarifaCentro!==null?u.tarifaCentro.toFixed(4):""]);Jt("tarifas_kg_"+Date.now()+".csv",Xt(o,p))})}const bt=50;function gt(e,s,t){const n=e.consolidacionObjetivo||{},c=String(s||""),i=c==="SANTIAGO"||c==="SAN_BERNARDO"?n["SANTIAGO_+_SAN_BERNARDO"]:null,m=n[c]?.[t]??i?.[t];return m==null||m===""?80:Number(m)}function q(e,s,t,n){const c=Vt(s,t),i=It(s,n),m=new Map;c.forEach(({truck:o,ruta:p})=>{const u=p.origen_grupo||"",A=o.capKg!=null?o.capKg:Number(String(o.type).match(/(\d+)/)?.[1]||0)*1e3;(!m.has(u)||A<m.get(u))&&m.set(u,A)});const l=new Map;c.forEach(({zcap:o,truck:p,ruta:u})=>{const A=u.origen_grupo||"",j=A.replace(/\s/g,"_"),_=p.capKg!=null?p.capKg:Number(String(p.type).match(/(\d+)/)?.[1]||0)*1e3;if(_!==m.get(A))return;const y=u.codigo||String(u.id||"");if(l.has(y))return;const L=_/1e3,R=gt(n,j,L),z=_*(R/100);l.set(y,{minTruckType:p.type||_/1e3+"T",zfmiZcap:o,zfmiKilos:z,zfmi:o>0?o:null})});const v=[];if(c.forEach(({zcap:o,truck:p,ruta:u})=>{const A=u.origen_grupo||"",j=A.replace(/\s/g,"_"),_=n.comunaCluster[String(u.id||"")]||n.comunaCluster[String(u.codigo||"")]||"",y=i.get(String(u.id||""))||i.get(String(u.codigo||""))||"",L=p.capKg!=null?p.capKg:Number(String(p.type).match(/(\d+)/)?.[1]||0)*1e3,R=L/1e3,z=gt(n,j,R),K=L*(z/100),Y=o>0?o:null,U=u.codigo||String(u.id||""),tt=l.get(U),ht=n.especiales?.recargoExclusividad||{},V=ht[j]??ht[A],de=V&&typeof V=="object"?V.activo===!1?0:Number(V.pct)||0:Number(V)||0,pe=o>0?o*(1+de/100):null,Ot=n.clusters?.find(me=>me.key===_)?.nv||1,vt=tt?.zfmiKilos??null,Ft=vt!=null&&Ot>0?vt/Ot:null,Gt=tt?.zfmiZcap>0&&vt>0?tt.zfmiZcap/vt:null,ue=Ft!=null&&Gt!=null?Ft*Gt:null;v.push({centroOrigen:A,idRuta:U,destino:u.destino||"",tipo:u.tipo||"",clasificacion:u.clasificRuta||"",km:Number(u.km)||0,cluster:_,clusterOp:y,tipoCamion:p.type||R+"T",capKg:L,camionMinimo:tt?.minTruckType||"—",zcap:o,zfmi:ue,zfmx:Y,tarifaExpress:pe,factorPct:z,kilosConsolidar:K,kilosTarifaMin:Ft,pedidosPromedio:Ot})}),!v.length){e.innerHTML='<div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm">'+J("No hay rutas activas con tipos de camión configurados.")+"</div>";return}const r=[...new Set(v.map(o=>o.centroOrigen))].filter(Boolean).sort(),C=Et.trim().toLowerCase(),a=v.filter(o=>{if(ot!=="todas"){const p=(o.clasificacion||"").toLowerCase();if(ot==="regional"&&p!=="regional"||ot==="interregional"&&p!=="interregional")return!1}return!(dt!=="all"&&o.centroOrigen!==dt||nt&&String(o.capKg)!==nt||C&&!o.idRuta.toLowerCase().includes(C)&&!o.destino.toLowerCase().includes(C))}),d=Math.max(1,Math.ceil(a.length/bt));O>=d&&(O=0);const g=a.slice(O*bt,(O+1)*bt),h="border border-[#CED4DA] px-sm py-[7px] text-[12px] bg-white rounded focus:border-primary focus:ring-0",x=o=>"px-md py-xs border rounded text-[12px] font-bold uppercase transition-colors "+(o?"bg-primary text-white border-primary":"bg-white border-outline-variant text-on-surface hover:bg-surface-container-high"),w=o=>"zfmi-ctab px-sm py-xs border rounded text-[11px] font-bold uppercase transition-colors "+(dt===o?"bg-primary text-white border-primary":"bg-white border-outline-variant text-on-surface hover:bg-surface-container-high"),f=o=>o!=null?o.toLocaleString("es-CL",{maximumFractionDigits:0})+" kg":"—",b=o=>o!=null?"$"+Math.round(o).toLocaleString("es-CL"):'<span class="text-secondary">—</span>',S=g.length===0?'<tr><td colspan="15" class="p-md text-center text-secondary">Sin resultados.</td></tr>':g.map(o=>{const p=o.clusterOp?E(o.clusterOp):"—";return'<tr class="hover:bg-surface-container-low border-b border-outline-variant text-[12px]"><td class="p-sm text-[11px] text-secondary whitespace-nowrap">'+E(o.centroOrigen)+'</td><td class="p-sm font-data-mono font-bold text-primary text-[11px]">'+E(o.idRuta)+'</td><td class="p-sm whitespace-nowrap">'+E(o.destino)+'</td><td class="p-sm text-[11px]"><span class="border border-outline-variant px-xs py-px rounded">'+E(o.tipo)+'</span></td><td class="p-sm text-[11px] text-secondary">'+E(o.clasificacion)+'</td><td class="p-sm text-right font-data-mono text-[11px]">'+o.km.toLocaleString("es-CL")+'</td><td class="p-sm text-[11px] font-bold font-data-mono">'+p+'</td><td class="p-sm text-[11px]"><span class="border border-outline-variant px-xs py-px rounded font-data-mono">'+E(o.tipoCamion)+'</span></td><td class="p-sm text-[11px]"><span class="border border-[#e2c56a] bg-[#fef9ec] text-[#92640a] px-xs py-px rounded font-data-mono">'+E(o.camionMinimo)+'</span></td><td class="p-sm text-right font-data-mono text-[11px]">'+(o.zcap!==null?lt(o.zcap):'<span class="text-secondary">—</span>')+'</td><td class="p-sm text-right font-bold font-data-mono text-[11px] text-green-700">'+b(o.zfmi)+'</td><td class="p-sm text-right font-bold font-data-mono text-[11px] text-primary">'+b(o.zfmx)+'</td><td class="p-sm text-right font-bold font-data-mono text-[11px] text-orange-600">'+b(o.tarifaExpress)+'</td><td class="p-sm text-right font-data-mono text-[11px]">'+o.factorPct.toFixed(1)+'%</td><td class="p-sm text-right font-data-mono text-[11px]">'+f(o.kilosConsolidar)+'</td><td class="p-sm text-right font-data-mono text-[11px] text-secondary">'+f(o.kilosTarifaMin)+"</td></tr>"}).join(""),$=O*bt+1,D=Math.min((O+1)*bt,a.length),F=O===0?"disabled opacity-40 cursor-default":"hover:bg-surface-container-high cursor-pointer",M=O>=d-1?"disabled opacity-40 cursor-default":"hover:bg-surface-container-high cursor-pointer",P='<div class="flex items-center justify-between mt-sm flex-wrap gap-sm"><span class="text-[12px] text-secondary">Mostrando '+$+"–"+D+" de "+a.length+'</span><div class="flex items-center gap-xs"><button id="zfmi-pag-prev" class="px-sm py-xs border border-outline-variant rounded text-[12px] '+F+'"'+(O===0?" disabled":"")+'>‹ Ant.</button><span class="px-sm text-[12px]">Pág. '+(O+1)+" / "+d+'</span><button id="zfmi-pag-next" class="px-sm py-xs border border-outline-variant rounded text-[12px] '+M+'"'+(O>=d-1?" disabled":"")+">Sig. ›</button></div></div>";e.innerHTML='<div class="bg-surface-container-lowest border border-outline-variant p-lg shadow-sm"><div class="flex items-center justify-between mb-md border-b border-outline-variant pb-sm flex-wrap gap-sm"><div class="flex items-center gap-sm"><span class="material-symbols-outlined text-primary">request_quote</span><h2 class="font-headline-sm text-headline-sm font-bold text-on-surface">Tarifa Min / Max</h2></div><div class="flex items-center gap-sm"><button id="btn-zfmi-refresh" class="flex items-center gap-xs border border-secondary text-secondary hover:bg-surface-container-high font-bold px-md py-sm rounded text-[11px] uppercase tracking-wider" title="Recalcular ZCAP/ZFMI/ZFMX tras modificar Tarifa Rutas (ZCAP) u otros parámetros"><span class="material-symbols-outlined text-[16px]">refresh</span> Refrescar</button><button id="btn-zfmi-download" class="bg-primary hover:bg-[#930007] text-white font-bold px-md py-sm rounded flex items-center gap-xs text-[12px] uppercase"><span class="material-symbols-outlined text-[18px]">download</span> Descargar CSV</button></div></div><div class="flex items-center gap-xs mb-sm flex-wrap"><span class="text-[11px] text-secondary font-bold uppercase mr-xs">Tipo:</span>'+[["todas","Todas"],["regional","Regional"],["interregional","Interregional"]].map(([o,p])=>'<button class="zfmi-ctipo '+x(ot===o)+'" data-v="'+o+'">'+p+"</button>").join("")+'</div><div class="flex items-center gap-xs mb-md flex-wrap"><button class="'+w("all")+'" data-c="all">Todos</button>'+r.map(o=>'<button class="'+w(o)+'" data-c="'+E(o)+'">'+E(o)+"</button>").join("")+'</div><div class="flex flex-wrap items-end gap-md mb-md"><div><label class="font-label-caps text-label-caps text-secondary block mb-xs text-[10px] uppercase">Tipo Camión</label><select id="zfmi-f-camion" class="'+h+' w-40"><option value=""'+(nt?"":" selected")+">Todos</option>"+[5e3,1e4,15e3,28e3].map(o=>'<option value="'+o+'"'+(nt===String(o)?" selected":"")+">"+(o/1e3).toLocaleString("es-CL")+".000 Kg</option>").join("")+'</select></div><div><label class="font-label-caps text-label-caps text-secondary block mb-xs text-[10px] uppercase">Buscar Ruta / Destino</label><input id="zfmi-f-buscar" type="text" placeholder="Código o destino..." value="'+E(Et)+'" class="'+h+' w-52"></div><button id="zfmi-reset" class="border border-outline-variant px-md py-[7px] text-[12px] text-secondary hover:bg-surface-container-high rounded flex items-center gap-xs"><span class="material-symbols-outlined text-[16px]">filter_alt_off</span> Limpiar</button><span class="ml-auto text-[12px] text-secondary">'+a.length+' fila(s)</span></div><div class="bg-surface border border-outline-variant rounded overflow-x-auto"><table class="w-full border-collapse"><thead><tr class="bg-surface-container-high border-b border-outline-variant text-left">'+[["Centro Origen",!1],["ID Ruta",!1],["Destino",!1],["Tipo",!1],["Clasificación",!1],["Dist. KM",!0],["Cluster",!1],["Tipo Camión",!1],["Camión Mínimo",!1],["ZCAP",!0],["ZFMI $ Min",!0],["ZFMX $ Max",!0],["Express $",!0],["Factor Cons.",!0],["Kilos Consol.",!0],["Kilos Tarif.Min",!0]].map(([o,p])=>'<th class="p-sm font-label-caps text-secondary uppercase text-[10px]'+(p?" text-right":"")+'">'+o+"</th>").join("")+'</tr></thead><tbody class="divide-y divide-outline-variant">'+S+"</tbody></table></div>"+P+'<div class="text-[11px] text-secondary mt-sm flex flex-wrap gap-lg"><span><b>Camión Mínimo</b> = truck de menor capacidad del centro</span><span><b>ZFMI $</b> = (Kilos Tarif.Min ÷ Ped.Prom. cluster) × ZFMP $/kg</span><span><b>ZFMX $</b> = ZCAP del camión (mismo que vista ZCAP)</span><span><b>Tarifa Express</b> = ZCAP × (1 + Recargo Exclusividad %)</span></div></div>',e.querySelectorAll(".zfmi-ctipo").forEach(o=>{o.addEventListener("click",()=>{ot=o.dataset.v,O=0,q(e,s,t,n)})}),e.querySelectorAll(".zfmi-ctab").forEach(o=>{o.addEventListener("click",()=>{dt=o.dataset.c,O=0,q(e,s,t,n)})}),document.getElementById("zfmi-f-camion")?.addEventListener("change",o=>{nt=o.target.value,O=0,q(e,s,t,n)}),document.getElementById("zfmi-f-buscar")?.addEventListener("input",o=>{const p=o.target.selectionStart;Et=o.target.value,O=0,q(e,s,t,n);const u=document.getElementById("zfmi-f-buscar");u&&(u.focus(),u.setSelectionRange(p,p))}),document.getElementById("zfmi-reset")?.addEventListener("click",()=>{ot="todas",dt="all",nt="",Et="",O=0,q(e,s,t,n)}),document.getElementById("zfmi-pag-prev")?.addEventListener("click",()=>{O=Math.max(0,O-1),q(e,s,t,n)}),document.getElementById("zfmi-pag-next")?.addEventListener("click",()=>{O=Math.min(d-1,O+1),q(e,s,t,n)}),document.getElementById("btn-zfmi-refresh")?.addEventListener("click",()=>{q(e,s,t,n),k("Tarifa Min/Max recalculada desde Tarifa Rutas (ZCAP).")}),document.getElementById("btn-zfmi-download")?.addEventListener("click",()=>{const o=["Centro Origen","ID Ruta","Destino","Tipo","Clasificacion","Dist KM","Cluster","Tipo Camion","Camion Minimo","ZCAP","ZFMI Min","ZFMX Max","Express","Factor Consolidacion %","Kilos a Consolidar","Kilos Tarif.Min"],p=a.map(u=>[u.centroOrigen,u.idRuta,u.destino,u.tipo,u.clasificacion,u.km,u.clusterOp||"",u.tipoCamion,u.camionMinimo,u.zcap!==null?Math.round(u.zcap):"",u.zfmi!==null?Math.round(u.zfmi):"",u.zfmx!==null?Math.round(u.zfmx):"",u.tarifaExpress!==null?Math.round(u.tarifaExpress):"",u.factorPct.toFixed(1),u.kilosConsolidar!==null?u.kilosConsolidar.toFixed(0):"",u.kilosTarifaMin!==null?u.kilosTarifaMin.toFixed(0):""]);Jt("tarifa_minmax_"+Date.now()+".csv",Xt(o,p))})}export{Ve as contextoTarifasClientes,Xe as renderClientTariffView,Be as setActiveSubC};

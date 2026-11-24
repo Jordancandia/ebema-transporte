@@ -1,114 +1,4 @@
-import { getDatabase, saveDatabase, getCentreName } from './data.js?v=202611232043';
-import { showAlert, escapeHtml } from './utils.js';
-import { supabase } from './supabase-client.js?v=202611232043';
-import { ROLES_CON_CENTROS, PERFILES, ALIAS_PERFIL, ACCIONES_EXTRA, VISTAS_CATALOGO, perfilVeMenu, esOwner, can, TODOS_CENTROS } from './permisos.js?v=202611232043';
-import { confirmar } from './confirmar.js?v=202611232043';
-
-// --- Perfiles de Acceso (Roles y Perfiles + Row Level Security) ---
-// 5 perfiles canónicos. Cada uno determina qué puede ver/editar el usuario
-// en la plataforma; el control real de acceso se aplica vía RLS en Supabase
-// usando el rol y, cuando corresponde, el centro/transportista asociado.
-// Perfiles v2 (12-oct-2026, planilla ROLES_Y_PERFILES.xlsx). Vistas y privilegios
-// por defecto en js/permisos.js; sólo OWNER agrega vistas/funcionalidades extra.
-const ROLE_CONFIG = {
-  'OWNER':                  { bg: '#ffdad5', text: '#93000a', border: '#ffb4aa', icon: 'workspace_premium', label: 'Owner' },
-  'ADMINISTRADOR':          { bg: '#fce4ec', text: '#880e4f', border: '#f48fb1', icon: 'shield_person',     label: 'Administrador' },
-  'PLANNER_DISTRIBUCION':   { bg: '#fff3e0', text: '#bf360c', border: '#ffab91', icon: 'alt_route',         label: 'Planner Distribución' },
-  'JEFE_ABASTECIMIENTO':    { bg: '#e0f2f1', text: '#004d40', border: '#4db6ac', icon: 'inventory_2',       label: 'Jefe Abastecimiento' },
-  'PLANNER_ABASTECIMIENTO': { bg: '#e0f2f1', text: '#00695c', border: '#80cbc4', icon: 'inventory',         label: 'Planner Abastecimiento' },
-  'JEFE_OPERACIONES':       { bg: '#e3f2fd', text: '#0d47a1', border: '#90caf9', icon: 'warehouse',         label: 'Jefe Operaciones' },
-  'PLANNER_OPERACIONES':    { bg: '#ede7f6', text: '#4527a0', border: '#b39ddb', icon: 'monitoring',        label: 'Planner Operaciones' },
-  'CONTROL_PUERTA':         { bg: '#fff8e1', text: '#7a5300', border: '#ffd54f', icon: 'meeting_room',     label: 'Control Puerta' },
-  'JEFE_SUCURSAL':          { bg: '#e8eaf6', text: '#283593', border: '#9fa8da', icon: 'storefront',        label: 'Jefe Sucursal' },
-  'JEFE_CATEGORIA':         { bg: '#f1f8e9', text: '#33691e', border: '#c5e1a5', icon: 'category',          label: 'Jefe Categoría' },
-  'VENDEDOR':               { bg: '#e8f5e9', text: '#1b5e20', border: '#a5d6a7', icon: 'request_quote',     label: 'Vendedor' },
-  'TRANSPORTISTA':          { bg: '#fff3e0', text: '#e65100', border: '#ffcc80', icon: 'local_shipping',    label: 'Transportista' },
-  'CHOFER':                 { bg: '#f3e5f5', text: '#6a1b9a', border: '#ce93d8', icon: 'badge',             label: 'Chofer' }
-};
-
-// Descripciones de cada perfil (se muestran al seleccionar el rol en el modal)
-const ROLE_DESCRIPTIONS = {
-  'OWNER': 'Todas las vistas y centros. Visualizar, comentar, editar, borrar e invitar. Único perfil que agrega vistas o funcionalidades extra a un usuario.',
-  'ADMINISTRADOR': 'Todas las vistas y centros. Visualizar, comentar, editar (excluir y subir pedidos al Plan de Carga) e invitar usuarios. No borra.',
-  'PLANNER_DISTRIBUCION': 'Todas las vistas (Cotizador, Gestión Troncales, Flete Tercero, Indicadores, Tarifas, Maestros, Roles) y centros. Comenta, edita e invita.',
-  'JEFE_ABASTECIMIENTO': 'Home y Gestión Troncales completa, todos los centros. Comenta y edita (excluir y subir pedidos al Plan de Carga).',
-  'PLANNER_ABASTECIMIENTO': 'Home y Gestión Troncales completa, todos los centros. Comenta y edita (excluir y subir pedidos al Plan de Carga).',
-  'JEFE_OPERACIONES': 'Sus centros: Home, Gestión Troncales, Flete Tercero, Indicadores y Tarifas Clientes. Comenta (sin edición).',
-  'PLANNER_OPERACIONES': 'Sus centros: Home, Cotizador, Gestión Troncales, Flete Tercero, Indicadores y Tarifas Clientes. Comenta (sin edición).',
-  'CONTROL_PUERTA': 'Sólo Portería · Control Puerta del centro asignado (1003): registra llegadas, ingresos, salidas, pesos, guías y retornos. Edita, no borra.',
-  'JEFE_SUCURSAL': 'Sus centros: Home, Cotizador, Gestión Troncales, Flete Tercero, Indicadores y Tarifas Clientes. Comenta (sin edición).',
-  'JEFE_CATEGORIA': 'Todos los centros: Home, Gestión Troncales e Indicadores. Comenta (sin edición).',
-  'VENDEDOR': 'Sólo Cotizador Despacho: puede cotizar. No ve ninguna otra vista.',
-  'TRANSPORTISTA': 'Ve el estado de sus camiones, cuenta bancaria asociada, transportes y choferes. Edita solo lo que está en su perfil.',
-  'CHOFER': 'Ve el estado de su camión asignado, datos del transporte y sus datos personales (nombre, RUT, correo, teléfono, licencia y carnet).'
-};
-
-// Roles legados (datos antiguos) → equivalente normalizado entre los 5 perfiles
-const LEGACY_ROLE_MAP = {
-  'Administrador': 'OWNER',
-  'admin': 'OWNER',
-  'Admin SIT': 'OWNER',
-  'Operador Logístico': 'JEFE_OPERACIONES',
-  'operador': 'JEFE_OPERACIONES',
-  'Logistics Operator': 'JEFE_OPERACIONES',
-  'Visita': 'VENDEDOR',
-  ...ALIAS_PERFIL,
-  'proveedor': 'TRANSPORTISTA'
-};
-
-// Roles que requieren un "Centro Logístico" asociado.
-// Ajuste 2026-09-17: Admin. Depósito vuelve a pedir un "Centro de Preferencia"
-// — se usa únicamente para definir a qué centro se dirigen los correos de
-// notificación de ese usuario; NO filtra los datos que ve (desde el 14-sep-2026
-// Admin. Depósito ve todos los centros en sus vistas permitidas).
-// Ajuste 2026-09-17 (correo Plan de Carga): se agrega OWNER — mismo criterio,
-// solo para definir a qué centro(s) se dirigen sus correos de notificación del
-// Plan de Carga; NO restringe en absoluto su acceso total a la plataforma.
-// (12-oct-2026, Jordan) Se quitó «Centro(s) de Preferencia»: el correo de Plan de Carga llega a todos los usuarios.
-const CENTRO_ROLES = [];
-// Roles que requieren un "Transportista" asociado
-const TRANSPORTE_ROLES = ['TRANSPORTISTA', 'CHOFER'];
-
-// Normaliza un rol (legado o nuevo) a uno de los 5 perfiles canónicos
-function normalizeRole(role) {
-  if (ROLE_CONFIG[role]) return role;
-  return LEGACY_ROLE_MAP[role] || 'VENDEDOR';
-}
-
-function getRoleConfig(role) {
-  return ROLE_CONFIG[normalizeRole(role)] || { bg: '#f3f4f5', text: '#5c5f61', border: '#e1e3e4', icon: 'person', label: role || 'Sin rol' };
-}
-
-function getInitials(name) {
-  return (name || '?').split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2);
-}
-
-// Colores de avatar deterministas según email
-const AVATAR_PALETTES = [
-  ['#b5000b', '#fff5f3'],
-  ['#1565c0', '#e3f2fd'],
-  ['#2e7d32', '#e8f5e9'],
-  ['#6a1b9a', '#f3e5f5'],
-  ['#e65100', '#fff3e0'],
-  ['#00695c', '#e0f2f1'],
-];
-function getAvatarPalette(email) {
-  let h = 0;
-  for (let c of (email || '')) h = (h * 31 + c.charCodeAt(0)) & 0xffff;
-  return AVATAR_PALETTES[h % AVATAR_PALETTES.length];
-}
-
-export function renderRolesView(container) {
-  const db = getDatabase();
-  const users = db.users;
-
-  const totalUsers = users.length;
-  const ownerCount = users.filter(u => normalizeRole(u.role) === 'OWNER').length;
-  const depositoCount = users.filter(u => ROLES_CON_CENTROS.includes(normalizeRole(u.role))).length;
-  const ES_OWNER = esOwner();
-  const activeCount = users.filter(u => u.activo !== false).length;
-
-  container.innerHTML = `
+import{getDatabase as A,saveDatabase as $,getCentreName as B}from"./data.js?v=6ce8cb5f60";import{showAlert as y,escapeHtml as w}from"./utils.js";import{supabase as N}from"./supabase-client.js?v=fd17fd7d20";import{ROLES_CON_CENTROS as C,PERFILES as Y,ALIAS_PERFIL as K,ACCIONES_EXTRA as X,VISTAS_CATALOGO as Q,perfilVeMenu as Z,esOwner as S,can as P,TODOS_CENTROS as L}from"./permisos.js?v=a8b193e9fb";import{confirmar as ee}from"./confirmar.js?v=84d7f13f40";const _={OWNER:{bg:"#ffdad5",text:"#93000a",border:"#ffb4aa",icon:"workspace_premium",label:"Owner"},ADMINISTRADOR:{bg:"#fce4ec",text:"#880e4f",border:"#f48fb1",icon:"shield_person",label:"Administrador"},PLANNER_DISTRIBUCION:{bg:"#fff3e0",text:"#bf360c",border:"#ffab91",icon:"alt_route",label:"Planner Distribución"},JEFE_ABASTECIMIENTO:{bg:"#e0f2f1",text:"#004d40",border:"#4db6ac",icon:"inventory_2",label:"Jefe Abastecimiento"},PLANNER_ABASTECIMIENTO:{bg:"#e0f2f1",text:"#00695c",border:"#80cbc4",icon:"inventory",label:"Planner Abastecimiento"},JEFE_OPERACIONES:{bg:"#e3f2fd",text:"#0d47a1",border:"#90caf9",icon:"warehouse",label:"Jefe Operaciones"},PLANNER_OPERACIONES:{bg:"#ede7f6",text:"#4527a0",border:"#b39ddb",icon:"monitoring",label:"Planner Operaciones"},CONTROL_PUERTA:{bg:"#fff8e1",text:"#7a5300",border:"#ffd54f",icon:"meeting_room",label:"Control Puerta"},JEFE_SUCURSAL:{bg:"#e8eaf6",text:"#283593",border:"#9fa8da",icon:"storefront",label:"Jefe Sucursal"},JEFE_CATEGORIA:{bg:"#f1f8e9",text:"#33691e",border:"#c5e1a5",icon:"category",label:"Jefe Categoría"},VENDEDOR:{bg:"#e8f5e9",text:"#1b5e20",border:"#a5d6a7",icon:"request_quote",label:"Vendedor"},TRANSPORTISTA:{bg:"#fff3e0",text:"#e65100",border:"#ffcc80",icon:"local_shipping",label:"Transportista"},CHOFER:{bg:"#f3e5f5",text:"#6a1b9a",border:"#ce93d8",icon:"badge",label:"Chofer"}},te={OWNER:"Todas las vistas y centros. Visualizar, comentar, editar, borrar e invitar. Único perfil que agrega vistas o funcionalidades extra a un usuario.",ADMINISTRADOR:"Todas las vistas y centros. Visualizar, comentar, editar (excluir y subir pedidos al Plan de Carga) e invitar usuarios. No borra.",PLANNER_DISTRIBUCION:"Todas las vistas (Cotizador, Gestión Troncales, Flete Tercero, Indicadores, Tarifas, Maestros, Roles) y centros. Comenta, edita e invita.",JEFE_ABASTECIMIENTO:"Home y Gestión Troncales completa, todos los centros. Comenta y edita (excluir y subir pedidos al Plan de Carga).",PLANNER_ABASTECIMIENTO:"Home y Gestión Troncales completa, todos los centros. Comenta y edita (excluir y subir pedidos al Plan de Carga).",JEFE_OPERACIONES:"Sus centros: Home, Gestión Troncales, Flete Tercero, Indicadores y Tarifas Clientes. Comenta (sin edición).",PLANNER_OPERACIONES:"Sus centros: Home, Cotizador, Gestión Troncales, Flete Tercero, Indicadores y Tarifas Clientes. Comenta (sin edición).",CONTROL_PUERTA:"Sólo Portería · Control Puerta del centro asignado (1003): registra llegadas, ingresos, salidas, pesos, guías y retornos. Edita, no borra.",JEFE_SUCURSAL:"Sus centros: Home, Cotizador, Gestión Troncales, Flete Tercero, Indicadores y Tarifas Clientes. Comenta (sin edición).",JEFE_CATEGORIA:"Todos los centros: Home, Gestión Troncales e Indicadores. Comenta (sin edición).",VENDEDOR:"Sólo Cotizador Despacho: puede cotizar. No ve ninguna otra vista.",TRANSPORTISTA:"Ve el estado de sus camiones, cuenta bancaria asociada, transportes y choferes. Edita solo lo que está en su perfil.",CHOFER:"Ve el estado de su camión asignado, datos del transporte y sus datos personales (nombre, RUT, correo, teléfono, licencia y carnet)."},oe={Administrador:"OWNER",admin:"OWNER","Admin SIT":"OWNER","Operador Logístico":"JEFE_OPERACIONES",operador:"JEFE_OPERACIONES","Logistics Operator":"JEFE_OPERACIONES",Visita:"VENDEDOR",...K,proveedor:"TRANSPORTISTA"},q=[],k=["TRANSPORTISTA","CHOFER"];function T(e){return _[e]?e:oe[e]||"VENDEDOR"}function U(e){return _[T(e)]||{bg:"#f3f4f5",text:"#5c5f61",border:"#e1e3e4",icon:"person",label:e||"Sin rol"}}function se(e){return(e||"?").split(" ").map(n=>n[0]).join("").toUpperCase().slice(0,2)}const D=[["#b5000b","#fff5f3"],["#1565c0","#e3f2fd"],["#2e7d32","#e8f5e9"],["#6a1b9a","#f3e5f5"],["#e65100","#fff3e0"],["#00695c","#e0f2f1"]];function ne(e){let n=0;for(let a of e||"")n=n*31+a.charCodeAt(0)&65535;return D[n%D.length]}function z(e){const n=A(),a=n.users,s=a.length,r=a.filter(o=>T(o.role)==="OWNER").length,t=a.filter(o=>C.includes(T(o.role))).length,u=S(),l=a.filter(o=>o.activo!==!1).length;e.innerHTML=`
     <!-- Encabezado de Sección -->
     <div class="mb-xl">
       <div class="flex items-center justify-between flex-wrap gap-md">
@@ -116,12 +6,12 @@ export function renderRolesView(container) {
           <h1 class="font-headline-lg text-headline-lg text-on-surface">Roles y Perfiles</h1>
           <p class="font-body-lg text-body-lg text-secondary mt-1">Gestione los accesos y permisos de usuarios corporativos en SIT EBEMA.</p>
         </div>
-        ${can('invitar') ? `<button id="btn-open-add-user"
+        ${P("invitar")?`<button id="btn-open-add-user"
           style="display:inline-flex;align-items:center;gap:8px;padding:10px 20px;background:#b5000b;color:white;border:none;border-radius:8px;font-size:14px;font-weight:700;cursor:pointer;transition:background 0.2s"
           onmouseover="this.style.background='#930007'" onmouseout="this.style.background='#b5000b'">
           <span class="material-symbols-outlined" style="font-size:18px">person_add</span>
           Agregar Usuario
-        </button>` : ''}
+        </button>`:""}
       </div>
     </div>
 
@@ -130,28 +20,28 @@ export function renderRolesView(container) {
       <div style="background:white;border:1px solid #e9bcb6;border-left:4px solid #b5000b;border-radius:8px;padding:16px;display:flex;justify-content:space-between;align-items:center">
         <div>
           <p style="font-size:10px;font-weight:700;letter-spacing:0.07em;text-transform:uppercase;color:#5c5f61;margin-bottom:4px">Total Usuarios</p>
-          <p style="font-size:28px;font-weight:800;color:#b5000b;line-height:1">${totalUsers}</p>
+          <p style="font-size:28px;font-weight:800;color:#b5000b;line-height:1">${s}</p>
         </div>
         <span class="material-symbols-outlined" style="font-size:32px;color:#b5000b;opacity:0.4">groups</span>
       </div>
       <div style="background:white;border:1px solid #e1e3e4;border-radius:8px;padding:16px;display:flex;justify-content:space-between;align-items:center">
         <div>
           <p style="font-size:10px;font-weight:700;letter-spacing:0.07em;text-transform:uppercase;color:#5c5f61;margin-bottom:4px">Owners</p>
-          <p style="font-size:28px;font-weight:800;color:#93000a;line-height:1">${ownerCount}</p>
+          <p style="font-size:28px;font-weight:800;color:#93000a;line-height:1">${r}</p>
         </div>
         <span class="material-symbols-outlined" style="font-size:32px;color:#93000a;opacity:0.3">workspace_premium</span>
       </div>
       <div style="background:white;border:1px solid #e1e3e4;border-radius:8px;padding:16px;display:flex;justify-content:space-between;align-items:center">
         <div>
           <p style="font-size:10px;font-weight:700;letter-spacing:0.07em;text-transform:uppercase;color:#5c5f61;margin-bottom:4px">Perfiles por centro</p>
-          <p style="font-size:28px;font-weight:800;color:#0d47a1;line-height:1">${depositoCount}</p>
+          <p style="font-size:28px;font-weight:800;color:#0d47a1;line-height:1">${t}</p>
         </div>
         <span class="material-symbols-outlined" style="font-size:32px;color:#0d47a1;opacity:0.3">warehouse</span>
       </div>
       <div style="background:white;border:1px solid #e1e3e4;border-radius:8px;padding:16px;display:flex;justify-content:space-between;align-items:center">
         <div>
           <p style="font-size:10px;font-weight:700;letter-spacing:0.07em;text-transform:uppercase;color:#5c5f61;margin-bottom:4px">Activos Ahora</p>
-          <p style="font-size:28px;font-weight:800;color:#191c1d;line-height:1">${activeCount}</p>
+          <p style="font-size:28px;font-weight:800;color:#191c1d;line-height:1">${l}</p>
         </div>
         <span class="material-symbols-outlined" style="font-size:32px;color:#191c1d;opacity:0.2">how_to_reg</span>
       </div>
@@ -164,7 +54,7 @@ export function renderRolesView(container) {
         <div style="display:flex;align-items:center;gap:8px">
           <span class="material-symbols-outlined" style="color:#b5000b;font-size:20px">security</span>
           <h3 style="font-size:16px;font-weight:700;color:#191c1d">Usuarios Corporativos</h3>
-          <span style="font-size:11px;padding:2px 8px;background:#f3f4f5;border:1px solid #e1e3e4;border-radius:20px;color:#5c5f61;font-weight:600">${totalUsers} registros</span>
+          <span style="font-size:11px;padding:2px 8px;background:#f3f4f5;border:1px solid #e1e3e4;border-radius:20px;color:#5c5f61;font-weight:600">${s} registros</span>
         </div>
         <div style="position:relative">
           <span class="material-symbols-outlined" style="position:absolute;left:10px;top:50%;transform:translateY(-50%);color:#5c5f61;font-size:16px;pointer-events:none">search</span>
@@ -233,17 +123,14 @@ export function renderRolesView(container) {
           <div>
             <label style="display:block;font-size:11px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#5c5f61;margin-bottom:8px">Rol de Acceso (Perfil)</label>
             <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px" id="rol-selector">
-              ${Object.keys(ROLE_CONFIG).filter(rol => ES_OWNER || rol !== 'OWNER').map(rol => {
-                const rc = getRoleConfig(rol);
-                return `
+              ${Object.keys(_).filter(o=>u||o!=="OWNER").map(o=>{const i=U(o);return`
                 <label style="cursor:pointer">
-                  <input type="radio" name="modal-role" value="${rol}" style="display:none" class="role-radio" />
-                  <div class="role-option" data-role="${rol}" style="padding:10px 8px;border:2px solid #e1e3e4;border-radius:8px;text-align:center;transition:all 0.15s;user-select:none">
-                    <span class="material-symbols-outlined" style="font-size:20px;color:${rc.text};display:block;margin-bottom:4px">${rc.icon}</span>
-                    <span style="font-size:11px;font-weight:700;color:#191c1d;display:block;line-height:1.2">${rc.label}</span>
+                  <input type="radio" name="modal-role" value="${o}" style="display:none" class="role-radio" />
+                  <div class="role-option" data-role="${o}" style="padding:10px 8px;border:2px solid #e1e3e4;border-radius:8px;text-align:center;transition:all 0.15s;user-select:none">
+                    <span class="material-symbols-outlined" style="font-size:20px;color:${i.text};display:block;margin-bottom:4px">${i.icon}</span>
+                    <span style="font-size:11px;font-weight:700;color:#191c1d;display:block;line-height:1.2">${i.label}</span>
                   </div>
-                </label>`;
-              }).join('')}
+                </label>`}).join("")}
             </div>
             <p id="role-desc-text" style="font-size:12px;color:#5c5f61;margin-top:8px;line-height:1.4;background:#f8f9fa;border:1px solid #e1e3e4;border-radius:6px;padding:8px 10px"></p>
           </div>
@@ -260,16 +147,16 @@ export function renderRolesView(container) {
               <button type="button" id="asig-ninguno" style="font-size:11px;font-weight:700;color:#5c5f61;background:none;border:none;cursor:pointer;padding:0">Limpiar</button>
             </div>
             <div id="modal-user-asig-list" style="max-height:160px;overflow-y:auto;border:1.5px solid #e1e3e4;border-radius:8px;padding:8px 10px;display:flex;flex-direction:column;gap:6px">
-              ${(db.logisticsCentres || []).map(cd => `
+              ${(n.logisticsCentres||[]).map(o=>`
                 <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
-                  <input type="checkbox" class="modal-user-asig-item" value="${cd.id}" style="width:15px;height:15px;accent-color:#b5000b" />
-                  <span style="font-size:13px;color:#191c1d">${cd.nombre} (${cd.id})</span>
-                </label>`).join('')}
+                  <input type="checkbox" class="modal-user-asig-item" value="${o.id}" style="width:15px;height:15px;accent-color:#b5000b" />
+                  <span style="font-size:13px;color:#191c1d">${o.nombre} (${o.id})</span>
+                </label>`).join("")}
             </div>
             <p style="font-size:11px;color:#5c5f61;margin-top:6px;line-height:1.4">Uno, varios o todos. El usuario solo verá información de estos centros (centro destino).</p>
           </div>
 
-          ${ES_OWNER ? `
+          ${u?`
           <div id="field-extras" style="border:1.5px dashed #ffb4aa;border-radius:10px;padding:12px;background:#fffaf9">
             <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
               <span class="material-symbols-outlined" style="font-size:18px;color:#b5000b">tune</span>
@@ -278,24 +165,24 @@ export function renderRolesView(container) {
             <p style="font-size:11px;color:#5c5f61;line-height:1.4;margin-bottom:8px">Se suman a la estructura por defecto del perfil. Las vistas ya incluidas en el perfil aparecen marcadas y bloqueadas.</p>
             <p style="font-size:10px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#5c5f61;margin:6px 0 4px">Vistas</p>
             <div id="extras-vistas" style="max-height:180px;overflow-y:auto;border:1px solid #e1e3e4;border-radius:8px;padding:8px 10px;background:white">
-              ${VISTAS_CATALOGO.map(g => `
-                <p style="font-size:10px;font-weight:700;color:#93000a;margin:6px 0 2px">${escapeHtml(g.modulo)}</p>
-                ${g.items.map(([k, lbl]) => `
+              ${Q.map(o=>`
+                <p style="font-size:10px;font-weight:700;color:#93000a;margin:6px 0 2px">${w(o.modulo)}</p>
+                ${o.items.map(([i,p])=>`
                 <label style="display:flex;align-items:center;gap:8px;cursor:pointer;padding:2px 0">
-                  <input type="checkbox" class="extra-vista" value="${k}" style="width:15px;height:15px;accent-color:#b5000b" />
-                  <span style="font-size:12px;color:#191c1d">${escapeHtml(lbl)}</span>
-                </label>`).join('')}`).join('')}
+                  <input type="checkbox" class="extra-vista" value="${i}" style="width:15px;height:15px;accent-color:#b5000b" />
+                  <span style="font-size:12px;color:#191c1d">${w(p)}</span>
+                </label>`).join("")}`).join("")}
             </div>
             <p style="font-size:10px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#5c5f61;margin:10px 0 4px">Funcionalidades</p>
             <div id="extras-acciones" style="border:1px solid #e1e3e4;border-radius:8px;padding:8px 10px;background:white;display:flex;flex-direction:column;gap:4px">
-              ${ACCIONES_EXTRA.map(a => `
+              ${X.map(o=>`
                 <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
-                  <input type="checkbox" class="extra-accion" value="${a.key}" data-solo-editor="${a.soloEditor ? 1 : 0}" style="width:15px;height:15px;accent-color:#b5000b" />
-                  <span style="font-size:12px;color:#191c1d">${escapeHtml(a.label)}</span>
-                </label>`).join('')}
+                  <input type="checkbox" class="extra-accion" value="${o.key}" data-solo-editor="${o.soloEditor?1:0}" style="width:15px;height:15px;accent-color:#b5000b" />
+                  <span style="font-size:12px;color:#191c1d">${w(o.label)}</span>
+                </label>`).join("")}
             </div>
             <p style="font-size:10px;color:#5c5f61;margin-top:6px;line-height:1.4">Las funcionalidades de edición solo se habilitan en perfiles con privilegio Editar. Los datos visibles en una vista extra respetan el perfil base y sus centros.</p>
-          </div>` : ''}
+          </div>`:""}
 
           <div id="field-transportista" style="display:none">
             <label style="display:block;font-size:11px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#5c5f61;margin-bottom:6px">Transportista Asociado</label>
@@ -305,7 +192,7 @@ export function renderRolesView(container) {
                 style="width:100%;padding:11px 12px 11px 36px;border:1.5px solid #e1e3e4;border-radius:8px;font-size:14px;background:white;color:#191c1d;outline:none;box-sizing:border-box;transition:border-color 0.2s;appearance:none"
                 onfocus="this.style.borderColor='#b5000b'" onblur="this.style.borderColor='#e1e3e4'">
                 <option value="">Seleccione un transportista...</option>
-                ${(db.transports || []).map(t => `<option value="${t.id}">${escapeHtml(t.razonSocial || t.nombre || t.id)}</option>`).join('')}
+                ${(n.transports||[]).map(o=>`<option value="${o.id}">${w(o.razonSocial||o.nombre||o.id)}</option>`).join("")}
               </select>
             </div>
           </div>
@@ -336,552 +223,71 @@ export function renderRolesView(container) {
         background: #fff5f3 !important;
       }
     </style>
-  `;
-
-  // Renderizar tabla
-  renderUsersTable(users, container);
-
-  // Búsqueda en tiempo real
-  document.getElementById('users-search').addEventListener('input', (e) => {
-    const query = e.target.value.toLowerCase();
-    const db2 = getDatabase();
-    const filtered = db2.users.filter(u =>
-      (u.name || '').toLowerCase().includes(query) ||
-      (u.email || '').toLowerCase().includes(query) ||
-      (u.role || '').toLowerCase().includes(query)
-    );
-    renderUsersTable(filtered, container, true);
-  });
-
-  // Abrir modal (nuevo usuario)
-  document.getElementById('btn-open-add-user')?.addEventListener('click', () => {
-    openModal();
-  });
-
-  // Cerrar modal
-  document.getElementById('btn-modal-close').addEventListener('click', closeModal);
-  document.getElementById('modal-user').addEventListener('click', (e) => {
-    if (e.target === document.getElementById('modal-user')) closeModal();
-  });
-
-  // Selector de roles visual
-  setupRoleSelector();
-  setupCentroSelector();
-  setupAsignadosSelector();
-
-  // Submit del modal
-  document.getElementById('modal-user-form').addEventListener('submit', (e) => {
-    e.preventDefault();
-    saveUser();
-  });
-}
-
-function setupRoleSelector() {
-  document.querySelectorAll('.role-option').forEach(opt => {
-    opt.addEventListener('click', () => {
-      const role = opt.dataset.role;
-      document.querySelectorAll('.role-option').forEach(o => o.classList.remove('selected'));
-      opt.classList.add('selected');
-      // Marcar el radio correspondiente
-      const radio = document.querySelector(`input[name="modal-role"][value="${role}"]`);
-      if (radio) radio.checked = true;
-      updateRoleFields(role);
-    });
-  });
-}
-
-// "Todos los centros" desactiva/limpia la lista de centros individuales
-function setupCentroSelector() {
-  const todosChk = document.getElementById('modal-user-centro-todos');
-  const listBox = document.getElementById('modal-user-centro-list');
-  if (!todosChk || !listBox) return;
-  todosChk.addEventListener('change', () => {
-    const itemChecks = listBox.querySelectorAll('.modal-user-centro-item');
-    if (todosChk.checked) {
-      itemChecks.forEach(c => { c.checked = false; c.disabled = true; });
-      listBox.style.opacity = '0.5';
-    } else {
-      itemChecks.forEach(c => { c.disabled = false; });
-      listBox.style.opacity = '1';
-    }
-  });
-}
-
-// Centros asignados (restricción de datos por centro)
-function getCentrosAsignados() {
-  if (document.getElementById('asig-todos-centros')?.checked) return [TODOS_CENTROS];
-  return Array.from(document.querySelectorAll('.modal-user-asig-item:checked')).map(c => c.value);
-}
-function toggleAsigTodos(on) {
-  const list = document.getElementById('modal-user-asig-list');
-  document.querySelectorAll('.modal-user-asig-item').forEach(c => { c.disabled = on; if (on) c.checked = false; });
-  if (list) list.style.opacity = on ? '0.5' : '1';
-}
-function setCentrosAsignados(centros) {
-  const sel = Array.isArray(centros) ? centros.map(String) : [];
-  const todos = sel.includes(TODOS_CENTROS);
-  const chk = document.getElementById('asig-todos-centros');
-  if (chk) chk.checked = todos;
-  document.querySelectorAll('.modal-user-asig-item').forEach(c => { c.checked = !todos && sel.includes(c.value); });
-  toggleAsigTodos(todos);
-}
-
-// Accesos adicionales (sólo OWNER): marca extras del usuario y bloquea lo que ya trae el perfil
-let _extrasUsuario = { vistasExtra: [], accionesExtra: [] };
-function refreshExtras(role) {
-  const p = PERFILES[role];
-  const editor = !!p && p.acciones.includes('editar');
-  document.querySelectorAll('.extra-vista').forEach(c => {
-    const base = perfilVeMenu(role, c.value);
-    c.disabled = base;
-    c.checked = base || _extrasUsuario.vistasExtra.includes(c.value);
-    c.parentElement.style.opacity = base ? '0.55' : '1';
-  });
-  document.querySelectorAll('.extra-accion').forEach(c => {
-    const base = !!p && p.acciones.includes(c.value);
-    const bloqueada = base || (c.dataset.soloEditor === '1' && !editor);
-    c.disabled = bloqueada;
-    c.checked = base || (!bloqueada && _extrasUsuario.accionesExtra.includes(c.value));
-    c.parentElement.style.opacity = bloqueada ? '0.55' : '1';
-  });
-}
-function getExtras() {
-  return {
-    vistasExtra: Array.from(document.querySelectorAll('.extra-vista:checked:not(:disabled)')).map(c => c.value),
-    accionesExtra: Array.from(document.querySelectorAll('.extra-accion:checked:not(:disabled)')).map(c => c.value),
-  };
-}
-function setupAsignadosSelector() {
-  document.getElementById('asig-todos-centros')?.addEventListener('change', e => toggleAsigTodos(e.target.checked));
-  document.getElementById('asig-todos')?.addEventListener('click', () => document.querySelectorAll('.modal-user-asig-item:not(:disabled)').forEach(c => { c.checked = true; }));
-  document.getElementById('asig-ninguno')?.addEventListener('click', () => document.querySelectorAll('.modal-user-asig-item').forEach(c => { c.checked = false; }));
-}
-
-// Lee la selección de centros del modal: null = Todos, array = centros puntuales
-function getSelectedCentros() {
-  const todosChk = document.getElementById('modal-user-centro-todos');
-  if (todosChk && todosChk.checked) return null;
-  const checked = Array.from(document.querySelectorAll('.modal-user-centro-item:checked')).map(c => c.value);
-  return checked.length ? checked : null; // sin selección explícita = Todos por defecto
-}
-
-// Marca en el modal la selección de centros guardada (null/vacío = Todos)
-function setSelectedCentros(centros) {
-  const todosChk = document.getElementById('modal-user-centro-todos');
-  const listBox = document.getElementById('modal-user-centro-list');
-  if (!todosChk || !listBox) return;
-  const itemChecks = listBox.querySelectorAll('.modal-user-centro-item');
-  const isTodos = !centros || centros.length === 0;
-  todosChk.checked = isTodos;
-  itemChecks.forEach(c => {
-    c.checked = !isTodos && centros.includes(c.value);
-    c.disabled = isTodos;
-  });
-  listBox.style.opacity = isTodos ? '0.5' : '1';
-}
-
-// Actualiza la descripción del perfil y muestra/oculta los campos de
-// "Centro Asociado" / "Transportista Asociado" según el rol seleccionado.
-function updateRoleFields(role) {
-  const descEl = document.getElementById('role-desc-text');
-  if (descEl) descEl.textContent = ROLE_DESCRIPTIONS[role] || '';
-
-  const fieldCentro = document.getElementById('field-centro');
-  const fieldTransportista = document.getElementById('field-transportista');
-  if (fieldCentro) fieldCentro.style.display = CENTRO_ROLES.includes(role) ? 'block' : 'none';
-  const fieldAsig = document.getElementById('field-centros-asig');
-  if (fieldAsig) fieldAsig.style.display = ROLES_CON_CENTROS.includes(role) ? 'block' : 'none';
-  if (fieldTransportista) fieldTransportista.style.display = TRANSPORTE_ROLES.includes(role) ? 'block' : 'none';
-  const fieldExtras = document.getElementById('field-extras');
-  if (fieldExtras) { fieldExtras.style.display = TRANSPORTE_ROLES.includes(role) ? 'none' : 'block'; refreshExtras(role); }
-}
-
-function openModal(userIdx = null) {
-  const modal = document.getElementById('modal-user');
-  const title = document.getElementById('modal-user-title');
-  const editIdx = document.getElementById('modal-edit-idx');
-  const nameInput = document.getElementById('modal-user-name');
-  const emailInput = document.getElementById('modal-user-email');
-  const errorDiv = document.getElementById('modal-user-error');
-  const submitBtn = document.getElementById('btn-modal-submit');
-
-  errorDiv.style.display = 'none';
-
-  // Limpiar selección de roles
-  document.querySelectorAll('.role-option').forEach(o => o.classList.remove('selected'));
-  document.querySelectorAll('input[name="modal-role"]').forEach(r => r.checked = false);
-  const transportistaSelect = document.getElementById('modal-user-transportista');
-  if (transportistaSelect) transportistaSelect.value = '';
-  setSelectedCentros(null); // por defecto: Todos los centros
-  setCentrosAsignados([]);
-  _extrasUsuario = { vistasExtra: [], accionesExtra: [] };
-
-  let selectedRole = 'VENDEDOR';
-
-  if (userIdx !== null) {
-    // Modo edición
-    const db = getDatabase();
-    const user = db.users[userIdx];
-    title.textContent = 'Editar Usuario';
-    submitBtn.innerHTML = '<span class="material-symbols-outlined" style="font-size:18px">save</span> Guardar Cambios';
-    editIdx.value = userIdx;
-    nameInput.value = user.name || '';
-    emailInput.value = user.email || '';
-    emailInput.readOnly = true;
-    emailInput.style.background = '#f3f4f5';
-    emailInput.style.cursor = 'not-allowed';
-
-    // Seleccionar rol actual (normalizado a los 5 perfiles canónicos)
-    selectedRole = normalizeRole(user.role);
-    setSelectedCentros(user.centrosPreferencia || null);
-    setCentrosAsignados(user.centrosAsignados || []);
-    _extrasUsuario = { vistasExtra: Array.isArray(user.vistasExtra) ? user.vistasExtra : [], accionesExtra: Array.isArray(user.accionesExtra) ? user.accionesExtra : [] };
-    if (transportistaSelect && user.transportistaId) transportistaSelect.value = user.transportistaId;
-  } else {
-    // Modo creación
-    title.textContent = 'Agregar Usuario';
-    submitBtn.innerHTML = '<span class="material-symbols-outlined" style="font-size:18px">person_add</span> Guardar Usuario';
-    editIdx.value = '';
-    nameInput.value = '';
-    emailInput.value = '';
-    emailInput.readOnly = false;
-    emailInput.style.background = 'white';
-    emailInput.style.cursor = 'text';
-  }
-
-  const roleOpt = document.querySelector(`.role-option[data-role="${selectedRole}"]`);
-  if (roleOpt) {
-    roleOpt.classList.add('selected');
-    const radio = document.querySelector(`input[name="modal-role"][value="${selectedRole}"]`);
-    if (radio) radio.checked = true;
-  }
-  updateRoleFields(selectedRole);
-
-  modal.style.display = 'flex';
-  nameInput.focus();
-}
-
-function closeModal() {
-  document.getElementById('modal-user').style.display = 'none';
-}
-
-async function saveUser() {
-  const db = getDatabase();
-  const editIdx = document.getElementById('modal-edit-idx').value;
-  const name = document.getElementById('modal-user-name').value.trim();
-  const email = document.getElementById('modal-user-email').value.trim().toLowerCase();
-  const selectedRole = document.querySelector('input[name="modal-role"]:checked')?.value;
-  const errorDiv = document.getElementById('modal-user-error');
-  const errorText = document.getElementById('modal-user-error-text');
-
-  const showErr = (msg) => {
-    errorText.textContent = msg;
-    errorDiv.style.display = 'flex';
-  };
-
-  if (!name) return showErr('El nombre es obligatorio.');
-  if (!email.endsWith('@ebema.cl')) return showErr('El correo debe pertenecer al dominio @ebema.cl');
-  if (!selectedRole) return showErr('Seleccione un rol de acceso.');
-
-  // Centro(s) de preferencia / transportista asociado (según el perfil seleccionado)
-  // getSelectedCentros() → null = Todos los centros; array = centros puntuales.
-  const centrosPreferencia = getSelectedCentros();
-  const transportistaId = document.getElementById('modal-user-transportista')?.value || '';
-
-  if (TRANSPORTE_ROLES.includes(selectedRole) && !transportistaId) {
-    return showErr('Seleccione el Transportista Asociado para este perfil.');
-  }
-
-  const centrosAsignados = ROLES_CON_CENTROS.includes(selectedRole) ? getCentrosAsignados() : [];
-  if (ROLES_CON_CENTROS.includes(selectedRole) && centrosAsignados.length === 0) {
-    return showErr('Asigne al menos un centro a este perfil.');
-  }
-
-  if (selectedRole === 'OWNER' && !esOwner()) return showErr('Solo un Owner puede asignar el perfil Owner.');
-  // Accesos adicionales: sólo OWNER los define; otros perfiles conservan los existentes
-  const extras = esOwner() && !TRANSPORTE_ROLES.includes(selectedRole) ? getExtras() : null;
-
-  // Limpiar asociaciones que no correspondan al perfil
-  const finalCentrosPreferencia = null;
-  const finalTransportistaId = TRANSPORTE_ROLES.includes(selectedRole) ? transportistaId : null;
-
-  if (editIdx === '') {
-    // CREAR = INVITAR: no se define contraseña. La Edge Function 'invite-user'
-    // valida permisos, pre-asigna rol/centro en app_users y envía el correo de
-    // invitación (Supabase). El user_id se vincula por el trigger al aceptar.
-    if (db.users.some(u => u.email === email)) return showErr('El correo ya se encuentra registrado.');
-    const submitBtn = document.getElementById('btn-modal-submit');
-    const original = submitBtn.innerHTML;
-    submitBtn.disabled = true;
-    submitBtn.innerHTML = '<span class="material-symbols-outlined" style="font-size:18px">outgoing_mail</span> Enviando invitación...';
-
-    const { data, error } = await supabase.functions.invoke('invite-user', {
-      body: {
-        email, name, role: selectedRole,
-        centrosPreferencia: finalCentrosPreferencia, centrosAsignados, transportistaId: finalTransportistaId,
-        ...(extras || {}),
-        redirectTo: window.location.origin + window.location.pathname
-      }
-    });
-
-    submitBtn.disabled = false;
-    submitBtn.innerHTML = original;
-
-    if (error || (data && data.error)) {
-      return showErr((data && data.error) || error?.message || 'No se pudo enviar la invitación.');
-    }
-    // Reflejar en la tabla localmente (pendiente de activación)
-    db.users.push({ email, name, role: selectedRole, centrosPreferencia: finalCentrosPreferencia, centrosAsignados, transportistaId: finalTransportistaId, vistasExtra: extras?.vistasExtra || [], accionesExtra: extras?.accionesExtra || [], activo: true, lastAccess: 'Invitación enviada' });
-    showAlert((data && (data.message || data.warning)) || `Invitación enviada a ${email}.`);
-    closeModal();
-    const container = document.getElementById('stage-area');
-    if (container) renderRolesView(container);
-    return;
-  }
-
-  // Editar usuario (rol / centros de preferencia / transportista)
-  const idx = parseInt(editIdx);
-  if (db.users[idx]) {
-    db.users[idx].name = name;
-    db.users[idx].role = selectedRole;
-    db.users[idx].centrosPreferencia = finalCentrosPreferencia;
-    db.users[idx].centrosAsignados = centrosAsignados;
-    db.users[idx].transportistaId = finalTransportistaId;
-    if (extras) { db.users[idx].vistasExtra = extras.vistasExtra; db.users[idx].accionesExtra = extras.accionesExtra; }
-    showAlert(`Perfil de ${name} actualizado.`);
-  }
-
-  saveDatabase(db, { syncOnly: ['users'] });
-  closeModal();
-  const container = document.getElementById('stage-area');
-  if (container) renderRolesView(container);
-}
-
-function renderUsersTable(usersList, viewContainer, isFiltered = false) {
-  const tbody = document.getElementById('users-roles-tbody');
-  if (!tbody) return;
-
-  tbody.innerHTML = '';
-
-  if (usersList.length === 0) {
-    tbody.innerHTML = `
+  `,G(a,e),document.getElementById("users-search").addEventListener("input",o=>{const i=o.target.value.toLowerCase(),c=A().users.filter(d=>(d.name||"").toLowerCase().includes(i)||(d.email||"").toLowerCase().includes(i)||(d.role||"").toLowerCase().includes(i));G(c,e,!0)}),document.getElementById("btn-open-add-user")?.addEventListener("click",()=>{V()}),document.getElementById("btn-modal-close").addEventListener("click",R),document.getElementById("modal-user").addEventListener("click",o=>{o.target===document.getElementById("modal-user")&&R()}),M(),ae(),de(),document.getElementById("modal-user-form").addEventListener("submit",o=>{o.preventDefault(),pe()})}function M(){document.querySelectorAll(".role-option").forEach(e=>{e.addEventListener("click",()=>{const n=e.dataset.role;document.querySelectorAll(".role-option").forEach(s=>s.classList.remove("selected")),e.classList.add("selected");const a=document.querySelector(`input[name="modal-role"][value="${n}"]`);a&&(a.checked=!0),H(n)})})}function ae(){const e=document.getElementById("modal-user-centro-todos"),n=document.getElementById("modal-user-centro-list");!e||!n||e.addEventListener("change",()=>{const a=n.querySelectorAll(".modal-user-centro-item");e.checked?(a.forEach(s=>{s.checked=!1,s.disabled=!0}),n.style.opacity="0.5"):(a.forEach(s=>{s.disabled=!1}),n.style.opacity="1")})}function re(){return document.getElementById("asig-todos-centros")?.checked?[L]:Array.from(document.querySelectorAll(".modal-user-asig-item:checked")).map(e=>e.value)}function F(e){const n=document.getElementById("modal-user-asig-list");document.querySelectorAll(".modal-user-asig-item").forEach(a=>{a.disabled=e,e&&(a.checked=!1)}),n&&(n.style.opacity=e?"0.5":"1")}function J(e){const n=Array.isArray(e)?e.map(String):[],a=n.includes(L),s=document.getElementById("asig-todos-centros");s&&(s.checked=a),document.querySelectorAll(".modal-user-asig-item").forEach(r=>{r.checked=!a&&n.includes(r.value)}),F(a)}let O={vistasExtra:[],accionesExtra:[]};function ie(e){const n=Y[e],a=!!n&&n.acciones.includes("editar");document.querySelectorAll(".extra-vista").forEach(s=>{const r=Z(e,s.value);s.disabled=r,s.checked=r||O.vistasExtra.includes(s.value),s.parentElement.style.opacity=r?"0.55":"1"}),document.querySelectorAll(".extra-accion").forEach(s=>{const r=!!n&&n.acciones.includes(s.value),t=r||s.dataset.soloEditor==="1"&&!a;s.disabled=t,s.checked=r||!t&&O.accionesExtra.includes(s.value),s.parentElement.style.opacity=t?"0.55":"1"})}function le(){return{vistasExtra:Array.from(document.querySelectorAll(".extra-vista:checked:not(:disabled)")).map(e=>e.value),accionesExtra:Array.from(document.querySelectorAll(".extra-accion:checked:not(:disabled)")).map(e=>e.value)}}function de(){document.getElementById("asig-todos-centros")?.addEventListener("change",e=>F(e.target.checked)),document.getElementById("asig-todos")?.addEventListener("click",()=>document.querySelectorAll(".modal-user-asig-item:not(:disabled)").forEach(e=>{e.checked=!0})),document.getElementById("asig-ninguno")?.addEventListener("click",()=>document.querySelectorAll(".modal-user-asig-item").forEach(e=>{e.checked=!1}))}function ce(){const e=document.getElementById("modal-user-centro-todos");if(e&&e.checked)return null;const n=Array.from(document.querySelectorAll(".modal-user-centro-item:checked")).map(a=>a.value);return n.length?n:null}function j(e){const n=document.getElementById("modal-user-centro-todos"),a=document.getElementById("modal-user-centro-list");if(!n||!a)return;const s=a.querySelectorAll(".modal-user-centro-item"),r=!e||e.length===0;n.checked=r,s.forEach(t=>{t.checked=!r&&e.includes(t.value),t.disabled=r}),a.style.opacity=r?"0.5":"1"}function H(e){const n=document.getElementById("role-desc-text");n&&(n.textContent=te[e]||"");const a=document.getElementById("field-centro"),s=document.getElementById("field-transportista");a&&(a.style.display=q.includes(e)?"block":"none");const r=document.getElementById("field-centros-asig");r&&(r.style.display=C.includes(e)?"block":"none"),s&&(s.style.display=k.includes(e)?"block":"none");const t=document.getElementById("field-extras");t&&(t.style.display=k.includes(e)?"none":"block",ie(e))}function V(e=null){const n=document.getElementById("modal-user"),a=document.getElementById("modal-user-title"),s=document.getElementById("modal-edit-idx"),r=document.getElementById("modal-user-name"),t=document.getElementById("modal-user-email"),u=document.getElementById("modal-user-error"),l=document.getElementById("btn-modal-submit");u.style.display="none",document.querySelectorAll(".role-option").forEach(c=>c.classList.remove("selected")),document.querySelectorAll('input[name="modal-role"]').forEach(c=>c.checked=!1);const o=document.getElementById("modal-user-transportista");o&&(o.value=""),j(null),J([]),O={vistasExtra:[],accionesExtra:[]};let i="VENDEDOR";if(e!==null){const d=A().users[e];a.textContent="Editar Usuario",l.innerHTML='<span class="material-symbols-outlined" style="font-size:18px">save</span> Guardar Cambios',s.value=e,r.value=d.name||"",t.value=d.email||"",t.readOnly=!0,t.style.background="#f3f4f5",t.style.cursor="not-allowed",i=T(d.role),j(d.centrosPreferencia||null),J(d.centrosAsignados||[]),O={vistasExtra:Array.isArray(d.vistasExtra)?d.vistasExtra:[],accionesExtra:Array.isArray(d.accionesExtra)?d.accionesExtra:[]},o&&d.transportistaId&&(o.value=d.transportistaId)}else a.textContent="Agregar Usuario",l.innerHTML='<span class="material-symbols-outlined" style="font-size:18px">person_add</span> Guardar Usuario',s.value="",r.value="",t.value="",t.readOnly=!1,t.style.background="white",t.style.cursor="text";const p=document.querySelector(`.role-option[data-role="${i}"]`);if(p){p.classList.add("selected");const c=document.querySelector(`input[name="modal-role"][value="${i}"]`);c&&(c.checked=!0)}H(i),n.style.display="flex",r.focus()}function R(){document.getElementById("modal-user").style.display="none"}async function pe(){const e=A(),n=document.getElementById("modal-edit-idx").value,a=document.getElementById("modal-user-name").value.trim(),s=document.getElementById("modal-user-email").value.trim().toLowerCase(),r=document.querySelector('input[name="modal-role"]:checked')?.value,t=document.getElementById("modal-user-error"),u=document.getElementById("modal-user-error-text"),l=m=>{u.textContent=m,t.style.display="flex"};if(!a)return l("El nombre es obligatorio.");if(!s.endsWith("@ebema.cl"))return l("El correo debe pertenecer al dominio @ebema.cl");if(!r)return l("Seleccione un rol de acceso.");const o=ce(),i=document.getElementById("modal-user-transportista")?.value||"";if(k.includes(r)&&!i)return l("Seleccione el Transportista Asociado para este perfil.");const p=C.includes(r)?re():[];if(C.includes(r)&&p.length===0)return l("Asigne al menos un centro a este perfil.");if(r==="OWNER"&&!S())return l("Solo un Owner puede asignar el perfil Owner.");const c=S()&&!k.includes(r)?le():null,d=null,b=k.includes(r)?i:null;if(n===""){if(e.users.some(f=>f.email===s))return l("El correo ya se encuentra registrado.");const m=document.getElementById("btn-modal-submit"),h=m.innerHTML;m.disabled=!0,m.innerHTML='<span class="material-symbols-outlined" style="font-size:18px">outgoing_mail</span> Enviando invitación...';const{data:g,error:I}=await N.functions.invoke("invite-user",{body:{email:s,name:a,role:r,centrosPreferencia:d,centrosAsignados:p,transportistaId:b,...c||{},redirectTo:window.location.origin+window.location.pathname}});if(m.disabled=!1,m.innerHTML=h,I||g&&g.error)return l(g&&g.error||I?.message||"No se pudo enviar la invitación.");e.users.push({email:s,name:a,role:r,centrosPreferencia:d,centrosAsignados:p,transportistaId:b,vistasExtra:c?.vistasExtra||[],accionesExtra:c?.accionesExtra||[],activo:!0,lastAccess:"Invitación enviada"}),y(g&&(g.message||g.warning)||`Invitación enviada a ${s}.`),R();const E=document.getElementById("stage-area");E&&z(E);return}const x=parseInt(n);e.users[x]&&(e.users[x].name=a,e.users[x].role=r,e.users[x].centrosPreferencia=d,e.users[x].centrosAsignados=p,e.users[x].transportistaId=b,c&&(e.users[x].vistasExtra=c.vistasExtra,e.users[x].accionesExtra=c.accionesExtra),y(`Perfil de ${a} actualizado.`)),$(e,{syncOnly:["users"]}),R();const v=document.getElementById("stage-area");v&&z(v)}function G(e,n,a=!1){const s=document.getElementById("users-roles-tbody");if(!s)return;if(s.innerHTML="",e.length===0){s.innerHTML=`
       <tr>
         <td colspan="5" style="padding:48px 20px;text-align:center;color:#5c5f61">
           <span class="material-symbols-outlined" style="font-size:40px;display:block;margin-bottom:8px;opacity:0.3">search_off</span>
           <p style="font-size:14px">No se encontraron usuarios</p>
         </td>
       </tr>
-    `;
-    return;
-  }
-
-  // Necesitamos el índice real en db.users para acciones
-  const db = getDatabase();
-
-  usersList.forEach((user, localIdx) => {
-    // Índice real en la DB (para editar/toggle por índice)
-    const realIdx = isFiltered
-      ? db.users.findIndex(u => u.email === user.email)
-      : localIdx;
-
-    const normRole = normalizeRole(user.role);
-    const rc = getRoleConfig(user.role);
-    const [avatarBg, avatarText] = getAvatarPalette(user.email);
-    const initials = getInitials(user.name);
-    const isActive = user.activo !== false;
-    // Pendiente de activar: se le envió invitación pero aún no define su
-    // contraseña (no ha iniciado sesión nunca). Ojo: en varias filas antiguas
-    // "lastAccess" no quedó en NULL sino con el texto literal 'Nunca' guardado
-    // en la BD (no solo como fallback visual), así que hay que contemplarlo.
-    const isPending = !user.lastAccess || user.lastAccess === 'Invitación enviada' || user.lastAccess === 'Nunca';
-
-    // Normalizar nombre de rol para display (uno de los 5 perfiles canónicos)
-    const roleDisplay = rc.label;
-
-    // Centro(s) de preferencia o transportista asociado (según el perfil)
-    let asociadoTxt = '';
-    if (ROLES_CON_CENTROS.includes(normRole)) {
-      const asig = user.centrosAsignados || [];
-      asociadoTxt = asig.includes(TODOS_CENTROS) ? 'Todos los centros'
-        : asig.length === 0 ? 'Sin centros asignados'
-        : asig.length === 1 ? (getCentreName(db, asig[0]) || asig[0])
-        : `${asig.length} centros asignados`;
-    } else if (CENTRO_ROLES.includes(normRole)) {
-      const centros = user.centrosPreferencia;
-      if (!centros || centros.length === 0) {
-        asociadoTxt = 'Todos los centros';
-      } else if (centros.length === 1) {
-        asociadoTxt = getCentreName(db, centros[0]) || centros[0];
-      } else {
-        asociadoTxt = `${centros.length} centros seleccionados`;
-      }
-    } else if (TRANSPORTE_ROLES.includes(normRole) && user.transportistaId) {
-      const t = (db.transports || []).find(t => t.id === user.transportistaId);
-      asociadoTxt = t ? (t.razonSocial || t.nombre || '') : '';
-    }
-
-    const nExtras = (Array.isArray(user.vistasExtra) ? user.vistasExtra.length : 0) + (Array.isArray(user.accionesExtra) ? user.accionesExtra.length : 0);
-    // Sólo OWNER gestiona usuarios Owner; nadie se edita a sí mismo salvo OWNER
-    const sesEmail = (JSON.parse(localStorage.getItem('ebema_user_session') || '{}').email || '').toLowerCase();
-    const gestionable = esOwner() || (normRole !== 'OWNER' && (user.email || '').toLowerCase() !== sesEmail);
-    const tr = document.createElement('tr');
-    tr.className = 'user-row';
-    tr.style.cssText = 'border-bottom:1px solid #f3f4f5;transition:background 0.15s';
-
-    tr.innerHTML = `
+    `;return}const r=A();e.forEach((t,u)=>{const l=a?r.users.findIndex(f=>f.email===t.email):u,o=T(t.role),i=U(t.role),[p,c]=ne(t.email),d=se(t.name),b=t.activo!==!1,x=!t.lastAccess||t.lastAccess==="Invitación enviada"||t.lastAccess==="Nunca",v=i.label;let m="";if(C.includes(o)){const f=t.centrosAsignados||[];m=f.includes(L)?"Todos los centros":f.length===0?"Sin centros asignados":f.length===1?B(r,f[0])||f[0]:`${f.length} centros asignados`}else if(q.includes(o)){const f=t.centrosPreferencia;!f||f.length===0?m="Todos los centros":f.length===1?m=B(r,f[0])||f[0]:m=`${f.length} centros seleccionados`}else if(k.includes(o)&&t.transportistaId){const f=(r.transports||[]).find(W=>W.id===t.transportistaId);m=f&&(f.razonSocial||f.nombre)||""}const h=(Array.isArray(t.vistasExtra)?t.vistasExtra.length:0)+(Array.isArray(t.accionesExtra)?t.accionesExtra.length:0),g=(JSON.parse(localStorage.getItem("ebema_user_session")||"{}").email||"").toLowerCase(),I=S()||o!=="OWNER"&&(t.email||"").toLowerCase()!==g,E=document.createElement("tr");E.className="user-row",E.style.cssText="border-bottom:1px solid #f3f4f5;transition:background 0.15s",E.innerHTML=`
       <td style="padding:14px 20px">
         <div style="display:flex;align-items:center;gap:12px">
-          <div style="width:36px;height:36px;border-radius:50%;background:${avatarBg};color:${avatarText};display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:800;flex-shrink:0;border:1px solid ${avatarBg}">
-            ${initials}
+          <div style="width:36px;height:36px;border-radius:50%;background:${p};color:${c};display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:800;flex-shrink:0;border:1px solid ${p}">
+            ${d}
           </div>
           <div>
-            <p style="font-size:14px;font-weight:700;color:#191c1d;line-height:1.2">${user.name || '—'}</p>
-            <p style="font-size:11px;color:#5c5f61;margin-top:2px">Último acceso: ${user.lastAccess || 'Nunca'}</p>
+            <p style="font-size:14px;font-weight:700;color:#191c1d;line-height:1.2">${t.name||"—"}</p>
+            <p style="font-size:11px;color:#5c5f61;margin-top:2px">Último acceso: ${t.lastAccess||"Nunca"}</p>
           </div>
         </div>
       </td>
       <td style="padding:14px 16px">
-        <span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:#5c5f61">${user.email}</span>
+        <span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:#5c5f61">${t.email}</span>
       </td>
       <td style="padding:14px 16px">
-        <span style="display:inline-flex;align-items:center;gap:5px;padding:4px 10px;background:${rc.bg};color:${rc.text};border:1px solid ${rc.border};border-radius:20px;font-size:11px;font-weight:700">
-          <span class="material-symbols-outlined" style="font-size:12px">${rc.icon}</span>
-          ${roleDisplay}
+        <span style="display:inline-flex;align-items:center;gap:5px;padding:4px 10px;background:${i.bg};color:${i.text};border:1px solid ${i.border};border-radius:20px;font-size:11px;font-weight:700">
+          <span class="material-symbols-outlined" style="font-size:12px">${i.icon}</span>
+          ${v}
         </span>
-        ${asociadoTxt ? `<p style="font-size:10px;color:#5c5f61;margin-top:4px">${asociadoTxt}</p>` : ''}
-        ${nExtras ? `<p style="font-size:10px;color:#b5000b;font-weight:700;margin-top:2px" title="Vistas/funcionalidades agregadas por Owner">+${nExtras} acceso${nExtras > 1 ? 's' : ''} adicional${nExtras > 1 ? 'es' : ''}</p>` : ''}
+        ${m?`<p style="font-size:10px;color:#5c5f61;margin-top:4px">${m}</p>`:""}
+        ${h?`<p style="font-size:10px;color:#b5000b;font-weight:700;margin-top:2px" title="Vistas/funcionalidades agregadas por Owner">+${h} acceso${h>1?"s":""} adicional${h>1?"es":""}</p>`:""}
       </td>
       <td style="padding:14px 16px;text-align:center">
-        <span style="display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border-radius:20px;font-size:10px;font-weight:700;${isActive ? 'background:#e8f5e9;color:#1b5e20;border:1px solid #a5d6a7' : 'background:#fce4e4;color:#b71c1c;border:1px solid #ef9a9a'}">
-          <span style="width:5px;height:5px;border-radius:50%;background:${isActive ? '#43a047' : '#e53935'};display:inline-block"></span>
-          ${isActive ? 'ACTIVO' : 'INACTIVO'}
+        <span style="display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border-radius:20px;font-size:10px;font-weight:700;${b?"background:#e8f5e9;color:#1b5e20;border:1px solid #a5d6a7":"background:#fce4e4;color:#b71c1c;border:1px solid #ef9a9a"}">
+          <span style="width:5px;height:5px;border-radius:50%;background:${b?"#43a047":"#e53935"};display:inline-block"></span>
+          ${b?"ACTIVO":"INACTIVO"}
         </span>
       </td>
       <td style="padding:14px 16px;text-align:center">
         <div style="display:inline-flex;align-items:center;gap:4px">
-          ${gestionable ? `<button class="btn-edit-user" data-idx="${realIdx}"
+          ${I?`<button class="btn-edit-user" data-idx="${l}"
             title="Editar perfil"
             style="padding:6px;background:#f3f4f5;border:1px solid #e1e3e4;border-radius:6px;cursor:pointer;display:flex;align-items:center;transition:all 0.15s"
             onmouseover="this.style.background='#e7e8e9';this.style.borderColor='#b5000b'" onmouseout="this.style.background='#f3f4f5';this.style.borderColor='#e1e3e4'">
             <span class="material-symbols-outlined" style="font-size:16px;color:#5c5f61">edit</span>
-          </button>` : ''}
-          ${isPending && isActive ? `
-          <button class="btn-resend-invite" data-idx="${realIdx}" data-email="${user.email}"
+          </button>`:""}
+          ${x&&b?`
+          <button class="btn-resend-invite" data-idx="${l}" data-email="${t.email}"
             title="Reenviar invitación"
             style="padding:6px;background:#fff8e1;border:1px solid #ffca28;border-radius:6px;cursor:pointer;display:flex;align-items:center;transition:all 0.15s"
             onmouseover="this.style.background='#ffecb3'" onmouseout="this.style.background='#fff8e1'">
             <span class="material-symbols-outlined" style="font-size:16px;color:#f57f17">forward_to_inbox</span>
-          </button>` : ''}
-          ${gestionable ? `<button class="btn-toggle-user" data-idx="${realIdx}"
-            title="${isActive ? 'Desactivar usuario' : 'Activar usuario'}"
-            style="padding:6px;background:${isActive ? '#fff8f7' : '#f0fdf4'};border:1px solid ${isActive ? '#ffb4aa' : '#a5d6a7'};border-radius:6px;cursor:pointer;display:flex;align-items:center;transition:all 0.15s"
+          </button>`:""}
+          ${I?`<button class="btn-toggle-user" data-idx="${l}"
+            title="${b?"Desactivar usuario":"Activar usuario"}"
+            style="padding:6px;background:${b?"#fff8f7":"#f0fdf4"};border:1px solid ${b?"#ffb4aa":"#a5d6a7"};border-radius:6px;cursor:pointer;display:flex;align-items:center;transition:all 0.15s"
             onmouseover="this.style.opacity='0.75'" onmouseout="this.style.opacity='1'">
-            <span class="material-symbols-outlined" style="font-size:16px;color:${isActive ? '#b5000b' : '#2e7d32'}">${isActive ? 'person_off' : 'how_to_reg'}</span>
-          </button>` : ''}
-          ${can('eliminar') ? `<button class="btn-delete-user" data-idx="${realIdx}" data-email="${user.email}" data-name="${escapeHtml(user.name || user.email)}"
+            <span class="material-symbols-outlined" style="font-size:16px;color:${b?"#b5000b":"#2e7d32"}">${b?"person_off":"how_to_reg"}</span>
+          </button>`:""}
+          ${P("eliminar")?`<button class="btn-delete-user" data-idx="${l}" data-email="${t.email}" data-name="${w(t.name||t.email)}"
             title="Eliminar usuario permanentemente"
             style="padding:6px;background:#fff8f7;border:1px solid #ffb4aa;border-radius:6px;cursor:pointer;display:flex;align-items:center;transition:all 0.15s"
             onmouseover="this.style.background='#ffdad6';this.style.borderColor='#b5000b'" onmouseout="this.style.background='#fff8f7';this.style.borderColor='#ffb4aa'">
             <span class="material-symbols-outlined" style="font-size:16px;color:#b5000b">delete_forever</span>
-          </button>` : ''}
+          </button>`:""}
         </div>
       </td>
-    `;
+    `,s.appendChild(E)}),s.querySelectorAll(".btn-resend-invite").forEach(t=>{t.addEventListener("click",async u=>{const l=u.currentTarget.getAttribute("data-email"),o=u.currentTarget.querySelector(".material-symbols-outlined"),i=o.textContent;u.currentTarget.disabled=!0,o.textContent="sync";const{data:p,error:c}=await N.functions.invoke("resend-invite",{body:{email:l}});if(u.currentTarget.disabled=!1,o.textContent=i,c||p&&p.error){y(p&&p.error||c?.message||"No se pudo reenviar la invitación.","error");return}y(p&&p.message||`Invitación reenviada a ${l}.`)})}),s.querySelectorAll(".btn-edit-user").forEach(t=>{t.addEventListener("click",u=>{const l=parseInt(u.currentTarget.getAttribute("data-idx"));V(l),M()})}),s.querySelectorAll(".btn-delete-user").forEach(t=>{t.addEventListener("click",async u=>{const l=parseInt(u.currentTarget.getAttribute("data-idx")),o=u.currentTarget.getAttribute("data-email"),i=u.currentTarget.getAttribute("data-name");if(JSON.parse(localStorage.getItem("ebema_user_session")||"{}").email===o){y("No puede eliminar su propio usuario.","error");return}if(!await ee(`¿Eliminar permanentemente a "${i}" (${o})?
 
-    tbody.appendChild(tr);
-  });
-
-  // Eventos: Reenviar invitación (cuentas pendientes de activar)
-  tbody.querySelectorAll('.btn-resend-invite').forEach(btn => {
-    btn.addEventListener('click', async (e) => {
-      const email = e.currentTarget.getAttribute('data-email');
-      const icon = e.currentTarget.querySelector('.material-symbols-outlined');
-      const originalIcon = icon.textContent;
-
-      e.currentTarget.disabled = true;
-      icon.textContent = 'sync';
-
-      const { data, error } = await supabase.functions.invoke('resend-invite', { body: { email } });
-
-      e.currentTarget.disabled = false;
-      icon.textContent = originalIcon;
-
-      if (error || (data && data.error)) {
-        showAlert((data && data.error) || error?.message || 'No se pudo reenviar la invitación.', 'error');
-        return;
-      }
-      showAlert((data && data.message) || `Invitación reenviada a ${email}.`);
-    });
-  });
-
-  // Eventos: Editar usuario
-  tbody.querySelectorAll('.btn-edit-user').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      const idx = parseInt(e.currentTarget.getAttribute('data-idx'));
-      openModal(idx);
-      setupRoleSelector();
-    });
-  });
-
-  // Eventos: Eliminar usuario permanentemente
-  tbody.querySelectorAll('.btn-delete-user').forEach(btn => {
-    btn.addEventListener('click', async (e) => {
-      const idx   = parseInt(e.currentTarget.getAttribute('data-idx'));
-      const email = e.currentTarget.getAttribute('data-email');
-      const name  = e.currentTarget.getAttribute('data-name');
-
-      const session = JSON.parse(localStorage.getItem('ebema_user_session') || '{}');
-      if (session.email === email) {
-        showAlert('No puede eliminar su propio usuario.', 'error');
-        return;
-      }
-
-      const ok = await confirmar(`¿Eliminar permanentemente a "${name}" (${email})?\n\nEsta acción no se puede deshacer.`);
-      if (!ok) return;
-
-      btn.disabled = true;
-      btn.style.opacity = '0.5';
-
-      const { data, error } = await supabase.functions.invoke('delete-user', { body: { email } });
-
-      if (error || (data && data.error)) {
-        showAlert((data && data.error) || error?.message || 'No se pudo eliminar el usuario.', 'error');
-        btn.disabled = false;
-        btn.style.opacity = '1';
-        return;
-      }
-
-      const db2 = getDatabase();
-      const pos = db2.users.findIndex(u => u.email === email);
-      if (pos !== -1) db2.users.splice(pos, 1);
-      saveDatabase(db2, { syncOnly: ['users'] });
-
-      showAlert(`${name} eliminado correctamente.`);
-      const stageContainer = document.getElementById('stage-area');
-      if (stageContainer) renderRolesView(stageContainer);
-    });
-  });
-
-  // Eventos: Activar / Desactivar usuario
-  tbody.querySelectorAll('.btn-toggle-user').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      const idx = parseInt(e.currentTarget.getAttribute('data-idx'));
-      const db = getDatabase();
-      const user = db.users[idx];
-      if (!user) return;
-
-      const session = JSON.parse(localStorage.getItem('ebema_user_session') || '{}');
-      if (session.email === user.email) {
-        showAlert('No puede desactivar su propio usuario activo.', 'error');
-        return;
-      }
-
-      user.activo = user.activo === undefined ? false : !user.activo;
-      saveDatabase(db);
-      showAlert(`${user.name} ha sido ${user.activo ? 'activado' : 'desactivado'}.`);
-
-      const stageContainer = document.getElementById('stage-area');
-      if (stageContainer) renderRolesView(stageContainer);
-    });
-  });
-}
+Esta acción no se puede deshacer.`))return;t.disabled=!0,t.style.opacity="0.5";const{data:d,error:b}=await N.functions.invoke("delete-user",{body:{email:o}});if(b||d&&d.error){y(d&&d.error||b?.message||"No se pudo eliminar el usuario.","error"),t.disabled=!1,t.style.opacity="1";return}const x=A(),v=x.users.findIndex(h=>h.email===o);v!==-1&&x.users.splice(v,1),$(x,{syncOnly:["users"]}),y(`${i} eliminado correctamente.`);const m=document.getElementById("stage-area");m&&z(m)})}),s.querySelectorAll(".btn-toggle-user").forEach(t=>{t.addEventListener("click",u=>{const l=parseInt(u.currentTarget.getAttribute("data-idx")),o=A(),i=o.users[l];if(!i)return;if(JSON.parse(localStorage.getItem("ebema_user_session")||"{}").email===i.email){y("No puede desactivar su propio usuario activo.","error");return}i.activo=i.activo===void 0?!1:!i.activo,$(o),y(`${i.name} ha sido ${i.activo?"activado":"desactivado"}.`);const c=document.getElementById("stage-area");c&&z(c)})})}export{z as renderRolesView};

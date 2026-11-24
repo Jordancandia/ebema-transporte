@@ -1,162 +1,31 @@
-import { getDatabase, saveDatabase, deleteRow } from './data.js?v=202611232043';
-import { parseCSV, showAlert, escapeHtml, toCSV, downloadFile } from './utils.js';
-import { REGIONES, COMUNAS_POR_REGION, TIPOS_ZONA, findRegionByComuna } from './chile-geo.js';
-import { confirmar } from './confirmar.js?v=202611232043';
-
-let editingZonaId = null;
-let currentFiltroRegionZona = '';
-let currentFiltroIncompletasZona = false;
-let currentFiltroErpZona = ''; // '', 'erp', 'pendiente'
-
-// --- Normalización de datos para Carga Masiva (CSV) ---
-// Los archivos exportados desde Excel suelen traer encabezados en mayúsculas/distinta
-// capitalización, sin tildes o con codificación incorrecta (Windows-1252/ISO-8859-1).
-// Estas utilidades permiten reconocer las columnas y valores sin importar el formato.
-
-// Normaliza una clave de columna: sin tildes, minúsculas, sin espacios ni símbolos.
-// "País" / "PAIS" / "Pa�s" -> "pais"
-export function normalizeKey(s) {
-  return s.toString()
-    .normalize('NFD').replace(/[̀-ͯ]/g, '')
-    .toLowerCase()
-    .replace(/[^a-z0-9]/g, '');
-}
-
-// Normaliza un texto para comparación: sin tildes, minúsculas, espacios simples.
-export function normalizeText(s) {
-  return s.toString()
-    .normalize('NFD').replace(/[̀-ͯ]/g, '')
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, ' ')
-    .trim();
-}
-
-// Busca el valor de una columna del CSV sin importar mayúsculas/tildes/espacios.
-export function getField(row, ...names) {
-  const normalizedRow = {};
-  Object.keys(row).forEach(k => { normalizedRow[normalizeKey(k)] = row[k]; });
-  for (const name of names) {
-    const key = normalizeKey(name);
-    if (normalizedRow[key] !== undefined) return normalizedRow[key];
-  }
-  return '';
-}
-
-// Alias de nombres de regiones (formato "REGION DE X" / "REGION DEL X" / sin tildes)
-// hacia el formato estándar usado en chile-geo.js
-const REGION_ALIASES = {
-  'arica y parinacota': 'Arica y Parinacota',
-  'tarapaca': 'Tarapacá',
-  'antofagasta': 'Antofagasta',
-  'atacama': 'Atacama',
-  'coquimbo': 'Coquimbo',
-  'valparaiso': 'Valparaíso',
-  'metropolitana de santiago': 'Metropolitana de Santiago',
-  'metropolitana': 'Metropolitana de Santiago',
-  'libertador general bernardo ohiggins': "Libertador General Bernardo O'Higgins",
-  'ohiggins': "Libertador General Bernardo O'Higgins",
-  'maule': 'Maule',
-  'nuble': 'Ñuble',
-  'biobio': 'Biobío',
-  'la araucania': 'La Araucanía',
-  'araucania': 'La Araucanía',
-  'los rios': 'Los Ríos',
-  'los lagos': 'Los Lagos',
-  'aysen': 'Aysén',
-  'magallanes y de la antartica chilena': 'Magallanes y de la Antártica Chilena',
-  'magallanes y antartica chilena': 'Magallanes y de la Antártica Chilena'
-};
-
-// Convierte un nombre de región en cualquier formato (ej. "REGION DE LOS RIOS")
-// al nombre estándar usado por la plataforma (ej. "Los Ríos")
-export function normalizeRegionName(raw) {
-  if (!raw) return '';
-  let s = normalizeText(raw);
-  s = s.replace(/^region\s+(del|de)\s+/, '').replace(/^region\s+/, '');
-  if (REGION_ALIASES[s]) return REGION_ALIASES[s];
-  for (const key of Object.keys(REGION_ALIASES)) {
-    if (s.startsWith(key)) return REGION_ALIASES[key];
-  }
-  const direct = REGIONES.find(r => normalizeText(r) === s);
-  if (direct) return direct;
-  return raw;
-}
-
-// Mapa de comunas normalizadas -> { comuna estándar, región } para reconocer
-// comunas escritas en mayúsculas/sin tildes y completar la región si falta.
-const COMUNA_LOOKUP = {};
-Object.entries(COMUNAS_POR_REGION).forEach(([region, comunas]) => {
-  comunas.forEach(c => {
-    COMUNA_LOOKUP[normalizeText(c)] = { comuna: c, region };
-  });
-});
-
-export function standardizeComuna(rawComuna) {
-  if (!rawComuna) return { comuna: '', region: '' };
-  const match = COMUNA_LOOKUP[normalizeText(rawComuna)];
-  if (match) return match;
-  return { comuna: rawComuna, region: '' };
-}
-
-// Indica si a una zona le falta completar Comuna, Región o Tipo
-function zonaIncompleta(z) {
-  return !z.comuna || !z.region || !z.tipo;
-}
-
-function fillRegionSelect(selectEl, selected) {
-  selectEl.innerHTML = '<option value="">— Sin definir —</option>' +
-    REGIONES.map(r => `<option value="${escapeHtml(r)}" ${r === selected ? 'selected' : ''}>${escapeHtml(r)}</option>`).join('');
-}
-
-function fillComunaSelect(selectEl, region, selected) {
-  const comunas = COMUNAS_POR_REGION[region] || [];
-  let opciones = '<option value="">— Sin definir —</option>';
-  // Si la comuna seleccionada no está en la lista de la región (dato cargado libre), se agrega igual
-  if (selected && !comunas.includes(selected)) {
-    opciones += `<option value="${escapeHtml(selected)}" selected>${escapeHtml(selected)} (no estándar)</option>`;
-  }
-  opciones += comunas.map(c => `<option value="${escapeHtml(c)}" ${c === selected ? 'selected' : ''}>${escapeHtml(c)}</option>`).join('');
-  selectEl.innerHTML = opciones;
-}
-
-export function renderZonasView(container) {
-  const db = getDatabase();
-  if (!db.transportZones) db.transportZones = [];
-  const zonas = db.transportZones;
-
-  const total = zonas.length;
-  const enErp = zonas.filter(z => z.estado_erp).length;
-  const pendErp = total - enErp;
-  const incompletas = zonas.filter(zonaIncompleta).length;
-
-  container.innerHTML = `
+import{getDatabase as L,saveDatabase as $,deleteRow as ve}from"./data.js?v=6ce8cb5f60";import{parseCSV as xe,showAlert as b,escapeHtml as i,toCSV as ye,downloadFile as he}from"./utils.js";import{REGIONES as Y,COMUNAS_POR_REGION as ie,TIPOS_ZONA as le,findRegionByComuna as ce}from"./chile-geo.js";import{confirmar as Ee}from"./confirmar.js?v=84d7f13f40";let S=null,P="",D=!1,v="";function pe(n){return n.toString().normalize("NFD").replace(/[̀-ͯ]/g,"").toLowerCase().replace(/[^a-z0-9]/g,"")}function M(n){return n.toString().normalize("NFD").replace(/[̀-ͯ]/g,"").toLowerCase().replace(/[^a-z0-9]+/g," ").trim()}function C(n,...o){const e={};Object.keys(n).forEach(s=>{e[pe(s)]=n[s]});for(const s of o){const l=pe(s);if(e[l]!==void 0)return e[l]}return""}const N={"arica y parinacota":"Arica y Parinacota",tarapaca:"Tarapacá",antofagasta:"Antofagasta",atacama:"Atacama",coquimbo:"Coquimbo",valparaiso:"Valparaíso","metropolitana de santiago":"Metropolitana de Santiago",metropolitana:"Metropolitana de Santiago","libertador general bernardo ohiggins":"Libertador General Bernardo O'Higgins",ohiggins:"Libertador General Bernardo O'Higgins",maule:"Maule",nuble:"Ñuble",biobio:"Biobío","la araucania":"La Araucanía",araucania:"La Araucanía","los rios":"Los Ríos","los lagos":"Los Lagos",aysen:"Aysén","magallanes y de la antartica chilena":"Magallanes y de la Antártica Chilena","magallanes y antartica chilena":"Magallanes y de la Antártica Chilena"};function ze(n){if(!n)return"";let o=M(n);if(o=o.replace(/^region\s+(del|de)\s+/,"").replace(/^region\s+/,""),N[o])return N[o];for(const s of Object.keys(N))if(o.startsWith(s))return N[s];const e=Y.find(s=>M(s)===o);return e||n}const me={};Object.entries(ie).forEach(([n,o])=>{o.forEach(e=>{me[M(e)]={comuna:e,region:n}})});function we(n){if(!n)return{comuna:"",region:""};const o=me[M(n)];return o||{comuna:n,region:""}}function W(n){return!n.comuna||!n.region||!n.tipo}function O(n,o){n.innerHTML='<option value="">— Sin definir —</option>'+Y.map(e=>`<option value="${i(e)}" ${e===o?"selected":""}>${i(e)}</option>`).join("")}function T(n,o,e){const s=ie[o]||[];let l='<option value="">— Sin definir —</option>';e&&!s.includes(e)&&(l+=`<option value="${i(e)}" selected>${i(e)} (no estándar)</option>`),l+=s.map(p=>`<option value="${i(p)}" ${p===e?"selected":""}>${i(p)}</option>`).join(""),n.innerHTML=l}function I(n){const o=L();o.transportZones||(o.transportZones=[]);const e=o.transportZones,s=e.length,l=e.filter(t=>t.estado_erp).length,p=s-l,m=e.filter(W).length;n.innerHTML=`
     <!-- Tarjetas KPI -->
     <div class="grid grid-cols-1 md:grid-cols-4 gap-lg mb-xl">
       <div class="bg-surface border border-outline-variant p-md shadow-sm rounded flex items-center justify-between">
         <div>
           <h4 class="font-label-caps text-label-caps text-secondary uppercase">Total Zonas</h4>
-          <div class="font-headline-md text-headline-md font-bold text-on-surface mt-1">${total}</div>
+          <div class="font-headline-md text-headline-md font-bold text-on-surface mt-1">${s}</div>
         </div>
         <span class="material-symbols-outlined text-[32px] text-secondary">map</span>
       </div>
-      <button type="button" id="kpi-zona-erp" class="bg-surface border ${currentFiltroErpZona === 'erp' ? 'border-green-500 ring-2 ring-green-300' : 'border-outline-variant'} p-md shadow-sm rounded flex items-center justify-between cursor-pointer text-left transition-all hover:shadow-md" title="Click para filtrar las zonas creadas en ERP">
+      <button type="button" id="kpi-zona-erp" class="bg-surface border ${v==="erp"?"border-green-500 ring-2 ring-green-300":"border-outline-variant"} p-md shadow-sm rounded flex items-center justify-between cursor-pointer text-left transition-all hover:shadow-md" title="Click para filtrar las zonas creadas en ERP">
         <div>
           <h4 class="font-label-caps text-label-caps text-secondary uppercase">Creadas en ERP</h4>
-          <div class="font-headline-md text-headline-md font-bold text-green-700 mt-1">${enErp}</div>
+          <div class="font-headline-md text-headline-md font-bold text-green-700 mt-1">${l}</div>
         </div>
         <span class="material-symbols-outlined text-[32px] text-green-600">check_circle</span>
       </button>
-      <button type="button" id="kpi-zona-pend-erp" class="bg-surface border ${currentFiltroErpZona === 'pendiente' ? 'border-red-500 ring-2 ring-red-300' : 'border-outline-variant'} p-md shadow-sm rounded flex items-center justify-between cursor-pointer text-left transition-all hover:shadow-md" title="Click para filtrar las zonas pendientes de ERP">
+      <button type="button" id="kpi-zona-pend-erp" class="bg-surface border ${v==="pendiente"?"border-red-500 ring-2 ring-red-300":"border-outline-variant"} p-md shadow-sm rounded flex items-center justify-between cursor-pointer text-left transition-all hover:shadow-md" title="Click para filtrar las zonas pendientes de ERP">
         <div>
           <h4 class="font-label-caps text-label-caps text-secondary uppercase">Pendientes ERP</h4>
-          <div class="font-headline-md text-headline-md font-bold text-red-600 mt-1">${pendErp}</div>
+          <div class="font-headline-md text-headline-md font-bold text-red-600 mt-1">${p}</div>
         </div>
         <span class="material-symbols-outlined text-[32px] text-red-500">pending</span>
       </button>
-      <button type="button" id="kpi-zona-incompletas" class="bg-surface border ${currentFiltroIncompletasZona ? 'border-amber-500 ring-2 ring-amber-300' : 'border-outline-variant'} p-md shadow-sm rounded border-l-4 border-amber-400 flex items-center justify-between cursor-pointer text-left transition-all hover:shadow-md" title="Click para filtrar las zonas con datos pendientes">
+      <button type="button" id="kpi-zona-incompletas" class="bg-surface border ${D?"border-amber-500 ring-2 ring-amber-300":"border-outline-variant"} p-md shadow-sm rounded border-l-4 border-amber-400 flex items-center justify-between cursor-pointer text-left transition-all hover:shadow-md" title="Click para filtrar las zonas con datos pendientes">
         <div>
           <h4 class="font-label-caps text-label-caps text-secondary uppercase">Datos a Completar</h4>
-          <div class="font-headline-md text-headline-md font-bold text-amber-600 mt-1">${incompletas}</div>
+          <div class="font-headline-md text-headline-md font-bold text-amber-600 mt-1">${m}</div>
         </div>
         <span class="material-symbols-outlined text-[32px] text-amber-500">warning</span>
       </button>
@@ -172,7 +41,7 @@ export function renderZonasView(container) {
           </div>
           <select id="zona-filter-region" class="w-full md:w-56 bg-surface-container-low border-none px-md py-xs font-body-md text-body-md focus:outline-none rounded">
             <option value="">Todas las regiones</option>
-            ${REGIONES.map(r => `<option value="${escapeHtml(r)}">${escapeHtml(r)}</option>`).join('')}
+            ${Y.map(t=>`<option value="${i(t)}">${i(t)}</option>`).join("")}
           </select>
         </div>
 
@@ -260,7 +129,7 @@ export function renderZonasView(container) {
                 <label for="z-tipo" class="font-label-caps text-label-caps text-secondary block">TIPO</label>
                 <select id="z-tipo" class="w-full border border-[#CED4DA] p-sm font-body-md text-body-md focus:border-primary focus:ring-0 transition-all rounded bg-white">
                   <option value="">— Sin definir —</option>
-                  ${TIPOS_ZONA.map(t => `<option value="${t}">${t}</option>`).join('')}
+                  ${le.map(t=>`<option value="${t}">${t}</option>`).join("")}
                 </select>
               </div>
               <div class="space-y-xs">
@@ -330,455 +199,46 @@ export function renderZonasView(container) {
         </div>
       </div>
     </div>
-  `;
-
-  // Selects dependientes Región -> Comuna
-  const regionSelect = document.getElementById('z-region');
-  const comunaSelect = document.getElementById('z-comuna');
-  fillRegionSelect(regionSelect, '');
-  fillComunaSelect(comunaSelect, '', '');
-  regionSelect.addEventListener('change', () => {
-    fillComunaSelect(comunaSelect, regionSelect.value, '');
-  });
-
-  // Auto-completar región al elegir una comuna estándar (cuando aún no hay región definida)
-  comunaSelect.addEventListener('change', () => {
-    if (!regionSelect.value && comunaSelect.value) {
-      const region = findRegionByComuna(comunaSelect.value);
-      if (region) {
-        fillRegionSelect(regionSelect, region);
-        fillComunaSelect(comunaSelect, region, comunaSelect.value);
-      }
-    }
-  });
-
-  // Buscador + filtros (Región, Datos a Completar)
-  const searchInput = document.getElementById('zona-search');
-  const regionFilterEl = document.getElementById('zona-filter-region');
-  regionFilterEl.value = currentFiltroRegionZona;
-
-  const applyZonaFilters = () => {
-    const term = searchInput.value.toLowerCase();
-    let filtered = zonas.filter(z =>
-      (z.zona || '').toLowerCase().includes(term) ||
-      (z.denominacion || '').toLowerCase().includes(term) ||
-      (z.comuna || '').toLowerCase().includes(term) ||
-      (z.region || '').toLowerCase().includes(term)
-    );
-    if (currentFiltroRegionZona) {
-      filtered = filtered.filter(z => z.region === currentFiltroRegionZona);
-    }
-    if (currentFiltroIncompletasZona) {
-      filtered = filtered.filter(zonaIncompleta);
-    }
-    if (currentFiltroErpZona === 'erp') {
-      filtered = filtered.filter(z => z.estado_erp);
-    } else if (currentFiltroErpZona === 'pendiente') {
-      filtered = filtered.filter(z => !z.estado_erp);
-    }
-    renderZonasTable(filtered);
-    return filtered;
-  };
-
-  searchInput.addEventListener('input', applyZonaFilters);
-
-  regionFilterEl.addEventListener('change', () => {
-    currentFiltroRegionZona = regionFilterEl.value;
-    applyZonaFilters();
-  });
-
-  // KPI "Datos a Completar": al hacer click, filtra/des-filtra la tabla
-  const kpiIncompletas = document.getElementById('kpi-zona-incompletas');
-  if (kpiIncompletas) {
-    kpiIncompletas.addEventListener('click', () => {
-      currentFiltroIncompletasZona = !currentFiltroIncompletasZona;
-      currentFiltroErpZona = '';
-      renderZonasView(container);
-    });
-  }
-
-  // KPI "Creadas en ERP": al hacer click, filtra zonas con estado_erp=true
-  const kpiErp = document.getElementById('kpi-zona-erp');
-  if (kpiErp) {
-    kpiErp.addEventListener('click', () => {
-      currentFiltroErpZona = currentFiltroErpZona === 'erp' ? '' : 'erp';
-      currentFiltroIncompletasZona = false;
-      renderZonasView(container);
-    });
-  }
-
-  // KPI "Pendientes ERP": al hacer click, filtra zonas con estado_erp=false
-  const kpiPendErp = document.getElementById('kpi-zona-pend-erp');
-  if (kpiPendErp) {
-    kpiPendErp.addEventListener('click', () => {
-      currentFiltroErpZona = currentFiltroErpZona === 'pendiente' ? '' : 'pendiente';
-      currentFiltroIncompletasZona = false;
-      renderZonasView(container);
-    });
-  }
-
-  // Exportar tabla (filtrada) a CSV
-  document.getElementById('btn-export-zonas-csv').addEventListener('click', () => {
-    const filtered = applyZonaFilters();
-    if (filtered.length === 0) {
-      showAlert('No hay zonas para exportar con los filtros actuales.', 'error');
-      return;
-    }
-    const headers = ['País', 'Zona', 'Denominación', 'Comuna', 'Región', 'Tipo', 'Estado ERP'];
-    const csvRows = filtered.map(z => [
-      z.pais || 'CL',
-      z.zona || '',
-      z.denominacion || '',
-      z.comuna || '',
-      z.region || '',
-      z.tipo || '',
-      z.estado_erp ? 'EN ERP' : 'PENDIENTE'
-    ]);
-    const csv = toCSV(headers, csvRows);
-    downloadFile(`zonas_transporte_${new Date().toISOString().slice(0, 10)}.csv`, csv);
-  });
-
-  // Renderizar tabla aplicando filtros persistidos (Región / Datos a Completar)
-  applyZonaFilters();
-
-  // Modal Crear/Editar
-  const zonaModal = document.getElementById('zona-modal');
-  const zonaForm = document.getElementById('zona-form');
-
-  const openModal = () => {
-    zonaModal.classList.remove('pointer-events-none', 'opacity-0');
-    zonaModal.querySelector('.modal-window').classList.remove('scale-95');
-  };
-  const closeModal = () => {
-    zonaModal.classList.add('pointer-events-none', 'opacity-0');
-    zonaModal.querySelector('.modal-window').classList.add('scale-95');
-  };
-
-  document.getElementById('btn-create-zona').addEventListener('click', () => {
-    editingZonaId = null;
-    zonaForm.reset();
-    document.getElementById('zona-modal-title').innerText = 'Nueva Zona de Transporte';
-    document.getElementById('z-pais').value = 'CL';
-    fillRegionSelect(regionSelect, '');
-    fillComunaSelect(comunaSelect, '', '');
-    document.getElementById('z-estado').value = 'false';
-    openModal();
-  });
-
-  document.getElementById('btn-close-zona-modal').addEventListener('click', closeModal);
-  document.getElementById('btn-cancel-zona-modal').addEventListener('click', closeModal);
-
-  zonaForm.addEventListener('submit', (e) => {
-    e.preventDefault();
-    const activeDb = getDatabase();
-    if (!activeDb.transportZones) activeDb.transportZones = [];
-
-    const zonaData = {
-      zona: document.getElementById('z-zona').value.trim().toUpperCase(),
-      pais: document.getElementById('z-pais').value.trim().toUpperCase() || 'CL',
-      denominacion: document.getElementById('z-denominacion').value.trim(),
-      comuna: document.getElementById('z-comuna').value || null,
-      region: document.getElementById('z-region').value || null,
-      tipo: document.getElementById('z-tipo').value || null,
-      estado_erp: document.getElementById('z-estado').value === 'true'
-    };
-
-    if (!zonaData.zona) {
-      showAlert('Debe ingresar el ID de la Zona.', 'error');
-      return;
-    }
-
-    if (editingZonaId) {
-      const idx = activeDb.transportZones.findIndex(z => z.zona === editingZonaId);
-      if (idx !== -1) {
-        // Si cambia el ID de zona, validar que no choque con otra existente
-        if (zonaData.zona !== editingZonaId && activeDb.transportZones.some(z => z.zona === zonaData.zona)) {
-          showAlert('Ya existe una zona con ese ID.', 'error');
-          return;
-        }
-        // Preservar created_at original (no enviar null al actualizar)
-        zonaData.created_at = activeDb.transportZones[idx].created_at || new Date().toISOString();
-        activeDb.transportZones[idx] = zonaData;
-        saveDatabase(activeDb);
-        showAlert('Zona de transporte actualizada correctamente.');
-      }
-    } else {
-      if (activeDb.transportZones.some(z => z.zona === zonaData.zona)) {
-        showAlert('Ya existe una zona registrada con ese ID.', 'error');
-        return;
-      }
-      zonaData.created_at = new Date().toISOString();
-      activeDb.transportZones.push(zonaData);
-      saveDatabase(activeDb);
-      showAlert('Zona de transporte registrada con éxito.');
-    }
-
-    closeModal();
-    renderZonasView(container);
-  });
-
-  // --- CARGA MASIVA DE ZONAS ---
-  const bulkModal = document.getElementById('bulk-upload-zonas-modal');
-  const btnCloseBulk = document.getElementById('btn-close-zona-bulk-modal');
-  const btnCancelBulk = document.getElementById('btn-cancel-zona-bulk');
-  const btnConfirmBulk = document.getElementById('btn-confirm-zona-bulk');
-  const csvDropzone = document.getElementById('csv-zona-dropzone');
-  const csvFileInput = document.getElementById('csv-zona-input');
-
-  let parsedZonas = [];
-
-  document.getElementById('btn-bulk-upload-zonas').addEventListener('click', () => {
-    parsedZonas = [];
-    btnConfirmBulk.disabled = true;
-    document.getElementById('csv-zona-preview-container').classList.add('hidden');
-    document.getElementById('csv-zona-preview-body').innerHTML = '';
-    bulkModal.classList.remove('pointer-events-none', 'opacity-0');
-    bulkModal.querySelector('.modal-window').classList.remove('scale-95');
-  });
-
-  const closeBulkModal = () => {
-    bulkModal.classList.add('pointer-events-none', 'opacity-0');
-    bulkModal.querySelector('.modal-window').classList.add('scale-95');
-  };
-  btnCloseBulk.addEventListener('click', closeBulkModal);
-  btnCancelBulk.addEventListener('click', closeBulkModal);
-
-  csvDropzone.addEventListener('click', () => csvFileInput.click());
-  csvDropzone.addEventListener('dragover', (e) => {
-    e.preventDefault();
-    csvDropzone.classList.add('border-primary', 'bg-primary-container/[0.04]');
-  });
-  csvDropzone.addEventListener('dragleave', () => {
-    csvDropzone.classList.remove('border-primary', 'bg-primary-container/[0.04]');
-  });
-  csvDropzone.addEventListener('drop', (e) => {
-    e.preventDefault();
-    csvDropzone.classList.remove('border-primary', 'bg-primary-container/[0.04]');
-    if (e.dataTransfer.files.length > 0) handleCsvZonaFile(e.dataTransfer.files[0]);
-  });
-  csvFileInput.addEventListener('change', (e) => {
-    if (e.target.files.length > 0) handleCsvZonaFile(e.target.files[0]);
-  });
-
-  function handleCsvZonaFile(file) {
-    const reader = new FileReader();
-    reader.onload = function(e) {
-      const buffer = e.target.result;
-      let text = new TextDecoder('utf-8').decode(buffer);
-      // Los archivos exportados desde Excel suelen venir en Windows-1252/ISO-8859-1.
-      // Si la decodificación UTF-8 produce caracteres de reemplazo (�) en tildes/ñ,
-      // se reintenta con Windows-1252.
-      if (text.includes('�')) {
-        text = new TextDecoder('windows-1252').decode(buffer);
-      }
-      const rows = parseCSV(text);
-      if (rows.length === 0) {
-        showAlert('El archivo CSV está vacío o no tiene el formato correcto.', 'error');
-        return;
-      }
-
-      const activeDb = getDatabase();
-      if (!activeDb.transportZones) activeDb.transportZones = [];
-      parsedZonas = [];
-      const previewBody = document.getElementById('csv-zona-preview-body');
-      previewBody.innerHTML = '';
-      const seen = new Set();
-
-      rows.forEach(row => {
-        const pais = (getField(row, 'pais', 'país') || 'CL').trim().toUpperCase() || 'CL';
-        const zona = (getField(row, 'zona', 'idzona', 'id zona') || '').trim().toUpperCase();
-        const denominacion = (getField(row, 'denominacion', 'denominación') || '').trim();
-        let comuna = (getField(row, 'comuna') || '').trim();
-        let region = normalizeRegionName((getField(row, 'region', 'región') || '').trim());
-        let tipo = (getField(row, 'tipo') || '').trim();
-        tipo = TIPOS_ZONA.find(t => t.toLowerCase() === tipo.toLowerCase()) || '';
-        // Convención del campo "estado": 1 = Creada en ERP, 0 (o vacío) = Pendiente de creación en ERP.
-        // También se aceptan equivalentes de texto (si/true/creada/erp) por compatibilidad.
-        const estadoRaw = (getField(row, 'estado', 'estado_erp', 'estadoerp') || '').trim().toLowerCase();
-        const estado_erp = ['1', 'si', 'sí', 'true', 'creada', 'erp'].includes(estadoRaw);
-
-        // Estandarizar nombre de comuna (mayúsculas/sin tildes) e inferir región si falta
-        if (comuna) {
-          const std = standardizeComuna(comuna);
-          comuna = std.comuna;
-          if (!region && std.region) region = std.region;
-        }
-        // Si aún falta región pero la comuna estándar la define, se infiere
-        if (!region && comuna) region = findRegionByComuna(comuna) || '';
-
-        let error = '';
-        if (!pais) error = 'Falta País';
-        else if (!zona) error = 'Falta ID Zona';
-        else if (!denominacion) error = 'Falta Denominación';
-        else if (activeDb.transportZones.some(z => z.zona === zona) || seen.has(zona)) error = 'Zona Duplicada';
-
-        const incompleto = !error && (!comuna || !region || !tipo);
-
-        const tr = document.createElement('tr');
-        tr.className = "border-b border-outline-variant";
-        tr.innerHTML = `
-          <td class="p-sm font-data-mono">${escapeHtml(zona)}</td>
-          <td class="p-sm">${escapeHtml(denominacion)}</td>
-          <td class="p-sm text-secondary">${escapeHtml(comuna) || '—'} / ${escapeHtml(region) || '—'} / ${escapeHtml(tipo) || '—'}</td>
+  `;const d=document.getElementById("z-region"),f=document.getElementById("z-comuna");O(d,""),T(f,"",""),d.addEventListener("change",()=>{T(f,d.value,"")}),f.addEventListener("change",()=>{if(!d.value&&f.value){const t=ce(f.value);t&&(O(d,t),T(f,t,f.value))}});const y=document.getElementById("zona-search"),j=document.getElementById("zona-filter-region");j.value=P;const A=()=>{const t=y.value.toLowerCase();let r=e.filter(a=>(a.zona||"").toLowerCase().includes(t)||(a.denominacion||"").toLowerCase().includes(t)||(a.comuna||"").toLowerCase().includes(t)||(a.region||"").toLowerCase().includes(t));return P&&(r=r.filter(a=>a.region===P)),D&&(r=r.filter(W)),v==="erp"?r=r.filter(a=>a.estado_erp):v==="pendiente"&&(r=r.filter(a=>!a.estado_erp)),Le(r),r};y.addEventListener("input",A),j.addEventListener("change",()=>{P=j.value,A()});const J=document.getElementById("kpi-zona-incompletas");J&&J.addEventListener("click",()=>{D=!D,v="",I(n)});const Q=document.getElementById("kpi-zona-erp");Q&&Q.addEventListener("click",()=>{v=v==="erp"?"":"erp",D=!1,I(n)});const X=document.getElementById("kpi-zona-pend-erp");X&&X.addEventListener("click",()=>{v=v==="pendiente"?"":"pendiente",D=!1,I(n)}),document.getElementById("btn-export-zonas-csv").addEventListener("click",()=>{const t=A();if(t.length===0){b("No hay zonas para exportar con los filtros actuales.","error");return}const r=["País","Zona","Denominación","Comuna","Región","Tipo","Estado ERP"],a=t.map(c=>[c.pais||"CL",c.zona||"",c.denominacion||"",c.comuna||"",c.region||"",c.tipo||"",c.estado_erp?"EN ERP":"PENDIENTE"]),u=ye(r,a);he(`zonas_transporte_${new Date().toISOString().slice(0,10)}.csv`,u)}),A();const R=document.getElementById("zona-modal"),ee=document.getElementById("zona-form"),te=()=>{R.classList.remove("pointer-events-none","opacity-0"),R.querySelector(".modal-window").classList.remove("scale-95")},F=()=>{R.classList.add("pointer-events-none","opacity-0"),R.querySelector(".modal-window").classList.add("scale-95")};document.getElementById("btn-create-zona").addEventListener("click",()=>{S=null,ee.reset(),document.getElementById("zona-modal-title").innerText="Nueva Zona de Transporte",document.getElementById("z-pais").value="CL",O(d,""),T(f,"",""),document.getElementById("z-estado").value="false",te()}),document.getElementById("btn-close-zona-modal").addEventListener("click",F),document.getElementById("btn-cancel-zona-modal").addEventListener("click",F),ee.addEventListener("submit",t=>{t.preventDefault();const r=L();r.transportZones||(r.transportZones=[]);const a={zona:document.getElementById("z-zona").value.trim().toUpperCase(),pais:document.getElementById("z-pais").value.trim().toUpperCase()||"CL",denominacion:document.getElementById("z-denominacion").value.trim(),comuna:document.getElementById("z-comuna").value||null,region:document.getElementById("z-region").value||null,tipo:document.getElementById("z-tipo").value||null,estado_erp:document.getElementById("z-estado").value==="true"};if(!a.zona){b("Debe ingresar el ID de la Zona.","error");return}if(S){const u=r.transportZones.findIndex(c=>c.zona===S);if(u!==-1){if(a.zona!==S&&r.transportZones.some(c=>c.zona===a.zona)){b("Ya existe una zona con ese ID.","error");return}a.created_at=r.transportZones[u].created_at||new Date().toISOString(),r.transportZones[u]=a,$(r),b("Zona de transporte actualizada correctamente.")}}else{if(r.transportZones.some(u=>u.zona===a.zona)){b("Ya existe una zona registrada con ese ID.","error");return}a.created_at=new Date().toISOString(),r.transportZones.push(a),$(r),b("Zona de transporte registrada con éxito.")}F(),I(n)});const _=document.getElementById("bulk-upload-zonas-modal"),ue=document.getElementById("btn-close-zona-bulk-modal"),be=document.getElementById("btn-cancel-zona-bulk"),q=document.getElementById("btn-confirm-zona-bulk"),h=document.getElementById("csv-zona-dropzone"),ne=document.getElementById("csv-zona-input");let k=[];document.getElementById("btn-bulk-upload-zonas").addEventListener("click",()=>{k=[],q.disabled=!0,document.getElementById("csv-zona-preview-container").classList.add("hidden"),document.getElementById("csv-zona-preview-body").innerHTML="",_.classList.remove("pointer-events-none","opacity-0"),_.querySelector(".modal-window").classList.remove("scale-95")});const H=()=>{_.classList.add("pointer-events-none","opacity-0"),_.querySelector(".modal-window").classList.add("scale-95")};ue.addEventListener("click",H),be.addEventListener("click",H),h.addEventListener("click",()=>ne.click()),h.addEventListener("dragover",t=>{t.preventDefault(),h.classList.add("border-primary","bg-primary-container/[0.04]")}),h.addEventListener("dragleave",()=>{h.classList.remove("border-primary","bg-primary-container/[0.04]")}),h.addEventListener("drop",t=>{t.preventDefault(),h.classList.remove("border-primary","bg-primary-container/[0.04]"),t.dataTransfer.files.length>0&&ae(t.dataTransfer.files[0])}),ne.addEventListener("change",t=>{t.target.files.length>0&&ae(t.target.files[0])});function ae(t){const r=new FileReader;r.onload=function(a){const u=a.target.result;let c=new TextDecoder("utf-8").decode(u);c.includes("�")&&(c=new TextDecoder("windows-1252").decode(u));const V=xe(c);if(V.length===0){b("El archivo CSV está vacío o no tiene el formato correcto.","error");return}const U=L();U.transportZones||(U.transportZones=[]),k=[];const oe=document.getElementById("csv-zona-preview-body");oe.innerHTML="";const re=new Set;V.forEach(E=>{const se=(C(E,"pais","país")||"CL").trim().toUpperCase()||"CL",B=(C(E,"zona","idzona","id zona")||"").trim().toUpperCase(),G=(C(E,"denominacion","denominación")||"").trim();let x=(C(E,"comuna")||"").trim(),z=ze((C(E,"region","región")||"").trim()),Z=(C(E,"tipo")||"").trim();Z=le.find(w=>w.toLowerCase()===Z.toLowerCase())||"";const fe=(C(E,"estado","estado_erp","estadoerp")||"").trim().toLowerCase(),ge=["1","si","sí","true","creada","erp"].includes(fe);if(x){const w=we(x);x=w.comuna,!z&&w.region&&(z=w.region)}!z&&x&&(z=ce(x)||"");let g="";se?B?G?(U.transportZones.some(w=>w.zona===B)||re.has(B))&&(g="Zona Duplicada"):g="Falta Denominación":g="Falta ID Zona":g="Falta País";const de=!g&&(!x||!z||!Z),K=document.createElement("tr");K.className="border-b border-outline-variant",K.innerHTML=`
+          <td class="p-sm font-data-mono">${i(B)}</td>
+          <td class="p-sm">${i(G)}</td>
+          <td class="p-sm text-secondary">${i(x)||"—"} / ${i(z)||"—"} / ${i(Z)||"—"}</td>
           <td class="p-sm">
-            <span class="inline-block px-2 py-0.5 rounded text-[10px] font-bold ${error ? 'bg-red-100 text-red-800' : (incompleto ? 'bg-amber-100 text-amber-800' : 'bg-green-100 text-green-800')}">
-              ${error ? error : (incompleto ? 'Completar Datos' : 'Listo')}
+            <span class="inline-block px-2 py-0.5 rounded text-[10px] font-bold ${g?"bg-red-100 text-red-800":de?"bg-amber-100 text-amber-800":"bg-green-100 text-green-800"}">
+              ${g||(de?"Completar Datos":"Listo")}
             </span>
           </td>
-        `;
-        previewBody.appendChild(tr);
-
-        if (!error) {
-          seen.add(zona);
-          parsedZonas.push({
-            zona, pais: pais || 'CL', denominacion,
-            comuna: comuna || null,
-            region: region || null,
-            tipo: tipo || null,
-            estado_erp,
-            created_at: new Date().toISOString()
-          });
-        }
-      });
-
-      document.getElementById('csv-zona-count').innerText = rows.length;
-      document.getElementById('csv-zona-preview-container').classList.remove('hidden');
-
-      if (parsedZonas.length > 0) {
-        btnConfirmBulk.disabled = false;
-      } else {
-        showAlert('No se encontraron registros de zonas válidos.', 'error');
-      }
-    };
-    reader.readAsArrayBuffer(file);
-  }
-
-  btnConfirmBulk.addEventListener('click', () => {
-    const activeDb = getDatabase();
-    if (!activeDb.transportZones) activeDb.transportZones = [];
-    parsedZonas.forEach(z => activeDb.transportZones.push(z));
-    saveDatabase(activeDb);
-    showAlert(`Se importaron ${parsedZonas.length} zonas de transporte correctamente.`);
-    closeBulkModal();
-    renderZonasView(container);
-  });
-
-  // Función auxiliar para abrir el modal en modo edición (usada por la tabla)
-  window.__openZonaEditModal = (zonaId) => {
-    const activeDb = getDatabase();
-    const z = (activeDb.transportZones || []).find(item => item.zona === zonaId);
-    if (!z) return;
-
-    editingZonaId = zonaId;
-    document.getElementById('z-pais').value = z.pais || 'CL';
-    document.getElementById('z-zona').value = z.zona;
-    document.getElementById('z-denominacion').value = z.denominacion || '';
-    fillRegionSelect(regionSelect, z.region || '');
-    fillComunaSelect(comunaSelect, z.region || '', z.comuna || '');
-    document.getElementById('z-tipo').value = z.tipo || '';
-    document.getElementById('z-estado').value = z.estado_erp ? 'true' : 'false';
-
-    document.getElementById('zona-modal-title').innerText = 'Editar Zona de Transporte';
-    openModal();
-  };
-}
-
-function renderZonasTable(zonasList) {
-  const tbody = document.getElementById('zonas-table-body');
-  if (!tbody) return;
-
-  if (zonasList.length === 0) {
-    tbody.innerHTML = `
+        `,oe.appendChild(K),g||(re.add(B),k.push({zona:B,pais:se||"CL",denominacion:G,comuna:x||null,region:z||null,tipo:Z||null,estado_erp:ge,created_at:new Date().toISOString()}))}),document.getElementById("csv-zona-count").innerText=V.length,document.getElementById("csv-zona-preview-container").classList.remove("hidden"),k.length>0?q.disabled=!1:b("No se encontraron registros de zonas válidos.","error")},r.readAsArrayBuffer(t)}q.addEventListener("click",()=>{const t=L();t.transportZones||(t.transportZones=[]),k.forEach(r=>t.transportZones.push(r)),$(t),b(`Se importaron ${k.length} zonas de transporte correctamente.`),H(),I(n)}),window.__openZonaEditModal=t=>{const a=(L().transportZones||[]).find(u=>u.zona===t);a&&(S=t,document.getElementById("z-pais").value=a.pais||"CL",document.getElementById("z-zona").value=a.zona,document.getElementById("z-denominacion").value=a.denominacion||"",O(d,a.region||""),T(f,a.region||"",a.comuna||""),document.getElementById("z-tipo").value=a.tipo||"",document.getElementById("z-estado").value=a.estado_erp?"true":"false",document.getElementById("zona-modal-title").innerText="Editar Zona de Transporte",te())}}function Le(n){const o=document.getElementById("zonas-table-body");if(o){if(n.length===0){o.innerHTML=`
       <tr>
         <td colspan="8" class="p-xl text-center text-secondary">
           No se encontraron zonas de transporte registradas.
         </td>
       </tr>
-    `;
-    return;
-  }
-
-  tbody.innerHTML = '';
-  zonasList.forEach(z => {
-    const tr = document.createElement('tr');
-    const incompleto = zonaIncompleta(z);
-    tr.className = `border-b border-outline-variant hover:bg-surface-container-low transition-colors ${incompleto ? 'bg-amber-50/60' : ''}`;
-
-    const statusBg = z.estado_erp ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800';
-    const campoPendiente = (valor) => valor
-      ? escapeHtml(valor)
-      : `<span class="inline-flex items-center gap-1 text-amber-700 font-bold text-[10px] uppercase"><span class="material-symbols-outlined text-[14px]">warning</span> Completar</span>`;
-
-    tr.innerHTML = `
-      <td class="p-md font-data-mono">${escapeHtml(z.pais || 'CL')}</td>
-      <td class="p-md font-bold text-primary font-data-mono">${escapeHtml(z.zona)}</td>
-      <td class="p-md">${escapeHtml(z.denominacion)}</td>
-      <td class="p-md text-xs">${campoPendiente(z.comuna)}</td>
-      <td class="p-md text-xs">${campoPendiente(z.region)}</td>
-      <td class="p-md text-xs">${campoPendiente(z.tipo)}</td>
+    `;return}o.innerHTML="",n.forEach(e=>{const s=document.createElement("tr"),l=W(e);s.className=`border-b border-outline-variant hover:bg-surface-container-low transition-colors ${l?"bg-amber-50/60":""}`;const p=e.estado_erp?"bg-green-100 text-green-800":"bg-red-100 text-red-800",m=d=>d?i(d):'<span class="inline-flex items-center gap-1 text-amber-700 font-bold text-[10px] uppercase"><span class="material-symbols-outlined text-[14px]">warning</span> Completar</span>';s.innerHTML=`
+      <td class="p-md font-data-mono">${i(e.pais||"CL")}</td>
+      <td class="p-md font-bold text-primary font-data-mono">${i(e.zona)}</td>
+      <td class="p-md">${i(e.denominacion)}</td>
+      <td class="p-md text-xs">${m(e.comuna)}</td>
+      <td class="p-md text-xs">${m(e.region)}</td>
+      <td class="p-md text-xs">${m(e.tipo)}</td>
       <td class="p-md">
-        <span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold ${statusBg}">
-          ${z.estado_erp ? 'EN ERP' : 'PENDIENTE'}
+        <span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold ${p}">
+          ${e.estado_erp?"EN ERP":"PENDIENTE"}
         </span>
       </td>
       <td class="p-md text-center">
         <div class="flex items-center justify-center gap-xs">
-          <button class="btn-edit-zona text-secondary hover:text-primary p-xs cursor-pointer" data-id="${escapeHtml(z.zona)}" title="Editar zona">
+          <button class="btn-edit-zona text-secondary hover:text-primary p-xs cursor-pointer" data-id="${i(e.zona)}" title="Editar zona">
             <span class="material-symbols-outlined text-[20px]">edit</span>
           </button>
-          <button class="btn-toggle-zona text-secondary hover:text-primary p-xs cursor-pointer" data-id="${escapeHtml(z.zona)}" title="${z.estado_erp ? 'Marcar como pendiente' : 'Marcar como creada en ERP'}">
-            <span class="material-symbols-outlined text-[20px] ${z.estado_erp ? 'text-red-600 hover:text-red-800' : 'text-green-600 hover:text-green-800'}">
-              ${z.estado_erp ? 'unpublished' : 'check_circle'}
+          <button class="btn-toggle-zona text-secondary hover:text-primary p-xs cursor-pointer" data-id="${i(e.zona)}" title="${e.estado_erp?"Marcar como pendiente":"Marcar como creada en ERP"}">
+            <span class="material-symbols-outlined text-[20px] ${e.estado_erp?"text-red-600 hover:text-red-800":"text-green-600 hover:text-green-800"}">
+              ${e.estado_erp?"unpublished":"check_circle"}
             </span>
           </button>
-          <button class="btn-delete-zona text-secondary hover:text-red-700 p-xs cursor-pointer" data-id="${escapeHtml(z.zona)}" title="Eliminar zona">
+          <button class="btn-delete-zona text-secondary hover:text-red-700 p-xs cursor-pointer" data-id="${i(e.zona)}" title="Eliminar zona">
             <span class="material-symbols-outlined text-[20px]">delete</span>
           </button>
         </div>
       </td>
-    `;
-    tbody.appendChild(tr);
-  });
-
-  tbody.querySelectorAll('.btn-edit-zona').forEach(btn => {
-    btn.addEventListener('click', (e) => window.__openZonaEditModal(e.currentTarget.getAttribute('data-id')));
-  });
-
-  tbody.querySelectorAll('.btn-toggle-zona').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      const id = e.currentTarget.getAttribute('data-id');
-      const db = getDatabase();
-      const z = (db.transportZones || []).find(item => item.zona === id);
-      if (z) {
-        z.estado_erp = !z.estado_erp;
-        saveDatabase(db);
-        showAlert(`La zona ${z.zona} fue marcada como ${z.estado_erp ? 'creada en ERP' : 'pendiente'}.`);
-        const subContent = document.getElementById('rutas-subview-content');
-        if (subContent) renderZonasView(subContent);
-      }
-    });
-  });
-
-  tbody.querySelectorAll('.btn-delete-zona').forEach(btn => {
-    btn.addEventListener('click', async (e) => {
-      const id = e.currentTarget.getAttribute('data-id');
-      const db = getDatabase();
-      const idx = (db.transportZones || []).findIndex(item => item.zona === id);
-      if (idx !== -1) {
-        if (!await confirmar(`¿Eliminar la zona ${id}? Esta acción no se puede deshacer.`)) return;
-        db.transportZones.splice(idx, 1);
-        saveDatabase(db, { syncOnly: ['transportZones'] });
-        deleteRow('transportZones', id).catch(err => console.error('Error al borrar zona en Supabase:', err.message || err));
-        showAlert(`La zona ${id} ha sido eliminada.`);
-        const subContent = document.getElementById('rutas-subview-content');
-        if (subContent) renderZonasView(subContent);
-        // Refrescar KPIs
-        const stageArea = document.getElementById('stage-area');
-        if (stageArea) {
-          const event = new Event('db_updated');
-          window.dispatchEvent(event);
-        }
-      }
-    });
-  });
-}
+    `,o.appendChild(s)}),o.querySelectorAll(".btn-edit-zona").forEach(e=>{e.addEventListener("click",s=>window.__openZonaEditModal(s.currentTarget.getAttribute("data-id")))}),o.querySelectorAll(".btn-toggle-zona").forEach(e=>{e.addEventListener("click",s=>{const l=s.currentTarget.getAttribute("data-id"),p=L(),m=(p.transportZones||[]).find(d=>d.zona===l);if(m){m.estado_erp=!m.estado_erp,$(p),b(`La zona ${m.zona} fue marcada como ${m.estado_erp?"creada en ERP":"pendiente"}.`);const d=document.getElementById("rutas-subview-content");d&&I(d)}})}),o.querySelectorAll(".btn-delete-zona").forEach(e=>{e.addEventListener("click",async s=>{const l=s.currentTarget.getAttribute("data-id"),p=L(),m=(p.transportZones||[]).findIndex(d=>d.zona===l);if(m!==-1){if(!await Ee(`¿Eliminar la zona ${l}? Esta acción no se puede deshacer.`))return;p.transportZones.splice(m,1),$(p,{syncOnly:["transportZones"]}),ve("transportZones",l).catch(y=>console.error("Error al borrar zona en Supabase:",y.message||y)),b(`La zona ${l} ha sido eliminada.`);const d=document.getElementById("rutas-subview-content");if(d&&I(d),document.getElementById("stage-area")){const y=new Event("db_updated");window.dispatchEvent(y)}}})})}}export{C as getField,pe as normalizeKey,ze as normalizeRegionName,M as normalizeText,I as renderZonasView,we as standardizeComuna};

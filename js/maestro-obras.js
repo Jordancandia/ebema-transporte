@@ -1,329 +1,69 @@
-// ============================================================================
-// MAESTRO DE OBRAS Y CLIENTES (18-nov-2026, Jordan)
-// ----------------------------------------------------------------------------
-// · Tablas maestro_obras / maestro_clientes (Supabase). Se alimentan solas desde
-//   los archivos SAP (fn_maestro_obras_sync, pg_cron cada 10 min) y se georreferencian
-//   automáticamente con OpenStreetMap (fn_maestro_obras_geocodificar).
-// · Estados de georreferencia:
-//     PENDIENTE  sin intentar todavía
-//     AUTO       encontrada con número
-//     AUTO_CALLE encontrada a nivel de calle (aprox., conviene verificar)
-//     REVISAR    no encontrada → georreferenciar a mano
-//     MANUAL     fijada / confirmada por un usuario
-// · Cada pedido nuevo con la misma obra toma la ubicación guardada.
-// · Editor compartido (Monitor de Pedidos, Coordinación de carga y esta vista):
-//   mapa con pin arrastrable, búsqueda de dirección y datos de contacto
-//   (nombre, teléfono y correo opcional).
-// ============================================================================
-import { supabase } from './supabase-client.js?v=202611232043';
-import { loadLeaflet, escapeHtml as esc } from './utils.js';
-import { can } from './permisos.js?v=202611232043';
-
-export const GEO = {
-  PENDIENTE:  { txt: 'Pendiente',           largo: 'Pendiente de georreferenciar (automático en curso)', color: '#6b7280', bg: '#f3f4f6', ink: '#374151', icon: 'hourglass_top', falta: true },
-  REVISAR:    { txt: 'Falta ubicar',        largo: 'No se encontró la dirección: georreferenciar a mano', color: '#dc2626', bg: '#fee2e2', ink: '#991b1b', icon: 'wrong_location', falta: true },
-  AUTO_CALLE: { txt: 'Calle (aprox.)',      largo: 'Ubicada a nivel de calle: conviene confirmar el punto', color: '#d97706', bg: '#fef3c7', ink: '#92400e', icon: 'add_location', falta: false },
-  AUTO:       { txt: 'Ubicada (auto)',      largo: 'Ubicada automáticamente con número', color: '#16a34a', bg: '#dcfce7', ink: '#166534', icon: 'where_to_vote', falta: false },
-  MANUAL:     { txt: 'Ubicada (manual)',    largo: 'Ubicación fijada por un usuario', color: '#16a34a', bg: '#dcfce7', ink: '#166534', icon: 'person_pin_circle', falta: false },
-};
-export const geoDe = o => GEO[(o && o.geo_estado) || 'PENDIENTE'] || GEO.PENDIENTE;
-export const tieneUbicacion = o => !!o && Number.isFinite(+o.lat) && Number.isFinite(+o.lon) && o.lat !== null && !geoDe(o).falta;
-export const faltaGeo = o => !tieneUbicacion(o);
-export const puedeEditarObras = () => can('editar') || can('coordinar_venta');
-
-const ms = i => `<span class="material-symbols-outlined">${i}</span>`;
-const z = v => String(v ?? '').trim().replace(/^0+(?=\d)/, '');
-export function badgeGeo(o, corto = true) {
-  const g = geoDe(o);
-  return `<span class="mo-badge" style="background:${g.bg};color:${g.ink}" title="${esc(g.largo)}">${ms(g.icon)}${esc(corto ? g.txt : g.largo)}</span>`;
-}
-
-/** Obras del maestro por id (Map id_obra → fila). */
-export async function cargarObras(ids) {
-  const out = new Map();
-  const l = [...new Set((ids || []).map(z).filter(Boolean))];
-  for (let i = 0; i < l.length; i += 300) {
-    const { data, error } = await supabase.from('maestro_obras').select('*').in('id_obra', l.slice(i, i + 300));
-    if (error) throw new Error(error.message);
-    (data || []).forEach(o => out.set(z(o.id_obra), o));
-  }
-  return out;
-}
-
-/* ════════════════════════════════════════════════════════════════════════
-   EDITOR DE OBRA (modal)
-   ════════════════════════════════════════════════════════════════════════ */
-/**
- * Abre el editor de una obra. opts.base completa datos si la obra aún no está en el maestro
- * ({ direccion, comuna, nombre_cliente, id_cliente, ruta }); opts.centro = { lat, lon } punto inicial.
- * Devuelve la obra guardada o null si se cierra sin guardar.
- */
-export async function abrirEditorObra(idObra, opts = {}) {
-  estilos();
-  const id = z(idObra);
-  if (!id) return null;
-  await loadLeaflet();
-  const { data: actual } = await supabase.from('maestro_obras').select('*').eq('id_obra', id).maybeSingle();
-  const b = opts.base || {};
-  const o = actual || { id_obra: id, geo_estado: 'PENDIENTE', lat: null, lon: null };
-  const st = {
-    direccion: o.direccion || b.direccion || '', comuna: o.comuna || b.comuna || '',
-    contacto_nombre: o.contacto_nombre || '', contacto_telefono: o.contacto_telefono || '', contacto_email: o.contacto_email || '',
-    lat: o.lat, lon: o.lon, movido: false, confirmar: false,
-  };
-  const editable = puedeEditarObras();
-  return new Promise(resolve => {
-    const bg = document.createElement('div');
-    bg.className = 'mo-bg';
-    bg.innerHTML = `<div class="mo-dlg" role="dialog" aria-label="Obra ${esc(id)}">
-      <header class="mo-h"><div class="mo-h-ic">${ms('apartment')}</div>
-        <div style="flex:1;min-width:0"><div class="mo-h-t">Obra ${esc(id)} <span data-badge>${badgeGeo(o)}</span></div>
-        <div class="mo-h-s">${esc(o.nombre_cliente || b.nombre_cliente || 'Cliente sin nombre')}${(o.id_cliente || b.id_cliente) ? ` · cliente <span class="mono">${esc(o.id_cliente || b.id_cliente)}</span>` : ''}</div></div>
-        <button class="mo-x" data-cerrar title="Cerrar (Esc)">${ms('close')}</button></header>
+import{supabase as E}from"./supabase-client.js?v=fd17fd7d20";import{loadLeaflet as I,escapeHtml as i}from"./utils.js";import{can as O}from"./permisos.js?v=a8b193e9fb";const U={PENDIENTE:{txt:"Pendiente",largo:"Pendiente de georreferenciar (automático en curso)",color:"#6b7280",bg:"#f3f4f6",ink:"#374151",icon:"hourglass_top",falta:!0},REVISAR:{txt:"Falta ubicar",largo:"No se encontró la dirección: georreferenciar a mano",color:"#dc2626",bg:"#fee2e2",ink:"#991b1b",icon:"wrong_location",falta:!0},AUTO_CALLE:{txt:"Calle (aprox.)",largo:"Ubicada a nivel de calle: conviene confirmar el punto",color:"#d97706",bg:"#fef3c7",ink:"#92400e",icon:"add_location",falta:!1},AUTO:{txt:"Ubicada (auto)",largo:"Ubicada automáticamente con número",color:"#16a34a",bg:"#dcfce7",ink:"#166534",icon:"where_to_vote",falta:!1},MANUAL:{txt:"Ubicada (manual)",largo:"Ubicación fijada por un usuario",color:"#16a34a",bg:"#dcfce7",ink:"#166534",icon:"person_pin_circle",falta:!1}},$=o=>U[o&&o.geo_estado||"PENDIENTE"]||U.PENDIENTE,B=o=>!!o&&Number.isFinite(+o.lat)&&Number.isFinite(+o.lon)&&o.lat!==null&&!$(o).falta,K=o=>!B(o),j=()=>O("editar")||O("coordinar_venta"),b=o=>`<span class="material-symbols-outlined">${o}</span>`,T=o=>String(o??"").trim().replace(/^0+(?=\d)/,"");function H(o,p=!0){const c=$(o);return`<span class="mo-badge" style="background:${c.bg};color:${c.ink}" title="${i(c.largo)}">${b(c.icon)}${i(p?c.txt:c.largo)}</span>`}async function Q(o){const p=new Map,c=[...new Set((o||[]).map(T).filter(Boolean))];for(let u=0;u<c.length;u+=300){const{data:s,error:n}=await E.from("maestro_obras").select("*").in("id_obra",c.slice(u,u+300));if(n)throw new Error(n.message);(s||[]).forEach(e=>p.set(T(e.id_obra),e))}return p}async function G(o,p={}){P();const c=T(o);if(!c)return null;await I();const{data:u}=await E.from("maestro_obras").select("*").eq("id_obra",c).maybeSingle(),s=p.base||{},n=u||{id_obra:c,geo_estado:"PENDIENTE",lat:null,lon:null},e={direccion:n.direccion||s.direccion||"",comuna:n.comuna||s.comuna||"",contacto_nombre:n.contacto_nombre||"",contacto_telefono:n.contacto_telefono||"",contacto_email:n.contacto_email||"",lat:n.lat,lon:n.lon,movido:!1,confirmar:!1},r=j();return new Promise(h=>{const t=document.createElement("div");t.className="mo-bg",t.innerHTML=`<div class="mo-dlg" role="dialog" aria-label="Obra ${i(c)}">
+      <header class="mo-h"><div class="mo-h-ic">${b("apartment")}</div>
+        <div style="flex:1;min-width:0"><div class="mo-h-t">Obra ${i(c)} <span data-badge>${H(n)}</span></div>
+        <div class="mo-h-s">${i(n.nombre_cliente||s.nombre_cliente||"Cliente sin nombre")}${n.id_cliente||s.id_cliente?` · cliente <span class="mono">${i(n.id_cliente||s.id_cliente)}</span>`:""}</div></div>
+        <button class="mo-x" data-cerrar title="Cerrar (Esc)">${b("close")}</button></header>
       <div class="mo-body">
         <div class="mo-mapcol">
-          <div class="mo-search">${ms('search')}<input data-q placeholder="Buscar dirección (calle número, comuna)…" value="${esc([st.direccion, st.comuna].filter(Boolean).join(', '))}"><button class="mo-btn sm" data-buscar>Buscar</button></div>
+          <div class="mo-search">${b("search")}<input data-q placeholder="Buscar dirección (calle número, comuna)…" value="${i([e.direccion,e.comuna].filter(Boolean).join(", "))}"><button class="mo-btn sm" data-buscar>Buscar</button></div>
           <div class="mo-res" data-res></div>
           <div class="mo-map" data-map></div>
-          <div class="mo-hint">${ms('touch_app')}Arrastre el pin o haga clic en el mapa en el acceso de la obra.</div>
+          <div class="mo-hint">${b("touch_app")}Arrastre el pin o haga clic en el mapa en el acceso de la obra.</div>
         </div>
         <div class="mo-form">
           <div class="mo-sec">Dirección</div>
-          <label class="mo-f"><span>Dirección</span><input data-k="direccion" value="${esc(st.direccion)}" ${editable ? '' : 'disabled'}></label>
-          <label class="mo-f"><span>Comuna</span><input data-k="comuna" value="${esc(st.comuna)}" ${editable ? '' : 'disabled'}></label>
+          <label class="mo-f"><span>Dirección</span><input data-k="direccion" value="${i(e.direccion)}" ${r?"":"disabled"}></label>
+          <label class="mo-f"><span>Comuna</span><input data-k="comuna" value="${i(e.comuna)}" ${r?"":"disabled"}></label>
           <div class="mo-geo" data-geo></div>
           <div class="mo-ll">
-            <label class="mo-f"><span>Latitud</span><input data-ll="lat" inputmode="decimal" value="${Number.isFinite(+st.lat) && st.lat !== null ? (+st.lat).toFixed(6) : ''}" ${editable ? '' : 'disabled'} placeholder="-33.456789"></label>
-            <label class="mo-f"><span>Longitud</span><input data-ll="lon" inputmode="decimal" value="${Number.isFinite(+st.lon) && st.lon !== null ? (+st.lon).toFixed(6) : ''}" ${editable ? '' : 'disabled'} placeholder="-70.654321"></label>
+            <label class="mo-f"><span>Latitud</span><input data-ll="lat" inputmode="decimal" value="${Number.isFinite(+e.lat)&&e.lat!==null?(+e.lat).toFixed(6):""}" ${r?"":"disabled"} placeholder="-33.456789"></label>
+            <label class="mo-f"><span>Longitud</span><input data-ll="lon" inputmode="decimal" value="${Number.isFinite(+e.lon)&&e.lon!==null?(+e.lon).toFixed(6):""}" ${r?"":"disabled"} placeholder="-70.654321"></label>
           </div>
-          ${editable ? '<div class="mo-muted">Puede pegar «lat, lon» copiado de Google Maps en cualquiera de los dos campos.</div>' : ''}
+          ${r?'<div class="mo-muted">Puede pegar «lat, lon» copiado de Google Maps en cualquiera de los dos campos.</div>':""}
           <div class="mo-sec">Contacto en obra</div>
-          <label class="mo-f"><span>Nombre contacto</span><input data-k="contacto_nombre" value="${esc(st.contacto_nombre)}" ${editable ? '' : 'disabled'} placeholder="Nombre y apellido"></label>
-          <label class="mo-f"><span>Teléfono</span><input data-k="contacto_telefono" value="${esc(st.contacto_telefono)}" ${editable ? '' : 'disabled'} placeholder="+56 9 …"></label>
-          <label class="mo-f"><span>Correo <small>(opcional)</small></span><input data-k="contacto_email" type="email" value="${esc(st.contacto_email)}" ${editable ? '' : 'disabled'} placeholder="nombre@empresa.cl"></label>
+          <label class="mo-f"><span>Nombre contacto</span><input data-k="contacto_nombre" value="${i(e.contacto_nombre)}" ${r?"":"disabled"} placeholder="Nombre y apellido"></label>
+          <label class="mo-f"><span>Teléfono</span><input data-k="contacto_telefono" value="${i(e.contacto_telefono)}" ${r?"":"disabled"} placeholder="+56 9 …"></label>
+          <label class="mo-f"><span>Correo <small>(opcional)</small></span><input data-k="contacto_email" type="email" value="${i(e.contacto_email)}" ${r?"":"disabled"} placeholder="nombre@empresa.cl"></label>
           <div class="mo-err" data-err></div>
           <div class="mo-acts">
             <button class="mo-btn" data-cerrar>Cancelar</button>
-            ${editable ? `<button class="mo-btn pri" data-guardar>${ms('save')}Guardar</button>` : '<span class="mo-muted">Sin permiso de edición</span>'}
+            ${r?`<button class="mo-btn pri" data-guardar>${b("save")}Guardar</button>`:'<span class="mo-muted">Sin permiso de edición</span>'}
           </div>
-          ${o.updated_by ? `<div class="mo-muted" style="margin-top:6px">Última edición: ${esc(o.updated_by)} · ${new Date(o.updated_at).toLocaleString('es-CL')}</div>` : ''}
+          ${n.updated_by?`<div class="mo-muted" style="margin-top:6px">Última edición: ${i(n.updated_by)} · ${new Date(n.updated_at).toLocaleString("es-CL")}</div>`:""}
         </div>
-      </div></div>`;
-    document.body.appendChild(bg);
-    const $ = s => bg.querySelector(s);
-    const fin = v => { try { map.remove(); } catch (_e) { /* */ } bg.remove(); document.removeEventListener('keydown', onKey, true); resolve(v); };
-    const onKey = e => { if (e.key === 'Escape') { e.stopPropagation(); fin(null); } };
-    document.addEventListener('keydown', onKey, true);
-    bg.addEventListener('mousedown', e => { if (e.target === bg) fin(null); });
-    bg.querySelectorAll('[data-cerrar]').forEach(x => x.addEventListener('click', () => fin(null)));
-    bg.querySelectorAll('[data-k]').forEach(i => i.addEventListener('input', () => { st[i.dataset.k] = i.value; }));
-
-    // Mapa
-    const ini = Number.isFinite(+st.lat) && st.lat !== null ? [+st.lat, +st.lon]
-      : opts.centro && Number.isFinite(+opts.centro.lat) ? [+opts.centro.lat, +opts.centro.lon] : [-33.45, -70.66];
-    const map = L.map($('[data-map]')).setView(ini, st.lat !== null && st.lat !== undefined ? 17 : 13);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '&copy; OpenStreetMap' }).addTo(map);
-    const pin = L.marker(ini, { draggable: editable, icon: L.divIcon({ className: 'mo-pin-wrap', html: `<div class="mo-pin">${ms('location_on')}</div>`, iconSize: [36, 36], iconAnchor: [18, 34] }) }).addTo(map);
-    const mover = (ll, desdeInput = false) => {
-      pin.setLatLng(ll); st.lat = ll.lat; st.lon = ll.lng; st.movido = true; pintarGeo();
-      if (!desdeInput) { $('[data-ll="lat"]').value = (+ll.lat).toFixed(6); $('[data-ll="lon"]').value = (+ll.lng).toFixed(6); }
-    };
-    // Coordenadas escritas o pegadas (acepta «-33.45, -70.66» en un solo campo). Rango Chile continental e insular.
-    const enChile = (la, lo) => la >= -56.5 && la <= -17 && lo >= -110 && lo <= -66;
-    bg.querySelectorAll('[data-ll]').forEach(i => i.addEventListener('input', () => {
-      const par = i.value.match(/(-?\d+(?:\.\d+)?)\s*(?:[,;]\s*|\s+)(-\d+(?:\.\d+)?)/);
-      if (par) { $('[data-ll="lat"]').value = par[1].replace(',', '.'); $('[data-ll="lon"]').value = par[2].replace(',', '.'); }
-      const la = parseFloat(String($('[data-ll="lat"]').value).replace(',', '.')), lo = parseFloat(String($('[data-ll="lon"]').value).replace(',', '.'));
-      const err = $('[data-err]');
-      if (!Number.isFinite(la) || !Number.isFinite(lo)) return;
-      if (!enChile(la, lo)) { err.textContent = 'Coordenadas fuera de Chile: revise latitud (−17 a −56) y longitud (−66 a −110).'; return; }
-      err.textContent = '';
-      const ll = L.latLng(la, lo); map.setView(ll, Math.max(map.getZoom(), 16)); mover(ll, true);
-    }));
-    pin.on('dragend', () => mover(pin.getLatLng()));
-    if (editable) map.on('click', e => mover(e.latlng));
-    setTimeout(() => map.invalidateSize(), 50);
-
-    function pintarGeo() {
-      const g = geoDe(o);
-      const coord = Number.isFinite(+st.lat) && st.lat !== null ? `${(+st.lat).toFixed(6)}, ${(+st.lon).toFixed(6)}` : 'sin coordenadas';
-      $('[data-geo]').innerHTML = st.movido
-        ? `<div class="mo-geo-l ok">${ms('check_circle')}<b>Nueva ubicación marcada</b> <span class="mono">${coord}</span></div><div class="mo-muted">Se guardará como ubicación manual.</div>`
-        : `<div class="mo-geo-l" style="color:${g.ink}">${ms(g.icon)}<b>${esc(g.largo)}</b></div>
-           <div class="mo-muted mono">${coord}</div>${o.geo_detalle ? `<div class="mo-muted">${esc(o.geo_detalle)}</div>` : ''}
-           ${editable && o.geo_estado === 'AUTO_CALLE' ? `<label class="mo-chk"><input type="checkbox" data-confirmar ${st.confirmar ? 'checked' : ''}> El punto es correcto (confirmar)</label>` : ''}
-           ${editable && g.falta && !(st.lat !== null && st.lat !== undefined) ? '<div class="mo-warn">Busque la dirección o marque el punto en el mapa.</div>' : ''}`;
-      $('[data-confirmar]')?.addEventListener('change', e => { st.confirmar = e.target.checked; });
-    }
-    pintarGeo();
-
-    // Búsqueda (OpenStreetMap)
-    const buscar = async () => {
-      const q = $('[data-q]').value.trim(); if (!q) return;
-      const res = $('[data-res]');
-      res.innerHTML = '<div class="mo-muted">Buscando…</div>';
-      try {
-        const r = await fetch(`https://nominatim.openstreetmap.org/search?format=jsonv2&limit=5&countrycodes=cl&accept-language=es&q=${encodeURIComponent(/chile/i.test(q) ? q : q + ', Chile')}`);
-        const l = await r.json();
-        if (!l.length) { res.innerHTML = '<div class="mo-muted">Sin resultados. Pruebe sólo calle y comuna, o marque el punto en el mapa.</div>'; return; }
-        res.innerHTML = l.map((x, i) => `<button class="mo-r" data-i="${i}">${ms('location_on')}<span>${esc(x.display_name)}</span></button>`).join('');
-        res.querySelectorAll('[data-i]').forEach(btn => btn.addEventListener('click', () => {
-          const x = l[+btn.dataset.i];
-          const ll = L.latLng(+x.lat, +x.lon);
-          map.setView(ll, 17);
-          if (editable) mover(ll);
-          res.innerHTML = '';
-        }));
-      } catch (e) { res.innerHTML = `<div class="mo-err">No se pudo buscar: ${esc(e.message)}</div>`; }
-    };
-    $('[data-buscar]').addEventListener('click', buscar);
-    $('[data-q]').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); buscar(); } });
-
-    // Guardar
-    $('[data-guardar]')?.addEventListener('click', async e => {
-      const btn = e.currentTarget, err = $('[data-err]');
-      err.textContent = '';
-      if (st.contacto_email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(st.contacto_email.trim())) { err.textContent = 'Correo inválido.'; return; }
-      if (st.movido && !(Number.isFinite(+st.lat) && Number.isFinite(+st.lon) && enChile(+st.lat, +st.lon))) { err.textContent = 'Latitud / longitud inválidas.'; return; }
-      const fila = {
-        id_obra: id,
-        direccion: st.direccion.trim() || null, comuna: st.comuna.trim() || null,
-        contacto_nombre: st.contacto_nombre.trim() || null, contacto_telefono: st.contacto_telefono.trim() || null,
-        contacto_email: st.contacto_email.trim() || null,
-      };
-      if (!actual) Object.assign(fila, { id_cliente: b.id_cliente || null, nombre_cliente: b.nombre_cliente || null, ruta: b.ruta || null, requiere_geo: true });
-      if (st.movido) Object.assign(fila, { lat: +(+st.lat).toFixed(6), lon: +(+st.lon).toFixed(6), geo_estado: 'MANUAL', geo_detalle: 'Ubicada a mano en SIT EBEMA' });
-      else if (st.confirmar) Object.assign(fila, { geo_estado: 'MANUAL', geo_detalle: (o.geo_detalle || '') + ' · confirmada por usuario' });
-      else if (actual && fila.direccion !== (actual.direccion || null) && actual.geo_estado !== 'MANUAL') Object.assign(fila, { geo_estado: 'PENDIENTE', geo_intentos: 0 });
-      btn.disabled = true; btn.textContent = 'Guardando…';
-      const q = actual ? supabase.from('maestro_obras').update(fila).eq('id_obra', id) : supabase.from('maestro_obras').insert(fila);
-      const { data, error } = await q.select('*').maybeSingle();
-      if (error) { btn.disabled = false; btn.innerHTML = `${ms('save')}Guardar`; err.textContent = 'No se pudo guardar: ' + error.message; return; }
-      fin(data || { ...o, ...fila });
-    });
-  });
-}
-
-/* ════════════════════════════════════════════════════════════════════════
-   VISTA MAESTRO DE OBRAS Y CLIENTES
-   ════════════════════════════════════════════════════════════════════════ */
-const V = { obras: [], clientes: [], tab: 'obras', q: '', est: 'falta', soloDespacho: true, pag: 0 };
-let vroot = null;
-export async function renderMaestroObras(stage, sub = 'obras') {
-  estilos();
-  V.tab = sub === 'clientes' ? 'clientes' : 'obras'; V.pag = 0;
-  stage.innerHTML = `<div class="mo-v">
+      </div></div>`,document.body.appendChild(t);const d=a=>t.querySelector(a),g=a=>{try{_.remove()}catch{}t.remove(),document.removeEventListener("keydown",q,!0),h(a)},q=a=>{a.key==="Escape"&&(a.stopPropagation(),g(null))};document.addEventListener("keydown",q,!0),t.addEventListener("mousedown",a=>{a.target===t&&g(null)}),t.querySelectorAll("[data-cerrar]").forEach(a=>a.addEventListener("click",()=>g(null))),t.querySelectorAll("[data-k]").forEach(a=>a.addEventListener("input",()=>{e[a.dataset.k]=a.value}));const S=Number.isFinite(+e.lat)&&e.lat!==null?[+e.lat,+e.lon]:p.centro&&Number.isFinite(+p.centro.lat)?[+p.centro.lat,+p.centro.lon]:[-33.45,-70.66],_=L.map(d("[data-map]")).setView(S,e.lat!==null&&e.lat!==void 0?17:13);L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:19,attribution:"&copy; OpenStreetMap"}).addTo(_);const N=L.marker(S,{draggable:r,icon:L.divIcon({className:"mo-pin-wrap",html:`<div class="mo-pin">${b("location_on")}</div>`,iconSize:[36,36],iconAnchor:[18,34]})}).addTo(_),A=(a,m=!1)=>{N.setLatLng(a),e.lat=a.lat,e.lon=a.lng,e.movido=!0,M(),m||(d('[data-ll="lat"]').value=(+a.lat).toFixed(6),d('[data-ll="lon"]').value=(+a.lng).toFixed(6))},z=(a,m)=>a>=-56.5&&a<=-17&&m>=-110&&m<=-66;t.querySelectorAll("[data-ll]").forEach(a=>a.addEventListener("input",()=>{const m=a.value.match(/(-?\d+(?:\.\d+)?)\s*(?:[,;]\s*|\s+)(-\d+(?:\.\d+)?)/);m&&(d('[data-ll="lat"]').value=m[1].replace(",","."),d('[data-ll="lon"]').value=m[2].replace(",","."));const x=parseFloat(String(d('[data-ll="lat"]').value).replace(",",".")),f=parseFloat(String(d('[data-ll="lon"]').value).replace(",",".")),v=d("[data-err]");if(!Number.isFinite(x)||!Number.isFinite(f))return;if(!z(x,f)){v.textContent="Coordenadas fuera de Chile: revise latitud (−17 a −56) y longitud (−66 a −110).";return}v.textContent="";const y=L.latLng(x,f);_.setView(y,Math.max(_.getZoom(),16)),A(y,!0)})),N.on("dragend",()=>A(N.getLatLng())),r&&_.on("click",a=>A(a.latlng)),setTimeout(()=>_.invalidateSize(),50);function M(){const a=$(n),m=Number.isFinite(+e.lat)&&e.lat!==null?`${(+e.lat).toFixed(6)}, ${(+e.lon).toFixed(6)}`:"sin coordenadas";d("[data-geo]").innerHTML=e.movido?`<div class="mo-geo-l ok">${b("check_circle")}<b>Nueva ubicación marcada</b> <span class="mono">${m}</span></div><div class="mo-muted">Se guardará como ubicación manual.</div>`:`<div class="mo-geo-l" style="color:${a.ink}">${b(a.icon)}<b>${i(a.largo)}</b></div>
+           <div class="mo-muted mono">${m}</div>${n.geo_detalle?`<div class="mo-muted">${i(n.geo_detalle)}</div>`:""}
+           ${r&&n.geo_estado==="AUTO_CALLE"?`<label class="mo-chk"><input type="checkbox" data-confirmar ${e.confirmar?"checked":""}> El punto es correcto (confirmar)</label>`:""}
+           ${r&&a.falta&&!(e.lat!==null&&e.lat!==void 0)?'<div class="mo-warn">Busque la dirección o marque el punto en el mapa.</div>':""}`,d("[data-confirmar]")?.addEventListener("change",x=>{e.confirmar=x.target.checked})}M();const F=async()=>{const a=d("[data-q]").value.trim();if(!a)return;const m=d("[data-res]");m.innerHTML='<div class="mo-muted">Buscando…</div>';try{const f=await(await fetch(`https://nominatim.openstreetmap.org/search?format=jsonv2&limit=5&countrycodes=cl&accept-language=es&q=${encodeURIComponent(/chile/i.test(a)?a:a+", Chile")}`)).json();if(!f.length){m.innerHTML='<div class="mo-muted">Sin resultados. Pruebe sólo calle y comuna, o marque el punto en el mapa.</div>';return}m.innerHTML=f.map((v,y)=>`<button class="mo-r" data-i="${y}">${b("location_on")}<span>${i(v.display_name)}</span></button>`).join(""),m.querySelectorAll("[data-i]").forEach(v=>v.addEventListener("click",()=>{const y=f[+v.dataset.i],C=L.latLng(+y.lat,+y.lon);_.setView(C,17),r&&A(C),m.innerHTML=""}))}catch(x){m.innerHTML=`<div class="mo-err">No se pudo buscar: ${i(x.message)}</div>`}};d("[data-buscar]").addEventListener("click",F),d("[data-q]").addEventListener("keydown",a=>{a.key==="Enter"&&(a.preventDefault(),F())}),d("[data-guardar]")?.addEventListener("click",async a=>{const m=a.currentTarget,x=d("[data-err]");if(x.textContent="",e.contacto_email&&!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e.contacto_email.trim())){x.textContent="Correo inválido.";return}if(e.movido&&!(Number.isFinite(+e.lat)&&Number.isFinite(+e.lon)&&z(+e.lat,+e.lon))){x.textContent="Latitud / longitud inválidas.";return}const f={id_obra:c,direccion:e.direccion.trim()||null,comuna:e.comuna.trim()||null,contacto_nombre:e.contacto_nombre.trim()||null,contacto_telefono:e.contacto_telefono.trim()||null,contacto_email:e.contacto_email.trim()||null};u||Object.assign(f,{id_cliente:s.id_cliente||null,nombre_cliente:s.nombre_cliente||null,ruta:s.ruta||null,requiere_geo:!0}),e.movido?Object.assign(f,{lat:+(+e.lat).toFixed(6),lon:+(+e.lon).toFixed(6),geo_estado:"MANUAL",geo_detalle:"Ubicada a mano en SIT EBEMA"}):e.confirmar?Object.assign(f,{geo_estado:"MANUAL",geo_detalle:(n.geo_detalle||"")+" · confirmada por usuario"}):u&&f.direccion!==(u.direccion||null)&&u.geo_estado!=="MANUAL"&&Object.assign(f,{geo_estado:"PENDIENTE",geo_intentos:0}),m.disabled=!0,m.textContent="Guardando…";const v=u?E.from("maestro_obras").update(f).eq("id_obra",c):E.from("maestro_obras").insert(f),{data:y,error:C}=await v.select("*").maybeSingle();if(C){m.disabled=!1,m.innerHTML=`${b("save")}Guardar`,x.textContent="No se pudo guardar: "+C.message;return}g(y||{...n,...f})})})}const l={obras:[],clientes:[],tab:"obras",q:"",est:"falta",soloDespacho:!0,pag:0};let w=null;async function W(o,p="obras"){P(),l.tab=p==="clientes"?"clientes":"obras",l.pag=0,o.innerHTML=`<div class="mo-v">
     <header class="mo-v-top">
-      <div class="mo-h-ic">${ms('apartment')}</div>
+      <div class="mo-h-ic">${b("apartment")}</div>
       <div style="margin-right:auto"><div class="mo-h-t">Socios de Negocios · Obras y Clientes</div><div class="mo-h-s">Se cargan solas desde SAP y se georreferencian automáticamente; las que no se encuentran quedan para ubicar a mano.</div></div>
-      <nav class="mo-tabs"><button data-tab="obras" class="${V.tab === 'obras' ? 'is-on' : ''}">${ms('apartment')}Obras</button><button data-tab="clientes" class="${V.tab === 'clientes' ? 'is-on' : ''}">${ms('groups')}Clientes</button></nav>
+      <nav class="mo-tabs"><button data-tab="obras" class="${l.tab==="obras"?"is-on":""}">${b("apartment")}Obras</button><button data-tab="clientes" class="${l.tab==="clientes"?"is-on":""}">${b("groups")}Clientes</button></nav>
     </header>
     <div class="mo-v-bar">
-      <label class="mo-search" style="flex:1;max-width:420px">${ms('search')}<input data-q placeholder="Obra, cliente, dirección, comuna, contacto…"></label>
+      <label class="mo-search" style="flex:1;max-width:420px">${b("search")}<input data-q placeholder="Obra, cliente, dirección, comuna, contacto…"></label>
       <div class="mo-chips" data-est></div>
       <label class="mo-chk"><input type="checkbox" data-desp checked> Sólo obras con despacho</label>
-      <button class="mo-btn sm" data-reload>${ms('refresh')}Actualizar</button>
+      <button class="mo-btn sm" data-reload>${b("refresh")}Actualizar</button>
     </div>
     <div class="mo-v-tab" data-cont><div class="mo-muted" style="padding:24px">Cargando…</div></div>
-  </div>`;
-  vroot = stage.querySelector('.mo-v');
-  const $ = s => vroot.querySelector(s);
-  vroot.querySelectorAll('[data-tab]').forEach(b => b.addEventListener('click', () => {
-    V.tab = b.dataset.tab; V.pag = 0;
-    vroot.querySelectorAll('[data-tab]').forEach(x => x.classList.toggle('is-on', x === b));
-    pintarV();
-  }));
-  let t; $('[data-q]').addEventListener('input', e => { clearTimeout(t); t = setTimeout(() => { V.q = e.target.value.trim().toLowerCase(); V.pag = 0; pintarV(); }, 160); });
-  $('[data-desp]').addEventListener('change', e => { V.soloDespacho = e.target.checked; V.pag = 0; pintarV(); });
-  $('[data-reload]').addEventListener('click', () => cargarV());
-  await cargarV();
-}
-async function cargarV() {
-  const leer = async (tabla, orden) => {
-    const out = [];
-    for (let d = 0; ; d += 1000) {
-      const { data, error } = await supabase.from(tabla).select('*').order(orden).range(d, d + 999);
-      if (error) throw new Error(error.message);
-      out.push(...(data || [])); if (!data || data.length < 1000) break;
-    }
-    return out;
-  };
-  try {
-    [V.obras, V.clientes] = await Promise.all([leer('maestro_obras', 'id_obra'), leer('maestro_clientes', 'id_cliente')]);
-  } catch (e) { vroot.querySelector('[data-cont]').innerHTML = `<div class="mo-err" style="padding:24px">${esc(e.message)}</div>`; return; }
-  pintarV();
-}
-function pintarV() {
-  const $ = s => vroot.querySelector(s);
-  $('[data-desp]').closest('label').style.display = V.tab === 'obras' ? '' : 'none';
-  if (V.tab === 'clientes') return pintarClientes();
-  const base = V.obras.filter(o => !V.soloDespacho || o.requiere_geo);
-  const cuenta = k => k === 'todas' ? base.length : k === 'falta' ? base.filter(o => geoDe(o).falta).length : base.filter(o => o.geo_estado === k).length;
-  const chips = [['falta', 'Falta ubicar', '#dc2626'], ['AUTO_CALLE', 'Calle (aprox.)', '#d97706'], ['AUTO', 'Auto', '#16a34a'], ['MANUAL', 'Manual', '#16a34a'], ['todas', 'Todas', '#191c1d']];
-  $('[data-est]').innerHTML = chips.map(([k, l, c]) => `<button class="mo-chip${V.est === k ? ' is-on' : ''}" data-e="${k}" style="--c:${c}">${esc(l)} <b>${cuenta(k)}</b></button>`).join('');
-  $('[data-est]').querySelectorAll('[data-e]').forEach(b => b.addEventListener('click', () => { V.est = b.dataset.e; V.pag = 0; pintarV(); }));
-  const q = V.q;
-  const rows = base.filter(o => V.est === 'todas' || (V.est === 'falta' ? geoDe(o).falta : o.geo_estado === V.est))
-    .filter(o => !q || [o.id_obra, o.id_cliente, o.nombre_cliente, o.direccion, o.comuna, o.ruta, o.contacto_nombre, o.contacto_telefono, o.contacto_email].some(x => String(x || '').toLowerCase().includes(q)))
-    .sort((a, b) => String(b.visto_en || '').localeCompare(String(a.visto_en || '')));
-  const PAG = 200, tot = rows.length, ver = rows.slice(V.pag * PAG, (V.pag + 1) * PAG);
-  $('[data-cont]').innerHTML = `<div class="mo-tscroll"><table class="mo-t"><thead><tr>
+  </div>`,w=o.querySelector(".mo-v");const c=s=>w.querySelector(s);w.querySelectorAll("[data-tab]").forEach(s=>s.addEventListener("click",()=>{l.tab=s.dataset.tab,l.pag=0,w.querySelectorAll("[data-tab]").forEach(n=>n.classList.toggle("is-on",n===s)),k()}));let u;c("[data-q]").addEventListener("input",s=>{clearTimeout(u),u=setTimeout(()=>{l.q=s.target.value.trim().toLowerCase(),l.pag=0,k()},160)}),c("[data-desp]").addEventListener("change",s=>{l.soloDespacho=s.target.checked,l.pag=0,k()}),c("[data-reload]").addEventListener("click",()=>D()),await D()}async function D(){const o=async(p,c)=>{const u=[];for(let s=0;;s+=1e3){const{data:n,error:e}=await E.from(p).select("*").order(c).range(s,s+999);if(e)throw new Error(e.message);if(u.push(...n||[]),!n||n.length<1e3)break}return u};try{[l.obras,l.clientes]=await Promise.all([o("maestro_obras","id_obra"),o("maestro_clientes","id_cliente")])}catch(p){w.querySelector("[data-cont]").innerHTML=`<div class="mo-err" style="padding:24px">${i(p.message)}</div>`;return}k()}function k(){const o=t=>w.querySelector(t);if(o("[data-desp]").closest("label").style.display=l.tab==="obras"?"":"none",l.tab==="clientes")return V();const p=l.obras.filter(t=>!l.soloDespacho||t.requiere_geo),c=t=>t==="todas"?p.length:t==="falta"?p.filter(d=>$(d).falta).length:p.filter(d=>d.geo_estado===t).length,u=[["falta","Falta ubicar","#dc2626"],["AUTO_CALLE","Calle (aprox.)","#d97706"],["AUTO","Auto","#16a34a"],["MANUAL","Manual","#16a34a"],["todas","Todas","#191c1d"]];o("[data-est]").innerHTML=u.map(([t,d,g])=>`<button class="mo-chip${l.est===t?" is-on":""}" data-e="${t}" style="--c:${g}">${i(d)} <b>${c(t)}</b></button>`).join(""),o("[data-est]").querySelectorAll("[data-e]").forEach(t=>t.addEventListener("click",()=>{l.est=t.dataset.e,l.pag=0,k()}));const s=l.q,n=p.filter(t=>l.est==="todas"||(l.est==="falta"?$(t).falta:t.geo_estado===l.est)).filter(t=>!s||[t.id_obra,t.id_cliente,t.nombre_cliente,t.direccion,t.comuna,t.ruta,t.contacto_nombre,t.contacto_telefono,t.contacto_email].some(d=>String(d||"").toLowerCase().includes(s))).sort((t,d)=>String(d.visto_en||"").localeCompare(String(t.visto_en||""))),e=200,r=n.length,h=n.slice(l.pag*e,(l.pag+1)*e);o("[data-cont]").innerHTML=`<div class="mo-tscroll"><table class="mo-t"><thead><tr>
       <th>Georreferencia</th><th>Obra</th><th>Cliente</th><th>Dirección</th><th>Comuna</th><th class="r">Latitud</th><th class="r">Longitud</th><th>Contacto</th><th>Teléfono</th><th>Correo</th><th></th></tr></thead>
-    <tbody>${ver.map(o => `<tr data-id="${esc(o.id_obra)}">
-      <td>${badgeGeo(o)}</td><td class="mono"><b>${esc(o.id_obra)}</b></td>
-      <td class="mo-trunc" title="${esc(o.nombre_cliente || '')}">${esc(o.nombre_cliente || '—')} <span class="mo-muted mono">${esc(o.id_cliente || '')}</span></td>
-      <td class="mo-trunc" title="${esc(o.direccion || '')}">${esc(o.direccion || '—')}</td><td>${esc(o.comuna || '—')}</td>
-      <td class="r mono">${o.lat != null ? (+o.lat).toFixed(6) : '—'}</td><td class="r mono">${o.lon != null ? (+o.lon).toFixed(6) : '—'}</td>
-      <td>${esc(o.contacto_nombre || '—')}</td><td class="mono">${esc(o.contacto_telefono || '—')}</td><td>${esc(o.contacto_email || '—')}</td>
-      <td><button class="mo-btn sm" data-edit>${ms(geoDe(o).falta ? 'edit_location_alt' : 'edit')}${geoDe(o).falta ? 'Ubicar' : 'Editar'}</button></td></tr>`).join('')
-      || '<tr><td colspan="11" class="mo-muted" style="text-align:center;padding:24px">Sin obras para el filtro.</td></tr>'}</tbody></table></div>
-    <div class="mo-pag"><span class="mo-muted">${tot} obras${tot > PAG ? ` · página ${V.pag + 1} de ${Math.ceil(tot / PAG)}` : ''}</span>
-      ${tot > PAG ? `<button class="mo-btn sm" data-p="-1" ${V.pag ? '' : 'disabled'}>‹</button><button class="mo-btn sm" data-p="1" ${(V.pag + 1) * PAG < tot ? '' : 'disabled'}>›</button>` : ''}</div>`;
-  $('[data-cont]').querySelectorAll('[data-p]').forEach(b => b.addEventListener('click', () => { V.pag += +b.dataset.p; pintarV(); }));
-  $('[data-cont]').querySelectorAll('[data-edit]').forEach(b => b.addEventListener('click', async () => {
-    const id = b.closest('tr').dataset.id;
-    const r = await abrirEditorObra(id);
-    if (r) { const i = V.obras.findIndex(x => x.id_obra === r.id_obra); if (i >= 0) V.obras[i] = r; pintarV(); }
-  }));
-}
-function pintarClientes() {
-  const $ = s => vroot.querySelector(s);
-  $('[data-est]').innerHTML = '';
-  const nObras = new Map(); V.obras.forEach(o => nObras.set(o.id_cliente, (nObras.get(o.id_cliente) || 0) + 1));
-  const q = V.q;
-  const rows = V.clientes.filter(c => !q || [c.id_cliente, c.nombre, c.contacto_nombre, c.contacto_telefono, c.contacto_email].some(x => String(x || '').toLowerCase().includes(q)));
-  const ver = rows.slice(0, 300);
-  const editable = puedeEditarObras();
-  $('[data-cont]').innerHTML = `<div class="mo-tscroll"><table class="mo-t"><thead><tr><th>Cliente</th><th>Nombre</th><th class="r">Obras</th><th>Contacto</th><th>Teléfono</th><th>Correo (opcional)</th><th></th></tr></thead>
-    <tbody>${ver.map(c => `<tr data-id="${esc(c.id_cliente)}"><td class="mono"><b>${esc(c.id_cliente)}</b></td><td>${esc(c.nombre || '—')}</td><td class="r mono">${nObras.get(c.id_cliente) || 0}</td>
-      <td><input class="mo-in" data-f="contacto_nombre" value="${esc(c.contacto_nombre || '')}" ${editable ? '' : 'disabled'}></td>
-      <td><input class="mo-in" data-f="contacto_telefono" value="${esc(c.contacto_telefono || '')}" ${editable ? '' : 'disabled'}></td>
-      <td><input class="mo-in" data-f="contacto_email" value="${esc(c.contacto_email || '')}" ${editable ? '' : 'disabled'}></td>
-      <td>${editable ? `<button class="mo-btn sm" data-save disabled>${ms('save')}</button>` : ''}</td></tr>`).join('')}</tbody></table></div>
-    <div class="mo-pag"><span class="mo-muted">${rows.length} clientes${rows.length > ver.length ? ' · mostrando 300 (use la búsqueda)' : ''}</span></div>`;
-  $('[data-cont]').querySelectorAll('tr[data-id]').forEach(tr => {
-    const btn = tr.querySelector('[data-save]'); if (!btn) return;
-    tr.querySelectorAll('[data-f]').forEach(i => i.addEventListener('input', () => { btn.disabled = false; btn.classList.add('pri'); }));
-    btn.addEventListener('click', async () => {
-      const f = {}; tr.querySelectorAll('[data-f]').forEach(i => { f[i.dataset.f] = i.value.trim() || null; });
-      if (f.contacto_email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(f.contacto_email)) { alert('Correo inválido'); return; }
-      btn.disabled = true;
-      const { error } = await supabase.from('maestro_clientes').update(f).eq('id_cliente', tr.dataset.id);
-      if (error) { btn.disabled = false; alert('No se pudo guardar: ' + error.message); return; }
-      const c = V.clientes.find(x => x.id_cliente === tr.dataset.id); Object.assign(c, f);
-      btn.classList.remove('pri'); btn.innerHTML = ms('check');
-    });
-  });
-}
-
-/* ════════════════════════════════════════════════════════════════════════
-   ESTILOS (prefijo mo-)
-   ════════════════════════════════════════════════════════════════════════ */
-function estilos() {
-  if (document.getElementById('mo-style')) return;
-  const s = document.createElement('style');
-  s.id = 'mo-style';
-  s.textContent = `
+    <tbody>${h.map(t=>`<tr data-id="${i(t.id_obra)}">
+      <td>${H(t)}</td><td class="mono"><b>${i(t.id_obra)}</b></td>
+      <td class="mo-trunc" title="${i(t.nombre_cliente||"")}">${i(t.nombre_cliente||"—")} <span class="mo-muted mono">${i(t.id_cliente||"")}</span></td>
+      <td class="mo-trunc" title="${i(t.direccion||"")}">${i(t.direccion||"—")}</td><td>${i(t.comuna||"—")}</td>
+      <td class="r mono">${t.lat!=null?(+t.lat).toFixed(6):"—"}</td><td class="r mono">${t.lon!=null?(+t.lon).toFixed(6):"—"}</td>
+      <td>${i(t.contacto_nombre||"—")}</td><td class="mono">${i(t.contacto_telefono||"—")}</td><td>${i(t.contacto_email||"—")}</td>
+      <td><button class="mo-btn sm" data-edit>${b($(t).falta?"edit_location_alt":"edit")}${$(t).falta?"Ubicar":"Editar"}</button></td></tr>`).join("")||'<tr><td colspan="11" class="mo-muted" style="text-align:center;padding:24px">Sin obras para el filtro.</td></tr>'}</tbody></table></div>
+    <div class="mo-pag"><span class="mo-muted">${r} obras${r>e?` · página ${l.pag+1} de ${Math.ceil(r/e)}`:""}</span>
+      ${r>e?`<button class="mo-btn sm" data-p="-1" ${l.pag?"":"disabled"}>‹</button><button class="mo-btn sm" data-p="1" ${(l.pag+1)*e<r?"":"disabled"}>›</button>`:""}</div>`,o("[data-cont]").querySelectorAll("[data-p]").forEach(t=>t.addEventListener("click",()=>{l.pag+=+t.dataset.p,k()})),o("[data-cont]").querySelectorAll("[data-edit]").forEach(t=>t.addEventListener("click",async()=>{const d=t.closest("tr").dataset.id,g=await G(d);if(g){const q=l.obras.findIndex(S=>S.id_obra===g.id_obra);q>=0&&(l.obras[q]=g),k()}}))}function V(){const o=e=>w.querySelector(e);o("[data-est]").innerHTML="";const p=new Map;l.obras.forEach(e=>p.set(e.id_cliente,(p.get(e.id_cliente)||0)+1));const c=l.q,u=l.clientes.filter(e=>!c||[e.id_cliente,e.nombre,e.contacto_nombre,e.contacto_telefono,e.contacto_email].some(r=>String(r||"").toLowerCase().includes(c))),s=u.slice(0,300),n=j();o("[data-cont]").innerHTML=`<div class="mo-tscroll"><table class="mo-t"><thead><tr><th>Cliente</th><th>Nombre</th><th class="r">Obras</th><th>Contacto</th><th>Teléfono</th><th>Correo (opcional)</th><th></th></tr></thead>
+    <tbody>${s.map(e=>`<tr data-id="${i(e.id_cliente)}"><td class="mono"><b>${i(e.id_cliente)}</b></td><td>${i(e.nombre||"—")}</td><td class="r mono">${p.get(e.id_cliente)||0}</td>
+      <td><input class="mo-in" data-f="contacto_nombre" value="${i(e.contacto_nombre||"")}" ${n?"":"disabled"}></td>
+      <td><input class="mo-in" data-f="contacto_telefono" value="${i(e.contacto_telefono||"")}" ${n?"":"disabled"}></td>
+      <td><input class="mo-in" data-f="contacto_email" value="${i(e.contacto_email||"")}" ${n?"":"disabled"}></td>
+      <td>${n?`<button class="mo-btn sm" data-save disabled>${b("save")}</button>`:""}</td></tr>`).join("")}</tbody></table></div>
+    <div class="mo-pag"><span class="mo-muted">${u.length} clientes${u.length>s.length?" · mostrando 300 (use la búsqueda)":""}</span></div>`,o("[data-cont]").querySelectorAll("tr[data-id]").forEach(e=>{const r=e.querySelector("[data-save]");r&&(e.querySelectorAll("[data-f]").forEach(h=>h.addEventListener("input",()=>{r.disabled=!1,r.classList.add("pri")})),r.addEventListener("click",async()=>{const h={};if(e.querySelectorAll("[data-f]").forEach(g=>{h[g.dataset.f]=g.value.trim()||null}),h.contacto_email&&!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(h.contacto_email)){alert("Correo inválido");return}r.disabled=!0;const{error:t}=await E.from("maestro_clientes").update(h).eq("id_cliente",e.dataset.id);if(t){r.disabled=!1,alert("No se pudo guardar: "+t.message);return}const d=l.clientes.find(g=>g.id_cliente===e.dataset.id);Object.assign(d,h),r.classList.remove("pri"),r.innerHTML=b("check")}))})}function P(){if(document.getElementById("mo-style"))return;const o=document.createElement("style");o.id="mo-style",o.textContent=`
 .mo-bg{position:fixed;inset:0;z-index:2300;background:rgba(25,28,29,.42);display:flex;align-items:center;justify-content:center;padding:16px}
 .mo-dlg{background:#fff;border-radius:12px;width:min(1080px,100%);max-height:94vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.3);overflow:hidden;color:#191c1d;font-size:13.5px}
 .mo-dlg *,.mo-v *{box-sizing:border-box}
@@ -384,6 +124,4 @@ table.mo-t{width:100%;border-collapse:separate;border-spacing:0;font-size:13px}
 .mo-trunc{max-width:260px;overflow:hidden;text-overflow:ellipsis}
 .mo-pag{display:flex;align-items:center;gap:8px;padding:8px 12px;border-top:1px solid #e1e3e4}
 @media (max-width:900px){.mo-body{grid-template-columns:1fr}.mo-mapcol{border-right:none;border-bottom:1px solid #e1e3e4}}
-`;
-  document.head.appendChild(s);
-}
+`,document.head.appendChild(o)}export{U as GEO,G as abrirEditorObra,H as badgeGeo,Q as cargarObras,K as faltaGeo,$ as geoDe,j as puedeEditarObras,W as renderMaestroObras,B as tieneUbicacion};

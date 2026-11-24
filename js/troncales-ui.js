@@ -1,883 +1,101 @@
-// ============================================================================
-// GESTIÓN TRONCALES — Vista de datos v2 (rediseño 29-sep-2026)
-// ----------------------------------------------------------------------------
-// Motor genérico para las vistas tipo tabla (Datos SAP + Entregas Creadas):
-// cabecera con acciones, tarjetas que filtran, chips, buscadores, tabla con
-// franja de color por fila y panel lateral de detalle.
-//
-// Cada vista de VISTAS_TRONCAL declara un bloque `v2` (ver abastecimiento.js).
-// La carga de datos (vista, preload, transform, postFilter, centroCampo),
-// las exclusiones del Plan de Carga y el CSV siguen siendo los de siempre:
-// este módulo sólo cambia la PRESENTACIÓN.
-// ============================================================================
-
-export const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
-
-// ── Piezas de UI ────────────────────────────────────────────────────────────
-export function pill(label, tone = 'mute') {
-  if (label == null || label === '') return '';
-  return `<span class="sv-pill ${tone}"><i></i>${esc(label)}</span>`;
-}
-export function mono(v, sub) {
-  const main = v == null || v === '' ? '<span class="sv-muted">—</span>' : `<span class="sv-mono">${esc(v)}</span>`;
-  return sub ? `${main}<div class="sv-sub" title="${esc(sub)}">${esc(sub)}</div>` : main;
-}
-export function txt(v, sub, bold = false) {
-  const main = v == null || v === '' ? '<span class="sv-muted">—</span>' : `<span class="${bold ? 'sv-b' : ''}">${esc(v)}</span>`;
-  return sub ? `${main}<div class="sv-sub" title="${esc(sub)}">${esc(sub)}</div>` : main;
-}
-export function tonHtml(n) {
-  if (n == null || isNaN(n)) return '<span class="sv-muted">—</span>';
-  return `${Number(n).toLocaleString('es-CL', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} t`;
-}
-
-// Encabezado del shell: fecha y hora de la última actualización SAP de la vista
-import { confirmar } from './confirmar.js?v=202611232043';
-import { comentariosHabilitados, conteosComentarios, celdaComentarios, montarHilo, tomarFoco, abrirHiloSuelto } from './comentarios.js?v=202611232043';
-export function setUltimaActualizacion(ts) {
-  const el = document.getElementById('sv-upd');
-  if (!el) return;
-  if (!ts) { el.classList.add('hidden'); el.innerHTML = ''; return; }
-  let lbl = '';
-  try {
-    const d = new Date(ts);
-    const f = d.toLocaleDateString('es-CL', { timeZone: 'America/Santiago', day: '2-digit', month: '2-digit', year: 'numeric' });
-    const h = d.toLocaleTimeString('es-CL', { timeZone: 'America/Santiago', hour: '2-digit', minute: '2-digit', hour12: false });
-    lbl = `${f} · ${h}`;
-  } catch (_e) { lbl = String(ts).slice(0, 16).replace('T', ' '); }
-  el.innerHTML = `<span class="material-symbols-outlined">update</span>Última actualización SAP <strong>${esc(lbl)}</strong>`;
-  el.classList.remove('hidden');
-}
-// Máximo cargado_en de un set de filas crudas (las vistas v_trc_* lo traen por fila)
-export function maxCargadoEn(rows) {
-  let m = '';
-  for (const r of rows || []) { const v = r && r.cargado_en; if (v && String(v) > m) m = String(v); }
-  return m || null;
-}
-
-// Estado de filtros por vista (se mantiene mientras dure la sesión en la pestaña)
-const _estado = new Map();
-// (16-nov-2026, Jordan · fluidez) Los filtros de cada vista sobreviven a F5 / nueva versión durante el MISMO día
-// (al día siguiente parten limpios, para no dejar filtros viejos escondiendo filas).
-const LS_FILTROS = 'sit_trc_filtros_v1_';
-const F_KEYS = ['kpi', 'chip', 'chip2', 'q', 'qDoc', 'dFrom', 'dTo', 'orig', 'mode', 'vista'];
-function leerFiltros(viewKey) {
-  try { const o = JSON.parse(localStorage.getItem(LS_FILTROS + viewKey) || 'null'); return o && o._dia === hoyISO() ? o : null; } catch (_e) { return null; }
-}
-function guardarFiltros(viewKey, st) {
-  try { const o = { _dia: hoyISO() }; F_KEYS.forEach(k => { if (st[k] !== undefined) o[k] = st[k]; }); localStorage.setItem(LS_FILTROS + viewKey, JSON.stringify(o)); } catch (_e) { /* sin almacenamiento */ }
-}
-// (16-nov-2026, Jordan · fluidez P2) Saltos entre vistas: quien navega deja un «salto» pendiente para la vista destino
-// ({ filtros: { kpi | q | qDoc }, volver: { sub, lbl } }); al abrirse, la vista parte con filtros neutros + los del salto.
-const _saltos = new Map();
-export function prepararSaltoV2(viewKey, salto) { _saltos.set(viewKey, salto || {}); }
-function filtrosNeutros(cfg) {
-  const V = cfg.v2, hoy = cfg.dateDefaultHoy ? hoyISO() : '';
-  return { kpi: 'all', chip: 'all', chip2: 'all', q: '', qDoc: '', ex: {}, mode: 0, dFrom: hoy, dTo: hoy,
-    orig: V.origen ? (V.origen.opciones.find(o => o[0] === '*') || V.origen.opciones[0])[0] : null, vista: V.calendario ? 'cal' : 'lista' };
-}
-// (16-nov-2026 · fluidez P3) Pantalla de carga inicial con forma de tabla (en vez del texto «Cargando datos…»).
-export function esqueletoV2(titulo) {
-  const barra = (w, h = 14) => `<div style="height:${h}px;width:${w};border-radius:6px;background:#e1e3e4;animation:svSk 1.1s ease-in-out infinite alternate"></div>`;
-  return `<style>@keyframes svSk{from{opacity:.45}to{opacity:1}}</style><div class="sv-view" aria-busy="true"><div class="sv-vhead"><div><h1 class="sv-h1">${esc(titulo || '')}</h1>
+const c=e=>String(e??"").replace(/[&<>"']/g,r=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[r]);function mt(e,r="mute"){return e==null||e===""?"":`<span class="sv-pill ${r}"><i></i>${c(e)}</span>`}function ht(e,r){const n=e==null||e===""?'<span class="sv-muted">—</span>':`<span class="sv-mono">${c(e)}</span>`;return r?`${n}<div class="sv-sub" title="${c(r)}">${c(r)}</div>`:n}function $t(e,r,n=!1){const d=e==null||e===""?'<span class="sv-muted">—</span>':`<span class="${n?"sv-b":""}">${c(e)}</span>`;return r?`${d}<div class="sv-sub" title="${c(r)}">${c(r)}</div>`:d}function yt(e){return e==null||isNaN(e)?'<span class="sv-muted">—</span>':`${Number(e).toLocaleString("es-CL",{minimumFractionDigits:2,maximumFractionDigits:2})} t`}import{confirmar as qa}from"./confirmar.js?v=84d7f13f40";import{comentariosHabilitados as Ca,conteosComentarios as tt,celdaComentarios as Da,montarHilo as et,tomarFoco as it,abrirHiloSuelto as lt}from"./comentarios.js?v=19466b3aaf";function st(e){const r=document.getElementById("sv-upd");if(!r)return;if(!e){r.classList.add("hidden"),r.innerHTML="";return}let n="";try{const d=new Date(e),$=d.toLocaleDateString("es-CL",{timeZone:"America/Santiago",day:"2-digit",month:"2-digit",year:"numeric"}),k=d.toLocaleTimeString("es-CL",{timeZone:"America/Santiago",hour:"2-digit",minute:"2-digit",hour12:!1});n=`${$} · ${k}`}catch{n=String(e).slice(0,16).replace("T"," ")}r.innerHTML=`<span class="material-symbols-outlined">update</span>Última actualización SAP <strong>${c(n)}</strong>`,r.classList.remove("hidden")}function ot(e){let r="";for(const n of e||[]){const d=n&&n.cargado_en;d&&String(d)>r&&(r=String(d))}return r||null}const ca=new Map,Pa="sit_trc_filtros_v1_",Aa=["kpi","chip","chip2","q","qDoc","dFrom","dTo","orig","mode","vista"];function nt(e){try{const r=JSON.parse(localStorage.getItem(Pa+e)||"null");return r&&r._dia===Z()?r:null}catch{return null}}function rt(e,r){try{const n={_dia:Z()};Aa.forEach(d=>{r[d]!==void 0&&(n[d]=r[d])}),localStorage.setItem(Pa+e,JSON.stringify(n))}catch{}}const $a=new Map;function gt(e,r){$a.set(e,r||{})}function ya(e){const r=e.v2,n=e.dateDefaultHoy?Z():"";return{kpi:"all",chip:"all",chip2:"all",q:"",qDoc:"",ex:{},mode:0,dFrom:n,dTo:n,orig:r.origen?(r.origen.opciones.find(d=>d[0]==="*")||r.origen.opciones[0])[0]:null,vista:r.calendario?"cal":"lista"}}function ct(e){const r=(n,d=14)=>`<div style="height:${d}px;width:${n};border-radius:6px;background:#e1e3e4;animation:svSk 1.1s ease-in-out infinite alternate"></div>`;return`<style>@keyframes svSk{from{opacity:.45}to{opacity:1}}</style><div class="sv-view" aria-busy="true"><div class="sv-vhead"><div><h1 class="sv-h1">${c(e||"")}</h1>
     <div class="sv-desc">Cargando datos…</div></div></div>
-    <div style="display:flex;gap:12px;margin:8px 0 16px">${[1, 2, 3, 4].map(() => `<div style="flex:1;padding:14px;border:1px solid #e1e3e4;border-radius:12px;display:flex;flex-direction:column;gap:8px">${barra('55%', 10)}${barra('35%', 22)}</div>`).join('')}</div>
-    <div style="border:1px solid #e1e3e4;border-radius:12px;padding:14px;display:flex;flex-direction:column;gap:12px">${['100%', '92%', '97%', '88%', '95%', '90%', '96%'].map(w => barra(w)).join('')}</div></div>`;
-}
-// Filtro neutro (origen y fechas por defecto) de las filas ya calculadas de una vista.
-function filtrarNeutro(rowsAll, cfg, AV, deps) {
-  const n = filtrosNeutros(cfg), dF = isoToDate(n.dFrom), dT = isoToDate(n.dTo), cal = !!(AV.calendario && n.vista === 'cal');
-  return rowsAll.filter(r => {
-    if (AV.origen && n.orig && n.orig !== '*' && String(AV.origen.of(r) ?? '').trim() !== n.orig) return false;
-    if (AV.fecha && (dF || dT) && !cal) {
-      const d = deps.parseDateSAP(AV.fecha.of(r));
-      if (!d) return false;
-      if (dF && d < dF) return false;
-      if (dT && d > dT) return false;
-    }
-    return true;
-  });
-}
-// Filas de una vista SIN dibujarla (mismo cálculo que la tabla, con filtros neutros): la usan «Pendientes» y el
-// buscador global, para que los números coincidan con lo que el usuario ve al saltar a la vista.
-export async function calcularVistaV2(cfg, deps) {
-  const V = cfg.v2;
-  const active = cfg.modes ? Object.assign({}, cfg, cfg.modes[0]) : cfg;
-  const AV = Object.assign({}, V, (active.v2mode || {}));
-  const ctx = Object.assign({}, active.preload ? await active.preload() : {}, AV.preload ? await AV.preload() : {});
-  const rawRows = (await deps.fetchAllRows(active.vista)).slice();
-  if (deps.augmentRaw) await deps.augmentRaw(active.vista, rawRows);
-  const campoCentro = active.centroCampo || active.chipFilter?.campo;
-  let rowsAll = active.transform ? active.transform(rawRows, ctx) : rawRows;
-  rowsAll = campoCentro ? deps.filtrarPorCentro(rowsAll, campoCentro) : rowsAll;
-  if (active.postFilter) rowsAll = active.postFilter(rowsAll, 'all', ctx);
-  // (18-nov-2026, Jordan) Filas que la vista no muestra (p. ej. destino CD Quilicura con origen 1003)
-  if (AV.ocultar) rowsAll = rowsAll.filter(r => !AV.ocultar(r));
-  if (AV.enrich) AV.enrich(rowsAll, ctx);
-  const n = filtrosNeutros(cfg), dF = isoToDate(n.dFrom), dT = isoToDate(n.dTo), cal = !!(AV.calendario && n.vista === 'cal');
-  const rows = rowsAll.filter(r => {
-    if (AV.origen && n.orig && n.orig !== '*' && String(AV.origen.of(r) ?? '').trim() !== n.orig) return false;
-    if (AV.fecha && (dF || dT) && !cal) {
-      const d = deps.parseDateSAP(AV.fecha.of(r));
-      if (!d) return false;
-      if (dF && d < dF) return false;
-      if (dT && d > dT) return false;
-    }
-    return true;
-  });
-  return { rows, AV };
-}
-// (16-nov-2026 · fluidez) Posición de scroll de la vista (contenedores padres, ventana y tabla) para reponerla tras recargar.
-export function guardarScroll(el) {
-  const l = [];
-  for (let p = el; p; p = p.parentElement) if (p.scrollTop > 0 || p.scrollLeft > 0) l.push([p, p.scrollTop, p.scrollLeft]);
-  const tw = el.querySelector('.sv-table-wrap');
-  return { el, l, x: window.scrollX, y: window.scrollY, tw: tw ? [tw.scrollTop, tw.scrollLeft] : null };
-}
-export function restaurarScroll(s) {
-  if (!s) return;
-  try {
-    s.l.forEach(([p, top, left]) => { if (p.isConnected) { p.scrollTop = top; p.scrollLeft = left; } });
-    if (window.scrollX !== s.x || window.scrollY !== s.y) window.scrollTo(s.x, s.y);
-    const tw = s.tw && s.el.querySelector('.sv-table-wrap');
-    if (tw) { tw.scrollTop = s.tw[0]; tw.scrollLeft = s.tw[1]; }
-  } catch (_e) { /* sin scroll que reponer */ }
-}
-// (16-nov-2026 · fluidez) Recarga de la MISMA vista (tras una acción): no se borra la pantalla; la tabla anterior queda
-// visible y atenuada mientras llegan los datos nuevos, y se repone el scroll.
-export async function renderTablaV2(stage, cfg, deps, viewKey) {
-  const recarga = stage._vkV2 === viewKey && !!stage.firstElementChild;
-  const sc = recarga ? guardarScroll(stage) : null;
-  if (recarga) { stage.style.transition = 'opacity .15s'; stage.style.opacity = '.55'; stage.style.pointerEvents = 'none'; }
-  try { await renderTablaV2Core(stage, cfg, deps, viewKey, recarga); stage._vkV2 = viewKey; }
-  finally { if (recarga) { stage.style.opacity = ''; stage.style.pointerEvents = ''; restaurarScroll(sc); } }
-}
-
-function isoToDate(s) {
-  const m = String(s || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  return m ? new Date(+m[1], +m[2] - 1, +m[3]) : null;
-}
-const MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
-const DIAS_SEM = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom'];
-function fechaLarga(f) {
-  const [y, m, d] = String(f || '').split('-').map(Number);
-  if (!y) return '';
-  const dt = new Date(y, m - 1, d);
-  return `${['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'][dt.getDay()]} ${d} de ${MESES[m - 1]}${y !== new Date().getFullYear() ? ' de ' + y : ''}`;
-}
-function hoyISO() {
-  const h = new Date();
-  return `${h.getFullYear()}-${String(h.getMonth() + 1).padStart(2, '0')}-${String(h.getDate()).padStart(2, '0')}`;
-}
-
-// ── Motor de la vista ───────────────────────────────────────────────────────
-// deps: { fetchAllRows, filtrarPorCentro, can, parseDateSAP, clearRawCache,
-//         exportarCSV, loadExclusionesPlan, excluirDelPlan, reactivarEnPlan, showAlert }
-async function renderTablaV2Core(stage, cfg, deps, viewKey, recarga = false) {
-  const V = cfg.v2;
-  const guardados = !_estado.has(viewKey) ? leerFiltros(viewKey) : null;
-  const st = _estado.get(viewKey) || {
-    kpi: 'all', chip: 'all', chip2: 'all', q: '', qDoc: '', dFrom: '', dTo: '',
-    orig: V.origen ? V.origen.opciones[0][0] : null, mode: 0, drawer: null,
-  };
-  if (!_estado.has(viewKey) && cfg.dateDefaultHoy) { st.dFrom = st.dTo = hoyISO(); }
-  if (guardados) {
-    F_KEYS.forEach(k => { if (guardados[k] !== undefined && guardados[k] !== null) st[k] = guardados[k]; });
-    if (V.origen && !V.origen.opciones.some(o => o[0] === st.orig)) st.orig = V.origen.opciones[0][0];
-    if (!cfg.modes || !cfg.modes[st.mode]) st.mode = 0;
-    if (st.vista === 'cal' && !V.calendario) st.vista = 'lista';
-  }
-  // (16-nov-2026 · fluidez P2) Llegada por salto desde otra vista / Pendientes / buscador
-  { const salto = _saltos.get(viewKey) || null; _saltos.delete(viewKey);
-    if (salto) { Object.assign(st, filtrosNeutros(cfg), salto.filtros || {}); st._volver = salto.volver || null; st.sel = new Set(); }
-    else if (!recarga) st._volver = null; }
-  _estado.set(viewKey, st);
-  st.open = null;
-  // (11-oct-2026) Vista calendario opcional (AV.calendario): se elige entre Calendario y Lista.
-  if (!st.vista) st.vista = V.calendario ? 'cal' : 'lista';
-  if (stage._fClose) { document.removeEventListener('click', stage._fClose); document.removeEventListener('keydown', stage._fClose); }
-  stage._fClose = e => {
-    if (!st.open || !stage.isConnected) return;
-    if (e.type === 'keydown' ? e.key !== 'Escape' : (e.target.closest && e.target.closest('.sv-fdd'))) return;
-    if (e.type === 'keydown') e.stopPropagation();
-    st.open = null; stage._fRedraw && stage._fRedraw();
-  };
-  document.addEventListener('click', stage._fClose);
-  document.addEventListener('keydown', stage._fClose);
-  // Tras una acción con { recargar } se reabre el detalle de la misma fila con datos frescos.
-  st.drawer = st._reopen || null; st._reopen = null;
-  // (11-nov-2026, Jordan) Selección múltiple de filas para acciones masivas (AV.seleccion.acciones).
-  if (!st.sel) st.sel = new Set();
-
-  const active = cfg.modes ? Object.assign({}, cfg, cfg.modes[st.mode] || cfg.modes[0]) : cfg;
-  const AV = Object.assign({}, V, (active.v2mode || {}));
-
-  if (!recarga) stage.innerHTML = esqueletoV2(AV.titulo);
-
-  // (16-nov-2026 · fluidez) Lecturas independientes EN PARALELO (antes iban una tras otra): datos de la vista, última
-  // lectura SAP, comentarios, exclusiones y prioridades parten juntas; los preload mantienen su orden entre sí.
-  const quiet = p => { p.catch(() => {}); return p; };
-  const _conComentP = comentariosHabilitados(viewKey);
-  const _conExclP = !!(active.excluir && ((!active.sinExcluir && deps.can(AV.permisoExcluir || 'excluir')) || AV.excluirEnFila));
-  const _prioCfgP = AV.prioridad && deps.loadPrioridades ? AV.prioridad : null;
-  const pRaw = quiet(Promise.resolve().then(() => deps.fetchAllRows(active.vista)));
-  const pUlt = quiet(Promise.resolve().then(() => deps.ultimaLectura ? deps.ultimaLectura(active.vista) : null));
-  const pConteos = quiet(Promise.resolve().then(() => _conComentP ? conteosComentarios(viewKey) : new Map()));
-  const pExcl = quiet(Promise.resolve().then(() => _conExclP ? deps.loadExclusionesPlan() : []));
-  const pPrios = quiet(Promise.resolve().then(() => _prioCfgP ? deps.loadPrioridades(_prioCfgP.tipo) : new Map()));
-  const pPriosH = quiet(Promise.resolve().then(() => _prioCfgP && _prioCfgP.hereda ? deps.loadPrioridades(_prioCfgP.hereda.tipo) : new Map()));
-
-  const ctx = Object.assign({}, active.preload ? await active.preload() : {}, AV.preload ? await AV.preload() : {});
-  const rawRows = (await pRaw).slice();
-  // (10-nov-2026, Jordan) La hora mostrada es la última lectura de los archivos SAP (Drive), no la de la fila más nueva:
-  // en Entregas el cargado_en de cada fila es su PRIMERA aparición y dejaba la hora pegada en la última entrega nueva.
-  { const tf = maxCargadoEn(rawRows); let tl = null;
-    try { tl = await pUlt; } catch (_e) { tl = null; }
-    setUltimaActualizacion(tl && (!tf || new Date(tl) > new Date(tf)) ? tl : tf); }
-  // (9-oct-2026) Hook para reponer filas respaldadas (p. ej. NV coordinadas que SAP sacó del SQVI).
-  if (deps.augmentRaw) await deps.augmentRaw(active.vista, rawRows);
-  const campoCentro = active.centroCampo || active.chipFilter?.campo;
-  let rowsAll = active.transform ? active.transform(rawRows, ctx) : rawRows;
-  rowsAll = campoCentro ? deps.filtrarPorCentro(rowsAll, campoCentro) : rowsAll;
-  if (active.postFilter) rowsAll = active.postFilter(rowsAll, 'all', ctx);
-  // (18-nov-2026, Jordan) Filas que la vista no muestra (p. ej. destino CD Quilicura con origen 1003)
-  if (AV.ocultar) rowsAll = rowsAll.filter(r => !AV.ocultar(r));
-  if (AV.enrich) AV.enrich(rowsAll, ctx);
-  // (16-nov-2026 · fluidez P3) contador de pendientes del menú: se actualiza cada vez que la vista se calcula
-  if (deps.alCalcularVista && st.mode === 0) { try { deps.alCalcularVista(viewKey, filtrarNeutro(rowsAll, cfg, AV, deps), AV); } catch (_e) { /* contador opcional */ } }
-  rowsAll.forEach((r, i) => { r.__rid = AV.rowId ? String(AV.rowId(r)) : String(i); });
-
-  // (12-oct-2026) Comentarios por fila en Orden de Carga: clave estable (rowId o documento|material)
-  const conComent = comentariosHabilitados(viewKey);
-  const claveCom = r => AV.rowId ? String(AV.rowId(r))
-    : active.excluir ? [active.excluir.doc(r), typeof active.excluir.material === 'function' ? active.excluir.material(r) : ''].map(x => String(x ?? '').trim()).join('|')
-    : r.__rid;
-  const docCom = r => {
-    if (!active.excluir) return claveCom(r);
-    const d = String(active.excluir.doc(r) ?? '').trim();
-    const m = typeof active.excluir.material === 'function' ? String(active.excluir.material(r) ?? '').trim() : '';
-    return m ? `${d} · mat. ${m}` : d;
-  };
-  let conteos = await pConteos;
-  const foco = conComent ? tomarFoco(viewKey) : null;
-  const focoPrio = foco && foco.prio ? foco : null;   // (15-oct-2026) se resuelve más abajo, tras cargar prioridades
-  if (foco && !foco.prio) {
-    const fr = rowsAll.find(r => claveCom(r) === foco.clave);
-    if (fr) { st.drawer = fr.__rid; st._focoCom = foco.comentarioId || true; }
-    else setTimeout(() => abrirHiloSuelto(foco), 0);
-  }
-
-  // Exclusiones del Plan de Carga (acción del panel lateral, sólo perfiles con permiso)
-  // (12-oct-2026) active.sinExcluir: el modo muestra el estado del plan pero sin botón Excluir (p. ej. Pendientes de traslados).
-  const puedeExcluir = !!(active.excluir && !active.sinExcluir && deps.can(AV.permisoExcluir || 'excluir'));
-  // excluirEnFila (2-oct-2026): estado + botón Excluir/Reactivar en la fila principal
-  // (columna «Plan de carga») en vez del panel lateral de detalle.
-  const enFila = !!(active.excluir && AV.excluirEnFila);
-  let exclusiones = await pExcl;
-  function exclusionDe(r) {
-    const ex = active.excluir; if (!ex) return null;
-    const doc = String(ex.doc(r) ?? '').trim();
-    const mat = typeof ex.material === 'function' ? String(ex.material(r) ?? '').trim() : '';
-    return exclusiones.find(e => e.tipo === ex.tipo && String(e.doc ?? '').trim() === doc
-      && (String(e.material ?? '').trim() === '' || String(e.material ?? '').trim() === mat)) || null;
-  }
-
-  // (15-oct-2026, Jordan) PRIORIDAD de carga: check por pedido/OC (AV.prioridad = { tipo, doc, centro }).
-  // La marca el Jefe de Operaciones de la sucursal (acción marcar_prioridad, sólo sus centros) y alerta en el Plan de Carga.
-  // (1-nov-2026, Jordan) Si la vista trae AV.prioridad.material, la marca es por ENTREGA + MATERIAL
-  // (vistas Entregas de Crossdocking y Pedidos de Traslados): se prioriza la línea, no el pedido completo.
-  const prioCfg = AV.prioridad && deps.loadPrioridades ? AV.prioridad : null;
-  let prios = await pPrios;
-  const prioDoc = r => String(prioCfg.doc(r) ?? '').trim();
-  const prioMat = r => prioCfg.material ? String(prioCfg.material(r) ?? '').trim() : '';
-  // (10-nov-2026) marcas antiguas sin material (pedido completo) siguen valiendo para cada posición
-  const prioDe = r => prios.get(`${prioCfg.tipo}|${prioDoc(r)}|${prioMat(r)}`) || (prioMat(r) ? prios.get(`${prioCfg.tipo}|${prioDoc(r)}|`) : null) || null;
-  // (10-nov-2026, Jordan) Prioridad HEREDADA: la entrega toma la prioridad dada a su PT + posición (prioCfg.hereda)
-  const heCfg = prioCfg && prioCfg.hereda ? prioCfg.hereda : null;
-  let priosH = await pPriosH;
-  const heredaDe = r => { if (!heCfg) return null; const d = String(heCfg.doc(r) ?? '').trim(), m = String(heCfg.material(r) ?? '').trim();
-    return priosH.get(`${heCfg.tipo}|${d}|${m}`) || priosH.get(`${heCfg.tipo}|${d}|`) || null; };
-  const prioLbl = r => prioMat(r) ? `${prioDoc(r)} · material ${prioMat(r)}` : prioDoc(r);
-  const puedePrio = r => deps.can('marcar_prioridad') && (!deps.enAlcance || !prioCfg.centro || deps.enAlcance(String(prioCfg.centro(r) ?? '').trim()));
-  // (15-oct-2026, Jordan) Aprobación: la marca de Operaciones queda POR APROBAR hasta que un Planner de
-  // Abastecimiento (acción evaluar_prioridad) la acepta → PRIORIDAD; si la rechaza se desactiva.
-  const puedeEval = () => deps.can('evaluar_prioridad') && !!deps.evaluarPrioridad;
-  function celdaPrio(r) {
-    const h = !prioDe(r) ? heredaDe(r) : null;
-    if (h) {   // heredada del PT: se muestra, se gestiona en el pedido (Crossdocking)
-      const hp = h.estado !== 'PENDIENTE';
-      return `<span class="sv-pill ${hp ? 'bad' : 'warn'}" style="font-size:10px;padding:1px 6px" title="Prioridad del pedido de traslado ${esc(String(heCfg.doc(r) ?? ''))} · posición ${esc(String(heCfg.material(r) ?? ''))}${h.motivo ? ' · ' + esc(h.motivo) : ''}. Se gestiona en la vista Crossdocking."><i></i>${hp ? 'PRIORIDAD PT' : 'PT POR APROBAR'}</span>`;
-    }
-    const p = prioDe(r), ed = puedePrio(r) && prioDoc(r);
-    const pend = !!p && p.estado === 'PENDIENTE';
-    const tit = p ? `Marcada por ${esc(p.marcado_por || '')}${p.motivo ? ' · ' + esc(p.motivo) : ''}${pend ? ' · pendiente de aprobación de Abastecimiento' : (p.evaluado_por ? ' · aceptada por ' + esc(p.evaluado_por) : '')}` : '';
-    const pill = !p ? '' : pend
-      ? `<span class="sv-pill warn" title="${tit}" style="font-size:10px;padding:1px 6px"><i></i>POR APROBAR</span>`
-      : `<span class="sv-pill bad" title="${tit}" style="font-size:10px;padding:1px 6px"><i></i>PRIORIDAD</span>`;
-    const rid = esc(r.__rid);
-    // (10-nov-2026, Jordan) columna compacta: Aceptar / Rechazar sólo con ícono, debajo de la marca
-    const ev = pend && puedeEval() ? `<span style="display:inline-flex;gap:4px;margin-top:4px">
-      <button class="sv-btn" data-prio-ok="${rid}" title="Aceptar: pasa a ser prioridad de carga" style="padding:2px 4px;font-size:11px;color:#15803d"><span class="material-symbols-outlined">check_circle</span></button>
-      <button class="sv-btn" data-prio-no="${rid}" title="Rechazar la priorización" style="padding:2px 4px;font-size:11px;color:#b91c1c"><span class="material-symbols-outlined">block</span></button></span>` : '';
-    if (!ed) return (pill || ev) ? `<span style="display:inline-flex;flex-direction:column;align-items:flex-start">${pill}${ev}</span>` : '<span class="sv-muted">—</span>';
-    return `<span style="display:inline-flex;flex-direction:column;align-items:flex-start"><label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;white-space:nowrap" title="${p ? 'Quitar prioridad de carga' : (puedeEval() ? 'Marcar prioridad de carga' : 'Solicitar prioridad de carga (la aprueba Abastecimiento)')}">
-      <input type="checkbox" data-prio="${rid}" ${p ? 'checked' : ''} style="width:16px;height:16px;accent-color:#b5000b;cursor:pointer">${pill}</label>${ev}</span>`;
-  }
-  if (focoPrio) {
-    // (15-oct-2026) Notificación de PRIORIDAD de carga: filtra la vista por el documento y abre su fila.
-    const d = String(focoPrio.documento ?? '').trim();
-    const mFoco = String(focoPrio.material ?? '').trim();
-    const fr = prioCfg && d ? (rowsAll.find(r => prioDoc(r) === d && (!mFoco || prioMat(r) === mFoco)) || rowsAll.find(r => prioDoc(r) === d)) : null;
-    if (fr && AV.docSearch && String(AV.docSearch.of(fr) ?? '').includes(d)) st.qDoc = d;
-    else if (fr && AV.search && String(AV.search.of(fr) ?? '').includes(d)) st.q = d;
-    if (fr) st.drawer = fr.__rid;
-    else setTimeout(() => deps.showAlert(`El documento ${d} no aparece en esta vista con los datos actuales (revisa Entregas / Pendientes).`, 'warning'), 0);
-  }
-  const rowId = r => r.__rid;
-  const esCal = () => !!(AV.calendario && st.vista === 'cal');
-  const kpisDef = AV.kpis || [];
-  const kpiFn = k => (kpisDef.find(x => x.key === k) || {}).fn;
-
-  function base() {
-    const qd = st.qDoc.trim(), dF = isoToDate(st.dFrom), dT = isoToDate(st.dTo);
-    return rowsAll.filter(r => {
-      if (AV.origen && st.orig && st.orig !== '*' && String(AV.origen.of(r) ?? '').trim() !== st.orig) return false;
-      if (AV.docSearch && qd && !String(AV.docSearch.of(r) ?? '').includes(qd)) return false;
-      if (AV.fecha && (dF || dT) && !esCal()) {
-        const d = deps.parseDateSAP(AV.fecha.of(r));
-        if (!d) return false;
-        if (dF && d < dF) return false;
-        if (dT && d > dT) return false;
-      }
-      return true;
-    });
-  }
-  // chip2 (opcional): 2º filtro por chips, p. ej. Centro Destino en Retiros (30-sep-2026).
-  // chips (opcional, 3-oct-2026): filtros extra por chips, p. ej. Tipo de pedido y Saldo en Retiros.
-  st.ex = st.ex || {};
-  const exOn = () => (AV.chips || []).some(c => st.ex[c.key] && st.ex[c.key] !== 'all');
-  function aplicaExtras(pre) {
-    return (AV.chips || []).reduce((acc, c) => (st.ex[c.key] && st.ex[c.key] !== 'all') ? acc.filter(r => String(c.of(r) ?? '') === st.ex[c.key]) : acc, pre);
-  }
-  function aplicaChip2(pre0) {
-    const pre = aplicaExtras(pre0);
-    return AV.chip2 && st.chip2 !== 'all' ? pre.filter(r => String(AV.chip2.of(r) ?? '') === st.chip2) : pre;
-  }
-  function aplica(pre0) {
-    const pre = aplicaChip2(pre0);
-    const byChip = AV.chip && st.chip !== 'all' ? pre.filter(r => String(AV.chip.of(r) ?? '') === st.chip) : pre;
-    const q = st.q.trim().toLowerCase();
-    const f = kpiFn(st.kpi);
-    const filt = byChip.filter(r => (!f || f(r)) && (!q || !AV.search || String(AV.search.of(r) ?? '').toLowerCase().includes(q)));
-    return { byChip, filt };
-  }
-
-  // (7-oct-2026) Botones extra del encabezado por vista/modo: AV.headBtns = [{ label, icon, perm, run }]; run() → true recarga.
-  // (28-oct-2026) run(filas) recibe las filas filtradas en pantalla (p. ej. descargas).
-  const headBtns = () => (AV.headBtns || []).filter(b => !b.perm || deps.can(b.perm));
-  function headHTML() {
-    const seg = AV.origen ? `<div class="sv-seg" role="group" aria-label="Centro de origen">${AV.origen.opciones.map(([v, l]) =>
-      `<button data-chip data-orig="${esc(v)}" class="${st.orig === v ? 'is-on' : ''}"><span class="material-symbols-outlined">warehouse</span>${esc(l)}</button>`).join('')}</div>` : '';
-    const modes = cfg.modes ? `<div class="sv-seg" role="group" aria-label="Modo">${cfg.modes.map((m, i) =>
-      `<button data-chip data-mode="${i}" class="${st.mode === i ? 'is-on' : ''}">${m.icon ? `<span class="material-symbols-outlined">${m.icon}</span>` : ''}${esc(m.v2label || m.label)}</button>`).join('')}</div>` : '';
-    return `<div class="sv-vhead">
-      <div style="min-width:0"><h1 class="sv-h1">${esc(AV.titulo)}</h1>${AV.desc ? `<div class="sv-desc">${esc(AV.desc)}</div>` : ''}</div>
-      <div class="sv-actions">${st._volver ? `<button class="sv-btn-p" data-volver title="Volver a donde estabas"><span class="material-symbols-outlined">arrow_back</span>Volver a ${esc(st._volver.lbl || '')}</button>` : ''}${AV.calendario ? `<div class="sv-seg" role="group" aria-label="Vista">
-        <button data-chip data-vista="cal" class="${esCal() ? 'is-on' : ''}"><span class="material-symbols-outlined">calendar_month</span>Calendario</button>
-        <button data-chip data-vista="lista" class="${!esCal() ? 'is-on' : ''}"><span class="material-symbols-outlined">view_list</span>Lista</button></div>` : ''}${modes}${seg}
-        ${headBtns().map((b, i) => `<button class="sv-btn" data-hbtn="${i}" title="${esc(b.label)}"><span class="material-symbols-outlined">${esc(b.icon || 'bolt')}</span>${esc(b.label)}</button>`).join('')}
-        ${deps.barraTrabajo ? deps.barraTrabajo() : ''}
+    <div style="display:flex;gap:12px;margin:8px 0 16px">${[1,2,3,4].map(()=>`<div style="flex:1;padding:14px;border:1px solid #e1e3e4;border-radius:12px;display:flex;flex-direction:column;gap:8px">${r("55%",10)}${r("35%",22)}</div>`).join("")}</div>
+    <div style="border:1px solid #e1e3e4;border-radius:12px;padding:14px;display:flex;flex-direction:column;gap:12px">${["100%","92%","97%","88%","95%","90%","96%"].map(n=>r(n)).join("")}</div></div>`}function dt(e,r,n,d){const $=ya(r),k=G($.dFrom),P=G($.dTo),t=!!(n.calendario&&$.vista==="cal");return e.filter(f=>{if(n.origen&&$.orig&&$.orig!=="*"&&String(n.origen.of(f)??"").trim()!==$.orig)return!1;if(n.fecha&&(k||P)&&!t){const s=d.parseDateSAP(n.fecha.of(f));if(!s||k&&s<k||P&&s>P)return!1}return!0})}async function wt(e,r){const n=e.v2,d=e.modes?Object.assign({},e,e.modes[0]):e,$=Object.assign({},n,d.v2mode||{}),k=Object.assign({},d.preload?await d.preload():{},$.preload?await $.preload():{}),P=(await r.fetchAllRows(d.vista)).slice();r.augmentRaw&&await r.augmentRaw(d.vista,P);const t=d.centroCampo||d.chipFilter?.campo;let f=d.transform?d.transform(P,k):P;f=t?r.filtrarPorCentro(f,t):f,d.postFilter&&(f=d.postFilter(f,"all",k)),$.ocultar&&(f=f.filter(U=>!$.ocultar(U))),$.enrich&&$.enrich(f,k);const s=ya(e),L=G(s.dFrom),F=G(s.dTo),da=!!($.calendario&&s.vista==="cal");return{rows:f.filter(U=>{if($.origen&&s.orig&&s.orig!=="*"&&String($.origen.of(U)??"").trim()!==s.orig)return!1;if($.fecha&&(L||F)&&!da){const K=r.parseDateSAP($.fecha.of(U));if(!K||L&&K<L||F&&K>F)return!1}return!0}),AV:$}}function pt(e){const r=[];for(let d=e;d;d=d.parentElement)(d.scrollTop>0||d.scrollLeft>0)&&r.push([d,d.scrollTop,d.scrollLeft]);const n=e.querySelector(".sv-table-wrap");return{el:e,l:r,x:window.scrollX,y:window.scrollY,tw:n?[n.scrollTop,n.scrollLeft]:null}}function ut(e){if(e)try{e.l.forEach(([n,d,$])=>{n.isConnected&&(n.scrollTop=d,n.scrollLeft=$)}),(window.scrollX!==e.x||window.scrollY!==e.y)&&window.scrollTo(e.x,e.y);const r=e.tw&&e.el.querySelector(".sv-table-wrap");r&&(r.scrollTop=e.tw[0],r.scrollLeft=e.tw[1])}catch{}}async function J(e,r,n,d){const $=e._vkV2===d&&!!e.firstElementChild,k=$?pt(e):null;$&&(e.style.transition="opacity .15s",e.style.opacity=".55",e.style.pointerEvents="none");try{await ft(e,r,n,d,$),e._vkV2=d}finally{$&&(e.style.opacity="",e.style.pointerEvents="",ut(k))}}function G(e){const r=String(e||"").match(/^(\d{4})-(\d{2})-(\d{2})$/);return r?new Date(+r[1],+r[2]-1,+r[3]):null}const Ma=["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"],vt=["Lun","Mar","Mié","Jue","Vie","Sáb","Dom"];function Ta(e){const[r,n,d]=String(e||"").split("-").map(Number);if(!r)return"";const $=new Date(r,n-1,d);return`${["domingo","lunes","martes","miércoles","jueves","viernes","sábado"][$.getDay()]} ${d} de ${Ma[n-1]}${r!==new Date().getFullYear()?" de "+r:""}`}function Z(){const e=new Date;return`${e.getFullYear()}-${String(e.getMonth()+1).padStart(2,"0")}-${String(e.getDate()).padStart(2,"0")}`}async function ft(e,r,n,d,$=!1){const k=r.v2,P=ca.has(d)?null:nt(d),t=ca.get(d)||{kpi:"all",chip:"all",chip2:"all",q:"",qDoc:"",dFrom:"",dTo:"",orig:k.origen?k.origen.opciones[0][0]:null,mode:0,drawer:null};!ca.has(d)&&r.dateDefaultHoy&&(t.dFrom=t.dTo=Z()),P&&(Aa.forEach(i=>{P[i]!==void 0&&P[i]!==null&&(t[i]=P[i])}),k.origen&&!k.origen.opciones.some(i=>i[0]===t.orig)&&(t.orig=k.origen.opciones[0][0]),(!r.modes||!r.modes[t.mode])&&(t.mode=0),t.vista==="cal"&&!k.calendario&&(t.vista="lista"));{const i=$a.get(d)||null;$a.delete(d),i?(Object.assign(t,ya(r),i.filtros||{}),t._volver=i.volver||null,t.sel=new Set):$||(t._volver=null)}ca.set(d,t),t.open=null,t.vista||(t.vista=k.calendario?"cal":"lista"),e._fClose&&(document.removeEventListener("click",e._fClose),document.removeEventListener("keydown",e._fClose)),e._fClose=i=>{!t.open||!e.isConnected||(i.type==="keydown"?i.key!=="Escape":i.target.closest&&i.target.closest(".sv-fdd"))||(i.type==="keydown"&&i.stopPropagation(),t.open=null,e._fRedraw&&e._fRedraw())},document.addEventListener("click",e._fClose),document.addEventListener("keydown",e._fClose),t.drawer=t._reopen||null,t._reopen=null,t.sel||(t.sel=new Set);const f=r.modes?Object.assign({},r,r.modes[t.mode]||r.modes[0]):r,s=Object.assign({},k,f.v2mode||{});$||(e.innerHTML=ct(s.titulo));const L=i=>(i.catch(()=>{}),i),F=Ca(d),da=!!(f.excluir&&(!f.sinExcluir&&n.can(s.permisoExcluir||"excluir")||s.excluirEnFila)),Q=s.prioridad&&n.loadPrioridades?s.prioridad:null,U=L(Promise.resolve().then(()=>n.fetchAllRows(f.vista))),K=L(Promise.resolve().then(()=>n.ultimaLectura?n.ultimaLectura(f.vista):null)),ja=L(Promise.resolve().then(()=>F?tt(d):new Map)),Fa=L(Promise.resolve().then(()=>da?n.loadExclusionesPlan():[])),Ra=L(Promise.resolve().then(()=>Q?n.loadPrioridades(Q.tipo):new Map)),Ha=L(Promise.resolve().then(()=>Q&&Q.hereda?n.loadPrioridades(Q.hereda.tipo):new Map)),T=Object.assign({},f.preload?await f.preload():{},s.preload?await s.preload():{}),ta=(await U).slice();{const i=ot(ta);let l=null;try{l=await K}catch{l=null}st(l&&(!i||new Date(l)>new Date(i))?l:i)}n.augmentRaw&&await n.augmentRaw(f.vista,ta);const ea=f.centroCampo||f.chipFilter?.campo;let S=f.transform?f.transform(ta,T):ta;if(S=ea?n.filtrarPorCentro(S,ea):S,f.postFilter&&(S=f.postFilter(S,"all",T)),s.ocultar&&(S=S.filter(i=>!s.ocultar(i))),s.enrich&&s.enrich(S,T),n.alCalcularVista&&t.mode===0)try{n.alCalcularVista(d,dt(S,r,s,n),s)}catch{}S.forEach((i,l)=>{i.__rid=s.rowId?String(s.rowId(i)):String(l)});const pa=Ca(d),aa=i=>s.rowId?String(s.rowId(i)):f.excluir?[f.excluir.doc(i),typeof f.excluir.material=="function"?f.excluir.material(i):""].map(l=>String(l??"").trim()).join("|"):i.__rid,Ia=i=>{if(!f.excluir)return aa(i);const l=String(f.excluir.doc(i)??"").trim(),a=typeof f.excluir.material=="function"?String(f.excluir.material(i)??"").trim():"";return a?`${l} · mat. ${a}`:l};let ua=await ja;const z=pa?it(d):null,va=z&&z.prio?z:null;if(z&&!z.prio){const i=S.find(l=>aa(l)===z.clave);i?(t.drawer=i.__rid,t._focoCom=z.comentarioId||!0):setTimeout(()=>lt(z),0)}const ba=!!(f.excluir&&!f.sinExcluir&&n.can(s.permisoExcluir||"excluir")),xa=!!(f.excluir&&s.excluirEnFila);let ia=await Fa;function la(i){const l=f.excluir;if(!l)return null;const a=String(l.doc(i)??"").trim(),o=typeof l.material=="function"?String(l.material(i)??"").trim():"";return ia.find(u=>u.tipo===l.tipo&&String(u.doc??"").trim()===a&&(String(u.material??"").trim()===""||String(u.material??"").trim()===o))||null}const q=s.prioridad&&n.loadPrioridades?s.prioridad:null;let sa=await Ra;const R=i=>String(q.doc(i)??"").trim(),W=i=>q.material?String(q.material(i)??"").trim():"",oa=i=>sa.get(`${q.tipo}|${R(i)}|${W(i)}`)||(W(i)?sa.get(`${q.tipo}|${R(i)}|`):null)||null,X=q&&q.hereda?q.hereda:null;let ga=await Ha;const Na=i=>{if(!X)return null;const l=String(X.doc(i)??"").trim(),a=String(X.material(i)??"").trim();return ga.get(`${X.tipo}|${l}|${a}`)||ga.get(`${X.tipo}|${l}|`)||null},wa=i=>W(i)?`${R(i)} · material ${W(i)}`:R(i),Oa=i=>n.can("marcar_prioridad")&&(!n.enAlcance||!q.centro||n.enAlcance(String(q.centro(i)??"").trim())),Sa=()=>n.can("evaluar_prioridad")&&!!n.evaluarPrioridad;function Va(i){const l=oa(i)?null:Na(i);if(l){const M=l.estado!=="PENDIENTE";return`<span class="sv-pill ${M?"bad":"warn"}" style="font-size:10px;padding:1px 6px" title="Prioridad del pedido de traslado ${c(String(X.doc(i)??""))} · posición ${c(String(X.material(i)??""))}${l.motivo?" · "+c(l.motivo):""}. Se gestiona en la vista Crossdocking."><i></i>${M?"PRIORIDAD PT":"PT POR APROBAR"}</span>`}const a=oa(i),o=Oa(i)&&R(i),u=!!a&&a.estado==="PENDIENTE",h=a?`Marcada por ${c(a.marcado_por||"")}${a.motivo?" · "+c(a.motivo):""}${u?" · pendiente de aprobación de Abastecimiento":a.evaluado_por?" · aceptada por "+c(a.evaluado_por):""}`:"",y=a?u?`<span class="sv-pill warn" title="${h}" style="font-size:10px;padding:1px 6px"><i></i>POR APROBAR</span>`:`<span class="sv-pill bad" title="${h}" style="font-size:10px;padding:1px 6px"><i></i>PRIORIDAD</span>`:"",E=c(i.__rid),A=u&&Sa()?`<span style="display:inline-flex;gap:4px;margin-top:4px">
+      <button class="sv-btn" data-prio-ok="${E}" title="Aceptar: pasa a ser prioridad de carga" style="padding:2px 4px;font-size:11px;color:#15803d"><span class="material-symbols-outlined">check_circle</span></button>
+      <button class="sv-btn" data-prio-no="${E}" title="Rechazar la priorización" style="padding:2px 4px;font-size:11px;color:#b91c1c"><span class="material-symbols-outlined">block</span></button></span>`:"";return o?`<span style="display:inline-flex;flex-direction:column;align-items:flex-start"><label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;white-space:nowrap" title="${a?"Quitar prioridad de carga":Sa()?"Marcar prioridad de carga":"Solicitar prioridad de carga (la aprueba Abastecimiento)"}">
+      <input type="checkbox" data-prio="${E}" ${a?"checked":""} style="width:16px;height:16px;accent-color:#b5000b;cursor:pointer">${y}</label>${A}</span>`:y||A?`<span style="display:inline-flex;flex-direction:column;align-items:flex-start">${y}${A}</span>`:'<span class="sv-muted">—</span>'}if(va){const i=String(va.documento??"").trim(),l=String(va.material??"").trim(),a=q&&i?S.find(o=>R(o)===i&&(!l||W(o)===l))||S.find(o=>R(o)===i):null;a&&s.docSearch&&String(s.docSearch.of(a)??"").includes(i)?t.qDoc=i:a&&s.search&&String(s.search.of(a)??"").includes(i)&&(t.q=i),a?t.drawer=a.__rid:setTimeout(()=>n.showAlert(`El documento ${i} no aparece en esta vista con los datos actuales (revisa Entregas / Pendientes).`,"warning"),0)}const na=i=>i.__rid,V=()=>!!(s.calendario&&t.vista==="cal"),fa=s.kpis||[],za=i=>(fa.find(l=>l.key===i)||{}).fn;function Ba(){const i=t.qDoc.trim(),l=G(t.dFrom),a=G(t.dTo);return S.filter(o=>{if(s.origen&&t.orig&&t.orig!=="*"&&String(s.origen.of(o)??"").trim()!==t.orig||s.docSearch&&i&&!String(s.docSearch.of(o)??"").includes(i))return!1;if(s.fecha&&(l||a)&&!V()){const u=n.parseDateSAP(s.fecha.of(o));if(!u||l&&u<l||a&&u>a)return!1}return!0})}t.ex=t.ex||{};const Ya=()=>(s.chips||[]).some(i=>t.ex[i.key]&&t.ex[i.key]!=="all");function Ea(i){return(s.chips||[]).reduce((l,a)=>t.ex[a.key]&&t.ex[a.key]!=="all"?l.filter(o=>String(a.of(o)??"")===t.ex[a.key]):l,i)}function ka(i){const l=Ea(i);return s.chip2&&t.chip2!=="all"?l.filter(a=>String(s.chip2.of(a)??"")===t.chip2):l}function Wa(i){const l=ka(i),a=s.chip&&t.chip!=="all"?l.filter(y=>String(s.chip.of(y)??"")===t.chip):l,o=t.q.trim().toLowerCase(),u=za(t.kpi),h=a.filter(y=>(!u||u(y))&&(!o||!s.search||String(s.search.of(y)??"").toLowerCase().includes(o)));return{byChip:a,filt:h}}const _a=()=>(s.headBtns||[]).filter(i=>!i.perm||n.can(i.perm));function Xa(){const i=s.origen?`<div class="sv-seg" role="group" aria-label="Centro de origen">${s.origen.opciones.map(([a,o])=>`<button data-chip data-orig="${c(a)}" class="${t.orig===a?"is-on":""}"><span class="material-symbols-outlined">warehouse</span>${c(o)}</button>`).join("")}</div>`:"",l=r.modes?`<div class="sv-seg" role="group" aria-label="Modo">${r.modes.map((a,o)=>`<button data-chip data-mode="${o}" class="${t.mode===o?"is-on":""}">${a.icon?`<span class="material-symbols-outlined">${a.icon}</span>`:""}${c(a.v2label||a.label)}</button>`).join("")}</div>`:"";return`<div class="sv-vhead">
+      <div style="min-width:0"><h1 class="sv-h1">${c(s.titulo)}</h1>${s.desc?`<div class="sv-desc">${c(s.desc)}</div>`:""}</div>
+      <div class="sv-actions">${t._volver?`<button class="sv-btn-p" data-volver title="Volver a donde estabas"><span class="material-symbols-outlined">arrow_back</span>Volver a ${c(t._volver.lbl||"")}</button>`:""}${s.calendario?`<div class="sv-seg" role="group" aria-label="Vista">
+        <button data-chip data-vista="cal" class="${V()?"is-on":""}"><span class="material-symbols-outlined">calendar_month</span>Calendario</button>
+        <button data-chip data-vista="lista" class="${V()?"":"is-on"}"><span class="material-symbols-outlined">view_list</span>Lista</button></div>`:""}${l}${i}
+        ${_a().map((a,o)=>`<button class="sv-btn" data-hbtn="${o}" title="${c(a.label)}"><span class="material-symbols-outlined">${c(a.icon||"bolt")}</span>${c(a.label)}</button>`).join("")}
+        ${n.barraTrabajo?n.barraTrabajo():""}
         <button class="sv-btn" data-csv title="Descargar CSV"><span class="material-symbols-outlined">download</span>Descargar</button>
         <button class="sv-btn is-icon" data-refrescar title="Refrescar datos"><span class="material-symbols-outlined">refresh</span></button>
-      </div></div>`;
-  }
-
-  stage._fRedraw = () => draw();
-  function draw() {
-    guardarFiltros(viewKey, st);   // (16-nov-2026 · fluidez) filtros persistentes durante el día
-    const pre = base();
-    const { byChip, filt } = aplica(pre);
-    const hasFilter = exOn() || st.kpi !== 'all' || st.chip !== 'all' || st.chip2 !== 'all' || !!st.q.trim() || !!st.qDoc.trim() || ((!!st.dFrom || !!st.dTo) && !esCal());
-
-    const kpis = kpisDef.length ? `<div class="sv-kpis">${kpisDef.map(k => {
-      const n = k.fn ? byChip.filter(k.fn).length : byChip.length;
-      const on = st.kpi === k.key;
-      const val = k.valor ? k.valor(byChip) : n.toLocaleString('es-CL');
-      return `<button class="sv-kpi ${on ? 'is-on' : ''}" data-chip data-kpi="${esc(k.key)}" style="${on ? `box-shadow:inset 0 -3px 0 ${k.color}` : ''}">
-        <div class="sv-kpi-l"><i style="background:${k.color}"></i>${esc(k.label)}</div>
-        <div class="sv-kpi-v">${esc(val)}</div><div class="sv-kpi-s">${esc(k.sub || '')}</div></button>`;
-    }).join('')}</div>` : '';
-
-    // (4-oct-2026) Filtros por chips como menús desplegables en una sola barra (antes una fila
-    // de botones por grupo, que colapsaba la vista cuando había muchos destinos).
-    const grupos = [];
-    const mkGrupo = (id, def, base0, cur) => {
-      const nm = def.name || (v => v);
-      const vals = [...new Set(base0.map(r => String(def.of(r) ?? '')).filter(Boolean))].sort((a, b) => (def.orden ? def.orden(a, b) : a.localeCompare(b)));
-      grupos.push({ id, label: def.label, cur, total: base0.length,
-        opts: vals.map(v => ({ v, name: nm(v), n: base0.filter(r => String(def.of(r) ?? '') === v).length })) });
-    };
-    const preX = aplicaExtras(pre);
-    if (AV.chip2) mkGrupo('chip2', AV.chip2, preX, st.chip2);
-    if (AV.chip) mkGrupo('chip', AV.chip, aplicaChip2(pre), st.chip);
-    (AV.chips || []).forEach(c => mkGrupo('ex:' + c.key, c, pre, st.ex[c.key] || 'all'));
-    const ddHtml = g => {
-      const on = g.cur !== 'all';
-      const curName = on ? ((g.opts.find(o => o.v === g.cur) || {}).name || g.cur) : 'Todos';
-      const pop = st.open === g.id ? `<div class="sv-fpop" role="listbox">
-          ${g.opts.length > 8 ? `<label class="sv-inp sv-fpop-q"><span class="material-symbols-outlined">search</span><input data-fq placeholder="Buscar ${esc(g.label.toLowerCase())}"></label>` : ''}
-          <button class="sv-fopt ${!on ? 'is-on' : ''}" data-fset="${esc(g.id)}" data-fv="all"><span>Todos</span><small>${g.total}</small></button>
-          ${g.opts.map(o => `<button class="sv-fopt ${g.cur === o.v ? 'is-on' : ''}" data-fset="${esc(g.id)}" data-fv="${esc(o.v)}" data-fname="${esc((String(o.name) + ' ' + o.v).toLowerCase())}"><span>${esc(o.name)}</span><small>${o.n}</small></button>`).join('')}
-        </div>` : '';
-      return `<div class="sv-fdd ${on ? 'is-on' : ''} ${st.open === g.id ? 'is-open' : ''}">
-        <button class="sv-fdd-b" data-fopen="${esc(g.id)}" aria-expanded="${st.open === g.id}"><span class="sv-fdd-l">${esc(g.label)}</span><span class="sv-fdd-v" title="${esc(curName)}">${esc(curName)}</span><span class="material-symbols-outlined">expand_more</span></button>
-        ${on ? `<button class="sv-fdd-x" data-fset="${esc(g.id)}" data-fv="all" title="Quitar filtro"><span class="material-symbols-outlined">close</span></button>` : ''}
-        ${pop}</div>`;
-    };
-    const chips = grupos.map(ddHtml).join('');
-    const inputs = [];
-    if (AV.docSearch) inputs.push(`<label class="sv-inp" title="${esc(AV.docSearch.ph)}"><span class="material-symbols-outlined">tag</span>
-      <input class="is-mono" data-qdoc inputmode="numeric" placeholder="${esc(AV.docSearch.ph)}" value="${esc(st.qDoc)}" style="width:190px"/></label>`);
-    if (AV.fecha && !esCal()) inputs.push(`<div class="sv-inp" title="${esc(AV.fecha.label)}"><span class="material-symbols-outlined">date_range</span>
-      <span class="sv-sep">${esc(AV.fecha.label)}</span>
-      <input type="date" data-dfrom value="${esc(st.dFrom)}" aria-label="Desde"/><span class="sv-sep">–</span><input type="date" data-dto value="${esc(st.dTo)}" aria-label="Hasta"/></div>`);
-    if (AV.search) inputs.push(`<label class="sv-inp"><span class="material-symbols-outlined">search</span>
-      <input data-q placeholder="${esc(AV.search.ph)}" value="${esc(st.q)}" style="width:220px"/></label>`);
-    const filtros = (chips || inputs.length) ? `<div class="sv-filters"><div class="sv-ftool">${chips}${inputs.join('')}${hasFilter ? '<button class="sv-btn-g" data-chip data-clear>Limpiar filtros</button>' : ''}</div></div>` : '';
-
-    const MAX = 1500;
-    const shown = filt.slice(0, MAX);
-    const selId = st.drawer;
-    let cols = enFila ? AV.cols.concat([{ label: 'Plan de carga', html: r => celdaPlan(r) }]) : AV.cols;
-    if (prioCfg) cols = [{ label: prioCfg.material ? 'Prio. línea' : 'Prio.', w: '92px', html: r => celdaPrio(r) }].concat(cols);
-    const selAcc = (AV.seleccion && AV.seleccion.acciones || []).filter(a => !a.perm || deps.can(a.perm));
-    if (selAcc.length) {
-      const vis = new Set(rowsAll.map(r => r.__rid)); [...st.sel].forEach(id => { if (!vis.has(id)) st.sel.delete(id); });
-      const todos = filt.slice(0, MAX).length > 0 && filt.slice(0, MAX).every(r => st.sel.has(r.__rid));
-      cols = [{ label: '', w: '34px', headHtml: `<input type="checkbox" data-selall title="Seleccionar todas las filas filtradas" ${todos ? 'checked' : ''} style="width:16px;height:16px;cursor:pointer">`,
-        html: r => `<input type="checkbox" data-selrow="${esc(r.__rid)}" ${st.sel.has(r.__rid) ? 'checked' : ''} style="width:16px;height:16px;cursor:pointer">` }].concat(cols);
-    }
-    if (conComent) cols = cols.concat([{ label: 'Coment.', html: r => celdaComentarios(conteos.get(claveCom(r)) || 0, r.__rid) }]);
-    // (8-oct-2026) Acciones en la fila principal (AV.filaAcciones(r) → [{ label, icon, run, tono }])
-    if (AV.filaAcciones) cols = cols.concat([{ label: 'Acciones', html: r => {
-      const acc = AV.filaAcciones(r) || [];
-      return acc.length ? `<div style="display:flex;flex-direction:column;gap:4px;align-items:flex-start">${acc.map((a, i) =>
-        `<button class="sv-btn" data-facc="${esc(r.__rid)}" data-facc-i="${i}" title="${esc(a.title || a.label)}" style="padding:2px 8px;font-size:11px;white-space:nowrap${a.tono === 'peligro' ? ';color:#b91c1c' : ''}">${a.icon ? `<span class="material-symbols-outlined">${a.icon}</span>` : ''}${esc(a.label)}</button>`).join('')}</div>` : '';
-    } }]);
-    const body = shown.length ? shown.map(r => {
-      const id = rowId(r);
-      const edge = AV.edge ? AV.edge(r) : null;
-      return `<tr data-row="${esc(id)}" class="${selId === id ? 'is-sel' : ''}">${cols.map((c, i) =>
-        `<td class="${c.al === 'r' ? 'r' : ''}" ${i === 0 && edge ? `style="box-shadow:inset 3px 0 0 ${edge}"` : ''}>${c.html(r)}</td>`).join('')}</tr>`;
-    }).join('') : `<tr class="sv-empty"><td colspan="${cols.length}">${hasFilter ? 'Ningún registro coincide con los filtros.' : 'Sin datos.'}</td></tr>`;
-    const nota = typeof AV.note === 'function' ? AV.note(filt) : (AV.note || '');
-
-    stage.innerHTML = `<div class="sv-view">
-      ${headHTML()}
-      ${AV.banner ? AV.banner(rowsAll, ctx) : ''}
-      ${kpis}
-      ${filtros}
-      ${!esCal() && selAcc.length && st.sel.size ? `<div class="sv-card" style="padding:10px 14px;margin-bottom:10px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;position:sticky;top:60px;z-index:5;border:1px solid #b5000b33">
-        <b>${st.sel.size.toLocaleString('es-CL')} seleccionada${st.sel.size === 1 ? '' : 's'}</b>
-        ${selAcc.map((a, i) => `<button class="${a.primary ? 'sv-btn-p' : 'sv-btn'}" data-selacc="${i}"${a.tono === 'peligro' ? ' style="color:#b91c1c"' : ''}>${a.icon ? `<span class="material-symbols-outlined">${a.icon}</span>` : ''}${esc(a.label)}</button>`).join('')}
-        <button class="sv-btn" data-selclear><span class="material-symbols-outlined">close</span>Quitar selección</button></div>` : ''}
-      ${esCal() ? calHTML(filt) : `<div class="sv-card">
-        <div class="sv-tablewrap"><table class="sv-table" style="min-width:${AV.minW || '900px'}">
-          <thead><tr>${cols.map(c => `<th class="${c.al === 'r' ? 'r' : ''}"${c.w ? ` style="width:${c.w};min-width:${c.w};max-width:${c.w}"` : ''}>${c.headHtml || esc(c.label)}</th>`).join('')}</tr></thead>
-          <tbody>${body}</tbody></table></div>
-        <div class="sv-tfoot"><span>${filt.length.toLocaleString('es-CL')} de ${rowsAll.filter(r => !AV.origen || st.orig === '*' || String(AV.origen.of(r) ?? '').trim() === st.orig).length.toLocaleString('es-CL')} registros${filt.length > MAX ? ` · mostrando ${MAX}, usa los filtros para acotar` : ''}</span><span>${esc(nota)}</span></div>
+      </div></div>`}e._fRedraw=()=>g();function g(){rt(d,t);const i=Ba(),{byChip:l,filt:a}=Wa(i),o=Ya()||t.kpi!=="all"||t.chip!=="all"||t.chip2!=="all"||!!t.q.trim()||!!t.qDoc.trim()||(!!t.dFrom||!!t.dTo)&&!V(),u=fa.length?`<div class="sv-kpis">${fa.map(p=>{const _=p.fn?l.filter(p.fn).length:l.length,x=t.kpi===p.key,N=p.valor?p.valor(l):_.toLocaleString("es-CL");return`<button class="sv-kpi ${x?"is-on":""}" data-chip data-kpi="${c(p.key)}" style="${x?`box-shadow:inset 0 -3px 0 ${p.color}`:""}">
+        <div class="sv-kpi-l"><i style="background:${p.color}"></i>${c(p.label)}</div>
+        <div class="sv-kpi-v">${c(N)}</div><div class="sv-kpi-s">${c(p.sub||"")}</div></button>`}).join("")}</div>`:"",h=[],y=(p,_,x,N)=>{const j=_.name||(O=>O),at=[...new Set(x.map(O=>String(_.of(O)??"")).filter(Boolean))].sort((O,ra)=>_.orden?_.orden(O,ra):O.localeCompare(ra));h.push({id:p,label:_.label,cur:N,total:x.length,opts:at.map(O=>({v:O,name:j(O),n:x.filter(ra=>String(_.of(ra)??"")===O).length}))})},E=Ea(i);s.chip2&&y("chip2",s.chip2,E,t.chip2),s.chip&&y("chip",s.chip,ka(i),t.chip),(s.chips||[]).forEach(p=>y("ex:"+p.key,p,i,t.ex[p.key]||"all"));const A=p=>{const _=p.cur!=="all",x=_?(p.opts.find(j=>j.v===p.cur)||{}).name||p.cur:"Todos",N=t.open===p.id?`<div class="sv-fpop" role="listbox">
+          ${p.opts.length>8?`<label class="sv-inp sv-fpop-q"><span class="material-symbols-outlined">search</span><input data-fq placeholder="Buscar ${c(p.label.toLowerCase())}"></label>`:""}
+          <button class="sv-fopt ${_?"":"is-on"}" data-fset="${c(p.id)}" data-fv="all"><span>Todos</span><small>${p.total}</small></button>
+          ${p.opts.map(j=>`<button class="sv-fopt ${p.cur===j.v?"is-on":""}" data-fset="${c(p.id)}" data-fv="${c(j.v)}" data-fname="${c((String(j.name)+" "+j.v).toLowerCase())}"><span>${c(j.name)}</span><small>${j.n}</small></button>`).join("")}
+        </div>`:"";return`<div class="sv-fdd ${_?"is-on":""} ${t.open===p.id?"is-open":""}">
+        <button class="sv-fdd-b" data-fopen="${c(p.id)}" aria-expanded="${t.open===p.id}"><span class="sv-fdd-l">${c(p.label)}</span><span class="sv-fdd-v" title="${c(x)}">${c(x)}</span><span class="material-symbols-outlined">expand_more</span></button>
+        ${_?`<button class="sv-fdd-x" data-fset="${c(p.id)}" data-fv="all" title="Quitar filtro"><span class="material-symbols-outlined">close</span></button>`:""}
+        ${N}</div>`},M=h.map(A).join(""),v=[];s.docSearch&&v.push(`<label class="sv-inp" title="${c(s.docSearch.ph)}"><span class="material-symbols-outlined">tag</span>
+      <input class="is-mono" data-qdoc inputmode="numeric" placeholder="${c(s.docSearch.ph)}" value="${c(t.qDoc)}" style="width:190px"/></label>`),s.fecha&&!V()&&v.push(`<div class="sv-inp" title="${c(s.fecha.label)}"><span class="material-symbols-outlined">date_range</span>
+      <span class="sv-sep">${c(s.fecha.label)}</span>
+      <input type="date" data-dfrom value="${c(t.dFrom)}" aria-label="Desde"/><span class="sv-sep">–</span><input type="date" data-dto value="${c(t.dTo)}" aria-label="Hasta"/></div>`),s.search&&v.push(`<label class="sv-inp"><span class="material-symbols-outlined">search</span>
+      <input data-q placeholder="${c(s.search.ph)}" value="${c(t.q)}" style="width:220px"/></label>`);const w=M||v.length?`<div class="sv-filters"><div class="sv-ftool">${M}${v.join("")}${o?'<button class="sv-btn-g" data-chip data-clear>Limpiar filtros</button>':""}</div></div>`:"",b=1500,C=a.slice(0,b),H=t.drawer;let m=xa?s.cols.concat([{label:"Plan de carga",html:p=>Ua(p)}]):s.cols;q&&(m=[{label:q.material?"Prio. línea":"Prio.",w:"92px",html:p=>Va(p)}].concat(m));const D=(s.seleccion&&s.seleccion.acciones||[]).filter(p=>!p.perm||n.can(p.perm));if(D.length){const p=new Set(S.map(x=>x.__rid));[...t.sel].forEach(x=>{p.has(x)||t.sel.delete(x)}),m=[{label:"",w:"34px",headHtml:`<input type="checkbox" data-selall title="Seleccionar todas las filas filtradas" ${a.slice(0,b).length>0&&a.slice(0,b).every(x=>t.sel.has(x.__rid))?"checked":""} style="width:16px;height:16px;cursor:pointer">`,html:x=>`<input type="checkbox" data-selrow="${c(x.__rid)}" ${t.sel.has(x.__rid)?"checked":""} style="width:16px;height:16px;cursor:pointer">`}].concat(m)}pa&&(m=m.concat([{label:"Coment.",html:p=>Da(ua.get(aa(p))||0,p.__rid)}])),s.filaAcciones&&(m=m.concat([{label:"Acciones",html:p=>{const _=s.filaAcciones(p)||[];return _.length?`<div style="display:flex;flex-direction:column;gap:4px;align-items:flex-start">${_.map((x,N)=>`<button class="sv-btn" data-facc="${c(p.__rid)}" data-facc-i="${N}" title="${c(x.title||x.label)}" style="padding:2px 8px;font-size:11px;white-space:nowrap${x.tono==="peligro"?";color:#b91c1c":""}">${x.icon?`<span class="material-symbols-outlined">${x.icon}</span>`:""}${c(x.label)}</button>`).join("")}</div>`:""}}]));const Y=C.length?C.map(p=>{const _=na(p),x=s.edge?s.edge(p):null;return`<tr data-row="${c(_)}" class="${H===_?"is-sel":""}">${m.map((N,j)=>`<td class="${N.al==="r"?"r":""}" ${j===0&&x?`style="box-shadow:inset 3px 0 0 ${x}"`:""}>${N.html(p)}</td>`).join("")}</tr>`}).join(""):`<tr class="sv-empty"><td colspan="${m.length}">${o?"Ningún registro coincide con los filtros.":"Sin datos."}</td></tr>`,I=typeof s.note=="function"?s.note(a):s.note||"";e.innerHTML=`<div class="sv-view">
+      ${Xa()}
+      ${s.banner?s.banner(S,T):""}
+      ${u}
+      ${w}
+      ${!V()&&D.length&&t.sel.size?`<div class="sv-card" style="padding:10px 14px;margin-bottom:10px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;position:sticky;top:60px;z-index:5;border:1px solid #b5000b33">
+        <b>${t.sel.size.toLocaleString("es-CL")} seleccionada${t.sel.size===1?"":"s"}</b>
+        ${D.map((p,_)=>`<button class="${p.primary?"sv-btn-p":"sv-btn"}" data-selacc="${_}"${p.tono==="peligro"?' style="color:#b91c1c"':""}>${p.icon?`<span class="material-symbols-outlined">${p.icon}</span>`:""}${c(p.label)}</button>`).join("")}
+        <button class="sv-btn" data-selclear><span class="material-symbols-outlined">close</span>Quitar selección</button></div>`:""}
+      ${V()?Ja(a):`<div class="sv-card">
+        <div class="sv-tablewrap"><table class="sv-table" style="min-width:${s.minW||"900px"}">
+          <thead><tr>${m.map(p=>`<th class="${p.al==="r"?"r":""}"${p.w?` style="width:${p.w};min-width:${p.w};max-width:${p.w}"`:""}>${p.headHtml||c(p.label)}</th>`).join("")}</tr></thead>
+          <tbody>${Y}</tbody></table></div>
+        <div class="sv-tfoot"><span>${a.length.toLocaleString("es-CL")} de ${S.filter(p=>!s.origen||t.orig==="*"||String(s.origen.of(p)??"").trim()===t.orig).length.toLocaleString("es-CL")} registros${a.length>b?` · mostrando ${b}, usa los filtros para acotar`:""}</span><span>${c(I)}</span></div>
       </div>`}
       <div data-drawer-slot></div>
-    </div>`;
-    wire(filt);
-    if (st.drawer) openDrawer(st.drawer);
-  }
-
-  // ── Calendario (11-oct-2026, Jordan) ─────────────────────────────────────
-  // AV.calendario = { fecha(r) → 'YYYY-MM-DD', chip(r) → html (resumen en la celda), totalDia(rows) → texto,
-  //   resumenDia(rows) → html, tarjeta(r) → html (panel del día), leyenda → html, vacio → texto }.
-  // Clic en un día → panel con sus planes; clic en una tarjeta → panel lateral de detalle de siempre.
-  function calHTML(filt) {
-    const C = AV.calendario;
-    const porDia = new Map();
-    filt.forEach(r => { const f = String(C.fecha(r) || '').slice(0, 10); if (!/^\d{4}-\d{2}-\d{2}$/.test(f)) return; if (!porDia.has(f)) porDia.set(f, []); porDia.get(f).push(r); });
-    const hoy = hoyISO();
-    if (!st.calDia) {
-      const dias = [...porDia.keys()].sort();
-      st.calDia = porDia.has(hoy) ? hoy : (dias.find(d => d > hoy) || dias[dias.length - 1] || hoy);
-    }
-    if (!st.calMes) st.calMes = st.calDia.slice(0, 7);
-    const [y, m] = st.calMes.split('-').map(Number);
-    const pad = n => String(n).padStart(2, '0');
-    const iso = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-    const off = (new Date(y, m - 1, 1).getDay() + 6) % 7;
-    const nDias = new Date(y, m, 0).getDate();
-    const semanas = Math.ceil((off + nDias) / 7);
-    const delMes = [...porDia.entries()].filter(([d]) => d.startsWith(st.calMes)).flatMap(([, rs]) => rs);
-    let celdas = '';
-    for (let i = 0; i < semanas * 7; i++) {
-      const d = new Date(y, m - 1, 1 - off + i), f = iso(d), rs = porDia.get(f) || [];
-      const cls = ['sv-cdr-d', d.getMonth() !== m - 1 ? 'is-out' : '', f === hoy ? 'is-today' : '', f === st.calDia ? 'is-sel' : '',
-        rs.length ? 'has' : '', i % 7 >= 5 ? 'is-we' : ''].filter(Boolean).join(' ');
-      celdas += `<button class="${cls}" data-cal-dia="${f}" aria-label="${esc(fechaLarga(f))}${rs.length ? `, ${rs.length} planes` : ''}" aria-pressed="${f === st.calDia}">
-        <span class="sv-cdr-dh"><span class="sv-cdr-n">${d.getDate()}</span>${rs.length ? `<span class="sv-cdr-t">${esc(C.totalDia(rs))}</span>` : ''}</span>
-        ${rs.slice(0, 4).map(C.chip).join('')}${rs.length > 4 ? `<span class="sv-cdr-more">+${rs.length - 4} más</span>` : ''}</button>`;
-    }
-    const rsDia = (porDia.get(st.calDia) || []);
-    const cards = rsDia.length ? rsDia.map(r => `<div class="sv-cdr-card ${st.drawer === r.__rid ? 'is-sel' : ''}" data-cal-row="${esc(r.__rid)}" role="button" tabindex="0">${C.tarjeta(r)}</div>`).join('')
-      : `<div class="sv-cdr-empty"><span class="material-symbols-outlined">event_available</span>${esc(C.vacio || 'Sin planes este día.')}</div>`;
-    return `<div class="sv-cdr">
+    </div>`,Ka(a),t.drawer&&B(t.drawer)}function Ja(i){const l=s.calendario,a=new Map;i.forEach(m=>{const D=String(l.fecha(m)||"").slice(0,10);/^\d{4}-\d{2}-\d{2}$/.test(D)&&(a.has(D)||a.set(D,[]),a.get(D).push(m))});const o=Z();if(!t.calDia){const m=[...a.keys()].sort();t.calDia=a.has(o)?o:m.find(D=>D>o)||m[m.length-1]||o}t.calMes||(t.calMes=t.calDia.slice(0,7));const[u,h]=t.calMes.split("-").map(Number),y=m=>String(m).padStart(2,"0"),E=m=>`${m.getFullYear()}-${y(m.getMonth()+1)}-${y(m.getDate())}`,A=(new Date(u,h-1,1).getDay()+6)%7,M=new Date(u,h,0).getDate(),v=Math.ceil((A+M)/7),w=[...a.entries()].filter(([m])=>m.startsWith(t.calMes)).flatMap(([,m])=>m);let b="";for(let m=0;m<v*7;m++){const D=new Date(u,h-1,1-A+m),Y=E(D),I=a.get(Y)||[],p=["sv-cdr-d",D.getMonth()!==h-1?"is-out":"",Y===o?"is-today":"",Y===t.calDia?"is-sel":"",I.length?"has":"",m%7>=5?"is-we":""].filter(Boolean).join(" ");b+=`<button class="${p}" data-cal-dia="${Y}" aria-label="${c(Ta(Y))}${I.length?`, ${I.length} planes`:""}" aria-pressed="${Y===t.calDia}">
+        <span class="sv-cdr-dh"><span class="sv-cdr-n">${D.getDate()}</span>${I.length?`<span class="sv-cdr-t">${c(l.totalDia(I))}</span>`:""}</span>
+        ${I.slice(0,4).map(l.chip).join("")}${I.length>4?`<span class="sv-cdr-more">+${I.length-4} más</span>`:""}</button>`}const C=a.get(t.calDia)||[],H=C.length?C.map(m=>`<div class="sv-cdr-card ${t.drawer===m.__rid?"is-sel":""}" data-cal-row="${c(m.__rid)}" role="button" tabindex="0">${l.tarjeta(m)}</div>`).join(""):`<div class="sv-cdr-empty"><span class="material-symbols-outlined">event_available</span>${c(l.vacio||"Sin planes este día.")}</div>`;return`<div class="sv-cdr">
       <div class="sv-card sv-cdr-main">
         <div class="sv-cdr-h">
           <button class="sv-iconbtn" data-cal-nav="-1" title="Mes anterior"><span class="material-symbols-outlined">chevron_left</span></button>
-          <div class="sv-cdr-m">${esc(MESES[m - 1])} ${y}</div>
+          <div class="sv-cdr-m">${c(Ma[h-1])} ${u}</div>
           <button class="sv-iconbtn" data-cal-nav="1" title="Mes siguiente"><span class="material-symbols-outlined">chevron_right</span></button>
           <button class="sv-btn" data-cal-hoy style="padding:4px 10px">Hoy</button>
-          <span class="sv-cdr-ms">${delMes.length ? esc(C.resumenMes ? C.resumenMes(delMes) : `${delMes.length} planes`) : 'Sin planes en el mes'}</span>
+          <span class="sv-cdr-ms">${w.length?c(l.resumenMes?l.resumenMes(w):`${w.length} planes`):"Sin planes en el mes"}</span>
         </div>
         <div class="sv-cdr-scroll"><div class="sv-cdr-grid">
-          ${DIAS_SEM.map((dn, i) => `<div class="sv-cdr-wd ${i >= 5 ? 'is-we' : ''}">${dn}</div>`).join('')}
-          ${celdas}
+          ${vt.map((m,D)=>`<div class="sv-cdr-wd ${D>=5?"is-we":""}">${m}</div>`).join("")}
+          ${b}
         </div></div>
-        ${C.leyenda ? `<div class="sv-cdr-leg">${C.leyenda}</div>` : ''}
+        ${l.leyenda?`<div class="sv-cdr-leg">${l.leyenda}</div>`:""}
       </div>
       <aside class="sv-card sv-cdr-side" aria-live="polite">
         <div class="sv-cdr-sh">
-          <div class="sv-cdr-sk">${esc(C.etiquetaDia || 'Día')}</div>
-          <div class="sv-cdr-st">${esc(fechaLarga(st.calDia))}</div>
-          ${rsDia.length && C.resumenDia ? `<div class="sv-cdr-ss">${C.resumenDia(rsDia)}</div>` : ''}
+          <div class="sv-cdr-sk">${c(l.etiquetaDia||"Día")}</div>
+          <div class="sv-cdr-st">${c(Ta(t.calDia))}</div>
+          ${C.length&&l.resumenDia?`<div class="sv-cdr-ss">${l.resumenDia(C)}</div>`:""}
         </div>
-        <div class="sv-cdr-cards">${cards}</div>
+        <div class="sv-cdr-cards">${H}</div>
       </aside>
-    </div>`;
-  }
-  function wireCal() {
-    stage.querySelectorAll('[data-cal-dia]').forEach(b => b.addEventListener('click', () => {
-      st.calDia = b.dataset.calDia;
-      if (!st.calDia.startsWith(st.calMes)) st.calMes = st.calDia.slice(0, 7);
-      draw();
-      if (window.matchMedia('(max-width: 1180px)').matches) stage.querySelector('.sv-cdr-side')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }));
-    stage.querySelectorAll('[data-cal-nav]').forEach(b => b.addEventListener('click', () => {
-      const [y, m] = st.calMes.split('-').map(Number);
-      const d = new Date(y, m - 1 + Number(b.dataset.calNav), 1);
-      st.calMes = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; draw();
-    }));
-    stage.querySelector('[data-cal-hoy]')?.addEventListener('click', () => { st.calDia = hoyISO(); st.calMes = st.calDia.slice(0, 7); draw(); });
-    const abrir = el => {
-      st.drawer = el.dataset.calRow;
-      stage.querySelectorAll('.sv-cdr-card.is-sel').forEach(x => x.classList.remove('is-sel'));
-      el.classList.add('is-sel');
-      openDrawer(st.drawer);
-    };
-    stage.querySelectorAll('[data-cal-row]').forEach(el => {
-      el.addEventListener('click', () => abrir(el));
-      el.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); abrir(el); } });
-    });
-  }
+    </div>`}function Qa(){e.querySelectorAll("[data-cal-dia]").forEach(l=>l.addEventListener("click",()=>{t.calDia=l.dataset.calDia,t.calDia.startsWith(t.calMes)||(t.calMes=t.calDia.slice(0,7)),g(),window.matchMedia("(max-width: 1180px)").matches&&e.querySelector(".sv-cdr-side")?.scrollIntoView({behavior:"smooth",block:"start"})})),e.querySelectorAll("[data-cal-nav]").forEach(l=>l.addEventListener("click",()=>{const[a,o]=t.calMes.split("-").map(Number),u=new Date(a,o-1+Number(l.dataset.calNav),1);t.calMes=`${u.getFullYear()}-${String(u.getMonth()+1).padStart(2,"0")}`,g()})),e.querySelector("[data-cal-hoy]")?.addEventListener("click",()=>{t.calDia=Z(),t.calMes=t.calDia.slice(0,7),g()});const i=l=>{t.drawer=l.dataset.calRow,e.querySelectorAll(".sv-cdr-card.is-sel").forEach(a=>a.classList.remove("is-sel")),l.classList.add("is-sel"),B(t.drawer)};e.querySelectorAll("[data-cal-row]").forEach(l=>{l.addEventListener("click",()=>i(l)),l.addEventListener("keydown",a=>{(a.key==="Enter"||a.key===" ")&&(a.preventDefault(),i(l))})})}function Ua(i){const l=la(i),a=s.planEstado?s.planEstado(i,!!l):l?'<span class="sv-pill bad"><i></i>Excluida hoy</span>':'<span class="sv-pill ok"><i></i>En plan</span>';if(!ba||s.bloqueado&&s.bloqueado(i))return a;const o=l?`<button class="sv-btn" data-fila-reac="${c(i.__rid)}" title="Reactivar en el Plan de Carga" style="padding:2px 8px;font-size:11px"><span class="material-symbols-outlined">visibility</span>Reactivar</button>`:`<button class="sv-btn" data-fila-excl="${c(i.__rid)}" title="Excluir del Plan de Carga" style="padding:2px 8px;font-size:11px;color:#b91c1c"><span class="material-symbols-outlined">visibility_off</span>Excluir</button>`;return`<div style="display:flex;align-items:center;gap:6px;white-space:nowrap">${a}${o}</div>`}async function Ga(i){const l=f.excluir,a=l.doc(i),o=typeof l.material=="function"?l.material(i):null,h=String(a??"").startsWith("ENT:")?`la entrega ${String(a).slice(4)}${o?" · material "+o:""}`:o?`el material ${o} del documento ${a}`:`el documento ${a} completo`;return!await qa(`¿Excluir del Plan de Carga ${h}?
 
-  function celdaPlan(r) {
-    const ex = exclusionDe(r);
-    const pill = AV.planEstado ? AV.planEstado(r, !!ex)
-      : (ex ? '<span class="sv-pill bad"><i></i>Excluida hoy</span>' : '<span class="sv-pill ok"><i></i>En plan</span>');
-    if (!puedeExcluir || (AV.bloqueado && AV.bloqueado(r))) return pill;   // (14-oct-2026) NV en camión programado: bloqueada
-    const btn = ex
-      ? `<button class="sv-btn" data-fila-reac="${esc(r.__rid)}" title="Reactivar en el Plan de Carga" style="padding:2px 8px;font-size:11px"><span class="material-symbols-outlined">visibility</span>Reactivar</button>`
-      : `<button class="sv-btn" data-fila-excl="${esc(r.__rid)}" title="Excluir del Plan de Carga" style="padding:2px 8px;font-size:11px;color:#b91c1c"><span class="material-symbols-outlined">visibility_off</span>Excluir</button>`;
-    return `<div style="display:flex;align-items:center;gap:6px;white-space:nowrap">${pill}${btn}</div>`;
-  }
-  async function excluirFila(r) {
-    const ex = active.excluir;
-    const doc = ex.doc(r), mat = typeof ex.material === 'function' ? ex.material(r) : null;
-    const esEnt = String(doc ?? '').startsWith('ENT:');
-    const etiqueta = esEnt ? `la entrega ${String(doc).slice(4)}${mat ? ' · material ' + mat : ''}` : mat ? `el material ${mat} del documento ${doc}` : `el documento ${doc} completo`;
-    if (!await confirmar(`¿Excluir del Plan de Carga ${etiqueta}?\n\nLa exclusión vale sólo para el plan de hoy.`)) return false;
-    if (!(await deps.excluirDelPlan(ex.tipo, doc, mat || null, 'Excluido desde ' + AV.titulo))) return false;
-    deps.showAlert('Excluido del Plan de Carga', 'success');
-    return true;
-  }
-  async function reactivarFila(r) {
-    const ex = exclusionDe(r);
-    if (!ex || !(await deps.reactivarEnPlan(Number(ex.id)))) return false;
-    deps.showAlert('Reactivado en el Plan de Carga', 'success');
-    return true;
-  }
-
-  function refocus(sel) {
-    const el = stage.querySelector(sel);
-    if (el) { el.focus(); try { el.setSelectionRange(el.value.length, el.value.length); } catch (_e) { /* date */ } }
-  }
-
-  function wire(filt) {
-    stage.querySelectorAll('[data-vista]').forEach(b => b.addEventListener('click', () => {
-      if (st.vista === b.dataset.vista) return;
-      st.vista = b.dataset.vista; st.open = null; draw();
-    }));
-    if (esCal()) wireCal();
-    stage.querySelectorAll('[data-kpi]').forEach(b => b.addEventListener('click', () => {
-      const k = b.dataset.kpi; st.kpi = (st.kpi === k && k !== 'all') ? 'all' : k; draw();
-    }));
-    stage.querySelectorAll('[data-chipv]').forEach(b => b.addEventListener('click', () => {
-      const v = b.dataset.chipv; st.chip = (st.chip === v && v !== 'all') ? 'all' : v; draw();
-    }));
-    stage.querySelectorAll('[data-fopen]').forEach(b => b.addEventListener('click', e => {
-      e.stopPropagation(); st.open = st.open === b.dataset.fopen ? null : b.dataset.fopen; draw();
-      stage.querySelector('[data-fq]')?.focus();
-    }));
-    stage.querySelectorAll('[data-fset]').forEach(b => b.addEventListener('click', e => {
-      e.stopPropagation();
-      const id = b.dataset.fset, v = b.dataset.fv;
-      if (id === 'chip') st.chip = v; else if (id === 'chip2') st.chip2 = v; else st.ex[id.slice(3)] = v;
-      st.open = null; draw();
-    }));
-    stage.querySelector('[data-fq]')?.addEventListener('input', e => {
-      const q = e.target.value.trim().toLowerCase();
-      stage.querySelectorAll('.sv-fpop [data-fname]').forEach(o => { o.style.display = !q || o.dataset.fname.includes(q) ? '' : 'none'; });
-    });
-    stage.querySelectorAll('[data-exk]').forEach(b => b.addEventListener('click', () => {
-      const k = b.dataset.exk, v = b.dataset.exv; st.ex[k] = (st.ex[k] === v && v !== 'all') ? 'all' : v; draw();
-    }));
-    stage.querySelectorAll('[data-chip2v]').forEach(b => b.addEventListener('click', () => {
-      const v = b.dataset.chip2v; st.chip2 = (st.chip2 === v && v !== 'all') ? 'all' : v; draw();
-    }));
-    stage.querySelectorAll('[data-orig]').forEach(b => b.addEventListener('click', () => { st.orig = b.dataset.orig; st.chip = 'all'; st.chip2 = 'all'; draw(); }));
-    stage.querySelectorAll('[data-mode]').forEach(b => b.addEventListener('click', () => {
-      const m = +b.dataset.mode; if (m === st.mode) return;
-      st.mode = m; st.sel && st.sel.clear(); st.kpi = 'all'; st.chip = 'all'; st.chip2 = 'all'; renderTablaV2(stage, cfg, deps, viewKey);
-    }));
-    stage.querySelector('[data-clear]')?.addEventListener('click', () => {
-      Object.assign(st, { kpi: 'all', chip: 'all', chip2: 'all', q: '', qDoc: '', dFrom: '', dTo: '', ex: {}, open: null }); draw();
-    });
-    stage.querySelector('[data-q]')?.addEventListener('input', e => { st.q = e.target.value; draw(); refocus('[data-q]'); });
-    stage.querySelector('[data-qdoc]')?.addEventListener('input', e => {
-      st.qDoc = e.target.value.replace(/\D/g, ''); draw(); refocus('[data-qdoc]');
-    });
-    stage.querySelector('[data-dfrom]')?.addEventListener('change', e => { st.dFrom = e.target.value; draw(); });
-    stage.querySelector('[data-dto]')?.addEventListener('change', e => { st.dTo = e.target.value; draw(); });
-    stage.querySelector('[data-refrescar]')?.addEventListener('click', () => { deps.clearRawCache(); renderTablaV2(stage, cfg, deps, viewKey); });
-    stage.querySelector('[data-volver]')?.addEventListener('click', () => { const v = st._volver; st._volver = null; if (v && deps.navegar) deps.navegar(v.sub); });
-    if (deps.wireBarraTrabajo) deps.wireBarraTrabajo(stage);
-    stage.querySelectorAll('[data-hbtn]').forEach(b => b.addEventListener('click', async () => {
-      const hb = headBtns()[+b.dataset.hbtn]; if (!hb) return;
-      b.disabled = true;
-      // (21-oct-2026) run() puede devolver { abrir: rowId } para reabrir el detalle de esa fila tras recargar.
-      try { const res = await hb.run(filt); if (res) { if (res.abrir) st._reopen = String(res.abrir); deps.clearRawCache(); renderTablaV2(stage, cfg, deps, viewKey); return; } } finally { b.disabled = false; }
-    }));
-    stage.querySelector('[data-csv]')?.addEventListener('click', () => deps.exportarCSV(active, filt));
-    // (18-nov-2026) Aviso propio de la vista (p. ej. reposición sin fondo): wireBanner(stage, ctx, recargar)
-    if (AV.wireBanner) AV.wireBanner(stage, ctx, () => { deps.clearRawCache(); renderTablaV2(stage, cfg, deps, viewKey); });
-    const accFila = (sel, fn) => stage.querySelectorAll(sel).forEach(b => b.addEventListener('click', async e => {
-      e.stopPropagation();
-      const r = rowsAll.find(x => rowId(x) === (b.dataset.filaExcl || b.dataset.filaReac));
-      if (!r || !(await fn(r))) return;
-      exclusiones = await deps.loadExclusionesPlan();
-      if (AV.onPlanChange) await AV.onPlanChange(rowsAll, ctx);
-      draw();
-    }));
-    // (11-nov-2026) selección múltiple
-    stage.querySelectorAll('[data-selrow]').forEach(ch => {
-      ch.addEventListener('click', e => e.stopPropagation());
-      ch.addEventListener('change', () => { if (ch.checked) st.sel.add(ch.dataset.selrow); else st.sel.delete(ch.dataset.selrow); draw(); });
-    });
-    stage.querySelector('[data-selall]')?.addEventListener('change', e => {
-      const ids = filt.slice(0, 1500).map(r => r.__rid);
-      if (e.target.checked) ids.forEach(id => st.sel.add(id)); else ids.forEach(id => st.sel.delete(id));
-      draw();
-    });
-    stage.querySelector('[data-selclear]')?.addEventListener('click', () => { st.sel.clear(); draw(); });
-    stage.querySelectorAll('[data-selacc]').forEach(b => b.addEventListener('click', async () => {
-      const acc = (AV.seleccion && AV.seleccion.acciones || []).filter(a => !a.perm || deps.can(a.perm));
-      const a = acc[+b.dataset.selacc]; if (!a) return;
-      const rows = rowsAll.filter(r => st.sel.has(r.__rid)); if (!rows.length) return;
-      b.disabled = true;
-      try {
-        const res = await a.run(rows, ctx);
-        if (res) { st.sel.clear(); deps.clearRawCache(); renderTablaV2(stage, cfg, deps, viewKey); }
-      } finally { b.disabled = false; }
-    }));
-    stage.querySelectorAll('[data-facc]').forEach(b => b.addEventListener('click', async e => {
-      e.stopPropagation();
-      const r = rowsAll.find(x => rowId(x) === b.dataset.facc); if (!r) return;
-      const a = (AV.filaAcciones(r) || [])[+b.dataset.faccI]; if (!a || !a.run) return;
-      b.disabled = true;
-      try {
-        const res = await a.run(r, ctx);
-        if (res && res.recargar) { deps.clearRawCache(); renderTablaV2(stage, cfg, deps, viewKey); return; }
-        if (res && res.redibujar) draw();
-      } finally { b.disabled = false; }
-    }));
-    stage.querySelectorAll('[data-cmt]').forEach(b => b.addEventListener('click', e => {
-      e.stopPropagation();
-      st.drawer = b.dataset.cmt; st._focoCom = 'hilo';
-      stage.querySelectorAll('tbody tr.is-sel').forEach(x => x.classList.remove('is-sel'));
-      b.closest('tr')?.classList.add('is-sel');
-      openDrawer(st.drawer);
-    }));
-    stage.querySelectorAll('[data-prio]').forEach(ch => {
-      ch.addEventListener('click', e => e.stopPropagation());
-      ch.closest('label')?.addEventListener('click', e => e.stopPropagation());
-      ch.addEventListener('change', async () => {
-        const r = rowsAll.find(x => x.__rid === ch.dataset.prio); if (!r) return;
-        ch.disabled = true;
-        // (20-nov-2026) Al quitar, se usa el material de la marca real (una marca antigua del pedido completo no tiene material)
-        const pr0 = prioDe(r), mat0 = ch.checked || !pr0 ? prioMat(r) : String(pr0.material ?? '').trim();
-        const ok = await deps.togglePrioridad(prioCfg.tipo, prioDoc(r), prioCfg.centro ? String(prioCfg.centro(r) ?? '').trim() : null, ch.checked, mat0, mat0 ? prioLbl(r) : prioDoc(r));
-        if (ok) prios = await deps.loadPrioridades(prioCfg.tipo);
-        draw();
-      });
-    });
-    // (15-oct-2026) Aceptar / Rechazar prioridad (Planner de Abastecimiento)
-    [['[data-prio-ok]', 'prioOk', true], ['[data-prio-no]', 'prioNo', false]].forEach(([sel, k, acepta]) =>
-      stage.querySelectorAll(sel).forEach(b => b.addEventListener('click', async e => {
-        e.stopPropagation();
-        const r = rowsAll.find(x => x.__rid === b.dataset[k]); if (!r) return;
-        b.disabled = true;
-        try {
-          const pr0 = prioDe(r), mat0 = pr0 ? String(pr0.material ?? '').trim() : prioMat(r);
-          const ok = await deps.evaluarPrioridad(prioCfg.tipo, prioDoc(r), acepta, mat0, mat0 ? prioLbl(r) : prioDoc(r));
-          if (ok) prios = await deps.loadPrioridades(prioCfg.tipo);
-        } finally { draw(); }
-      })));
-    accFila('[data-fila-excl]', excluirFila);
-    accFila('[data-fila-reac]', reactivarFila);
-    stage.querySelectorAll('tbody tr[data-row]').forEach(tr => tr.addEventListener('click', () => {
-      st.drawer = tr.dataset.row;
-      stage.querySelectorAll('tbody tr.is-sel').forEach(x => x.classList.remove('is-sel'));
-      tr.classList.add('is-sel');
-      openDrawer(st.drawer);
-    }));
-  }
-
-  // ── Panel lateral ─────────────────────────────────────────────────────────
-  function closeDrawer() {
-    st.drawer = null;
-    const slot = stage.querySelector('[data-drawer-slot]');
-    if (slot) slot.innerHTML = '';
-    stage.querySelectorAll('tbody tr.is-sel, .sv-cdr-card.is-sel').forEach(x => x.classList.remove('is-sel'));
-    document.removeEventListener('keydown', escKey);
-  }
-  function escKey(e) { if (e.key === 'Escape' && !document.querySelector('.sv-pal-bg, #coord-modal-bg, #excl-modal-bg')) closeDrawer(); }
-
-  function openDrawer(id) {
-    const r = rowsAll.find(x => rowId(x) === id);
-    const slot = stage.querySelector('[data-drawer-slot]');
-    if (!r || !slot || !AV.detalle) return;
-    const d = AV.detalle(r, ctx) || {};
-    const kv = (d.kv || []).filter(Boolean).map(([k, v, raw]) =>
-      `<div><dt>${esc(k)}</dt><dd>${raw ? (v ?? '—') : (v == null || v === '' ? '—' : esc(v))}</dd></div>`).join('');
-    // d.tablas (5-oct-2026): varias tablas en el detalle (p. ej. un camión por tabla); d.tabla sigue funcionando.
-    // (11-oct-2026) tb.html: bloque libre (p. ej. ficha del transporte); tb.vacio: texto cuando la tabla no tiene filas.
-    const tablaHtml = tb => tb && tb.html != null ? `<div>
-      ${tb.titulo ? `<div class="sv-dr-sect">${esc(tb.titulo)}</div>` : ''}
-      ${tb.sub ? `<div class="sv-sub" style="margin:-4px 0 6px;max-width:none">${esc(tb.sub)}</div>` : ''}${tb.html}</div>`
-      : tb && tb.vacio && !(tb.rows && tb.rows.length) ? `<div><div class="sv-dr-sect">${esc(tb.titulo || 'Detalle')}</div>
-      <div class="sv-sub" style="margin:0;max-width:none">${esc(tb.vacio)}</div></div>`
-      : tb && tb.rows && tb.rows.length ? `<div>
-      <div class="sv-dr-sect">${esc(tb.titulo || 'Detalle')}</div>
-      ${tb.sub ? `<div class="sv-sub" style="margin:-4px 0 6px;max-width:none">${esc(tb.sub)}</div>` : ''}
+La exclusión vale sólo para el plan de hoy.`)||!await n.excluirDelPlan(l.tipo,a,o||null,"Excluido desde "+s.titulo)?!1:(n.showAlert("Excluido del Plan de Carga","success"),!0)}async function Za(i){const l=la(i);return!l||!await n.reactivarEnPlan(Number(l.id))?!1:(n.showAlert("Reactivado en el Plan de Carga","success"),!0)}function La(i){const l=e.querySelector(i);if(l){l.focus();try{l.setSelectionRange(l.value.length,l.value.length)}catch{}}}function Ka(i){e.querySelectorAll("[data-vista]").forEach(a=>a.addEventListener("click",()=>{t.vista!==a.dataset.vista&&(t.vista=a.dataset.vista,t.open=null,g())})),V()&&Qa(),e.querySelectorAll("[data-kpi]").forEach(a=>a.addEventListener("click",()=>{const o=a.dataset.kpi;t.kpi=t.kpi===o&&o!=="all"?"all":o,g()})),e.querySelectorAll("[data-chipv]").forEach(a=>a.addEventListener("click",()=>{const o=a.dataset.chipv;t.chip=t.chip===o&&o!=="all"?"all":o,g()})),e.querySelectorAll("[data-fopen]").forEach(a=>a.addEventListener("click",o=>{o.stopPropagation(),t.open=t.open===a.dataset.fopen?null:a.dataset.fopen,g(),e.querySelector("[data-fq]")?.focus()})),e.querySelectorAll("[data-fset]").forEach(a=>a.addEventListener("click",o=>{o.stopPropagation();const u=a.dataset.fset,h=a.dataset.fv;u==="chip"?t.chip=h:u==="chip2"?t.chip2=h:t.ex[u.slice(3)]=h,t.open=null,g()})),e.querySelector("[data-fq]")?.addEventListener("input",a=>{const o=a.target.value.trim().toLowerCase();e.querySelectorAll(".sv-fpop [data-fname]").forEach(u=>{u.style.display=!o||u.dataset.fname.includes(o)?"":"none"})}),e.querySelectorAll("[data-exk]").forEach(a=>a.addEventListener("click",()=>{const o=a.dataset.exk,u=a.dataset.exv;t.ex[o]=t.ex[o]===u&&u!=="all"?"all":u,g()})),e.querySelectorAll("[data-chip2v]").forEach(a=>a.addEventListener("click",()=>{const o=a.dataset.chip2v;t.chip2=t.chip2===o&&o!=="all"?"all":o,g()})),e.querySelectorAll("[data-orig]").forEach(a=>a.addEventListener("click",()=>{t.orig=a.dataset.orig,t.chip="all",t.chip2="all",g()})),e.querySelectorAll("[data-mode]").forEach(a=>a.addEventListener("click",()=>{const o=+a.dataset.mode;o!==t.mode&&(t.mode=o,t.sel&&t.sel.clear(),t.kpi="all",t.chip="all",t.chip2="all",J(e,r,n,d))})),e.querySelector("[data-clear]")?.addEventListener("click",()=>{Object.assign(t,{kpi:"all",chip:"all",chip2:"all",q:"",qDoc:"",dFrom:"",dTo:"",ex:{},open:null}),g()}),e.querySelector("[data-q]")?.addEventListener("input",a=>{t.q=a.target.value,g(),La("[data-q]")}),e.querySelector("[data-qdoc]")?.addEventListener("input",a=>{t.qDoc=a.target.value.replace(/\D/g,""),g(),La("[data-qdoc]")}),e.querySelector("[data-dfrom]")?.addEventListener("change",a=>{t.dFrom=a.target.value,g()}),e.querySelector("[data-dto]")?.addEventListener("change",a=>{t.dTo=a.target.value,g()}),e.querySelector("[data-refrescar]")?.addEventListener("click",()=>{n.clearRawCache(),J(e,r,n,d)}),e.querySelector("[data-volver]")?.addEventListener("click",()=>{const a=t._volver;t._volver=null,a&&n.navegar&&n.navegar(a.sub)}),n.wireBarraTrabajo&&n.wireBarraTrabajo(e),e.querySelectorAll("[data-hbtn]").forEach(a=>a.addEventListener("click",async()=>{const o=_a()[+a.dataset.hbtn];if(o){a.disabled=!0;try{const u=await o.run(i);if(u){u.abrir&&(t._reopen=String(u.abrir)),n.clearRawCache(),J(e,r,n,d);return}}finally{a.disabled=!1}}})),e.querySelector("[data-csv]")?.addEventListener("click",()=>n.exportarCSV(f,i)),s.wireBanner&&s.wireBanner(e,T,()=>{n.clearRawCache(),J(e,r,n,d)});const l=(a,o)=>e.querySelectorAll(a).forEach(u=>u.addEventListener("click",async h=>{h.stopPropagation();const y=S.find(E=>na(E)===(u.dataset.filaExcl||u.dataset.filaReac));!y||!await o(y)||(ia=await n.loadExclusionesPlan(),s.onPlanChange&&await s.onPlanChange(S,T),g())}));e.querySelectorAll("[data-selrow]").forEach(a=>{a.addEventListener("click",o=>o.stopPropagation()),a.addEventListener("change",()=>{a.checked?t.sel.add(a.dataset.selrow):t.sel.delete(a.dataset.selrow),g()})}),e.querySelector("[data-selall]")?.addEventListener("change",a=>{const o=i.slice(0,1500).map(u=>u.__rid);a.target.checked?o.forEach(u=>t.sel.add(u)):o.forEach(u=>t.sel.delete(u)),g()}),e.querySelector("[data-selclear]")?.addEventListener("click",()=>{t.sel.clear(),g()}),e.querySelectorAll("[data-selacc]").forEach(a=>a.addEventListener("click",async()=>{const u=(s.seleccion&&s.seleccion.acciones||[]).filter(y=>!y.perm||n.can(y.perm))[+a.dataset.selacc];if(!u)return;const h=S.filter(y=>t.sel.has(y.__rid));if(h.length){a.disabled=!0;try{await u.run(h,T)&&(t.sel.clear(),n.clearRawCache(),J(e,r,n,d))}finally{a.disabled=!1}}})),e.querySelectorAll("[data-facc]").forEach(a=>a.addEventListener("click",async o=>{o.stopPropagation();const u=S.find(y=>na(y)===a.dataset.facc);if(!u)return;const h=(s.filaAcciones(u)||[])[+a.dataset.faccI];if(!(!h||!h.run)){a.disabled=!0;try{const y=await h.run(u,T);if(y&&y.recargar){n.clearRawCache(),J(e,r,n,d);return}y&&y.redibujar&&g()}finally{a.disabled=!1}}})),e.querySelectorAll("[data-cmt]").forEach(a=>a.addEventListener("click",o=>{o.stopPropagation(),t.drawer=a.dataset.cmt,t._focoCom="hilo",e.querySelectorAll("tbody tr.is-sel").forEach(u=>u.classList.remove("is-sel")),a.closest("tr")?.classList.add("is-sel"),B(t.drawer)})),e.querySelectorAll("[data-prio]").forEach(a=>{a.addEventListener("click",o=>o.stopPropagation()),a.closest("label")?.addEventListener("click",o=>o.stopPropagation()),a.addEventListener("change",async()=>{const o=S.find(E=>E.__rid===a.dataset.prio);if(!o)return;a.disabled=!0;const u=oa(o),h=a.checked||!u?W(o):String(u.material??"").trim();await n.togglePrioridad(q.tipo,R(o),q.centro?String(q.centro(o)??"").trim():null,a.checked,h,h?wa(o):R(o))&&(sa=await n.loadPrioridades(q.tipo)),g()})}),[["[data-prio-ok]","prioOk",!0],["[data-prio-no]","prioNo",!1]].forEach(([a,o,u])=>e.querySelectorAll(a).forEach(h=>h.addEventListener("click",async y=>{y.stopPropagation();const E=S.find(A=>A.__rid===h.dataset[o]);if(E){h.disabled=!0;try{const A=oa(E),M=A?String(A.material??"").trim():W(E);await n.evaluarPrioridad(q.tipo,R(E),u,M,M?wa(E):R(E))&&(sa=await n.loadPrioridades(q.tipo))}finally{g()}}}))),l("[data-fila-excl]",Ga),l("[data-fila-reac]",Za),e.querySelectorAll("tbody tr[data-row]").forEach(a=>a.addEventListener("click",()=>{t.drawer=a.dataset.row,e.querySelectorAll("tbody tr.is-sel").forEach(o=>o.classList.remove("is-sel")),a.classList.add("is-sel"),B(t.drawer)}))}function ma(){t.drawer=null;const i=e.querySelector("[data-drawer-slot]");i&&(i.innerHTML=""),e.querySelectorAll("tbody tr.is-sel, .sv-cdr-card.is-sel").forEach(l=>l.classList.remove("is-sel")),document.removeEventListener("keydown",ha)}function ha(i){i.key==="Escape"&&!document.querySelector(".sv-pal-bg, #coord-modal-bg, #excl-modal-bg")&&ma()}function B(i){const l=S.find(v=>na(v)===i),a=e.querySelector("[data-drawer-slot]");if(!l||!a||!s.detalle)return;const o=s.detalle(l,T)||{},u=(o.kv||[]).filter(Boolean).map(([v,w,b])=>`<div><dt>${c(v)}</dt><dd>${b?w??"—":w==null||w===""?"—":c(w)}</dd></div>`).join(""),h=v=>v&&v.html!=null?`<div>
+      ${v.titulo?`<div class="sv-dr-sect">${c(v.titulo)}</div>`:""}
+      ${v.sub?`<div class="sv-sub" style="margin:-4px 0 6px;max-width:none">${c(v.sub)}</div>`:""}${v.html}</div>`:v&&v.vacio&&!(v.rows&&v.rows.length)?`<div><div class="sv-dr-sect">${c(v.titulo||"Detalle")}</div>
+      <div class="sv-sub" style="margin:0;max-width:none">${c(v.vacio)}</div></div>`:v&&v.rows&&v.rows.length?`<div>
+      <div class="sv-dr-sect">${c(v.titulo||"Detalle")}</div>
+      ${v.sub?`<div class="sv-sub" style="margin:-4px 0 6px;max-width:none">${c(v.sub)}</div>`:""}
       <div class="sv-card" style="overflow:auto"><table class="sv-table">
-        <thead><tr>${tb.head.map(([l, al]) => `<th class="${al === 'r' ? 'r' : ''}">${esc(l)}</th>`).join('')}</tr></thead>
-        <tbody>${tb.rows.map((row, ri) => `<tr${tb.rowStyle && tb.rowStyle(ri) ? ` style="${tb.rowStyle(ri)}"` : ''}>${row.map((c, i) => `<td class="${tb.head[i] && tb.head[i][1] === 'r' ? 'r' : ''}">${c}</td>`).join('')}</tr>`).join('')}</tbody>
-      </table></div></div>` : '';
-    const tabla = (d.tablas || (d.tabla ? [d.tabla] : [])).map(tablaHtml).join('');
-
-    // Acciones: propias de la vista + excluir/reactivar del Plan de Carga
-    const acciones = (d.acciones || []).slice();
-    // (11-oct-2026) En el calendario no hay columna Acciones: las acciones de la fila van al detalle.
-    if (esCal() && AV.filaAcciones) (AV.filaAcciones(r) || []).forEach(a => acciones.push(Object.assign({}, a)));
-    if (puedeExcluir && !enFila) {
-      const ex = exclusionDe(r);
-      acciones.push(ex
-        ? { id: 'reactivar', label: 'Reactivar en el plan', icon: 'visibility', primary: false }
-        : { id: 'excluir', label: active.excluir.material ? 'Excluir línea del plan' : 'Excluir del plan', icon: 'visibility_off', primary: !(d.acciones || []).some(a => a.primary) });
-    }
-    const btns = acciones.map((a, i) => `<button data-acc="${i}" class="${a.primary ? 'sv-btn-p' : 'sv-btn'}"${a.tono === 'peligro' ? ' style="color:#b91c1c"' : ''}${a.title ? ` title="${esc(a.title)}"` : ''}>${a.icon ? `<span class="material-symbols-outlined">${a.icon}</span>` : ''}${esc(a.label)}</button>`).join('');
-
-    slot.innerHTML = `<div class="sv-dr-bg" data-close></div>
-      <aside class="sv-dr" role="dialog" aria-label="${esc(d.kind || 'Detalle')}"${AV.drawerW ? ` style="width:${AV.drawerW}"` : ''}>
+        <thead><tr>${v.head.map(([w,b])=>`<th class="${b==="r"?"r":""}">${c(w)}</th>`).join("")}</tr></thead>
+        <tbody>${v.rows.map((w,b)=>`<tr${v.rowStyle&&v.rowStyle(b)?` style="${v.rowStyle(b)}"`:""}>${w.map((C,H)=>`<td class="${v.head[H]&&v.head[H][1]==="r"?"r":""}">${C}</td>`).join("")}</tr>`).join("")}</tbody>
+      </table></div></div>`:"",y=(o.tablas||(o.tabla?[o.tabla]:[])).map(h).join(""),E=(o.acciones||[]).slice();if(V()&&s.filaAcciones&&(s.filaAcciones(l)||[]).forEach(v=>E.push(Object.assign({},v))),ba&&!xa){const v=la(l);E.push(v?{id:"reactivar",label:"Reactivar en el plan",icon:"visibility",primary:!1}:{id:"excluir",label:f.excluir.material?"Excluir línea del plan":"Excluir del plan",icon:"visibility_off",primary:!(o.acciones||[]).some(w=>w.primary)})}const A=E.map((v,w)=>`<button data-acc="${w}" class="${v.primary?"sv-btn-p":"sv-btn"}"${v.tono==="peligro"?' style="color:#b91c1c"':""}${v.title?` title="${c(v.title)}"`:""}>${v.icon?`<span class="material-symbols-outlined">${v.icon}</span>`:""}${c(v.label)}</button>`).join("");a.innerHTML=`<div class="sv-dr-bg" data-close></div>
+      <aside class="sv-dr" role="dialog" aria-label="${c(o.kind||"Detalle")}"${s.drawerW?` style="width:${s.drawerW}"`:""}>
         <div class="sv-dr-h"><div style="flex:1;min-width:0">
-          <div class="sv-dr-k">${esc(d.kind || '')}</div>
-          <div class="sv-dr-t">${esc(d.title || id)}</div>
-          ${d.sub ? `<div class="sv-dr-s">${esc(d.sub)}</div>` : ''}</div>
+          <div class="sv-dr-k">${c(o.kind||"")}</div>
+          <div class="sv-dr-t">${c(o.title||i)}</div>
+          ${o.sub?`<div class="sv-dr-s">${c(o.sub)}</div>`:""}</div>
           <button class="sv-iconbtn" data-close title="Cerrar (Esc)"><span class="material-symbols-outlined">close</span></button></div>
         <div class="sv-dr-b">
-          ${d.aviso ? `<div class="sv-note-box">${d.aviso}</div>` : ''}
-          ${kv ? `<dl class="sv-kv" style="margin:0">${kv}</dl>` : ''}
-          ${tabla}
-          ${conComent ? '<div data-hilo style="border-top:1px solid var(--sv-line,#e1e3e4);padding-top:16px"></div>' : ''}
+          ${o.aviso?`<div class="sv-note-box">${o.aviso}</div>`:""}
+          ${u?`<dl class="sv-kv" style="margin:0">${u}</dl>`:""}
+          ${y}
+          ${pa?'<div data-hilo style="border-top:1px solid var(--sv-line,#e1e3e4);padding-top:16px"></div>':""}
         </div>
-        <div class="sv-dr-f"><span class="sv-dr-note">${esc(d.nota || '')}</span><div style="display:flex;gap:8px;flex-wrap:wrap">${btns}</div></div>
-      </aside>`;
-    slot.querySelectorAll('[data-close]').forEach(b => b.addEventListener('click', closeDrawer));
-    const hiloEl = slot.querySelector('[data-hilo]');
-    if (hiloEl) {
-      const fc = st._focoCom; st._focoCom = null;
-      montarHilo(hiloEl, { vista: viewKey, clave: claveCom(r), documento: docCom(r), centro: campoCentro ? String(r[campoCentro] ?? '').trim() : null,
-        focoId: typeof fc === 'number' ? fc : null,
-        onCount: n => {
-          const k = claveCom(r);
-          if ((conteos.get(k) || 0) === n) return;
-          conteos.set(k, n);
-          const cel = stage.querySelector(`[data-cmt="${CSS.escape(r.__rid)}"]`);
-          if (cel) cel.outerHTML = celdaComentarios(n, r.__rid);
-          const nb = stage.querySelector(`[data-cmt="${CSS.escape(r.__rid)}"]`);
-          nb?.addEventListener('click', e => { e.stopPropagation(); st.drawer = r.__rid; st._focoCom = 'hilo'; openDrawer(r.__rid); });
-        } });
-      if (fc === 'hilo') setTimeout(() => hiloEl.scrollIntoView({ block: 'start', behavior: 'smooth' }), 60);
-    }
-    document.removeEventListener('keydown', escKey);
-    document.addEventListener('keydown', escKey);
-    slot.querySelectorAll('[data-acc]').forEach(b => b.addEventListener('click', async () => {
-      const a = acciones[+b.dataset.acc];
-      if (a.id === 'excluir') {
-        const ex = active.excluir;
-        const doc = ex.doc(r), mat = typeof ex.material === 'function' ? ex.material(r) : null;
-        const etiqueta = mat ? `el material ${mat} del documento ${doc}` : `el documento ${doc} completo`;
-        if (!await confirmar(`¿Excluir del Plan de Carga ${etiqueta}?\n\nLa exclusión vale sólo para el plan de hoy.`)) return;
-        if (await deps.excluirDelPlan(ex.tipo, doc, mat || null, 'Excluido desde ' + AV.titulo)) {
-          deps.showAlert('Excluido del Plan de Carga', 'success');
-          exclusiones = await deps.loadExclusionesPlan();
-          if (AV.onPlanChange) { await AV.onPlanChange(rowsAll, ctx); st.drawer = id; draw(); } else openDrawer(id);
-        }
-      } else if (a.id === 'reactivar') {
-        const ex = exclusionDe(r);
-        if (ex && await deps.reactivarEnPlan(Number(ex.id))) {
-          deps.showAlert('Reactivado en el Plan de Carga', 'success');
-          exclusiones = await deps.loadExclusionesPlan();
-          if (AV.onPlanChange) { await AV.onPlanChange(rowsAll, ctx); st.drawer = id; draw(); } else openDrawer(id);
-        }
-      } else if (a.run) {
-        const res = await a.run(r, ctx);
-        if (res && res.recargar) { closeDrawer(); st._reopen = id; deps.clearRawCache(); renderTablaV2(stage, cfg, deps, viewKey); }
-        else if (res && res.redibujar) { draw(); st.drawer = id; openDrawer(id); }
-      }
-    }));
-  }
+        <div class="sv-dr-f"><span class="sv-dr-note">${c(o.nota||"")}</span><div style="display:flex;gap:8px;flex-wrap:wrap">${A}</div></div>
+      </aside>`,a.querySelectorAll("[data-close]").forEach(v=>v.addEventListener("click",ma));const M=a.querySelector("[data-hilo]");if(M){const v=t._focoCom;t._focoCom=null,et(M,{vista:d,clave:aa(l),documento:Ia(l),centro:ea?String(l[ea]??"").trim():null,focoId:typeof v=="number"?v:null,onCount:w=>{const b=aa(l);if((ua.get(b)||0)===w)return;ua.set(b,w);const C=e.querySelector(`[data-cmt="${CSS.escape(l.__rid)}"]`);C&&(C.outerHTML=Da(w,l.__rid)),e.querySelector(`[data-cmt="${CSS.escape(l.__rid)}"]`)?.addEventListener("click",m=>{m.stopPropagation(),t.drawer=l.__rid,t._focoCom="hilo",B(l.__rid)})}}),v==="hilo"&&setTimeout(()=>M.scrollIntoView({block:"start",behavior:"smooth"}),60)}document.removeEventListener("keydown",ha),document.addEventListener("keydown",ha),a.querySelectorAll("[data-acc]").forEach(v=>v.addEventListener("click",async()=>{const w=E[+v.dataset.acc];if(w.id==="excluir"){const b=f.excluir,C=b.doc(l),H=typeof b.material=="function"?b.material(l):null,m=H?`el material ${H} del documento ${C}`:`el documento ${C} completo`;if(!await qa(`¿Excluir del Plan de Carga ${m}?
 
-  draw();
-}
-
-// ── Gráfico «camión que se llena» ───────────────────────────────────────────
-// segs: [{ ton, color, label }] en orden de llenado; cap: capacidad (t).
-// El relleno ocupa el % de la capacidad (tope 100 %); si la carga supera la
-// capacidad se dibuja un 2º camión punteado verde con el excedente.
-// opts: { w, h, color } — color único (DT / indicadores) cuando no hay segs.
-export function truckGauge(segs, cap, opts = {}) {
-  const w = opts.w || 150, h = opts.h || 30;
-  const total = segs.reduce((s, x) => s + (x.ton || 0), 0);
-  let restante = cap;
-  const partes = segs.filter(s => s.ton > 0).map(s => {
-    const t = Math.max(0, Math.min(s.ton, restante));
-    restante -= t;
-    return t > 0 ? `<i title="${esc(s.label || '')}: ${Number(s.ton).toLocaleString('es-CL', { maximumFractionDigits: 1 })} t" style="width:${cap > 0 ? (t / cap * 100) : 0}%;background:${s.color}"></i>` : '';
-  }).join('');
-  const excede = Math.max(0, total - cap);
-  const segundo = excede > 0 ? `<div class="sv-trk2" title="2º camión: ${excede.toLocaleString('es-CL', { maximumFractionDigits: 1 })} t">
-      <span>2º camión</span><div class="sv-trk2-box" style="width:${Math.round(w * 0.46)}px;height:${Math.round(h * 0.7)}px"><i style="width:${Math.min(100, excede / cap * 100)}%"></i></div></div>` : '';
-  return `<div class="sv-trk-wrap"><div class="sv-trk" style="--tw:${w}px;--th:${h}px">
-      <div class="sv-trk-box"><div class="sv-trk-fill">${partes}</div></div><div class="sv-trk-cab"></div>
-      <span class="sv-trk-wh" style="left:10px"></span><span class="sv-trk-wh" style="left:${w - 22}px"></span><span class="sv-trk-wh" style="left:${w + 14}px"></span>
-    </div>${segundo}</div>`;
-}
-// Color por umbral de consolidación (DT / indicadores): ≥80 verde, 70–80 amarillo, <70 gris
-export function colorUmbral(pct) { return pct >= 80 ? '#15803d' : pct >= 70 ? '#ca8a04' : '#9ca3af'; }
+La exclusión vale sólo para el plan de hoy.`))return;await n.excluirDelPlan(b.tipo,C,H||null,"Excluido desde "+s.titulo)&&(n.showAlert("Excluido del Plan de Carga","success"),ia=await n.loadExclusionesPlan(),s.onPlanChange?(await s.onPlanChange(S,T),t.drawer=i,g()):B(i))}else if(w.id==="reactivar"){const b=la(l);b&&await n.reactivarEnPlan(Number(b.id))&&(n.showAlert("Reactivado en el Plan de Carga","success"),ia=await n.loadExclusionesPlan(),s.onPlanChange?(await s.onPlanChange(S,T),t.drawer=i,g()):B(i))}else if(w.run){const b=await w.run(l,T);b&&b.recargar?(ma(),t._reopen=i,n.clearRawCache(),J(e,r,n,d)):b&&b.redibujar&&(g(),t.drawer=i,B(i))}}))}g()}function St(e,r,n={}){const d=n.w||150,$=n.h||30,k=e.reduce((L,F)=>L+(F.ton||0),0);let P=r;const t=e.filter(L=>L.ton>0).map(L=>{const F=Math.max(0,Math.min(L.ton,P));return P-=F,F>0?`<i title="${c(L.label||"")}: ${Number(L.ton).toLocaleString("es-CL",{maximumFractionDigits:1})} t" style="width:${r>0?F/r*100:0}%;background:${L.color}"></i>`:""}).join(""),f=Math.max(0,k-r),s=f>0?`<div class="sv-trk2" title="2º camión: ${f.toLocaleString("es-CL",{maximumFractionDigits:1})} t">
+      <span>2º camión</span><div class="sv-trk2-box" style="width:${Math.round(d*.46)}px;height:${Math.round($*.7)}px"><i style="width:${Math.min(100,f/r*100)}%"></i></div></div>`:"";return`<div class="sv-trk-wrap"><div class="sv-trk" style="--tw:${d}px;--th:${$}px">
+      <div class="sv-trk-box"><div class="sv-trk-fill">${t}</div></div><div class="sv-trk-cab"></div>
+      <span class="sv-trk-wh" style="left:10px"></span><span class="sv-trk-wh" style="left:${d-22}px"></span><span class="sv-trk-wh" style="left:${d+14}px"></span>
+    </div>${s}</div>`}function Et(e){return e>=80?"#15803d":e>=70?"#ca8a04":"#9ca3af"}export{wt as calcularVistaV2,Et as colorUmbral,c as esc,ct as esqueletoV2,pt as guardarScroll,ot as maxCargadoEn,ht as mono,mt as pill,gt as prepararSaltoV2,J as renderTablaV2,ut as restaurarScroll,st as setUltimaActualizacion,yt as tonHtml,St as truckGauge,$t as txt};

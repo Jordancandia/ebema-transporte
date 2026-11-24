@@ -1,219 +1,35 @@
-// ============================================================================
-// INDICADORES – PLAN DE CARGA  (dashboard ejecutivo, 27-sep-2026)
-// ----------------------------------------------------------------------------
-// Fuente: v_ind_consolidacion_dt (1 fila por DT) y v_ind_efectividad_plan
-// (1 fila por línea documento+SKU de la foto 15:35; sólo camiones programados:
-// camión CD en PROGRAMAR, 2º camión aceptado y camiones directos — columna medido).
-// Alcance: DT cuyo usuario responsable está en abast_ind_usuarios_plan (activo).
-//   Usuario del DT = "Creado por" del reporte DT > "Modif. por" > creador de
-//   sus entregas (v_abast_dt_usuario). La lista es editable (OWNER / ADMIN).
-// Capacidad: GeEs del DT; si viene vacía y es traslado → 28 t (15 t a 1050/1005),
-//   misma regla del Plan de Carga, marcada como "estimada".
-// (30-sep-2026, Jordan) Modo "Asertividad del plan": por día de carga y centro
-// programado (foto de cierre 15:30 → abast_plan_foto), asertividad = SKU cuya
-// cantidad en el DT ≥ cantidad planificada (1) o no (0); consolidación = % del DT
-// del camión. Se abre el camión para ver el detalle por SKU (v_ind_plan_asert_sku).
-// Semanas cerradas: sólo resultado por camión (abast_ind_plan_camion_hist).
-// Sin dependencias: gráficos SVG propios + CSS encapsulado (.ipc-*), porque el
-// Tailwind del sitio está compilado y no incluye clases nuevas.
-// ============================================================================
-
-import { supabase } from './supabase-client.js?v=202611232043';
-import { filtrarPorCentro, rolClase } from './permisos.js?v=202611232043';
-import { showAlert, escapeHtml } from './utils.js';
-import { getDatabase } from './data.js?v=202611232043';
-import { truckGauge } from './troncales-ui.js?v=202611232043';
-
-const META_CONS = 85;   // % consolidación objetivo por viaje
-const META_EFEC = 90;   // % efectividad objetivo del Plan de Carga
-
-const C = {
-  series: '#191c1d', good: '#15803d', warn: '#ca8a04', bad: '#b5000b', info: '#1d4ed8', neutral: '#9ca3af',
-  grid: '#edeeef', axis: '#5c5f61', ink: '#191c1d', ink2: '#5c5f61',
-};
-const CAT = ['#191c1d', '#b5000b', '#1d4ed8', '#ca8a04', '#7e22ce', '#15803d', '#ea580c', '#936e69'];
-const ESTADOS = [
-  { k: 'CUMPLE', lbl: 'Cumple', color: C.good },
-  { k: 'PARCIAL', lbl: 'Parcial', color: C.warn },
-  { k: 'CON ENTREGA SIN DT', lbl: 'Con entrega sin DT', color: C.info },
-  { k: 'NO CARGADO', lbl: 'No cargado', color: C.bad },
-];
-
-// ── estado ─────────────────────────────────────────────────────────────────
-const S = {
-  desde: '', hasta: '', usuario: 'all', centro: 'all', tipo: 'all', cd: 'all', soloAlcance: true,
-  cons: [], asert: [], usuarios: [], abiertos: new Set(), skuCache: new Map(), canEdit: false, cenAbiertos: new Set(), viajes: new Set(), viajeCache: new Map(), ordCen: 'asert', cenSel: null, vista: 'dash', detalleModo: 0, modo: 'centro',
-};
-let root = null, opts = {}, resizeT = null, onResize = null;
-
-// ── utilidades ─────────────────────────────────────────────────────────────
-const iso = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-const fmt = (n, d = 1) => (n == null || isNaN(n)) ? '—' : Number(n).toLocaleString('es-CL', { minimumFractionDigits: d, maximumFractionDigits: d });
-const pct = (n, d = 1) => n == null ? '—' : fmt(n, d) + '%';
-const ddmm = s => { const m = String(s || '').match(/^(\d{4})-(\d{2})-(\d{2})/); return m ? `${m[3]}-${m[2]}` : s; };
-const ddmmyy = s => { const m = String(s || '').match(/^(\d{4})-(\d{2})-(\d{2})/); return m ? `${m[3]}-${m[2]}-${m[1]}` : s; };
-const avg = a => a.length ? a.reduce((s, x) => s + x, 0) / a.length : null;
-const semaforo = (v, meta, amarillo) => v == null ? C.neutral : v >= meta ? C.good : v >= amarillo ? C.warn : C.bad;
-const semaforoTxt = (v, meta, amarillo) => v == null ? 'Sin datos' : v >= meta ? 'Sobre meta' : v >= amarillo ? 'Cerca de meta' : 'Bajo meta';
-const semaforoIco = (v, meta, amarillo) => v == null ? 'remove' : v >= meta ? 'check_circle' : v >= amarillo ? 'error' : 'cancel';
-const esc = s => escapeHtml(String(s ?? ''));
-
-async function fetchPag(vista, build) {
-  const size = 1000; let out = [];
-  for (let p = 0; p < 200; p++) {
-    const { data, error } = await build(supabase.from(vista).select('*')).range(p * size, p * size + size - 1);
-    if (error) { console.error(error); showAlert('Error al cargar ' + vista + ': ' + error.message, 'error'); break; }
-    out = out.concat(data || []);
-    if (!data || data.length < size) break;
-  }
-  return out;
-}
-
-// ── entrada ────────────────────────────────────────────────────────────────
-export async function renderIndPlanCarga(stage, options = {}) {
-  root = stage; opts = options;
-  const rol = rolClase();
-  S.canEdit = rol === 'OWNER' || rol === 'ADMIN';
-  if (!S.desde) {
-    const h = new Date(); const d = new Date(); d.setDate(d.getDate() - 30);
-    S.desde = iso(d); S.hasta = iso(h);
-  }
-  root.innerHTML = `${css()}<div class="ipc"><div class="ipc-load">Cargando indicadores…</div></div>`;
-  await cargar();
-  pintar();
-  if (onResize) window.removeEventListener('resize', onResize);
-  onResize = () => { clearTimeout(resizeT); resizeT = setTimeout(() => { if (root && root.isConnected && S.vista === 'dash') pintarGraficos(); }, 180); };
-  window.addEventListener('resize', onResize);
-}
-
-async function cargar() {
-  const [cons, efec, usr] = await Promise.all([
-    fetchPag('v_ind_consolidacion_dt', q => q.gte('fecha_creacion', S.desde).lte('fecha_creacion', S.hasta).order('fecha_creacion')),
-    fetchPag('v_ind_plan_asert_resumen', q => q.gte('fecha_carga', S.desde).lte('fecha_plan', S.hasta).order('fecha_carga')), // incluye cargas de mañana ya planificadas
-    supabase.from('abast_ind_usuarios_plan').select('*').order('usuario'),
-  ]);
-  S.cons = filtrarPorCentro(cons, 'centro_expedicion');
-  S.asert = filtrarPorCentro(efec, 'ce');
-  S.skuCache.clear();
-  S.viajeCache.clear();
-  S.usuarios = usr.data || [];
-}
-
-// ── filtros ────────────────────────────────────────────────────────────────
-function usuariosActivos() { return S.usuarios.filter(u => u.activo).map(u => u.usuario); }
-function consFiltrado() {
-  return S.cons.filter(r => {
-    if (S.soloAlcance && !r.en_alcance) return false;
-    if (S.usuario !== 'all' && r.usuario_dt !== S.usuario) return false;
-    if (S.centro !== 'all' && String(r.centro_expedicion) !== S.centro) return false;
-    if (S.tipo !== 'all' && r.tipo_despacho !== S.tipo) return false;
-    return true;
-  });
-}
-function asertFiltrado() {
-  return S.asert.filter(r => S.cd === 'all' || String(r.cd_origen) === S.cd);
-}
-const pctA = r => r.pct_asertividad == null ? null : Number(r.pct_asertividad) * 100;
-const pctC = r => r.pct_consolidacion == null ? null : Number(r.pct_consolidacion) * 100;
-// (24-oct-2026, Jordan) Estado de medición de cada camión del plan:
-//  · con DT cruzado → se mide (asertividad y consolidación);
-//  · sin DT y carga de hoy o futura → PENDIENTE hasta que se cruce el DT (no se mide);
-//  · sin DT y carga pasada → FALTA DT PARA VALIDAR: alerta, y no entra a los promedios.
-const hoyIso = () => iso(new Date());
-const conDt = r => !!String(r.transportes ?? '').trim();
-const estadoMed = r => conDt(r) ? 'medido' : String(r.fecha_carga || '').slice(0, 10) < hoyIso() ? 'faltadt' : 'pendiente';
-const medido = r => estadoMed(r) === 'medido';
-const faltaDt = r => estadoMed(r) === 'faltadt';
-const pendienteDt = r => estadoMed(r) === 'pendiente';
-const TAG_FALTA_DT = '<span class="ipc-tag bad" title="Carga pasada sin documento de transporte: falta el DT para validar">⚠ falta DT para validar</span>';
-const TAG_PEND_DT = '<span class="ipc-tag warn" title="Se mide cuando se cruce el DT">pendiente DT</span>';
-function estTagMed(r) {
-  const e = estadoMed(r);
-  return e === 'faltadt' ? TAG_FALTA_DT : e === 'pendiente' ? TAG_PEND_DT : r.historico ? '<span class="ipc-tag">semana cerrada</span>' : '<span class="ipc-tag ok">con DT</span>';
-}
-// Aviso con los despachos pasados sin DT (falta el DT para validar)
-function alertaFaltaDt(rows) {
-  const f = rows.filter(faltaDt);
-  if (!f.length) return '';
-  const lst = f.slice().sort((a, b) => String(b.fecha_carga).localeCompare(String(a.fecha_carga))).slice(0, 12)
-    .map(r => `${ddmmyy(r.fecha_carga)} · ${esc(nombreCentro(r.ce))} · ${esc(r.camion)}`).join('<br>');
-  return `<div class="ipc-alert" data-tt="${esc(lst + (f.length > 12 ? '<br>…' : ''))}"><span class="material-symbols-outlined">warning</span>
-    <span><b>${f.length} ${f.length === 1 ? 'despacho pasado sin DT' : 'despachos pasados sin DT'}</b>: falta el documento de transporte para validar. ${f.length === 1 ? 'No entra' : 'No entran'} al promedio hasta que se cruce el DT.</span></div>`;
-}
-const pctRow = r => r.pct_consolidacion == null ? null : Number(r.pct_consolidacion) * 100;
-
-function enlazar(box) {
-  box.querySelectorAll('[data-usr]').forEach(b => b.onclick = () => { S.usuario = b.dataset.usr; pintar(); });
-  box.querySelectorAll('[data-cen]').forEach(b => b.onclick = () => { S.centro = b.dataset.cen; pintar(); });
-  box.querySelectorAll('[data-tip]').forEach(b => b.onclick = () => { S.tipo = b.dataset.tip; pintar(); });
-  box.querySelectorAll('[data-cd]').forEach(b => b.onclick = () => { S.cd = b.dataset.cd; pintar(); });
-  box.querySelectorAll('[data-dias]').forEach(b => b.onclick = async () => {
-    const d = new Date(); d.setDate(d.getDate() - Number(b.dataset.dias)); S.desde = iso(d); S.hasta = iso(new Date());
-    await recargar();
-  });
-  box.querySelectorAll('input[data-f="desde"],input[data-f="hasta"]').forEach(i => i.onchange = async () => {
-    if (!i.value) return; S[i.dataset.f] = i.value; if (S.desde > S.hasta) [S.desde, S.hasta] = [S.hasta, S.desde];
-    await recargar();
-  });
-  const solo = box.querySelector('input[data-f="solo"]');
-  if (solo) solo.onchange = () => { S.soloAlcance = solo.checked; S.usuario = 'all'; pintar(); };
-  const bv = box.querySelector('[data-act="vista"]');
-  if (bv) bv.onclick = () => { S.vista = S.vista === 'dash' ? 'detalle' : 'dash'; pintar(); };
-  const bu = box.querySelector('[data-act="usuarios"]');
-  if (bu) bu.onclick = () => modalUsuarios();
-}
-
-async function recargar() {
-  root.querySelector('.ipc-kpis') && (root.querySelector('.ipc-kpis').innerHTML = '<div class="ipc-load">Actualizando…</div>');
-  await cargar(); pintar();
-}
-
-// ── pintado general (rediseño v2 29-sep-2026: selector de modo Consolidación /
-//    Efectividad, tarjetas, barras diarias con línea de meta y tabla por sucursal)
-function pintar() {
-  const box = root.querySelector('.ipc');
-  const act = usuariosActivos();
-  const universoUsr = S.soloAlcance ? act : [...new Set(S.cons.map(r => r.usuario_dt).filter(Boolean))].sort();
-  const centros = [...new Set(S.cons.map(r => String(r.centro_expedicion || '')).filter(Boolean))].sort();
-  const tipos = [...new Set(S.cons.map(r => r.tipo_despacho).filter(Boolean))].sort();
-  const cds = [...new Set(S.asert.map(r => String(r.cd_origen || '')).filter(Boolean))].sort();
-  const chip = (v, lbl, sel, attr) => `<button class="sv-chip ${sel ? 'is-on' : ''}" data-chip data-${attr}="${esc(v)}">${esc(lbl)}</button>`;
-  const cons = S.modo === 'cons';
-
-  box.innerHTML = `
+import{supabase as z}from"./supabase-client.js?v=fd17fd7d20";import{filtrarPorCentro as tt,rolClase as yt}from"./permisos.js?v=a8b193e9fb";import{showAlert as at,escapeHtml as kt}from"./utils.js";import{getDatabase as wt}from"./data.js?v=6ce8cb5f60";import{truckGauge as St}from"./troncales-ui.js?v=58773d73b2";const x=85,S=90,p={series:"#191c1d",good:"#15803d",warn:"#ca8a04",bad:"#b5000b",info:"#1d4ed8",neutral:"#9ca3af",grid:"#edeeef",axis:"#5c5f61",ink:"#191c1d",ink2:"#5c5f61"},et=["#191c1d","#b5000b","#1d4ed8","#ca8a04","#7e22ce","#15803d","#ea580c","#936e69"],I=[{k:"CUMPLE",lbl:"Cumple",color:p.good},{k:"PARCIAL",lbl:"Parcial",color:p.warn},{k:"CON ENTREGA SIN DT",lbl:"Con entrega sin DT",color:p.info},{k:"NO CARGADO",lbl:"No cargado",color:p.bad}],l={desde:"",hasta:"",usuario:"all",centro:"all",tipo:"all",cd:"all",soloAlcance:!0,cons:[],asert:[],usuarios:[],abiertos:new Set,skuCache:new Map,canEdit:!1,cenAbiertos:new Set,viajes:new Set,viajeCache:new Map,ordCen:"asert",cenSel:null,vista:"dash",detalleModo:0,modo:"centro"};let _=null,F={},st=null,R=null;const L=t=>`${t.getFullYear()}-${String(t.getMonth()+1).padStart(2,"0")}-${String(t.getDate()).padStart(2,"0")}`,y=(t,s=1)=>t==null||isNaN(t)?"—":Number(t).toLocaleString("es-CL",{minimumFractionDigits:s,maximumFractionDigits:s}),v=(t,s=1)=>t==null?"—":y(t,s)+"%",_t=t=>{const s=String(t||"").match(/^(\d{4})-(\d{2})-(\d{2})/);return s?`${s[3]}-${s[2]}`:t},A=t=>{const s=String(t||"").match(/^(\d{4})-(\d{2})-(\d{2})/);return s?`${s[3]}-${s[2]}-${s[1]}`:t},w=t=>t.length?t.reduce((s,o)=>s+o,0)/t.length:null,D=(t,s,o)=>t==null?p.neutral:t>=s?p.good:t>=o?p.warn:p.bad,B=(t,s,o)=>t==null?"Sin datos":t>=s?"Sobre meta":t>=o?"Cerca de meta":"Bajo meta",Bt=(t,s,o)=>t==null?"remove":t>=s?"check_circle":t>=o?"error":"cancel",m=t=>kt(String(t??""));async function nt(t,s){let n=[];for(let e=0;e<200;e++){const{data:i,error:a}=await s(z.from(t).select("*")).range(e*1e3,e*1e3+1e3-1);if(a){console.error(a),at("Error al cargar "+t+": "+a.message,"error");break}if(n=n.concat(i||[]),!i||i.length<1e3)break}return n}async function Kt(t,s={}){_=t,F=s;const o=yt();if(l.canEdit=o==="OWNER"||o==="ADMIN",!l.desde){const n=new Date,e=new Date;e.setDate(e.getDate()-30),l.desde=L(e),l.hasta=L(n)}_.innerHTML=`${Ft()}<div class="ipc"><div class="ipc-load">Cargando indicadores…</div></div>`,await it(),M(),R&&window.removeEventListener("resize",R),R=()=>{clearTimeout(st),st=setTimeout(()=>{_&&_.isConnected&&l.vista==="dash"&&ut()},180)},window.addEventListener("resize",R)}async function it(){const[t,s,o]=await Promise.all([nt("v_ind_consolidacion_dt",n=>n.gte("fecha_creacion",l.desde).lte("fecha_creacion",l.hasta).order("fecha_creacion")),nt("v_ind_plan_asert_resumen",n=>n.gte("fecha_carga",l.desde).lte("fecha_plan",l.hasta).order("fecha_carga")),z.from("abast_ind_usuarios_plan").select("*").order("usuario")]);l.cons=tt(t,"centro_expedicion"),l.asert=tt(s,"ce"),l.skuCache.clear(),l.viajeCache.clear(),l.usuarios=o.data||[]}function ot(){return l.usuarios.filter(t=>t.activo).map(t=>t.usuario)}function ct(){return l.cons.filter(t=>!(l.soloAlcance&&!t.en_alcance||l.usuario!=="all"&&t.usuario_dt!==l.usuario||l.centro!=="all"&&String(t.centro_expedicion)!==l.centro||l.tipo!=="all"&&t.tipo_despacho!==l.tipo))}function lt(){return l.asert.filter(t=>l.cd==="all"||String(t.cd_origen)===l.cd)}const N=t=>t.pct_asertividad==null?null:Number(t.pct_asertividad)*100,P=t=>t.pct_consolidacion==null?null:Number(t.pct_consolidacion)*100,rt=()=>L(new Date),K=t=>!!String(t.transportes??"").trim(),V=t=>K(t)?"medido":String(t.fecha_carga||"").slice(0,10)<rt()?"faltadt":"pendiente",O=t=>V(t)==="medido",H=t=>V(t)==="faltadt",dt=t=>V(t)==="pendiente",Tt='<span class="ipc-tag bad" title="Carga pasada sin documento de transporte: falta el DT para validar">⚠ falta DT para validar</span>',Ct='<span class="ipc-tag warn" title="Se mide cuando se cruce el DT">pendiente DT</span>';function pt(t){const s=V(t);return s==="faltadt"?Tt:s==="pendiente"?Ct:t.historico?'<span class="ipc-tag">semana cerrada</span>':'<span class="ipc-tag ok">con DT</span>'}function Dt(t){const s=t.filter(H);if(!s.length)return"";const o=s.slice().sort((n,e)=>String(e.fecha_carga).localeCompare(String(n.fecha_carga))).slice(0,12).map(n=>`${A(n.fecha_carga)} · ${m(j(n.ce))} · ${m(n.camion)}`).join("<br>");return`<div class="ipc-alert" data-tt="${m(o+(s.length>12?"<br>…":""))}"><span class="material-symbols-outlined">warning</span>
+    <span><b>${s.length} ${s.length===1?"despacho pasado sin DT":"despachos pasados sin DT"}</b>: falta el documento de transporte para validar. ${s.length===1?"No entra":"No entran"} al promedio hasta que se cruce el DT.</span></div>`}const T=t=>t.pct_consolidacion==null?null:Number(t.pct_consolidacion)*100;function Et(t){t.querySelectorAll("[data-usr]").forEach(e=>e.onclick=()=>{l.usuario=e.dataset.usr,M()}),t.querySelectorAll("[data-cen]").forEach(e=>e.onclick=()=>{l.centro=e.dataset.cen,M()}),t.querySelectorAll("[data-tip]").forEach(e=>e.onclick=()=>{l.tipo=e.dataset.tip,M()}),t.querySelectorAll("[data-cd]").forEach(e=>e.onclick=()=>{l.cd=e.dataset.cd,M()}),t.querySelectorAll("[data-dias]").forEach(e=>e.onclick=async()=>{const i=new Date;i.setDate(i.getDate()-Number(e.dataset.dias)),l.desde=L(i),l.hasta=L(new Date),await G()}),t.querySelectorAll('input[data-f="desde"],input[data-f="hasta"]').forEach(e=>e.onchange=async()=>{e.value&&(l[e.dataset.f]=e.value,l.desde>l.hasta&&([l.desde,l.hasta]=[l.hasta,l.desde]),await G())});const s=t.querySelector('input[data-f="solo"]');s&&(s.onchange=()=>{l.soloAlcance=s.checked,l.usuario="all",M()});const o=t.querySelector('[data-act="vista"]');o&&(o.onclick=()=>{l.vista=l.vista==="dash"?"detalle":"dash",M()});const n=t.querySelector('[data-act="usuarios"]');n&&(n.onclick=()=>xt())}async function G(){_.querySelector(".ipc-kpis")&&(_.querySelector(".ipc-kpis").innerHTML='<div class="ipc-load">Actualizando…</div>'),await it(),M()}function M(){const t=_.querySelector(".ipc"),s=ot(),o=l.soloAlcance?s:[...new Set(l.cons.map(d=>d.usuario_dt).filter(Boolean))].sort(),n=[...new Set(l.cons.map(d=>String(d.centro_expedicion||"")).filter(Boolean))].sort(),e=[...new Set(l.cons.map(d=>d.tipo_despacho).filter(Boolean))].sort(),i=[...new Set(l.asert.map(d=>String(d.cd_origen||"")).filter(Boolean))].sort(),a=(d,$,g,b)=>`<button class="sv-chip ${g?"is-on":""}" data-chip data-${b}="${m(d)}">${m($)}</button>`,u=l.modo==="cons";t.innerHTML=`
   <div class="sv-vhead">
     <div style="min-width:0">
       <h1 class="sv-h1">Indicadores Plan de Carga</h1>
-      <div class="sv-desc">${!cons ? 'Foto del cierre del plan (15:30) vs Documento de Transporte del día de carga · por día de carga' : S.soloAlcance
-        ? `DT de: <b>${act.length ? act.map(esc).join(' · ') : 'sin usuarios configurados'}</b>`
-        : 'Todos los DT (todos los usuarios)'} · ${ddmmyy(S.desde)} a ${ddmmyy(S.hasta)}</div>
+      <div class="sv-desc">${u?l.soloAlcance?`DT de: <b>${s.length?s.map(m).join(" · "):"sin usuarios configurados"}</b>`:"Todos los DT (todos los usuarios)":"Foto del cierre del plan (15:30) vs Documento de Transporte del día de carga · por día de carga"} · ${A(l.desde)} a ${A(l.hasta)}</div>
     </div>
     <div class="sv-actions">
-      ${S.vista === 'dash' ? `<div class="sv-seg" role="group" aria-label="Indicador">
-        <button data-chip data-modo-ipc="centro" class="${S.modo === 'centro' ? 'is-on' : ''}"><span class="material-symbols-outlined">location_on</span>Por centro destino</button>
-        <button data-chip data-modo-ipc="cons" class="${cons ? 'is-on' : ''}"><span class="material-symbols-outlined">local_shipping</span>Consolidación</button>
-        <button data-chip data-modo-ipc="efec" class="${S.modo === 'efec' ? 'is-on' : ''}"><span class="material-symbols-outlined">task_alt</span>Asertividad del plan</button>
-</div>` : ''}
-      ${S.canEdit ? '<button class="sv-btn" data-chip data-act="usuarios"><span class="material-symbols-outlined">group</span>Usuarios</button>' : ''}
-      <button class="sv-btn" data-chip data-act="vista"><span class="material-symbols-outlined">${S.vista === 'dash' ? 'table_view' : 'insights'}</span>${S.vista === 'dash' ? 'Ver detalle' : 'Ver dashboard'}</button>
+      ${l.vista==="dash"?`<div class="sv-seg" role="group" aria-label="Indicador">
+        <button data-chip data-modo-ipc="centro" class="${l.modo==="centro"?"is-on":""}"><span class="material-symbols-outlined">location_on</span>Por centro destino</button>
+        <button data-chip data-modo-ipc="cons" class="${u?"is-on":""}"><span class="material-symbols-outlined">local_shipping</span>Consolidación</button>
+        <button data-chip data-modo-ipc="efec" class="${l.modo==="efec"?"is-on":""}"><span class="material-symbols-outlined">task_alt</span>Asertividad del plan</button>
+</div>`:""}
+      ${l.canEdit?'<button class="sv-btn" data-chip data-act="usuarios"><span class="material-symbols-outlined">group</span>Usuarios</button>':""}
+      <button class="sv-btn" data-chip data-act="vista"><span class="material-symbols-outlined">${l.vista==="dash"?"table_view":"insights"}</span>${l.vista==="dash"?"Ver detalle":"Ver dashboard"}</button>
     </div>
   </div>
-  ${S.vista === 'detalle' ? '<div class="ipc-detalle"></div>' : `
+  ${l.vista==="detalle"?'<div class="ipc-detalle"></div>':`
   <div class="sv-filters">
     <div class="sv-frow">
       <div class="sv-inp"><span class="material-symbols-outlined">date_range</span><span class="sv-sep">Período</span>
-        <input type="date" data-f="desde" value="${S.desde}" aria-label="Desde"><span class="sv-sep">–</span><input type="date" data-f="hasta" value="${S.hasta}" aria-label="Hasta"></div>
-      ${[7, 30, 90].map(n => `<button class="sv-chip" data-chip data-dias="${n}">${n} días</button>`).join('')}
-      ${cons ? `<label class="ipc-check"><input type="checkbox" data-f="solo" ${S.soloAlcance ? 'checked' : ''}> Solo usuarios configurados</label>` : ''}
+        <input type="date" data-f="desde" value="${l.desde}" aria-label="Desde"><span class="sv-sep">–</span><input type="date" data-f="hasta" value="${l.hasta}" aria-label="Hasta"></div>
+      ${[7,30,90].map(d=>`<button class="sv-chip" data-chip data-dias="${d}">${d} días</button>`).join("")}
+      ${u?`<label class="ipc-check"><input type="checkbox" data-f="solo" ${l.soloAlcance?"checked":""}> Solo usuarios configurados</label>`:""}
     </div>
-    ${cons ? `<div class="sv-frow"><span class="sv-flbl">Usuario</span>${chip('all', 'Todos', S.usuario === 'all', 'usr')}${universoUsr.map(u => chip(u, u, S.usuario === u, 'usr')).join('')}</div>` : ''}
-    ${cons ? `<div class="sv-frow"><span class="sv-flbl">Centro exp.</span>${chip('all', 'Todos', S.centro === 'all', 'cen')}${centros.map(c => chip(c, c, S.centro === c, 'cen')).join('')}
-      ${tipos.length > 1 ? `<span class="sv-flbl" style="margin-left:12px">Tipo</span>${chip('all', 'Todos', S.tipo === 'all', 'tip')}${tipos.map(t => chip(t, t, S.tipo === t, 'tip')).join('')}` : ''}</div>`
-    : (cds.length > 1 ? `<div class="sv-frow"><span class="sv-flbl">CD origen</span>${chip('all', 'Todos', S.cd === 'all', 'cd')}${cds.map(c => chip(c, 'CD ' + c, S.cd === c, 'cd')).join('')}</div>` : '')}
+    ${u?`<div class="sv-frow"><span class="sv-flbl">Usuario</span>${a("all","Todos",l.usuario==="all","usr")}${o.map(d=>a(d,d,l.usuario===d,"usr")).join("")}</div>`:""}
+    ${u?`<div class="sv-frow"><span class="sv-flbl">Centro exp.</span>${a("all","Todos",l.centro==="all","cen")}${n.map(d=>a(d,d,l.centro===d,"cen")).join("")}
+      ${e.length>1?`<span class="sv-flbl" style="margin-left:12px">Tipo</span>${a("all","Todos",l.tipo==="all","tip")}${e.map(d=>a(d,d,l.tipo===d,"tip")).join("")}`:""}</div>`:i.length>1?`<div class="sv-frow"><span class="sv-flbl">CD origen</span>${a("all","Todos",l.cd==="all","cd")}${i.map(d=>a(d,"CD "+d,l.cd===d,"cd")).join("")}</div>`:""}
   </div>
-  ${S.modo === 'centro' ? '' : '<div class="sv-kpis ipc-kpis"></div>'}
-  ${cons ? `
-  <section class="sv-card ipc-card"><h3>Consolidación diaria de camiones <small>promedio simple por DT · meta ${META_CONS}%</small></h3><div class="ipc-chart" data-ch="diaria"></div></section>
+  ${l.modo==="centro"?"":'<div class="sv-kpis ipc-kpis"></div>'}
+  ${u?`
+  <section class="sv-card ipc-card"><h3>Consolidación diaria de camiones <small>promedio simple por DT · meta ${x}%</small></h3><div class="ipc-chart" data-ch="diaria"></div></section>
   <section class="sv-card ipc-card"><h3>Por sucursal destino <small>consolidación promedio · Δ segunda mitad del período vs primera</small></h3><div data-ch="suc"></div></section>
   <div class="ipc-grid">
     <section class="sv-card ipc-card"><h3>Por usuario <small>% consolidación · DT · t</small></h3><div class="ipc-chart" data-ch="usuario"></div></section>
@@ -221,501 +37,104 @@ function pintar() {
   </div>
   <section class="sv-card ipc-card"><h3>Viajes bajo meta <small>DT con menor consolidación en el período</small></h3><div data-ch="bajo"></div></section>
   <p class="ipc-note">Capacidad = GeEs del DT; si viene vacía en un traslado se usa 28 t (15 t a 1050/1005) y el DT se marca <i>estimada</i>.
-  Ton por línea = máx(peso bruto, peso volumétrico) × cantidad; tope 100% por DT.</p>` : S.modo === 'centro' ? `
+  Ton por línea = máx(peso bruto, peso volumétrico) × cantidad; tope 100% por DT.</p>`:l.modo==="centro"?`
   <div data-ch="centros"></div>
-  <p class="ipc-note">Promedio por camión: foto de cierre del plan vs DT · metas asertividad ${META_EFEC}% y consolidación ${META_CONS}% · cargas de hoy o futuras quedan pendientes hasta cruzar el DT; cargas pasadas sin DT no entran al promedio.</p>` : `
+  <p class="ipc-note">Promedio por camión: foto de cierre del plan vs DT · metas asertividad ${S}% y consolidación ${x}% · cargas de hoy o futuras quedan pendientes hasta cruzar el DT; cargas pasadas sin DT no entran al promedio.</p>`:`
   <div data-ch="alertaDt"></div>
-  <section class="sv-card ipc-card"><h3>Asertividad diaria del despacho <small>por día de carga · sólo camiones programados · meta ${META_EFEC}%</small></h3><div class="ipc-chart" data-ch="diariaAsert"></div></section>
+  <section class="sv-card ipc-card"><h3>Asertividad diaria del despacho <small>por día de carga · sólo camiones programados · meta ${S}%</small></h3><div class="ipc-chart" data-ch="diariaAsert"></div></section>
   <section class="sv-card ipc-card"><h3>Camiones programados por día de carga <small>abra un camión para ver el detalle por SKU</small></h3><div data-ch="camiones"></div></section>
   <p class="ipc-note">Foto del cierre del plan (15:30): sólo camiones en estado Programar (y 2º camión aceptado / camiones directos) y sólo productos incluidos; los que exceden no se consideran.
   Asertividad por SKU: 1 si la cantidad en el Documento de Transporte del día de carga es igual o mayor a la planificada, 0 si no; la del camión es el promedio de sus SKU.
   Consolidación = % de consolidación del DT del camión. Las semanas cerradas guardan sólo el resultado por camión (sin detalle).</p>`}
   `}
-  <div class="ipc-tip" hidden></div>`;
-
-  enlazar(box);
-  box.querySelectorAll('[data-modo-ipc]').forEach(b => b.onclick = () => { if (S.modo === b.dataset.modoIpc) return; S.modo = b.dataset.modoIpc; pintar(); });
-  if (S.vista === 'dash') { if (root.querySelector('.ipc-kpis')) pintarKpis(); pintarGraficos(); }
-  else if (opts.renderDetalle) opts.renderDetalle(box.querySelector('.ipc-detalle'), S.modo !== 'cons' ? 1 : S.detalleModo);
-}
-
-// ── KPIs ───────────────────────────────────────────────────────────────────
-function pintarKpis() {
-  const tile = (lbl, val, sub, dot, extra = '') => `<div class="sv-kpi" style="cursor:default">
-      <div class="sv-kpi-l"><i style="background:${dot}"></i>${lbl}</div>
-      <div class="sv-kpi-v">${val}</div><div class="sv-kpi-s">${sub}</div>${extra}</div>`;
-  const meter = (v, meta, color) => v == null ? '' : `<div class="ipc-meter"><i style="width:${Math.min(100, v)}%;background:${color}"></i><b style="left:${meta}%"></b></div>`;
-  if (S.modo === 'cons') {
-    const rows = consFiltrado();
-    const vals = rows.map(pctRow).filter(v => v != null);
-    const cons = avg(vals);
-    const ton = rows.reduce((s, r) => s + (Number(r.ton_cargadas) || 0), 0);
-    const sobre = vals.filter(v => v >= META_CONS).length;
-    const dias = diasCons(rows).filter(d => d.v != null);
-    const bajo = dias.filter(d => d.v < META_CONS);
-    const ult = bajo.length ? bajo[bajo.length - 1] : null;
-    const nLin = rows.reduce((s, r) => s + (Number(r.n_lineas) || 0), 0);
-    const sinPeso = rows.reduce((s, r) => s + (Number(r.lineas_sin_peso) || 0), 0);
-    const sinCap = rows.filter(r => pctRow(r) == null).length;
-    const col = semaforo(cons, META_CONS, 70);
-    root.querySelector('.ipc-kpis').innerHTML =
-      tile('Consolidación promedio', pct(cons), `<span style="color:${col};font-weight:700">${semaforoTxt(cons, META_CONS, 70)}</span> · ${sobre} de ${vals.length} viajes ≥ ${META_CONS}%`, C.ink, meter(cons, META_CONS, col))
-      + tile('Viajes (DT)', fmt(rows.length, 0), `${fmt(ton, 0)} t transportadas · ${fmt(rows.length ? ton / rows.length : null, 1)} t/viaje`, C.ink2)
-      + tile('Días bajo meta', `${bajo.length} de ${dias.length}`, ult ? `último: ${ddmmyy(ult.f)} (${pct(ult.v, 0)})` : 'todos los días sobre meta', C.warn)
-      + tile('Calidad del dato', pct(nLin ? (nLin - sinPeso) / nLin * 100 : null, 0), `líneas con peso maestro · ${sinCap} DT sin capacidad`, C.neutral);
-  } else {
-    const rows = asertFiltrado();
-    const med = rows.filter(medido);
-    const asert = avg(med.map(pctA).filter(v => v != null));
-    const consV = avg(med.map(pctC).filter(v => v != null));
-    const nSku = med.reduce((s, r) => s + (Number(r.n_sku) || 0), 0), nOk = med.reduce((s, r) => s + (Number(r.n_acierto) || 0), 0);
-    const col = semaforo(asert, META_EFEC, 75), colC = semaforo(consV, META_CONS, 70);
-    root.querySelector('.ipc-kpis').innerHTML =
-      tile('Asertividad del despacho', pct(asert), `<span style="color:${col};font-weight:700">${semaforoTxt(asert, META_EFEC, 75)}</span> · promedio por camión`, C.ink, meter(asert, META_EFEC, col))
-      + tile('Consolidación camiones', pct(consV), `<span style="color:${colC};font-weight:700">${semaforoTxt(consV, META_CONS, 70)}</span> · DT de los camiones programados`, C.ink2, meter(consV, META_CONS, colC))
-      + tile('Camiones medidos', fmt(med.length, 0), `${(np => `${np} ${np === 1 ? 'pendiente' : 'pendientes'} de DT`)(rows.filter(pendienteDt).length)}${rows.some(faltaDt) ? ` · <b style="color:${C.bad}">${fmt(rows.filter(faltaDt).length, 0)} con falta de DT</b>` : ''}`, C.ink2)
-      + tile('SKU acertados', `${fmt(nOk, 0)} de ${fmt(nSku, 0)}`, nSku ? `${pct(nOk / nSku * 100, 0)} de los SKU planificados` : 'sin SKU medidos', C.good);
-  }
-}
-
-// ── gráficos ───────────────────────────────────────────────────────────────
-function pintarGraficos() {
-  const q = k => root.querySelector(`[data-ch="${k}"]`);
-  if (S.modo === 'cons') {
-    const rows = consFiltrado();
-    chDiaria(q('diaria'), rows);
-    tablaSucCons(q('suc'), rows);
-    chUsuario(q('usuario'), rows);
-    chDist(q('dist'), rows);
-    tablaBajo(q('bajo'), rows);
-  } else {
-    const rows = asertFiltrado();
-    if (q('alertaDt')) q('alertaDt').innerHTML = alertaFaltaDt(rows);   // (24-oct-2026, Jordan) planes pasados sin DT
-    if (S.modo === 'centro') tablaCentros(q('centros'), rows);
-    else { chDiariaAsert(q('diariaAsert'), rows); tablaCamiones(q('camiones'), rows); }
-  }
-  tooltips();
-}
-const vacio = el => { el.innerHTML = '<div class="ipc-empty">Sin datos para los filtros seleccionados</div>'; };
-
-function diasCons(rows) {
-  const by = new Map();
-  rows.forEach(r => { const f = String(r.fecha_creacion).slice(0, 10); (by.get(f) || by.set(f, []).get(f)).push(r); });
-  return [...by.keys()].sort().map(f => {
-    const rs = by.get(f); const v = rs.map(pctRow).filter(x => x != null);
-    return { f, v: avg(v), n: rs.length, t: rs.reduce((s, r) => s + (Number(r.ton_cargadas) || 0), 0) };
-  });
-}
-// Barras diarias con línea de meta punteada: verde sobre la meta, amarillo bajo la meta.
-function barrasDiarias(el, pts, meta, ttFn) {
-  if (!pts.length) return vacio(el);
-  const W = Math.max(300, el.clientWidth), H = 200, m = { l: 40, r: 14, t: 14, b: 24 };
-  const iw = W - m.l - m.r, ih = H - m.t - m.b;
-  const step = iw / pts.length, x = i => m.l + step * (i + .5), bw = Math.max(4, Math.min(34, step * .62));
-  const y = v => m.t + ih - (Math.max(0, Math.min(100, v)) / 100) * ih;
-  let s = `<svg width="${W}" height="${H}" role="img">`;
-  [0, 50, 100].forEach(g => { s += `<line x1="${m.l}" x2="${W - m.r}" y1="${y(g)}" y2="${y(g)}" stroke="${C.grid}"/><text x="${m.l - 6}" y="${y(g) + 4}" text-anchor="end" class="ipc-ax">${g}%</text>`; });
-  const every = Math.ceil(pts.length / Math.max(1, Math.floor(iw / 44)));
-  pts.forEach((p, i) => {
-    if (p.v != null) {
-      const top = y(p.v), h = m.t + ih - top;
-      s += `<path d="M${x(i) - bw / 2},${m.t + ih} v${-Math.max(0, h - 3)} q0,-3 3,-3 h${bw - 6} q3,0 3,3 v${Math.max(0, h - 3)} z" fill="${p.v >= meta ? C.good : C.warn}"/>`;
-      if (step > 30) s += `<text x="${x(i)}" y="${top - 5}" text-anchor="middle" class="ipc-val">${fmt(p.v, 0)}</text>`;
-    } else if (p.plazo) {
-      s += `<rect x="${x(i) - bw / 2}" y="${m.t + ih - 14}" width="${bw}" height="14" rx="3" fill="${p.lbl === 'falta DT' ? '#fde2e2' : '#e7e8e9'}"/>`;
-      if (step > 30) s += `<text x="${x(i)}" y="${m.t + ih - 20}" text-anchor="middle" class="ipc-ax"${p.lbl === 'falta DT' ? ` style="fill:${C.bad};font-weight:700"` : ''}>${p.lbl || 'en plazo'}</text>`;
-    }
-    if (i % every === 0) s += `<text x="${x(i)}" y="${H - 6}" text-anchor="middle" class="ipc-ax">${ddmm(p.f)}</text>`;
-    s += `<rect x="${x(i) - step / 2}" y="${m.t}" width="${step}" height="${ih}" fill="transparent" data-tt="${esc(ttFn(p))}"/>`;
-  });
-  s += `<line x1="${m.l}" x2="${W - m.r}" y1="${y(meta)}" y2="${y(meta)}" stroke="${C.ink}" stroke-dasharray="5 4" stroke-width="1.2"/>
-        <text x="${W - m.r}" y="${y(meta) - 5}" text-anchor="end" class="ipc-ax" style="fill:${C.ink};font-weight:700">Meta ${meta}%</text>`;
-  el.innerHTML = s + '</svg>';
-}
-function chDiaria(el, rows) {
-  barrasDiarias(el, diasCons(rows), META_CONS, p => `<b>${ddmmyy(p.f)}</b><br>Consolidación: <b>${pct(p.v)}</b><br>Viajes: ${p.n}<br>Toneladas: ${fmt(p.t, 1)} t`);
-}
-function chDiariaEfec(el, rows) {
-  const g = new Map();
-  rows.forEach(r => { const f = String(r.fecha).slice(0, 10); (g.get(f) || g.set(f, []).get(f)).push(r); });
-  const pts = [...g.keys()].sort().map(f => {
-    const rs = g.get(f), med = rs.filter(r => r.estado !== 'EN PLAZO'), ok = med.filter(r => r.linea_cumple).length;
-    return { f, v: med.length ? ok / med.length * 100 : null, plazo: rs.length - med.length > 0 && !med.length, n: rs.length, med: med.length, ok };
-  });
-  barrasDiarias(el, pts, META_EFEC, p => `<b>Plan ${ddmmyy(p.f)}</b><br>${p.v == null ? 'Sigue en plazo (48 h hábiles)' : `Efectividad: <b>${pct(p.v)}</b>`}<br>Líneas: ${p.n} · medidas ${p.med} · cumplen ${p.ok}`);
-}
-
-function chDiariaAsert(el, rows) {
-  const g = new Map();
-  rows.forEach(r => { const f = String(r.fecha_carga).slice(0, 10); (g.get(f) || g.set(f, []).get(f)).push(r); });
-  const pts = [...g.keys()].sort().map(f => {
-    const rs = g.get(f), med = rs.filter(medido);
-    return { f, v: avg(med.map(pctA).filter(v => v != null)), c: avg(med.map(pctC).filter(v => v != null)), plazo: !med.length, lbl: f < hoyIso() ? 'falta DT' : 'pendiente', falta: rs.filter(faltaDt).length, n: rs.length, med: med.length };
-  });
-  barrasDiarias(el, pts, META_EFEC, p => `<b>Carga ${ddmmyy(p.f)}</b><br>${p.v == null ? (p.lbl === 'falta DT' ? '<b>Falta DT para validar</b>' : 'Pendiente: se mide al cruzar el DT') : `Asertividad: <b>${pct(p.v)}</b><br>Consolidación: <b>${pct(p.c)}</b>`}<br>Camiones: ${p.n} · medidos ${p.med}${p.falta ? ` · <b>${p.falta} sin DT</b>` : ''}`);
-}
-
-const keyCam = r => [r.fecha_plan, r.cd_origen, r.ce, r.camion].join('|');
-function celdaPct(v, meta, amarillo) {
-  return v == null ? '<span class="sv-muted">—</span>' : `<div class="ipc-mini"><i style="width:${Math.min(100, v)}%;background:${semaforo(v, meta, amarillo)}"></i></div><b>${pct(v, 0)}</b>`;
-}
-function tablaCamiones(el, rows) {
-  if (!rows.length) return vacio(el);
-  const dias = new Map();
-  rows.forEach(r => { const f = String(r.fecha_carga).slice(0, 10); (dias.get(f) || dias.set(f, []).get(f)).push(r); });
-  const estTag = estTagMed;   // (24-oct-2026) pendiente DT / falta DT para validar
-  const html = [...dias.keys()].sort().reverse().map(f => {
-    const rs = dias.get(f).sort((a, b) => String(a.cd_origen).localeCompare(String(b.cd_origen)) || String(a.ce).localeCompare(String(b.ce)) || String(a.camion).localeCompare(String(b.camion)));
-    const med = rs.filter(medido);
-    const vA = avg(med.map(pctA).filter(v => v != null)), vC = avg(med.map(pctC).filter(v => v != null));
-    const etiquetas = [...new Set(rs.map(r => r.etiqueta))];
-    const filas = rs.map(r => {
-      const k = keyCam(r), open = S.abiertos.has(k);
-      return `<tr class="ipc-cam ${r.historico ? '' : 'is-click'}" ${r.historico ? '' : `data-cam="${esc(k)}"`}>
-        <td>${r.historico ? '' : `<span class="material-symbols-outlined ipc-chev">${open ? 'expand_more' : 'chevron_right'}</span>`}<span class="sv-b">${esc(nombreCentro(r.ce))}</span> <span class="sv-sub" style="display:inline">${esc(r.ce)}</span></td>
-        <td>CD ${esc(r.cd_origen)}</td><td><b>${esc(r.camion)}</b></td>
-        <td class="r">${fmt(r.ton_plan, 1)} t <span class="sv-muted">(${pct(r.pct_ocupacion_plan == null ? null : r.pct_ocupacion_plan * 100, 0)} de ${fmt(r.cap, 0)} t)</span></td>
-        <td class="r">${r.n_acierto ?? 0} / ${r.n_sku ?? 0}</td>
-        <td>${medido(r) ? celdaPct(pctA(r), META_EFEC, 75) : '<span class="sv-muted">—</span>'}</td>
-        <td>${celdaPct(pctC(r), META_CONS, 70)}</td>
-        <td>${esc(r.transportes || '—')}</td><td>${estTag(r)}</td></tr>
-        ${open ? `<tr class="ipc-det"><td colspan="9"><div data-sku="${esc(k)}"><div class="ipc-load">Cargando detalle…</div></div></td></tr>` : ''}`;
-    }).join('');
-    return `<div class="ipc-dia"><div class="ipc-diah"><b>Carga día ${ddmmyy(f)}</b><span class="ipc-etq">${etiquetas.map(esc).join(' · ')}</span>
-        <span class="ipc-diak">Asertividad <b style="color:${semaforo(vA, META_EFEC, 75)}">${pct(vA, 0)}</b> · Consolidación <b style="color:${semaforo(vC, META_CONS, 70)}">${pct(vC, 0)}</b> · ${rs.length} ${rs.length === 1 ? 'camión' : 'camiones'}</span></div>
+  <div class="ipc-tip" hidden></div>`,Et(t),t.querySelectorAll("[data-modo-ipc]").forEach(d=>d.onclick=()=>{l.modo!==d.dataset.modoIpc&&(l.modo=d.dataset.modoIpc,M())}),l.vista==="dash"?(_.querySelector(".ipc-kpis")&&At(),ut()):F.renderDetalle&&F.renderDetalle(t.querySelector(".ipc-detalle"),l.modo!=="cons"?1:l.detalleModo)}function At(){const t=(o,n,e,i,a="")=>`<div class="sv-kpi" style="cursor:default">
+      <div class="sv-kpi-l"><i style="background:${i}"></i>${o}</div>
+      <div class="sv-kpi-v">${n}</div><div class="sv-kpi-s">${e}</div>${a}</div>`,s=(o,n,e)=>o==null?"":`<div class="ipc-meter"><i style="width:${Math.min(100,o)}%;background:${e}"></i><b style="left:${n}%"></b></div>`;if(l.modo==="cons"){const o=ct(),n=o.map(T).filter(h=>h!=null),e=w(n),i=o.reduce((h,f)=>h+(Number(f.ton_cargadas)||0),0),a=n.filter(h=>h>=x).length,u=ht(o).filter(h=>h.v!=null),d=u.filter(h=>h.v<x),$=d.length?d[d.length-1]:null,g=o.reduce((h,f)=>h+(Number(f.n_lineas)||0),0),b=o.reduce((h,f)=>h+(Number(f.lineas_sin_peso)||0),0),r=o.filter(h=>T(h)==null).length,c=D(e,x,70);_.querySelector(".ipc-kpis").innerHTML=t("Consolidación promedio",v(e),`<span style="color:${c};font-weight:700">${B(e,x,70)}</span> · ${a} de ${n.length} viajes ≥ ${x}%`,p.ink,s(e,x,c))+t("Viajes (DT)",y(o.length,0),`${y(i,0)} t transportadas · ${y(o.length?i/o.length:null,1)} t/viaje`,p.ink2)+t("Días bajo meta",`${d.length} de ${u.length}`,$?`último: ${A($.f)} (${v($.v,0)})`:"todos los días sobre meta",p.warn)+t("Calidad del dato",v(g?(g-b)/g*100:null,0),`líneas con peso maestro · ${r} DT sin capacidad`,p.neutral)}else{const o=lt(),n=o.filter(O),e=w(n.map(N).filter(g=>g!=null)),i=w(n.map(P).filter(g=>g!=null)),a=n.reduce((g,b)=>g+(Number(b.n_sku)||0),0),u=n.reduce((g,b)=>g+(Number(b.n_acierto)||0),0),d=D(e,S,75),$=D(i,x,70);_.querySelector(".ipc-kpis").innerHTML=t("Asertividad del despacho",v(e),`<span style="color:${d};font-weight:700">${B(e,S,75)}</span> · promedio por camión`,p.ink,s(e,S,d))+t("Consolidación camiones",v(i),`<span style="color:${$};font-weight:700">${B(i,x,70)}</span> · DT de los camiones programados`,p.ink2,s(i,x,$))+t("Camiones medidos",y(n.length,0),`${(g=>`${g} ${g===1?"pendiente":"pendientes"} de DT`)(o.filter(dt).length)}${o.some(H)?` · <b style="color:${p.bad}">${y(o.filter(H).length,0)} con falta de DT</b>`:""}`,p.ink2)+t("SKU acertados",`${y(u,0)} de ${y(a,0)}`,a?`${v(u/a*100,0)} de los SKU planificados`:"sin SKU medidos",p.good)}}function ut(){const t=s=>_.querySelector(`[data-ch="${s}"]`);if(l.modo==="cons"){const s=ct();Mt(t("diaria"),s),Nt(t("suc"),s),Pt(t("usuario"),s),Ht(t("dist"),s),Ut(t("bajo"),s)}else{const s=lt();t("alertaDt")&&(t("alertaDt").innerHTML=Dt(s)),l.modo==="centro"?J(t("centros"),s):(jt(t("diariaAsert"),s),mt(t("camiones"),s))}W()}const q=t=>{t.innerHTML='<div class="ipc-empty">Sin datos para los filtros seleccionados</div>'};function ht(t){const s=new Map;return t.forEach(o=>{const n=String(o.fecha_creacion).slice(0,10);(s.get(n)||s.set(n,[]).get(n)).push(o)}),[...s.keys()].sort().map(o=>{const n=s.get(o),e=n.map(T).filter(i=>i!=null);return{f:o,v:w(e),n:n.length,t:n.reduce((i,a)=>i+(Number(a.ton_cargadas)||0),0)}})}function Z(t,s,o,n){if(!s.length)return q(t);const e=Math.max(300,t.clientWidth),i=200,a={l:40,r:14,t:14,b:24},u=e-a.l-a.r,d=i-a.t-a.b,$=u/s.length,g=f=>a.l+$*(f+.5),b=Math.max(4,Math.min(34,$*.62)),r=f=>a.t+d-Math.max(0,Math.min(100,f))/100*d;let c=`<svg width="${e}" height="${i}" role="img">`;[0,50,100].forEach(f=>{c+=`<line x1="${a.l}" x2="${e-a.r}" y1="${r(f)}" y2="${r(f)}" stroke="${p.grid}"/><text x="${a.l-6}" y="${r(f)+4}" text-anchor="end" class="ipc-ax">${f}%</text>`});const h=Math.ceil(s.length/Math.max(1,Math.floor(u/44)));s.forEach((f,k)=>{if(f.v!=null){const C=r(f.v),E=a.t+d-C;c+=`<path d="M${g(k)-b/2},${a.t+d} v${-Math.max(0,E-3)} q0,-3 3,-3 h${b-6} q3,0 3,3 v${Math.max(0,E-3)} z" fill="${f.v>=o?p.good:p.warn}"/>`,$>30&&(c+=`<text x="${g(k)}" y="${C-5}" text-anchor="middle" class="ipc-val">${y(f.v,0)}</text>`)}else f.plazo&&(c+=`<rect x="${g(k)-b/2}" y="${a.t+d-14}" width="${b}" height="14" rx="3" fill="${f.lbl==="falta DT"?"#fde2e2":"#e7e8e9"}"/>`,$>30&&(c+=`<text x="${g(k)}" y="${a.t+d-20}" text-anchor="middle" class="ipc-ax"${f.lbl==="falta DT"?` style="fill:${p.bad};font-weight:700"`:""}>${f.lbl||"en plazo"}</text>`));k%h===0&&(c+=`<text x="${g(k)}" y="${i-6}" text-anchor="middle" class="ipc-ax">${_t(f.f)}</text>`),c+=`<rect x="${g(k)-$/2}" y="${a.t}" width="${$}" height="${d}" fill="transparent" data-tt="${m(n(f))}"/>`}),c+=`<line x1="${a.l}" x2="${e-a.r}" y1="${r(o)}" y2="${r(o)}" stroke="${p.ink}" stroke-dasharray="5 4" stroke-width="1.2"/>
+        <text x="${e-a.r}" y="${r(o)-5}" text-anchor="end" class="ipc-ax" style="fill:${p.ink};font-weight:700">Meta ${o}%</text>`,t.innerHTML=c+"</svg>"}function Mt(t,s){Z(t,ht(s),x,o=>`<b>${A(o.f)}</b><br>Consolidación: <b>${v(o.v)}</b><br>Viajes: ${o.n}<br>Toneladas: ${y(o.t,1)} t`)}function Gt(t,s){const o=new Map;s.forEach(e=>{const i=String(e.fecha).slice(0,10);(o.get(i)||o.set(i,[]).get(i)).push(e)});const n=[...o.keys()].sort().map(e=>{const i=o.get(e),a=i.filter(d=>d.estado!=="EN PLAZO"),u=a.filter(d=>d.linea_cumple).length;return{f:e,v:a.length?u/a.length*100:null,plazo:i.length-a.length>0&&!a.length,n:i.length,med:a.length,ok:u}});Z(t,n,S,e=>`<b>Plan ${A(e.f)}</b><br>${e.v==null?"Sigue en plazo (48 h hábiles)":`Efectividad: <b>${v(e.v)}</b>`}<br>Líneas: ${e.n} · medidas ${e.med} · cumplen ${e.ok}`)}function jt(t,s){const o=new Map;s.forEach(e=>{const i=String(e.fecha_carga).slice(0,10);(o.get(i)||o.set(i,[]).get(i)).push(e)});const n=[...o.keys()].sort().map(e=>{const i=o.get(e),a=i.filter(O);return{f:e,v:w(a.map(N).filter(u=>u!=null)),c:w(a.map(P).filter(u=>u!=null)),plazo:!a.length,lbl:e<rt()?"falta DT":"pendiente",falta:i.filter(H).length,n:i.length,med:a.length}});Z(t,n,S,e=>`<b>Carga ${A(e.f)}</b><br>${e.v==null?e.lbl==="falta DT"?"<b>Falta DT para validar</b>":"Pendiente: se mide al cruzar el DT":`Asertividad: <b>${v(e.v)}</b><br>Consolidación: <b>${v(e.c)}</b>`}<br>Camiones: ${e.n} · medidos ${e.med}${e.falta?` · <b>${e.falta} sin DT</b>`:""}`)}const X=t=>[t.fecha_plan,t.cd_origen,t.ce,t.camion].join("|");function ft(t,s,o){return t==null?'<span class="sv-muted">—</span>':`<div class="ipc-mini"><i style="width:${Math.min(100,t)}%;background:${D(t,s,o)}"></i></div><b>${v(t,0)}</b>`}function mt(t,s){if(!s.length)return q(t);const o=new Map;s.forEach(i=>{const a=String(i.fecha_carga).slice(0,10);(o.get(a)||o.set(a,[]).get(a)).push(i)});const n=pt,e=[...o.keys()].sort().reverse().map(i=>{const a=o.get(i).sort((r,c)=>String(r.cd_origen).localeCompare(String(c.cd_origen))||String(r.ce).localeCompare(String(c.ce))||String(r.camion).localeCompare(String(c.camion))),u=a.filter(O),d=w(u.map(N).filter(r=>r!=null)),$=w(u.map(P).filter(r=>r!=null)),g=[...new Set(a.map(r=>r.etiqueta))],b=a.map(r=>{const c=X(r),h=l.abiertos.has(c);return`<tr class="ipc-cam ${r.historico?"":"is-click"}" ${r.historico?"":`data-cam="${m(c)}"`}>
+        <td>${r.historico?"":`<span class="material-symbols-outlined ipc-chev">${h?"expand_more":"chevron_right"}</span>`}<span class="sv-b">${m(j(r.ce))}</span> <span class="sv-sub" style="display:inline">${m(r.ce)}</span></td>
+        <td>CD ${m(r.cd_origen)}</td><td><b>${m(r.camion)}</b></td>
+        <td class="r">${y(r.ton_plan,1)} t <span class="sv-muted">(${v(r.pct_ocupacion_plan==null?null:r.pct_ocupacion_plan*100,0)} de ${y(r.cap,0)} t)</span></td>
+        <td class="r">${r.n_acierto??0} / ${r.n_sku??0}</td>
+        <td>${O(r)?ft(N(r),S,75):'<span class="sv-muted">—</span>'}</td>
+        <td>${ft(P(r),x,70)}</td>
+        <td>${m(r.transportes||"—")}</td><td>${n(r)}</td></tr>
+        ${h?`<tr class="ipc-det"><td colspan="9"><div data-sku="${m(c)}"><div class="ipc-load">Cargando detalle…</div></div></td></tr>`:""}`}).join("");return`<div class="ipc-dia"><div class="ipc-diah"><b>Carga día ${A(i)}</b><span class="ipc-etq">${g.map(m).join(" · ")}</span>
+        <span class="ipc-diak">Asertividad <b style="color:${D(d,S,75)}">${v(d,0)}</b> · Consolidación <b style="color:${D($,x,70)}">${v($,0)}</b> · ${a.length} ${a.length===1?"camión":"camiones"}</span></div>
       <div class="ipc-scroll"><table class="ipc-tbl"><thead><tr><th>Centro</th><th>Origen</th><th>Camión</th><th class="r">Carga plan</th><th class="r">SKU OK</th><th>Asertividad</th><th>Consolidación</th><th>Doc. transporte</th><th>Estado</th></tr></thead>
-      <tbody>${filas}</tbody></table></div></div>`;
-  }).join('');
-  el.innerHTML = html;
-  el.querySelectorAll('[data-cam]').forEach(tr => tr.onclick = () => {
-    const k = tr.dataset.cam; S.abiertos.has(k) ? S.abiertos.delete(k) : S.abiertos.add(k);
-    tablaCamiones(el, rows); tooltips();
-  });
-  el.querySelectorAll('[data-sku]').forEach(d => detalleSku(d, d.dataset.sku));
-}
-async function detalleSku(box, k) {
-  let data = S.skuCache.get(k);
-  if (!data) {
-    const [fp, cd, ce, cam] = k.split('|');
-    const { data: d, error } = await supabase.from('v_ind_plan_asert_sku').select('*')
-      .eq('fecha_plan', fp).eq('cd_origen', cd).eq('ce', ce).eq('camion', cam).order('material');
-    if (error) { box.innerHTML = `<div class="ipc-empty">Error: ${esc(error.message)}</div>`; return; }
-    data = d || []; S.skuCache.set(k, data);
-  }
-  if (!data.length) { box.innerHTML = '<div class="ipc-empty">Sin detalle (semana cerrada)</div>'; return; }
-  const est = { 'CUMPLE': C.good, 'PARCIAL': C.warn, 'CON ENTREGA SIN DT': C.info, 'EN CURSO': C.neutral, 'NO CARGADO': C.bad };
-  box.innerHTML = `<table class="ipc-tbl ipc-sku"><thead><tr><th>SKU</th><th>Material</th><th>Pedido traslado / doc.</th><th>Pedido venta</th><th class="r">Cant. plan</th><th class="r">Ton plan</th>
+      <tbody>${b}</tbody></table></div></div>`}).join("");t.innerHTML=e,t.querySelectorAll("[data-cam]").forEach(i=>i.onclick=()=>{const a=i.dataset.cam;l.abiertos.has(a)?l.abiertos.delete(a):l.abiertos.add(a),mt(t,s),W()}),t.querySelectorAll("[data-sku]").forEach(i=>gt(i,i.dataset.sku))}async function gt(t,s){let o=l.skuCache.get(s);if(!o){const[e,i,a,u]=s.split("|"),{data:d,error:$}=await z.from("v_ind_plan_asert_sku").select("*").eq("fecha_plan",e).eq("cd_origen",i).eq("ce",a).eq("camion",u).order("material");if($){t.innerHTML=`<div class="ipc-empty">Error: ${m($.message)}</div>`;return}o=d||[],l.skuCache.set(s,o)}if(!o.length){t.innerHTML='<div class="ipc-empty">Sin detalle (semana cerrada)</div>';return}const n={CUMPLE:p.good,PARCIAL:p.warn,"CON ENTREGA SIN DT":p.info,"EN CURSO":p.neutral,"NO CARGADO":p.bad};t.innerHTML=`<table class="ipc-tbl ipc-sku"><thead><tr><th>SKU</th><th>Material</th><th>Pedido traslado / doc.</th><th>Pedido venta</th><th class="r">Cant. plan</th><th class="r">Ton plan</th>
       <th>Entregas</th><th class="r">Cant. entrega</th><th>DT</th><th class="r">Cant. DT</th><th class="r">Asertividad</th><th class="r">Consolidación</th><th>Estado</th></tr></thead><tbody>
-    ${data.map(r => `<tr><td><b>${esc(r.material)}</b></td><td>${esc(r.nombre || '')}</td><td>${esc(r.documentos || '')}</td><td>${esc(r.pedidos_venta || '—')}</td>
-      <td class="r">${fmt(r.cant_plan, 0)}</td><td class="r">${fmt(r.ton_plan, 2)}</td><td>${esc(r.entregas || '—')}</td><td class="r">${fmt(r.cant_entregada, 0)}</td>
-      <td>${esc(r.transportes || '—')}</td><td class="r">${fmt(r.cant_dt, 0)}</td>
-      <td class="r"><span class="ipc-bin ${Number(r.acierto) === 1 ? 'ok' : ''}">${Number(r.acierto) === 1 ? '1' : '0'}</span></td>
-      <td class="r">${r.pct_consolidacion == null ? '—' : pct(Number(r.pct_consolidacion) * 100, 1)}</td>
-      <td><span class="ipc-dot" style="background:${est[r.estado] || C.neutral}"></span>${esc(r.estado)}</td></tr>`).join('')}
-  </tbody></table>`;
-}
-
-// ── POR CENTRO DESTINO (24-oct-2026, Jordan) ────────────────────────────────
-// Asertividad y consolidación (oficiales, foto de cierre vs DT) por centro destino.
-// Clic en un centro → todos sus despachos del período; clic en un despacho → planificado vs real
-// por SKU y unidades (mismo cruce plan / DT del Seguimiento de Carga, opts.detalleViaje).
-const TIPO_CAM = { 'CD': 'Camión CD', 'CD 2º': 'Camión extra (2º)', 'CD-CLIENTE': 'CD-Cliente', 'FÁBRICA-CLIENTE': 'Fábrica-Cliente', 'FÁBRICA-SUCURSAL': 'Fábrica-Sucursal' };
-const keyViaje = r => keyCam(r) + '|' + String(r.fecha_carga || '').slice(0, 10);
-// Despacho medido: con resultado (no «en curso») y con fecha de carga ya ocurrida (no cuenta cargas futuras ya planificadas).
-const medidoC = medido;
-const estTagCam = estTagMed;
-// (24-oct-2026, Jordan) Vista simple: cada centro destino es una etiqueta con su % de asertividad y % de
-// consolidación promedio. Clic en un centro → sus despachos; clic en un despacho → planificado vs real.
-function tablaCentros(el, rows) {
-  if (!rows.length) return vacio(el);
-  const resumen = rs => { const med = rs.filter(medidoC);
-    return { n: rs.length, a: avg(med.map(pctA).filter(v => v != null)), c: avg(med.map(pctC).filter(v => v != null)),
-      falta: rs.filter(faltaDt).length, pend: rs.filter(pendienteDt).length }; };
-  const g = new Map();
-  rows.forEach(r => { const k = String(r.ce ?? '').trim(); (g.get(k) || g.set(k, []).get(k)).push(r); });
-  const items = [...g.entries()].map(([k, rs]) => ({ k, rs, ...resumen(rs) })).sort((x, y) => nombreCentro(x.k).localeCompare(nombreCentro(y.k)));
-  if (S.cenSel && !g.has(S.cenSel)) S.cenSel = null;
-  const tot = resumen(rows);
-  const met = (lbl, v, meta, am) => `<div class="ipc-ct-m"><span>${lbl}</span><b style="color:${semaforo(v, meta, am)}">${v == null ? '—' : pct(v, 0)}</b></div>`;
-  const pie = it => [`${it.n} ${it.n === 1 ? 'despacho' : 'despachos'}`, it.pend ? `${it.pend} pendiente${it.pend === 1 ? '' : 's'}` : '',
-    it.falta ? `<b class="ipc-ct-bad">⚠ ${it.falta} sin DT</b>` : ''].filter(Boolean).join(' · ');
-  const tag = (it, total) => `<${total ? 'div' : 'button'} class="ipc-ct${total ? ' is-tot' : ''}${S.cenSel === it.k ? ' is-sel' : ''}"${total ? '' : ` data-cenx="${esc(it.k)}"`}>
-      <div class="ipc-ct-n">${total ? 'Total' : esc(nombreCentro(it.k))}${total ? '' : ` <small>${esc(it.k)}</small>`}</div>
-      <div class="ipc-ct-ms">${met('Asertividad', it.a, META_EFEC, 75)}${met('Consolidación', it.c, META_CONS, 70)}</div>
-      <div class="ipc-ct-f">${pie(it)}</div></${total ? 'div' : 'button'}>`;
-  const sel = S.cenSel ? items.find(it => it.k === S.cenSel) : null;
-  const porKey = new Map();
-  const panel = !sel ? '<p class="ipc-hint">Selecciona un centro para ver sus despachos.</p>' : (() => {
-    const lst = sel.rs.slice().sort((a, b) => String(b.fecha_carga).localeCompare(String(a.fecha_carga)) || String(a.camion).localeCompare(String(b.camion)));
-    return `<section class="sv-card ipc-card ipc-cpanel"><h3>${esc(nombreCentro(sel.k))} <small>${sel.n} ${sel.n === 1 ? 'despacho' : 'despachos'} · clic en un despacho para ver planificado vs real</small></h3>
+    ${o.map(e=>`<tr><td><b>${m(e.material)}</b></td><td>${m(e.nombre||"")}</td><td>${m(e.documentos||"")}</td><td>${m(e.pedidos_venta||"—")}</td>
+      <td class="r">${y(e.cant_plan,0)}</td><td class="r">${y(e.ton_plan,2)}</td><td>${m(e.entregas||"—")}</td><td class="r">${y(e.cant_entregada,0)}</td>
+      <td>${m(e.transportes||"—")}</td><td class="r">${y(e.cant_dt,0)}</td>
+      <td class="r"><span class="ipc-bin ${Number(e.acierto)===1?"ok":""}">${Number(e.acierto)===1?"1":"0"}</span></td>
+      <td class="r">${e.pct_consolidacion==null?"—":v(Number(e.pct_consolidacion)*100,1)}</td>
+      <td><span class="ipc-dot" style="background:${n[e.estado]||p.neutral}"></span>${m(e.estado)}</td></tr>`).join("")}
+  </tbody></table>`}const zt={CD:"Camión CD","CD 2º":"Camión extra (2º)","CD-CLIENTE":"CD-Cliente","FÁBRICA-CLIENTE":"Fábrica-Cliente","FÁBRICA-SUCURSAL":"Fábrica-Sucursal"},$t=t=>X(t)+"|"+String(t.fecha_carga||"").slice(0,10),Y=O,qt=pt;function J(t,s){if(!s.length)return q(t);const o=r=>{const c=r.filter(Y);return{n:r.length,a:w(c.map(N).filter(h=>h!=null)),c:w(c.map(P).filter(h=>h!=null)),falta:r.filter(H).length,pend:r.filter(dt).length}},n=new Map;s.forEach(r=>{const c=String(r.ce??"").trim();(n.get(c)||n.set(c,[]).get(c)).push(r)});const e=[...n.entries()].map(([r,c])=>({k:r,rs:c,...o(c)})).sort((r,c)=>j(r.k).localeCompare(j(c.k)));l.cenSel&&!n.has(l.cenSel)&&(l.cenSel=null);const i=o(s),a=(r,c,h,f)=>`<div class="ipc-ct-m"><span>${r}</span><b style="color:${D(c,h,f)}">${c==null?"—":v(c,0)}</b></div>`,u=r=>[`${r.n} ${r.n===1?"despacho":"despachos"}`,r.pend?`${r.pend} pendiente${r.pend===1?"":"s"}`:"",r.falta?`<b class="ipc-ct-bad">⚠ ${r.falta} sin DT</b>`:""].filter(Boolean).join(" · "),d=(r,c)=>`<${c?"div":"button"} class="ipc-ct${c?" is-tot":""}${l.cenSel===r.k?" is-sel":""}"${c?"":` data-cenx="${m(r.k)}"`}>
+      <div class="ipc-ct-n">${c?"Total":m(j(r.k))}${c?"":` <small>${m(r.k)}</small>`}</div>
+      <div class="ipc-ct-ms">${a("Asertividad",r.a,S,75)}${a("Consolidación",r.c,x,70)}</div>
+      <div class="ipc-ct-f">${u(r)}</div></${c?"div":"button"}>`,$=l.cenSel?e.find(r=>r.k===l.cenSel):null,g=new Map,b=$?(()=>{const r=$.rs.slice().sort((c,h)=>String(h.fecha_carga).localeCompare(String(c.fecha_carga))||String(c.camion).localeCompare(String(h.camion)));return`<section class="sv-card ipc-card ipc-cpanel"><h3>${m(j($.k))} <small>${$.n} ${$.n===1?"despacho":"despachos"} · clic en un despacho para ver planificado vs real</small></h3>
       <div class="ipc-scroll"><table class="ipc-tbl ipc-viajes"><thead><tr><th>Fecha carga</th><th>Camión</th><th>Doc. transporte</th><th class="r">Asertividad</th><th class="r">Consolidación</th><th>Estado</th></tr></thead><tbody>
-      ${lst.map(r => {
-        const k = keyViaje(r), open = S.viajes.has(k); porKey.set(k, r);
-        const v = (x, meta, am) => x == null ? '<span class="sv-muted">—</span>' : `<b style="color:${semaforo(x, meta, am)}">${pct(x, 0)}</b>`;
-        return `<tr class="ipc-cam is-click" data-viaje="${esc(k)}">
-          <td><span class="material-symbols-outlined ipc-chev">${open ? 'expand_more' : 'chevron_right'}</span><b>${ddmmyy(r.fecha_carga)}</b></td>
-          <td>${esc(TIPO_CAM[r.camion] || r.camion)}</td><td>${esc(r.transportes || '—')}</td>
-          <td class="r">${medidoC(r) ? v(pctA(r), META_EFEC, 75) : '<span class="sv-muted">—</span>'}</td><td class="r">${medidoC(r) ? v(pctC(r), META_CONS, 70) : '<span class="sv-muted">—</span>'}</td>
-          <td>${estTagCam(r)}</td></tr>
-          ${open ? `<tr class="ipc-det ipc-det2"><td colspan="6"><div data-viaje-box="${esc(k)}"><div class="ipc-load">Cargando planificado vs real…</div></div></td></tr>` : ''}`;
-      }).join('')}</tbody></table></div></section>`;
-  })();
-  el.innerHTML = `<div class="ipc-cts">${tag(tot, true)}${items.map(it => tag(it)).join('')}</div>${panel}`;
-  el.querySelectorAll('[data-cenx]').forEach(b => b.onclick = () => { S.cenSel = S.cenSel === b.dataset.cenx ? null : b.dataset.cenx; tablaCentros(el, rows); tooltips(); });
-  el.querySelectorAll('[data-viaje]').forEach(tr => tr.onclick = () => {
-    const k = tr.dataset.viaje; S.viajes.has(k) ? S.viajes.delete(k) : S.viajes.add(k);
-    tablaCentros(el, rows); tooltips();
-  });
-  el.querySelectorAll('[data-viaje-box]').forEach(d => { const r = porKey.get(d.dataset.viajeBox); if (r) cargarViaje(d, r); });
-}
-async function cargarViaje(box, r) {
-  const k = keyViaje(r);
-  let html = S.viajeCache.get(k);
-  if (html === undefined) {
-    try { html = opts.detalleViaje ? await opts.detalleViaje(r) : null; } catch (e) { console.warn('Detalle del viaje', e); html = null; }
-    S.viajeCache.set(k, html);
-  }
-  if (!box.isConnected) return;
-  if (html) { box.innerHTML = html; return; }
-  if (r.historico || !conDt(r)) { box.innerHTML = `<div class="ipc-empty">${conDt(r) ? 'Sin detalle por SKU guardado para este despacho (semana cerrada).' : faltaDt(r) ? 'Falta el DT para validar este despacho.' : 'Pendiente: se compara al cruzar el DT.'}</div>`; return; }
-  box.innerHTML = '<div data-sku-f><div class="ipc-load">Cargando detalle…</div></div>';
-  detalleSku(box.querySelector('[data-sku-f]'), keyCam(r));
-}
-
-function nombreCentro(id) {
-  const c = (getDatabase().logisticsCentres || []).find(x => String(x.id) === String(id));
-  return c && c.nombre ? c.nombre : String(id);
-}
-function tablaSucCons(el, rows) {
-  if (!rows.length) return vacio(el);
-  const mid = (() => { const d0 = new Date(S.desde + 'T12:00:00'), d1 = new Date(S.hasta + 'T12:00:00'); return iso(new Date((d0.getTime() + d1.getTime()) / 2)); })();
-  const g = new Map();
-  rows.forEach(r => { const k = String(r.sucursal_destino || '(sin dato)'); (g.get(k) || g.set(k, []).get(k)).push(r); });
-  const items = [...g.entries()].map(([k, rs]) => {
-    const v = avg(rs.map(pctRow).filter(x => x != null));
-    const a = avg(rs.filter(r => String(r.fecha_creacion).slice(0, 10) < mid).map(pctRow).filter(x => x != null));
-    const b = avg(rs.filter(r => String(r.fecha_creacion).slice(0, 10) >= mid).map(pctRow).filter(x => x != null));
-    return { k, v, n: rs.length, t: rs.reduce((s, r) => s + (Number(r.ton_cargadas) || 0), 0), d: a != null && b != null ? b - a : null };
-  }).sort((a, b) => (b.v ?? -1) - (a.v ?? -1));
-  const col = v => v == null ? C.neutral : v >= META_CONS ? C.good : v >= 70 ? C.warn : C.neutral;
-  el.innerHTML = `<div style="overflow:auto"><table class="sv-table" style="min-width:640px"><thead><tr><th>Sucursal</th><th class="r">Viajes</th><th class="r">Toneladas</th><th>Consolidación</th><th class="r">Δ</th></tr></thead><tbody>
-    ${items.map(it => `<tr style="cursor:default"><td><span class="sv-b">${esc(nombreCentro(it.k))}</span>${nombreCentro(it.k) !== it.k ? `<div class="sv-sub">${esc(it.k)}</div>` : ''}</td>
-      <td class="r">${it.n}</td><td class="r"><span class="sv-ton">${fmt(it.t, 1)} t</span></td>
-      <td><div style="display:flex;align-items:center;gap:12px">${it.v != null ? truckGauge([{ ton: it.v, color: col(it.v), label: 'Consolidación' }], 100, { w: 110, h: 22 }) : ''}<b>${pct(it.v, 0)}</b></div></td>
-      <td class="r">${it.d == null ? '<span class="sv-muted">—</span>' : `<b style="color:${it.d >= 0 ? C.good : C.bad}">${it.d >= 0 ? '▲' : '▼'} ${fmt(Math.abs(it.d), 1)}</b> <span class="sv-muted">pts</span>`}</td></tr>`).join('')}
-  </tbody></table></div>`;
-}
-function tablaSucEfec(el, rows) {
-  const med = rows.filter(r => r.estado !== 'EN PLAZO');
-  if (!med.length) return vacio(el);
-  const g = new Map();
-  med.forEach(r => { const k = String(r.ce || '(sin dato)'); (g.get(k) || g.set(k, []).get(k)).push(r); });
-  const items = [...g.entries()].map(([k, rs]) => ({ k, n: rs.length, ok: rs.filter(r => r.linea_cumple).length, cnt: ESTADOS.map(e => rs.filter(r => r.estado === e.k).length) }))
-    .map(it => ({ ...it, v: it.ok / it.n * 100 })).sort((a, b) => b.v - a.v);
-  el.innerHTML = `<div class="ipc-legend">${ESTADOS.map(e => `<span class="ipc-leg"><i style="background:${e.color}"></i>${e.lbl}</span>`).join('')}</div>
+      ${r.map(c=>{const h=$t(c),f=l.viajes.has(h);g.set(h,c);const k=(C,E,U)=>C==null?'<span class="sv-muted">—</span>':`<b style="color:${D(C,E,U)}">${v(C,0)}</b>`;return`<tr class="ipc-cam is-click" data-viaje="${m(h)}">
+          <td><span class="material-symbols-outlined ipc-chev">${f?"expand_more":"chevron_right"}</span><b>${A(c.fecha_carga)}</b></td>
+          <td>${m(zt[c.camion]||c.camion)}</td><td>${m(c.transportes||"—")}</td>
+          <td class="r">${Y(c)?k(N(c),S,75):'<span class="sv-muted">—</span>'}</td><td class="r">${Y(c)?k(P(c),x,70):'<span class="sv-muted">—</span>'}</td>
+          <td>${qt(c)}</td></tr>
+          ${f?`<tr class="ipc-det ipc-det2"><td colspan="6"><div data-viaje-box="${m(h)}"><div class="ipc-load">Cargando planificado vs real…</div></div></td></tr>`:""}`}).join("")}</tbody></table></div></section>`})():'<p class="ipc-hint">Selecciona un centro para ver sus despachos.</p>';t.innerHTML=`<div class="ipc-cts">${d(i,!0)}${e.map(r=>d(r)).join("")}</div>${b}`,t.querySelectorAll("[data-cenx]").forEach(r=>r.onclick=()=>{l.cenSel=l.cenSel===r.dataset.cenx?null:r.dataset.cenx,J(t,s),W()}),t.querySelectorAll("[data-viaje]").forEach(r=>r.onclick=()=>{const c=r.dataset.viaje;l.viajes.has(c)?l.viajes.delete(c):l.viajes.add(c),J(t,s),W()}),t.querySelectorAll("[data-viaje-box]").forEach(r=>{const c=g.get(r.dataset.viajeBox);c&&Lt(r,c)})}async function Lt(t,s){const o=$t(s);let n=l.viajeCache.get(o);if(n===void 0){try{n=F.detalleViaje?await F.detalleViaje(s):null}catch(e){console.warn("Detalle del viaje",e),n=null}l.viajeCache.set(o,n)}if(t.isConnected){if(n){t.innerHTML=n;return}if(s.historico||!K(s)){t.innerHTML=`<div class="ipc-empty">${K(s)?"Sin detalle por SKU guardado para este despacho (semana cerrada).":H(s)?"Falta el DT para validar este despacho.":"Pendiente: se compara al cruzar el DT."}</div>`;return}t.innerHTML='<div data-sku-f><div class="ipc-load">Cargando detalle…</div></div>',gt(t.querySelector("[data-sku-f]"),X(s))}}function j(t){const s=(wt().logisticsCentres||[]).find(o=>String(o.id)===String(t));return s&&s.nombre?s.nombre:String(t)}function Nt(t,s){if(!s.length)return q(t);const o=(()=>{const a=new Date(l.desde+"T12:00:00"),u=new Date(l.hasta+"T12:00:00");return L(new Date((a.getTime()+u.getTime())/2))})(),n=new Map;s.forEach(a=>{const u=String(a.sucursal_destino||"(sin dato)");(n.get(u)||n.set(u,[]).get(u)).push(a)});const e=[...n.entries()].map(([a,u])=>{const d=w(u.map(T).filter(b=>b!=null)),$=w(u.filter(b=>String(b.fecha_creacion).slice(0,10)<o).map(T).filter(b=>b!=null)),g=w(u.filter(b=>String(b.fecha_creacion).slice(0,10)>=o).map(T).filter(b=>b!=null));return{k:a,v:d,n:u.length,t:u.reduce((b,r)=>b+(Number(r.ton_cargadas)||0),0),d:$!=null&&g!=null?g-$:null}}).sort((a,u)=>(u.v??-1)-(a.v??-1)),i=a=>a==null?p.neutral:a>=x?p.good:a>=70?p.warn:p.neutral;t.innerHTML=`<div style="overflow:auto"><table class="sv-table" style="min-width:640px"><thead><tr><th>Sucursal</th><th class="r">Viajes</th><th class="r">Toneladas</th><th>Consolidación</th><th class="r">Δ</th></tr></thead><tbody>
+    ${e.map(a=>`<tr style="cursor:default"><td><span class="sv-b">${m(j(a.k))}</span>${j(a.k)!==a.k?`<div class="sv-sub">${m(a.k)}</div>`:""}</td>
+      <td class="r">${a.n}</td><td class="r"><span class="sv-ton">${y(a.t,1)} t</span></td>
+      <td><div style="display:flex;align-items:center;gap:12px">${a.v!=null?St([{ton:a.v,color:i(a.v),label:"Consolidación"}],100,{w:110,h:22}):""}<b>${v(a.v,0)}</b></div></td>
+      <td class="r">${a.d==null?'<span class="sv-muted">—</span>':`<b style="color:${a.d>=0?p.good:p.bad}">${a.d>=0?"▲":"▼"} ${y(Math.abs(a.d),1)}</b> <span class="sv-muted">pts</span>`}</td></tr>`).join("")}
+  </tbody></table></div>`}function Zt(t,s){const o=s.filter(i=>i.estado!=="EN PLAZO");if(!o.length)return q(t);const n=new Map;o.forEach(i=>{const a=String(i.ce||"(sin dato)");(n.get(a)||n.set(a,[]).get(a)).push(i)});const e=[...n.entries()].map(([i,a])=>({k:i,n:a.length,ok:a.filter(u=>u.linea_cumple).length,cnt:I.map(u=>a.filter(d=>d.estado===u.k).length)})).map(i=>({...i,v:i.ok/i.n*100})).sort((i,a)=>a.v-i.v);t.innerHTML=`<div class="ipc-legend">${I.map(i=>`<span class="ipc-leg"><i style="background:${i.color}"></i>${i.lbl}</span>`).join("")}</div>
   <div style="overflow:auto"><table class="sv-table" style="min-width:640px"><thead><tr><th>Sucursal</th><th class="r">Líneas</th><th style="width:45%">Estado de las líneas</th><th class="r">Efectividad</th></tr></thead><tbody>
-    ${items.map(it => `<tr style="cursor:default"><td><span class="sv-b">${esc(nombreCentro(it.k))}</span><div class="sv-sub">${esc(it.k)}</div></td><td class="r">${it.n}</td>
-      <td><div class="ipc-stack">${ESTADOS.map((e, i) => it.cnt[i] ? `<i style="width:${it.cnt[i] / it.n * 100}%;background:${e.color}" data-tt="${esc(`<b>${e.lbl}</b><br>${it.cnt[i]} líneas (${pct(it.cnt[i] / it.n * 100, 0)})`)}"></i>` : '').join('')}</div></td>
-      <td class="r"><b style="color:${semaforo(it.v, META_EFEC, 75)}">${pct(it.v, 0)}</b></td></tr>`).join('')}
-  </tbody></table></div>`;
-}
-
-function barrasH(el, items, { meta, valFmt, sub, colorFn }) {
-  if (!items.length) return vacio(el);
-  const W = Math.max(280, el.clientWidth), rowH = 30, lblW = 118, valW = 118, m = { t: 6, b: 18 };
-  const H = m.t + m.b + items.length * rowH, iw = W - lblW - valW - 8;
-  const x = v => lblW + (Math.max(0, Math.min(100, v)) / 100) * iw;
-  let s = `<svg width="${W}" height="${H}" role="img">`;
-  [0, 50, 100].forEach(g => { s += `<line x1="${x(g)}" x2="${x(g)}" y1="${m.t}" y2="${H - m.b}" stroke="${C.grid}"/><text x="${x(g)}" y="${H - 4}" text-anchor="middle" class="ipc-ax">${g}%</text>`; });
-  items.forEach((it, i) => {
-    const yy = m.t + i * rowH, bh = 16, by = yy + (rowH - bh) / 2;
-    s += `<text x="${lblW - 8}" y="${by + 12}" text-anchor="end" class="ipc-lbl">${esc(it.lbl)}</text>`;
-    if (it.v != null) s += `<rect x="${lblW}" y="${by}" width="${Math.max(3, x(it.v) - lblW)}" height="${bh}" rx="4" fill="${colorFn ? colorFn(it, i) : C.series}"/>`;
-    s += `<text x="${lblW + iw + 8}" y="${by + 12}" class="ipc-val">${valFmt(it)}</text>`;
-    s += `<rect x="0" y="${yy}" width="${W}" height="${rowH}" fill="transparent" data-tt="${esc(sub(it))}"/>`;
-  });
-  if (meta != null) s += `<line x1="${x(meta)}" x2="${x(meta)}" y1="${m.t}" y2="${H - m.b}" stroke="${C.good}" stroke-dasharray="4 3" stroke-width="1.5"/>`;
-  el.innerHTML = s + '</svg>';
-}
-
-function agrupar(rows, key) {
-  const g = new Map();
-  rows.forEach(r => { const k = r[key] || '(sin dato)'; (g.get(k) || g.set(k, []).get(k)).push(r); });
-  return [...g.entries()].map(([k, rs]) => ({
-    lbl: k, n: rs.length, v: avg(rs.map(pctRow).filter(v => v != null)),
-    t: rs.reduce((s, r) => s + (Number(r.ton_cargadas) || 0), 0),
-  }));
-}
-
-function chUsuario(el, rows) {
-  const orden = usuariosActivos();
-  const items = agrupar(rows, 'usuario_dt').sort((a, b) => (b.v ?? -1) - (a.v ?? -1));
-  const colorIdx = u => { const i = orden.indexOf(u); return i >= 0 ? CAT[i % CAT.length] : C.neutral; };
-  barrasH(el, items, {
-    meta: META_CONS,
-    valFmt: it => `${pct(it.v, 0)} · ${it.n} DT · ${fmt(it.t, 0)} t`,
-    sub: it => `<b>${it.lbl}</b><br>Consolidación: <b>${pct(it.v)}</b><br>Viajes: ${it.n}<br>Toneladas: ${fmt(it.t, 1)} t<br>t/viaje: ${fmt(it.t / it.n, 1)}`,
-    colorFn: it => colorIdx(it.lbl),
-  });
-}
-
-function chDestino(el, rows) {
-  const items = agrupar(rows, 'sucursal_destino').sort((a, b) => b.n - a.n).slice(0, 12)
-    .sort((a, b) => (b.v ?? -1) - (a.v ?? -1));
-  barrasH(el, items, {
-    meta: META_CONS,
-    valFmt: it => `${pct(it.v, 0)} · ${it.n} DT`,
-    sub: it => `<b>Destino ${it.lbl}</b><br>Consolidación: <b>${pct(it.v)}</b><br>Viajes: ${it.n}<br>Toneladas: ${fmt(it.t, 1)} t`,
-    colorFn: it => semaforo(it.v, META_CONS, 70),
-  });
-}
-
-function chDist(el, rows) {
-  const vals = rows.map(pctRow).filter(v => v != null);
-  if (!vals.length) return vacio(el);
-  const bk = [
-    { lbl: '< 50%', f: v => v < 50, color: C.bad },
-    { lbl: '50–70%', f: v => v >= 50 && v < 70, color: C.bad },
-    { lbl: '70–85%', f: v => v >= 70 && v < META_CONS, color: C.warn },
-    { lbl: '85–99%', f: v => v >= META_CONS && v < 99.95, color: C.good },
-    { lbl: '100%', f: v => v >= 99.95, color: C.good },
-  ].map(b => ({ ...b, n: vals.filter(b.f).length }));
-  const W = Math.max(280, el.clientWidth), H = 230, m = { l: 12, r: 12, t: 22, b: 40 };
-  const iw = W - m.l - m.r, ih = H - m.t - m.b, step = iw / bk.length, bw = Math.min(56, step * .62);
-  const maxN = Math.max(...bk.map(b => b.n), 1);
-  let s = `<svg width="${W}" height="${H}" role="img"><line x1="${m.l}" x2="${W - m.r}" y1="${m.t + ih}" y2="${m.t + ih}" stroke="${C.axis}"/>`;
-  bk.forEach((b, i) => {
-    const cx = m.l + step * (i + .5), h = b.n / maxN * ih;
-    if (b.n) s += `<path d="M${cx - bw / 2},${m.t + ih} v${-(h - 4)} q0,-4 4,-4 h${bw - 8} q4,0 4,4 v${h - 4} z" fill="${b.color}"/>`;
-    s += `<text x="${cx}" y="${m.t + ih - h - 6}" text-anchor="middle" class="ipc-val">${b.n}</text>
-          <text x="${cx}" y="${m.t + ih + 16}" text-anchor="middle" class="ipc-lbl">${b.lbl}</text>
-          <text x="${cx}" y="${m.t + ih + 31}" text-anchor="middle" class="ipc-ax">${pct(b.n / vals.length * 100, 0)}</text>
-          <rect x="${cx - step / 2}" y="${m.t}" width="${step}" height="${ih}" fill="transparent" data-tt="${esc(`<b>${b.lbl}</b><br>${b.n} viajes (${pct(b.n / vals.length * 100, 0)})`)}"/>`;
-  });
-  el.innerHTML = s + '</svg>';
-}
-
-function chEfec(el, rows) {
-  const med = rows.filter(r => r.estado !== 'EN PLAZO');
-  const plazo = rows.length - med.length;
-  if (!rows.length) return vacio(el);
-  const cnt = ESTADOS.map(e => ({ ...e, n: med.filter(r => r.estado === e.k).length }));
-  const W = Math.max(280, el.clientWidth), bh = 26;
-  let s = `<svg width="${W}" height="${bh + 4}" role="img">`;
-  let x0 = 0; const tot = med.length || 1;
-  cnt.forEach(c => {
-    if (!c.n) return; const w = c.n / tot * W;
-    s += `<rect x="${x0}" y="2" width="${Math.max(0, w - 2)}" height="${bh}" rx="4" fill="${c.color}" data-tt="${esc(`<b>${c.lbl}</b><br>${c.n} líneas (${pct(c.n / tot * 100)})`)}"/>`;
-    if (w > 42) s += `<text x="${x0 + w / 2}" y="${bh / 2 + 7}" text-anchor="middle" class="ipc-inbar">${pct(c.n / tot * 100, 0)}</text>`;
-    x0 += w;
-  });
-  s += '</svg>';
-  const leg = cnt.map(c => `<span class="ipc-leg"><i style="background:${c.color}"></i>${c.lbl} <b>${c.n}</b></span>`).join('')
-    + `<span class="ipc-leg"><i style="background:${C.neutral}"></i>En plazo (no se mide) <b>${plazo}</b></span>`;
-  // por fecha de plan
-  const g = new Map();
-  rows.forEach(r => { const f = String(r.fecha).slice(0, 10); (g.get(f) || g.set(f, []).get(f)).push(r); });
-  const fil = [...g.keys()].sort().reverse().slice(0, 8).map(f => {
-    const rs = g.get(f), m = rs.filter(r => r.estado !== 'EN PLAZO'), ok = m.filter(r => r.linea_cumple).length;
-    const v = m.length ? ok / m.length * 100 : null;
-    return `<tr><td>${ddmmyy(f)}</td><td class="r">${rs.length}</td><td class="r">${m.length}</td><td class="r">${ok}</td>
-      <td class="r"><span class="ipc-dot" style="background:${semaforo(v, META_EFEC, 75)}"></span><b>${pct(v)}</b></td></tr>`;
-  }).join('');
-  void fil;
-  el.innerHTML = `${med.length ? s : '<div class="ipc-empty">Todas las líneas siguen en plazo (48 h hábiles)</div>'}<div class="ipc-legend">${leg}</div>`;
-}
-
-function tablaBajo(el, rows) {
-  const r2 = rows.filter(r => pctRow(r) != null && pctRow(r) < META_CONS).sort((a, b) => pctRow(a) - pctRow(b)).slice(0, 10);
-  if (!r2.length) { el.innerHTML = `<div class="ipc-empty ok"><span class="material-symbols-outlined">check_circle</span>Todos los viajes del período están sobre la meta de ${META_CONS}%</div>`; return; }
-  el.innerHTML = `<div class="ipc-scroll"><table class="ipc-tbl"><thead><tr><th>Doc. Transporte</th><th>Fecha</th><th>Usuario</th><th>Centro</th><th>Destino</th><th>Transportista</th>
+    ${e.map(i=>`<tr style="cursor:default"><td><span class="sv-b">${m(j(i.k))}</span><div class="sv-sub">${m(i.k)}</div></td><td class="r">${i.n}</td>
+      <td><div class="ipc-stack">${I.map((a,u)=>i.cnt[u]?`<i style="width:${i.cnt[u]/i.n*100}%;background:${a.color}" data-tt="${m(`<b>${a.lbl}</b><br>${i.cnt[u]} líneas (${v(i.cnt[u]/i.n*100,0)})`)}"></i>`:"").join("")}</div></td>
+      <td class="r"><b style="color:${D(i.v,S,75)}">${v(i.v,0)}</b></td></tr>`).join("")}
+  </tbody></table></div>`}function bt(t,s,{meta:o,valFmt:n,sub:e,colorFn:i}){if(!s.length)return q(t);const a=Math.max(280,t.clientWidth),u=30,d=118,$=118,g={t:6,b:18},b=g.t+g.b+s.length*u,r=a-d-$-8,c=f=>d+Math.max(0,Math.min(100,f))/100*r;let h=`<svg width="${a}" height="${b}" role="img">`;[0,50,100].forEach(f=>{h+=`<line x1="${c(f)}" x2="${c(f)}" y1="${g.t}" y2="${b-g.b}" stroke="${p.grid}"/><text x="${c(f)}" y="${b-4}" text-anchor="middle" class="ipc-ax">${f}%</text>`}),s.forEach((f,k)=>{const C=g.t+k*u,E=16,U=C+(u-E)/2;h+=`<text x="${d-8}" y="${U+12}" text-anchor="end" class="ipc-lbl">${m(f.lbl)}</text>`,f.v!=null&&(h+=`<rect x="${d}" y="${U}" width="${Math.max(3,c(f.v)-d)}" height="${E}" rx="4" fill="${i?i(f,k):p.series}"/>`),h+=`<text x="${d+r+8}" y="${U+12}" class="ipc-val">${n(f)}</text>`,h+=`<rect x="0" y="${C}" width="${a}" height="${u}" fill="transparent" data-tt="${m(e(f))}"/>`}),o!=null&&(h+=`<line x1="${c(o)}" x2="${c(o)}" y1="${g.t}" y2="${b-g.b}" stroke="${p.good}" stroke-dasharray="4 3" stroke-width="1.5"/>`),t.innerHTML=h+"</svg>"}function vt(t,s){const o=new Map;return t.forEach(n=>{const e=n[s]||"(sin dato)";(o.get(e)||o.set(e,[]).get(e)).push(n)}),[...o.entries()].map(([n,e])=>({lbl:n,n:e.length,v:w(e.map(T).filter(i=>i!=null)),t:e.reduce((i,a)=>i+(Number(a.ton_cargadas)||0),0)}))}function Pt(t,s){const o=ot(),n=vt(s,"usuario_dt").sort((i,a)=>(a.v??-1)-(i.v??-1)),e=i=>{const a=o.indexOf(i);return a>=0?et[a%et.length]:p.neutral};bt(t,n,{meta:x,valFmt:i=>`${v(i.v,0)} · ${i.n} DT · ${y(i.t,0)} t`,sub:i=>`<b>${i.lbl}</b><br>Consolidación: <b>${v(i.v)}</b><br>Viajes: ${i.n}<br>Toneladas: ${y(i.t,1)} t<br>t/viaje: ${y(i.t/i.n,1)}`,colorFn:i=>e(i.lbl)})}function Xt(t,s){const o=vt(s,"sucursal_destino").sort((n,e)=>e.n-n.n).slice(0,12).sort((n,e)=>(e.v??-1)-(n.v??-1));bt(t,o,{meta:x,valFmt:n=>`${v(n.v,0)} · ${n.n} DT`,sub:n=>`<b>Destino ${n.lbl}</b><br>Consolidación: <b>${v(n.v)}</b><br>Viajes: ${n.n}<br>Toneladas: ${y(n.t,1)} t`,colorFn:n=>D(n.v,x,70)})}function Ht(t,s){const o=s.map(T).filter(c=>c!=null);if(!o.length)return q(t);const n=[{lbl:"< 50%",f:c=>c<50,color:p.bad},{lbl:"50–70%",f:c=>c>=50&&c<70,color:p.bad},{lbl:"70–85%",f:c=>c>=70&&c<x,color:p.warn},{lbl:"85–99%",f:c=>c>=x&&c<99.95,color:p.good},{lbl:"100%",f:c=>c>=99.95,color:p.good}].map(c=>({...c,n:o.filter(c.f).length})),e=Math.max(280,t.clientWidth),i=230,a={l:12,r:12,t:22,b:40},u=e-a.l-a.r,d=i-a.t-a.b,$=u/n.length,g=Math.min(56,$*.62),b=Math.max(...n.map(c=>c.n),1);let r=`<svg width="${e}" height="${i}" role="img"><line x1="${a.l}" x2="${e-a.r}" y1="${a.t+d}" y2="${a.t+d}" stroke="${p.axis}"/>`;n.forEach((c,h)=>{const f=a.l+$*(h+.5),k=c.n/b*d;c.n&&(r+=`<path d="M${f-g/2},${a.t+d} v${-(k-4)} q0,-4 4,-4 h${g-8} q4,0 4,4 v${k-4} z" fill="${c.color}"/>`),r+=`<text x="${f}" y="${a.t+d-k-6}" text-anchor="middle" class="ipc-val">${c.n}</text>
+          <text x="${f}" y="${a.t+d+16}" text-anchor="middle" class="ipc-lbl">${c.lbl}</text>
+          <text x="${f}" y="${a.t+d+31}" text-anchor="middle" class="ipc-ax">${v(c.n/o.length*100,0)}</text>
+          <rect x="${f-$/2}" y="${a.t}" width="${$}" height="${d}" fill="transparent" data-tt="${m(`<b>${c.lbl}</b><br>${c.n} viajes (${v(c.n/o.length*100,0)})`)}"/>`}),t.innerHTML=r+"</svg>"}function Yt(t,s){const o=s.filter(c=>c.estado!=="EN PLAZO"),n=s.length-o.length;if(!s.length)return q(t);const e=I.map(c=>({...c,n:o.filter(h=>h.estado===c.k).length})),i=Math.max(280,t.clientWidth),a=26;let u=`<svg width="${i}" height="${a+4}" role="img">`,d=0;const $=o.length||1;e.forEach(c=>{if(!c.n)return;const h=c.n/$*i;u+=`<rect x="${d}" y="2" width="${Math.max(0,h-2)}" height="${a}" rx="4" fill="${c.color}" data-tt="${m(`<b>${c.lbl}</b><br>${c.n} líneas (${v(c.n/$*100)})`)}"/>`,h>42&&(u+=`<text x="${d+h/2}" y="${a/2+7}" text-anchor="middle" class="ipc-inbar">${v(c.n/$*100,0)}</text>`),d+=h}),u+="</svg>";const g=e.map(c=>`<span class="ipc-leg"><i style="background:${c.color}"></i>${c.lbl} <b>${c.n}</b></span>`).join("")+`<span class="ipc-leg"><i style="background:${p.neutral}"></i>En plazo (no se mide) <b>${n}</b></span>`,b=new Map;s.forEach(c=>{const h=String(c.fecha).slice(0,10);(b.get(h)||b.set(h,[]).get(h)).push(c)});const r=[...b.keys()].sort().reverse().slice(0,8).map(c=>{const h=b.get(c),f=h.filter(E=>E.estado!=="EN PLAZO"),k=f.filter(E=>E.linea_cumple).length,C=f.length?k/f.length*100:null;return`<tr><td>${A(c)}</td><td class="r">${h.length}</td><td class="r">${f.length}</td><td class="r">${k}</td>
+      <td class="r"><span class="ipc-dot" style="background:${D(C,S,75)}"></span><b>${v(C)}</b></td></tr>`}).join("");t.innerHTML=`${o.length?u:'<div class="ipc-empty">Todas las líneas siguen en plazo (48 h hábiles)</div>'}<div class="ipc-legend">${g}</div>`}function Ut(t,s){const o=s.filter(n=>T(n)!=null&&T(n)<x).sort((n,e)=>T(n)-T(e)).slice(0,10);if(!o.length){t.innerHTML=`<div class="ipc-empty ok"><span class="material-symbols-outlined">check_circle</span>Todos los viajes del período están sobre la meta de ${x}%</div>`;return}t.innerHTML=`<div class="ipc-scroll"><table class="ipc-tbl"><thead><tr><th>Doc. Transporte</th><th>Fecha</th><th>Usuario</th><th>Centro</th><th>Destino</th><th>Transportista</th>
     <th class="r">Entregas</th><th class="r">Capacidad</th><th class="r">Ton</th><th>Consolidación</th></tr></thead><tbody>
-    ${r2.map(r => { const v = pctRow(r); return `<tr><td><b>${esc(r.transporte)}</b></td><td>${ddmmyy(r.fecha_creacion)}</td><td>${esc(r.usuario_dt || '—')}</td>
-      <td>${esc(r.centro_expedicion)}</td><td>${esc(r.sucursal_destino)}</td><td>${esc(r.transportista || '')}</td><td class="r">${r.n_entregas}</td>
-      <td class="r">${fmt(r.capacidad_efectiva, 0)} t${r.capacidad_estimada ? ' <span class="ipc-tag">estimada</span>' : ''}</td><td class="r">${fmt(r.ton_cargadas, 1)}</td>
-      <td><div class="ipc-mini"><i style="width:${v}%;background:${semaforo(v, META_CONS, 70)}"></i></div><b>${pct(v)}</b>${Number(r.lineas_sin_peso) ? ` <span class="ipc-tag warn" title="Líneas sin peso maestro: el % puede estar subestimado">${r.lineas_sin_peso} sin peso</span>` : ''}</td></tr>`; }).join('')}
-  </tbody></table></div>`;
-}
-
-function tooltips() {
-  const tip = root.querySelector('.ipc-tip'); const box = root.querySelector('.ipc');
-  box.querySelectorAll('[data-tt]').forEach(n => {
-    n.addEventListener('mousemove', e => {
-      tip.innerHTML = n.getAttribute('data-tt'); tip.hidden = false;
-      const b = box.getBoundingClientRect(); let lx = e.clientX - b.left + 14, ly = e.clientY - b.top + 14;
-      if (lx + tip.offsetWidth > b.width) lx = e.clientX - b.left - tip.offsetWidth - 14;
-      tip.style.left = lx + 'px'; tip.style.top = ly + 'px';
-    });
-    n.addEventListener('mouseleave', () => { tip.hidden = true; });
-  });
-}
-
-// ── gestión de usuarios (OWNER / ADMIN) ────────────────────────────────────
-function modalUsuarios() {
-  const ov = document.createElement('div'); ov.className = 'ipc-ov';
-  const detectados = [...new Set(S.cons.map(r => r.usuario_dt).filter(Boolean))].filter(u => !S.usuarios.some(x => x.usuario === u)).sort();
-  ov.innerHTML = `<div class="ipc-modal" role="dialog" aria-label="Usuarios del indicador">
+    ${o.map(n=>{const e=T(n);return`<tr><td><b>${m(n.transporte)}</b></td><td>${A(n.fecha_creacion)}</td><td>${m(n.usuario_dt||"—")}</td>
+      <td>${m(n.centro_expedicion)}</td><td>${m(n.sucursal_destino)}</td><td>${m(n.transportista||"")}</td><td class="r">${n.n_entregas}</td>
+      <td class="r">${y(n.capacidad_efectiva,0)} t${n.capacidad_estimada?' <span class="ipc-tag">estimada</span>':""}</td><td class="r">${y(n.ton_cargadas,1)}</td>
+      <td><div class="ipc-mini"><i style="width:${e}%;background:${D(e,x,70)}"></i></div><b>${v(e)}</b>${Number(n.lineas_sin_peso)?` <span class="ipc-tag warn" title="Líneas sin peso maestro: el % puede estar subestimado">${n.lineas_sin_peso} sin peso</span>`:""}</td></tr>`}).join("")}
+  </tbody></table></div>`}function W(){const t=_.querySelector(".ipc-tip"),s=_.querySelector(".ipc");s.querySelectorAll("[data-tt]").forEach(o=>{o.addEventListener("mousemove",n=>{t.innerHTML=o.getAttribute("data-tt"),t.hidden=!1;const e=s.getBoundingClientRect();let i=n.clientX-e.left+14,a=n.clientY-e.top+14;i+t.offsetWidth>e.width&&(i=n.clientX-e.left-t.offsetWidth-14),t.style.left=i+"px",t.style.top=a+"px"}),o.addEventListener("mouseleave",()=>{t.hidden=!0})})}function xt(){const t=document.createElement("div");t.className="ipc-ov";const s=[...new Set(l.cons.map(a=>a.usuario_dt).filter(Boolean))].filter(a=>!l.usuarios.some(u=>u.usuario===a)).sort();t.innerHTML=`<div class="ipc-modal" role="dialog" aria-label="Usuarios del indicador">
     <div class="ipc-mhead"><h3>Usuarios del indicador</h3><button class="ipc-x" data-x><span class="material-symbols-outlined">close</span></button></div>
     <p class="ipc-sub">Los DT de estos usuarios (usuario SAP) forman el alcance del dashboard.</p>
     <table class="ipc-tbl"><thead><tr><th>Usuario SAP</th><th>Nombre</th><th>Activo</th><th></th></tr></thead><tbody>
-      ${S.usuarios.map(u => `<tr><td><b>${esc(u.usuario)}</b></td><td><input class="ipc-in" data-nom="${esc(u.usuario)}" value="${esc(u.nombre || '')}" placeholder="opcional"></td>
-        <td><input type="checkbox" data-act-u="${esc(u.usuario)}" ${u.activo ? 'checked' : ''}></td>
-        <td><button class="ipc-link bad" data-del="${esc(u.usuario)}">Quitar</button></td></tr>`).join('')}
+      ${l.usuarios.map(a=>`<tr><td><b>${m(a.usuario)}</b></td><td><input class="ipc-in" data-nom="${m(a.usuario)}" value="${m(a.nombre||"")}" placeholder="opcional"></td>
+        <td><input type="checkbox" data-act-u="${m(a.usuario)}" ${a.activo?"checked":""}></td>
+        <td><button class="ipc-link bad" data-del="${m(a.usuario)}">Quitar</button></td></tr>`).join("")}
     </tbody></table>
     <div class="ipc-add"><input class="ipc-in" data-new placeholder="Usuario SAP (ej. JPEREZ)" maxlength="12"><button class="ipc-btn on" data-add>Agregar</button></div>
-    ${detectados.length ? `<p class="ipc-sub">Detectados en DT del período: ${detectados.map(u => `<button class="ipc-chip" data-sug="${esc(u)}">+ ${esc(u)}</button>`).join('')}</p>` : ''}
-  </div>`;
-  document.body.appendChild(ov);
-  const cerrar = async (reload) => { ov.remove(); if (reload) await recargar(); };
-  let cambios = false;
-  const run = async (p) => { const { error } = await p; if (error) { showAlert('No se pudo guardar: ' + error.message, 'error'); return false; } cambios = true; return true; };
-  const add = async (u) => {
-    u = String(u || '').trim().toUpperCase(); if (!u) return;
-    if (await run(supabase.from('abast_ind_usuarios_plan').upsert({ usuario: u, activo: true }))) { S.usuarios = (await supabase.from('abast_ind_usuarios_plan').select('*').order('usuario')).data || []; ov.remove(); modalUsuarios(); cambiosPend = true; }
-  };
-  ov.querySelector('[data-x]').onclick = () => cerrar(cambios || cambiosPend);
-  ov.onclick = e => { if (e.target === ov) cerrar(cambios || cambiosPend); };
-  ov.querySelector('[data-add]').onclick = () => add(ov.querySelector('[data-new]').value);
-  ov.querySelector('[data-new]').onkeydown = e => { if (e.key === 'Enter') add(e.target.value); };
-  ov.querySelectorAll('[data-sug]').forEach(b => b.onclick = () => add(b.dataset.sug));
-  ov.querySelectorAll('[data-act-u]').forEach(c => c.onchange = () => run(supabase.from('abast_ind_usuarios_plan').update({ activo: c.checked }).eq('usuario', c.dataset.actU)));
-  ov.querySelectorAll('[data-nom]').forEach(i => i.onchange = () => run(supabase.from('abast_ind_usuarios_plan').update({ nombre: i.value.trim() || null }).eq('usuario', i.dataset.nom)));
-  ov.querySelectorAll('[data-del]').forEach(b => b.onclick = async () => {
-    if (await run(supabase.from('abast_ind_usuarios_plan').delete().eq('usuario', b.dataset.del))) b.closest('tr').remove();
-  });
-}
-let cambiosPend = false;
-
-// ── estilos encapsulados ───────────────────────────────────────────────────
-function css() {
-  // Estilos propios del dashboard (.ipc-*). Tarjetas, chips, botones y tablas
-  // usan el sistema visual v2 compartido (css/sit-v2.css, clases .sv-*).
-  return `<style>
-  .ipc{position:relative;display:flex;flex-direction:column;gap:20px;color:${C.ink}}
-  .ipc-load,.ipc-empty{padding:24px;color:${C.ink2};font-size:13px;text-align:center}
-  .ipc-empty.ok{display:flex;gap:8px;justify-content:center;align-items:center;color:${C.good};font-weight:600}
-  .ipc-check{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:${C.ink2};margin-left:auto;cursor:pointer}
+    ${s.length?`<p class="ipc-sub">Detectados en DT del período: ${s.map(a=>`<button class="ipc-chip" data-sug="${m(a)}">+ ${m(a)}</button>`).join("")}</p>`:""}
+  </div>`,document.body.appendChild(t);const o=async a=>{t.remove(),a&&await G()};let n=!1;const e=async a=>{const{error:u}=await a;return u?(at("No se pudo guardar: "+u.message,"error"),!1):(n=!0,!0)},i=async a=>{a=String(a||"").trim().toUpperCase(),a&&await e(z.from("abast_ind_usuarios_plan").upsert({usuario:a,activo:!0}))&&(l.usuarios=(await z.from("abast_ind_usuarios_plan").select("*").order("usuario")).data||[],t.remove(),xt(),Q=!0)};t.querySelector("[data-x]").onclick=()=>o(n||Q),t.onclick=a=>{a.target===t&&o(n||Q)},t.querySelector("[data-add]").onclick=()=>i(t.querySelector("[data-new]").value),t.querySelector("[data-new]").onkeydown=a=>{a.key==="Enter"&&i(a.target.value)},t.querySelectorAll("[data-sug]").forEach(a=>a.onclick=()=>i(a.dataset.sug)),t.querySelectorAll("[data-act-u]").forEach(a=>a.onchange=()=>e(z.from("abast_ind_usuarios_plan").update({activo:a.checked}).eq("usuario",a.dataset.actU))),t.querySelectorAll("[data-nom]").forEach(a=>a.onchange=()=>e(z.from("abast_ind_usuarios_plan").update({nombre:a.value.trim()||null}).eq("usuario",a.dataset.nom))),t.querySelectorAll("[data-del]").forEach(a=>a.onclick=async()=>{await e(z.from("abast_ind_usuarios_plan").delete().eq("usuario",a.dataset.del))&&a.closest("tr").remove()})}let Q=!1;function Ft(){return`<style>
+  .ipc{position:relative;display:flex;flex-direction:column;gap:20px;color:${p.ink}}
+  .ipc-load,.ipc-empty{padding:24px;color:${p.ink2};font-size:13px;text-align:center}
+  .ipc-empty.ok{display:flex;gap:8px;justify-content:center;align-items:center;color:${p.good};font-weight:600}
+  .ipc-check{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:${p.ink2};margin-left:auto;cursor:pointer}
   .ipc-meter{position:relative;height:6px;background:#edeeef;border-radius:3px;margin-top:10px}
   .ipc-meter i{position:absolute;left:0;top:0;bottom:0;border-radius:3px}
-  .ipc-meter b{position:absolute;top:-4px;bottom:-4px;width:2px;background:${C.ink}}
+  .ipc-meter b{position:absolute;top:-4px;bottom:-4px;width:2px;background:${p.ink}}
   .ipc-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:20px}
   @media (max-width:900px){.ipc-grid{grid-template-columns:minmax(0,1fr)}}
   .ipc-card{padding:16px 20px;min-width:0}
   .ipc-card h3{font-size:15px;font-weight:700;margin:0 0 12px;display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 10px}
-  .ipc-card h3 small{font-size:12px;font-weight:500;color:${C.ink2}}
+  .ipc-card h3 small{font-size:12px;font-weight:500;color:${p.ink2}}
   .ipc-chart{width:100%;min-height:60px}
   .ipc-chart svg{display:block;overflow:visible}
-  .ipc-ax{font-size:11px;fill:${C.axis}}
-  .ipc-lbl{font-size:12px;fill:${C.ink};font-weight:600}
-  .ipc-val{font-size:11px;fill:${C.ink2};font-variant-numeric:tabular-nums;font-weight:600}
+  .ipc-ax{font-size:11px;fill:${p.axis}}
+  .ipc-lbl{font-size:12px;fill:${p.ink};font-weight:600}
+  .ipc-val{font-size:11px;fill:${p.ink2};font-variant-numeric:tabular-nums;font-weight:600}
   .ipc-inbar{font-size:11px;fill:#fff;font-weight:700}
-  .ipc-legend{display:flex;flex-wrap:wrap;gap:6px 16px;margin:8px 0 10px;font-size:12px;color:${C.ink2}}
+  .ipc-legend{display:flex;flex-wrap:wrap;gap:6px 16px;margin:8px 0 10px;font-size:12px;color:${p.ink2}}
   .ipc-leg{display:inline-flex;align-items:center;gap:6px}.ipc-leg i{width:10px;height:10px;border-radius:2px;display:inline-block}
-  .ipc-leg b{color:${C.ink}}
+  .ipc-leg b{color:${p.ink}}
   .ipc-stack{display:flex;height:14px;border-radius:3px;overflow:hidden;background:#edeeef;gap:1px}
   .ipc-stack i{display:block;height:100%}
   .ipc-tbl{width:100%;border-collapse:collapse;font-size:13px}
-  .ipc-tbl th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:${C.ink2};font-weight:700;border-bottom:1px solid #e1e3e4;padding:8px 10px;white-space:nowrap;background:#f8f9fa}
+  .ipc-tbl th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:${p.ink2};font-weight:700;border-bottom:1px solid #e1e3e4;padding:8px 10px;white-space:nowrap;background:#f8f9fa}
   .ipc-tbl td{padding:8px 10px;border-bottom:1px solid #edeeef;white-space:nowrap;font-variant-numeric:tabular-nums}
   .ipc-tbl .r{text-align:right}
   .ipc-scroll{overflow-x:auto}
@@ -724,49 +143,48 @@ function css() {
   .ipc-mini i{position:absolute;left:0;top:0;bottom:0;border-radius:3px}
   .ipc-tag{font-size:11px;font-weight:700;background:#dbeafe;color:#1e3a8a;border-radius:2px;padding:1px 5px;margin-left:4px}
   .ipc-tag.warn{background:#fef3c7;color:#713f12}
-  .ipc-note{font-size:12px;color:${C.ink2};margin:0;line-height:1.5}
-  .ipc-tip{position:absolute;z-index:30;pointer-events:none;background:${C.ink};color:#fff;font-size:12px;line-height:1.45;padding:8px 10px;border-radius:4px;box-shadow:0 4px 14px rgba(0,0,0,.2);max-width:260px}
+  .ipc-note{font-size:12px;color:${p.ink2};margin:0;line-height:1.5}
+  .ipc-tip{position:absolute;z-index:30;pointer-events:none;background:${p.ink};color:#fff;font-size:12px;line-height:1.45;padding:8px 10px;border-radius:4px;box-shadow:0 4px 14px rgba(0,0,0,.2);max-width:260px}
   .ipc-ov{position:fixed;inset:0;background:rgba(25,28,29,.28);z-index:1000;display:flex;align-items:center;justify-content:center;padding:16px}
   .ipc-modal{background:#fff;border-radius:8px;padding:20px 24px;width:min(560px,100%);max-height:90vh;overflow:auto;box-shadow:0 16px 48px rgba(0,0,0,.2)}
   .ipc-mhead{display:flex;justify-content:space-between;align-items:center}.ipc-mhead h3{margin:0;font-size:16px;font-weight:700}
-  .ipc-sub{font-size:13px;color:${C.ink2};margin:6px 0 10px}
-  .ipc-x{border:0;background:none;cursor:pointer;color:${C.ink2}}
+  .ipc-sub{font-size:13px;color:${p.ink2};margin:6px 0 10px}
+  .ipc-x{border:0;background:none;cursor:pointer;color:${p.ink2}}
   .ipc-in{border:1px solid #e1e3e4;border-radius:4px;padding:6px 8px;font:inherit;font-size:13px;width:100%}
   .ipc-add{display:flex;gap:8px;margin:12px 0 4px}.ipc-add .ipc-in{flex:1;text-transform:uppercase}
   .ipc-btn{display:inline-flex;align-items:center;gap:6px;border:1px solid #b5000b;background:#b5000b;color:#fff;border-radius:4px;padding:7px 12px;font-size:13px;font-weight:700;cursor:pointer}
   .ipc-chip{border:1px solid #e1e3e4;background:#fff;border-radius:999px;padding:3px 10px;font-size:12px;font-weight:600;cursor:pointer;margin:2px}
-  .ipc-link{border:0;background:none;cursor:pointer;font-weight:700;font-size:12px}.ipc-link.bad{color:${C.bad}}
+  .ipc-link{border:0;background:none;cursor:pointer;font-weight:700;font-size:12px}.ipc-link.bad{color:${p.bad}}
   .ipc-detalle{margin-top:4px}
   .ipc-dia{margin-bottom:18px}.ipc-dia:last-child{margin-bottom:0}
   .ipc-diah{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 14px;padding:8px 0 6px}
-  .ipc-diah b{font-size:14px}.ipc-etq{font-size:12px;color:${C.ink2}}.ipc-diak{margin-left:auto;font-size:12px;color:${C.ink2}}
+  .ipc-diah b{font-size:14px}.ipc-etq{font-size:12px;color:${p.ink2}}.ipc-diak{margin-left:auto;font-size:12px;color:${p.ink2}}
   .ipc-cam.is-click{cursor:pointer}.ipc-cam.is-click:hover td{background:#f8f9fa}
-  .ipc-chev{font-size:18px;vertical-align:middle;color:${C.ink2};margin-right:2px}
+  .ipc-chev{font-size:18px;vertical-align:middle;color:${p.ink2};margin-right:2px}
   .ipc-det>td{background:#fafafa;padding:6px 10px 12px 34px;white-space:normal}
   .ipc-sku{font-size:12px;background:#fff;border:1px solid #edeeef}
   .ipc-sku td,.ipc-sku th{padding:6px 8px}
-  .ipc-bin{display:inline-block;min-width:22px;text-align:center;font-weight:800;border-radius:3px;padding:1px 6px;background:#fde2e2;color:${C.bad}}
-  .ipc-bin.ok{background:#dcfce7;color:${C.good}}
+  .ipc-bin{display:inline-block;min-width:22px;text-align:center;font-weight:800;border-radius:3px;padding:1px 6px;background:#fde2e2;color:${p.bad}}
+  .ipc-bin.ok{background:#dcfce7;color:${p.good}}
   .ipc-tag.ok{background:#dcfce7;color:#14532d}.ipc-tag.bad{background:#fde2e2;color:#7f1d1d}
   .ipc-ord{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:0 0 10px}
   .ipc-centros .ipc-cenrow td{padding:11px 10px;font-size:13.5px}
   .ipc-sem{font-size:11px;font-weight:700;margin-left:4px}
   .ipc-viajes{margin:4px 0}
   .ipc-det2>td{background:#f3f4f5;padding:10px 12px 14px 12px}
-  .ipc-ofi{display:flex;align-items:center;gap:8px;font-size:12.5px;color:${C.ink2};background:#fff;border:1px solid #e1e3e4;border-radius:8px;padding:8px 12px;margin-bottom:10px;white-space:normal}
-  .ipc-ofi .material-symbols-outlined{font-size:18px;color:${C.info}}.ipc-ofi b{color:${C.ink}}
+  .ipc-ofi{display:flex;align-items:center;gap:8px;font-size:12.5px;color:${p.ink2};background:#fff;border:1px solid #e1e3e4;border-radius:8px;padding:8px 12px;margin-bottom:10px;white-space:normal}
+  .ipc-ofi .material-symbols-outlined{font-size:18px;color:${p.info}}.ipc-ofi b{color:${p.ink}}
   .ipc-cts{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;margin-bottom:16px}
   .ipc-ct{display:flex;flex-direction:column;gap:8px;text-align:left;font:inherit;color:inherit;background:#fff;border:1px solid #e1e3e4;border-radius:10px;padding:12px 14px;cursor:pointer;transition:border-color .15s,box-shadow .15s}
   .ipc-ct:hover{border-color:#9ca3af}
-  .ipc-ct.is-sel{border-color:${C.ink};box-shadow:0 0 0 2px ${C.ink} inset}
+  .ipc-ct.is-sel{border-color:${p.ink};box-shadow:0 0 0 2px ${p.ink} inset}
   .ipc-ct.is-tot{background:#f3f4f5;cursor:default}
-  .ipc-ct-n{font-weight:700;font-size:14px}.ipc-ct-n small{font-weight:500;color:${C.ink2};font-size:11px}
+  .ipc-ct-n{font-weight:700;font-size:14px}.ipc-ct-n small{font-weight:500;color:${p.ink2};font-size:11px}
   .ipc-ct-ms{display:grid;grid-template-columns:1fr 1fr;gap:8px}
-  .ipc-ct-m span{display:block;font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:${C.ink2}}
+  .ipc-ct-m span{display:block;font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:${p.ink2}}
   .ipc-ct-m b{font-size:24px;font-weight:800;font-variant-numeric:tabular-nums;line-height:1.15}
-  .ipc-ct-f{font-size:11.5px;color:${C.ink2}}.ipc-ct-bad{color:${C.bad}}
-  .ipc-hint{margin:0;font-size:13px;color:${C.ink2}}
+  .ipc-ct-f{font-size:11.5px;color:${p.ink2}}.ipc-ct-bad{color:${p.bad}}
+  .ipc-hint{margin:0;font-size:13px;color:${p.ink2}}
   .ipc-alert{display:flex;align-items:center;gap:10px;background:#fde2e2;color:#7f1d1d;border:1px solid #fca5a5;border-radius:8px;padding:10px 14px;font-size:13px;cursor:default}
-  .ipc-alert .material-symbols-outlined{font-size:22px;color:${C.bad}}
-  </style>`;
-}
+  .ipc-alert .material-symbols-outlined{font-size:22px;color:${p.bad}}
+  </style>`}export{Kt as renderIndPlanCarga};

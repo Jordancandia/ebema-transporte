@@ -1,375 +1,62 @@
-// Vista ZCAP — Costo de Servicio por Centro Logístico, Ruta y Tipo de Camión
-// Regional:       ZCAP = Costo Base + km × Tarifa/KM
-// Interregional:  ZCAP = item10_costoRutaTotal (motor completo)
-// Troncales:      ZCAP = motor completo para rutas definidas por el usuario
-import { getDatabase, saveDatabase, getTariffConfig, truckCapKg, getOrigenGroups, TRUCK_BASE_TYPES } from './data.js?v=202611232043';
-import { calcularCostoRuta } from './tarifas-engine.js?v=202611232043';
-import { showAlert } from './utils.js';
-import { can } from './permisos.js?v=202611232043';
-import { esc, fmt, clp, numIn, wireNumIns, rerenderKeepFocus, debounce, chainHtml, wireChain, changesBarHtml, wireChangesBar, textoImpacto, setParamPill, usuarioSesion, clasifPill, clasifTarifa, carPill } from './tarifas-ui.js?v=202611232043';
-
-const TRUCK_ORDER = ['Camión 2 Ton', 'Camión 5 Ton', 'Camión 10 Ton', 'Camión 15 Ton', 'Camión 28 Ton'];
-
-// (23-oct-2026, Jordan) Camión 2 Ton habilitable en Tarifas por Camión: sin Motor de
-// Costos, su ZCAP sólo existe en rutas Regionales (b + c + máx(0, KM − a) × tarifa).
-// Alimenta Tarifas Rutas, Min/Max/Express y Retiro Retorno; NO entra a $/Kg, al
-// camión mínimo ni al Cotizador (buildZcapMap lo excluye salvo { incluir2t: true }).
-export const es2Ton = t => truckCapKg(t && typeof t === 'object' ? t.type : t) === 2000;
-
-// Grupos que comparten configuración de Tarifas por Camión con otro grupo.
-// La clave es el grupo origen de la ruta; el valor es el grupo cuya config se usa.
-// Ej: rutas BDO (SAN BERNARDO) usan los truckTypes configurados en SANTIAGO.
-const GRUPO_TARIFF_SOURCE = {
-  'SAN BERNARDO': 'SANTIAGO',
-};
-
-
-// ── Helpers ────────────────────────────────────────────────────────────────
-
-
-// ── Cálculo ZCAP ───────────────────────────────────────────────────────────
-// Componentes de la tarifa regional de un camión (Tarifas por Camión):
-//   a = KM base · b = Costo base (baseKM) · c = T. base KM (baseRate) · rate = tarifa km ajustada
-// (normal, o especial si la ruta es ISLA/EXTREMA). Lo usan el ZCAP regional y Retiro Retorno.
-export function componentesRegional(ruta, truck) {
-  const num = v => (v === null || v === undefined || v === '' ? null : Number(v));
-  const defaultBase = TRUCK_BASE_TYPES.find(b => b.type === truck.type)?.baseRate || 0;
-  const isExtrema = ['ISLA', 'EXTREMA'].includes((ruta.caracteristica || '').toUpperCase());
-  const rateNorm = num(truck.rateAjustNorm) || num(truck.ratePerKm) || 0;
-  return {
-    a: num(truck.Kmbase) ?? 0,
-    b: num(truck.baseKM) ?? 0,
-    c: num(truck.baseRate) ?? defaultBase,
-    rate: isExtrema ? (num(truck.rateAjustEsp) || num(truck.ratePerKmExtrema) || rateNorm) : rateNorm,
-    especial: isExtrema,
-  };
-}
-
-export function calcZcapRow(db, cfg, ruta, truck, troncalesSet) {
-  const km        = Number(ruta.km) || 0;
-  const esTroncal = troncalesSet.has(ruta.codigo);
-
-  if (!esTroncal && ruta.clasificRuta === 'Regional') {
-    // ZCAP Regional (regla de negocio confirmada 27-sep-2026):
-    //   ZCAP = Costo Base (baseRate) + Costo Base KM (baseKM) + max(0, km ruta − Km Base) × Tarifa/KM
-    //   Si km ≤ Km Base → tarifa plana = Costo Base + Costo Base KM. Km Base = 0 → se cobra el km completo.
-    //   Tarifa/KM = tarifa AJUSTADA (rateAjustNorm / rateAjustEsp si la ruta es ISLA/EXTREMA);
-    //   si no hay ajustada, usa la ponderada calculada por el motor (ratePerKm / ratePerKmExtrema).
-    const defaultBase = TRUCK_BASE_TYPES.find(b => b.type === truck.type)?.baseRate || 0;
-    const num = v => (v === null || v === undefined || v === '' ? null : Number(v));
-    const costoBase   = num(truck.baseRate) ?? defaultBase;
-    const costoBaseKm = num(truck.baseKM) ?? 0;
-    const isExtrema   = ['ISLA','EXTREMA'].includes((ruta.caracteristica||'').toUpperCase());
-    const rateNorm    = num(truck.rateAjustNorm) || num(truck.ratePerKm) || 0;
-    const rate = isExtrema
-      ? (num(truck.rateAjustEsp) || num(truck.ratePerKmExtrema) || rateNorm)
-      : rateNorm;
-    const kmBase      = num(truck.Kmbase) ?? 0;
-    return costoBase + costoBaseKm + Math.max(0, km - kmBase) * rate;
-  }
-  // Interregional o Troncal → motor completo
-  const capKg = truckCapKg(truck.type);
-  if (!capKg) return 0;
-  // soloIda: ruta troncal marcada con toggle IDA en el panel de configuración
-  const soloIdaKey = ruta.codigo + '||' + truck.type;
-  const soloIda = esTroncal && (cfg.variables?.troncalesSoloIda || []).includes(soloIdaKey);
-  try { return calcularCostoRuta(db, cfg, ruta, capKg, { soloIda }).item10_costoRutaTotal || 0; }
-  catch (_) { return 0; }
-}
-
-// ── ZCAP manual (rediseño 29-sep-2026) ─────────────────────────────────────
-// Un ZCAP manual > 0 reemplaza al calculado para esa ruta × camión. Se guarda en
-// tariff_config.data.zcapManual = { "CODIGO||Camión X Ton": { valor, by, at } }.
-// El ZCAP VIGENTE (manual si existe, si no el calculado) es el que alimenta
-// Tarifas $/Kg, Min/Max y el Cotizador (vía buildZcapMap).
-export const zcapKey = (ruta, truck) => (ruta.codigo || '') + '||' + (truck.type || truck);
-export function zcapManualValor(cfg, key) {
-  const e = (cfg.zcapManual || {})[key];
-  const v = e && typeof e === 'object' ? Number(e.valor) : Number(e);
-  return v > 0 ? v : 0;
-}
-
-// Rutas activas del mismo grupo de tarifas con sus camiones (compartido por la
-// vista, el CSV y buildZcapMap).
-function combosRuta(db, cfg, grupos, ruta, troncalesSet) {
-  const skipOrigenId = String(ruta.origenId) === '1000';
-  const grupo = (!skipOrigenId && grupos.find(g => (g.centroIds || []).map(String).includes(String(ruta.origenId))))
-    || grupos.find(g => g.grupo === ruta.origen_grupo);
-  if (!grupo) return null;
-  const tariffGrupoNombre = GRUPO_TARIFF_SOURCE[grupo.grupo] || grupo.grupo;
-  const tariffGrupo = grupos.find(g => g.grupo === tariffGrupoNombre) || grupo;
-  let trucks = (db.truckTypes || [])
-    .filter(t => t.Id_centro === tariffGrupo.repId)
-    .sort((a, b) => TRUCK_ORDER.indexOf(a.type) - TRUCK_ORDER.indexOf(b.type));
-  if (troncalesSet.has(ruta.codigo) || ruta.clasificRuta !== 'Regional') trucks = trucks.filter(t => !es2Ton(t));
-  if (troncalesSet.has(ruta.codigo)) {
-    const excluidas = new Set(cfg.variables?.troncalesExcluidas || []);
-    trucks = trucks.filter(t => !excluidas.has(ruta.codigo + '||' + t.type));
-  }
-  return { grupo, trucks };
-}
-
-// ── Mapa ZCAP: "rutaCodigo||truckType" → { zcap (vigente), zcapCalculado, manual, truck, ruta }
-// Usado por Tarifas $/Kg, Min/Max y el Cotizador para leer el mismo valor sin recalcular.
-export function buildZcapMap(db, cfg, { incluir2t = false } = {}) {
-  const grupos       = getOrigenGroups(db);
-  // Fix 27-sep-2026: la lista de troncales se guarda en troncalesRoutes.
-  const troncalesSet = new Set(cfg.variables?.troncalesRoutes || []);
-  const rutas        = (db.routes || []).filter(r => r.activo);
-  const map          = new Map();
-  rutas.forEach(ruta => {
-    const c = combosRuta(db, cfg, grupos, ruta, troncalesSet);
-    if (!c) return;
-    c.trucks.forEach(truck => {
-      if (!incluir2t && es2Ton(truck)) return;
-      const key  = zcapKey(ruta, truck);
-      const calc = calcZcapRow(db, cfg, ruta, truck, troncalesSet);
-      const man  = zcapManualValor(cfg, key);
-      map.set(key, { zcap: man > 0 ? man : calc, zcapCalculado: calc, manual: man > 0, truck, ruta });
-    });
-  });
-  return map;
-}
-
-// ── Vista Tarifas Rutas (ZCAP) v2 ──────────────────────────────────────────
-const ZV = { tipo: 'todas', tipos: new Set(), centro: 'all', truck: 'all', q: '', kpi: 'all', pagina: 0, draft: {}, guardando: false };
-const PAGE = 50;
-const TIPO_LBL = { todas: 'Todas', regional: 'Regionales', interregional: 'Interregionales', sector: 'Sectores', troncales: 'Troncales' };
-
-export function renderZcapView(container) {
-  const db  = getDatabase();
-  const cfg = getTariffConfig(db);
-  if (!cfg.variables) cfg.variables = {};
-  if (!cfg.variables.troncalesRoutes) cfg.variables.troncalesRoutes = [];
-  if (!cfg.variables.troncalesExcluidas) cfg.variables.troncalesExcluidas = [];
-  if (!cfg.zcapManual) cfg.zcapManual = {};
-  const grupos = getOrigenGroups(db);
-  const editar = can('editar');
-  setParamPill(cfg);
-
-  // Todas las combinaciones ruta × camión con su ZCAP calculado (se recalcula
-  // sólo al entrar o al cambiar la configuración de troncales).
-  let combos = [];
-  function recalcular() {
-    const troncalesSet = new Set(cfg.variables.troncalesRoutes || []);
-    combos = [];
-    (db.routes || []).filter(r => r.activo).sort((a, b) => (a.codigo || '').localeCompare(b.codigo || '')).forEach(ruta => {
-      const c = combosRuta(db, cfg, grupos, ruta, troncalesSet);
-      if (!c) return;
-      const clasif = clasifTarifa(ruta, troncalesSet);
-      c.trucks.forEach(truck => combos.push({
-        key: zcapKey(ruta, truck), ruta, truck, grupo: c.grupo, clasif,
-        calc: calcZcapRow(db, cfg, ruta, truck, troncalesSet),
-      }));
-    });
-  }
-  recalcular();
-
-  const guardado = k => zcapManualValor(cfg, k);
-  const actual = k => (k in ZV.draft ? (Number(ZV.draft[k]) || 0) : guardado(k));
-  const vigente = (x, man) => (man > 0 ? man : x.calc);
-  const cambios = () => Object.keys(ZV.draft).filter(k => (Number(ZV.draft[k]) || 0) !== guardado(k));
-
-  function filtrados() {
-    const q = ZV.q.trim().toLowerCase();
-    return combos.filter(x => {
-      // (4-nov-2026, Jordan) selección múltiple de tipos de ruta (vacío = todas)
-      if (ZV.tipos.size && !ZV.tipos.has(x.clasif === 'Troncal' ? 'troncales' : String(x.clasif || '').toLowerCase())) return false;
-      if (ZV.centro !== 'all' && x.grupo.grupo !== ZV.centro) return false;
-      if (ZV.truck !== 'all' && x.truck.type !== ZV.truck) return false;
-      if (q && !`${x.ruta.codigo} ${x.ruta.destino}`.toLowerCase().includes(q)) return false;
-      return true;
-    });
-  }
-
-  function impacto() {
-    const ch = cambios();
-    const antes = {}, despues = {};
-    ch.forEach(k => {
-      const x = combos.find(c => c.key === k);
-      if (!x) return;
-      antes[k] = vigente(x, guardado(k));
-      despues[k] = vigente(x, actual(k));
-    });
-    return textoImpacto(antes, despues, 'ZCAP vigentes');
-  }
-
-  function render() {
-    const base = filtrados();
-    const lista = ZV.kpi === 'manual' ? base.filter(x => actual(x.key) > 0) : base;
-    const n = base.length || 1;
-    const prom = base.reduce((s, x) => s + vigente(x, actual(x.key)), 0) / n;
-    const prom0 = base.reduce((s, x) => s + vigente(x, guardado(x.key)), 0) / n;
-    const nMan = base.filter(x => actual(x.key) > 0).length;
-    const dPct = prom0 ? (prom / prom0 - 1) * 100 : 0;
-    const totalPags = Math.max(1, Math.ceil(lista.length / PAGE));
-    if (ZV.pagina >= totalPags) ZV.pagina = totalPags - 1;
-    const pag = lista.slice(ZV.pagina * PAGE, (ZV.pagina + 1) * PAGE);
-    const troncal = ZV.tipos.size === 1 && ZV.tipos.has('troncales');
-    const ch = cambios();
-
-    const kpi = (k, lbl, val, sub, color, click) => `<button class="sv-kpi ${ZV.kpi === k ? 'is-on' : ''}" ${click ? `data-chip data-zkpi="${k}"` : 'data-chip disabled style="cursor:default"'}
-      style="${ZV.kpi === k ? `box-shadow:inset 0 -3px 0 ${color}` : ''}"><div class="sv-kpi-l"><i style="background:${color}"></i>${esc(lbl)}</div>
-      <div class="sv-kpi-v" style="font-size:28px;line-height:36px">${esc(val)}</div><div class="sv-kpi-s">${esc(sub)}</div></button>`;
-
-    container.innerHTML = `<div class="sv-view">
-      ${changesBarHtml(ch.length, impacto(), ZV.guardando)}
+import{getDatabase as W,saveDatabase as L,getTariffConfig as aa,truckCapKg as Z,getOrigenGroups as D,TRUCK_BASE_TYPES as _}from"./data.js?v=6ce8cb5f60";import{calcularCostoRuta as ta}from"./tarifas-engine.js?v=be2617cfd2";import{showAlert as ea}from"./utils.js";import{can as sa}from"./permisos.js?v=a8b193e9fb";import{esc as b,fmt as I,clp as O,numIn as oa,wireNumIns as na,rerenderKeepFocus as ia,debounce as la,chainHtml as ca,wireChain as ra,changesBarHtml as da,wireChangesBar as pa,textoImpacto as ua,setParamPill as fa,usuarioSesion as ma,clasifPill as ga,clasifTarifa as va,carPill as ba}from"./tarifas-ui.js?v=19c87cf278";const x=["Camión 2 Ton","Camión 5 Ton","Camión 10 Ton","Camión 15 Ton","Camión 28 Ton"],U=n=>Z(n&&typeof n=="object"?n.type:n)===2e3,ha={"SAN BERNARDO":"SANTIAGO"};function Sa(n,i){const s=d=>d==null||d===""?null:Number(d),l=_.find(d=>d.type===i.type)?.baseRate||0,h=["ISLA","EXTREMA"].includes((n.caracteristica||"").toUpperCase()),C=s(i.rateAjustNorm)||s(i.ratePerKm)||0;return{a:s(i.Kmbase)??0,b:s(i.baseKM)??0,c:s(i.baseRate)??l,rate:h&&(s(i.rateAjustEsp)||s(i.ratePerKmExtrema))||C,especial:h}}function B(n,i,s,l,h){const C=Number(s.km)||0,d=h.has(s.codigo);if(!d&&s.clasificRuta==="Regional"){const p=_.find(S=>S.type===l.type)?.baseRate||0,v=S=>S==null||S===""?null:Number(S),w=v(l.baseRate)??p,y=v(l.baseKM)??0,j=["ISLA","EXTREMA"].includes((s.caracteristica||"").toUpperCase()),M=v(l.rateAjustNorm)||v(l.ratePerKm)||0,q=j&&(v(l.rateAjustEsp)||v(l.ratePerKmExtrema))||M,N=v(l.Kmbase)??0;return w+y+Math.max(0,C-N)*q}const m=Z(l.type);if(!m)return 0;const z=s.codigo+"||"+l.type,u=d&&(i.variables?.troncalesSoloIda||[]).includes(z);try{return ta(n,i,s,m,{soloIda:u}).item10_costoRutaTotal||0}catch{return 0}}const V=(n,i)=>(n.codigo||"")+"||"+(i.type||i);function G(n,i){const s=(n.zcapManual||{})[i],l=Number(s&&typeof s=="object"?s.valor:s);return l>0?l:0}function F(n,i,s,l,h){const d=!(String(l.origenId)==="1000")&&s.find(p=>(p.centroIds||[]).map(String).includes(String(l.origenId)))||s.find(p=>p.grupo===l.origen_grupo);if(!d)return null;const m=ha[d.grupo]||d.grupo,z=s.find(p=>p.grupo===m)||d;let u=(n.truckTypes||[]).filter(p=>p.Id_centro===z.repId).sort((p,v)=>x.indexOf(p.type)-x.indexOf(v.type));if((h.has(l.codigo)||l.clasificRuta!=="Regional")&&(u=u.filter(p=>!U(p))),h.has(l.codigo)){const p=new Set(i.variables?.troncalesExcluidas||[]);u=u.filter(v=>!p.has(l.codigo+"||"+v.type))}return{grupo:d,trucks:u}}function Ra(n,i,{incluir2t:s=!1}={}){const l=D(n),h=new Set(i.variables?.troncalesRoutes||[]),C=(n.routes||[]).filter(m=>m.activo),d=new Map;return C.forEach(m=>{const z=F(n,i,l,m,h);z&&z.trucks.forEach(u=>{if(!s&&U(u))return;const p=V(m,u),v=B(n,i,m,u,h),w=G(i,p);d.set(p,{zcap:w>0?w:v,zcapCalculado:v,manual:w>0,truck:u,ruta:m})})}),d}const e={tipo:"todas",tipos:new Set,centro:"all",truck:"all",q:"",kpi:"all",pagina:0,draft:{},guardando:!1},k=50,ya={todas:"Todas",regional:"Regionales",interregional:"Interregionales",sector:"Sectores",troncales:"Troncales"};function wa(n){const i=W(),s=aa(i);s.variables||(s.variables={}),s.variables.troncalesRoutes||(s.variables.troncalesRoutes=[]),s.variables.troncalesExcluidas||(s.variables.troncalesExcluidas=[]),s.zcapManual||(s.zcapManual={});const l=D(i),h=sa("editar");fa(s);let C=[];function d(){const t=new Set(s.variables.troncalesRoutes||[]);C=[],(i.routes||[]).filter(a=>a.activo).sort((a,o)=>(a.codigo||"").localeCompare(o.codigo||"")).forEach(a=>{const o=F(i,s,l,a,t);if(!o)return;const r=va(a,t);o.trucks.forEach(f=>C.push({key:V(a,f),ruta:a,truck:f,grupo:o.grupo,clasif:r,calc:B(i,s,a,f,t)}))})}d();const m=t=>G(s,t),z=t=>t in e.draft?Number(e.draft[t])||0:m(t),u=(t,a)=>a>0?a:t.calc,p=()=>Object.keys(e.draft).filter(t=>(Number(e.draft[t])||0)!==m(t));function v(){const t=e.q.trim().toLowerCase();return C.filter(a=>!(e.tipos.size&&!e.tipos.has(a.clasif==="Troncal"?"troncales":String(a.clasif||"").toLowerCase())||e.centro!=="all"&&a.grupo.grupo!==e.centro||e.truck!=="all"&&a.truck.type!==e.truck||t&&!`${a.ruta.codigo} ${a.ruta.destino}`.toLowerCase().includes(t)))}function w(){const t=p(),a={},o={};return t.forEach(r=>{const f=C.find($=>$.key===r);f&&(a[r]=u(f,m(r)),o[r]=u(f,z(r)))}),ua(a,o,"ZCAP vigentes")}function y(){const t=v(),a=e.kpi==="manual"?t.filter(c=>z(c.key)>0):t,o=t.length||1,r=t.reduce((c,E)=>c+u(E,z(E.key)),0)/o,f=t.reduce((c,E)=>c+u(E,m(E.key)),0)/o,$=t.filter(c=>z(c.key)>0).length,g=f?(r/f-1)*100:0,A=Math.max(1,Math.ceil(a.length/k));e.pagina>=A&&(e.pagina=A-1);const R=a.slice(e.pagina*k,(e.pagina+1)*k),T=e.tipos.size===1&&e.tipos.has("troncales"),X=p(),P=(c,E,Q,Y,K,J)=>`<button class="sv-kpi ${e.kpi===c?"is-on":""}" ${J?`data-chip data-zkpi="${c}"`:'data-chip disabled style="cursor:default"'}
+      style="${e.kpi===c?`box-shadow:inset 0 -3px 0 ${K}`:""}"><div class="sv-kpi-l"><i style="background:${K}"></i>${b(E)}</div>
+      <div class="sv-kpi-v" style="font-size:28px;line-height:36px">${b(Q)}</div><div class="sv-kpi-s">${b(Y)}</div></button>`;n.innerHTML=`<div class="sv-view">
+      ${da(X.length,w(),e.guardando)}
       <div class="sv-vhead">
         <div style="min-width:0"><h1 class="sv-h1">Tarifas Rutas</h1>
           <div class="sv-desc">ZCAP por ruta y tipo de camión: la expectativa de pago al transportista. El vigente alimenta $/Kg, Min/Max y el Cotizador.</div></div>
         <div class="sv-actions"><button class="sv-btn" data-csv id="zcap-btn-csv"><span class="material-symbols-outlined">download</span>Descargar CSV</button></div>
       </div>
-      ${chainHtml('transporte', 'zcap')}
+      ${ca("transporte","zcap")}
       <div class="sv-kpis">
-        ${kpi('all', 'Combinaciones', fmt(base.length), 'ruta × camión con el filtro', '#191c1d', true)}
-        ${kpi('prom', 'ZCAP promedio', clp(prom), ZV.truck === 'all' ? 'todos los camiones' : ZV.truck, '#b5000b', false)}
-        ${kpi('manual', 'Con ZCAP manual', fmt(nMan), 'reemplazan el calculado', '#7e22ce', true)}
-        ${kpi('delta', 'Cambio vs. guardado', `${dPct >= 0 ? '+' : ''}${fmt(dPct, 1)}%`, Math.abs(dPct) < 0.05 ? 'sin cambios pendientes' : 'si guardas los cambios', Math.abs(dPct) < 0.05 ? '#9ca3af' : '#ca8a04', false)}
+        ${P("all","Combinaciones",I(t.length),"ruta × camión con el filtro","#191c1d",!0)}
+        ${P("prom","ZCAP promedio",O(r),e.truck==="all"?"todos los camiones":e.truck,"#b5000b",!1)}
+        ${P("manual","Con ZCAP manual",I($),"reemplazan el calculado","#7e22ce",!0)}
+        ${P("delta","Cambio vs. guardado",`${g>=0?"+":""}${I(g,1)}%`,Math.abs(g)<.05?"sin cambios pendientes":"si guardas los cambios",Math.abs(g)<.05?"#9ca3af":"#ca8a04",!1)}
       </div>
       <div class="sv-filters">
         <div class="sv-frow">
-          <div class="sv-seg">${Object.entries(TIPO_LBL).map(([k, l]) => `<button data-chip data-ztipo="${k}" class="${(k === 'todas' ? !ZV.tipos.size : ZV.tipos.has(k)) ? 'is-on' : ''}">${l}</button>`).join('')}</div>
-          <div class="sv-seg">${['all', ...TRUCK_ORDER].map(t => `<button data-chip data-ztruck="${esc(t)}" class="${ZV.truck === t ? 'is-on' : ''}">${t === 'all' ? 'Todos' : esc(t.replace('Camión ', ''))}</button>`).join('')}</div>
-          <label class="sv-inp"><span class="material-symbols-outlined">search</span><input id="zcap-q" placeholder="Código o destino" value="${esc(ZV.q)}" style="width:200px"></label>
+          <div class="sv-seg">${Object.entries(ya).map(([c,E])=>`<button data-chip data-ztipo="${c}" class="${(c==="todas"?!e.tipos.size:e.tipos.has(c))?"is-on":""}">${E}</button>`).join("")}</div>
+          <div class="sv-seg">${["all",...x].map(c=>`<button data-chip data-ztruck="${b(c)}" class="${e.truck===c?"is-on":""}">${c==="all"?"Todos":b(c.replace("Camión ",""))}</button>`).join("")}</div>
+          <label class="sv-inp"><span class="material-symbols-outlined">search</span><input id="zcap-q" placeholder="Código o destino" value="${b(e.q)}" style="width:200px"></label>
         </div>
         <div class="sv-frow"><span class="sv-flbl">Centro origen</span>
-          <button class="sv-chip ${ZV.centro === 'all' ? 'is-on' : ''}" data-chip data-zcentro="all">Todos</button>
-          ${grupos.map(g => `<button class="sv-chip ${ZV.centro === g.grupo ? 'is-on' : ''}" data-chip data-zcentro="${esc(g.grupo)}">${esc(g.nombre || g.grupo)}</button>`).join('')}
+          <button class="sv-chip ${e.centro==="all"?"is-on":""}" data-chip data-zcentro="all">Todos</button>
+          ${l.map(c=>`<button class="sv-chip ${e.centro===c.grupo?"is-on":""}" data-chip data-zcentro="${b(c.grupo)}">${b(c.nombre||c.grupo)}</button>`).join("")}
         </div>
       </div>
-      ${troncal ? panelTroncales() : ''}
+      ${T?M():""}
       <div class="sv-card">
         <div class="sv-tablewrap" style="max-height:none"><table class="sv-table" style="min-width:1240px">
           <thead><tr><th>Centro</th><th>Cód. ruta</th><th>Destino</th><th>Clasificación</th><th>Tipo</th><th class="r">KM</th><th>Tipo camión</th>
-            <th class="r">ZCAP calculado</th><th class="r">ZCAP manual</th><th class="r">ZCAP vigente</th><th class="r">Δ pendiente</th>${troncal ? '<th>Modo</th>' : ''}</tr></thead>
-          <tbody>${pag.length ? pag.map(x => fila(x, troncal)).join('') : `<tr class="sv-empty"><td colspan="${troncal ? 12 : 11}">Sin combinaciones para los filtros.</td></tr>`}</tbody>
+            <th class="r">ZCAP calculado</th><th class="r">ZCAP manual</th><th class="r">ZCAP vigente</th><th class="r">Δ pendiente</th>${T?"<th>Modo</th>":""}</tr></thead>
+          <tbody>${R.length?R.map(c=>j(c,T)).join(""):`<tr class="sv-empty"><td colspan="${T?12:11}">Sin combinaciones para los filtros.</td></tr>`}</tbody>
         </table></div>
-        <div class="sv-tfoot"><span>${fmt(lista.length)} combinaciones ruta × camión${lista.length > PAGE ? ` · ${fmt(ZV.pagina * PAGE + 1)}–${fmt(Math.min(lista.length, (ZV.pagina + 1) * PAGE))}` : ''}</span>
+        <div class="sv-tfoot"><span>${I(a.length)} combinaciones ruta × camión${a.length>k?` · ${I(e.pagina*k+1)}–${I(Math.min(a.length,(e.pagina+1)*k))}`:""}</span>
           <span style="display:flex;gap:12px;align-items:center">ZCAP manual en 0 = usa el calculado
-          ${totalPags > 1 ? `<span class="tf-pager"><button data-chip data-zpag="-1" ${ZV.pagina === 0 ? 'disabled' : ''}><span class="material-symbols-outlined" style="font-size:16px">chevron_left</span></button>Pág. ${ZV.pagina + 1} / ${totalPags}<button data-chip data-zpag="1" ${ZV.pagina >= totalPags - 1 ? 'disabled' : ''}><span class="material-symbols-outlined" style="font-size:16px">chevron_right</span></button></span>` : ''}</span></div>
+          ${A>1?`<span class="tf-pager"><button data-chip data-zpag="-1" ${e.pagina===0?"disabled":""}><span class="material-symbols-outlined" style="font-size:16px">chevron_left</span></button>Pág. ${e.pagina+1} / ${A}<button data-chip data-zpag="1" ${e.pagina>=A-1?"disabled":""}><span class="material-symbols-outlined" style="font-size:16px">chevron_right</span></button></span>`:""}</span></div>
       </div>
-    </div>`;
-    wire();
-  }
-
-  function fila(x, troncal) {
-    const man = actual(x.key), man0 = guardado(x.key);
-    const vig = vigente(x, man), d = vig - vigente(x, man0);
-    const ch = man !== man0;
-    let modo = '';
-    if (troncal) {
-      const ida = (cfg.variables.troncalesSoloIda || []).includes(x.key);
-      modo = `<td><div style="display:flex;gap:6px;align-items:center">
-        <button class="tf-toggle ${ida ? 'is-on' : ''}" data-chip data-zida="${esc(x.key)}" ${editar ? '' : 'disabled'} title="${ida ? 'Sólo IDA: peajes y combustible del tramo de ida. Clic → IDA + VUELTA' : 'IDA + VUELTA. Clic → sólo IDA'}">${ida ? 'IDA' : 'IDA+V'}</button>
-        ${editar ? `<button class="tf-actbtn" data-chip data-zrm="${esc(x.key)}" title="Quitar este camión de troncales"><span class="material-symbols-outlined">remove_circle_outline</span></button>` : ''}</div></td>`;
-    }
-    return `<tr class="${man > 0 ? 'tf-man' : ''}" style="cursor:default">
-      <td style="${man > 0 ? 'box-shadow:inset 3px 0 0 #7e22ce' : ''}"><span class="sv-b">${esc(x.grupo.nombre || x.grupo.grupo)}</span><div class="sv-sub">${esc(x.ruta.origenId || '')}</div></td>
-      <td><span class="sv-mono">${esc(x.ruta.codigo || '')}</span></td>
-      <td>${esc(x.ruta.destino || '')}</td>
-      <td>${clasifPill(x.clasif)}</td>
-      <td>${carPill(x.ruta.caracteristica)}</td>
-      <td class="r">${fmt(Number(x.ruta.km) || 0)}</td>
-      <td style="white-space:nowrap">${esc(x.truck.type)}</td>
-      <td class="r" style="color:${man > 0 ? '#9ca3af' : 'inherit'}">${x.calc > 0 ? clp(x.calc) : '—'}</td>
-      <td class="r">${numIn(x.key, man || '', { changed: ch, pre: '$', w: '112px', disabled: !editar, placeholder: '—', label: 'ZCAP manual ' + x.key })}</td>
-      <td class="r"><b class="${man > 0 ? 'tf-vig-man' : ''}">${vig > 0 ? clp(vig) : '—'}</b>${man > 0 ? '<div class="sv-sub" style="text-align:right;color:#7e22ce">manual</div>' : ''}</td>
-      <td class="r" style="color:${Math.abs(d) >= 1 ? '#ca8a04' : '#9ca3af'};font-weight:${Math.abs(d) >= 1 ? 700 : 400}">${Math.abs(d) >= 1 ? (d > 0 ? '+' : '−') + clp(Math.abs(d)) : '—'}</td>
-      ${modo}</tr>`;
-  }
-
-  function panelTroncales() {
-    const list = cfg.variables.troncalesRoutes || [];
-    return `<div class="sv-card" style="padding:14px 16px;display:flex;flex-direction:column;gap:10px">
-      <div style="display:flex;align-items:center;gap:8px;font-weight:700;font-size:14px"><span class="material-symbols-outlined" style="color:#ea580c">settings</span>Rutas troncales (${list.length})
+    </div>`,N()}function j(t,a){const o=z(t.key),r=m(t.key),f=u(t,o),$=f-u(t,r),g=o!==r;let A="";if(a){const R=(s.variables.troncalesSoloIda||[]).includes(t.key);A=`<td><div style="display:flex;gap:6px;align-items:center">
+        <button class="tf-toggle ${R?"is-on":""}" data-chip data-zida="${b(t.key)}" ${h?"":"disabled"} title="${R?"Sólo IDA: peajes y combustible del tramo de ida. Clic → IDA + VUELTA":"IDA + VUELTA. Clic → sólo IDA"}">${R?"IDA":"IDA+V"}</button>
+        ${h?`<button class="tf-actbtn" data-chip data-zrm="${b(t.key)}" title="Quitar este camión de troncales"><span class="material-symbols-outlined">remove_circle_outline</span></button>`:""}</div></td>`}return`<tr class="${o>0?"tf-man":""}" style="cursor:default">
+      <td style="${o>0?"box-shadow:inset 3px 0 0 #7e22ce":""}"><span class="sv-b">${b(t.grupo.nombre||t.grupo.grupo)}</span><div class="sv-sub">${b(t.ruta.origenId||"")}</div></td>
+      <td><span class="sv-mono">${b(t.ruta.codigo||"")}</span></td>
+      <td>${b(t.ruta.destino||"")}</td>
+      <td>${ga(t.clasif)}</td>
+      <td>${ba(t.ruta.caracteristica)}</td>
+      <td class="r">${I(Number(t.ruta.km)||0)}</td>
+      <td style="white-space:nowrap">${b(t.truck.type)}</td>
+      <td class="r" style="color:${o>0?"#9ca3af":"inherit"}">${t.calc>0?O(t.calc):"—"}</td>
+      <td class="r">${oa(t.key,o||"",{changed:g,pre:"$",w:"112px",disabled:!h,placeholder:"—",label:"ZCAP manual "+t.key})}</td>
+      <td class="r"><b class="${o>0?"tf-vig-man":""}">${f>0?O(f):"—"}</b>${o>0?'<div class="sv-sub" style="text-align:right;color:#7e22ce">manual</div>':""}</td>
+      <td class="r" style="color:${Math.abs($)>=1?"#ca8a04":"#9ca3af"};font-weight:${Math.abs($)>=1?700:400}">${Math.abs($)>=1?($>0?"+":"−")+O(Math.abs($)):"—"}</td>
+      ${A}</tr>`}function M(){const t=s.variables.troncalesRoutes||[];return`<div class="sv-card" style="padding:14px 16px;display:flex;flex-direction:column;gap:10px">
+      <div style="display:flex;align-items:center;gap:8px;font-weight:700;font-size:14px"><span class="material-symbols-outlined" style="color:#ea580c">settings</span>Rutas troncales (${t.length})
         <span class="sv-sub" style="font-weight:400;margin:0">Usan el motor de costos completo para el ZCAP</span></div>
-      ${editar ? `<div class="sv-frow"><label class="sv-inp"><span class="material-symbols-outlined">add_road</span>
+      ${h?`<div class="sv-frow"><label class="sv-inp"><span class="material-symbols-outlined">add_road</span>
         <input id="zcap-tronc-input" list="zcap-tronc-list" placeholder="Código de ruta (ej: CON518)" style="width:220px" class="is-mono"></label>
-        <datalist id="zcap-tronc-list">${(db.routes || []).filter(r => r.activo).map(r => `<option value="${esc(r.codigo || '')}"></option>`).join('')}</datalist>
-        <button class="sv-btn" data-chip id="zcap-tronc-add"><span class="material-symbols-outlined">add</span>Agregar</button></div>` : ''}
-      <div class="sv-sub" style="max-width:none">${list.length ? 'Activas: ' + list.map(esc).join(', ') + ' · configura IDA / IDA+V o quita camiones desde la tabla.' : 'Sin rutas troncales.'}</div>
-    </div>`;
-  }
-
-  const recalcDebounced = debounce(() => rerenderKeepFocus(container, render), 250);
-
-  function wire() {
-    wireChain(container);
-    container.querySelectorAll('[data-ztipo]').forEach(b => b.addEventListener('click', () => {
-      const k = b.dataset.ztipo;
-      if (k === 'todas') ZV.tipos.clear(); else if (ZV.tipos.has(k)) ZV.tipos.delete(k); else ZV.tipos.add(k);
-      ZV.tipo = ZV.tipos.size ? [...ZV.tipos].join('+') : 'todas';
-      ZV.pagina = 0; render();
-    }));
-    container.querySelectorAll('[data-ztruck]').forEach(b => b.addEventListener('click', () => { ZV.truck = b.dataset.ztruck; ZV.pagina = 0; render(); }));
-    container.querySelectorAll('[data-zcentro]').forEach(b => b.addEventListener('click', () => { ZV.centro = b.dataset.zcentro; ZV.pagina = 0; render(); }));
-    container.querySelectorAll('[data-zkpi]').forEach(b => b.addEventListener('click', () => { const k = b.dataset.zkpi; ZV.kpi = ZV.kpi === k || k === 'all' ? 'all' : k; ZV.pagina = 0; render(); }));
-    container.querySelectorAll('[data-zpag]').forEach(b => b.addEventListener('click', () => { ZV.pagina += Number(b.dataset.zpag); render(); window.scrollTo({ top: 0 }); }));
-    const q = container.querySelector('#zcap-q');
-    q?.addEventListener('input', () => { ZV.q = q.value; ZV.pagina = 0; const pos = q.selectionStart; render(); const n = container.querySelector('#zcap-q'); n.focus(); n.setSelectionRange(pos, pos); });
-    wireNumIns(container, (key, val) => {
-      if (val === guardado(key)) delete ZV.draft[key]; else ZV.draft[key] = val;
-      recalcDebounced();
-    });
-    wireChangesBar(container, () => { ZV.draft = {}; render(); }, guardar);
-    container.querySelector('#zcap-btn-csv')?.addEventListener('click', () => exportarCsv(filtrados()));
-    // Troncales (se guardan al instante, igual que antes)
-    container.querySelector('#zcap-tronc-add')?.addEventListener('click', () => {
-      const inp = container.querySelector('#zcap-tronc-input');
-      const cod = (inp?.value || '').trim().toUpperCase();
-      if (!cod) return;
-      if (!cfg.variables.troncalesRoutes.includes(cod)) {
-        cfg.variables.troncalesRoutes.push(cod);
-        saveDatabase(db, { syncOnly: ['tariffConfig'] });
-      }
-      recalcular(); render();
-    });
-    container.querySelectorAll('[data-zida]').forEach(b => b.addEventListener('click', () => {
-      if (!cfg.variables.troncalesSoloIda) cfg.variables.troncalesSoloIda = [];
-      const k = b.dataset.zida, i = cfg.variables.troncalesSoloIda.indexOf(k);
-      if (i >= 0) cfg.variables.troncalesSoloIda.splice(i, 1); else cfg.variables.troncalesSoloIda.push(k);
-      saveDatabase(db, { syncOnly: ['tariffConfig'] });
-      recalcular(); render();
-    }));
-    container.querySelectorAll('[data-zrm]').forEach(b => b.addEventListener('click', () => {
-      const k = b.dataset.zrm;
-      if (!cfg.variables.troncalesExcluidas.includes(k)) cfg.variables.troncalesExcluidas.push(k);
-      if (cfg.variables.troncalesSoloIda) cfg.variables.troncalesSoloIda = cfg.variables.troncalesSoloIda.filter(x => x !== k);
-      saveDatabase(db, { syncOnly: ['tariffConfig'] });
-      recalcular(); render();
-    }));
-  }
-
-  function guardar() {
-    const ch = cambios();
-    if (!ch.length) return;
-    const by = usuarioSesion(), at = new Date().toISOString();
-    ch.forEach(k => {
-      const v = Number(ZV.draft[k]) || 0;
-      if (v > 0) cfg.zcapManual[k] = { valor: Math.round(v), by, at };
-      else delete cfg.zcapManual[k];
-    });
-    ZV.draft = {};
-    saveDatabase(db, { syncOnly: ['tariffConfig'] });
-    showAlert(`ZCAP manual guardado (${ch.length} ${ch.length === 1 ? 'cambio' : 'cambios'}). El ZCAP vigente ya alimenta $/Kg, Min/Max y el Cotizador.`, 'success');
-    render();
-  }
-
-  function exportarCsv(lista) {
-    if (!lista.length) return;
-    const sep = ';';
-    const lines = [['Centro', 'Cod Ruta', 'Destino', 'Clasificacion', 'Tipo', 'KM', 'Tipo Camion', 'ZCAP calculado', 'ZCAP manual', 'ZCAP vigente'].join(sep)];
-    lista.forEach(x => {
-      const man = guardado(x.key);
-      lines.push([x.grupo.nombre || x.grupo.grupo, x.ruta.codigo || '', x.ruta.destino || '', x.clasif, x.ruta.caracteristica || 'NORMAL', Number(x.ruta.km) || 0,
-        x.truck.type, Math.round(x.calc || 0), man || '', Math.round(vigente(x, man) || 0)].map(v => '"' + String(v).replace(/"/g, '""') + '"').join(sep));
-    });
-    const blob = new Blob(['﻿' + lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url; a.download = `zcap_${ZV.centro}_${ZV.tipo}.csv`;
-    document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
-  }
-
-  render();
-}
+        <datalist id="zcap-tronc-list">${(i.routes||[]).filter(a=>a.activo).map(a=>`<option value="${b(a.codigo||"")}"></option>`).join("")}</datalist>
+        <button class="sv-btn" data-chip id="zcap-tronc-add"><span class="material-symbols-outlined">add</span>Agregar</button></div>`:""}
+      <div class="sv-sub" style="max-width:none">${t.length?"Activas: "+t.map(b).join(", ")+" · configura IDA / IDA+V o quita camiones desde la tabla.":"Sin rutas troncales."}</div>
+    </div>`}const q=la(()=>ia(n,y),250);function N(){ra(n),n.querySelectorAll("[data-ztipo]").forEach(a=>a.addEventListener("click",()=>{const o=a.dataset.ztipo;o==="todas"?e.tipos.clear():e.tipos.has(o)?e.tipos.delete(o):e.tipos.add(o),e.tipo=e.tipos.size?[...e.tipos].join("+"):"todas",e.pagina=0,y()})),n.querySelectorAll("[data-ztruck]").forEach(a=>a.addEventListener("click",()=>{e.truck=a.dataset.ztruck,e.pagina=0,y()})),n.querySelectorAll("[data-zcentro]").forEach(a=>a.addEventListener("click",()=>{e.centro=a.dataset.zcentro,e.pagina=0,y()})),n.querySelectorAll("[data-zkpi]").forEach(a=>a.addEventListener("click",()=>{const o=a.dataset.zkpi;e.kpi=e.kpi===o||o==="all"?"all":o,e.pagina=0,y()})),n.querySelectorAll("[data-zpag]").forEach(a=>a.addEventListener("click",()=>{e.pagina+=Number(a.dataset.zpag),y(),window.scrollTo({top:0})}));const t=n.querySelector("#zcap-q");t?.addEventListener("input",()=>{e.q=t.value,e.pagina=0;const a=t.selectionStart;y();const o=n.querySelector("#zcap-q");o.focus(),o.setSelectionRange(a,a)}),na(n,(a,o)=>{o===m(a)?delete e.draft[a]:e.draft[a]=o,q()}),pa(n,()=>{e.draft={},y()},S),n.querySelector("#zcap-btn-csv")?.addEventListener("click",()=>H(v())),n.querySelector("#zcap-tronc-add")?.addEventListener("click",()=>{const o=(n.querySelector("#zcap-tronc-input")?.value||"").trim().toUpperCase();o&&(s.variables.troncalesRoutes.includes(o)||(s.variables.troncalesRoutes.push(o),L(i,{syncOnly:["tariffConfig"]})),d(),y())}),n.querySelectorAll("[data-zida]").forEach(a=>a.addEventListener("click",()=>{s.variables.troncalesSoloIda||(s.variables.troncalesSoloIda=[]);const o=a.dataset.zida,r=s.variables.troncalesSoloIda.indexOf(o);r>=0?s.variables.troncalesSoloIda.splice(r,1):s.variables.troncalesSoloIda.push(o),L(i,{syncOnly:["tariffConfig"]}),d(),y()})),n.querySelectorAll("[data-zrm]").forEach(a=>a.addEventListener("click",()=>{const o=a.dataset.zrm;s.variables.troncalesExcluidas.includes(o)||s.variables.troncalesExcluidas.push(o),s.variables.troncalesSoloIda&&(s.variables.troncalesSoloIda=s.variables.troncalesSoloIda.filter(r=>r!==o)),L(i,{syncOnly:["tariffConfig"]}),d(),y()}))}function S(){const t=p();if(!t.length)return;const a=ma(),o=new Date().toISOString();t.forEach(r=>{const f=Number(e.draft[r])||0;f>0?s.zcapManual[r]={valor:Math.round(f),by:a,at:o}:delete s.zcapManual[r]}),e.draft={},L(i,{syncOnly:["tariffConfig"]}),ea(`ZCAP manual guardado (${t.length} ${t.length===1?"cambio":"cambios"}). El ZCAP vigente ya alimenta $/Kg, Min/Max y el Cotizador.`,"success"),y()}function H(t){if(!t.length)return;const a=";",o=[["Centro","Cod Ruta","Destino","Clasificacion","Tipo","KM","Tipo Camion","ZCAP calculado","ZCAP manual","ZCAP vigente"].join(a)];t.forEach(g=>{const A=m(g.key);o.push([g.grupo.nombre||g.grupo.grupo,g.ruta.codigo||"",g.ruta.destino||"",g.clasif,g.ruta.caracteristica||"NORMAL",Number(g.ruta.km)||0,g.truck.type,Math.round(g.calc||0),A||"",Math.round(u(g,A)||0)].map(R=>'"'+String(R).replace(/"/g,'""')+'"').join(a))});const r=new Blob(["\uFEFF"+o.join(`
+`)],{type:"text/csv;charset=utf-8;"}),f=URL.createObjectURL(r),$=document.createElement("a");$.href=f,$.download=`zcap_${e.centro}_${e.tipo}.csv`,document.body.appendChild($),$.click(),$.remove(),URL.revokeObjectURL(f)}y()}export{Ra as buildZcapMap,B as calcZcapRow,Sa as componentesRegional,U as es2Ton,wa as renderZcapView,V as zcapKey,G as zcapManualValor};

@@ -1,16 +1,4 @@
-import { getDatabase, saveDatabase, deleteRow } from './data.js?v=202611232043';
-import { showAlert, geocodeAddress, escapeHtml, toCSV, downloadFile } from './utils.js';
-import { GRUPOS_ORIGEN } from './chile-geo.js';
-import { confirmar } from './confirmar.js?v=202611232043';
-
-let currentCdSearchTerm = '';
-
-// Renderizar la vista de Centros Logísticos con Mapa Interactivo Leaflet y Tailwind CSS
-export function renderLogisticsView(container) {
-  const db = getDatabase();
-  const centres = db.logisticsCentres;
-
-  container.innerHTML = `
+import{getDatabase as C,saveDatabase as A,deleteRow as _}from"./data.js?v=6ce8cb5f60";import{showAlert as y,geocodeAddress as q,escapeHtml as H,toCSV as U,downloadFile as F}from"./utils.js";import{GRUPOS_ORIGEN as M}from"./chile-geo.js";import{confirmar as V}from"./confirmar.js?v=84d7f13f40";let B="";function T(x){const b=C().logisticsCentres;x.innerHTML=`
     <p class="font-body-md text-body-md text-secondary mb-md">Administre los centros de distribución (CD) y puntos de salida. Seleccione un centro para geolocalizarlo en el mapa interactivo.</p>
 
     <div class="flex flex-wrap items-center gap-sm mb-md">
@@ -89,369 +77,53 @@ export function renderLogisticsView(container) {
         </form>
       </div>
     </div>
-  `;
-
-  // Estado del paso de geolocalización/ajuste de pin (paso 2 del formulario)
-  let pendingCoords = null;
-  let pendingData = null;
-  let adjustMap = null;
-  let adjustMarker = null;
-
-  const resetGeoStep = (defaultLabel) => {
-    pendingCoords = null;
-    pendingData = null;
-    if (adjustMap) { adjustMap.remove(); adjustMap = null; }
-    adjustMarker = null;
-    document.getElementById('cd-map-adjust-wrap').style.display = 'none';
-    document.getElementById('cd-geo-status').textContent = '';
-    const btnSubmit = document.getElementById('btn-submit-cd');
-    btnSubmit.disabled = false;
-    btnSubmit.innerText = defaultLabel;
-  };
-
-  const showAdjustMap = (coords) => {
-    const wrap = document.getElementById('cd-map-adjust-wrap');
-    const statusEl = document.getElementById('cd-geo-status');
-    wrap.style.display = '';
-    statusEl.textContent = coords.found
-      ? `Ubicación encontrada: ${coords.displayName}`
-      : `⚠ ${coords.displayName}`;
-    statusEl.className = `text-[11px] mb-1 ${coords.found ? 'text-secondary' : 'text-red-700 font-bold'}`;
-
-    if (adjustMap) { adjustMap.remove(); adjustMap = null; }
-    adjustMap = L.map('cd-map-adjust').setView([coords.lat, coords.lon], coords.found ? 15 : 11);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      maxZoom: 19,
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
-    }).addTo(adjustMap);
-    adjustMarker = L.marker([coords.lat, coords.lon], { draggable: true }).addTo(adjustMap)
-      .bindTooltip('Arrastre para ajustar la ubicación exacta', { permanent: false });
-    setTimeout(() => adjustMap.invalidateSize(), 150);
-  };
-
-  // Filtro de búsqueda rápida + render agrupado por origen
-  const cdSearchInput = document.getElementById('cd-search');
-  cdSearchInput.value = currentCdSearchTerm;
-  const applyCdFilters = () => {
-    const term = currentCdSearchTerm.toLowerCase();
-    const filtered = term ? centres.filter(cd =>
-      (cd.nombre || '').toLowerCase().includes(term) ||
-      (cd.direccion || '').toLowerCase().includes(term) ||
-      (cd.id || '').toLowerCase().includes(term) ||
-      (cd.origen_grupo || '').toLowerCase().includes(term)
-    ) : centres;
-    renderCdCards(filtered, container, resetGeoStep);
-    return filtered;
-  };
-  cdSearchInput.addEventListener('input', (e) => {
-    currentCdSearchTerm = e.target.value;
-    applyCdFilters();
-  });
-
-  document.getElementById('btn-export-cds-csv').addEventListener('click', () => {
-    if (centres.length === 0) { showAlert('No hay centros logísticos para exportar.', 'error'); return; }
-    const headers = ['ID Centro SAP', 'Nombre', 'Dirección', 'Origen', 'Latitud', 'Longitud'];
-    const csvRows = centres.map(cd => [cd.id || '', cd.nombre || '', cd.direccion || '', cd.origen_grupo || '', cd.lat || '', cd.lon || '']);
-    const csv = toCSV(headers, csvRows);
-    downloadFile(`centros_logisticos_${new Date().toISOString().slice(0, 10)}.csv`, csv);
-  });
-
-  // Renderizar CD Cards (agrupadas por origen)
-  applyCdFilters();
-
-  // Inicializar Mapa Leaflet
-  let map;
-  let markers = [];
-  try {
-    map = L.map('logistics-map').setView([-34.5, -71.5], 6);
-
-    // Capa de Mapa estilo Premium Dark (CartoDB Dark Matter)
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      maxZoom: 19,
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
-    }).addTo(map);
-
-    const bounds = [];
-    centres.forEach((cd, index) => {
-      if (cd.lat && cd.lon) {
-        const marker = L.marker([cd.lat, cd.lon]).addTo(map)
-          .bindPopup(`
+  `;let p=null,l=null,m=null,o=null;const a=e=>{p=null,l=null,m&&(m.remove(),m=null),o=null,document.getElementById("cd-map-adjust-wrap").style.display="none",document.getElementById("cd-geo-status").textContent="";const t=document.getElementById("btn-submit-cd");t.disabled=!1,t.innerText=e},r=e=>{const t=document.getElementById("cd-map-adjust-wrap"),i=document.getElementById("cd-geo-status");t.style.display="",i.textContent=e.found?`Ubicación encontrada: ${e.displayName}`:`⚠ ${e.displayName}`,i.className=`text-[11px] mb-1 ${e.found?"text-secondary":"text-red-700 font-bold"}`,m&&(m.remove(),m=null),m=L.map("cd-map-adjust").setView([e.lat,e.lon],e.found?15:11),L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:19,attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'}).addTo(m),o=L.marker([e.lat,e.lon],{draggable:!0}).addTo(m).bindTooltip("Arrastre para ajustar la ubicación exacta",{permanent:!1}),setTimeout(()=>m.invalidateSize(),150)},d=document.getElementById("cd-search");d.value=B;const n=()=>{const e=B.toLowerCase(),t=e?b.filter(i=>(i.nombre||"").toLowerCase().includes(e)||(i.direccion||"").toLowerCase().includes(e)||(i.id||"").toLowerCase().includes(e)||(i.origen_grupo||"").toLowerCase().includes(e)):b;return Z(t,x,a),t};d.addEventListener("input",e=>{B=e.target.value,n()}),document.getElementById("btn-export-cds-csv").addEventListener("click",()=>{if(b.length===0){y("No hay centros logísticos para exportar.","error");return}const e=["ID Centro SAP","Nombre","Dirección","Origen","Latitud","Longitud"],t=b.map(c=>[c.id||"",c.nombre||"",c.direccion||"",c.origen_grupo||"",c.lat||"",c.lon||""]),i=U(e,t);F(`centros_logisticos_${new Date().toISOString().slice(0,10)}.csv`,i)}),n();let u,g=[];try{u=L.map("logistics-map").setView([-34.5,-71.5],6),L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:19,attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'}).addTo(u);const e=[];b.forEach((t,i)=>{if(t.lat&&t.lon){const c=L.marker([t.lat,t.lon]).addTo(u).bindPopup(`
             <div class="text-on-surface font-body-md" style="font-family: 'Hanken Grotesk', sans-serif;">
-              <strong class="text-primary font-bold text-sm">${cd.nombre}</strong><br>
-              <span class="text-xs text-secondary">${cd.direccion}</span><br>
-              <span class="text-[10px] font-bold text-primary block mt-1">Código SAP: ${cd.id}</span>
+              <strong class="text-primary font-bold text-sm">${t.nombre}</strong><br>
+              <span class="text-xs text-secondary">${t.direccion}</span><br>
+              <span class="text-[10px] font-bold text-primary block mt-1">Código SAP: ${t.id}</span>
             </div>
-          `);
-        markers.push(marker);
-        bounds.push([cd.lat, cd.lon]);
-
-        // Asignar click a la tarjeta para enfocar en el mapa
-        const cardElement = document.getElementById(`cd-card-${cd.id}`);
-        if (cardElement) {
-          cardElement.addEventListener('click', () => {
-            // Quitar clase activa previa y agregarla a este
-            document.querySelectorAll('.cd-card').forEach(c => c.classList.remove('border-primary', 'bg-primary-container/[0.02]'));
-            cardElement.classList.add('border-primary', 'bg-primary-container/[0.02]');
-
-            map.flyTo([cd.lat, cd.lon], 14, { duration: 1.5 });
-            marker.openPopup();
-          });
-        }
-      }
-    });
-
-    if (bounds.length > 0) {
-      map.fitBounds(bounds, { padding: [50, 50] });
-    }
-
-  } catch (err) {
-    console.error("Error al cargar Leaflet:", err);
-    document.getElementById('logistics-map').innerHTML = `
+          `);g.push(c),e.push([t.lat,t.lon]);const f=document.getElementById(`cd-card-${t.id}`);f&&f.addEventListener("click",()=>{document.querySelectorAll(".cd-card").forEach(I=>I.classList.remove("border-primary","bg-primary-container/[0.02]")),f.classList.add("border-primary","bg-primary-container/[0.02]"),u.flyTo([t.lat,t.lon],14,{duration:1.5}),c.openPopup()})}}),e.length>0&&u.fitBounds(e,{padding:[50,50]})}catch(e){console.error("Error al cargar Leaflet:",e),document.getElementById("logistics-map").innerHTML=`
       <div class="flex justify-center items-center h-full text-secondary font-body-md bg-surface-container-low border border-outline-variant">
         Error al cargar los servicios de mapa interactivo.
       </div>
-    `;
-  }
-
-  // Modales y Formulario
-  const cdModal = document.getElementById('cd-modal');
-  const btnCreateCd = document.getElementById('btn-create-cd');
-  const btnCloseModal = document.getElementById('btn-close-cd-modal');
-  const btnCancelModal = document.getElementById('btn-cancel-cd-modal');
-  const cdForm = document.getElementById('cd-form');
-
-  btnCreateCd.addEventListener('click', () => {
-    cdForm.reset();
-    window.__editingCdId = null;
-    document.querySelector('#cd-modal h4').textContent = 'Nuevo Centro Logístico (CD)';
-    const sapInput = document.getElementById('cd-sap');
-    sapInput.value = '';
-    sapInput.disabled = false;
-    document.getElementById('cd-sap-hint').textContent = 'Ingrese el código de centro SAP (será el identificador único del centro).';
-    resetGeoStep('Geolocalizar y Registrar');
-
-    cdModal.classList.remove('pointer-events-none', 'opacity-0');
-    cdModal.querySelector('.modal-window').classList.remove('scale-95');
-  });
-
-  const closeModal = () => {
-    cdModal.classList.add('pointer-events-none', 'opacity-0');
-    cdModal.querySelector('.modal-window').classList.add('scale-95');
-    resetGeoStep('Geolocalizar y Registrar');
-  };
-  btnCloseModal.addEventListener('click', closeModal);
-  btnCancelModal.addEventListener('click', closeModal);
-
-  cdForm.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const db = getDatabase();
-    const btnSubmit = document.getElementById('btn-submit-cd');
-    const editingId = window.__editingCdId || null;
-
-    // Paso 2: la dirección ya fue geolocalizada y se muestra el mapa de ajuste.
-    // Al confirmar, se guarda con la posición final del pin (ajustada o no).
-    if (pendingCoords && pendingData) {
-      const finalLatLng = adjustMarker ? adjustMarker.getLatLng() : pendingCoords;
-      const { nombre, direccionCompleta } = pendingData;
-
-      if (editingId) {
-        const idx = db.logisticsCentres.findIndex(c => c.id === editingId);
-        if (idx !== -1) {
-          db.logisticsCentres[idx] = {
-            ...db.logisticsCentres[idx],
-            nombre,
-            direccion: direccionCompleta,
-            lat: finalLatLng.lat,
-            lon: finalLatLng.lng
-          };
-          saveDatabase(db);
-          showAlert('Centro Logístico actualizado con éxito.');
-        }
-      } else {
-        const cdData = {
-          id: pendingData.sapId,
-          nombre: nombre,
-          direccion: direccionCompleta,
-          lat: finalLatLng.lat,
-          lon: finalLatLng.lng
-        };
-        db.logisticsCentres.push(cdData);
-        saveDatabase(db);
-        showAlert('Centro Logístico geolocalizado y registrado con éxito.');
-      }
-
-      window.__editingCdId = null;
-      resetGeoStep('Geolocalizar y Registrar');
-      closeModal();
-      renderLogisticsView(container);
-      return;
-    }
-
-    // Paso 1: validar y geolocalizar la dirección, mostrando el mapa de ajuste.
-    const sapId = document.getElementById('cd-sap').value.toUpperCase().replace(/\s+/g, '');
-    if (!editingId && db.logisticsCentres.some(cd => cd.id === sapId)) {
-      showAlert('El ID de Centro SAP ya está registrado.', 'error');
-      return;
-    }
-
-    btnSubmit.disabled = true;
-    btnSubmit.innerText = 'Geolocalizando dirección...';
-
-    const nombre = document.getElementById('cd-nombre').value;
-    const calleNumero = document.getElementById('cd-direccion').value;
-    const comunaRegion = document.getElementById('cd-comuna').value;
-    const direccionCompleta = `${calleNumero}, ${comunaRegion}`;
-
-    const coords = await geocodeAddress(direccionCompleta);
-
-    pendingCoords = coords;
-    pendingData = { nombre, direccionCompleta, sapId };
-    showAdjustMap(coords);
-
-    btnSubmit.disabled = false;
-    btnSubmit.innerText = 'Confirmar Ubicación y Guardar';
-
-    if (!coords.found) {
-      showAlert('No se encontró la dirección automáticamente. Ajuste el pin en el mapa antes de confirmar.', 'error');
-    }
-  });
-}
-
-function renderCdCards(list, parentContainer, resetGeoStep) {
-  const container = document.getElementById('cd-cards-container');
-  if (!container) return;
-
-  if (list.length === 0) {
-    container.innerHTML = `
+    `}const s=document.getElementById("cd-modal"),E=document.getElementById("btn-create-cd"),z=document.getElementById("btn-close-cd-modal"),P=document.getElementById("btn-cancel-cd-modal"),D=document.getElementById("cd-form");E.addEventListener("click",()=>{D.reset(),window.__editingCdId=null,document.querySelector("#cd-modal h4").textContent="Nuevo Centro Logístico (CD)";const e=document.getElementById("cd-sap");e.value="",e.disabled=!1,document.getElementById("cd-sap-hint").textContent="Ingrese el código de centro SAP (será el identificador único del centro).",a("Geolocalizar y Registrar"),s.classList.remove("pointer-events-none","opacity-0"),s.querySelector(".modal-window").classList.remove("scale-95")});const w=()=>{s.classList.add("pointer-events-none","opacity-0"),s.querySelector(".modal-window").classList.add("scale-95"),a("Geolocalizar y Registrar")};z.addEventListener("click",w),P.addEventListener("click",w),D.addEventListener("submit",async e=>{e.preventDefault();const t=C(),i=document.getElementById("btn-submit-cd"),c=window.__editingCdId||null;if(p&&l){const v=o?o.getLatLng():p,{nombre:j,direccionCompleta:N}=l;if(c){const h=t.logisticsCentres.findIndex(O=>O.id===c);h!==-1&&(t.logisticsCentres[h]={...t.logisticsCentres[h],nombre:j,direccion:N,lat:v.lat,lon:v.lng},A(t),y("Centro Logístico actualizado con éxito."))}else{const h={id:l.sapId,nombre:j,direccion:N,lat:v.lat,lon:v.lng};t.logisticsCentres.push(h),A(t),y("Centro Logístico geolocalizado y registrado con éxito.")}window.__editingCdId=null,a("Geolocalizar y Registrar"),w(),T(x);return}const f=document.getElementById("cd-sap").value.toUpperCase().replace(/\s+/g,"");if(!c&&t.logisticsCentres.some(v=>v.id===f)){y("El ID de Centro SAP ya está registrado.","error");return}i.disabled=!0,i.innerText="Geolocalizando dirección...";const I=document.getElementById("cd-nombre").value,R=document.getElementById("cd-direccion").value,G=document.getElementById("cd-comuna").value,$=`${R}, ${G}`,S=await q($);p=S,l={nombre:I,direccionCompleta:$,sapId:f},r(S),i.disabled=!1,i.innerText="Confirmar Ubicación y Guardar",S.found||y("No se encontró la dirección automáticamente. Ajuste el pin en el mapa antes de confirmar.","error")})}function Z(x,k,b){const p=document.getElementById("cd-cards-container");if(!p)return;if(x.length===0){p.innerHTML=`
       <div class="text-center text-secondary p-xl bg-surface border border-outline-variant rounded">
         No hay centros logísticos registrados.
       </div>
-    `;
-    return;
-  }
-
-  container.innerHTML = '';
-
-  // Agrupar centros por Origen (GRUPOS_ORIGEN), dejando "Sin Origen" al final
-  const grupos = {};
-  list.forEach(cd => {
-    const grupo = cd.origen_grupo || 'Sin Origen';
-    if (!grupos[grupo]) grupos[grupo] = [];
-    grupos[grupo].push(cd);
-  });
-  const ordenGrupos = [...GRUPOS_ORIGEN.filter(g => grupos[g]), ...Object.keys(grupos).filter(g => !GRUPOS_ORIGEN.includes(g))];
-
-  ordenGrupos.forEach(grupo => {
-    const header = document.createElement('div');
-    header.className = 'flex items-center gap-sm mt-sm mb-1 first:mt-0';
-    header.innerHTML = `
+    `;return}p.innerHTML="";const l={};x.forEach(o=>{const a=o.origen_grupo||"Sin Origen";l[a]||(l[a]=[]),l[a].push(o)}),[...M.filter(o=>l[o]),...Object.keys(l).filter(o=>!M.includes(o))].forEach(o=>{const a=document.createElement("div");a.className="flex items-center gap-sm mt-sm mb-1 first:mt-0",a.innerHTML=`
       <span class="material-symbols-outlined text-primary text-[18px]">flag</span>
-      <h4 class="font-label-caps text-label-caps text-secondary uppercase tracking-wider">${escapeHtml(grupo)}</h4>
-      <span class="text-[10px] text-secondary bg-surface-container-high rounded-full px-sm py-0.5">${grupos[grupo].length}</span>
+      <h4 class="font-label-caps text-label-caps text-secondary uppercase tracking-wider">${H(o)}</h4>
+      <span class="text-[10px] text-secondary bg-surface-container-high rounded-full px-sm py-0.5">${l[o].length}</span>
       <div class="flex-1 border-t border-outline-variant"></div>
-    `;
-    container.appendChild(header);
-
-    grupos[grupo].forEach(cd => {
-    const card = document.createElement('div');
-    card.className = 'cd-card bg-surface border border-outline-variant rounded p-md shadow-sm transition-all flex flex-col justify-between hover:border-primary relative';
-    card.id = `cd-card-${cd.id}`;
-    card.style.cursor = 'pointer';
-
-    const hasRealCoords = cd.lat && cd.lon && (cd.lat !== -33.4489 || cd.lon !== -70.6693);
-
-    card.innerHTML = `
+    `,p.appendChild(a),l[o].forEach(r=>{const d=document.createElement("div");d.className="cd-card bg-surface border border-outline-variant rounded p-md shadow-sm transition-all flex flex-col justify-between hover:border-primary relative",d.id=`cd-card-${r.id}`,d.style.cursor="pointer";const n=r.lat&&r.lon&&(r.lat!==-33.4489||r.lon!==-70.6693);d.innerHTML=`
       <div class="flex items-start justify-between gap-md">
         <div>
-          <h4 class="font-headline-sm text-[16px] font-bold text-on-surface mb-xs">${cd.nombre}</h4>
+          <h4 class="font-headline-sm text-[16px] font-bold text-on-surface mb-xs">${r.nombre}</h4>
           <div class="flex items-start gap-xs text-xs text-secondary leading-tight">
             <span class="material-symbols-outlined text-[16px] text-primary mt-0.5">location_on</span>
-            <span>${cd.direccion}</span>
+            <span>${r.direccion}</span>
           </div>
         </div>
         <!-- Código SAP destacado -->
         <div class="text-center bg-primary/5 border-2 border-primary/30 rounded-lg px-md py-sm flex-shrink-0">
           <p class="text-[9px] font-bold tracking-widest text-secondary uppercase">Código SAP</p>
-          <p class="font-data-mono font-extrabold text-primary" style="font-size:26px;line-height:1.1;letter-spacing:0.04em">${cd.id}</p>
+          <p class="font-data-mono font-extrabold text-primary" style="font-size:26px;line-height:1.1;letter-spacing:0.04em">${r.id}</p>
         </div>
       </div>
 
       <div class="flex justify-between items-center text-[10px] text-secondary border-t border-outline-variant pt-sm mt-md">
         <span class="flex items-center gap-xs">
-          <span class="w-1.5 h-1.5 rounded-full ${hasRealCoords ? 'bg-green-600' : 'bg-amber-600'}"></span>
-          ${hasRealCoords ? 'GPS exacto' : 'Coordenadas estimadas'}
+          <span class="w-1.5 h-1.5 rounded-full ${n?"bg-green-600":"bg-amber-600"}"></span>
+          ${n?"GPS exacto":"Coordenadas estimadas"}
         </span>
         <div class="flex items-center gap-xs">
-          <button class="btn-edit-cd flex items-center gap-1 border border-outline-variant hover:border-primary hover:text-primary text-secondary px-sm py-1 rounded cursor-pointer text-[11px] font-bold" data-id="${cd.id}" title="Editar centro">
+          <button class="btn-edit-cd flex items-center gap-1 border border-outline-variant hover:border-primary hover:text-primary text-secondary px-sm py-1 rounded cursor-pointer text-[11px] font-bold" data-id="${r.id}" title="Editar centro">
             <span class="material-symbols-outlined text-[14px]">edit</span> Editar
           </button>
-          <button class="btn-delete-cd flex items-center gap-1 border border-red-200 hover:bg-red-50 text-red-700 px-sm py-1 rounded cursor-pointer text-[11px] font-bold" data-id="${cd.id}" title="Eliminar centro">
+          <button class="btn-delete-cd flex items-center gap-1 border border-red-200 hover:bg-red-50 text-red-700 px-sm py-1 rounded cursor-pointer text-[11px] font-bold" data-id="${r.id}" title="Eliminar centro">
             <span class="material-symbols-outlined text-[14px]">delete</span> Eliminar
           </button>
         </div>
       </div>
-    `;
-    container.appendChild(card);
-    });
-  });
-
-  // --- Editar centro ---
-  container.querySelectorAll('.btn-edit-cd').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const id = e.currentTarget.getAttribute('data-id');
-      const db = getDatabase();
-      const cd = db.logisticsCentres.find(c => c.id === id);
-      if (!cd) return;
-
-      window.__editingCdId = id;
-      document.getElementById('cd-nombre').value = cd.nombre;
-      const sapInput = document.getElementById('cd-sap');
-      sapInput.value = cd.id;
-      sapInput.disabled = true;
-      document.getElementById('cd-sap-hint').textContent = 'El ID Centro SAP no se puede modificar una vez creado.';
-      // Separar dirección "calle, comuna/región" si es posible
-      const partes = (cd.direccion || '').split(',');
-      document.getElementById('cd-direccion').value = partes[0] ? partes[0].trim() : cd.direccion;
-      document.getElementById('cd-comuna').value = partes.slice(1).join(',').trim();
-      document.querySelector('#cd-modal h4').textContent = 'Editar Centro Logístico (CD)';
-      if (typeof resetGeoStep === 'function') resetGeoStep('Geolocalizar y Guardar Cambios');
-
-      const modal = document.getElementById('cd-modal');
-      modal.classList.remove('pointer-events-none', 'opacity-0');
-      modal.querySelector('.modal-window').classList.remove('scale-95');
-    });
-  });
-
-  // --- Eliminar centro (con protección de integridad) ---
-  container.querySelectorAll('.btn-delete-cd').forEach(btn => {
-    btn.addEventListener('click', async (e) => {
-      e.stopPropagation();
-      const id = e.currentTarget.getAttribute('data-id');
-      const db = getDatabase();
-      const cd = db.logisticsCentres.find(c => c.id === id);
-      if (!cd) return;
-
-      // Verificar dependencias: rutas que salen de este centro
-      const rutasAsociadas = (db.routes || []).filter(r => r.origenId === id);
-      if (rutasAsociadas.length > 0) {
-        showAlert(`No se puede eliminar: ${rutasAsociadas.length} ruta(s) dependen de ${cd.nombre}. Elimine o reasigne esas rutas primero.`, 'error');
-        return;
-      }
-      // Verificar transportistas que prestan servicio en este centro
-      const transAsociados = (db.transports || []).filter(t => (t.centrosServicio || []).includes(id));
-      if (transAsociados.length > 0) {
-        showAlert(`No se puede eliminar: ${transAsociados.length} transportista(s) prestan servicio en ${cd.nombre}.`, 'error');
-        return;
-      }
-
-      if (!await confirmar(`¿Eliminar definitivamente el centro "${cd.nombre}" (${cd.id})?`)) return;
-
-      db.logisticsCentres = db.logisticsCentres.filter(c => c.id !== id);
-      saveDatabase(db, { syncOnly: ['logisticsCentres'] });
-      deleteRow('logisticsCentres', id).catch(err => console.error('Error al borrar centro en Supabase:', err.message || err));
-      showAlert(`Centro ${cd.nombre} eliminado.`);
-      renderLogisticsView(parentContainer);
-    });
-  });
-}
+    `,p.appendChild(d)})}),p.querySelectorAll(".btn-edit-cd").forEach(o=>{o.addEventListener("click",a=>{a.stopPropagation();const r=a.currentTarget.getAttribute("data-id"),n=C().logisticsCentres.find(E=>E.id===r);if(!n)return;window.__editingCdId=r,document.getElementById("cd-nombre").value=n.nombre;const u=document.getElementById("cd-sap");u.value=n.id,u.disabled=!0,document.getElementById("cd-sap-hint").textContent="El ID Centro SAP no se puede modificar una vez creado.";const g=(n.direccion||"").split(",");document.getElementById("cd-direccion").value=g[0]?g[0].trim():n.direccion,document.getElementById("cd-comuna").value=g.slice(1).join(",").trim(),document.querySelector("#cd-modal h4").textContent="Editar Centro Logístico (CD)",typeof b=="function"&&b("Geolocalizar y Guardar Cambios");const s=document.getElementById("cd-modal");s.classList.remove("pointer-events-none","opacity-0"),s.querySelector(".modal-window").classList.remove("scale-95")})}),p.querySelectorAll(".btn-delete-cd").forEach(o=>{o.addEventListener("click",async a=>{a.stopPropagation();const r=a.currentTarget.getAttribute("data-id"),d=C(),n=d.logisticsCentres.find(s=>s.id===r);if(!n)return;const u=(d.routes||[]).filter(s=>s.origenId===r);if(u.length>0){y(`No se puede eliminar: ${u.length} ruta(s) dependen de ${n.nombre}. Elimine o reasigne esas rutas primero.`,"error");return}const g=(d.transports||[]).filter(s=>(s.centrosServicio||[]).includes(r));if(g.length>0){y(`No se puede eliminar: ${g.length} transportista(s) prestan servicio en ${n.nombre}.`,"error");return}await V(`¿Eliminar definitivamente el centro "${n.nombre}" (${n.id})?`)&&(d.logisticsCentres=d.logisticsCentres.filter(s=>s.id!==r),A(d,{syncOnly:["logisticsCentres"]}),_("logisticsCentres",r).catch(s=>console.error("Error al borrar centro en Supabase:",s.message||s)),y(`Centro ${n.nombre} eliminado.`),T(k))})})}export{T as renderLogisticsView};

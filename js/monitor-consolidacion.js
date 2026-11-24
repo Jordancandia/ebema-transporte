@@ -1,737 +1,95 @@
-// ============================================================================
-// TORRE DE CONTROL › MONITOR DE PEDIDOS (18-nov-2026, Jordan)
-// (antes Distribución › Monitor de Consolidación, 9-nov-2026)
-// ----------------------------------------------------------------------------
-// Monitor de pedidos de venta de sucursal (despacho / retiro) y su estado.
-// NO consolida camiones: se eliminó todo lo relativo a tipo de camión / capacidad.
-//
-// Condiciones de expedición visibles (cada una con color + icono en el mapa):
-//   · EBE-DESP              EBEMA despacha
-//   · EBE-RET / EBE-DESP    EBEMA retira – EBEMA despacha
-//   · EBE-RET / CLI-RET     EBEMA retira – Cliente retira
-//   · FAB-DESP / EBE-DESP   Fábrica despacha – EBEMA despacha
-//
-// Fuentes (Supabase):
-//   · trc_live 'pedidos_ventas_sucursal'  ← Pedidos_Ventas_Sucursal.csv (Drive)
-//   · trc_live 'entregas_periodo'          ← Entregas_Periodo.csv (entregas en tratamiento ZE*)
-//   · routes / logistics_centres           ← coordenadas de ruta (comuna) y del centro
-//   · maestro_productos                    ← prioridad de pesos
-//   · maestro_obras                        ← georreferencia (auto OSM / manual) y contacto de la obra (18-nov-2026)
-//
-// (18-nov-2026) Flete express = pedido spot (rayo + alerta, primero en la lista). Detalle con fechas, repartos,
-// entregas y flete: traslado (ZFLT), última milla (ZFL0/ZFL1) y sugerido por posición:
-//   $/kg < mínimo → mínimo · $/kg > máximo → máximo · entre ambos → $/kg (máximo 0 = sin tope); total = Σ posiciones.
-//
-// Estado del pedido (sobre posiciones con pendiente, sin MR 60/70/CR que se ocultan):
-//   · bloq    Bloqueado      todas las posiciones pendientes bloqueadas
-//   · sin     Sin entrega    ninguna posición con entrega creada
-//   · parcial Entrega parcial alguna posición con entrega, no todas cubiertas
-//   · lista   Con entrega    todas las posiciones libres cubiertas por entregas
-//   Marcas: vencido (F. entrega < hoy), bloqueo parcial, unidades sin confirmar.
-// ============================================================================
-import { supabase } from './supabase-client.js?v=202611232043';
-import { getDatabase, loadRoutesData, HIST_ALIAS_PREFIJO } from './data.js?v=202611232043';
-import { loadLeaflet } from './utils.js';
-import { filtrarPorCentro, can } from './permisos.js?v=202611232043';
-import { cargarObras, abrirEditorObra, tieneUbicacion, geoDe, badgeGeo } from './maestro-obras.js?v=202611232043';
-
-const CFG = {
-  tiles: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
-  kgUnitSospechoso: 5000,
-};
-const LS_SUC = 'sit_cc_sucursal';
-
-// Condiciones de expedición del monitor (orden = orden de despliegue)
-const CONDS = [
-  { key: 'EBE-DESP',            label: 'EBEMA Despacha',                    corto: 'EBEMA despacha',          color: '#2563eb', bg: '#dbeafe', ink: '#1e40af', icon: 'local_shipping' },
-  { key: 'EBE-RET / EBE-DESP',  label: 'EBEMA Retira – EBEMA Despacha',     corto: 'Retira EBEMA › despacha', color: '#0d9488', bg: '#ccfbf1', ink: '#115e59', icon: 'sync_alt' },
-  { key: 'EBE-RET / CLI-RET',   label: 'EBEMA Retira – Cliente Retira',     corto: 'Retira EBEMA › cliente',  color: '#ea580c', bg: '#ffedd5', ink: '#9a3412', icon: 'storefront' },
-  { key: 'FAB-DESP / EBE-DESP', label: 'Fábrica Despacha – EBEMA Despacha', corto: 'Fábrica › EBEMA despacha', color: '#7c3aed', bg: '#ede9fe', ink: '#5b21b6', icon: 'factory' },
-];
-const normCond = s => String(s || '').toUpperCase().replace(/\s*\/\s*/g, ' / ').replace(/\s+/g, ' ').trim();
-const COND = new Map(CONDS.map(c => [c.key, c]));
-
-const ESTADOS = [
-  { key: 'sin',     label: 'Sin entrega',     icon: 'schedule',     color: '#6b7280', bg: '#f3f4f6', ink: '#374151' },
-  { key: 'parcial', label: 'Entrega parcial', icon: 'incomplete_circle', color: '#f59e0b', bg: '#fef3c7', ink: '#92400e' },
-  { key: 'lista',   label: 'Con entrega',     icon: 'task_alt',     color: '#16a34a', bg: '#dcfce7', ink: '#166534' },
-  { key: 'bloq',    label: 'Bloqueado',       icon: 'block',        color: '#dc2626', bg: '#fee2e2', ink: '#991b1b' },
-];
-const EST = new Map(ESTADOS.map(e => [e.key, e]));
-const MR_OCULTO = /^(60|70|CR)\b/i;   // rechazo del cliente → se oculta (10-nov-2026)
-
-/* ════════════════════════════════════════════════════════════════════════
-   ESTADO
-   ════════════════════════════════════════════════════════════════════════ */
-const S = {
-  raw: null, sucursal: '', centro: null,
-  pedidos: [], byId: new Map(),
-  cond: new Set(CONDS.map(c => c.key)),
-  fEstado: 'todos', soloVencidos: false, soloExpress: false, soloSinGeo: false, q: '',
-  sel: null, editGeo: false,
-  orden: { col: 'prio', dir: 1 },
-};
-let root = null, map = null, capaPedidos = null, capaTmp = null, hubMarker = null;
-const marcadores = new Map(), firmas = new Map(), tmpMarkers = new Map();
-
-/* ════════════════════════════════════════════════════════════════════════
-   UTILIDADES
-   ════════════════════════════════════════════════════════════════════════ */
-const $ = s => root.querySelector(s);
-const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const num = v => { const s = String(v ?? '').trim(); if (!s) return 0; const t = s.includes(',') ? s.replace(/\./g, '').replace(',', '.') : s; const x = parseFloat(t); return Number.isFinite(x) ? x : 0; };
-const z = v => String(v ?? '').trim().replace(/^0+(?=\d)/, '');
-const fT = (n, d = 2) => (Number.isFinite(n) ? n : 0).toLocaleString('es-CL', { minimumFractionDigits: d, maximumFractionDigits: d });
-const fP = n => `${Math.round((Number.isFinite(n) ? n : 0) * 100)}%`;
-const fechaKey = s => { const m = String(s || '').match(/^(\d{2})[.\-/](\d{2})[.\-/](\d{4})$/); return m ? `${m[3]}-${m[2]}-${m[1]}` : ''; };
-const fechaTxt = k => k ? `${k.slice(8, 10)}-${k.slice(5, 7)}-${k.slice(0, 4)}` : '—';
-const hoyKey = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
-const diasHasta = k => { if (!k) return null; const a = new Date(k + 'T00:00:00'), b = new Date(hoyKey() + 'T00:00:00'); return Math.round((a - b) / 86400000); };
-const tieneGeo = p => Number.isFinite(p.latitud) && Number.isFinite(p.longitud);
-const hash = s => { let h = 2166136261; for (const c of String(s)) { h ^= c.charCodeAt(0); h = Math.imul(h, 16777619); } return h >>> 0; };
-const ms = (ic, extra = '') => `<span class="material-symbols-outlined"${extra}>${ic}</span>`;
-const fCLP = n => '$' + Math.round(Number.isFinite(n) ? n : 0).toLocaleString('es-CL');
-const RAYO = '<span class="cc-rayo" title="Flete express · pedido spot">' + '<span class="material-symbols-outlined">bolt</span></span>';
-
-/**
- * Flete sugerido por posición (18-nov-2026, Jordan):
- *   $ por kilo < mínimo → mínimo · $ por kilo > máximo → máximo · entre ambos → $ por kilo.
- *   Máximo = 0 se toma como "sin tope" (no lleva el sugerido a 0).
- */
-function fleteSugerido(min, max, pk) {
-  if (pk < min) return min;
-  if (max > 0 && pk > max) return max;
-  return pk;
-}
-
-async function leerPaginado(fn) {
-  const out = [];
-  for (let desde = 0; ; desde += 1000) {
-    const { data, error } = await fn().range(desde, desde + 999);
-    if (error) throw new Error(error.message);
-    out.push(...(data || []));
-    if (!data || data.length < 1000) break;
-  }
-  return out;
-}
-
-/* ════════════════════════════════════════════════════════════════════════
-   CARGA DE DATOS
-   ════════════════════════════════════════════════════════════════════════ */
-async function cargarFuentes() {
-  await loadRoutesData();
-  const [suc, ent] = await Promise.all([
-    leerPaginado(() => supabase.from('trc_live').select('data,cargado_en').eq('fuente', 'pedidos_ventas_sucursal').order('fila')),
-    leerPaginado(() => supabase.from('trc_live').select('data').eq('fuente', 'entregas_periodo').order('fila')),
-  ]);
-  // Sólo las 4 condiciones del monitor
-  const filas = suc.map(r => r.data).filter(d => COND.has(normCond(d?.cond_expedicion)));
-  const mats = [...new Set(filas.map(d => z(d.material)).filter(Boolean))];
-  const maestro = new Map();
-  for (let i = 0; i < mats.length; i += 300) {
-    const { data, error } = await supabase.from('maestro_productos').select('id_material,peso_bruto').in('id_material', mats.slice(i, i + 300));
-    if (error) break;
-    (data || []).forEach(m => { if (+m.peso_bruto > 0) maestro.set(z(m.id_material), +m.peso_bruto); });
-  }
-  const cargado = suc.reduce((m, r) => (r.cargado_en && r.cargado_en > m ? r.cargado_en : m), '');
-  // (18-nov-2026) Maestro de obras: georreferencia y contacto
-  let geo = new Map(), geoOk = true;
-  try { geo = await cargarObras(filas.map(d => d.id_obra)); } catch (_e) { geoOk = false; }
-  S.raw = { suc: filtrarPorCentro(filas, r => z(r.ofvta)), ent: ent.map(r => r.data), geo, geoOk, maestro, cargado };
-}
-
-function indiceRutas() {
-  const db = getDatabase();
-  const idx = new Map();
-  (db.routes || []).forEach(r => { if (r.codigo) idx.set(String(r.codigo).trim().toUpperCase(), r); });
-  return code => {
-    const c = String(code || '').trim().toUpperCase(); if (!c) return null;
-    let r = idx.get(c);
-    if (!r) { const al = HIST_ALIAS_PREFIJO[c.slice(0, 3)]; if (al) r = idx.get(al + c.slice(3)); }
-    return r || null;
-  };
-}
-
-function construirPedidos(sucursal) {
-  const { suc, ent, geo, maestro } = S.raw;
-  const rutaDe = indiceRutas();
-  const entPos = new Map();
-  ent.forEach(d => {
-    if (!/^ZE/i.test(String(d.tipo_entrega || ''))) return;
-    const k = z(d.documento_precedente_doc_modelo) + '|' + z(d.posicion_modelo);
-    const e = entPos.get(k) || { cant: 0, entregas: new Set() };
-    e.cant += num(d.cantidad_entregada); e.entregas.add(z(d.entrega));
-    entPos.set(k, e);
-  });
-  const peds = new Map();
-  suc.forEach(d => {
-    if (z(d.ofvta) !== sucursal) return;
-    const doc = z(d.doc_ventas); if (!doc) return;
-    const mr = String(d.motivo_rechazo || d.mr || '').trim();
-    if (MR_OCULTO.test(mr)) return;               // posición rechazada por el cliente: no se muestra
-    let p = peds.get(doc);
-    if (!p) {
-      const ruta = rutaDe(d.ruta);
-      const comunaDesc = String(d.ruta_desc || '').split('/').slice(1).join('/').trim();
-      p = {
-        id_pedido: doc, id_obra: z(d.id_obra), cliente: String(d.nombre_cliente || '').trim(), solic: z(d.solic),
-        cond: normCond(d.cond_expedicion), clase: d.clvt || '',
-        rutaCodigo: ruta ? String(ruta.codigo).toUpperCase() : String(d.ruta || '').trim().toUpperCase(), rutaDesc: d.ruta_desc || '',
-        comuna: (ruta && ruta.comuna) || comunaDesc || (d.ruta ? String(d.ruta) : 'Sin ruta'),
-        direccion: String(d.direccion_obra || '').trim(), interlocutor: d.interlocutor || '', creado: fechaKey(d.creado_el),
-        latitud: null, longitud: null, geoExacta: false, _rutaObj: ruta, posiciones: [],
-      };
-      peds.set(doc, p);
-    }
-    const cant = num(d.cantidad_de_pedido), pend = num(d.pendiente_entrega), kgPos = num(d.peso_bruto);
-    const um = String(d.um || '').trim().toUpperCase(), mat = z(d.material);
-    const kgUnit = um === 'KG' ? 1 : (maestro.get(mat) || (cant > 0 ? kgPos / cant : 0));
-    const bloqTxt = [mr, d.dcto_vendedor].map(x => String(x || '').trim()).filter(Boolean).join(' / ');
-    const bloq = String(d.bloqueada || '').trim().toUpperCase() === 'X' || !!bloqTxt;
-    const posK = z(d.pos);
-    const rep = { reparto: z(d.reparto) || '—', fecha: fechaKey(d.fe_entrega), confirmada: num(d.reparto_confirmado || d.ctd_confirmada), pendiente: pend, entregado: num(d.cantidad_entrg) };
-    // (18-nov-2026) Una posición puede venir en varias filas (repartos SAP): se agrupa por posición.
-    let x = p.posiciones.find(q => q.pos === posK);
-    if (!x) {
-      const e = entPos.get(doc + '|' + posK);
-      x = {
-        pos: posK, sku: mat, descripcion: d.denominacion_de_posicion || '', um, cantidad: cant, confirmada: 0,
-        entregado: 0, pendiente: 0, kgUnit: kgUnit > CFG.kgUnitSospechoso ? 0 : kgUnit,
-        bloqueo: bloq ? (bloqTxt || 'X') : null, fecha: '', repartos: [],
-        entTrat: e ? e.cant : 0, entregas: e ? [...e.entregas] : [],
-        // Fletes (vienen repetidos en cada reparto: se toman una vez por posición)
-        fleteTraslado: num(d.flete_zflt), fleteUltMilla: num(d.flete_zfl0_zfl1),
-        fleteMin: num(d.flete_minimo), fleteMax: num(d.flete_maximo), fletePk: num(d.flete_peso_kilo),
-        express: String(d.flete_express || '').trim().toUpperCase() === 'X',
-      };
-      x.fleteSug = fleteSugerido(x.fleteMin, x.fleteMax, x.fletePk);
-      p.posiciones.push(x);
-    }
-    x.repartos.push(rep);
-    x.confirmada += rep.confirmada; x.entregado += rep.entregado; x.pendiente += rep.pendiente;
-    if (pend > 0 && rep.fecha && (!x.fecha || rep.fecha < x.fecha)) x.fecha = rep.fecha;
-    if (!x.fecha && rep.fecha) x.fecha = rep.fecha;
-  });
-  const lista = [...peds.values()].filter(p => p.posiciones.some(x => x.pendiente > 0));
-  lista.forEach(p => {
-    const g = geo.get(p.id_obra);
-    p.obra = g || null;
-    if (tieneUbicacion(g)) { p.latitud = +g.lat; p.longitud = +g.lon; p.geoExacta = true; }
-    else if (p._rutaObj && Number.isFinite(+p._rutaObj.lat) && Number.isFinite(+p._rutaObj.lon) && +p._rutaObj.lat !== 0) {
-      const h = hash(p.id_pedido), ang = (h % 360) * Math.PI / 180, rad = 0.0012 + ((h >>> 9) % 100) / 100 * 0.0045;
-      p.latitud = +p._rutaObj.lat + rad * Math.sin(ang); p.longitud = +p._rutaObj.lon + rad * 1.2 * Math.cos(ang);
-    }
-    evaluar(p);
-  });
-  return lista;
-}
-
-/* ════════════════════════════════════════════════════════════════════════
-   ESTADO DEL PEDIDO
-   ════════════════════════════════════════════════════════════════════════ */
-function evaluar(p) {
-  const act = p.posiciones.filter(x => x.pendiente > 0);
-  const lib = act.filter(x => !x.bloqueo), bloq = act.filter(x => x.bloqueo);
-  const cubierta = x => x.entTrat + 1e-6 >= x.pendiente;
-  const conEnt = lib.filter(x => x.entTrat > 0);
-  const kgP = lib.reduce((a, x) => a + x.pendiente * x.kgUnit, 0);
-  const kgOk = lib.reduce((a, x) => a + Math.min(x.entTrat, x.pendiente) * x.kgUnit, 0);
-  p._ton = kgP / 1000;
-  p._avance = !lib.length ? 0 : kgP > 0 ? kgOk / kgP : lib.filter(cubierta).length / lib.length;
-  p._nPos = act.length; p._nLib = lib.length; p._nBloq = bloq.length; p._nCub = lib.filter(cubierta).length;
-  p._entregas = [...new Set(lib.flatMap(x => x.entregas))];
-  p._estado = !lib.length ? 'bloq' : lib.every(cubierta) ? 'lista' : (conEnt.length || lib.some(x => x.entregado > 0)) ? 'parcial' : 'sin';
-  const fechas = (lib.length ? lib : act).map(x => x.fecha).filter(Boolean).sort();
-  p.fecha = fechas[0] || '';
-  p._dias = diasHasta(p.fecha);
-  p._vencido = p._estado !== 'lista' && p._dias !== null && p._dias < 0;
-  const marcas = [];
-  if (p._vencido) marcas.push({ t: 'rd', txt: `Vencido ${-p._dias} d` });
-  if (p._estado !== 'bloq' && bloq.length) marcas.push({ t: 'am', txt: `Bloqueo parcial · ${bloq.length} pos.` });
-  if (lib.some(x => x.confirmada + 1e-6 < x.cantidad)) marcas.push({ t: 'am', txt: 'Unidades sin confirmar' });
-  p._sinGeo = !p.geoExacta;
-  if (p._sinGeo) marcas.push({ t: 'rd', txt: p.obra && p.obra.geo_estado === 'PENDIENTE' ? 'Georref. pendiente' : 'Falta georreferencia' });
-  else if (p.obra && p.obra.geo_estado === 'AUTO_CALLE') marcas.push({ t: 'am', txt: 'Ubicación calle (aprox.)' });
-  p._marcas = marcas;
-  p.codigo_bloqueo = [...new Set(bloq.map(x => x.bloqueo))].join(', ');
-  // Flete express (pedido spot): alguna posición con X → se ve con rayo y va primero
-  p._express = p.posiciones.some(x => x.express);
-  if (p._express) marcas.unshift({ t: 'xp', txt: 'Express · spot' });
-  // Fletes del pedido: todas las posiciones visibles (incluye bloqueo MR 79 por liberar; 60/70/CR ya se ocultaron)
-  const fl = p.posiciones;
-  const s = k => fl.reduce((a, x) => a + (x[k] || 0), 0);
-  p._flete = { min: s('fleteMin'), max: s('fleteMax'), pk: s('fletePk'), sug: s('fleteSug'), traslado: s('fleteTraslado'), ultMilla: s('fleteUltMilla') };
-  p._flete.cobrado = p._flete.traslado + p._flete.ultMilla;
-  // Prioridad de atención: express, bloqueado, vencido, sin entrega, parcial
-  p._prio = (p._express ? 0 : 1) * 1e8 + (p._estado === 'bloq' ? 0 : p._vencido ? 1 : p._estado === 'sin' ? 2 : p._estado === 'parcial' ? 3 : 4) * 1e6 + (p._dias ?? 9999);
-}
-
-const visible = p => S.cond.has(p.cond) && (S.fEstado === 'todos' || p._estado === S.fEstado) && (!S.soloVencidos || p._vencido) && (!S.soloExpress || p._express) && (!S.soloSinGeo || p._sinGeo);
-function coincide(p) {
-  const q = S.q.trim().toLowerCase();
-  return !q || [p.id_pedido, p.id_obra, p.cliente, p.comuna, p.direccion, p.rutaCodigo, ...p._entregas].some(x => String(x || '').toLowerCase().includes(q));
-}
-const filtrados = () => S.pedidos.filter(p => visible(p) && coincide(p));
-
-function setSucursal(suc) {
-  S.sucursal = suc;
-  try { localStorage.setItem(LS_SUC, suc); } catch (_e) { /* */ }
-  const db = getDatabase();
-  const lc = (db.logisticsCentres || []).find(c => String(c.id) === suc);
-  S.centro = { id: suc, nombre: lc ? lc.nombre : `Centro ${suc}`, lat: lc ? +lc.lat : -33.45, lon: lc ? +lc.lon : -70.66 };
-  S.pedidos = construirPedidos(suc);
-  S.byId = new Map(S.pedidos.map(p => [p.id_pedido, p]));
-  S.sel = null;
-  reiniciarMapa();
-  renderSucursales(); renderTodo(true);
-  const nx = S.pedidos.filter(p => p._express && S.cond.has(p.cond)).length;
-  if (nx) toast('xp', `${nx} pedido${nx > 1 ? 's' : ''} express (spot) en ${S.centro.nombre}`, 'Flete express: revisar y coordinar a la brevedad. Filtre con la tarjeta Express.');
-}
-
-/* ════════════════════════════════════════════════════════════════════════
-   MAPA
-   ════════════════════════════════════════════════════════════════════════ */
-function crearMapa() {
-  map = L.map($('#cc-map'), { zoomControl: true }).setView([S.centro.lat, S.centro.lon], 11);
-  L.tileLayer(CFG.tiles, { maxZoom: 19, attribution: '&copy; OpenStreetMap' }).addTo(map);
-  capaPedidos = L.layerGroup().addTo(map);
-  capaTmp = L.layerGroup().addTo(map);
-}
-function reiniciarMapa() {
-  if (!map) crearMapa();
-  capaPedidos.clearLayers(); capaTmp.clearLayers(); marcadores.clear(); firmas.clear(); tmpMarkers.clear();
-  if (hubMarker) hubMarker.remove();
-  hubMarker = L.marker([S.centro.lat, S.centro.lon], {
-    icon: L.divIcon({ className: 'cc-pin-wrap', html: `<div class="cc-hub">${ms('warehouse')}</div>`, iconSize: [36, 36], iconAnchor: [18, 18] }), zIndexOffset: 2000, keyboard: false,
-  }).addTo(map).bindTooltip(`<div class="cc-tt-h">${esc(S.centro.nombre)}</div><div class="cc-tt-r">Centro ${esc(S.centro.id)}</div>`, { className: 'cc-tt', direction: 'top', offset: [0, -16] });
-  if (S.editGeo) { S.editGeo = false; $('#cc-btn-geo').classList.remove('is-on'); }
-  setTimeout(() => { map.invalidateSize(); ajustarVista(); }, 0);
-}
-function ajustarVista() {
-  const pts = filtrados().filter(tieneGeo).map(p => [p.latitud, p.longitud]);
-  pts.push([S.centro.lat, S.centro.lon]);
-  if (pts.length > 1) map.fitBounds(pts, { padding: [30, 30], maxZoom: 13 }); else map.setView(pts[0], 11);
-}
-function iconoPedido(p) {
-  const c = COND.get(p.cond), e = EST.get(p._estado), sel = S.sel === p.id_pedido;
-  const cls = `cc-pin${sel ? ' sel' : ''}${p.geoExacta ? '' : ' aprox nogeo'}${S.editGeo && !p.geoExacta ? ' drag' : ''}${p._vencido ? ' venc' : ''}${p._express ? ' xp' : ''}`;
-  const html = `<div class="${cls}" style="--pc:${c.color}" data-id="${esc(p.id_pedido)}">${ms(c.icon)}<i class="cc-pin-st" style="background:${e.color}" title="${esc(e.label)}"></i>${p._express ? `<b class="cc-pin-xp">${ms('bolt')}</b>` : ''}${p._sinGeo ? `<b class="cc-pin-ng" title="Falta georreferencia">${ms('question_mark')}</b>` : ''}</div>`;
-  return { firma: html, icon: L.divIcon({ className: 'cc-pin-wrap', html, iconSize: [30, 30], iconAnchor: [15, 15] }) };
-}
-function tooltipPedido(p) {
-  const c = COND.get(p.cond), e = EST.get(p._estado);
-  return `<div class="cc-tt-h"><span class="cc-ci" style="background:${c.color}">${ms(c.icon)}</span><span class="mono">${esc(p.id_pedido)}</span>${p._express ? RAYO : ''}<span class="cc-est-pill" style="background:${e.bg};color:${e.ink}">${esc(e.label)}</span></div>
-    <div class="cc-tt-r"><b>${esc(p.cliente)}</b><br>${esc(c.label)}<br>${esc(p.direccion || '—')} · ${esc(p.comuna)}<br>F. entrega <b>${fechaTxt(p.fecha)}</b> · ${p._nCub}/${p._nLib} pos. con entrega · ${fT(p._ton, 1)} t</div>
-    ${p._marcas.length ? `<div class="cc-tt-r" style="margin-top:3px">${p._marcas.map(m => `<span class="cc-tag ${m.t}">${esc(m.txt)}</span>`).join(' ')}</div>` : ''}
-    <div class="cc-tt-f">${S.editGeo && !p.geoExacta ? 'Arrastre al punto de la obra y guarde' : 'Clic para ver el detalle'}</div>`;
-}
-function renderMarcadores() {
-  const vis = new Set(filtrados().map(p => p.id_pedido));
-  S.pedidos.forEach(p => {
-    const id = p.id_pedido;
-    let mk = marcadores.get(id);
-    if (!tieneGeo(p)) { if (mk) { capaPedidos.removeLayer(mk); marcadores.delete(id); firmas.delete(id); } return; }
-    const { firma, icon } = iconoPedido(p);
-    if (!mk) {
-      mk = L.marker([p.latitud, p.longitud], { icon, riseOnHover: true, draggable: false });
-      mk.on('click', () => { if (S.editGeo && !p.geoExacta) { mk.openPopup(); return; } seleccionar(id, { desdeMapa: true }); abrirDetalle(id); });
-      mk.on('mouseover', () => hlFila(id, true));
-      mk.on('mouseout', () => hlFila(id, false));
-      mk.on('dragend', () => { mk._movido = true; mk.openPopup(); });
-      mk.bindTooltip(() => tooltipPedido(p), { className: 'cc-tt', direction: 'top', offset: [0, -14] });
-      marcadores.set(id, mk); firmas.set(id, firma);
-    } else if (firmas.get(id) !== firma) { mk.setIcon(icon); firmas.set(id, firma); }
-    const arr = S.editGeo && !p.geoExacta;
-    if (arr && !mk.getPopup()) mk.bindPopup(() => popupGeo(p, mk), { minWidth: 240 });
-    if (!arr && mk.getPopup()) mk.unbindPopup();
-    if (mk.dragging) { if (arr) mk.dragging.enable(); else mk.dragging.disable(); }
-    mk.setZIndexOffset(S.sel === id ? 1500 : p._express ? 900 : p._estado === 'bloq' || p._vencido ? 300 : 0);
-    const v = vis.has(id);
-    if (v && !capaPedidos.hasLayer(mk)) capaPedidos.addLayer(mk);
-    if (!v && capaPedidos.hasLayer(mk)) capaPedidos.removeLayer(mk);
-  });
-}
-function pinDe(id) { const mk = marcadores.get(id); return mk && mk.getElement() ? mk.getElement().querySelector('.cc-pin') : null; }
-function hlPin(id, on) { const el = pinDe(id); if (el) el.classList.toggle('hl', on); }
-function hlFila(id, on) { root.querySelectorAll(`[data-id="${CSS.escape(id)}"]`).forEach(el => { if (!el.classList.contains('cc-pin')) el.classList.toggle('is-hl', on); }); }
-function seleccionar(id, { desdeMapa = false, sinScroll = false } = {}) {
-  S.sel = id;
-  renderMarcadores(); renderLista(); renderTabla();
-  if (!S.sel) return;
-  const p = S.byId.get(id);
-  if (!desdeMapa && tieneGeo(p)) {
-    map.setView([p.latitud, p.longitud], Math.max(map.getZoom(), 14));
-    setTimeout(() => { const mk = marcadores.get(id); if (mk) mk.openTooltip(); }, 260);
-  }
-  if (sinScroll) return;
-  const tr = root.querySelector(`tr[data-id="${CSS.escape(id)}"]`); if (tr) tr.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-  const li = root.querySelector(`.cc-li[data-id="${CSS.escape(id)}"]`); if (li) li.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-}
-
-/* ── Georreferenciación de obras (obras_georef) ── */
-const obrasPendientes = () => { const m = new Map(); filtrados().forEach(p => { if (!p.geoExacta && p.id_obra && !m.has(p.id_obra)) m.set(p.id_obra, p); }); return [...m.values()]; };
-async function guardarCoordenadasObra(idObra, lat, lng) {
-  const payload = { lat: +(+lat).toFixed(6), lon: +(+lng).toFixed(6), geo_estado: 'MANUAL', geo_detalle: 'Ubicada a mano en el Monitor de Pedidos' };
-  const { data, error } = await supabase.from('maestro_obras').update(payload).eq('id_obra', idObra).select('*').maybeSingle();
-  if (error) throw new Error(error.message);
-  if (!data) throw new Error('La obra aún no está en el maestro (se sincroniza cada 10 min) o su perfil no puede editarla.');
-  return data;
-}
-/** Aplica una obra guardada (editor o arrastre) a todos los pedidos que la usan. */
-function aplicarObra(o) {
-  if (!o) return;
-  S.raw.geo.set(z(o.id_obra), o);
-  S.pedidos.forEach(x => {
-    if (x.id_obra !== z(o.id_obra)) return;
-    x.obra = o;
-    if (tieneUbicacion(o)) { x.latitud = +o.lat; x.longitud = +o.lon; x.geoExacta = true; }
-    evaluar(x);
-    const m2 = marcadores.get(x.id_pedido); if (m2 && tieneGeo(x)) m2.setLatLng([x.latitud, x.longitud]);
-  });
-  renderTodo();
-}
-async function editarObra(p) {
-  const o = await abrirEditorObra(p.id_obra, {
-    base: { direccion: p.direccion, comuna: p.comuna, nombre_cliente: p.cliente, id_cliente: p.solic, ruta: p.rutaCodigo },
-    centro: tieneGeo(p) ? { lat: p.latitud, lon: p.longitud } : { lat: S.centro.lat, lon: S.centro.lon },
-  });
-  if (o) { aplicarObra(o); toast('ok', `Obra ${o.id_obra} guardada`, tieneUbicacion(o) ? 'Los pedidos de esta obra (actuales y futuros) toman esta ubicación.' : 'Datos de contacto guardados.'); }
-  return o;
-}
-function activarEdicion(on) {
-  if (on && !S.raw.geoOk) { toast('err', 'Georreferenciación no disponible', 'No se pudo leer el maestro de obras.'); return; }
-  if (on && !can('editar')) { toast('warn', 'Sin permiso de edición', 'Su perfil no puede guardar coordenadas de obra.'); return; }
-  S.editGeo = on;
-  $('#cc-btn-geo').classList.toggle('is-on', on);
-  capaTmp.clearLayers(); tmpMarkers.clear();
-  if (!on) S.pedidos.forEach(p => { const mk = marcadores.get(p.id_pedido); if (mk && tieneGeo(p)) { mk._movido = false; mk.closePopup(); mk.setLatLng([p.latitud, p.longitud]); } });
-  if (on) {
-    obrasPendientes().filter(p => !tieneGeo(p)).forEach((p, i) => {
-      const mk = L.marker([S.centro.lat + .012 * Math.cos(i * 0.9), S.centro.lon + .015 * Math.sin(i * 0.9)], {
-        draggable: true, autoPan: true, zIndexOffset: 3000,
-        icon: L.divIcon({ className: 'cc-pin-wrap', html: `<div class="cc-pin edit">${ms('location_on')}</div>`, iconSize: [30, 30], iconAnchor: [15, 15] }),
-      });
-      mk.bindPopup(() => popupGeo(p, mk), { minWidth: 240 });
-      mk.on('dragend', () => { mk._movido = true; mk.openPopup(); });
-      mk.addTo(capaTmp); tmpMarkers.set(p.id_obra, mk);
-    });
-  }
-  hint(); renderMarcadores();
-}
-function popupGeo(p, mk) {
-  const ped = S.pedidos.filter(x => x.id_obra === p.id_obra).map(x => x.id_pedido);
-  const { lat, lng } = mk.getLatLng();
-  const d = document.createElement('div');
-  d.className = 'cc-geo-pop';
-  d.innerHTML = `<div><b>Obra ${esc(p.id_obra)}</b> <span class="cc-tag am">${tieneGeo(p) ? 'Ubicación aprox.' : 'Sin ubicación'}</span></div>
-    <div style="font-size:12px;color:#5c5f61">${esc(p.cliente)}<br>${esc(p.direccion || '—')}<br>${esc(p.comuna)} · pedidos <span class="mono">${ped.map(esc).join(', ')}</span></div>
-    <div class="mono">${lat.toFixed(6)}, ${lng.toFixed(6)}</div>
-    <div style="font-size:11.5px;color:#5c5f61">${mk._movido ? 'Verifique el punto y guarde.' : 'Arrastre el marcador al acceso de la obra.'}</div>`;
-  const b = document.createElement('button');
-  b.className = 'cc-btn pri sm'; b.innerHTML = `${ms('save')}Guardar coordenadas`;
-  b.disabled = !mk._movido;
-  b.onclick = async () => {
-    b.disabled = true; b.textContent = 'Guardando…';
-    const pos = mk.getLatLng();
-    try {
-      const r = await guardarCoordenadasObra(p.id_obra, pos.lat, pos.lng);
-      aplicarObra(r);
-      if (tmpMarkers.has(p.id_obra)) { capaTmp.removeLayer(tmpMarkers.get(p.id_obra)); tmpMarkers.delete(p.id_obra); }
-      ped.forEach(id => { const m2 = marcadores.get(id); if (m2) { m2.closePopup(); m2.setLatLng([r.lat, r.lon]); } });
-      mk.closePopup();
-      toast('ok', `Obra ${p.id_obra} georreferenciada`, `${ped.length} pedido${ped.length > 1 ? 's' : ''} con ubicación exacta.`);
-      renderTodo();
-    } catch (err) {
-      b.disabled = false; b.innerHTML = `${ms('save')}Reintentar`;
-      toast('err', 'No se pudo guardar', err.message || String(err));
-    }
-  };
-  d.appendChild(b);
-  return d;
-}
-function hint() {
-  const h = $('#cc-maphint');
-  if (S.editGeo) { h.innerHTML = `${ms('edit_location_alt')}Modo edición: arrastre los pines de borde punteado (${obrasPendientes().length} obras) y guarde`; h.classList.add('show'); }
-  else h.classList.remove('show');
-}
-
-/* ════════════════════════════════════════════════════════════════════════
-   RENDER UI
-   ════════════════════════════════════════════════════════════════════════ */
-function renderSucursales() {
-  const db = getDatabase();
-  const sucs = [...new Set(S.raw.suc.map(d => z(d.ofvta)).filter(Boolean))].sort();
-  $('#cc-suc').innerHTML = sucs.map(s => {
-    const lc = (db.logisticsCentres || []).find(c => String(c.id) === s);
-    return `<option value="${esc(s)}"${s === S.sucursal ? ' selected' : ''}>${esc(s)} · ${esc(lc ? lc.nombre : '')}</option>`;
-  }).join('');
-  $('#cc-centro-lbl').textContent = `Torre de Control · ${S.centro.nombre}`;
-}
-/** KPIs por estado (sobre las condiciones activas y la búsqueda). Clic = filtro. */
-function renderKpis() {
-  const base = S.pedidos.filter(p => S.cond.has(p.cond) && coincide(p));
-  const n = k => base.filter(p => p._estado === k).length;
-  const venc = base.filter(p => p._vencido).length;
-  const tarj = [
-    { k: 'todos', label: 'Pedidos', icon: 'receipt_long', v: base.length, color: '#191c1d', sub: `${fT(base.reduce((a, p) => a + p._ton, 0), 1)} t pendientes` },
-    ...ESTADOS.map(e => ({ k: e.key, label: e.label, icon: e.icon, v: n(e.key), color: e.color, sub: base.length ? fP(n(e.key) / base.length) : '0%' })),
-  ];
-  $('#cc-kpis').innerHTML = tarj.map(t => `<button class="cc-kpi${S.fEstado === t.k ? ' is-on' : ''}" data-est="${t.k}" style="--kc:${t.color}">
-      <span class="cc-kpi-ic">${ms(t.icon)}</span><span class="cc-kpi-b"><span class="cc-kpi-l">${esc(t.label)}</span><b class="num">${t.v}</b><span class="cc-kpi-s">${esc(t.sub)}</span></span></button>`).join('') +
-    `<button class="cc-kpi xp${S.soloExpress ? ' is-on' : ''}${base.some(p => p._express) ? ' alerta' : ''}" data-xp="1" style="--kc:#ca8a04"><span class="cc-kpi-ic">${ms('bolt')}</span><span class="cc-kpi-b"><span class="cc-kpi-l">Express (spot)</span><b class="num">${base.filter(p => p._express).length}</b><span class="cc-kpi-s">Atender a la brevedad</span></span></button>` +
-    `<button class="cc-kpi ng${S.soloSinGeo ? ' is-on' : ''}" data-ng="1" style="--kc:#7c2d12"><span class="cc-kpi-ic">${ms('wrong_location')}</span><span class="cc-kpi-b"><span class="cc-kpi-l">Sin georreferencia</span><b class="num">${base.filter(p => p._sinGeo).length}</b><span class="cc-kpi-s">Ubicar obra</span></span></button>` +
-    `<button class="cc-kpi venc${S.soloVencidos ? ' is-on' : ''}" data-venc="1" style="--kc:#b91c1c"><span class="cc-kpi-ic">${ms('event_busy')}</span><span class="cc-kpi-b"><span class="cc-kpi-l">Vencidos</span><b class="num">${venc}</b><span class="cc-kpi-s">F. entrega &lt; hoy</span></span></button>`;
-}
-function renderCond() {
-  const base = S.pedidos.filter(coincide);
-  $('#cc-cond').innerHTML = CONDS.map(c => {
-    const n = base.filter(p => p.cond === c.key).length;
-    return `<button class="cc-cchip${S.cond.has(c.key) ? ' is-on' : ''}" data-cond="${esc(c.key)}" style="--cc:${c.color};--cb:${c.bg};--ci:${c.ink}" title="${esc(c.key)}">
-      <span class="cc-ci" style="background:${c.color}">${ms(c.icon)}</span>${esc(c.label)}<span class="cc-cnt">${n}</span></button>`;
-  }).join('');
-  $('#cc-legend').innerHTML = CONDS.map(c => `<div><span class="cc-ci sm" style="background:${c.color}">${ms(c.icon)}</span>${esc(c.corto)}</div>`).join('') +
-    '<div class="cc-legend-sep"></div>' + ESTADOS.map(e => `<div><i style="background:${e.color}"></i>${esc(e.label)}</div>`).join('') +
-    '<div><i class="dash"></i>Ubicación aprox. (ruta)</div>';
-}
-/** Panel lateral: matriz condición × estado + lista de pedidos priorizada. */
-function renderLista() {
-  let h = '';
-  const lista = filtrados().sort((a, b) => a._prio - b._prio).slice(0, 150);
-  h += `<div class="cc-sec-t"><span>Pedidos por atender</span><span>${filtrados().length}</span></div>`;
-  if (!lista.length) h += `<div class="cc-empty">${ms('inbox')}Sin pedidos para los filtros actuales.</div>`;
-  h += lista.map(p => {
-    const c = COND.get(p.cond), e = EST.get(p._estado);
-    const f = p._dias === null ? 'Sin fecha' : p._dias < 0 ? `Vencido hace ${-p._dias} d` : p._dias === 0 ? 'Entrega hoy' : p._dias === 1 ? 'Entrega mañana' : `En ${p._dias} días`;
-    return `<div class="cc-li${S.sel === p.id_pedido ? ' is-sel' : ''}${p._express ? ' xp' : ''}" data-id="${esc(p.id_pedido)}">
-      <span class="cc-ci" style="background:${c.color}">${ms(c.icon)}</span>
-      <div style="min-width:0"><div class="cc-li-id">${esc(p.id_pedido)}${p._express ? RAYO : ''}${p._sinGeo ? '<span class="cc-ng" title="Falta georreferencia de la obra">' + ms('wrong_location') + '</span>' : ''}<span class="cc-est-pill" style="background:${e.bg};color:${e.ink}">${esc(e.label)}</span></div>
-      <div class="cc-li-sub">${esc(p.cliente)} · ${esc(p.comuna)}</div>
-      <div class="cc-li-f"><span class="${p._vencido ? 'cc-venc' : ''}">${ms('event')}${f}</span><span class="cc-mini"><i style="width:${p._avance * 100}%;background:${e.color}"></i></span><span class="mono">${p._nCub}/${p._nLib}</span></div></div>
-      <span class="cc-x">${ms('chevron_right')}</span></div>`;
-  }).join('');
-  $('#cc-pane').innerHTML = h;
-}
-function filasTabla() {
-  const rows = filtrados();
-  const key = {
-    prio: p => p._prio, estado: p => ESTADOS.findIndex(e => e.key === p._estado), id: p => p.id_pedido, cond: p => CONDS.findIndex(c => c.key === p.cond),
-    cliente: p => p.cliente, comuna: p => p.comuna, fecha: p => p.fecha || '9999', creado: p => p.creado || '9999', flete: p => p._flete.sug, avance: p => p._avance, ton: p => p._ton,
-  }[S.orden.col];
-  rows.sort((a, b) => { const x = key(a), y = key(b); return (x > y ? 1 : x < y ? -1 : 0) * S.orden.dir || a.id_pedido.localeCompare(b.id_pedido); });
-  return rows;
-}
-function renderTabla() {
-  const rows = filasTabla();
-  $('#cc-tbody').innerHTML = rows.map(p => {
-    const c = COND.get(p.cond), e = EST.get(p._estado), id = p.id_pedido;
-    return `<tr data-id="${esc(id)}" class="${S.sel === id ? 'is-sel' : ''}${p._express ? ' xp' : ''}">
-      <td><span class="cc-est-pill" style="background:${e.bg};color:${e.ink}">${ms(e.icon)}${esc(e.label)}</span></td>
-      <td class="mono"><b>${esc(id)}</b>${p._express ? RAYO : ''}</td>
-      <td><span class="cc-cond" style="background:${c.bg};color:${c.ink}"><span class="cc-ci xs" style="background:${c.color}">${ms(c.icon)}</span>${esc(c.label)}</span></td>
-      <td class="cc-td-cli" title="${esc(p.cliente)}">${esc(p.cliente)}</td>
-      <td class="mono">${esc(p.id_obra)}</td>
-      <td>${esc(p.comuna)}</td>
-      <td class="mono">${fechaTxt(p.creado)}</td>
-      <td class="mono${p._vencido ? ' cc-venc' : ''}">${fechaTxt(p.fecha)}</td>
-      <td class="r mono">${p._flete.sug ? fCLP(p._flete.sug) : '—'}</td>
-      <td><span class="cc-av"><span class="cc-mini"><i style="width:${p._avance * 100}%;background:${e.color}"></i></span><span class="mono">${p._nCub}/${p._nLib} pos.</span></span></td>
-      <td class="mono">${p._entregas.length ? esc(p._entregas.slice(0, 2).join(', ')) + (p._entregas.length > 2 ? ` +${p._entregas.length - 2}` : '') : '—'}</td>
-      <td class="r mono">${fT(p._ton, 2)}</td>
-      <td>${p._marcas.map(m => `<span class="cc-tag ${m.t}">${esc(m.txt)}</span>`).join(' ')}${p._estado === 'bloq' ? ` <span class="cc-tag rd">${esc(p.codigo_bloqueo)}</span>` : ''}</td>
+import{supabase as H}from"./supabase-client.js?v=fd17fd7d20";import{getDatabase as Q,loadRoutesData as ze,HIST_ALIAS_PREFIJO as Me}from"./data.js?v=6ce8cb5f60";import{loadLeaflet as Ce}from"./utils.js";import{filtrarPorCentro as Te,can as Pe}from"./permisos.js?v=a8b193e9fb";import{cargarObras as qe,abrirEditorObra as Fe,tieneUbicacion as ee,badgeGeo as je}from"./maestro-obras.js?v=2643773560";const de={tiles:"https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",kgUnitSospechoso:5e3},pe="sit_cc_sucursal",G=[{key:"EBE-DESP",label:"EBEMA Despacha",corto:"EBEMA despacha",color:"#2563eb",bg:"#dbeafe",ink:"#1e40af",icon:"local_shipping"},{key:"EBE-RET / EBE-DESP",label:"EBEMA Retira – EBEMA Despacha",corto:"Retira EBEMA › despacha",color:"#0d9488",bg:"#ccfbf1",ink:"#115e59",icon:"sync_alt"},{key:"EBE-RET / CLI-RET",label:"EBEMA Retira – Cliente Retira",corto:"Retira EBEMA › cliente",color:"#ea580c",bg:"#ffedd5",ink:"#9a3412",icon:"storefront"},{key:"FAB-DESP / EBE-DESP",label:"Fábrica Despacha – EBEMA Despacha",corto:"Fábrica › EBEMA despacha",color:"#7c3aed",bg:"#ede9fe",ink:"#5b21b6",icon:"factory"}],fe=e=>String(e||"").toUpperCase().replace(/\s*\/\s*/g," / ").replace(/\s+/g," ").trim(),O=new Map(G.map(e=>[e.key,e])),V=[{key:"sin",label:"Sin entrega",icon:"schedule",color:"#6b7280",bg:"#f3f4f6",ink:"#374151"},{key:"parcial",label:"Entrega parcial",icon:"incomplete_circle",color:"#f59e0b",bg:"#fef3c7",ink:"#92400e"},{key:"lista",label:"Con entrega",icon:"task_alt",color:"#16a34a",bg:"#dcfce7",ink:"#166534"},{key:"bloq",label:"Bloqueado",icon:"block",color:"#dc2626",bg:"#fee2e2",ink:"#991b1b"}],A=new Map(V.map(e=>[e.key,e])),Ge=/^(60|70|CR)\b/i,n={raw:null,sucursal:"",centro:null,pedidos:[],byId:new Map,cond:new Set(G.map(e=>e.key)),fEstado:"todos",soloVencidos:!1,soloExpress:!1,soloSinGeo:!1,q:"",sel:null,editGeo:!1,orden:{col:"prio",dir:1}};let _=null,v=null,P=null,U=null,R=null;const C=new Map,N=new Map,B=new Map,f=e=>_.querySelector(e),l=e=>String(e??"").replace(/[&<>"']/g,t=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[t]),S=e=>{const t=String(e??"").trim();if(!t)return 0;const c=t.includes(",")?t.replace(/\./g,"").replace(",","."):t,a=parseFloat(c);return Number.isFinite(a)?a:0},y=e=>String(e??"").trim().replace(/^0+(?=\d)/,""),w=(e,t=2)=>(Number.isFinite(e)?e:0).toLocaleString("es-CL",{minimumFractionDigits:t,maximumFractionDigits:t}),be=e=>`${Math.round((Number.isFinite(e)?e:0)*100)}%`,ge=e=>{const t=String(e||"").match(/^(\d{2})[.\-/](\d{2})[.\-/](\d{4})$/);return t?`${t[3]}-${t[2]}-${t[1]}`:""},q=e=>e?`${e.slice(8,10)}-${e.slice(5,7)}-${e.slice(0,4)}`:"—",me=()=>{const e=new Date;return`${e.getFullYear()}-${String(e.getMonth()+1).padStart(2,"0")}-${String(e.getDate()).padStart(2,"0")}`},ue=e=>{if(!e)return null;const t=new Date(e+"T00:00:00"),c=new Date(me()+"T00:00:00");return Math.round((t-c)/864e5)},z=e=>Number.isFinite(e.latitud)&&Number.isFinite(e.longitud),Oe=e=>{let t=2166136261;for(const c of String(e))t^=c.charCodeAt(0),t=Math.imul(t,16777619);return t>>>0},d=(e,t="")=>`<span class="material-symbols-outlined"${t}>${e}</span>`,h=e=>"$"+Math.round(Number.isFinite(e)?e:0).toLocaleString("es-CL"),K='<span class="cc-rayo" title="Flete express · pedido spot"><span class="material-symbols-outlined">bolt</span></span>';function Be(e,t,c){return c<e?e:t>0&&c>t?t:c}async function xe(e){const t=[];for(let c=0;;c+=1e3){const{data:a,error:o}=await e().range(c,c+999);if(o)throw new Error(o.message);if(t.push(...a||[]),!a||a.length<1e3)break}return t}async function he(){await ze();const[e,t]=await Promise.all([xe(()=>H.from("trc_live").select("data,cargado_en").eq("fuente","pedidos_ventas_sucursal").order("fila")),xe(()=>H.from("trc_live").select("data").eq("fuente","entregas_periodo").order("fila"))]),c=e.map(b=>b.data).filter(b=>O.has(fe(b?.cond_expedicion))),a=[...new Set(c.map(b=>y(b.material)).filter(Boolean))],o=new Map;for(let b=0;b<a.length;b+=300){const{data:s,error:g}=await H.from("maestro_productos").select("id_material,peso_bruto").in("id_material",a.slice(b,b+300));if(g)break;(s||[]).forEach(u=>{+u.peso_bruto>0&&o.set(y(u.id_material),+u.peso_bruto)})}const r=e.reduce((b,s)=>s.cargado_en&&s.cargado_en>b?s.cargado_en:b,"");let p=new Map,m=!0;try{p=await qe(c.map(b=>b.id_obra))}catch{m=!1}n.raw={suc:Te(c,b=>y(b.ofvta)),ent:t.map(b=>b.data),geo:p,geoOk:m,maestro:o,cargado:r}}function De(){const e=Q(),t=new Map;return(e.routes||[]).forEach(c=>{c.codigo&&t.set(String(c.codigo).trim().toUpperCase(),c)}),c=>{const a=String(c||"").trim().toUpperCase();if(!a)return null;let o=t.get(a);if(!o){const r=Me[a.slice(0,3)];r&&(o=t.get(r+a.slice(3)))}return o||null}}function Ie(e){const{suc:t,ent:c,geo:a,maestro:o}=n.raw,r=De(),p=new Map;c.forEach(s=>{if(!/^ZE/i.test(String(s.tipo_entrega||"")))return;const g=y(s.documento_precedente_doc_modelo)+"|"+y(s.posicion_modelo),u=p.get(g)||{cant:0,entregas:new Set};u.cant+=S(s.cantidad_entregada),u.entregas.add(y(s.entrega)),p.set(g,u)});const m=new Map;t.forEach(s=>{if(y(s.ofvta)!==e)return;const g=y(s.doc_ventas);if(!g)return;const u=String(s.motivo_rechazo||s.mr||"").trim();if(Ge.test(u))return;let i=m.get(g);if(!i){const k=r(s.ruta),Le=String(s.ruta_desc||"").split("/").slice(1).join("/").trim();i={id_pedido:g,id_obra:y(s.id_obra),cliente:String(s.nombre_cliente||"").trim(),solic:y(s.solic),cond:fe(s.cond_expedicion),clase:s.clvt||"",rutaCodigo:k?String(k.codigo).toUpperCase():String(s.ruta||"").trim().toUpperCase(),rutaDesc:s.ruta_desc||"",comuna:k&&k.comuna||Le||(s.ruta?String(s.ruta):"Sin ruta"),direccion:String(s.direccion_obra||"").trim(),interlocutor:s.interlocutor||"",creado:ge(s.creado_el),latitud:null,longitud:null,geoExacta:!1,_rutaObj:k,posiciones:[]},m.set(g,i)}const x=S(s.cantidad_de_pedido),j=S(s.pendiente_entrega),W=S(s.peso_bruto),E=String(s.um||"").trim().toUpperCase(),se=y(s.material),re=E==="KG"?1:o.get(se)||(x>0?W/x:0),le=[u,s.dcto_vendedor].map(k=>String(k||"").trim()).filter(Boolean).join(" / "),Se=String(s.bloqueada||"").trim().toUpperCase()==="X"||!!le,Y=y(s.pos),M={reparto:y(s.reparto)||"—",fecha:ge(s.fe_entrega),confirmada:S(s.reparto_confirmado||s.ctd_confirmada),pendiente:j,entregado:S(s.cantidad_entrg)};let $=i.posiciones.find(k=>k.pos===Y);if(!$){const k=p.get(g+"|"+Y);$={pos:Y,sku:se,descripcion:s.denominacion_de_posicion||"",um:E,cantidad:x,confirmada:0,entregado:0,pendiente:0,kgUnit:re>de.kgUnitSospechoso?0:re,bloqueo:Se?le||"X":null,fecha:"",repartos:[],entTrat:k?k.cant:0,entregas:k?[...k.entregas]:[],fleteTraslado:S(s.flete_zflt),fleteUltMilla:S(s.flete_zfl0_zfl1),fleteMin:S(s.flete_minimo),fleteMax:S(s.flete_maximo),fletePk:S(s.flete_peso_kilo),express:String(s.flete_express||"").trim().toUpperCase()==="X"},$.fleteSug=Be($.fleteMin,$.fleteMax,$.fletePk),i.posiciones.push($)}$.repartos.push(M),$.confirmada+=M.confirmada,$.entregado+=M.entregado,$.pendiente+=M.pendiente,j>0&&M.fecha&&(!$.fecha||M.fecha<$.fecha)&&($.fecha=M.fecha),!$.fecha&&M.fecha&&($.fecha=M.fecha)});const b=[...m.values()].filter(s=>s.posiciones.some(g=>g.pendiente>0));return b.forEach(s=>{const g=a.get(s.id_obra);if(s.obra=g||null,ee(g))s.latitud=+g.lat,s.longitud=+g.lon,s.geoExacta=!0;else if(s._rutaObj&&Number.isFinite(+s._rutaObj.lat)&&Number.isFinite(+s._rutaObj.lon)&&+s._rutaObj.lat!=0){const u=Oe(s.id_pedido),i=u%360*Math.PI/180,x=.0012+(u>>>9)%100/100*.0045;s.latitud=+s._rutaObj.lat+x*Math.sin(i),s.longitud=+s._rutaObj.lon+x*1.2*Math.cos(i)}ve(s)}),b}function ve(e){const t=e.posiciones.filter(i=>i.pendiente>0),c=t.filter(i=>!i.bloqueo),a=t.filter(i=>i.bloqueo),o=i=>i.entTrat+1e-6>=i.pendiente,r=c.filter(i=>i.entTrat>0),p=c.reduce((i,x)=>i+x.pendiente*x.kgUnit,0),m=c.reduce((i,x)=>i+Math.min(x.entTrat,x.pendiente)*x.kgUnit,0);e._ton=p/1e3,e._avance=c.length?p>0?m/p:c.filter(o).length/c.length:0,e._nPos=t.length,e._nLib=c.length,e._nBloq=a.length,e._nCub=c.filter(o).length,e._entregas=[...new Set(c.flatMap(i=>i.entregas))],e._estado=c.length?c.every(o)?"lista":r.length||c.some(i=>i.entregado>0)?"parcial":"sin":"bloq";const b=(c.length?c:t).map(i=>i.fecha).filter(Boolean).sort();e.fecha=b[0]||"",e._dias=ue(e.fecha),e._vencido=e._estado!=="lista"&&e._dias!==null&&e._dias<0;const s=[];e._vencido&&s.push({t:"rd",txt:`Vencido ${-e._dias} d`}),e._estado!=="bloq"&&a.length&&s.push({t:"am",txt:`Bloqueo parcial · ${a.length} pos.`}),c.some(i=>i.confirmada+1e-6<i.cantidad)&&s.push({t:"am",txt:"Unidades sin confirmar"}),e._sinGeo=!e.geoExacta,e._sinGeo?s.push({t:"rd",txt:e.obra&&e.obra.geo_estado==="PENDIENTE"?"Georref. pendiente":"Falta georreferencia"}):e.obra&&e.obra.geo_estado==="AUTO_CALLE"&&s.push({t:"am",txt:"Ubicación calle (aprox.)"}),e._marcas=s,e.codigo_bloqueo=[...new Set(a.map(i=>i.bloqueo))].join(", "),e._express=e.posiciones.some(i=>i.express),e._express&&s.unshift({t:"xp",txt:"Express · spot"});const g=e.posiciones,u=i=>g.reduce((x,j)=>x+(j[i]||0),0);e._flete={min:u("fleteMin"),max:u("fleteMax"),pk:u("fletePk"),sug:u("fleteSug"),traslado:u("fleteTraslado"),ultMilla:u("fleteUltMilla")},e._flete.cobrado=e._flete.traslado+e._flete.ultMilla,e._prio=(e._express?0:1)*1e8+(e._estado==="bloq"?0:e._vencido?1:e._estado==="sin"?2:e._estado==="parcial"?3:4)*1e6+(e._dias??9999)}const Ae=e=>n.cond.has(e.cond)&&(n.fEstado==="todos"||e._estado===n.fEstado)&&(!n.soloVencidos||e._vencido)&&(!n.soloExpress||e._express)&&(!n.soloSinGeo||e._sinGeo);function te(e){const t=n.q.trim().toLowerCase();return!t||[e.id_pedido,e.id_obra,e.cliente,e.comuna,e.direccion,e.rutaCodigo,...e._entregas].some(c=>String(c||"").toLowerCase().includes(t))}const D=()=>n.pedidos.filter(e=>Ae(e)&&te(e));function ce(e){n.sucursal=e;try{localStorage.setItem(pe,e)}catch{}const c=(Q().logisticsCentres||[]).find(o=>String(o.id)===e);n.centro={id:e,nombre:c?c.nombre:`Centro ${e}`,lat:c?+c.lat:-33.45,lon:c?+c.lon:-70.66},n.pedidos=Ie(e),n.byId=new Map(n.pedidos.map(o=>[o.id_pedido,o])),n.sel=null,Ne(),Je(),F(!0);const a=n.pedidos.filter(o=>o._express&&n.cond.has(o.cond)).length;a&&T("xp",`${a} pedido${a>1?"s":""} express (spot) en ${n.centro.nombre}`,"Flete express: revisar y coordinar a la brevedad. Filtre con la tarjeta Express.")}function Ue(){v=L.map(f("#cc-map"),{zoomControl:!0}).setView([n.centro.lat,n.centro.lon],11),L.tileLayer(de.tiles,{maxZoom:19,attribution:"&copy; OpenStreetMap"}).addTo(v),P=L.layerGroup().addTo(v),U=L.layerGroup().addTo(v)}function Ne(){v||Ue(),P.clearLayers(),U.clearLayers(),C.clear(),N.clear(),B.clear(),R&&R.remove(),R=L.marker([n.centro.lat,n.centro.lon],{icon:L.divIcon({className:"cc-pin-wrap",html:`<div class="cc-hub">${d("warehouse")}</div>`,iconSize:[36,36],iconAnchor:[18,18]}),zIndexOffset:2e3,keyboard:!1}).addTo(v).bindTooltip(`<div class="cc-tt-h">${l(n.centro.nombre)}</div><div class="cc-tt-r">Centro ${l(n.centro.id)}</div>`,{className:"cc-tt",direction:"top",offset:[0,-16]}),n.editGeo&&(n.editGeo=!1,f("#cc-btn-geo").classList.remove("is-on")),setTimeout(()=>{v.invalidateSize(),X()},0)}function X(){const e=D().filter(z).map(t=>[t.latitud,t.longitud]);e.push([n.centro.lat,n.centro.lon]),e.length>1?v.fitBounds(e,{padding:[30,30],maxZoom:13}):v.setView(e[0],11)}function He(e){const t=O.get(e.cond),c=A.get(e._estado),r=`<div class="${`cc-pin${n.sel===e.id_pedido?" sel":""}${e.geoExacta?"":" aprox nogeo"}${n.editGeo&&!e.geoExacta?" drag":""}${e._vencido?" venc":""}${e._express?" xp":""}`}" style="--pc:${t.color}" data-id="${l(e.id_pedido)}">${d(t.icon)}<i class="cc-pin-st" style="background:${c.color}" title="${l(c.label)}"></i>${e._express?`<b class="cc-pin-xp">${d("bolt")}</b>`:""}${e._sinGeo?`<b class="cc-pin-ng" title="Falta georreferencia">${d("question_mark")}</b>`:""}</div>`;return{firma:r,icon:L.divIcon({className:"cc-pin-wrap",html:r,iconSize:[30,30],iconAnchor:[15,15]})}}function Ve(e){const t=O.get(e.cond),c=A.get(e._estado);return`<div class="cc-tt-h"><span class="cc-ci" style="background:${t.color}">${d(t.icon)}</span><span class="mono">${l(e.id_pedido)}</span>${e._express?K:""}<span class="cc-est-pill" style="background:${c.bg};color:${c.ink}">${l(c.label)}</span></div>
+    <div class="cc-tt-r"><b>${l(e.cliente)}</b><br>${l(t.label)}<br>${l(e.direccion||"—")} · ${l(e.comuna)}<br>F. entrega <b>${q(e.fecha)}</b> · ${e._nCub}/${e._nLib} pos. con entrega · ${w(e._ton,1)} t</div>
+    ${e._marcas.length?`<div class="cc-tt-r" style="margin-top:3px">${e._marcas.map(a=>`<span class="cc-tag ${a.t}">${l(a.txt)}</span>`).join(" ")}</div>`:""}
+    <div class="cc-tt-f">${n.editGeo&&!e.geoExacta?"Arrastre al punto de la obra y guarde":"Clic para ver el detalle"}</div>`}function ae(){const e=new Set(D().map(t=>t.id_pedido));n.pedidos.forEach(t=>{const c=t.id_pedido;let a=C.get(c);if(!z(t)){a&&(P.removeLayer(a),C.delete(c),N.delete(c));return}const{firma:o,icon:r}=He(t);a?N.get(c)!==o&&(a.setIcon(r),N.set(c,o)):(a=L.marker([t.latitud,t.longitud],{icon:r,riseOnHover:!0,draggable:!1}),a.on("click",()=>{if(n.editGeo&&!t.geoExacta){a.openPopup();return}I(c,{desdeMapa:!0}),J(c)}),a.on("mouseover",()=>ye(c,!0)),a.on("mouseout",()=>ye(c,!1)),a.on("dragend",()=>{a._movido=!0,a.openPopup()}),a.bindTooltip(()=>Ve(t),{className:"cc-tt",direction:"top",offset:[0,-14]}),C.set(c,a),N.set(c,o));const p=n.editGeo&&!t.geoExacta;p&&!a.getPopup()&&a.bindPopup(()=>ke(t,a),{minWidth:240}),!p&&a.getPopup()&&a.unbindPopup(),a.dragging&&(p?a.dragging.enable():a.dragging.disable()),a.setZIndexOffset(n.sel===c?1500:t._express?900:t._estado==="bloq"||t._vencido?300:0);const m=e.has(c);m&&!P.hasLayer(a)&&P.addLayer(a),!m&&P.hasLayer(a)&&P.removeLayer(a)})}function Re(e){const t=C.get(e);return t&&t.getElement()?t.getElement().querySelector(".cc-pin"):null}function Z(e,t){const c=Re(e);c&&c.classList.toggle("hl",t)}function ye(e,t){_.querySelectorAll(`[data-id="${CSS.escape(e)}"]`).forEach(c=>{c.classList.contains("cc-pin")||c.classList.toggle("is-hl",t)})}function I(e,{desdeMapa:t=!1,sinScroll:c=!1}={}){if(n.sel=e,ae(),we(),ne(),!n.sel)return;const a=n.byId.get(e);if(!t&&z(a)&&(v.setView([a.latitud,a.longitud],Math.max(v.getZoom(),14)),setTimeout(()=>{const p=C.get(e);p&&p.openTooltip()},260)),c)return;const o=_.querySelector(`tr[data-id="${CSS.escape(e)}"]`);o&&o.scrollIntoView({block:"nearest",behavior:"smooth"});const r=_.querySelector(`.cc-li[data-id="${CSS.escape(e)}"]`);r&&r.scrollIntoView({block:"nearest",behavior:"smooth"})}const oe=()=>{const e=new Map;return D().forEach(t=>{!t.geoExacta&&t.id_obra&&!e.has(t.id_obra)&&e.set(t.id_obra,t)}),[...e.values()]};async function Ke(e,t,c){const a={lat:+(+t).toFixed(6),lon:+(+c).toFixed(6),geo_estado:"MANUAL",geo_detalle:"Ubicada a mano en el Monitor de Pedidos"},{data:o,error:r}=await H.from("maestro_obras").update(a).eq("id_obra",e).select("*").maybeSingle();if(r)throw new Error(r.message);if(!o)throw new Error("La obra aún no está en el maestro (se sincroniza cada 10 min) o su perfil no puede editarla.");return o}function $e(e){e&&(n.raw.geo.set(y(e.id_obra),e),n.pedidos.forEach(t=>{if(t.id_obra!==y(e.id_obra))return;t.obra=e,ee(e)&&(t.latitud=+e.lat,t.longitud=+e.lon,t.geoExacta=!0),ve(t);const c=C.get(t.id_pedido);c&&z(t)&&c.setLatLng([t.latitud,t.longitud])}),F())}async function Xe(e){const t=await Fe(e.id_obra,{base:{direccion:e.direccion,comuna:e.comuna,nombre_cliente:e.cliente,id_cliente:e.solic,ruta:e.rutaCodigo},centro:z(e)?{lat:e.latitud,lon:e.longitud}:{lat:n.centro.lat,lon:n.centro.lon}});return t&&($e(t),T("ok",`Obra ${t.id_obra} guardada`,ee(t)?"Los pedidos de esta obra (actuales y futuros) toman esta ubicación.":"Datos de contacto guardados.")),t}function Ze(e){if(e&&!n.raw.geoOk){T("err","Georreferenciación no disponible","No se pudo leer el maestro de obras.");return}if(e&&!Pe("editar")){T("warn","Sin permiso de edición","Su perfil no puede guardar coordenadas de obra.");return}n.editGeo=e,f("#cc-btn-geo").classList.toggle("is-on",e),U.clearLayers(),B.clear(),e||n.pedidos.forEach(t=>{const c=C.get(t.id_pedido);c&&z(t)&&(c._movido=!1,c.closePopup(),c.setLatLng([t.latitud,t.longitud]))}),e&&oe().filter(t=>!z(t)).forEach((t,c)=>{const a=L.marker([n.centro.lat+.012*Math.cos(c*.9),n.centro.lon+.015*Math.sin(c*.9)],{draggable:!0,autoPan:!0,zIndexOffset:3e3,icon:L.divIcon({className:"cc-pin-wrap",html:`<div class="cc-pin edit">${d("location_on")}</div>`,iconSize:[30,30],iconAnchor:[15,15]})});a.bindPopup(()=>ke(t,a),{minWidth:240}),a.on("dragend",()=>{a._movido=!0,a.openPopup()}),a.addTo(U),B.set(t.id_obra,a)}),_e(),ae()}function ke(e,t){const c=n.pedidos.filter(m=>m.id_obra===e.id_obra).map(m=>m.id_pedido),{lat:a,lng:o}=t.getLatLng(),r=document.createElement("div");r.className="cc-geo-pop",r.innerHTML=`<div><b>Obra ${l(e.id_obra)}</b> <span class="cc-tag am">${z(e)?"Ubicación aprox.":"Sin ubicación"}</span></div>
+    <div style="font-size:12px;color:#5c5f61">${l(e.cliente)}<br>${l(e.direccion||"—")}<br>${l(e.comuna)} · pedidos <span class="mono">${c.map(l).join(", ")}</span></div>
+    <div class="mono">${a.toFixed(6)}, ${o.toFixed(6)}</div>
+    <div style="font-size:11.5px;color:#5c5f61">${t._movido?"Verifique el punto y guarde.":"Arrastre el marcador al acceso de la obra."}</div>`;const p=document.createElement("button");return p.className="cc-btn pri sm",p.innerHTML=`${d("save")}Guardar coordenadas`,p.disabled=!t._movido,p.onclick=async()=>{p.disabled=!0,p.textContent="Guardando…";const m=t.getLatLng();try{const b=await Ke(e.id_obra,m.lat,m.lng);$e(b),B.has(e.id_obra)&&(U.removeLayer(B.get(e.id_obra)),B.delete(e.id_obra)),c.forEach(s=>{const g=C.get(s);g&&(g.closePopup(),g.setLatLng([b.lat,b.lon]))}),t.closePopup(),T("ok",`Obra ${e.id_obra} georreferenciada`,`${c.length} pedido${c.length>1?"s":""} con ubicación exacta.`),F()}catch(b){p.disabled=!1,p.innerHTML=`${d("save")}Reintentar`,T("err","No se pudo guardar",b.message||String(b))}},r.appendChild(p),r}function _e(){const e=f("#cc-maphint");n.editGeo?(e.innerHTML=`${d("edit_location_alt")}Modo edición: arrastre los pines de borde punteado (${oe().length} obras) y guarde`,e.classList.add("show")):e.classList.remove("show")}function Je(){const e=Q(),t=[...new Set(n.raw.suc.map(c=>y(c.ofvta)).filter(Boolean))].sort();f("#cc-suc").innerHTML=t.map(c=>{const a=(e.logisticsCentres||[]).find(o=>String(o.id)===c);return`<option value="${l(c)}"${c===n.sucursal?" selected":""}>${l(c)} · ${l(a?a.nombre:"")}</option>`}).join(""),f("#cc-centro-lbl").textContent=`Torre de Control · ${n.centro.nombre}`}function We(){const e=n.pedidos.filter(o=>n.cond.has(o.cond)&&te(o)),t=o=>e.filter(r=>r._estado===o).length,c=e.filter(o=>o._vencido).length,a=[{k:"todos",label:"Pedidos",icon:"receipt_long",v:e.length,color:"#191c1d",sub:`${w(e.reduce((o,r)=>o+r._ton,0),1)} t pendientes`},...V.map(o=>({k:o.key,label:o.label,icon:o.icon,v:t(o.key),color:o.color,sub:e.length?be(t(o.key)/e.length):"0%"}))];f("#cc-kpis").innerHTML=a.map(o=>`<button class="cc-kpi${n.fEstado===o.k?" is-on":""}" data-est="${o.k}" style="--kc:${o.color}">
+      <span class="cc-kpi-ic">${d(o.icon)}</span><span class="cc-kpi-b"><span class="cc-kpi-l">${l(o.label)}</span><b class="num">${o.v}</b><span class="cc-kpi-s">${l(o.sub)}</span></span></button>`).join("")+`<button class="cc-kpi xp${n.soloExpress?" is-on":""}${e.some(o=>o._express)?" alerta":""}" data-xp="1" style="--kc:#ca8a04"><span class="cc-kpi-ic">${d("bolt")}</span><span class="cc-kpi-b"><span class="cc-kpi-l">Express (spot)</span><b class="num">${e.filter(o=>o._express).length}</b><span class="cc-kpi-s">Atender a la brevedad</span></span></button><button class="cc-kpi ng${n.soloSinGeo?" is-on":""}" data-ng="1" style="--kc:#7c2d12"><span class="cc-kpi-ic">${d("wrong_location")}</span><span class="cc-kpi-b"><span class="cc-kpi-l">Sin georreferencia</span><b class="num">${e.filter(o=>o._sinGeo).length}</b><span class="cc-kpi-s">Ubicar obra</span></span></button><button class="cc-kpi venc${n.soloVencidos?" is-on":""}" data-venc="1" style="--kc:#b91c1c"><span class="cc-kpi-ic">${d("event_busy")}</span><span class="cc-kpi-b"><span class="cc-kpi-l">Vencidos</span><b class="num">${c}</b><span class="cc-kpi-s">F. entrega &lt; hoy</span></span></button>`}function Ye(){const e=n.pedidos.filter(te);f("#cc-cond").innerHTML=G.map(t=>{const c=e.filter(a=>a.cond===t.key).length;return`<button class="cc-cchip${n.cond.has(t.key)?" is-on":""}" data-cond="${l(t.key)}" style="--cc:${t.color};--cb:${t.bg};--ci:${t.ink}" title="${l(t.key)}">
+      <span class="cc-ci" style="background:${t.color}">${d(t.icon)}</span>${l(t.label)}<span class="cc-cnt">${c}</span></button>`}).join(""),f("#cc-legend").innerHTML=G.map(t=>`<div><span class="cc-ci sm" style="background:${t.color}">${d(t.icon)}</span>${l(t.corto)}</div>`).join("")+'<div class="cc-legend-sep"></div>'+V.map(t=>`<div><i style="background:${t.color}"></i>${l(t.label)}</div>`).join("")+'<div><i class="dash"></i>Ubicación aprox. (ruta)</div>'}function we(){let e="";const t=D().sort((c,a)=>c._prio-a._prio).slice(0,150);e+=`<div class="cc-sec-t"><span>Pedidos por atender</span><span>${D().length}</span></div>`,t.length||(e+=`<div class="cc-empty">${d("inbox")}Sin pedidos para los filtros actuales.</div>`),e+=t.map(c=>{const a=O.get(c.cond),o=A.get(c._estado),r=c._dias===null?"Sin fecha":c._dias<0?`Vencido hace ${-c._dias} d`:c._dias===0?"Entrega hoy":c._dias===1?"Entrega mañana":`En ${c._dias} días`;return`<div class="cc-li${n.sel===c.id_pedido?" is-sel":""}${c._express?" xp":""}" data-id="${l(c.id_pedido)}">
+      <span class="cc-ci" style="background:${a.color}">${d(a.icon)}</span>
+      <div style="min-width:0"><div class="cc-li-id">${l(c.id_pedido)}${c._express?K:""}${c._sinGeo?'<span class="cc-ng" title="Falta georreferencia de la obra">'+d("wrong_location")+"</span>":""}<span class="cc-est-pill" style="background:${o.bg};color:${o.ink}">${l(o.label)}</span></div>
+      <div class="cc-li-sub">${l(c.cliente)} · ${l(c.comuna)}</div>
+      <div class="cc-li-f"><span class="${c._vencido?"cc-venc":""}">${d("event")}${r}</span><span class="cc-mini"><i style="width:${c._avance*100}%;background:${o.color}"></i></span><span class="mono">${c._nCub}/${c._nLib}</span></div></div>
+      <span class="cc-x">${d("chevron_right")}</span></div>`}).join(""),f("#cc-pane").innerHTML=e}function Qe(){const e=D(),t={prio:c=>c._prio,estado:c=>V.findIndex(a=>a.key===c._estado),id:c=>c.id_pedido,cond:c=>G.findIndex(a=>a.key===c.cond),cliente:c=>c.cliente,comuna:c=>c.comuna,fecha:c=>c.fecha||"9999",creado:c=>c.creado||"9999",flete:c=>c._flete.sug,avance:c=>c._avance,ton:c=>c._ton}[n.orden.col];return e.sort((c,a)=>{const o=t(c),r=t(a);return(o>r?1:o<r?-1:0)*n.orden.dir||c.id_pedido.localeCompare(a.id_pedido)}),e}function ne(){const e=Qe();f("#cc-tbody").innerHTML=e.map(t=>{const c=O.get(t.cond),a=A.get(t._estado),o=t.id_pedido;return`<tr data-id="${l(o)}" class="${n.sel===o?"is-sel":""}${t._express?" xp":""}">
+      <td><span class="cc-est-pill" style="background:${a.bg};color:${a.ink}">${d(a.icon)}${l(a.label)}</span></td>
+      <td class="mono"><b>${l(o)}</b>${t._express?K:""}</td>
+      <td><span class="cc-cond" style="background:${c.bg};color:${c.ink}"><span class="cc-ci xs" style="background:${c.color}">${d(c.icon)}</span>${l(c.label)}</span></td>
+      <td class="cc-td-cli" title="${l(t.cliente)}">${l(t.cliente)}</td>
+      <td class="mono">${l(t.id_obra)}</td>
+      <td>${l(t.comuna)}</td>
+      <td class="mono">${q(t.creado)}</td>
+      <td class="mono${t._vencido?" cc-venc":""}">${q(t.fecha)}</td>
+      <td class="r mono">${t._flete.sug?h(t._flete.sug):"—"}</td>
+      <td><span class="cc-av"><span class="cc-mini"><i style="width:${t._avance*100}%;background:${a.color}"></i></span><span class="mono">${t._nCub}/${t._nLib} pos.</span></span></td>
+      <td class="mono">${t._entregas.length?l(t._entregas.slice(0,2).join(", "))+(t._entregas.length>2?` +${t._entregas.length-2}`:""):"—"}</td>
+      <td class="r mono">${w(t._ton,2)}</td>
+      <td>${t._marcas.map(r=>`<span class="cc-tag ${r.t}">${l(r.txt)}</span>`).join(" ")}${t._estado==="bloq"?` <span class="cc-tag rd">${l(t.codigo_bloqueo)}</span>`:""}</td>
       <td><div class="cc-acts">
-        <button class="cc-ib" data-act="ver" title="${tieneGeo(p) ? 'Ver en mapa' : 'Sin ubicación'}" ${tieneGeo(p) ? '' : 'disabled'}>${ms('my_location')}</button>
-        <button class="cc-ib" data-act="detalle" title="Detalle de posiciones y entregas">${ms('fact_check')}</button></div></td></tr>`;
-  }).join('') || '<tr><td colspan="14" style="text-align:center;color:var(--cc-ink2);padding:24px">Sin pedidos para los filtros actuales.</td></tr>';
-  $('#cc-tbar-s').textContent = `${rows.length} de ${S.pedidos.length} pedidos · ${fT(rows.reduce((a, p) => a + p._ton, 0), 1)} t pendientes`;
-  root.querySelectorAll('.cc-t th.sort').forEach(th => {
-    th.querySelector('.material-symbols-outlined')?.remove();
-    if (th.dataset.col === S.orden.col) th.insertAdjacentHTML('beforeend', ms(S.orden.dir > 0 ? 'arrow_upward' : 'arrow_downward'));
-  });
-  $('#cc-geo-cnt').textContent = obrasPendientes().length;
-}
-function renderTodo(encuadrar = false) {
-  renderKpis(); renderCond(); renderMarcadores(); renderLista(); renderTabla(); hint();
-  if (encuadrar && map) ajustarVista();
-}
-function abrirDetalle(id) {
-  const p = S.byId.get(id), c = COND.get(p.cond), e = EST.get(p._estado), hoy = hoyKey(), F = p._flete;
-  const posOrd = [...p.posiciones].sort((a, b) => a.pos.localeCompare(b.pos, 'es', { numeric: true }));
-  const sinDatoFlete = !posOrd.some(x => x.fleteMin || x.fleteMax || x.fletePk);
-  // ── Productos (posición) con repartos, entrega y flete sugerido
-  const filas = posOrd.map(x => {
-    const st = x.bloqueo ? 'Bloqueada' : x.pendiente <= 0 ? 'Entregada' : x.entTrat + 1e-6 >= x.pendiente ? 'Con entrega' : x.entTrat > 0 ? 'Entrega parcial' : 'Sin entrega';
-    const regla = x.fletePk < x.fleteMin ? 'Mín.' : x.fleteMax > 0 && x.fletePk > x.fleteMax ? 'Máx.' : '$/kg';
-    const reps = x.repartos.map(r => `<span class="cc-rep${r.fecha && r.fecha < hoy && r.pendiente > 0 ? ' venc' : ''}" title="Reparto ${esc(r.reparto)} · confirmado ${fT(r.confirmada, 0)} · pendiente ${fT(r.pendiente, 0)}">${fechaTxt(r.fecha)} <small>${fT(r.confirmada, 0)}</small></span>`).join('');
-    return `<tr class="${x.bloqueo ? 'blq' : st === 'Entrega parcial' ? 'bad' : ''}">
-      <td class="mono">${esc(x.pos)}${x.express ? RAYO : ''}</td><td class="mono">${esc(x.sku)}</td><td class="cc-desc" title="${esc(x.descripcion)}">${esc(x.descripcion)}</td>
-      <td class="r mono">${fT(x.cantidad, 0)} <small>${esc(x.um)}</small></td><td class="r mono">${fT(x.entregado, 0)}</td><td class="r mono">${fT(x.pendiente, 0)}</td>
-      <td><div class="cc-reps">${reps || '—'}</div></td>
-      <td class="mono">${x.entregas.length ? x.entregas.map(esc).join(', ') + ` <small>(${fT(x.entTrat, 0)})</small>` : '—'}</td>
-      <td>${x.bloqueo ? `<span class="cc-tag rd">${esc(x.bloqueo)}</span>` : esc(st)}</td>
-      <td class="r mono sep">${fCLP(x.fleteTraslado)}</td><td class="r mono">${fCLP(x.fleteUltMilla)}</td>
-      <td class="r mono sep">${fCLP(x.fleteMin)}</td><td class="r mono">${x.fleteMax ? fCLP(x.fleteMax) : '<small>sin tope</small>'}</td><td class="r mono">${fCLP(x.fletePk)}</td>
-      <td class="r mono sug"><b>${fCLP(x.fleteSug)}</b> <small class="cc-regla">${regla}</small></td></tr>`;
-  }).join('');
-  const dif = F.cobrado - F.sug;
-  const entregas = [...new Set(p.posiciones.flatMap(x => x.entregas))];
-  const fechasRep = [...new Set(p.posiciones.flatMap(x => x.repartos.map(r => r.fecha)).filter(Boolean))].sort();
-  $('#cc-modal-c').innerHTML = `
-    <div class="cc-modal-h${p._express ? ' xp' : ''}"><span class="cc-ci lg" style="background:${c.color}">${ms(c.icon)}</span>
-      <div style="flex:1;min-width:0"><h3>Pedido ${esc(p.id_pedido)} ${p._express ? '<span class="cc-xp-badge">' + ms('bolt') + 'FLETE EXPRESS · SPOT</span>' : ''}<span class="cc-est-pill" style="background:${e.bg};color:${e.ink}">${ms(e.icon)}${esc(e.label)}</span></h3>
-      <p><b>${esc(c.label)}</b> · clase ${esc(p.clase)} · sucursal ${esc(S.centro.nombre)}</p>
-      ${p._marcas.length ? `<div style="margin-top:6px;display:flex;gap:4px;flex-wrap:wrap">${p._marcas.map(x => `<span class="cc-tag ${x.t}">${esc(x.txt)}</span>`).join('')}</div>` : ''}</div>
-      ${tieneGeo(p) ? `<button class="cc-btn sm" data-act="ver-mapa" data-id="${esc(p.id_pedido)}">${ms('my_location')}Ver en mapa</button>` : ''}
-      <button class="cc-x" data-act="cerrar-modal" title="Cerrar (Esc)">${ms('close')}</button></div>
+        <button class="cc-ib" data-act="ver" title="${z(t)?"Ver en mapa":"Sin ubicación"}" ${z(t)?"":"disabled"}>${d("my_location")}</button>
+        <button class="cc-ib" data-act="detalle" title="Detalle de posiciones y entregas">${d("fact_check")}</button></div></td></tr>`}).join("")||'<tr><td colspan="14" style="text-align:center;color:var(--cc-ink2);padding:24px">Sin pedidos para los filtros actuales.</td></tr>',f("#cc-tbar-s").textContent=`${e.length} de ${n.pedidos.length} pedidos · ${w(e.reduce((t,c)=>t+c._ton,0),1)} t pendientes`,_.querySelectorAll(".cc-t th.sort").forEach(t=>{t.querySelector(".material-symbols-outlined")?.remove(),t.dataset.col===n.orden.col&&t.insertAdjacentHTML("beforeend",d(n.orden.dir>0?"arrow_upward":"arrow_downward"))}),f("#cc-geo-cnt").textContent=oe().length}function F(e=!1){We(),Ye(),ae(),we(),ne(),_e(),e&&v&&X()}function J(e){const t=n.byId.get(e),c=O.get(t.cond),a=A.get(t._estado),o=me(),r=t._flete,p=[...t.posiciones].sort((i,x)=>i.pos.localeCompare(x.pos,"es",{numeric:!0})),m=!p.some(i=>i.fleteMin||i.fleteMax||i.fletePk),b=p.map(i=>{const x=i.bloqueo?"Bloqueada":i.pendiente<=0?"Entregada":i.entTrat+1e-6>=i.pendiente?"Con entrega":i.entTrat>0?"Entrega parcial":"Sin entrega",j=i.fletePk<i.fleteMin?"Mín.":i.fleteMax>0&&i.fletePk>i.fleteMax?"Máx.":"$/kg",W=i.repartos.map(E=>`<span class="cc-rep${E.fecha&&E.fecha<o&&E.pendiente>0?" venc":""}" title="Reparto ${l(E.reparto)} · confirmado ${w(E.confirmada,0)} · pendiente ${w(E.pendiente,0)}">${q(E.fecha)} <small>${w(E.confirmada,0)}</small></span>`).join("");return`<tr class="${i.bloqueo?"blq":x==="Entrega parcial"?"bad":""}">
+      <td class="mono">${l(i.pos)}${i.express?K:""}</td><td class="mono">${l(i.sku)}</td><td class="cc-desc" title="${l(i.descripcion)}">${l(i.descripcion)}</td>
+      <td class="r mono">${w(i.cantidad,0)} <small>${l(i.um)}</small></td><td class="r mono">${w(i.entregado,0)}</td><td class="r mono">${w(i.pendiente,0)}</td>
+      <td><div class="cc-reps">${W||"—"}</div></td>
+      <td class="mono">${i.entregas.length?i.entregas.map(l).join(", ")+` <small>(${w(i.entTrat,0)})</small>`:"—"}</td>
+      <td>${i.bloqueo?`<span class="cc-tag rd">${l(i.bloqueo)}</span>`:l(x)}</td>
+      <td class="r mono sep">${h(i.fleteTraslado)}</td><td class="r mono">${h(i.fleteUltMilla)}</td>
+      <td class="r mono sep">${h(i.fleteMin)}</td><td class="r mono">${i.fleteMax?h(i.fleteMax):"<small>sin tope</small>"}</td><td class="r mono">${h(i.fletePk)}</td>
+      <td class="r mono sug"><b>${h(i.fleteSug)}</b> <small class="cc-regla">${j}</small></td></tr>`}).join(""),s=r.cobrado-r.sug,g=[...new Set(t.posiciones.flatMap(i=>i.entregas))],u=[...new Set(t.posiciones.flatMap(i=>i.repartos.map(x=>x.fecha)).filter(Boolean))].sort();f("#cc-modal-c").innerHTML=`
+    <div class="cc-modal-h${t._express?" xp":""}"><span class="cc-ci lg" style="background:${c.color}">${d(c.icon)}</span>
+      <div style="flex:1;min-width:0"><h3>Pedido ${l(t.id_pedido)} ${t._express?'<span class="cc-xp-badge">'+d("bolt")+"FLETE EXPRESS · SPOT</span>":""}<span class="cc-est-pill" style="background:${a.bg};color:${a.ink}">${d(a.icon)}${l(a.label)}</span></h3>
+      <p><b>${l(c.label)}</b> · clase ${l(t.clase)} · sucursal ${l(n.centro.nombre)}</p>
+      ${t._marcas.length?`<div style="margin-top:6px;display:flex;gap:4px;flex-wrap:wrap">${t._marcas.map(i=>`<span class="cc-tag ${i.t}">${l(i.txt)}</span>`).join("")}</div>`:""}</div>
+      ${z(t)?`<button class="cc-btn sm" data-act="ver-mapa" data-id="${l(t.id_pedido)}">${d("my_location")}Ver en mapa</button>`:""}
+      <button class="cc-x" data-act="cerrar-modal" title="Cerrar (Esc)">${d("close")}</button></div>
     <div class="cc-modal-b">
-      <div class="cc-steps">${pasos(p)}</div>
+      <div class="cc-steps">${et(t)}</div>
       <div class="cc-dgrid">
-        <section class="cc-dbox"><h4>${ms('person')}Cliente y destino</h4>
-          <dl><dt>Cliente</dt><dd><b>${esc(p.cliente)}</b> <span class="mono">(${esc(p.solic)})</span></dd>
-          <dt>Dirección</dt><dd>${esc(p.direccion || '—')}</dd>
-          <dt>Comuna</dt><dd>${esc(p.comuna)} · ruta <span class="mono">${esc(p.rutaCodigo || '—')}</span></dd>
-          <dt>Obra</dt><dd><span class="mono">${esc(p.id_obra)}</span> ${badgeGeo(p.obra)}</dd>
-          <dt>Contacto obra</dt><dd>${p.obra && (p.obra.contacto_nombre || p.obra.contacto_telefono || p.obra.contacto_email)
-            ? [p.obra.contacto_nombre, p.obra.contacto_telefono, p.obra.contacto_email].filter(Boolean).map(esc).join(' · ') : '<span class="cc-tag gy">Sin contacto</span>'}</dd>
-          <dt>Vendedor</dt><dd>${esc(p.interlocutor || '—')}</dd></dl>
-          <button class="cc-btn sm${p._sinGeo ? ' pri' : ''}" data-act="obra-edit" data-id="${esc(p.id_pedido)}" style="margin-top:8px">${ms(p._sinGeo ? 'edit_location_alt' : 'contact_page')}${p._sinGeo ? 'Georreferenciar obra y contacto' : 'Editar ubicación y contacto'}</button></section>
-        <section class="cc-dbox"><h4>${ms('event')}Fechas y entrega</h4>
-          <dl><dt>Creación pedido</dt><dd><b>${fechaTxt(p.creado)}</b>${p.creado ? ` <small>(hace ${-diasHasta(p.creado)} d)</small>` : ''}</dd>
-          <dt>Próximo reparto</dt><dd class="${p._vencido ? 'cc-venc' : ''}"><b>${fechaTxt(p.fecha)}</b>${p._vencido ? ` · vencido ${-p._dias} d` : ''}</dd>
-          <dt>Fechas de reparto</dt><dd>${fechasRep.map(fechaTxt).join(' · ') || '—'}</dd>
-          <dt>Entrega(s) SAP</dt><dd class="mono">${entregas.length ? entregas.map(esc).join(', ') : '<span class="cc-tag gy">Sin entrega asociada</span>'}</dd>
-          <dt>Avance</dt><dd>${p._nCub} de ${p._nLib} posiciones con entrega · ${fT(p._ton, 2)} t pendientes</dd></dl></section>
-        <section class="cc-dbox cc-flete"><h4>${ms('payments')}Flete</h4>
-          <div class="cc-fl-row"><span>Flete traslado (ZFLT)</span><b class="mono">${fCLP(F.traslado)}</b></div>
-          <div class="cc-fl-row"><span>Flete última milla (ZFL0/ZFL1)</span><b class="mono">${fCLP(F.ultMilla)}</b></div>
-          <div class="cc-fl-row tot"><span>Flete cobrado</span><b class="mono">${fCLP(F.cobrado)}</b></div>
-          <div class="cc-fl-row sug"><span>${ms('auto_awesome')}Flete sugerido sistema</span><b class="mono">${sinDatoFlete ? '—' : fCLP(F.sug)}</b></div>
-          ${sinDatoFlete ? '<p class="cc-fl-nota">Sin datos de flete mínimo / máximo / $ por kilo en la carga SAP.</p>'
-            : `<div class="cc-fl-row dif ${dif < 0 ? 'neg' : 'pos'}"><span>Cobrado − sugerido</span><b class="mono">${dif < 0 ? '−' : '+'}${fCLP(Math.abs(dif))}</b></div>
-          <p class="cc-fl-nota">Por posición: $/kg bajo el mínimo → mínimo; sobre el máximo → máximo; entre ambos → $/kg. Σ mín ${fCLP(F.min)} · Σ máx ${fCLP(F.max)} · Σ $/kg ${fCLP(F.pk)}</p>`}
+        <section class="cc-dbox"><h4>${d("person")}Cliente y destino</h4>
+          <dl><dt>Cliente</dt><dd><b>${l(t.cliente)}</b> <span class="mono">(${l(t.solic)})</span></dd>
+          <dt>Dirección</dt><dd>${l(t.direccion||"—")}</dd>
+          <dt>Comuna</dt><dd>${l(t.comuna)} · ruta <span class="mono">${l(t.rutaCodigo||"—")}</span></dd>
+          <dt>Obra</dt><dd><span class="mono">${l(t.id_obra)}</span> ${je(t.obra)}</dd>
+          <dt>Contacto obra</dt><dd>${t.obra&&(t.obra.contacto_nombre||t.obra.contacto_telefono||t.obra.contacto_email)?[t.obra.contacto_nombre,t.obra.contacto_telefono,t.obra.contacto_email].filter(Boolean).map(l).join(" · "):'<span class="cc-tag gy">Sin contacto</span>'}</dd>
+          <dt>Vendedor</dt><dd>${l(t.interlocutor||"—")}</dd></dl>
+          <button class="cc-btn sm${t._sinGeo?" pri":""}" data-act="obra-edit" data-id="${l(t.id_pedido)}" style="margin-top:8px">${d(t._sinGeo?"edit_location_alt":"contact_page")}${t._sinGeo?"Georreferenciar obra y contacto":"Editar ubicación y contacto"}</button></section>
+        <section class="cc-dbox"><h4>${d("event")}Fechas y entrega</h4>
+          <dl><dt>Creación pedido</dt><dd><b>${q(t.creado)}</b>${t.creado?` <small>(hace ${-ue(t.creado)} d)</small>`:""}</dd>
+          <dt>Próximo reparto</dt><dd class="${t._vencido?"cc-venc":""}"><b>${q(t.fecha)}</b>${t._vencido?` · vencido ${-t._dias} d`:""}</dd>
+          <dt>Fechas de reparto</dt><dd>${u.map(q).join(" · ")||"—"}</dd>
+          <dt>Entrega(s) SAP</dt><dd class="mono">${g.length?g.map(l).join(", "):'<span class="cc-tag gy">Sin entrega asociada</span>'}</dd>
+          <dt>Avance</dt><dd>${t._nCub} de ${t._nLib} posiciones con entrega · ${w(t._ton,2)} t pendientes</dd></dl></section>
+        <section class="cc-dbox cc-flete"><h4>${d("payments")}Flete</h4>
+          <div class="cc-fl-row"><span>Flete traslado (ZFLT)</span><b class="mono">${h(r.traslado)}</b></div>
+          <div class="cc-fl-row"><span>Flete última milla (ZFL0/ZFL1)</span><b class="mono">${h(r.ultMilla)}</b></div>
+          <div class="cc-fl-row tot"><span>Flete cobrado</span><b class="mono">${h(r.cobrado)}</b></div>
+          <div class="cc-fl-row sug"><span>${d("auto_awesome")}Flete sugerido sistema</span><b class="mono">${m?"—":h(r.sug)}</b></div>
+          ${m?'<p class="cc-fl-nota">Sin datos de flete mínimo / máximo / $ por kilo en la carga SAP.</p>':`<div class="cc-fl-row dif ${s<0?"neg":"pos"}"><span>Cobrado − sugerido</span><b class="mono">${s<0?"−":"+"}${h(Math.abs(s))}</b></div>
+          <p class="cc-fl-nota">Por posición: $/kg bajo el mínimo → mínimo; sobre el máximo → máximo; entre ambos → $/kg. Σ mín ${h(r.min)} · Σ máx ${h(r.max)} · Σ $/kg ${h(r.pk)}</p>`}
         </section>
       </div>
-      <h4 class="cc-dtit">${ms('inventory_2')}Detalle de productos <small>${posOrd.length} posiciones</small></h4>
+      <h4 class="cc-dtit">${d("inventory_2")}Detalle de productos <small>${p.length} posiciones</small></h4>
       <div class="cc-dtab"><table><thead>
         <tr class="grp"><th colspan="9"></th><th colspan="2" class="sep">Flete cobrado</th><th colspan="4" class="sep">Flete sugerido sistema</th></tr>
         <tr><th>Pos</th><th>Material</th><th>Descripción</th><th class="r">Cant.</th><th class="r">Entregado</th><th class="r">Pendiente</th><th>Repartos (fecha · ctd)</th><th>Entrega</th><th>Estado</th>
         <th class="r sep">Traslado</th><th class="r">Últ. milla</th><th class="r sep">Mínimo</th><th class="r">Máximo</th><th class="r">$ por kilo</th><th class="r">Sugerido</th></tr></thead>
-        <tbody>${filas}</tbody>
+        <tbody>${b}</tbody>
         <tfoot><tr><td colspan="9"><b>Total pedido</b></td>
-          <td class="r mono sep"><b>${fCLP(F.traslado)}</b></td><td class="r mono"><b>${fCLP(F.ultMilla)}</b></td>
-          <td class="r mono sep"><b>${fCLP(F.min)}</b></td><td class="r mono"><b>${fCLP(F.max)}</b></td><td class="r mono"><b>${fCLP(F.pk)}</b></td><td class="r mono sug"><b>${fCLP(F.sug)}</b></td></tr></tfoot>
+          <td class="r mono sep"><b>${h(r.traslado)}</b></td><td class="r mono"><b>${h(r.ultMilla)}</b></td>
+          <td class="r mono sep"><b>${h(r.min)}</b></td><td class="r mono"><b>${h(r.max)}</b></td><td class="r mono"><b>${h(r.pk)}</b></td><td class="r mono sug"><b>${h(r.sug)}</b></td></tr></tfoot>
       </table></div>
-    </div>`;
-  $('#cc-modal').classList.add('show');
-}
-/** Línea de avance del pedido: Creado → Entrega creada → Completo. */
-function pasos(p) {
-  if (p._estado === 'bloq') return `<div class="cc-step on rd">${ms('receipt_long')}<span>Pedido creado</span></div><i class="cc-step-l"></i><div class="cc-step on rd">${ms('block')}<span>Bloqueado ${esc(p.codigo_bloqueo)}</span></div>`;
-  const n = p._estado === 'sin' ? 1 : p._estado === 'parcial' ? 2 : 3;
-  const st = [['receipt_long', 'Pedido creado'], ['inventory', p._estado === 'parcial' ? `Entrega parcial (${fP(p._avance)})` : 'Entrega creada'], ['task_alt', 'Todas las posiciones con entrega']];
-  return st.map((s, i) => `<div class="cc-step${i < n ? ' on' : ''}">${ms(s[0])}<span>${esc(s[1])}</span></div>`).join('<i class="cc-step-l"></i>');
-}
-function toast(tipo, titulo, texto) {
-  const ic = { ok: 'check_circle', err: 'error', warn: 'warning', info: 'info', xp: 'bolt' }[tipo] || 'info';
-  const el = document.createElement('div');
-  el.className = `cc-toast ${tipo}`;
-  el.innerHTML = `${ms(ic)}<div><b>${esc(titulo)}</b>${texto ? `<p>${esc(texto)}</p>` : ''}</div><button class="cc-x" title="Cerrar">${ms('close')}</button>`;
-  const cerrar = () => el.remove();
-  el.querySelector('.cc-x').onclick = cerrar;
-  const box = document.getElementById('cc-toasts'); if (!box) return;
-  box.appendChild(el);
-  while (box.children.length > 4) box.firstChild.remove();
-  setTimeout(cerrar, tipo === 'xp' ? 9000 : 4800);
-}
-
-/* ════════════════════════════════════════════════════════════════════════
-   EVENTOS
-   ════════════════════════════════════════════════════════════════════════ */
-function bindEventos() {
-  $('#cc-suc').addEventListener('change', e => setSucursal(e.target.value));
-  $('#cc-kpis').addEventListener('click', e => {
-    const b = e.target.closest('.cc-kpi'); if (!b) return;
-    if (b.dataset.venc) S.soloVencidos = !S.soloVencidos;
-    else if (b.dataset.xp) S.soloExpress = !S.soloExpress;
-    else if (b.dataset.ng) S.soloSinGeo = !S.soloSinGeo;
-    else S.fEstado = S.fEstado === b.dataset.est ? 'todos' : b.dataset.est;
-    S.sel = null; renderTodo(true);
-  });
-  $('#cc-cond').addEventListener('click', e => {
-    const b = e.target.closest('[data-cond]'); if (!b) return;
-    const k = b.dataset.cond;
-    if (e.altKey || e.ctrlKey || e.metaKey) { S.cond = new Set([k]); }        // Ctrl/Alt+clic = sólo esta
-    else if (S.cond.has(k)) { if (S.cond.size > 1) S.cond.delete(k); } else S.cond.add(k);
-    renderTodo(true);
-  });
-  $('#cc-btn-todas').onclick = () => { S.cond = new Set(CONDS.map(c => c.key)); S.fEstado = 'todos'; S.soloVencidos = false; S.soloExpress = false; S.soloSinGeo = false; S.q = ''; $('#cc-q').value = ''; renderTodo(true); };
-  $('#cc-btn-geo').onclick = () => activarEdicion(!S.editGeo);
-  $('#cc-btn-encuadrar').onclick = () => ajustarVista();
-  $('#cc-btn-panel').onclick = () => {
-    const off = root.classList.toggle('sin-panel');
-    $('#cc-btn-panel').innerHTML = ms(off ? 'right_panel_open' : 'right_panel_close');
-    setTimeout(() => map.invalidateSize(), 220);
-  };
-  $('#cc-btn-full').onclick = () => {
-    const on = root.classList.toggle('map-full');
-    $('#cc-btn-full').innerHTML = ms(on ? 'fullscreen_exit' : 'fullscreen');
-    setTimeout(() => { map.invalidateSize(); ajustarVista(); }, 120);
-  };
-  $('#cc-btn-reload').onclick = () => recargar();
-  const pane = $('#cc-pane');
-  pane.addEventListener('click', e => {
-    const li = e.target.closest('.cc-li[data-id]'); if (!li) return;
-    seleccionar(li.dataset.id, { sinScroll: true }); abrirDetalle(li.dataset.id);
-  });
-  pane.addEventListener('mouseover', e => { const li = e.target.closest('.cc-li[data-id]'); if (li) hlPin(li.dataset.id, true); });
-  pane.addEventListener('mouseout', e => { const li = e.target.closest('.cc-li[data-id]'); if (li) hlPin(li.dataset.id, false); });
-  const tb = $('#cc-tbody');
-  tb.addEventListener('click', e => {
-    const tr = e.target.closest('tr[data-id]'); if (!tr) return;
-    const id = tr.dataset.id, act = e.target.closest('[data-act]')?.dataset.act;
-    if (act === 'ver') { seleccionar(id); return; }
-    seleccionar(id, { sinScroll: true }); abrirDetalle(id);
-  });
-  tb.addEventListener('mouseover', e => { const tr = e.target.closest('tr[data-id]'); if (tr) hlPin(tr.dataset.id, true); });
-  tb.addEventListener('mouseout', e => { const tr = e.target.closest('tr[data-id]'); if (tr) hlPin(tr.dataset.id, false); });
-  root.querySelector('.cc-t thead').addEventListener('click', e => {
-    const th = e.target.closest('th.sort'); if (!th) return;
-    const col = th.dataset.col;
-    S.orden = { col, dir: S.orden.col === col ? -S.orden.dir : (col === 'ton' || col === 'avance' || col === 'flete' ? -1 : 1) };
-    renderTabla();
-  });
-  let tq;
-  $('#cc-q').addEventListener('input', e => { clearTimeout(tq); tq = setTimeout(() => { S.q = e.target.value; renderTodo(); }, 160); });
-  $('#cc-modal').addEventListener('click', e => {
-    if (e.target.id === 'cc-modal' || e.target.closest('[data-act="cerrar-modal"]')) { $('#cc-modal').classList.remove('show'); return; }
-    const oe = e.target.closest('[data-act="obra-edit"]');
-    if (oe) { const p = S.byId.get(oe.dataset.id); editarObra(p).then(o => { if (o) abrirDetalle(p.id_pedido); }); return; }
-    const vm = e.target.closest('[data-act="ver-mapa"]');
-    if (vm) { $('#cc-modal').classList.remove('show'); seleccionar(vm.dataset.id); }
-  });
-}
-function onKey(e) {
-  if (!root || !document.body.contains(root)) { document.removeEventListener('keydown', onKey); return; }
-  if (e.key !== 'Escape') return;
-  if ($('#cc-modal').classList.contains('show')) { $('#cc-modal').classList.remove('show'); return; }
-  if (root.classList.contains('map-full')) $('#cc-btn-full').click();
-}
-
-/* ════════════════════════════════════════════════════════════════════════
-   VISTA
-   ════════════════════════════════════════════════════════════════════════ */
-function plantilla() {
-  return `<div class="cc">
+    </div>`,f("#cc-modal").classList.add("show")}function et(e){if(e._estado==="bloq")return`<div class="cc-step on rd">${d("receipt_long")}<span>Pedido creado</span></div><i class="cc-step-l"></i><div class="cc-step on rd">${d("block")}<span>Bloqueado ${l(e.codigo_bloqueo)}</span></div>`;const t=e._estado==="sin"?1:e._estado==="parcial"?2:3;return[["receipt_long","Pedido creado"],["inventory",e._estado==="parcial"?`Entrega parcial (${be(e._avance)})`:"Entrega creada"],["task_alt","Todas las posiciones con entrega"]].map((a,o)=>`<div class="cc-step${o<t?" on":""}">${d(a[0])}<span>${l(a[1])}</span></div>`).join('<i class="cc-step-l"></i>')}function T(e,t,c){const a={ok:"check_circle",err:"error",warn:"warning",info:"info",xp:"bolt"}[e]||"info",o=document.createElement("div");o.className=`cc-toast ${e}`,o.innerHTML=`${d(a)}<div><b>${l(t)}</b>${c?`<p>${l(c)}</p>`:""}</div><button class="cc-x" title="Cerrar">${d("close")}</button>`;const r=()=>o.remove();o.querySelector(".cc-x").onclick=r;const p=document.getElementById("cc-toasts");if(p){for(p.appendChild(o);p.children.length>4;)p.firstChild.remove();setTimeout(r,e==="xp"?9e3:4800)}}function tt(){f("#cc-suc").addEventListener("change",a=>ce(a.target.value)),f("#cc-kpis").addEventListener("click",a=>{const o=a.target.closest(".cc-kpi");o&&(o.dataset.venc?n.soloVencidos=!n.soloVencidos:o.dataset.xp?n.soloExpress=!n.soloExpress:o.dataset.ng?n.soloSinGeo=!n.soloSinGeo:n.fEstado=n.fEstado===o.dataset.est?"todos":o.dataset.est,n.sel=null,F(!0))}),f("#cc-cond").addEventListener("click",a=>{const o=a.target.closest("[data-cond]");if(!o)return;const r=o.dataset.cond;a.altKey||a.ctrlKey||a.metaKey?n.cond=new Set([r]):n.cond.has(r)?n.cond.size>1&&n.cond.delete(r):n.cond.add(r),F(!0)}),f("#cc-btn-todas").onclick=()=>{n.cond=new Set(G.map(a=>a.key)),n.fEstado="todos",n.soloVencidos=!1,n.soloExpress=!1,n.soloSinGeo=!1,n.q="",f("#cc-q").value="",F(!0)},f("#cc-btn-geo").onclick=()=>Ze(!n.editGeo),f("#cc-btn-encuadrar").onclick=()=>X(),f("#cc-btn-panel").onclick=()=>{const a=_.classList.toggle("sin-panel");f("#cc-btn-panel").innerHTML=d(a?"right_panel_open":"right_panel_close"),setTimeout(()=>v.invalidateSize(),220)},f("#cc-btn-full").onclick=()=>{const a=_.classList.toggle("map-full");f("#cc-btn-full").innerHTML=d(a?"fullscreen_exit":"fullscreen"),setTimeout(()=>{v.invalidateSize(),X()},120)},f("#cc-btn-reload").onclick=()=>at();const e=f("#cc-pane");e.addEventListener("click",a=>{const o=a.target.closest(".cc-li[data-id]");o&&(I(o.dataset.id,{sinScroll:!0}),J(o.dataset.id))}),e.addEventListener("mouseover",a=>{const o=a.target.closest(".cc-li[data-id]");o&&Z(o.dataset.id,!0)}),e.addEventListener("mouseout",a=>{const o=a.target.closest(".cc-li[data-id]");o&&Z(o.dataset.id,!1)});const t=f("#cc-tbody");t.addEventListener("click",a=>{const o=a.target.closest("tr[data-id]");if(!o)return;const r=o.dataset.id;if(a.target.closest("[data-act]")?.dataset.act==="ver"){I(r);return}I(r,{sinScroll:!0}),J(r)}),t.addEventListener("mouseover",a=>{const o=a.target.closest("tr[data-id]");o&&Z(o.dataset.id,!0)}),t.addEventListener("mouseout",a=>{const o=a.target.closest("tr[data-id]");o&&Z(o.dataset.id,!1)}),_.querySelector(".cc-t thead").addEventListener("click",a=>{const o=a.target.closest("th.sort");if(!o)return;const r=o.dataset.col;n.orden={col:r,dir:n.orden.col===r?-n.orden.dir:r==="ton"||r==="avance"||r==="flete"?-1:1},ne()});let c;f("#cc-q").addEventListener("input",a=>{clearTimeout(c),c=setTimeout(()=>{n.q=a.target.value,F()},160)}),f("#cc-modal").addEventListener("click",a=>{if(a.target.id==="cc-modal"||a.target.closest('[data-act="cerrar-modal"]')){f("#cc-modal").classList.remove("show");return}const o=a.target.closest('[data-act="obra-edit"]');if(o){const p=n.byId.get(o.dataset.id);Xe(p).then(m=>{m&&J(p.id_pedido)});return}const r=a.target.closest('[data-act="ver-mapa"]');r&&(f("#cc-modal").classList.remove("show"),I(r.dataset.id))})}function ie(e){if(!_||!document.body.contains(_)){document.removeEventListener("keydown",ie);return}if(e.key==="Escape"){if(f("#cc-modal").classList.contains("show")){f("#cc-modal").classList.remove("show");return}_.classList.contains("map-full")&&f("#cc-btn-full").click()}}function ct(){return`<div class="cc">
   <header class="cc-top">
     <div class="cc-brand">
-      <div class="cc-brand-ic">${ms('cell_tower')}</div>
+      <div class="cc-brand-ic">${d("cell_tower")}</div>
       <div><div class="cc-brand-t">Monitor de Pedidos</div><div class="cc-brand-s" id="cc-centro-lbl"></div></div>
     </div>
     <div class="cc-grp"><span class="cc-lbl">Sucursal (of. ventas)</span><select class="cc-select" id="cc-suc"></select></div>
-    <label class="cc-search">${ms('search')}<input id="cc-q" placeholder="Pedido, cliente, obra, comuna, entrega…"></label>
+    <label class="cc-search">${d("search")}<input id="cc-q" placeholder="Pedido, cliente, obra, comuna, entrega…"></label>
     <div class="cc-chips">
-      <button class="cc-chip" id="cc-btn-todas" title="Quitar todos los filtros">${ms('filter_alt_off')}Limpiar filtros</button>
-      <button class="cc-chip is-tool" id="cc-btn-geo" title="Ubicar obras arrastrando su pin">${ms('edit_location_alt')}Georreferenciar <span class="cc-cnt" id="cc-geo-cnt">0</span></button>
-      <button class="cc-chip" id="cc-btn-reload" title="Volver a leer los datos SAP">${ms('refresh')}Actualizar</button>
+      <button class="cc-chip" id="cc-btn-todas" title="Quitar todos los filtros">${d("filter_alt_off")}Limpiar filtros</button>
+      <button class="cc-chip is-tool" id="cc-btn-geo" title="Ubicar obras arrastrando su pin">${d("edit_location_alt")}Georreferenciar <span class="cc-cnt" id="cc-geo-cnt">0</span></button>
+      <button class="cc-chip" id="cc-btn-reload" title="Volver a leer los datos SAP">${d("refresh")}Actualizar</button>
     </div>
     <div class="cc-kpis" id="cc-kpis"></div>
     <div class="cc-grp cc-grp-full"><span class="cc-lbl">Condición de expedición <span style="text-transform:none;font-weight:500;letter-spacing:0">· Ctrl+clic para ver sólo una</span></span><div class="cc-chips" id="cc-cond"></div></div>
@@ -742,9 +100,9 @@ function plantilla() {
         <div id="cc-map"></div>
         <div class="cc-maphint" id="cc-maphint"></div>
         <div class="cc-mapbtns">
-          <button class="cc-mapbtn" id="cc-btn-encuadrar" title="Encuadrar todos los pedidos">${ms('fit_screen')}</button>
-          <button class="cc-mapbtn" id="cc-btn-panel" title="Ocultar / mostrar panel lateral">${ms('right_panel_close')}</button>
-          <button class="cc-mapbtn" id="cc-btn-full" title="Mapa a pantalla completa">${ms('fullscreen')}</button>
+          <button class="cc-mapbtn" id="cc-btn-encuadrar" title="Encuadrar todos los pedidos">${d("fit_screen")}</button>
+          <button class="cc-mapbtn" id="cc-btn-panel" title="Ocultar / mostrar panel lateral">${d("right_panel_close")}</button>
+          <button class="cc-mapbtn" id="cc-btn-full" title="Mapa a pantalla completa">${d("fullscreen")}</button>
         </div>
         <div class="cc-legend" id="cc-legend"></div>
       </div>
@@ -761,56 +119,7 @@ function plantilla() {
     </tr></thead><tbody id="cc-tbody"></tbody></table></div>
   </section>
   <div class="cc-modal" id="cc-modal"><div class="cc-modal-c" id="cc-modal-c"></div></div>
-</div>`;
-}
-
-async function recargar() {
-  const btn = $('#cc-btn-reload'); if (btn) btn.disabled = true;
-  try {
-    await cargarFuentes();
-    const sel = S.sel;
-    setSucursal(S.sucursal);
-    if (sel && S.byId.has(sel)) seleccionar(sel);
-    actualizadoEn();
-    toast('ok', 'Datos actualizados', `${S.pedidos.length} pedidos en ${S.centro.nombre}.`);
-  } catch (err) { toast('err', 'No se pudo actualizar', err.message || String(err)); }
-  if (btn) btn.disabled = false;
-}
-function actualizadoEn() {
-  const upd = document.getElementById('sv-upd');
-  if (!upd || !S.raw.cargado) return;
-  const d = new Date(S.raw.cargado);
-  upd.innerHTML = `${ms('schedule')}Datos SAP ${d.toLocaleDateString('es-CL')} ${d.toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' })}`;
-  upd.classList.remove('hidden');
-}
-
-export async function renderMonitorPedidos(stage) {
-  inyectarEstilos();
-  if (!document.getElementById('cc-toasts')) { const t = document.createElement('div'); t.id = 'cc-toasts'; t.className = 'cc-toasts'; document.body.appendChild(t); }
-  if (map) { try { map.remove(); } catch (_e) { /* */ } map = null; hubMarker = null; }
-  S.editGeo = false; S.sel = null;
-  await Promise.all([loadLeaflet(), cargarFuentes()]);
-  stage.innerHTML = plantilla();
-  root = stage.querySelector('.cc');
-  bindEventos();
-  document.removeEventListener('keydown', onKey); document.addEventListener('keydown', onKey);
-  const sucs = [...new Set(S.raw.suc.map(d => z(d.ofvta)).filter(Boolean))].sort();
-  if (!sucs.length) { root.querySelector('.cc-main').innerHTML = '<div class="cc-card"><div class="cc-empty" style="margin:24px">No hay pedidos de despacho/retiro en su alcance.</div></div>'; return; }
-  let pref = ''; try { pref = localStorage.getItem(LS_SUC) || ''; } catch (_e) { /* */ }
-  setSucursal(sucs.includes(pref) ? pref : sucs[0]);
-  actualizadoEn();
-}
-// Compatibilidad con app.js (tab 'monitor-consolidacion')
-export const renderMonitorConsolidacion = renderMonitorPedidos;
-
-/* ════════════════════════════════════════════════════════════════════════
-   ESTILOS (prefijo cc-)
-   ════════════════════════════════════════════════════════════════════════ */
-function inyectarEstilos() {
-  document.getElementById('cc-style')?.remove();
-  const st = document.createElement('style');
-  st.id = 'cc-style';
-  st.textContent = `
+</div>`}async function at(){const e=f("#cc-btn-reload");e&&(e.disabled=!0);try{await he();const t=n.sel;ce(n.sucursal),t&&n.byId.has(t)&&I(t),Ee(),T("ok","Datos actualizados",`${n.pedidos.length} pedidos en ${n.centro.nombre}.`)}catch(t){T("err","No se pudo actualizar",t.message||String(t))}e&&(e.disabled=!1)}function Ee(){const e=document.getElementById("sv-upd");if(!e||!n.raw.cargado)return;const t=new Date(n.raw.cargado);e.innerHTML=`${d("schedule")}Datos SAP ${t.toLocaleDateString("es-CL")} ${t.toLocaleTimeString("es-CL",{hour:"2-digit",minute:"2-digit"})}`,e.classList.remove("hidden")}async function ot(e){if(nt(),!document.getElementById("cc-toasts")){const a=document.createElement("div");a.id="cc-toasts",a.className="cc-toasts",document.body.appendChild(a)}if(v){try{v.remove()}catch{}v=null,R=null}n.editGeo=!1,n.sel=null,await Promise.all([Ce(),he()]),e.innerHTML=ct(),_=e.querySelector(".cc"),tt(),document.removeEventListener("keydown",ie),document.addEventListener("keydown",ie);const t=[...new Set(n.raw.suc.map(a=>y(a.ofvta)).filter(Boolean))].sort();if(!t.length){_.querySelector(".cc-main").innerHTML='<div class="cc-card"><div class="cc-empty" style="margin:24px">No hay pedidos de despacho/retiro en su alcance.</div></div>';return}let c="";try{c=localStorage.getItem(pe)||""}catch{}ce(t.includes(c)?c:t[0]),Ee()}const ft=ot;function nt(){document.getElementById("cc-style")?.remove();const e=document.createElement("style");e.id="cc-style",e.textContent=`
 .cc{--cc-primary:#b5000b;--cc-sel:#ffdad5;--cc-sel2:#fff5f3;--cc-ink:#191c1d;--cc-ink2:#5c5f61;--cc-ink3:#444749;--cc-s1:#f3f4f5;--cc-s2:#edeeef;--cc-s3:#e7e8e9;--cc-line:#e1e3e4;--cc-line2:#edeeef;--cc-mono:'JetBrains Mono',ui-monospace,Consolas,monospace;--cc-gray:#9ca3af;
 display:flex;flex-direction:column;gap:10px;color:var(--cc-ink);font-size:14px}
 .cc *,.cc-toasts *{box-sizing:border-box}
@@ -1022,6 +331,4 @@ table.cc-t{width:100%;border-collapse:separate;border-spacing:0;font-size:13px}
 @media (max-width:1280px){.cc-kpis{grid-template-columns:repeat(3,minmax(0,1fr))}}
 @media (max-width:1100px){.cc{height:auto}.cc-main{grid-template-columns:1fr;height:auto}.cc-mapwrap{height:58vh;flex:none}.cc-side{max-height:560px}.cc-tablecard{height:auto;max-height:70vh}}
 @media (max-width:640px){.cc-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.cc-kv{grid-template-columns:repeat(2,1fr)}.cc-search input{width:140px}.cc-brand{min-width:0;width:100%}}
-`;
-  document.head.appendChild(st);
-}
+`,document.head.appendChild(e)}export{ft as renderMonitorConsolidacion,ot as renderMonitorPedidos};
