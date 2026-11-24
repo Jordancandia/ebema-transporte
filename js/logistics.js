@@ -1,4 +1,4 @@
-import{getDatabase as C,saveDatabase as A,deleteRow as _}from"./data.js?v=6ce8cb5f60";import{showAlert as y,geocodeAddress as q,escapeHtml as H,toCSV as U,downloadFile as F}from"./utils.js";import{GRUPOS_ORIGEN as M}from"./chile-geo.js";import{confirmar as V}from"./confirmar.js?v=84d7f13f40";let B="";function T(x){const b=C().logisticsCentres;x.innerHTML=`
+import{getDatabase as C,saveDatabase as A,deleteRow as _}from"./data.js?v=99b844b255";import{showAlert as y,geocodeAddress as q,escapeHtml as H,toCSV as U,downloadFile as F}from"./utils.js";import{GRUPOS_ORIGEN as M}from"./chile-geo.js";import{confirmar as V}from"./confirmar.js?v=84d7f13f40";let B="";function T(x){const b=C().logisticsCentres;x.innerHTML=`
     <p class="font-body-md text-body-md text-secondary mb-md">Administre los centros de distribución (CD) y puntos de salida. Seleccione un centro para geolocalizarlo en el mapa interactivo.</p>
 
     <div class="flex flex-wrap items-center gap-sm mb-md">
